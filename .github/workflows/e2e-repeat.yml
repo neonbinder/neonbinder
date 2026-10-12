@@ -12,7 +12,8 @@ name: E2E Repeat (flakiness sampler)
 # dispatching the next, so the suite's own cancel-in-progress concurrency never
 # cancels a sample and two runs never contend on the shared Convex preview and
 # test accounts (the documented 503-under-contention). Every sample re-runs the
-# scripted reset and the seed, so each starts from the same baseline.
+# scripted reset and both seeds (desktop pass, then mobile pass), so each starts
+# from the same baseline.
 #
 # All samples share the same code + preview, so any spec that flips pass<->fail
 # across samples is genuine flakiness.

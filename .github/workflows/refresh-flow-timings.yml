@@ -4,7 +4,8 @@ name: Refresh flow timings
 # correct" as specs are added / changed, with no babysitting.
 #
 # It does NOT run the E2E suite. It downloads the `pw-merged` artifact (the merged
-# Playwright JSON report) that e2e.yml's `e2e` job uploads on every PR Pipeline run,
+# Playwright JSON report, both passes, desktop and mobile) that e2e.yml's `e2e` job
+# uploads on every PR Pipeline run,
 # rewrites the timings with `shard-plan.mjs --from-results`, RE-ALIGNS them to main's
 # current spec set (branch-only specs drop; specs the run did not measure keep their
 # committed value; main-only specs fall to the planner's median default), and — when
@@ -77,15 +78,20 @@ jobs:
 
           old_doc = json.load(open(sys.argv[1]))
           new_doc = json.load(open(sys.argv[2]))
-          measured = new_doc.get("seconds", {})
-          # Each value sums the projects in the doc's `projects` (absent = the
-          # desktop-only format, ["e2e"]). Put the committed values on the new
-          # run's basis before comparing or merging, so a desktop-only file
-          # and a desktop+mobile run never read as drift (or mix) by 2x.
-          new_projects = new_doc.get("projects") or ["e2e"]
-          old_projects = old_doc.get("projects") or ["e2e"]
-          old = {k: round(v * len(new_projects) / len(old_projects))
-                 for k, v in old_doc.get("seconds", {}).items()}
+
+          def per_project(doc):
+              # {project: {spec: seconds}} from either schema: `seconds` is
+              # the desktop (e2e) run, `byProject` carries the others. A
+              # legacy `projects` list (seconds summed over several projects)
+              # is divided back to one project's figure.
+              legacy = len(doc.get("projects") or []) or 1
+              out = {"e2e": {k: v / legacy for k, v in doc.get("seconds", {}).items()}}
+              for proj, secs in (doc.get("byProject") or {}).items():
+                  out[proj] = dict(secs)
+              return out
+
+          old_pp = per_project(old_doc)
+          measured_pp = per_project(new_doc)
 
           # main's current spec set (the checkout), same filter as shard-plan.mjs.
           tests = "playwright/tests"
@@ -97,38 +103,47 @@ jobs:
                   if rel.endswith(".spec.ts") and rel not in excluded:
                       current.add(rel)
 
-          # Measured value where the run has one, else the committed value;
-          # branch-only specs (not on main) are dropped.
-          merged = {}
-          for spec in sorted(current):
-              if spec in measured:
-                  merged[spec] = measured[spec]
-              elif spec in old:
-                  merged[spec] = old[spec]
-
+          # Per project: measured value where the run has one, else the
+          # committed value; branch-only specs (not on main) are dropped.
+          merged_pp, old_pp_r = {}, {}
           reasons = []
-          added = [p for p in merged if p not in old]
-          removed = [p for p in old if p not in merged]
-          if added:
-              reasons.append(f"{len(added)} added: " + ", ".join(p.split("/")[-1] for p in added[:5]))
-          if removed:
-              reasons.append(f"{len(removed)} removed: " + ", ".join(p.split("/")[-1] for p in removed[:5]))
-          moved = []
-          for p in set(old) & set(merged):
-              o, n = old[p], merged[p]
-              if abs(n - o) >= max(10, 0.20 * o):  # >= max(20%, 10s)
-                  moved.append((p, o, n))
-          if moved:
-              moved.sort(key=lambda x: -abs(x[2] - x[1]))
-              reasons.append(f"{len(moved)} moved, e.g. " +
-                  ", ".join(f"{p.split('/')[-1]} {o}->{n}s" for p, o, n in moved[:5]))
-          drift = bool(added or removed or moved)
+          drift = False
+          for proj in sorted(set(old_pp) | set(measured_pp)):
+              measured = measured_pp.get(proj, {})
+              old = {k: round(v) for k, v in old_pp.get(proj, {}).items()}
+              old_pp_r[proj] = old
+              merged = {}
+              for spec in sorted(current):
+                  if spec in measured:
+                      merged[spec] = measured[spec]
+                  elif spec in old:
+                      merged[spec] = old[spec]
+              merged_pp[proj] = merged
+              added = [p for p in merged if p not in old]
+              removed = [p for p in old if p not in merged]
+              if added:
+                  reasons.append(f"[{proj}] {len(added)} added: " + ", ".join(p.split("/")[-1] for p in added[:5]))
+              if removed:
+                  reasons.append(f"[{proj}] {len(removed)} removed: " + ", ".join(p.split("/")[-1] for p in removed[:5]))
+              moved = []
+              for p in set(old) & set(merged):
+                  o, n = old[p], merged[p]
+                  if abs(n - o) >= max(10, 0.20 * o):  # >= max(20%, 10s)
+                      moved.append((p, o, n))
+              if moved:
+                  moved.sort(key=lambda x: -abs(x[2] - x[1]))
+                  reasons.append(f"[{proj}] {len(moved)} moved, e.g. " +
+                      ", ".join(f"{p.split('/')[-1]} {o}->{n}s" for p, o, n in moved[:5]))
+              drift = drift or bool(added or removed or moved)
           reason = "; ".join(reasons) if reasons else "no material drift"
           print("Drift:", drift, "-", reason)
 
           if drift:
               out = {"_source": new_doc.get("_source", old_doc.get("_source", "")),
-                     "projects": new_projects, "seconds": merged}
+                     "seconds": merged_pp.get("e2e", {})}
+              extra = {k: v for k, v in merged_pp.items() if k != "e2e" and v}
+              if extra:
+                  out["byProject"] = extra
               with open(sys.argv[2], "w") as fh:
                   fh.write(json.dumps(out, indent=2) + "\n")
           else:

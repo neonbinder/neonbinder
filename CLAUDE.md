@@ -108,11 +108,11 @@ The economics, measured on 2026-08-25:
 
 | | Workers | E2E wall-clock | Actions cost | Vercel cost |
 |---|---|---|---|---|
-| CI | 8 shards | wall-clock set by the slowest shard | **$0** — public repo | 1 preview build |
+| CI | 8 shards x 2 passes (desktop, then mobile) | wall-clock set by the slowest shard of each pass | **$0** — public repo | 1 preview build |
 | Local | 1 | far longer than CI | $0 | $0 |
 
 A dev laptop runs an individual spec at roughly CI's pace. CI is not faster
-per spec — it is faster because it runs eight shards at once. So **CI is the
+per spec — it is faster because it runs eight shards at once (in two passes, desktop then mobile). So **CI is the
 right place to discover E2E failures, and the laptop is the right place to fix
 them.** The timing numbers above were measured on the old Maestro suite;
 re-measure before quoting them for Playwright.
@@ -163,6 +163,7 @@ VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001
 # in another shell, point Playwright at it and run just the failing spec
 APP_URL=http://localhost:3001 WORKER_INDEX=0 \
   npx playwright test --project=e2e --no-deps <path-substring>
+# phone project: re-seed first (reset + setup), then --project=e2e-mobile
 ```
 
 - **Spare port, not 3000** — keeps this Vite instance separate from any other
@@ -430,9 +431,9 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
 - **`browser.yml`** — `services/browser` build + unit tests + the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a real BSC + SportLots login probe against it). **Pre-merge only.**
 - **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.
 - **`preprocess.yml`** — `services/preprocess` lint + unit tests + the **per-PR preprocess preview** (`pr-<N>` tagged no-traffic revision on the dev service + smoke + sticky PR comment). **Pre-merge only.**
-- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): scripted reset → seed (the `setup` project, worker 0) → **8 shards**, each given an explicit file list by `shard-plan.mjs` (longest-first over `timings.json`) and running the `bootstrap` project for its own test account first → the single required **`e2e`** gate (green iff no spec failed **and** no result is missing, so a shard that died before reporting fails it) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are screenshots and the merged report, never traces (a trace records Clerk testing tokens, and the repo is public). Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's `timings.json`) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → the single required **`e2e`** gate (green iff both seeds and every shard succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are screenshots and the merged report, never traces (a trace records Clerk testing tokens, and the repo is public). Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
 - **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image, and deletes the PR's Convex preview. Browser and preprocess get **separate jobs**, because each authenticates as its own deployer SA and `google-github-actions/auth` rewrites ADC in place — a second auth in one job would silently run later steps as the wrong identity. The Convex job finds its target via the PR head SHA's GitHub Deployment record; since NEO-162 it accepts **both** `vercel[bot]` (PRs opened before the cutover) and `github-actions[bot]` (previews built by `web-preview`), so the pre-cutover backlog stays reclaimable.
-- **`refresh-flow-timings.yml`** — refreshes `apps/web/playwright/timings.json` (the shard planner's per-spec timings) from CI.
+- **`refresh-flow-timings.yml`** — refreshes `apps/web/playwright/timings.json` (the shard planner's per-spec, per-project timings) from CI.
 - **`e2e-repeat.yml`** — manual flakiness sampler (runs the Playwright suite N times).
 
 ## E2E Testing (Playwright)
@@ -444,13 +445,14 @@ The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, he
 **Run locally** — only the specs covering your change, against the PR's Convex preview (never shared dev, never the full suite; see the PR loop above):
 ```bash
 cd apps/web
-npm run test:e2e:list -- --project=e2e     # check a new spec is listed once
+npm run test:e2e:list -- --project=e2e     # check a new spec is listed once (once per project)
 npm run test:e2e:typecheck                 # tsc -p playwright/tsconfig.json
 APP_URL=http://localhost:3001 WORKER_INDEX=0 \
   npx playwright test --project=e2e --no-deps <path-substring>
+# phone project: re-seed first (reset + setup), then --project=e2e-mobile
 ```
 
-**In CI:** the suite runs via `pr-pipeline.yml` → `e2e.yml` on every PR (see CI/CD). The `e2e` check is the merge-blocking gate. One test account per shard (workers 0–7 used; 0–11 exist); specs must be self-contained and parallel-safe (create-and-use their own data; no shared global state; writes only to a per-worker hand-made set or a registered sole-writer spec).
+**In CI:** the suite runs via `pr-pipeline.yml` → `e2e.yml` on every PR (see CI/CD). The `e2e` check is the merge-blocking gate. One test account per shard (workers 0–7 used in each pass; 0–11 exist); desktop and mobile run in separate passes on separate seeds; specs must be self-contained and parallel-safe (create-and-use their own data; no shared global state; writes only to a per-worker hand-made set or a registered sole-writer spec).
 
 **Test tags:** `@smoke` plus a feature grouping (`@set-selector`, `@profile`, ...). There is no `@regression` tag and never a `wip` tag — fix the underlying bug instead.
 

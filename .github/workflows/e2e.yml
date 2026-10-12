@@ -52,39 +52,61 @@ permissions:
 # gate. Specs live in apps/web/playwright/tests/; config is
 # apps/web/playwright.config.ts (projects: setup / bootstrap / e2e /
 # e2e-mobile). Every spec runs on BOTH e2e (desktop) and e2e-mobile (a
-# Chromium phone); `shard-plan.mjs --projects` names them for this file.
+# Chromium phone), in two passes, each on a FRESHLY SEEDED preview: ~15 specs
+# are fresh-only or the sole writer of a real marketplace set and pass once
+# per seed, so desktop and mobile cannot share one. `shard-plan.mjs
+# --projects` names the projects for the gate.
 #
-#   setup → adopt the PR's Vercel preview URL, wait for it (with the bypass
-#           header), derive the preview's Convex deployment name.
-#   seed  → mirror the Convex env switches, scripted reset (e2e-baseline.sh),
-#           then the `setup` project (the global baseline) as worker 0.
-#   shard → 8 x ubuntu-latest. Each shard runs the spec files that
-#           playwright/shard-plan.mjs assigns it (longest-first over the per-spec
-#           timings in playwright/timings.json, each weighted desktop + mobile),
-#           NOT Playwright's count-based --shard, on BOTH spec projects. One
-#           shard = one worker = one account (shard i -> WORKER_INDEX i-1 ->
-#           TEST_EMAIL_<i-1>), so a spec's desktop and mobile tests run back to
-#           back, never concurrently; each shard runs the `bootstrap` project
-#           first via the project dependency.
-#   e2e   → the single ruleset-gated verdict (job id and name are load-bearing:
-#           pr-pipeline.yml's `e2e` job and ci-gate read it). Merges every
-#           report and is green iff setup + seed + every shard succeeded AND every
-#           planned spec produced a passing result on EVERY spec project.
-#   report→ merged JUnit as ONE "Playwright E2E" check, per-test timing table in
-#           the step summary, sticky PR comment.
+#   setup        → adopt the PR's Vercel preview URL, wait for it (with the
+#                  bypass header), derive the preview's Convex deployment name.
+#   seed         → mirror the Convex env switches, scripted reset
+#                  (e2e-baseline.sh), then the `setup` project (the global
+#                  baseline) as worker 0.
+#   shard-desktop→ 8 x ubuntu-latest, `--project=e2e`. Each shard runs the spec
+#                  files that `shard-plan.mjs 8 <i> --project e2e` assigns it
+#                  (longest-first over the per-spec desktop timings in
+#                  playwright/timings.json), NOT Playwright's count-based
+#                  --shard. One shard = one worker = one account (shard i ->
+#                  WORKER_INDEX i-1 -> TEST_EMAIL_<i-1>); each shard runs the
+#                  `bootstrap` project first via the project dependency.
+#   seed-mobile  → needs shard-desktop: the reset wipes the shared preview, so
+#                  mobile may only seed after EVERY desktop shard has
+#                  finished. Runs even when desktop has reds (`!cancelled()`
+#                  as long as setup + seed succeeded) so one run still
+#                  collects the mobile results. Same Convex env switches,
+#                  scripted reset and `setup` project as `seed`.
+#   shard-mobile → 8 x ubuntu-latest, `--project=e2e-mobile`, planned on the
+#                  mobile timings. `bootstrap` is a dependency of e2e-mobile
+#                  too, so each mobile shard re-seeds its account after the
+#                  reset.
+#   e2e          → the single ruleset-gated verdict (job id and name are
+#                  load-bearing: pr-pipeline.yml's `e2e` job and ci-gate read
+#                  it). Merges every pass's report and is green iff all five
+#                  upstream jobs succeeded AND every planned spec produced a
+#                  passing result on EVERY spec project, and both seeds passed.
+#   report       → merged JUnit as ONE "Playwright E2E" check, per-test timing
+#                  table in the step summary, sticky PR comment.
 #
-# To scale: extend the shard matrix AND the `8` passed to shard-plan.mjs (both in
-# this file), and provision TEST_EMAIL_8.. — nothing else changes. Accounts
-# 0-11 exist, so up to 12 shards. 8 holds with mobile (NEO-341, from
-# timings.json): desktop + mobile is ~3,600 s of test time, ~450 s a shard at
-# 8, but the longest single spec alone is ~600 s doubled (both its projects
-# run in its one shard), so wall-clock is bound by that spec at any N >= 7.
+# Passes are strictly sequential inside a PR (the needs chain above): reset
+# wipes the preview that the other pass runs against.
+#
+# Wall clock (estimate): setup ~1 min + seed ~4 min + longest desktop shard
+# (~5 min: the longest spec is ~300 s, the rest pack under it at N >= 8) +
+# seed-mobile ~4 min + longest mobile shard (~5 min) + gate/report ~2 min,
+# about 20 min end to end, versus ~25-30 min with one seed and doubled
+# shards. To scale: extend BOTH shard matrices AND the `8` passed to
+# shard-plan.mjs (all in this file), and provision TEST_EMAIL_8.. — nothing
+# else changes. Accounts 0-11 exist, so up to 12 shards per pass; the longest
+# single spec bounds wall-clock at any N >= 7.
 #
 # Artifacts are screenshots + reports ONLY. Never traces: a trace records the
 # network traffic, including Clerk testing tokens, and these artifacts are public
 # (playwright.config.ts turns traces off in CI; do not turn them back on here).
 # Only png files are uploaded from results/ — the per-failure error-context
-# snapshots stay out until the security review clears them.
+# snapshots stay out until the security review clears them. Artifact names:
+# pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
+# pw-report-mobile-<i>, pw-merged (+ convex-logs-* on the first shard of each
+# pass and each seed).
 
 jobs:
   setup:
@@ -177,8 +199,8 @@ jobs:
           echo "convex_name=$name" >> "$GITHUB_OUTPUT"
 
   seed:
-    # Seed the shared per-PR Convex preview's global baseline ONCE, before the
-    # shard matrix fans out: scripted reset, then the `setup` project (Base +
+    # Seed the shared per-PR Convex preview's global baseline before the
+    # DESKTOP shard matrix fans out: scripted reset, then the `setup` project (Base +
     # Insert + Parallel in one in-place pass) as worker 0. The per-shard
     # `bootstrap` project resets only its own user, so it never wipes this
     # global baseline. By the time this runs, NEONBINDER_BROWSER_URL on the
@@ -507,8 +529,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  shard:
-    # 8 identical shards, each its own VM = ONE Chrome (web can't parallelize
+
+  shard-desktop:
+    # DESKTOP pass: 8 identical shards, each its own VM = ONE Chrome (web can't parallelize
     # within a VM — the NEO-46 contention). shard i -> global worker i-1 ->
     # TEST_EMAIL_<i-1> (0..7 provisioned). A test failure fails the shard, but
     # `fail-fast: false` lets every other shard finish and report; the `e2e`
@@ -550,9 +573,9 @@ jobs:
       # only cover its own window (captured above) — nothing spans the WHOLE
       # E2E run. Shard 1 does the next best thing: one stream for its full
       # lifetime (the other seven would just duplicate the same preview's logs
-      # 8x). See "Stop Convex log capture (shard 1)" below for the filtering
+      # 8x). See "Stop Convex log capture (desktop shard 1)" below for the filtering
       # rationale. Best-effort only: never fails the job.
-      - name: Start Convex log capture (shard 1)
+      - name: Start Convex log capture (desktop shard 1)
         if: matrix.shard == 1
         working-directory: apps/web
         env:
@@ -561,18 +584,18 @@ jobs:
         run: |
           set -uo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for shard 1."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for desktop shard 1."
             exit 0
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-shard-1.raw.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-1.raw.jsonl"
           rm -f "$RAW_LOG_FILE"
           nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
-            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-shard-1.stderr.log" &
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-1.stderr.log" &
           disown
-          echo "CONVEX_LOGS_SHARD1_PID=$!" >> "$GITHUB_ENV"
-          echo "Started Convex log capture for shard 1 (pid $!) -> $RAW_LOG_FILE"
+          echo "CONVEX_LOGS_DESKTOP1_PID=$!" >> "$GITHUB_ENV"
+          echo "Started Convex log capture for desktop shard 1 (pid $!) -> $RAW_LOG_FILE"
 
-      - name: Run shard ${{ matrix.shard }}/8
+      - name: Run desktop shard ${{ matrix.shard }}/8
         env:
           CI: "true"
           APP_URL: http://localhost:3000
@@ -582,44 +605,44 @@ jobs:
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
           PW_REPORT_DIR: playwright/report
           SHARD: ${{ matrix.shard }}
+          PROJECT: e2e
         run: |
           set -euo pipefail
-          # Longest-first file plan instead of --shard (see shard-plan.mjs).
-          files=$(node playwright/shard-plan.mjs 8 "$SHARD")
-          # Every planned spec runs on every spec project (desktop + mobile).
-          project_args=()
-          while IFS= read -r p; do project_args+=("--project=$p"); done < <(node playwright/shard-plan.mjs --projects)
-          node playwright/shard-plan.mjs 8   # per-shard totals, to stderr
+          # Longest-first file plan instead of --shard (see shard-plan.mjs),
+          # on this pass's project timings.
+          files=$(node playwright/shard-plan.mjs 8 "$SHARD" --project "$PROJECT")
+          node playwright/shard-plan.mjs 8 --project "$PROJECT"   # per-shard totals, to stderr
           if [ -z "$files" ]; then
             # `playwright test` with no file arguments runs the WHOLE suite, and
             # an empty plan means the planner and the spec tree disagree. Either
             # way, refuse rather than pass a shard that ran nothing.
-            echo "::error::Shard ${SHARD}/8 has no specs planned."
+            echo "::error::Shard ${SHARD}/8 ($PROJECT) has no specs planned."
             exit 1
           fi
-          echo "Shard ${SHARD} runs (${project_args[*]}):"; echo "$files"
+          echo "Shard ${SHARD} runs --project=$PROJECT:"; echo "$files"
           start=$(date +%s)
-          # `bootstrap` runs first via the project dependency (once, for both).
+          # `bootstrap` runs first via the project dependency (this pass's
+          # account re-seed, after the pass's reset).
           # shellcheck disable=SC2086 # one path per line, no spaces
-          npx playwright test "${project_args[@]}" $files || code=$?
-          echo "Shard ${SHARD}: exit ${code:-0}, $(( $(date +%s) - start ))s"
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Shard ${SHARD} ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
           exit "${code:-0}"
 
       # NEO-301: stop the background capture and filter before upload — same
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
       # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
-      - name: Stop Convex log capture (shard 1)
+      - name: Stop Convex log capture (desktop shard 1)
         if: always() && matrix.shard == 1
         working-directory: apps/web
         run: |
           set -uo pipefail
-          if [ -n "${CONVEX_LOGS_SHARD1_PID:-}" ]; then
-            kill "${CONVEX_LOGS_SHARD1_PID}" 2>/dev/null || true
-            wait "${CONVEX_LOGS_SHARD1_PID}" 2>/dev/null || true
+          if [ -n "${CONVEX_LOGS_DESKTOP1_PID:-}" ]; then
+            kill "${CONVEX_LOGS_DESKTOP1_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_DESKTOP1_PID}" 2>/dev/null || true
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-shard-1.raw.jsonl"
-          OUT_FILE="convex-logs-shard-1.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-desktop-1.raw.jsonl"
+          OUT_FILE="convex-logs-desktop-1.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
                 ((.logLines // [])
@@ -630,19 +653,19 @@ jobs:
                 as $keep
                 | select((.error != null) or ($keep | length) > 0)
                 | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-shard-1-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-1-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
-            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for shard 1."
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard 1."
           else
-            echo "No Convex logs captured for shard 1 (capture may have been skipped or produced nothing)."
+            echo "No Convex logs captured for desktop shard 1 (capture may have been skipped or produced nothing)."
           fi
 
-      - name: Upload Convex log capture (shard 1)
+      - name: Upload Convex log capture (desktop shard 1)
         if: always() && matrix.shard == 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: convex-logs-shard-1
-          path: apps/web/convex-logs-shard-1.jsonl.gz
+          name: convex-logs-desktop-1
+          path: apps/web/convex-logs-desktop-1.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
@@ -650,7 +673,409 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pw-report-shard-${{ matrix.shard }}
+          name: pw-report-desktop-${{ matrix.shard }}
+          # Same paths and the same PNG-only rule as the seed report.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+
+  seed-mobile:
+    # The second pass's seed: the same Convex env switches, scripted reset and
+    # `setup` project as `seed` (see its comments), run again so every spec
+    # starts the mobile pass on a fresh baseline. Strictly after every
+    # desktop shard (the reset wipes the shared preview), and independent of
+    # their verdict so a red desktop pass still yields mobile results.
+    needs: [setup, seed, shard-desktop]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Start Convex log capture (seed-mobile)
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seed-mobile job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seed-mobile.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_SEED_MOBILE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started Convex log capture for seed job (pid $!) -> $RAW_LOG_FILE"
+
+      - name: Mirror NEONBINDER_PAUSED_PLATFORMS onto the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          if [ -n "${PAUSED_PLATFORMS:-}" ]; then
+            # Validate before writing anything to the preview: a typo'd or
+            # unknown key here must fail loudly, never run the live suite
+            # against SportLots while everyone believes the pause is in
+            # effect (the exact silent-drift failure mode this whole
+            # mechanism exists to avoid).
+            IFS=',' read -ra _keys <<< "$PAUSED_PLATFORMS"
+            for _key in "${_keys[@]}"; do
+              _key="$(echo "$_key" | xargs)"  # trim whitespace
+              [ -z "$_key" ] && continue
+              _key_lower="$(echo "$_key" | tr '[:upper:]' '[:lower:]')"
+              case "$_key_lower" in
+                buysportscards|sportlots) ;;
+                *)
+                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots."
+                  exit 1
+                  ;;
+              esac
+            done
+            npx --yes convex@1.39.1 env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
+          else
+            npx --yes convex@1.39.1 env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
+              || echo "NEONBINDER_PAUSED_PLATFORMS was not set on this preview — nothing to remove."
+          fi
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" || true)
+          echo "Convex preview NEONBINDER_PAUSED_PLATFORMS = '${got}'"
+          {
+            echo "### SportLots/marketplace pause (NEO-287)";
+            echo "- \`vars.NEONBINDER_PAUSED_PLATFORMS\` = \`${PAUSED_PLATFORMS:-<empty>}\`";
+            echo "- Convex preview \`NEONBINDER_PAUSED_PLATFORMS\` = \`${got:-<unset>}\`";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          npx --yes convex@1.39.1 env set NEONBINDER_ENRICHMENT_FIXTURES 1 --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_ENRICHMENT_FIXTURES --deployment "$CONVEX_NAME")
+          echo "Convex preview NEONBINDER_ENRICHMENT_FIXTURES = $got"
+          if [ "$got" != "1" ]; then
+            echo "::error::read-back mismatch: expected 1, got '$got'"; exit 1
+          fi
+          {
+            echo "### Enrichment fixtures (NEO-289)";
+            echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scripted reset for the mobile pass (e2e-baseline.sh reset)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          ./e2e-baseline.sh reset
+
+      - name: Seed global baseline for the mobile pass (setup project, worker 0)
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          WORKER_INDEX: "0"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+        run: npx playwright test --project=setup
+
+      - name: Enrichment fixture coverage
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage."
+            exit 0
+          fi
+          report=$(npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
+            '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
+            --deployment "$CONVEX_NAME" 2>&1)
+          status=$?
+          echo "$report"
+          if [ $status -ne 0 ]; then
+            # Name the cause: a missing function means the Convex side is not
+            # on this preview yet; anything else is a real error to look at.
+            case "$report" in
+              *"Could not find"*|*"not found"*|*"does not exist"*)
+                why="function not on this preview yet (Convex side not deployed here)";;
+              *)
+                why="coverage action returned an error";;
+            esac
+            echo "::warning::Enrichment fixture coverage report could not be run — ${why}. See job log for details."
+            {
+              echo "### Enrichment fixture coverage (NEO-289)";
+              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — ${why}; see job log.";
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The report is the LAST line of output (Convex CLI may print log lines
+          # above it); parse defensively and never fail the job on a parse miss.
+          parsed=$(echo "$report" | tail -n 1 | python3 -c '
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              covered = d.get("covered", [])
+              missing = d.get("missing", [])
+              covered_n = len(covered) if isinstance(covered, list) else covered
+              missing_joined = ",".join(missing) if isinstance(missing, list) else missing
+              print(str(covered_n) + "|" + str(missing_joined))
+          except Exception:
+              print("?|")
+          ' 2>/dev/null || echo "?|")
+          covered_n="${parsed%%|*}"
+          missing="${parsed#*|}"
+          {
+            echo "### Enrichment fixture coverage (NEO-289)";
+            echo "- covered: \`${covered_n}\`";
+            echo "- missing: \`${missing:-<none>}\`";
+            echo '<details><summary>Raw report</summary>';
+            echo;
+            echo '```json';
+            echo "$report";
+            echo '```';
+            echo '</details>';
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$missing" ]; then
+            echo "::warning::Enrichment fixture coverage gaps for sportQid Q5369: ${missing}"
+          fi
+
+      - name: Stop Convex log capture (seed-mobile)
+        if: always()
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_SEED_MOBILE_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SEED_MOBILE_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SEED_MOBILE_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seed-mobile.raw.jsonl"
+          OUT_FILE="convex-logs-seed-mobile.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | select((.error != null) or ($keep | length) > 0)
+                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed-mobile job."
+          else
+            echo "No Convex logs captured for the seed-mobile job (capture may have been skipped or produced nothing)."
+          fi
+
+      - name: Upload Convex log capture (seed-mobile)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-logs-seed-mobile
+          path: apps/web/convex-logs-seed-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload seed report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pw-report-seed-mobile
+          # Not under a dot-directory: upload-artifact skips hidden paths by
+          # default. report/ holds the blob, results.json and junit.xml;
+          # results/ holds failure screenshots. PNG ONLY — no traces, and no
+          # error-context snapshots until the security review clears them.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  shard-mobile:
+    # MOBILE pass (after seed-mobile): 8 identical shards, each its own VM = ONE Chrome (web can't parallelize
+    # within a VM — the NEO-46 contention). shard i -> global worker i-1 ->
+    # TEST_EMAIL_<i-1> (0..7 provisioned). A test failure fails the shard, but
+    # `fail-fast: false` lets every other shard finish and report; the `e2e`
+    # gate below reads the merged results for the verdict.
+    needs: [setup, seed-mobile]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # Listed, not computed: Actions expressions have no arithmetic.
+      matrix:
+        include:
+          - { shard: 1, worker: 0 }
+          - { shard: 2, worker: 1 }
+          - { shard: 3, worker: 2 }
+          - { shard: 4, worker: 3 }
+          - { shard: 5, worker: 4 }
+          - { shard: 6, worker: 5 }
+          - { shard: 7, worker: 6 }
+          - { shard: 8, worker: 7 }
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # NEO-301: the seed job ends before the shard matrix starts, so it can
+      # only cover its own window (captured above) — nothing spans the WHOLE
+      # E2E run. Shard 1 does the next best thing: one stream for its full
+      # lifetime (the other seven would just duplicate the same preview's logs
+      # 8x). See "Stop Convex log capture (mobile shard 1)" below for the filtering
+      # rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (mobile shard 1)
+        if: matrix.shard == 1
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for mobile shard 1."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-1.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-1.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_MOBILE1_PID=$!" >> "$GITHUB_ENV"
+          echo "Started Convex log capture for mobile shard 1 (pid $!) -> $RAW_LOG_FILE"
+
+      - name: Run mobile shard ${{ matrix.shard }}/8
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          WORKER_INDEX: ${{ matrix.worker }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          SHARD: ${{ matrix.shard }}
+          PROJECT: e2e-mobile
+        run: |
+          set -euo pipefail
+          # Longest-first file plan instead of --shard (see shard-plan.mjs),
+          # on this pass's project timings.
+          files=$(node playwright/shard-plan.mjs 8 "$SHARD" --project "$PROJECT")
+          node playwright/shard-plan.mjs 8 --project "$PROJECT"   # per-shard totals, to stderr
+          if [ -z "$files" ]; then
+            # `playwright test` with no file arguments runs the WHOLE suite, and
+            # an empty plan means the planner and the spec tree disagree. Either
+            # way, refuse rather than pass a shard that ran nothing.
+            echo "::error::Shard ${SHARD}/8 ($PROJECT) has no specs planned."
+            exit 1
+          fi
+          echo "Shard ${SHARD} runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # `bootstrap` runs first via the project dependency (this pass's
+          # account re-seed, after the pass's reset).
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Shard ${SHARD} ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      # NEO-301: stop the background capture and filter before upload — same
+      # filter and same reasoning as "Stop Convex log capture (seed)" above
+      # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
+      # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
+      - name: Stop Convex log capture (mobile shard 1)
+        if: always() && matrix.shard == 1
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_MOBILE1_PID:-}" ]; then
+            kill "${CONVEX_LOGS_MOBILE1_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_MOBILE1_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-mobile-1.raw.jsonl"
+          OUT_FILE="convex-logs-mobile-1.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | select((.error != null) or ($keep | length) > 0)
+                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-1-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard 1."
+          else
+            echo "No Convex logs captured for mobile shard 1 (capture may have been skipped or produced nothing)."
+          fi
+
+      - name: Upload Convex log capture (mobile shard 1)
+        if: always() && matrix.shard == 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-logs-mobile-1
+          path: apps/web/convex-logs-mobile-1.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload shard report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pw-report-mobile-${{ matrix.shard }}
           # Same paths and the same PNG-only rule as the seed report.
           path: |
             apps/web/playwright/report/
@@ -659,7 +1084,7 @@ jobs:
           retention-days: 14
 
   # Single stable gate required by the `production` ruleset (through pr-pipeline's
-  # `e2e` job and `ci-gate`). The shard matrix emits "shard (N)" checks whose
+  # `e2e` job and `ci-gate`). The shard matrices emit "shard-desktop (N)" / "shard-mobile (N)" checks whose
   # names change with the matrix length, so they can't be the required check.
   # This ONE `e2e` job is the verdict. It is green iff
   #   * setup and seed succeeded,
@@ -669,7 +1094,7 @@ jobs:
   #     project (desktop and mobile) — so a shard, or one project's half of
   #     it, that died before reporting cannot pass by omission.
   e2e:
-    needs: [setup, seed, shard]
+    needs: [setup, seed, shard-desktop, seed-mobile, shard-mobile]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -683,11 +1108,13 @@ jobs:
         env:
           R_SETUP: ${{ needs.setup.result }}
           R_SEED: ${{ needs.seed.result }}
-          R_SHARD: ${{ needs.shard.result }}
+          R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
+          R_SEED_MOBILE: ${{ needs.seed-mobile.result }}
+          R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
         run: |
-          echo "jobs: setup=$R_SETUP seed=$R_SEED shard=$R_SHARD"
-          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ]; then
-            echo "::error::setup or seed did not succeed (setup=$R_SETUP seed=$R_SEED)"
+          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
+          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
+            echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
             exit 1
           fi
 
@@ -711,7 +1138,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pw-blobs pw-merged
-          find pw-all -path '*/blob/*.zip' -exec cp {} pw-blobs/ \;
+          # Prefix each blob with its artifact (pass) name so two passes can
+          # never overwrite one another's report-*.zip.
+          while IFS= read -r z; do
+            art=$(echo "$z" | cut -d/ -f2)
+            cp "$z" "pw-blobs/${art}__$(basename "$z")"
+          done < <(find pw-all -path '*/blob/*.zip')
           ls -la pw-blobs
           if [ -z "$(ls -A pw-blobs)" ]; then
             echo "::error::No report blobs from any job — nothing ran to completion."
@@ -782,9 +1214,11 @@ jobs:
               if verdict == "bad":
                   errors.append(f"[{proj}] {file} :: {title} -> {last}")
 
+          # One seed per pass: the desktop pass and the mobile pass each ran
+          # the `setup` project once, so two passing results are required.
           seed_ok = [r for r in rows if r[0] == "setup" and r[3] == "ok"]
-          if not seed_ok:
-              errors.append("no passing result from the `setup` project (the seed)")
+          if len(seed_ok) < 2:
+              errors.append(f"expected a passing `setup` (seed) result for EACH pass (desktop + mobile), found {len(seed_ok)}")
 
           # Bad results are errors above, so "a result on every project" plus
           # "no bad result" is "a passing result on every project".
@@ -811,10 +1245,11 @@ jobs:
       # crash) while the surviving results still looked complete.
       - name: Shard jobs
         env:
-          R_SHARD: ${{ needs.shard.result }}
+          R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
+          R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
         run: |
-          if [ "$R_SHARD" != "success" ]; then
-            echo "::error::a shard job did not succeed (shard=$R_SHARD)"
+          if [ "$R_SHARD_DESKTOP" != "success" ] || [ "$R_SHARD_MOBILE" != "success" ]; then
+            echo "::error::a shard job did not succeed (desktop=$R_SHARD_DESKTOP mobile=$R_SHARD_MOBILE)"
             exit 1
           fi
 
@@ -859,7 +1294,7 @@ jobs:
           except Exception as e:
               with open(out, "w") as fh:
                   fh.write("## Playwright E2E results\n\n")
-                  fh.write(f"No merged results were produced ({e}). A shard or the seed may have failed before reporting; check the `seed`, `shard` and `e2e` jobs.\n")
+                  fh.write(f"No merged results were produced ({e}). A shard or the seed may have failed before reporting; check the `seed`, `shard-desktop`, `seed-mobile`, `shard-mobile` and `e2e` jobs.\n")
               raise SystemExit(0)
 
           tests = []

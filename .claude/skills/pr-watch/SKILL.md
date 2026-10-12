@@ -56,7 +56,7 @@ reliably. Do **not** delegate this to a subagent.
    **yield** so they can keep working. Updates arrive as notifications.
 
 6. **On each notification line**, relay a tight one-liner. The script's line is
-   already concise (`[t+4m] RUNNING — checks 6/15 done, 0 failed · seed ✓ ·
+   already concise (`[t+4m] RUNNING — checks 6/15 done, 0 failed · seed ✓/▶ ·
    shards 3/8 · e2e ▶ · playwright ▶`) — pass it through;
    don't pad it.
 
@@ -104,9 +104,11 @@ the safety timeout. While waiting, the tick line says
 push is still worth one `gh pr checks <PR>` before acting on it.
 
 ## What the E2E fields mean
-`seed ✓ · shards 3/8 · e2e ▶ · playwright ✓` reads the PR's own check rollup:
-`seed` is the reusable E2E workflow's seed job, `shards n/8` counts its finished
-shard jobs, `e2e` is the single gate job (the real verdict), and `playwright` is
+`seed ✓/▶ · shards 3/16 · e2e ▶ · playwright ✓` reads the PR's own check rollup:
+the reusable E2E workflow runs two passes (desktop, then mobile, each on a fresh
+seed), so `seed a/b` is the desktop seed job then the `seed-mobile` job, `shards
+n/m` counts finished `shard-desktop` + `shard-mobile` jobs (m grows from 8 to 16
+once the mobile pass starts), `e2e` is the single gate job (the real verdict), and `playwright` is
 the merged-JUnit check, which publishes after the gate. No secret or Convex
 access is involved. The `e2e` gate is the source of truth for green/red: it
 fails when any spec fails or when any planned spec produced no result, so a dead

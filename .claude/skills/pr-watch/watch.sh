@@ -41,7 +41,7 @@ elapsed_min() { echo $(( ( $(date +%s) - START ) / 60 )); }
 # ── one poll: prints a status line, sets VERDICT + FAILED_NAMES globals ──────
 VERDICT="RUNNING"; FAILED_NAMES=""
 tick() {
-  local data state rollup total failed completed pending r_total r_done seed gate pw
+  local data state rollup total failed completed pending r_total r_done seed seedm gate pw
   data=$(gh pr view "$PR" --json state,statusCheckRollup 2>/dev/null) || {
     echo "[t+$(elapsed_min)m] poll error (gh read failed) — will retry next tick"; VERDICT="RUNNING"; return 0; }
   state=$(echo "$data" | jq -r '.state // "OPEN"')
@@ -51,10 +51,12 @@ tick() {
   failed=$(echo "$rollup"    | jq '[.[]|select(.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE" or .c=="ACTION_REQUIRED")]|length')
   completed=$(echo "$rollup" | jq '[.[]|select(.s=="COMPLETED" or .c=="SUCCESS" or .c=="FAILURE" or .c=="NEUTRAL" or .c=="SKIPPED" or .c=="CANCELLED" or .c=="TIMED_OUT")]|length')
   pending=$(( total - completed ))
-  # The reusable e2e.yml's jobs surface as "E2E / seed", "E2E / shard (N, W)",
-  # "E2E / e2e" (the prefix is the calling job's name).
-  r_total=$(echo "$rollup"   | jq '[.[]|select(.name|test("(^|/ )shard \\("))]|length')
-  r_done=$(echo "$rollup"    | jq '[.[]|select((.name|test("(^|/ )shard \\(")) and (.s=="COMPLETED"))]|length')
+  # The reusable e2e.yml runs two passes and its jobs surface as "E2E / seed",
+  # "E2E / shard-desktop (N, W)", "E2E / seed-mobile", "E2E / shard-mobile
+  # (N, W)", "E2E / e2e" (the prefix is the calling job's name). Shards are
+  # counted across both passes (16 when both have started).
+  r_total=$(echo "$rollup"   | jq '[.[]|select(.name|test("(^|/ )shard-(desktop|mobile) \\("))]|length')
+  r_done=$(echo "$rollup"    | jq '[.[]|select((.name|test("(^|/ )shard-(desktop|mobile) \\(")) and (.s=="COMPLETED"))]|length')
 
   # The gate check's own conclusion — see the GREEN condition below.
   local req
@@ -63,7 +65,7 @@ tick() {
 
   symbol() { case "$1" in SUCCESS) echo ✓;; FAILURE|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED) echo ✗;; NEUTRAL|SKIPPED) echo ⊘;; COMPLETED) echo ✓;; "") echo —;; *) echo ▶;; esac; }
   named() { echo "$rollup" | jq -r --arg re "$1" 'first(.[]|select(.name|test($re;"i"))) | (if (.c|length)>0 then .c else .s end) // "—"' 2>/dev/null; }
-  seed=$(symbol "$(named "(^|/ )seed$")"); gate=$(symbol "$(named "(^|/ )e2e$")"); pw=$(symbol "$(named "^Playwright E2E$")")
+  seed=$(symbol "$(named "(^|/ )seed$")"); seedm=$(symbol "$(named "(^|/ )seed-mobile$")"); gate=$(symbol "$(named "(^|/ )e2e$")"); pw=$(symbol "$(named "^Playwright E2E$")")
 
   # ── verdict (GitHub is the source of truth) ──
   if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then VERDICT="$state"
@@ -91,8 +93,8 @@ tick() {
   [ "$VERDICT" = "RUNNING" ] && [ "${pending:-0}" -eq 0 ] && [ -z "$req" ] &&
     waiting=" · waiting for ${REQUIRED_CHECK} (pipeline not registered yet)"
 
-  printf '[t+%sm] %s — checks %s/%s done, %s failed · seed %s · shards %s/%s · e2e %s · playwright %s%s\n' \
-    "$(elapsed_min)" "$VERDICT" "$completed" "$total" "$failed" "$seed" "$r_done" "$r_total" "$gate" "$pw" "$waiting"
+  printf '[t+%sm] %s — checks %s/%s done, %s failed · seed %s/%s · shards %s/%s · e2e %s · playwright %s%s\n' \
+    "$(elapsed_min)" "$VERDICT" "$completed" "$total" "$failed" "$seed" "$seedm" "$r_done" "$r_total" "$gate" "$pw" "$waiting"
 }
 
 # ── main loop ────────────────────────────────────────────────────────────────

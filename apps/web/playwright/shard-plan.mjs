@@ -1,33 +1,38 @@
 #!/usr/bin/env node
 // Longest-first (LPT) shard plan for the idiomatic Playwright suite.
 //
-//   node playwright/shard-plan.mjs <N> <i>     spec paths for shard i of N (1-based),
+//   node playwright/shard-plan.mjs <N> <i> [--project <p>]
+//                                                        spec paths for shard i of N (1-based),
 //                                                        one per line, relative to apps/web
-//   node playwright/shard-plan.mjs <N>         the whole plan, per-shard totals (stderr)
+//   node playwright/shard-plan.mjs <N> [--project <p>]   the whole plan, per-shard totals (stderr)
 //   node playwright/shard-plan.mjs --from-results <results.json>
 //                                                        rewrite timings.json from a (merged)
 //                                                        Playwright JSON report
-//   node playwright/shard-plan.mjs --projects  the projects every planned spec runs
-//                                                        on, one per line (e2e.yml reads it)
+//   node playwright/shard-plan.mjs --projects  the spec projects, one per line
+//                                                        (e2e.yml's gate reads it)
 //
-// Every planned spec runs on EVERY project in PROJECTS (desktop and mobile),
-// both in the same shard: the shard passes all of them as --project, so one
-// worker runs a spec's desktop and mobile tests back to back and a
-// sole-writer spec never overlaps itself. A spec's weight is therefore its
-// desktop + mobile time.
-//
-// Playwright's own --shard splits by test COUNT in file order, so one shard
-// can draw every multi-minute set-builder spec. This assigns each spec to the
-// currently lightest shard, heaviest spec first, which is what the retired
-// Maestro work queue achieved dynamically (NEO-61).
+// <p> is one of PROJECTS (default `e2e`, desktop). CI runs the suite in TWO
+// passes, one per project, each on a freshly seeded preview (e2e.yml: seed ->
+// shard-desktop x N -> seed-mobile -> shard-mobile x N): a spec that is
+// fresh-only or the sole writer of a real marketplace set passes once per
+// seed, so desktop and mobile never share one. Each pass plans on its own
+// project's timings, one project's weight per spec, and every pass uses the
+// same file set. Playwright's own --shard splits by test COUNT in file order,
+// so one shard can draw every multi-minute set-builder spec. This assigns each
+// spec to the currently lightest shard, heaviest spec first, which is what the
+// retired Maestro work queue achieved dynamically (NEO-61).
 //
 // Timings: timings.json (seconds per spec path under tests/) is the only
-// source. Only relative size matters. Its optional `projects` array names
-// the projects each value sums; a file without one (the desktop-only format
-// from before e2e-mobile) is read as `["e2e"]` and scaled up to all of
-// PROJECTS, so old and new files plan alike. A spec with no timing (a new
-// spec, or no timings.json at all) gets the median of the known timings, or
-// 1s when there are none. setup.spec.ts (the seed job) and
+// source. Only relative size matters. Schema:
+//   seconds    - per-spec seconds on `e2e` (desktop)
+//   byProject  - optional { "<project>": { "<spec>": seconds } } for the
+//                other projects (today `e2e-mobile`)
+// A project with no value for a spec falls back to the desktop value, so a
+// desktop-only file (the original format) plans both passes alike. A file
+// with a legacy `projects` array (seconds summed over several projects) is
+// divided back to a per-project figure. A spec with no timing at all (a new
+// spec, or no timings.json) gets the median of the known timings, or 1s when
+// there are none. setup.spec.ts (the seed jobs) and
 // profile/worker-bootstrap.spec.ts (every shard's `bootstrap` project
 // dependency) are never planned.
 //
@@ -55,13 +60,14 @@ function listSpecs() {
     .sort();
 }
 
-/** Seconds per spec for ALL of PROJECTS, whichever projects the file measured. */
-function loadTimings() {
+/** Seconds per spec on `project`, falling back to the desktop value. */
+function loadTimings(project) {
   if (!fs.existsSync(TIMINGS_JSON)) return {};
   const doc = JSON.parse(fs.readFileSync(TIMINGS_JSON, "utf8"));
-  const measured = Array.isArray(doc.projects) && doc.projects.length > 0 ? doc.projects.length : 1;
-  const scale = PROJECTS.length / measured;
-  return Object.fromEntries(Object.entries(doc.seconds ?? {}).map(([spec, secs]) => [spec, secs * scale]));
+  const legacy = Array.isArray(doc.projects) && doc.projects.length > 1 ? doc.projects.length : 1;
+  const desktop = Object.fromEntries(Object.entries(doc.seconds ?? {}).map(([spec, secs]) => [spec, secs / legacy]));
+  const own = doc.byProject?.[project] ?? {};
+  return project === PROJECTS[0] ? desktop : { ...desktop, ...own };
 }
 
 function median(values) {
@@ -71,8 +77,8 @@ function median(values) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-function plan(n) {
-  const timings = loadTimings();
+function plan(n, project) {
+  const timings = loadTimings(project);
   const specs = listSpecs();
   const fallback = median(specs.map((s) => timings[s]).filter((v) => Number.isFinite(v)));
   const weighted = specs
@@ -89,43 +95,53 @@ function plan(n) {
   return shards;
 }
 
-// Sums every project in PROJECTS per spec. A spec that reported on only
-// some of them (a project's run died) is scaled up from the ones it has, so
-// one missing half never makes a spec look light. Projects outside PROJECTS
-// (setup, bootstrap) are ignored.
+// One figure per spec per project in PROJECTS: `seconds` is the desktop
+// (PROJECTS[0]) run, `byProject` carries the others. A spec that reported on
+// only some projects (a pass died) keeps the other projects' committed value
+// via the planner's desktop fallback. Projects outside PROJECTS (setup,
+// bootstrap) are ignored.
 function fromResults(file) {
   const report = JSON.parse(fs.readFileSync(file, "utf8"));
-  const perSpec = {}; // spec -> { project -> seconds }
+  const perProject = Object.fromEntries(PROJECTS.map((p) => [p, {}])); // project -> spec -> seconds
   const walk = (suite, specFile) => {
     const f = toPosix(suite.file ?? specFile);
     for (const spec of suite.specs ?? []) {
       for (const t of spec.tests ?? []) {
         if (!PROJECTS.includes(t.projectName)) continue;
         const d = (t.results ?? []).reduce((acc, r) => acc + (r.duration ?? 0), 0) / 1000;
-        const byProject = (perSpec[f] ??= {});
-        byProject[t.projectName] = (byProject[t.projectName] ?? 0) + d;
+        perProject[t.projectName][f] = (perProject[t.projectName][f] ?? 0) + d;
       }
     }
     for (const child of suite.suites ?? []) walk(child, f);
   };
   for (const s of report.suites ?? []) walk(s, s.file);
-  const secs = {};
-  for (const [spec, byProject] of Object.entries(perSpec)) {
-    const values = Object.values(byProject);
-    const total = values.reduce((a, b) => a + b, 0);
-    secs[spec] = Math.round((total * PROJECTS.length) / values.length);
-  }
-  const sorted = Object.fromEntries(Object.entries(secs).sort(([a], [b]) => a.localeCompare(b)));
+  const round = (m) =>
+    Object.fromEntries(
+      Object.entries(m)
+        .map(([k, v]) => [k, Math.round(v)])
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+  const [desktop, ...others] = PROJECTS;
   const doc = {
-    _source: `Playwright JSON report ${path.basename(file)}, seconds per spec summed over projects ${PROJECTS.join(" + ")}.`,
-    projects: PROJECTS,
-    seconds: sorted,
+    _source: `Playwright JSON report ${path.basename(file)}, seconds per spec per project (${PROJECTS.join(", ")}).`,
+    seconds: round(perProject[desktop]),
   };
+  const byProject = Object.fromEntries(others.map((p) => [p, round(perProject[p])]).filter(([, m]) => Object.keys(m).length));
+  if (Object.keys(byProject).length) doc.byProject = byProject;
   fs.writeFileSync(TIMINGS_JSON, `${JSON.stringify(doc, null, 2)}\n`);
-  console.error(`wrote ${Object.keys(sorted).length} timings to ${path.relative(WEB, TIMINGS_JSON)}`);
+  console.error(
+    `wrote timings for ${PROJECTS.map((p) => `${p}=${Object.keys(p === desktop ? doc.seconds : (byProject[p] ?? {})).length}`).join(", ")} to ${path.relative(WEB, TIMINGS_JSON)}`,
+  );
 }
 
 const args = process.argv.slice(2);
+const pIdx = args.indexOf("--project");
+let project = PROJECTS[0];
+if (pIdx !== -1) {
+  project = args[pIdx + 1];
+  if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
+  args.splice(pIdx, 2);
+}
 if (args[0] === "--projects") {
   for (const p of PROJECTS) console.log(p);
 } else if (args[0] === "--from-results") {
@@ -135,12 +151,14 @@ if (args[0] === "--projects") {
   const n = Number(args[0]);
   const i = args[1] === undefined ? undefined : Number(args[1]);
   if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
-    throw new Error("usage: shard-plan.mjs <N> [<i> in 1..N] | --from-results <results.json> | --projects");
+    throw new Error(
+      "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json> | --projects",
+    );
   }
-  const shards = plan(n);
+  const shards = plan(n, project);
   if (i === undefined) {
     shards.forEach((s, k) =>
-      console.error(`shard ${k + 1}/${n}: ${s.specs.length} specs x ${PROJECTS.length} projects, ~${Math.round(s.secs)}s`),
+      console.error(`shard ${k + 1}/${n} [${project}]: ${s.specs.length} specs, ~${Math.round(s.secs)}s`),
     );
   } else {
     const rel = toPosix(path.relative(WEB, TESTS));

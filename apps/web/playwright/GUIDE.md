@@ -331,11 +331,16 @@ Idioms:
 
 Every spec runs twice: on `e2e` (desktop Chromium, 1024x629) and on
 `e2e-mobile` (Chromium with the Pixel 7 descriptor: 412x839, touch,
-`isMobile`, a mobile user agent). CI runs both projects on each shard's
-files, so a spec's two runs happen one after the other on the same worker
-and account, never at the same time; a sole writer stays a sole writer. The
-`e2e` gate needs a passing result for every planned spec on BOTH projects,
-and a skipped test counts as a failure.
+`isMobile`, a mobile user agent). CI runs them as two passes, each on a
+freshly seeded preview: the desktop pass (seed, 8 shards on `--project=e2e`),
+then a re-seed (reset + the `setup` project again), then the mobile pass (8
+shards on `--project=e2e-mobile`). A spec that is fresh-only or the sole
+writer of a real marketplace set passes once per seed, so each project
+gets its own; a spec never runs on both projects in one seed. Mobile starts
+only after every desktop shard finished (the reset wipes the shared
+preview), and still runs when desktop has reds. The `e2e` gate needs a
+passing result for every planned spec on BOTH projects and a passing seed
+for each pass, and a skipped test counts as a failure.
 
 - **Write one spec for both.** Role, label and text locators do not care
   about the viewport, and `click()` scrolls by itself. Most specs need no
@@ -360,8 +365,11 @@ and a skipped test counts as a failure.
   `WORKER_INDEX` stays the bare account number, shared by both projects:
   it is what `signIn` passes as `worker=`, and it names what the account's
   bootstrap seeded.
-- **Local runs** pass both projects, or the one you are debugging:
-  `npx playwright test --project=e2e --project=e2e-mobile --no-deps <spec>`.
+- **Local runs** pass the project you are debugging; to run both, re-seed
+  between them, because a fresh-only or sole-writer spec passes once per
+  seed: `npx playwright test --project=e2e --no-deps <spec>`, then
+  `./e2e-baseline.sh reset --deployment <preview>` and the `setup` project,
+  then `npx playwright test --project=e2e-mobile --no-deps <spec>`.
 
 ## Accessibility checks
 
@@ -611,7 +619,9 @@ VITE_CONVEX_URL=<the PR's Convex preview URL> VITE_DEV_DISABLE_HTTPS=1 \
 ./e2e-baseline.sh reset --deployment <the preview's deployment name>
 APP_URL=http://localhost:3002 npx playwright test --project=setup
 APP_URL=http://localhost:3002 WORKER_INDEX=0 \
-  npx playwright test --project=e2e --project=e2e-mobile --no-deps <path-substring>
+  npx playwright test --project=e2e --no-deps <path-substring>
+# for the phone project, re-seed first (reset + setup), then:
+#   ... npx playwright test --project=e2e-mobile --no-deps <path-substring>
 ```
 
 `TESTING_ENDPOINT_SECRET` must be exported into the Vite process itself (its
@@ -625,25 +635,39 @@ second run. A protected preview may need `VERCEL_AUTOMATION_BYPASS_SECRET` /
 timeboxed check and then push; CI validates.
 
 **CI shape.** `pr-pipeline.yml` calls `.github/workflows/e2e.yml` on every
-PR: reset, then seed (the `setup` project, worker 0), then 8 shards. Each
-shard gets an explicit file list from `shard-plan.mjs` (longest-processing-
-time-first over `timings.json`, each spec weighted desktop + mobile, not
-`--shard`), runs it on both `e2e` and `e2e-mobile` (`shard-plan.mjs
---projects` names them), and runs the `bootstrap` project for its own account
-first (workers 0-7 are used; accounts 0-11 exist). The `e2e` gate fails on any
-failed spec or any missing result on either project (a shard that died before
-reporting fails it too). A `report` job publishes the
+PR in two passes, each on a freshly seeded preview:
+
+```
+setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate) -> report
+```
+
+`seed` is the scripted reset plus the `setup` project (worker 0); the desktop
+shards run `--project=e2e`. `seed-mobile` needs every desktop shard (the reset
+wipes the shared preview), runs even when desktop has reds, and repeats the
+same Convex env steps, reset and `setup` project; the mobile shards run
+`--project=e2e-mobile`. Each shard gets an explicit file list from
+`node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
+(longest-processing-time-first over that project's entry in `timings.json`,
+not `--shard`) and runs the `bootstrap` project for its own account first, so
+each pass re-bootstraps its workers after its reset (workers 0-7 are used;
+accounts 0-11 exist). Expected wall clock is about 20 minutes: seed ~4 min,
+longest shard ~5 min (the longest spec), twice. The `e2e` gate fails on any
+failed spec, any missing result on either project, a pass whose seed did not
+pass, or a shard that died before reporting. A `report` job publishes the
 "Playwright E2E" check and a sticky PR comment. `e2e-repeat.yml` runs the
 suite N times (flake sampling); `refresh-flow-timings.yml` refreshes
 `timings.json` from CI. Refresh by hand from a run's merged results with
-`node playwright/shard-plan.mjs --from-results <results.json>`: it sums each
-spec's desktop and mobile time and records `"projects"` in the file (a file
-without it is the older desktop-only format, which the planner scales up).
+`node playwright/shard-plan.mjs --from-results <results.json>`: `seconds` is
+each spec's desktop time and `byProject["e2e-mobile"]` its mobile time (a
+project with no value for a spec falls back to the desktop one, so a
+desktop-only file still plans both passes).
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
-2. Download the artifacts BEFORE any rerun: `pw-report-shard-<n>` (the shard's
-   screenshots and report) and `pw-merged` (the merged report and results).
+2. Download the artifacts BEFORE any rerun: `pw-report-desktop-<n>` or
+   `pw-report-mobile-<n>` (the shard's screenshots and report),
+   `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
+   (both passes' merged report and results).
    `gh run download <run-id> -n pw-merged` (and the shard).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
    snapshot of the page at failure). The role and name you expected is
