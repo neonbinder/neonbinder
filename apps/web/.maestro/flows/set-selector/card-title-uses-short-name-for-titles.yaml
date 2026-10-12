@@ -1,0 +1,243 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Listing titles — a set name too long to fit is cut, and the set's Short name for titles brings it back on Regenerate"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE feature (NEO-335 Phase 2, "follow the old script title builder"):
+# a set whose name is too long for an 80-character listing title can be given
+# a SHORT NAME FOR TITLES, and a card's regenerated title uses it in place of
+# the set name.
+#
+#   • A card added under a set whose name cannot fit gets a title whose core
+#     was CUT at a word boundary (the set name is one word here, so it goes
+#     whole) and is stamped `listingTitleTruncated` — the drawer says
+#     "Auto title was cut short — rewrite it" under the Card title.
+#   • The Attributes panel's "Short name for titles" row (input
+#     `Value for Short name for titles`) saves `metadata.listingShortName` on
+#     the selected row; the title reads the nearest one from that row up to
+#     the set.
+#   • The drawer's Regenerate rebuilds the title through `assessListingTitle`:
+#     built with the full names the core does not fit, so it is rebuilt with
+#     the short name in place of the set (and insert) names — the maker stays
+#     — and committed like a hand-typed title.
+#
+# WHAT MAKES IT FAIL IF THE FEATURE BREAKS (R2)
+#   • The cut is proved twice: the product's own note, and the title holding
+#     NONE of the set name while it still ends in the card number. A generator
+#     that stopped cutting (or never stamped) fails there.
+#   • The short name is read back from the panel's field after its own
+#     "Saved Short name for titles" confirmation, so a save that went nowhere
+#     fails before Regenerate is ever pressed.
+#   • The regenerated title must be EXACTLY "2024 Topps <short name> #SN1"
+#     plus whatever optional tokens fit: a Regenerate that ignored the short
+#     name rebuilds the cut title again and fails on the full match.
+#
+# R3 — no other flow sets a short name on a hand-made set.
+#   `checklist-title-length-limits-and-fixer` owns the 80-character refusal and
+#   the variation cap; `inserts-1996-score-one-nb-set-two-bsc-sources` drives
+#   the wizard's "Shorter set name for titles" field on a real fetch. This flow
+#   owns the panel row and the drawer's Regenerate. Navigation is the shared
+#   drill util (R9).
+#
+# R7a / DATA ISOLATION — a PER-WORKER, PER-ATTEMPT custom set
+#   `stn-<worker>-<attempt>-<long word>` under the REAL Baseball / 2024 / Topps
+#   ancestors (registered in .maestro/SET-REGISTRY.md), `Insert` › `Base`
+#   beneath it. Hand-made, so no marketplace call fires; per ATTEMPT, so the
+#   card number `SN1` is the only card in its checklist and the row it names
+#   is unambiguous. The short name is written on this attempt's own `Base`
+#   row and nothing else reads it. Nothing needs restoring: the set is this
+#   attempt's alone, the same contract as `tlf-`.
+#
+# FIXTURE ARITHMETIC — why the core MUST be cut, on every runner
+#   The title core is "<year> <maker> <set> [<insert>] #<number>", capped at 80
+#   with " #SN1" reserved, so the words before it get 75 characters.
+#   "2024 Topps " is 11; the set name is `stn-<w>-` (6) + ATTEMPT_ID (7-11 on
+#   both runners) + "-" + a 59-character word = 73-77 with NO spaces. So the
+#   core is 84 or more before the insert name, and `cutAtWordBoundary` can only
+#   cut at the space after "Topps": the title becomes "2024 Topps #SN1", then
+#   whatever optional tokens fit (the sport). With the short name
+#   (`SNT<token>`, 11-15 characters) the core is ~33 and fits whole.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# The short name: ONE alphanumeric token per attempt (README, "Minted names
+# are single tokens"); the blessed idiom, never a hand-built prefix.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+- evalScript: '${output.SHORT = "SNT" + output.ATTEMPT_TOKEN}'
+
+# R9 — the drill util owns the six-level navigation and its waits.
+# Baseball → 2024 → Topps → stn-<worker>-<attempt>-<long word> → Insert → Base.
+# Returns with the CardChecklist open and "Open add card form" in viewport.
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "stn-${WORKER_INDEX || 0}-${ATTEMPT_ID}-Commemorativeanniversarycollectorseditionhologramsuperseries"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 1 — ONE CARD, AND ITS TITLE IS CUT
+#
+# Card number only (`Card number` is autofocused; the add form and the drawer
+# both carry a `Card name`, only the form a `Card number`). No player, no team:
+# every character of the core is the set's, so the arithmetic above holds.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card number"
+    timeout: 7000
+- inputText: "SN1"
+# centerElement is REQUIRED here (util-add-custom-card): the form opens above
+# the list box, so Add sits near the fold, and maestro's own scroll-before-tap
+# crashes on a target it cannot scroll to.
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+# CardChecklist scrolls its own list to the new row (`newCardIdRef`); this
+# centres the window on it. `(, .*)?` is NEO-272's label tail ("Edit card SN1,
+# Card #SN1").
+- scrollUntilVisible:
+    element:
+      id: "Edit card SN1(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit card SN1(, .*)?"
+    waitToSettleTimeoutMs: 1000
+# `Card title` is the drawer's alone (the add form has no such field).
+- extendedWaitUntil:
+    visible:
+      id: "Card title"
+    timeout: 7000
+
+# THE CUT, in the product's words (stamped at creation, read off the row)…
+- assertVisible: "Auto title was cut short — rewrite it"
+# …and in the title itself: it still ends in the card number (the number is
+# never cut — generateListing.ts, guarantee 2) and holds nothing of the set.
+# For an <input>, Maestro reads its VALUE.
+- assertVisible:
+    id: "Card title"
+    text: "2024 Topps #SN1( .*)?"
+- assertNotVisible:
+    id: "Card title"
+    text: ".*stn-.*"
+
+- tapOn:
+    id: "Done editing card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card title"
+    timeout: 7000
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 2 — "SHORT NAME FOR TITLES" ON THE ROW THE CARD HANGS FROM
+#
+# The selected row is `Base` under the hand-made `Insert` type — an insert
+# level, where the row is shown (`showsShortNameRow`: the set, and every level
+# cards hang from). The title reads the nearest short name from the card's row
+# up to the set, so this one is the card's.
+#
+# The panel renders ABOVE the checklist (SetSelector.tsx: columns → base
+# mapping → MultiSourcePanel → SetAttributesPanel → CardChecklist), and the
+# drawer was opened from a row below it, so its summary bar is UP from here.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+# The row's input, by its accessible name (never the DOM id). Same shape and
+# same commit as `set-attributes-card-prefix`'s Card prefix row.
+- scrollUntilVisible:
+    element:
+      id: "Value for Short name for titles"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Value for Short name for titles"
+- inputText: "${output.SHORT}"
+# Enter commits a single-line feature field in place (NEO-216).
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Short name for titles.*"
+    timeout: 7000
+# The stored value, read back off the field (its VALUE, not the placeholder):
+# the confirmation is optimistic, the field re-hydrates from the row.
+- assertVisible:
+    id: "Value for Short name for titles"
+    text: "${output.SHORT}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 3 — REGENERATE USES THE SHORT NAME
+#
+# Back down to the card's row (the panel is above it), into the drawer, and one
+# press of Regenerate: nothing has been typed into the title, so it does not ask
+# twice. It fetches `previewListingTitle`, puts the rebuilt title in the field
+# and commits it.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card SN1(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit card SN1(, .*)?"
+    waitToSettleTimeoutMs: 1000
+- extendedWaitUntil:
+    visible:
+      id: "Card title"
+    timeout: 7000
+- tapOn:
+    id: "Regenerate card title"
+# THE FEATURE: the maker stays, the short name stands where the set name was,
+# and the core fits now, so nothing before the number is cut. A query and our
+# own write: 7000.
+- extendedWaitUntil:
+    visible:
+      id: "Card title"
+      text: "2024 Topps ${output.SHORT} #SN1( .*)?"
+    timeout: 7000
+# Committed through the same per-field path as typing it (useTitlePreview).
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Card title.*"
+    timeout: 7000
+
+- tapOn:
+    id: "Done editing card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card title"
+    timeout: 7000

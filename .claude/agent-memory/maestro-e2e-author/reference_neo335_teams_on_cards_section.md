@@ -60,3 +60,14 @@ right-hand group before Cancel.
 card"` in `repeat while notVisible: id: "Remove team .*"`; read which chip via
 `copyTextFrom id: "Team: <name>…"`; tap Next once and wait the chip gone
 before walking to the next teamed card. Order is `compareCardNumbers`.
+
+**Titles + short name (Phase 2, "old script title builder").** An insert
+row's name joins the title core after the set's, so long insert names cut
+titles and raise the Card titles step. Step field `id: "Shorter set name for
+titles"` (Input forwards aria-label), `Suggested: X` + `Use suggestion`;
+status `Every title fits now.` / `N titles still trimmed.`; 50 rows then `And
+N more, kept as trimmed.` Panel row `id: "Value for Short name for titles"`
+(setName + card-prefix levels), toast `Saved Short name for titles`. Drawer
+cut note: `Auto title was cut short — rewrite it`. A short name replaces set
+AND insert names; the maker stays. Worked examples:
+`card-title-uses-short-name-for-titles`, `inserts-1996…` STEP 3b/6c/7a.
