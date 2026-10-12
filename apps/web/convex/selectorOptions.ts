@@ -17065,6 +17065,18 @@ export const commitCardChecklistChunk = internalMutation({
         for (const field of NB_CONTENT_FIELDS) {
           if (!accepted.has(field)) continue;
           if (sameContentValue(existing[field], incoming[field])) continue;
+          // An empty incoming team list never clears a stored one, even when
+          // a decision names the field: absence of a marketplace team is not a
+          // claim (see `diffChecklistAgainstExisting`, which no longer offers
+          // that row). Guarded here as well because the wire card is the
+          // client's, and this is the transaction that writes.
+          if (
+            field === "teamOnCardIds" &&
+            !(Array.isArray(incoming.teamOnCardIds) &&
+              incoming.teamOnCardIds.length > 0)
+          ) {
+            continue;
+          }
           contentPatch[field] = incoming[field];
         }
         /*
@@ -18733,8 +18745,25 @@ export const diffChecklistAgainstExisting = query({
         },
       ];
 
+      /**
+       * A missing marketplace team is not a claim that the card has none.
+       *
+       * The incoming team list is empty for reasons that say nothing about the
+       * card: BSC's per-card lookup timed out or answered non-2xx (the batch
+       * lookup folds a failure and "no team on file" into the same absent
+       * entry), or the pairing dialog was confirmed before the last lookup
+       * chunk's teams reached the client (the action's promise resolves
+       * independently of the subscription that carries those patches). Diffed
+       * as a value, every one of those offered a tier-1 "Team: Toronto Blue
+       * Jays → —" row: a proposal to clear NB data on the strength of a lookup
+       * that never returned. NB owns the team; only an explicit marketplace
+       * team that differs is a suggestion worth an operator's time.
+       */
       const fields = comparisons
         .filter(({ name }) => !settledConflictFields.has(name))
+        .filter(
+          ({ name }) => name !== "teamOnCardIds" || incomingTeams.length > 0,
+        )
         .filter(
           ({ stored, incoming, compare }) =>
             !sameContentValue(stored, incoming, compare),
