@@ -216,7 +216,7 @@ tags:
 # The card-number input is autofocused — type straight into it.
 - inputText: "101-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Title Cap ${ATTEMPT_ID}"
+- inputText: "TitleCap${output.ATTEMPT_TOKEN}"
 
 # ── The team, through the quick-add form's TeamPicker (NEO-208) ──────────────
 # Same four handles the drawer's picker is driven by in team-picker.yaml: the

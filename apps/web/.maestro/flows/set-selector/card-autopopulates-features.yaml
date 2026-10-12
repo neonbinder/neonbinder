@@ -121,6 +121,10 @@ tags:
 # attempt so a retry never collides with a row a prior attempt left behind.
 # ============================================================
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -128,7 +132,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "777-${ATTEMPT_ID}"
-      PLAYER_NAME: "Autopop Card Player ${ATTEMPT_ID}"
+      PLAYER_NAME: "AutopopPlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # OPEN THE INLINE CARD EDIT FORM + EXPAND THE FEATURES EDITOR
@@ -250,4 +254,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 777-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Autopop Card Player ${ATTEMPT_ID}"
+- assertNotVisible: "AutopopPlayer${output.ATTEMPT_TOKEN}"

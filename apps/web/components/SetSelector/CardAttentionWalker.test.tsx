@@ -43,9 +43,28 @@ type Suggestion = {
   name: string;
   source: "career";
   playerName: string;
+  /** NEO-330 — defaults to `name`; the server era-labels a shared name. */
+  label?: string;
+  /** NEO-330 — defaults to true: these fixtures are set-year stints, the preselected kind. */
+  inSetYear?: boolean;
 };
 
+/**
+ * The server's full shape for a fixture list, cached per list so the mock
+ * hands the fixer the same array on every render, as Convex does.
+ */
+const wireShape = new WeakMap<Suggestion[], Array<Required<Suggestion>>>();
+function onTheWire(list: Suggestion[]): Array<Required<Suggestion>> {
+  let shaped = wireShape.get(list);
+  if (!shaped) {
+    shaped = list.map((s) => ({ label: s.name, inSetYear: true, ...s }) as Required<Suggestion>);
+    wireShape.set(list, shaped);
+  }
+  return shaped;
+}
+
 let suggestionsByCard: Record<string, Suggestion[]>;
+const NO_SUGGESTIONS: Suggestion[] = [];
 let playerRows: Array<{ _id: string; name: string }> | undefined;
 const mockUpdateCard = vi.fn();
 const mockConfirmCardNoTeam = vi.fn();
@@ -54,7 +73,7 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (ref === "cardChecklist.suggestedTeamsForCard") {
       const cardId = (args as { cardId?: string })?.cardId ?? "";
-      return suggestionsByCard[cardId] ?? [];
+      return onTheWire(suggestionsByCard[cardId] ?? NO_SUGGESTIONS);
     }
     if (ref === "players.getManyByIds") return args === "skip" ? undefined : playerRows;
     return [];
@@ -131,8 +150,9 @@ function renderWalker(cards: CardChecklistRow[], props: Record<string, unknown> 
   return { ...utils, onClose };
 }
 
+// NEO-330: a career chip's name reads "<team> · <players> played here".
 const chip = (name: string, from: string) =>
-  screen.getByRole("button", { name: `${name} (from ${from}'s career)` }) as HTMLButtonElement;
+  screen.getByRole("button", { name: `${name} · ${from} played here` }) as HTMLButtonElement;
 
 const saveButton = () =>
   screen.getByRole("button", { name: /Save & Next/ }) as HTMLButtonElement;
@@ -377,7 +397,7 @@ describe("CardAttentionWalker — presentation", () => {
     ];
     renderWalker([needsTeamRow()]);
 
-    expect(chip("Detroit Tigers", "Tarik Skubal and Riley Greene")).toBeTruthy();
+    expect(chip("Detroit Tigers", "Tarik Skubal & Riley Greene")).toBeTruthy();
     expect(screen.getByTestId("picker-value").textContent).toBe("team-tigers");
   });
 });

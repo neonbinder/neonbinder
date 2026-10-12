@@ -8008,6 +8008,151 @@ describe("EntityReviewWizard — NEO-307 a New Team name another team holds as a
   });
 });
 
+// ===========================================================================
+// NEO-330 W6 — back to the player whose New Team step it was
+//
+// The E2E author's repro: on "Dan Brown" the operator typed "1995 Memphis
+// RiverKings CHL". The wizard staged a New Team step and walked there — and
+// once it was answered showed "Scott Brower", the first undecided row in batch
+// order. Dan Brown's new team was kept, just off-screen. Jason, 2026-10-10:
+// return to Dan Brown.
+// ===========================================================================
+
+describe("EntityReviewWizard — NEO-330 W6: returns to the player after its team step", () => {
+  const BROWN = "row-brown" as unknown as Id<"entityReviewQueue">;
+  const brower = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-brower" as unknown as Id<"entityReviewQueue">,
+      kind: "player",
+      name: "Scott Brower",
+      status: "ready",
+      enrichment: { careerTeams: [] },
+      ...over,
+    });
+  const brown = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: BROWN,
+      kind: "player",
+      name: "Dan Brown",
+      status: "ready",
+      enrichment: { careerTeams: [] },
+      ...over,
+    });
+  const riverKings = (over: Partial<Row> = {}) =>
+    makeCareerTeamRow(BROWN, "1995 Memphis RiverKings CHL", {
+      _id: "row-rk" as unknown as Id<"entityReviewQueue">,
+      source: {
+        kind: "careerTeamOf",
+        playerRowId: "row-brown",
+        manualStint: { fromYear: 1995 },
+      },
+      ...over,
+    });
+  const heading = (name: string) =>
+    screen.queryByRole("heading", { level: 3, name });
+
+  /** Dan Brown on screen, with Scott Brower still looking up ahead of him —
+   *  the walk steps over a pending row, which is how the repro reached Brown
+   *  while Brower sat earlier in batch order. */
+  function typeOnBrown() {
+    currentRows = [brower({ status: "pending" }), brown()];
+    const utils = renderWizard();
+    expect(heading("Dan Brown")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "1995 Memphis RiverKings CHL" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), {
+      target: { value: "1995" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    // The step lands, and Brower's lookup with it.
+    currentRows = [brower(), riverKings(), brown()];
+    rerenderWizard(utils.rerender);
+    expect(heading("New Team: 1995 Memphis RiverKings CHL")).toBeTruthy();
+    return utils;
+  }
+
+  it("comes back to Dan Brown, not Scott Brower, once the typed team is answered", () => {
+    const { rerender } = typeOnBrown();
+
+    currentRows = [
+      brower(),
+      riverKings({
+        decision: { action: "create", create: { location: "Memphis", name: "RiverKings" } },
+      }),
+      brown(),
+    ];
+    rerenderWizard(rerender);
+
+    expect(heading("Dan Brown")).toBeTruthy();
+    expect(heading("Scott Brower")).toBeNull();
+    // The team the operator typed is on the player they were editing.
+    expect(
+      within(screen.getByRole("list", { name: "Staged career teams" })).getByText(
+        /1995 Memphis RiverKings CHL/,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("comes back after a skip too", () => {
+    const { rerender } = typeOnBrown();
+    currentRows = [brower(), riverKings({ decision: { action: "skip" } }), brown()];
+    rerenderWizard(rerender);
+    expect(heading("Dan Brown")).toBeTruthy();
+  });
+
+  it("walks on as before if Dan Brown was decided meanwhile", () => {
+    const { rerender } = typeOnBrown();
+    currentRows = [
+      brower(),
+      riverKings({ decision: { action: "create", create: { name: "RiverKings" } } }),
+      brown({ decision: { action: "create" } }),
+    ];
+    rerenderWizard(rerender);
+    expect(heading("Scott Brower")).toBeTruthy();
+  });
+
+  it("returns after a step reached by 'Decide team' and answered there", async () => {
+    // No step in the batch for this label, so Decide team stages one and pins
+    // it — the explicit path, which `decide` hands back to the walk.
+    const withChip = (over: Partial<Row> = {}) =>
+      brown({
+        enrichment: { careerTeams: [{ name: "Quebec Remparts", fromYear: 1969 }] },
+        ...over,
+      });
+    currentRows = [brower({ status: "pending" }), withChip()];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    const { rerender } = renderWizard();
+    expect(heading("Dan Brown")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" })[0],
+    );
+    await waitFor(() => expect(mockStageCareerTeamRows).toHaveBeenCalled());
+
+    const remparts = makeCareerTeamRow(BROWN, "Quebec Remparts", {
+      _id: "row-remparts" as unknown as Id<"entityReviewQueue">,
+    });
+    currentRows = [brower(), remparts, withChip()];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("New Team: Quebec Remparts")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalled());
+
+    currentRows = [
+      brower(),
+      { ...remparts, decision: { action: "create", create: { name: "Quebec Remparts" } } },
+      withChip(),
+    ];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("Dan Brown")).toBeTruthy());
+    expect(heading("Scott Brower")).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // NEO-332 — an ambiguous same-name row opens a PICK step; "Create new" leads
 // to the New Player step and "Back to the list" returns to the pick step.
@@ -9042,5 +9187,141 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Back to the list" })).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-330 W6 × NEO-332 — the return stack meets the same-name pick step.
+//
+// "Create new" is the operator answering the pick step, and the New Team steps
+// its lookup stages belong to that new player — so once they are answered the
+// walk comes back to HIS New Player step, not the next row in batch order and
+// not back to the list. And a return target that has become a pick step while
+// the operator was away is returned to all the same, on the step it is now on.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — NEO-330 W6 × NEO-332 pick step", () => {
+  const ALLEN = "row-allen" as unknown as Id<"entityReviewQueue">;
+  const CANDIDATES = [
+    { playerId: "player-old", name: "Bob Allen", birthYear: 1867, careerSummary: "Phillies 1890–1894" },
+    { playerId: "player-young", name: "Bob Allen", birthYear: 1937, careerSummary: "Padres 1961–present" },
+  ];
+  const other = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-other" as unknown as Id<"entityReviewQueue">,
+      name: "Other Guy",
+      enrichment: { careerTeams: [] },
+      ...over,
+    });
+  const allen = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: ALLEN,
+      name: "Bob Allen",
+      enrichment: { existingCandidates: CANDIDATES },
+      ...over,
+    });
+  /** Allen once the lookup "Create new" asked for has landed. */
+  const allenLookedUp = (over: Partial<Row> = {}) =>
+    allen({
+      enrichment: {
+        existingCandidates: CANDIDATES,
+        wikidataId: "Q1",
+        careerTeams: [{ name: "Kansas City Royals", fromYear: 1969 }],
+      },
+      ...over,
+    });
+  const royals = (over: Partial<Row> = {}) =>
+    makeCareerTeamRow(ALLEN, "Kansas City Royals", {
+      _id: "row-royals" as unknown as Id<"entityReviewQueue">,
+      ...over,
+    });
+  const decidedRoyals = () =>
+    royals({ decision: { action: "create", create: { location: "Kansas City", name: "Royals" } } });
+  const heading = (name: string) => screen.queryByRole("heading", { level: 3, name });
+  const pickHeading = () => screen.queryByRole("heading", { name: "Which Bob Allen is this?" });
+
+  it("comes back to the New Player step Create new opened once its lookup's team is answered", () => {
+    currentRows = [other({ status: "pending" }), allen()];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create new" }));
+    // The lookup lands, staging the new player's career team ahead of him.
+    currentRows = [other(), royals(), allenLookedUp()];
+    rerenderWizard(rerender);
+    expect(heading("New Team: Kansas City Royals")).toBeTruthy();
+
+    currentRows = [other(), decidedRoyals(), allenLookedUp()];
+    rerenderWizard(rerender);
+
+    expect(heading("Other Guy")).toBeNull();
+    expect(pickHeading()).toBeNull();
+    expect(screen.getByRole("heading", { name: "New Player: Bob Allen" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to the list" })).toBeTruthy();
+  });
+
+  it("still comes back when the client's staging pass resets the walk before it sees the steps", async () => {
+    // A row whose lookup already ran (Change decision → Create new again): the
+    // staging pass runs the moment Create new clears the pick step, and here
+    // its answer lands before any render has shown the new rows — the order
+    // in which only the pass itself can remember Allen.
+    currentRows = [other({ status: "pending" }), allenLookedUp()];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+    mockStageCareerTeamRows.mockImplementationOnce(() => {
+      currentRows = [other(), royals(), allenLookedUp()];
+      return Promise.resolve(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create new" }));
+    await waitFor(() => expect(heading("New Team: Kansas City Royals")).toBeTruthy());
+
+    currentRows = [other(), decidedRoyals(), allenLookedUp()];
+    rerenderWizard(rerender);
+
+    expect(heading("Other Guy")).toBeNull();
+    expect(screen.getByRole("heading", { name: "New Player: Bob Allen" })).toBeTruthy();
+  });
+
+  it("returns to a player whose name turned ambiguous while away, on its pick step", () => {
+    const brown = (over: Partial<Row> = {}) =>
+      makeRow({
+        _id: "row-brown" as unknown as Id<"entityReviewQueue">,
+        name: "Dan Brown",
+        enrichment: { careerTeams: [] },
+        ...over,
+      });
+    const riverKings = (over: Partial<Row> = {}) =>
+      makeCareerTeamRow("row-brown" as unknown as Id<"entityReviewQueue">, "1995 Memphis RiverKings CHL", {
+        _id: "row-rk" as unknown as Id<"entityReviewQueue">,
+        source: { kind: "careerTeamOf", playerRowId: "row-brown", manualStint: { fromYear: 1995 } },
+        ...over,
+      });
+    currentNearMatches = [];
+    currentRows = [other({ status: "pending" }), brown()];
+    const { rerender } = renderWizard();
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "1995 Memphis RiverKings CHL" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "1995" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    currentRows = [other(), riverKings(), brown()];
+    rerenderWizard(rerender);
+    expect(heading("New Team: 1995 Memphis RiverKings CHL")).toBeTruthy();
+
+    // Answered — and meanwhile two Dan Browns are on file.
+    currentNearMatches = [
+      { _id: "p-a", name: "Dan Brown", confidence: "exact", birthYear: 1950 },
+      { _id: "p-b", name: "Dan Brown", confidence: "exact", birthYear: 1971 },
+    ];
+    currentRows = [
+      other(),
+      riverKings({ decision: { action: "create", create: { location: "Memphis", name: "RiverKings" } } }),
+      brown(),
+    ];
+    rerenderWizard(rerender);
+
+    expect(heading("Other Guy")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Which Dan Brown is this?" })).toBeTruthy();
   });
 });

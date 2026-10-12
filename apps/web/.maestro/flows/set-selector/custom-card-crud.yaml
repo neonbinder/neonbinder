@@ -25,7 +25,7 @@ tags:
 #   The add-card form has ONE name input (aria-label "Card name", placeholder
 #   "Player name") which is stored as cardName in the DB. The checklist row
 #   renders cardName only.
-#   PLAYER_NAME ("Test Player ${ATTEMPT_ID}") is typed first (fills cardName).
+#   PLAYER_NAME ("TestPlayer${output.ATTEMPT_TOKEN}") is typed first (fills cardName).
 #   CARD_NAME   ("CRUDName-${ATTEMPT_ID}") is then typed with an erase step
 #   (replaces cardName). The stored cardName = CARD_NAME alone.
 #   The rename test renames cardName from "CRUDName-..." to "Renamed-...".
@@ -46,6 +46,10 @@ tags:
 # returns with the "Edit card 999-${ATTEMPT_ID}" button scrolled into view.
 # ============================================================
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -53,7 +57,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "999-${ATTEMPT_ID}"
-      PLAYER_NAME: "Test Player ${ATTEMPT_ID}"
+      PLAYER_NAME: "TestPlayer${output.ATTEMPT_TOKEN}"
       CARD_NAME: "CRUDName-${ATTEMPT_ID}"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -71,7 +75,7 @@ tags:
 
 # ════════════════════════════════════════════════════════════════════════════
 # EDIT: rename the Card name; the new name sticks and the old card name is gone.
-# The Player name ("Test Player ${ATTEMPT_ID}") is unchanged and stays visible.
+# The Player name ("TestPlayer${output.ATTEMPT_TOKEN}") is unchanged and stays visible.
 # ════════════════════════════════════════════════════════════════════════════
 - tapOn:
     id: "Edit card 999-${ATTEMPT_ID}(, .*)?"

@@ -62,6 +62,7 @@ import {
 } from "../lib/entities/normalize-name";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
+import { clampSearchQuery } from "./lib/searchQueryClamp";
 
 /**
  * The dedup key on `players.nameNormalized`.
@@ -1917,7 +1918,8 @@ export const search = query({
   handler: async (ctx, args) => {
     if (!(await getCurrentUserId(ctx))) return [];
 
-    const term = args.query.trim();
+    // NEO-330 — bounded before the search index sees it (`clampSearchQuery`).
+    const term = clampSearchQuery(args.query).trim();
     if (!term) return [];
 
     const limit = clampLimit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
@@ -2502,7 +2504,7 @@ const MAX_PLAYER_TEAM_YEARS = 64;
  * reads as "that is all the players", which is the kind of wrong the operator
  * cannot see. Here it is not a distant scale worry — 500 is a number a real
  * deployment passes early — so the flag is load-bearing from day one, and the
- * page uses it to say "keep typing" instead of implying completeness.
+ * page uses it to show "N+ matches" instead of implying completeness.
  *
  * `createdByUserId` is stripped by `toPublicPlayer`, exactly as in every other
  * public query in this file. Admin-gated, but that is not a licence to leak the

@@ -126,7 +126,9 @@ lands") and the walker's auto-open-after-commit both need a real
 marketplace-backed card. Real sets are read-only (R7a) and a custom subtree
 skips BSC entirely (NEO-22), so both are unit/component-covered only — the same
 wall documented at length in `checklist-bsc-team-enrichment.yaml`'s header.
-Preselected suggestion chips need a LINKED player with career years for the
-set's year, which only the entity-review wizard path produces
-(`checklist-fetch-wizard-add-career-team`, ~3.5 min) — see
-[[reference_neo92_career_team_entry]].
+Suggestion chips need a LINKED player with career years. SUPERSEDED
+(2026-10-12): the quick-add PlayerPicker links a reference-catalogue player
+on a hand-made set, so career chips are reachable without the wizard — see
+[[reference-reaching-the-missing-team-fixer]]. A set-year (preselected) chip
+still needs a stint covering the set's year; the 2024 hand-made set with a
+retired player gives the whole-career fallback, unpicked.
