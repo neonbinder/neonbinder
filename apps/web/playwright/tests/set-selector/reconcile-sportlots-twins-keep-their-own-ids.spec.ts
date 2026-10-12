@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/reconcile-sportlots-twins-keep-their-own-ids.yaml (Maestro suite retired in NEO-341; see git history)
 // Read-only: opens the Parallels reconcile on 2024 Topps Chrome, never saves.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 
 const TWIN = "Chrome Update Sapphire";
@@ -29,6 +29,7 @@ test(
     await sync.click();
     const dialog = page.getByRole("dialog", { name: "Reconcile Parallels" });
     await expect(dialog).toBeVisible({ timeout: 60_000 });
+    await expectAccessible(page, { within: dialog, label: "Reconcile Parallels dialog" });
 
     const own = (label: string) => dialog.getByLabel(`Make its own set: ${label}`, { exact: true });
     const filterSets = dialog.getByRole("textbox", { name: "Filter NeonBinder sets" });
@@ -56,6 +57,7 @@ test(
     await dontMatch.click();
     await expect(dontMatchGroup).toBeVisible();
     await expect(dontMatchGroup.getByText(/Doesn.t match the Base/).first()).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Reconcile Parallels, non-matching SportLots group open" });
     await expect(dontMatchGroup.getByLabel(`Make its own set: ${BR} (#${BR_OTHER})`, { exact: true })).toBeVisible();
     await dontMatch.click();
     await expect(dontMatchGroup).toBeHidden();
@@ -109,6 +111,7 @@ test(
     await expect(dialog.getByText(clash)).toBeVisible();
     await expect(save).toBeDisabled();
     await expect(save).toHaveAccessibleDescription(clash);
+    await expectAccessible(page, { within: dialog, label: "Reconcile Parallels, two sets with one title" });
 
     // Renaming either clears the line and frees Save.
     const nameA = dialog.getByRole("textbox", { name: `NeonBinder set name for ${TWIN} (#${TWIN_A})` });

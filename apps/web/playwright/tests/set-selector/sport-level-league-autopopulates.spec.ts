@@ -2,7 +2,7 @@
 // Only READS Baseball's already-derived snapshot: drilling to the sport opens
 // Years with the attributes panel mounted at the sport level, and League
 // shows MLB with no set, variant or card checklist ever opened.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, pick, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -28,5 +28,6 @@ test(
 
     // League is derived from the sport name onto the sport's write-once snapshot.
     await expect(panel.getByLabel("Value for League")).toHaveValue("MLB");
+    await expectAccessible(page, { label: "Sport-level attributes panel" });
   },
 );

@@ -3,7 +3,7 @@
 // subtree, and BSC's own name comes back as a suggestion the operator can take.
 // Sole writer of the 2024 Hockey Topps NHL Sticker Collection set's name; it
 // ends renamed back, so a rerun starts from the same place.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   COLD_SYNC,
   columnOption,
@@ -54,6 +54,7 @@ test(
     const review = page.getByRole("dialog", { name: "Name Check — Sets" });
     await expect(review).toBeVisible();
     await expect(review.getByText(`BSC calls it "${ORIGINAL}"`)).toBeVisible();
+    await expectAccessible(page, { within: review, label: "Name Check dialog" });
 
     await review
       .getByRole("button", { name: `Take it — rename "${RENAMED}" to "${ORIGINAL}" (from BSC)` })

@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/parallel-grouping-reject-parallel.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, columnOption, addCustomEntry, drillToCustomSet } from "../../support/set-builder";
 
 test(
@@ -30,6 +30,7 @@ test(
     await dialog.getByRole("button", { name: `Remove ${gold} from parallels` }).click();
     await expect(dialog.getByText("No changes yet")).toBeVisible();
     await expect(dialog.getByRole("button", { name: gold, exact: true })).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog after a reject" });
 
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByText(/Drag inserts under a parent/)).toBeHidden();

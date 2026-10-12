@@ -9,7 +9,7 @@
 // The three teams answer the New Team dialog's League question three ways:
 //   STA creates a league from the typed text, STB picks that league as an
 //   EXISTING option, STC answers "No league".
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 import { addCardViaForm } from "../../support/cards";
 import type { Locator, Page } from "@playwright/test";
@@ -61,6 +61,7 @@ test(
       const dialog = page.getByRole("dialog", { name: `New team: ${team.short}` });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole("textbox", { name: "New team name" })).toHaveValue(team.short);
+      await expectAccessible(page, { within: dialog, label: `New Team dialog (${team.short})` });
       await dialog.getByRole("textbox", { name: "New team location (optional)" }).fill(`Loc${T}`);
       await answerLeague(dialog);
       await dialog.getByRole("button", { name: `Create team ${team.full}` }).click();
@@ -97,11 +98,16 @@ test(
       await league.fill(LEAGUE);
       await dialog.getByRole("option", { name: `Create “${LEAGUE}”` }).click();
       await expect(dialog.getByRole("textbox", { name: "New league name" })).toHaveValue(LEAGUE);
+      // NEO-331: a league needs a Level and none is pre-pressed, so "Add league"
+      // is held until one is. "Other" claims nothing: this flow does not prove a level.
+      await dialog.getByRole("radio", { name: "Other", exact: true }).click();
+      await expectAccessible(page, { within: dialog, label: "New Team dialog with the new-league form" });
       await dialog.getByRole("button", { name: "Add league" }).click();
       await expect(league).toHaveValue(LEAGUE);
     });
     await expect(page.getByText("Team applied to cards")).toBeVisible();
     await expect(removeChip(teamA.full)).toBeVisible();
+    await expectAccessible(page, { label: "Set attributes panel with the set team" });
 
     // ── STEP 3: two cards under the set's Base, NO team picked on the way in,
     // are born with the set's team.
@@ -119,6 +125,7 @@ test(
     await expect(cardName).toBeVisible();
     // Born with the set's team (the drawer chip) ...
     await expect(removeChip(teamA.full)).toBeVisible();
+    await expectAccessible(page, { label: "Card drawer born with the set's team" });
     // ... which the operator takes off, then replaces with a team of its own.
     await removeChip(teamA.full).click();
     await expect(page.getByText("Saved Teams")).toBeVisible();
@@ -161,6 +168,7 @@ test(
     await createSetTeam(teamC, noLeague);
     const apply = page.getByRole("dialog", { name: `Apply ${teamC.full} to this set?` });
     await expect(apply).toBeVisible();
+    await expectAccessible(page, { within: apply, label: "Apply team to this set confirm" });
     await expect(
       apply.getByText(`1 card under this set will get ${teamC.full}. 1 card carries a different team — these will not change.`),
     ).toBeVisible();

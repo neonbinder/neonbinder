@@ -6,7 +6,7 @@
 // proves re-hydration only as "still saveable after a reload". The toggle is
 // a pressed button (aria-pressed), so here the persisted value itself is
 // asserted after the reload.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, setBuilderReady } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
@@ -30,6 +30,8 @@ test(
     await openAttributes(page);
 
     const reprint = page.getByRole("button", { name: "Value for Reprint" });
+    await expect(reprint).toBeVisible();
+    await expectAccessible(page, { label: "Topps Chrome set attributes panel" });
     const wasOn = (await reprint.getAttribute("aria-pressed")) === "true";
     await reprint.click();
     await expect(page.getByText(/Saved Reprint/)).toBeVisible();

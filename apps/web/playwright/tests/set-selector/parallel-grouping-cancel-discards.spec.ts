@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/parallel-grouping-cancel-discards.yaml (Maestro suite retired in NEO-341; see git history)
 // Group Parallels: Cancel (and a backdrop click) ask to discard pending moves;
 // discarding closes the dialog and a reopen shows the original, unsaved state.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, addCustomEntry, drillToCustom } from "../../support/set-builder";
 
 test(
@@ -39,8 +39,13 @@ test(
     await dialog.getByRole("button", { name: /Accept all suggestions/ }).click();
     await expect(dialog.getByText(/[0-9]+ promotion/)).toBeVisible();
     await expect(dialog.getByText(new RegExp(`Parallels of .*${A} Stars`)).first()).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog with accepted suggestions" });
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByText(/Nothing has been saved yet/)).toBeVisible();
+    await expectAccessible(page, {
+      within: page.getByRole("dialog", { name: /^Discard .*pending move/ }),
+      label: "Discard pending moves confirm",
+    });
     await discardConfirm.click();
     await expect(dialog).toBeHidden();
 
@@ -73,5 +78,6 @@ test(
 
     await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Group Parallels" })).toBeVisible();
+    await expectAccessible(page, { label: "Inserts column after the discards" });
   },
 );

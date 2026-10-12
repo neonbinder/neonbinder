@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/new-chain-autopopulates-features.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, customSport } from "../../support/set-builder";
 
 test(
@@ -37,5 +37,6 @@ test(
     await expect(era.getByRole("option", { selected: true })).toHaveText(/1970-79/);
     await expect(page.getByRole("textbox", { name: "Value for Card Thickness" })).toHaveValue("20pt");
     await expect(page.getByRole("textbox", { name: "Value for Country of Origin" })).toHaveValue("USA");
+    await expectAccessible(page, { label: "Set attributes panel, auto-populated" });
   },
 );

@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/topps-chrome-marketplace-read.yaml (Maestro suite retired in NEO-341; see git history)
 // Read-only: never saves, never edits. Expands the attributes panel only if it
 // is collapsed (opening it is a view toggle, not a write).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -29,5 +29,6 @@ test(
 
     // Release metadata rows always render at set level.
     await expect(page.getByText(/Total Cards|Block/).first()).toBeVisible();
+    await expectAccessible(page, { label: "Topps Chrome set attributes panel (read-only)" });
   },
 );

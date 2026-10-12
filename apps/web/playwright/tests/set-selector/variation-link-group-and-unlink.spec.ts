@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/variation-link-group-and-unlink.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { addCustomCard } from "../../support/cards";
 
@@ -38,6 +38,7 @@ test(
     await parent.press("Enter");
     await expect(page.getByRole("button", { name: "Clear variation parent" })).toBeVisible();
     await expect(page.getByText(new RegExp(`#${base} Base Player ${id}`))).toBeVisible();
+    await expectAccessible(page, { label: "Card drawer with a variation parent set" });
 
     await page.getByRole("button", { name: "Close card detail" }).click();
     await expect(cardName).toBeHidden();
@@ -52,6 +53,7 @@ test(
     await show.click();
     await expect(page.getByText(`#${vari}`, { exact: true })).toBeVisible();
     await expect(hide).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with a variation group expanded" });
     await hide.click();
     await expect(page.getByText(`#${vari}`, { exact: true })).toBeHidden();
     await show.click();

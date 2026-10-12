@@ -7,7 +7,7 @@
 // Sole writer of Baseball 1990; FRESH-ONLY per deployment (a second run finds
 // the set already under Unknown). Every claim is BSC-side, so there is no
 // paused branch. The flow deliberately does not move the set back.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnSearch,
@@ -49,6 +49,7 @@ test(
     await brandSet(page).click();
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
     await expect(columnSelection(page, "Manufacturers", BRAND)).toBeVisible();
+    await expectAccessible(page, { label: "Set filed under the sync-created brand" });
     // The set's first visit fires a cold variant-type sync (the flow's 60 s).
     await expect(page.getByText("Syncing Variant Types")).toBeHidden({ timeout: 60_000 });
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
@@ -60,11 +61,13 @@ test(
     await expect(page.getByText("Move to which brand?")).toBeVisible();
     const brands = page.getByRole("group", { name: `Brands in ${YEAR}` });
     await expect(brands).toBeVisible();
+    await expectAccessible(page, { label: "Move to which brand" });
     // Its current brand is never offered.
     await expect(brands.getByRole("button", { name: `Move to ${BRAND}` })).toBeHidden();
     await brands.getByRole("button", { name: "Move to Unknown" }).click();
     const confirm = page.getByRole("dialog", { name: /^Move ".*" to Unknown\?$/ });
     await expect(confirm).toBeVisible();
+    await expectAccessible(page, { within: confirm, label: "Move set confirm dialog" });
     await expect(
       confirm.getByText(
         "The set keeps its cards, its variants and its marketplace links — only the brand above it changes. Sync Sets will leave it where you put it.",

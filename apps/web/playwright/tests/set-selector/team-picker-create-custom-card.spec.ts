@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/team-picker-create-custom-card.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { addCustomCard } from "../../support/cards";
 
@@ -26,13 +26,21 @@ test(
 
     // The picker offers a brand-new name as "New team", which opens the dialog.
     await expect(page.getByLabel("Team picker")).toBeVisible();
+    await expectAccessible(page, { label: "Card drawer with the team picker" });
     await page.getByRole("button", { name: "Add team" }).click();
-    await page.getByRole("textbox", { name: "Search teams" }).fill(team);
-    await page.getByRole("button", { name: `New team ${team}` }).click();
+    const search = page.getByRole("textbox", { name: "Search teams" });
+    await search.fill(team);
+    // Opened with Enter (the highlighted create row), not a click: the popover is
+    // fixed under its trigger with no flip or clamp, so a trigger near the fold
+    // leaves the row below the viewport ("element is outside of the viewport").
+    await expect(page.getByRole("button", { name: `New team ${team}` })).toBeVisible();
+    await expectAccessible(page, { label: "Team picker open with a create row" });
+    await search.press("Enter");
 
     const dialog = page.getByRole("dialog", { name: `New team: ${team}` });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("textbox", { name: "New team name" })).toHaveValue(team);
+    await expectAccessible(page, { within: dialog, label: "New Team dialog" });
     await dialog.getByRole("button", { name: `Create team ${team}` }).click();
 
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();

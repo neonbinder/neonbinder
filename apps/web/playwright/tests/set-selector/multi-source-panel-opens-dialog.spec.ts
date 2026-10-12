@@ -2,7 +2,7 @@
 // The Multi-source sets panel on a mapped Base variant: "Attach more" opens
 // the picker dialog, a BSC search lists matches, SportLots lists candidates
 // (or is empty while paused), and Cancel closes it again. Read-only.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToBaseVariant, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -30,6 +30,7 @@ test(
     } else {
       await expect(sportLots).toBeVisible();
     }
+    await expectAccessible(page, { within: dialog, label: "Attach more source sets dialog" });
 
     await dialog.getByRole("button", { name: "Cancel attach sets" }).click();
     await expect(dialog).toBeHidden();

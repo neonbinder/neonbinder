@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/sets-resync-already-loaded.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, columnOption, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -24,5 +24,6 @@ test(
     // it settles on the idle button.
     await expect(page.getByText("Syncing Variant Types")).toBeHidden();
     await expect(page.getByRole("button", { name: "Sync Variant Types" })).toBeVisible();
+    await expectAccessible(page, { label: "Variant Types column, already loaded" });
   },
 );

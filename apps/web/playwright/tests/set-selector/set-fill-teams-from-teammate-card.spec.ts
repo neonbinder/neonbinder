@@ -4,7 +4,7 @@
 // after a preview the operator confirms. Per-worker, per-attempt custom set
 // under E2E Test Sport <worker> > 2026 > Topps; every minted name is a single
 // search token.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 
 test(
@@ -42,7 +42,16 @@ test(
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     const findPlayer = page.getByRole("textbox", { name: "Find a player for the new card" });
     await findPlayer.fill(PLAYER);
-    await page.getByRole("option", { name: `Create player ${PLAYER}` }).click();
+    // The create row is offered and labelled with the name it would create. It is
+    // chosen with Enter (the highlighted row), not a click: the picker's popover is
+    // fixed under its trigger with no flip or clamp, so with the trigger at the fold
+    // of a 1024x629 window the row sits below the viewport and Playwright reports
+    // "element is outside of the viewport" (CI run 38161836368, shard 6, this spec:
+    // the click timed out on exactly that). Keyboard selection is a user path that
+    // does not depend on where the row falls.
+    await expect(page.getByRole("option", { name: `Create player ${PLAYER}` })).toBeVisible();
+    await expectAccessible(page, { label: "Quick-add player picker open" });
+    await findPlayer.press("Enter");
     await expect(page.getByRole("button", { name: `Remove player ${PLAYER}` })).toBeVisible();
     await cardName.click();
     await expect(findPlayer).toBeHidden();
@@ -55,6 +64,7 @@ test(
     const newTeam = page.getByRole("dialog", { name: `New team: ${TEAM}` });
     await expect(newTeam).toBeVisible();
     await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(TEAM);
+    await expectAccessible(page, { within: newTeam, label: "New Team dialog" });
     await newTeam.getByRole("textbox", { name: "New team location (optional)" }).fill(`Loc${T}`);
     const league = newTeam.getByRole("combobox", { name: "League" });
     await league.fill("No lea");
@@ -71,6 +81,7 @@ test(
     // The row prints its team, and it is not flagged.
     await expect(page.getByText(FULL_TEAM, { exact: true })).toBeVisible();
     await expect(needsTeam("781")).toBeHidden();
+    await expectAccessible(page, { label: "Checklist with a teamed card" });
 
     // ── Card 782: the SAME player (picked from the existing list), no team.
     await page.getByRole("button", { name: "Open add card form" }).click();
@@ -80,7 +91,8 @@ test(
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     await findPlayer.fill(PLAYER);
     await expect(page.getByRole("option", { name: `Create player ${PLAYER}` })).toBeHidden();
-    await page.getByRole("option", { name: `Add ${PLAYER}` }).click();
+    await expect(page.getByRole("option", { name: `Add ${PLAYER}` })).toBeVisible();
+    await findPlayer.press("Enter"); // row 0 is the one existing player (see card 781's note)
     await expect(page.getByRole("button", { name: `Remove player ${PLAYER}` })).toBeVisible();
     await cardName.click();
     await expect(findPlayer).toBeHidden();
@@ -88,6 +100,7 @@ test(
     await expect(cardName).toBeHidden();
     await expect(page.getByRole("button", { name: `Edit card 782-${A}` })).toBeVisible();
     await expect(needsTeam("782")).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with a card needing a team" });
 
     // ── Fill teams: a preview the operator confirms.
     await page.getByRole("button", { name: "1 card needs a team" }).click();
@@ -98,6 +111,7 @@ test(
     await expect(who).toBeVisible();
     await expect(who.getByText(PLAYER)).toBeVisible();
     await expect(who.getByText(FULL_TEAM)).toBeVisible();
+    await expectAccessible(page, { within: preview, label: "Fill teams preview dialog" });
     await expect(preview.getByText(/1 card . same player in this set/)).toBeVisible();
     await preview.getByRole("button", { name: "Yes, fill" }).click();
 
@@ -109,6 +123,7 @@ test(
     await page.getByRole("button", { name: `Edit card 782-${A}` }).click();
     await expect(cardName).toBeVisible();
     await expect(page.getByRole("button", { name: `Remove team ${FULL_TEAM}` })).toBeVisible();
+    await expectAccessible(page, { label: "Card drawer with the borrowed team" });
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
     await expect(needsTeam("782")).toBeHidden();

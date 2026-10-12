@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/parallel-grouping-multi-select-moves-together.yaml (Maestro suite retired in NEO-341; see git history)
 // NEO-300: two ticked rows move under one insert with a single press and a
 // single Save.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, addCustomEntry, drillToCustom } from "../../support/set-builder";
 
 test(
@@ -37,6 +37,7 @@ test(
     await dialog.getByRole("checkbox", { name: `Select ${comet}` }).click();
     await expect(dialog.getByText("2 selected", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Click here to make the 2 selected rows parallels").first()).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog with two rows ticked" });
 
     await dialog.getByText(`Parallels of "${aces}"`).click();
     await expect(dialog.getByText("2 promotions, 0 demotions")).toBeVisible();
@@ -49,5 +50,6 @@ test(
     await expect(page.getByText("Parallels", { exact: true }).first()).toBeVisible();
     await expect(page.getByText(bolt)).toBeVisible();
     await expect(page.getByText(comet)).toBeVisible();
+    await expectAccessible(page, { label: "Aces lists both parallels" });
   },
 );

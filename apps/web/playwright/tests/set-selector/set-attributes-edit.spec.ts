@@ -3,7 +3,7 @@
 // (Baseball > 2024 > Topps > attr-edit-<n>): breadcrumb scope, editing a
 // metadata field, CLEARING it ("Cleared", not "Saved"), collapse/expand, and
 // the scope following a child pick. The real Topps Chrome set is never touched.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 
 test(
@@ -37,6 +37,7 @@ test(
 
     // Breadcrumb: the panel names the node it edits and its ancestry.
     await expect(panel.getByText(new RegExp(`›.*${set}`)).first()).toBeVisible();
+    await expectAccessible(page, { label: "Set attributes panel open on a set" });
 
     // Edit Release Date. A sentinel first, so the stored value really changes
     // whatever an earlier attempt left behind (even a blank record).
@@ -79,5 +80,6 @@ test(
     // The panel's breadcrumb followed the pick down to the variant type.
     await ensureExpanded();
     await expect(panel.getByText(new RegExp(`›.*${child}`)).first()).toBeVisible();
+    await expectAccessible(page, { label: "Set attributes panel scoped to a variant type" });
   },
 );

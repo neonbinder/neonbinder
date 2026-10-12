@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/set-attributes-card-prefix.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustomSet, selectOrCreate } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
@@ -31,6 +31,8 @@ test(
 
     await openAttributes(page);
     const prefix = page.getByRole("textbox", { name: "Value for Card prefix" });
+    await expect(prefix).toBeVisible();
+    await expectAccessible(page, { label: "Set attributes panel open on an insert" });
 
     // Edit twice: each commit on Enter toasts a save.
     await prefix.fill("ZZ-");
@@ -50,6 +52,7 @@ test(
     await expect(prefix).toHaveAttribute("placeholder", "e.g. DK-");
     await prefix.press("Enter");
     await expect(page.getByText(/Cleared Card prefix/)).toBeVisible();
+    await expectAccessible(page, { label: "Card prefix cleared" });
 
     await collapseAndReopen(page);
     await expect(prefix).toHaveValue("");

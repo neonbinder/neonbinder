@@ -4,7 +4,7 @@
 // on the attributes toggle (or, with SportLots paused and Base unmapped, in
 // the Select Base Set dialog). The test never clicks a field: it types into
 // whatever holds focus.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnOption,
@@ -52,9 +52,12 @@ test(
       await expect(edit).toBeFocused();
       await page.keyboard.press("Enter");
       await expect(page.getByRole("button", { name: "Hide attributes" })).toBeVisible();
+      await expectAccessible(page, { label: "Base checklist, attributes open (keyboard drill)" });
     } else {
       // SportLots paused: Base cannot be mapped, so the picker opens instead.
-      await expect(page.getByRole("dialog", { name: "Select Base Set" })).toBeVisible();
+      const picker = page.getByRole("dialog", { name: "Select Base Set" });
+      await expect(picker).toBeVisible();
+      await expectAccessible(page, { within: picker, label: "Select Base Set dialog" });
     }
   },
 );

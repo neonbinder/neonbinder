@@ -3,7 +3,7 @@
 // link lands on the credentials page and whose Dismiss hides it. While
 // SportLots is paused the strip is the pause notice instead, never the
 // re-auth one.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -30,11 +30,13 @@ test(
       const signInAgain = page.getByRole("link", { name: "Sign in again on your Profile →" });
       await expect(signInAgain).toBeVisible();
       await expect(page.getByRole("button", { name: "Dismiss sign-in notice" })).toBeVisible();
+      await expectAccessible(page, { label: "Set Builder with the lapsed-session notice" });
 
       // The link lands on the credentials page.
       await signInAgain.click();
       await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible();
       await expect(page.getByText(/BuySportsCards Credentials/).first()).toBeVisible();
+      await expectAccessible(page, { label: "Profile credentials page" });
 
       // The notice survives a reload until it is dismissed.
       await page.goto("/admin/set-builder");
@@ -44,6 +46,7 @@ test(
       await page.getByRole("button", { name: "Dismiss sign-in notice" }).click();
       await expect(notice).toBeHidden();
       await expect(setBuilderReady(page)).toBeVisible();
+      await expectAccessible(page, { label: "Set Builder after the notice is dismissed" });
 
       // Restore the worker's SportLots credentials for later flows.
       await page.goto("/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials");
@@ -67,6 +70,7 @@ test(
       await expect(notice).toBeHidden();
       await expect(ranOut).toBeHidden();
       await expect(page.getByRole("button", { name: "Dismiss sign-in notice" })).toBeHidden();
+      await expectAccessible(page, { label: "Set Builder with the SportLots pause notice" });
     }
   },
 );

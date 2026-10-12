@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/sets-base.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of 2024 Topps Heritage's base mapping.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 
 test(
@@ -29,6 +29,7 @@ test(
         await expect(picker.getByText(/BSC base/).first()).toBeVisible();
         // The scored options arrive after the live SportLots fetch.
         await expect(picker.getByText("likely match").first()).toBeVisible();
+        await expectAccessible(page, { within: picker, label: "Select Base Set dialog" });
         // Nothing is linked on the operator's behalf: pick a set on each side.
         await bsc.first().click();
         await sl.first().click();
@@ -39,6 +40,7 @@ test(
       }
       await expect(syncChecklistButton(page)).toBeVisible();
       await expect(remap).toBeVisible();
+      await expectAccessible(page, { label: "Mapped Base checklist" });
     } else {
       // A BSC-only mapping reads as unmapped under the pause: the picker is open.
       await expect(picker).toBeVisible();
@@ -50,6 +52,7 @@ test(
       await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
       await expect(bsc.first()).toBeVisible();
       await expect(sl).toHaveCount(0);
+      await expectAccessible(page, { within: picker, label: "Select Base Set dialog (SportLots paused)" });
       await bsc.first().click();
       await confirm.click();
       await expect(picker).toBeHidden();

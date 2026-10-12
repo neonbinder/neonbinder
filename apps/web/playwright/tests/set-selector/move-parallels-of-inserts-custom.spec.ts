@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/move-parallels-of-inserts-custom.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, columnOption, columnSearch, addCustomEntry, drillToCustomSet } from "../../support/set-builder";
 
 test(
@@ -24,6 +24,7 @@ test(
     // Suggestions are pre-placed: "<stars> Gold" and "<stars> Red" promote under "<stars>".
     await expect(dialog.getByText(/\d+ promotion/)).toBeVisible();
     await expect(dialog.getByRole("button", { name: /Save \d+ change/ })).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog with suggestions" });
 
     await dialog.getByRole("button", { name: /Accept all suggestions/ }).click();
     await expect(dialog.getByText("Suggested", { exact: true })).toBeHidden();
@@ -46,5 +47,6 @@ test(
     await expect(page.getByRole("heading", { name: "Parallels", exact: true })).toBeVisible();
     await expect(page.getByText(gold)).toBeVisible();
     await expect(page.getByText(red)).toBeVisible();
+    await expectAccessible(page, { label: "Insert with its nested parallels" });
   },
 );

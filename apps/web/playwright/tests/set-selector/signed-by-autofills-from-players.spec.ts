@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/signed-by-autofills-from-players.yaml (Maestro suite retired in NEO-341; see git history)
 // Signed By auto-fills from the card's players when Autographed flips
 // None -> On Card (real Topps Chrome Base card #300; sole writer).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToBaseVariant, setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 
@@ -26,6 +26,7 @@ test(
     const hideFeatures = drawer.getByRole("button", { name: "Hide features editor" });
     await showFeatures.click();
     await expect(drawer.getByLabel("Card features editor", { exact: true })).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card drawer with the features editor" });
     const signedBy = drawer.getByRole("textbox", { name: "Value for Signed By" });
     await signedBy.fill(SENTINEL);
     await signedBy.press("Enter");

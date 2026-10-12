@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/parallel-grouping-demoted-parallel-takes-parallels.yaml (Maestro suite retired in NEO-341; see git history)
 // NEO-300: a saved parallel sent back to the top level can take a parallel of
 // its own in the same save (a demotion plus a re-parenting, one Save).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, addCustomEntry, drillToCustom } from "../../support/set-builder";
 
 test(
@@ -59,6 +59,7 @@ test(
     await expect(dialog.getByText("Click here to make the selected row a parallel").first()).toBeVisible();
     await goldBox.click();
     await expect(dialog.getByText("0 promotions, 1 demotion, 1 re-parented")).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog with a re-parenting" });
 
     await dialog.getByRole("button", { name: "Save 2 changes" }).click();
     await expect(dialog).toBeHidden();
@@ -67,5 +68,6 @@ test(
     await page.getByText(gold, { exact: true }).click();
     await expect(page.getByText("Parallels", { exact: true }).first()).toBeVisible();
     await expect(page.getByText(blue)).toBeVisible();
+    await expectAccessible(page, { label: "Gold lists Blue as its parallel" });
   },
 );

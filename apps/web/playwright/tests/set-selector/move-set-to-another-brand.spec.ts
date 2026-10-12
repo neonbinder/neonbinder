@@ -4,7 +4,7 @@
 // confirming files the set under the chosen brand (the open column follows
 // it), and it works in both directions. Marketplace-free: everything lives
 // under a sport this flow owns; a re-run finds the fixture as it left it.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, columnOption, columnSelection, setBuilderReady, drillToCustom } from "../../support/set-builder";
 
 test(
@@ -38,10 +38,12 @@ test(
     await expect(brands.getByRole("button", { name: "Move to Panini" })).toBeVisible();
     // The set's CURRENT brand is never offered.
     await expect(brands.getByRole("button", { name: "Move to Topps" })).toBeHidden();
+    await expectAccessible(page, { label: "Move to which brand list" });
 
     await brands.getByRole("button", { name: "Move to Panini" }).click();
     const confirm = page.getByRole("dialog", { name: `Move "${set}" to Panini?` });
     await expect(confirm).toBeVisible();
+    await expectAccessible(page, { within: confirm, label: "Move set confirm dialog" });
     await expect(
       confirm.getByText(
         "The set keeps its cards, its variants and its marketplace links — only the brand above it changes. Sync Sets will leave it where you put it.",

@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: the reconcile Save writes the two City Connect Swatch Relics sets.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnOption, columnSearch, drillToSet, setBuilderReady, readAttachedTwinId } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
@@ -50,6 +50,7 @@ test(
     // The year's inserts come from both marketplaces live (the flow's 240 s).
     const r = reconcile(page);
     await expect(r.dialog).toBeVisible({ timeout: 240_000 });
+    await expectAccessible(page, { within: r.dialog, label: "Reconcile Inserts dialog" });
 
     // The two SportLots twins start unpaired: each can be made its own set.
     await r.filterSets.fill("Swatch Collection Relics (Series");
@@ -85,6 +86,7 @@ test(
       r.dialog.getByRole("button", { name: `Remove ${TWIN} (#${S2_ID}) from ${TWO}` }),
     ).toBeVisible();
     await expect(r.dialog.getByText(/so you can tell them apart\./)).toBeHidden();
+    await expectAccessible(page, { within: r.dialog, label: "Reconcile Inserts, twins paired to their own sets" });
 
     await r.save.click();
     await expect(r.dialog).toBeHidden();
@@ -97,6 +99,7 @@ test(
     await insert.click();
     await page.getByRole("button", { name: "Sync Inserts" }).click();
     await expect(r.dialog).toBeVisible({ timeout: 240_000 });
+    await expectAccessible(page, { within: r.dialog, label: "Reconcile Inserts on re-sync" });
     await r.filterSets.fill("Swatch Collection Relics (Series");
     await expect(r.ready("2")).toBeVisible();
     await expect(

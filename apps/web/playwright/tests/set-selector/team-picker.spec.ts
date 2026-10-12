@@ -3,7 +3,7 @@
 // chip, the "No matches." state, add an existing team with Enter, and every
 // change autosaved on the tap (it survives closing and reopening the drawer
 // and a fresh load of the set).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton, openVariant } from "../../support/cards";
 
@@ -51,10 +51,16 @@ test(
     await addTeam.click();
     await expect(search).toBeVisible();
     await search.fill(TEAM);
-    await page.getByRole("button", { name: `New team ${TEAM}`, exact: true }).click();
+    // Opened with Enter (the highlighted create row), not a click: the popover is
+    // fixed under its trigger with no flip or clamp, so a trigger near the fold
+    // leaves the row below the viewport ("element is outside of the viewport").
+    await expect(page.getByRole("button", { name: `New team ${TEAM}`, exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Team picker open with a create row" });
+    await search.press("Enter");
     const newTeam = page.getByRole("dialog", { name: `New team: ${TEAM}` });
     await expect(newTeam).toBeVisible();
     await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(TEAM);
+    await expectAccessible(page, { within: newTeam, label: "New Team dialog" });
     await newTeam.getByRole("button", { name: `Create team ${TEAM}` }).click();
 
     // The chip lands (focus returns to the drawer).
@@ -70,6 +76,7 @@ test(
     await expect(search).toBeVisible();
     await search.fill("ZZZZNOTATEAM");
     await expect(page.getByText("No matches.")).toBeVisible();
+    await expectAccessible(page, { label: "Team picker with no matches" });
     await cardName.click();
 
     // Re-add the (now existing) team with the keyboard.
