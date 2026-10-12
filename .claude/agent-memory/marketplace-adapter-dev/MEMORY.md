@@ -28,3 +28,4 @@
 - [Planner sees the first wire id only](reference_planner_sees_first_wire_id_only.md) — reconcile store plans ids[0] per side; extras need their own one-link-one-row check at the insert
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Read-only marketplace measurement](reference_read_only_marketplace_measurement.md) — SL adapter actions + pure routeSlSets + discarded candidate fetches pick fixtures without writing NB rows
+- [Virtual-chain previews](reference_virtual_chain_previews.md) — previews share the read half over a virtual chain; unconfirmed SL ids on a node count as set linkage
