@@ -4,8 +4,6 @@ import { test, expect, expectAccessible } from "../../support/fixtures";
 test("Landing Page Smoke Test", { tag: ["@smoke", "@home"] }, async ({ page }) => {
   // Signed out: every test starts in a fresh browser context.
   await page.goto("/");
-  // PLANTED (NEO-341 gate proof, reverted next commit): mobile-only red.
-  if (test.info().project.name === "e2e-mobile") expect(1, "PLANTED break").toBe(2);
 
   // Header: logo text and Sign In button.
   const header = page.getByRole("banner");
