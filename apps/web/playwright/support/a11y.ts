@@ -43,6 +43,11 @@ export const EXCLUDED_REGIONS: ReadonlyArray<{ selector: string; reason: string 
     reason:
       "Vercel's preview toolbar. Vercel injects it into preview deployments only (the CI target); production users never see it and NB cannot change it.",
   },
+  {
+    selector: ".cl-formFieldInputCopyToClipboardButton",
+    reason:
+      "Clerk's own icon-only copy button inside <APIKeys/> (rendered from Clerk's UI bundle) has no accessible name (button-name). NB renders none of it; pending owner sign-off to report upstream to Clerk (NEO-341).",
+  },
 ];
 
 export interface AccessibleOptions {

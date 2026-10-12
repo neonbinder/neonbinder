@@ -238,7 +238,12 @@ export default function PickerPopover({
    * picker.
    */
   onTabOut: () => void;
-  /** `PlayerPicker` puts its listbox role on this container; `TeamPicker` does not. */
+  /**
+   * Neither picker sets this: both put `role="listbox"` on the options list
+   * INSIDE the popover (TeamPicker since NEO-236, PlayerPicker since NEO-341),
+   * because the popover also holds a search box and a sport switch and a
+   * listbox may own only options. Never put `listbox` here for a picker.
+   */
   role?: string;
   "aria-label"?: string;
 }) {

@@ -443,18 +443,19 @@ describe("EntitySelector — listbox semantics (NEO-260, NEO-224)", () => {
     }
   });
 
-  it("gives each option a DOM id (the aria-activedescendant target) but never the listbox", () => {
-    // Was: "options have no id". Options now carry an id; maestro-web reports
-    // `node.id || node.ariaLabel`, so the LISTBOX must stay id-less or its
-    // aria-label (the column title) stops being a flow handle (NEO-313).
+  it("gives each option a DOM id (the aria-activedescendant target), and the listbox the aria-controls id", () => {
+    // Options carry an id for `aria-activedescendant`. NEO-341: the listbox
+    // carries one too, the combobox's `aria-controls` target (APG). Maestro,
+    // which read an id ahead of the aria-label (NEO-313), is retired; the
+    // listbox keeps its accessible name, the column title.
     state.items = YEARS;
     render(column({ title: "Years" }));
 
     const ids = options().map((o) => o.getAttribute("id"));
     expect(ids.every((id) => !!id)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(
-      screen.getByRole("listbox", { name: "Years" }).getAttribute("id"),
-    ).toBeNull();
+    const listbox = screen.getByRole("listbox", { name: "Years" });
+    expect(listbox.getAttribute("id")).toBeTruthy();
+    expect(ids).not.toContain(listbox.getAttribute("id"));
   });
 });

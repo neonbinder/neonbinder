@@ -3572,13 +3572,16 @@ export default function EntityReviewWizard({
                     current.enrichment &&
                     (current.enrichment.wikidataId || current.enrichment.enwikiTitle) && (
                       <p className="mt-1 flex flex-wrap items-center gap-3 text-xs">
+                        {/* a11y (2.5.8): py-1 grows each 16px link line to a
+                            24px target; these are standalone links, not ones
+                            inside a sentence. */}
                         {current.enrichment.wikidataId &&
                           (wikidataUrl(current.enrichment.wikidataId) ? (
                             <a
                               href={wikidataUrl(current.enrichment.wikidataId)!}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                              className="py-1 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
                             >
                               Wikidata {current.enrichment.wikidataId}
                               <span className="sr-only"> (opens in new tab)</span>
@@ -3597,7 +3600,7 @@ export default function EntityReviewWizard({
                             href={wikipediaUrl(current.enrichment.enwikiTitle)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                            className="py-1 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
                           >
                             Wikipedia
                             <span className="sr-only"> (opens in new tab)</span>

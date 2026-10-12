@@ -231,11 +231,11 @@ export default function EntityLinkSearch({
   const empty = !idle && !searching && matches.length === 0;
 
   return (
-    <div
-      className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1"
-      role="listbox"
-      aria-label={`Search existing ${label}s`}
-    >
+    // NEO-341 (axe aria-required-children): the panel itself is no longer
+    // the listbox. It holds a search box, status lines and the Cancel button,
+    // and a listbox may own only options — so the role sits on the results
+    // list below, under the same name, rendered for the panel's whole life.
+    <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1">
       <Input
         bare
         ref={inputRef}
@@ -288,61 +288,67 @@ export default function EntityLinkSearch({
       )}
       {searching && <div className="text-xs text-gray-400 px-2 py-1">Loading…</div>}
       {empty && <div className="text-xs text-gray-400 px-2 py-1">No matches</div>}
-      {matches.map((m, idx) => {
-        const stints = m.stints ?? [];
-        const shown = stints.slice(0, MAX_STINTS_SHOWN);
-        const more = stints.length - shown.length;
-        return (
-          <button
-            key={m._id}
-            type="button"
-            onClick={() => onSelect(m._id, m.name)}
-            onMouseEnter={() => setHighlightIdx(idx)}
-            // Unchanged by NEO-313 — an E2E contract. The sport and career
-            // line below are what a sighted operator reads to choose; the
-            // name alone is what a flow and a screen reader select by.
-            aria-label={`Link to ${m.name}`}
-            role="option"
-            aria-selected={idx === highlightIdx}
-            className={`w-full text-left px-2 py-1 text-sm rounded ${
-              idx === highlightIdx
-                ? "bg-[#00D558]/20 text-[#00D558]"
-                : "hover:bg-gray-800 text-gray-200"
-            }`}
-          >
-            {/* The name in its own element, so a flow's `text:` match on it
-                is unaffected by the lines beside it. */}
-            <span className="flex items-baseline gap-2">
-              <span>{m.name}</span>
-              {m.sportValue && (
-                <span className="rounded border border-gray-600 px-1 text-[0.625rem] leading-4 text-gray-400">
-                  {m.sportValue}
+      <div
+        role="listbox"
+        aria-label={`Search existing ${label}s`}
+        className="space-y-1"
+      >
+        {matches.map((m, idx) => {
+          const stints = m.stints ?? [];
+          const shown = stints.slice(0, MAX_STINTS_SHOWN);
+          const more = stints.length - shown.length;
+          return (
+            <button
+              key={m._id}
+              type="button"
+              onClick={() => onSelect(m._id, m.name)}
+              onMouseEnter={() => setHighlightIdx(idx)}
+              // Unchanged by NEO-313 — an E2E contract. The sport and career
+              // line below are what a sighted operator reads to choose; the
+              // name alone is what a flow and a screen reader select by.
+              aria-label={`Link to ${m.name}`}
+              role="option"
+              aria-selected={idx === highlightIdx}
+              className={`w-full text-left px-2 py-1 text-sm rounded ${
+                idx === highlightIdx
+                  ? "bg-[#00D558]/20 text-[#00D558]"
+                  : "hover:bg-gray-800 text-gray-200"
+              }`}
+            >
+              {/* The name in its own element, so a flow's `text:` match on it
+                  is unaffected by the lines beside it. */}
+              <span className="flex items-baseline gap-2">
+                <span>{m.name}</span>
+                {m.sportValue && (
+                  <span className="rounded border border-gray-600 px-1 text-[0.625rem] leading-4 text-gray-400">
+                    {m.sportValue}
+                  </span>
+                )}
+              </span>
+              {shown.length > 0 && (
+                <span className="block truncate text-xs text-gray-400">
+                  {shown.map((st, i) => {
+                    const color = stintColor(st.primaryColor);
+                    return (
+                      <span key={`${st.label}-${st.fromYear}-${i}`}>
+                        {i > 0 && ", "}
+                        <span
+                          className={color ? "font-medium" : "text-gray-300"}
+                          style={color ? { color } : undefined}
+                        >
+                          {st.label}
+                        </span>{" "}
+                        {stintYears(st)}
+                      </span>
+                    );
+                  })}
+                  {more > 0 && `, +${more} more`}
                 </span>
               )}
-            </span>
-            {shown.length > 0 && (
-              <span className="block truncate text-xs text-gray-400">
-                {shown.map((st, i) => {
-                  const color = stintColor(st.primaryColor);
-                  return (
-                    <span key={`${st.label}-${st.fromYear}-${i}`}>
-                      {i > 0 && ", "}
-                      <span
-                        className={color ? "font-medium" : "text-gray-300"}
-                        style={color ? { color } : undefined}
-                      >
-                        {st.label}
-                      </span>{" "}
-                      {stintYears(st)}
-                    </span>
-                  );
-                })}
-                {more > 0 && `, +${more} more`}
-              </span>
-            )}
-          </button>
-        );
-      })}
+            </button>
+          );
+        })}
+      </div>
 
       <button
         type="button"

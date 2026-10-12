@@ -2747,12 +2747,15 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
     const form = openAddForm();
     fireEvent.click(screen.getByLabelText(QA_TRIGGER));
 
-    const popover = screen.getByLabelText("Player results for the new card");
+    // NEO-341: the named listbox is the options list INSIDE the portalled
+    // popover (a listbox may own only options), so the popover is its parent.
+    const results = screen.getByLabelText("Player results for the new card");
+    expect(results.getAttribute("role")).toBe("listbox");
+    const popover = results.parentElement as HTMLElement;
     expect(form.contains(screen.getByLabelText(QA_TRIGGER))).toBe(true);
     expect(form.contains(popover)).toBe(false);
     expect(container.contains(popover)).toBe(false);
     expect(popover.parentElement?.parentElement).toBe(document.body);
-    expect(popover.getAttribute("role")).toBe("listbox");
   });
 
   it("keeps the popover open when focus moves between controls inside it", async () => {
