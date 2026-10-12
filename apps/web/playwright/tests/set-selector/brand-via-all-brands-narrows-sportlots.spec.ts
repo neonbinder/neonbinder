@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: it creates the "SPx" brand under Hockey / 1997, which then exists.
 import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
-import { columnHeading, columnOption, columnSearch, columnSelection, drillToColdManufacturer, setBuilderReady, drillToCustom } from "../../support/set-builder";
+import { columnHeading, columnOption, columnSearch, columnSelection, drillToColdManufacturer, setBuilderReady, drillToCustom, COLD_SYNC } from "../../support/set-builder";
 
 const BRAND = "SPx";
 const YEAR = "1997";
@@ -16,12 +16,23 @@ test(
     // The year-wide view: every brand of the year, synced through All Brands.
     await drillToColdManufacturer(page, env, { sport: "Hockey", year: YEAR, manufacturer: "All Brands" });
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 15_000 });
+    // Wait on the data, the way a user would: the year-wide sync must have
+    // filed the SPx sets (under Unknown) before the brand is created, or the
+    // brand's sets are filed straight under it and nothing "moves out of
+    // Unknown". The idle "Sync Sets" button shows before the sync starts, so
+    // it proves nothing (drillToColdManufacturer waits for listed sets too).
+    await columnSearch(page, "Sets").fill(BRAND);
+    await expect(
+      page
+        .getByRole("listbox", { name: "Sets" })
+        .getByRole("option", { name: new RegExp(`^${BRAND}( .*)?`, "i") })
+        .first(),
+    ).toBeVisible({ timeout: COLD_SYNC });
     const skipped = page.getByText("SportLots skipped: no SportLots ids on this path.");
     if (env.SL_PAUSED) {
       await expect(skipped).toBeVisible();
     } else {
-      // With SportLots live the sets sync asks it (the flow's 150 s).
-      await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible({ timeout: 150_000 });
+      // With SportLots live the sets sync asks it.
       await expect(skipped).toBeHidden();
     }
 
@@ -76,16 +87,6 @@ test(
     // The brand's own view: its sets moved out of Unknown, and its attributes say how SportLots is matched.
     await drillToColdManufacturer(page, env, { sport: "Hockey", year: YEAR, manufacturer: BRAND });
     await expect(columnHeading(page, "Sets")).toBeVisible();
-    // TODO(NEO-341): a spec race, not a product bug. The notice exists only if
-    // the SPx sets were already under Unknown when the brand was created. The
-    // year-wide wait at the top ("Sync Sets" visible, "Syncing Sets" hidden)
-    // passes before ensureSelectorOptions writes its "syncing" row, so on a
-    // cold year SPx is created while that sync is still fetching BSC. The sync
-    // reads the year's brands AFTER its fetch (syncSetsAcrossManufacturers,
-    // holder index), sees SPx and files the SPx sets straight under it. They
-    // never sit in Unknown, nothing moves, and no notice is written. Maestro
-    // was slow enough to miss the race. Fix: before "Add custom Manufacturers",
-    // wait for an SPx-prefixed set in the All Brands Sets list.
     await expect(page.getByText(/[0-9]+ sets? moved out of Unknown/)).toBeVisible();
     await page.getByRole("button", { name: "Edit attributes" }).click();
     await expect(page.getByRole("button", { name: "Hide attributes" })).toBeVisible();

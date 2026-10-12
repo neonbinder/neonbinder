@@ -5,6 +5,7 @@
  * (Maestro suite retired in NEO-341; see git history.)
  */
 import { expect, type Page } from "@playwright/test";
+import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 
 export interface CrossListSource {
@@ -22,6 +23,8 @@ export async function openCrossListForm(page: Page) {
   await page.getByRole("button", { name: "Open add cross-release cards form" }).click();
   const modal = page.getByRole("dialog", { name: "Add cross-release cards" });
   await expect(modal).toBeVisible();
+  // The helper's product is this dialog, so it checks it (GUIDE "Accessibility checks").
+  await expectAccessible(page, { within: modal, label: "Add cross-release cards dialog" });
   return modal;
 }
 

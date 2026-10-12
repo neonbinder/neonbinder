@@ -6,6 +6,7 @@
  * retired in NEO-341; see git history).
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 import { drillToBaseVariant, syncChecklistButton, type DrillTarget } from "./set-builder";
 
@@ -51,6 +52,8 @@ export async function fetchChecklistToWizard(
     await expect(confirmMatches).toBeHidden();
   }
   await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
+  // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
+  await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
 
 /** Cancel out of the wizard and discard its decisions (the flows' ending). */
@@ -86,6 +89,32 @@ export function personSkip(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: /^Skip .* — not a person$/ });
 }
 
+/** The presented New Team / New League step's primary action, in any state (held, enabled). */
+export function addAsNewStep(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: /^Add as New (Team|League)$/ });
+}
+
+/**
+ * util-wizard-answer-step-as-new.yaml (NEO-331): answer the wizard's
+ * presented New Team / New League step as a create. A league cannot be added
+ * without a level and none is pre-pressed (its primary stays aria-disabled
+ * until one is), so a league step first gets `level` (default "Other", what
+ * the step pre-pressed before NEO-331; a drain claims nothing). A team step
+ * is one tap. The click waits (LOOKUPS) for the step's own live lookup to
+ * settle, which keeps the primary aria-disabled.
+ */
+export async function answerStepAsNew(
+  page: Page,
+  { level = "Other" }: { level?: "Major" | "Minor" | "College" | "International" | "Independent" | "Other" } = {},
+): Promise<void> {
+  const wizard = reviewWizard(page);
+  const isLeague = /League/.test((await addAsNewStep(page).first().textContent()) ?? "");
+  if (isLeague) await wizard.getByRole("radio", { name: level, exact: true }).click();
+  await wizard
+    .getByRole("button", { name: isLeague ? "Add as New League" : "Add as New Team", exact: true })
+    .click({ timeout: LOOKUPS });
+}
+
 /**
  * util-wizard-walk-to-player-row(-creating-teams).yaml: move the wizard past
  * every team/league step to the first player row. `creatingTeams: false`
@@ -104,7 +133,6 @@ export async function walkToPlayerRow(
     name: /^Skip .* — (not a team|this team has no league)$/,
     disabled: false,
   });
-  const addAsNew = wizard.getByRole("button", { name: /^Add as New (Team|League)$/, disabled: false });
 
   // A pass over the team/league steps; run twice because the lookups of the
   // rows behind them settle only once the earlier steps are decided.
@@ -116,7 +144,7 @@ export async function walkToPlayerRow(
       // The step's own skip names it, so its going away means the step moved on.
       const name = (await stepSkip.first().getAttribute("aria-label")) ?? "";
       if (creatingTeams) {
-        await addAsNew.click();
+        await answerStepAsNew(page);
       } else {
         await stepSkip.first().click();
       }

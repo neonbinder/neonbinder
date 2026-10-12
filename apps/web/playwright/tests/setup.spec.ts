@@ -28,6 +28,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
+import { addAsNewStep, answerStepAsNew } from "../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
@@ -228,17 +229,16 @@ test(
       await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
       // Enabled only: the button is aria-disabled while the row's enrichment
       // lookup is in flight, and between rows.
-      const addAsNew = wizard.getByRole("button", {
-        name: /^Add as New (Team|League)$/,
-        disabled: false,
-      });
+      // Any state: a league step's primary is held until a level is pressed
+      // (NEO-331), and answerStepAsNew presses "Other" first.
+      const addAsNew = addAsNewStep(page);
       const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
       // Teams and leagues are walked one at a time (enrichment lookups; the
       // flow's 240 s per step and 250 steps at most).
       for (let i = 0; i < 250; i++) {
         await expect(addAsNew.or(confirmSave).first()).toBeVisible({ timeout: 240_000 });
         if (await confirmSave.isVisible()) break;
-        await addAsNew.click();
+        await answerStepAsNew(page);
       }
       await confirmSave.click();
     }
@@ -327,6 +327,9 @@ test(
       return;
     }
 
+    // The sort count is the SportLots side's own arrival (the helper's wait is
+    // on BSC's sets); the negative checks below pass on a column still empty.
+    await expect(toSort).toBeVisible({ timeout: 150_000 });
     await expect(page.getByText("SportLots skipped: no SportLots ids on this path.")).toBeHidden();
     // SportLots-only names wait to be sorted; none lands as a set by itself.
     for (const name of [SL_SET, "Bowman Gold", "Bowman Neon Green"]) {

@@ -181,6 +181,11 @@ export interface DrillTarget {
   set?: string;
   /** Paused-SportLots only: create the manufacturer by hand if it is missing. */
   createManufacturer?: boolean;
+  /**
+   * drillToColdManufacturer: wait until the Sets column lists a row (the cold
+   * sync's data). Default: true when SportLots is live, false when paused.
+   */
+  expectSets?: boolean;
 }
 
 /** Variant types sync live on a set's first visit (the flow's 60 s). */
@@ -297,7 +302,7 @@ export const COLD_SYNC = 150_000;
 export async function drillToColdManufacturer(
   page: Page,
   env: FlowEnv,
-  { sport = "Hockey", year = "2024", manufacturer = "Topps" }: DrillTarget = {},
+  { sport = "Hockey", year = "2024", manufacturer = "Topps", expectSets }: DrillTarget = {},
 ): Promise<void> {
   await page.goto("/set-selector");
   await expect(setBuilderReady(page)).toBeVisible({ timeout: 20_000 });
@@ -337,6 +342,17 @@ export async function drillToColdManufacturer(
   }
   await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("Syncing Sets")).toBeHidden({ timeout: COLD_SYNC });
+  // "Syncing Sets" hidden is NOT proof the sync finished: a cold column shows
+  // its idle "Sync Sets" for a few queries before the sync's first write, so
+  // the wait above can pass before the sync has started. What a user waits on
+  // is the sets themselves: with SportLots live every brand (and All Brands)
+  // has sets, so a listed row is the signal. Hand-made brands under paused
+  // SportLots may be empty; pass `expectSets: false` for any other empty brand.
+  if (expectSets ?? !env.SL_PAUSED) {
+    await expect(page.getByRole("listbox", { name: "Sets" }).getByRole("option").first()).toBeVisible({
+      timeout: COLD_SYNC,
+    });
+  }
 }
 
 /** The per-worker custom sport every custom subtree lives under. */

@@ -395,6 +395,13 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   whatever is in the DOM at that moment). A dialog opening, a wizard step, an
   error state and an empty state are each a state. It runs on both projects
   with the same call, so the phone layout is checked too.
+- **Helpers.** A `support/` helper whose product is a screen, dialog or
+  wizard it opens and returns with showing (`fetchChecklistToWizard`,
+  `openCrossListForm`) runs `expectAccessible` itself on arrival, so every
+  spec that uses it covers that state; do not repeat it in the spec. Helpers
+  that only drive through intermediate states (the `drillTo*` cascade,
+  `walkToPlayerRow`, login warm-ups, form fillers) never call it: the spec
+  checks the state it stops on.
 - **Whole page by default.** `within` takes a Locator (role, label or text,
   like any other locator; it must resolve to exactly one element) for a
   region whose page the spec already checked. `label` names what the user

@@ -45,7 +45,6 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
 }
 
 export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
-  // eslint-disable-next-line no-empty-pattern -- Playwright fixture signature
   env: async ({}, use, testInfo) => {
     // The project feeds the d/m marker in every minted name (./env.ts).
     await use(makeEnv(testInfo.project.name));
