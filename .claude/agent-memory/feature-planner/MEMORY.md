@@ -15,3 +15,4 @@
 - [Names and roles are the spec handles](aria-names-and-roles-are-the-spec-handles.md) — a rename/relabel/re-role moves the Playwright specs; plan them in the same PR; new cascade chrome goes BELOW the columns
 - [Maestro-green / PW-red = mid-transition assert](maestro-green-playwright-red-means-a-mid-transition-assert.md) — PW helpers wait for the settle; fix the product status overwrite, never the spec (NEO-341)
 - [Convex table removal does not fail the push](convex-table-removal-does-not-fail-the-push.md) — only unlisted tables go unvalidated; field removal on a kept table is the hazard
+- [Optional→required is two merges](optional-to-required-is-two-merges.md) — deploy validates existing rows; writers+backfill first, schema flip second; one PR only if prod is hand-cleaned and rechecked (NEO-331)

@@ -16,11 +16,12 @@
  *      `findTeamByFullName`, so a team created in the staged pass is simply
  *      FOUND there. That is why the pass has to run first.
  *   2. **League precedence** (`reviewedTeamFields`). The operator's answer
- *      wins — an id, a name, or `null` for "no league" — and the sport default
- *      is never allowed back over it. `createTeamFromOperatorInput`'s
- *      `leagueChosen` flag is what makes the `null` case survive: "no league"
- *      writes no `leagueId`, which is byte-identical to "not answered" unless
- *      something else carries the distinction.
+ *      wins — an id, a name, or `null` for "no league" — then the lookup's
+ *      suggestion, then nothing. NEO-331 (Jason, 2026-10-10): "An unanswered
+ *      League stays blank, same as No league. No team lands under MLB without
+ *      someone saying so." The sport default is never applied, so the old
+ *      `leagueChosen` flag that kept "no league" apart from "not answered" is
+ *      gone — both write no `leagueId`.
  *
  * Fixture conventions mirror convex/commitCardChecklist.entityReview.test.ts:
  * the same sport → setName → variantType tree, review rows inserted raw so
@@ -164,6 +165,29 @@ async function allTeams(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ctx.db.query("teams").collect());
 }
 
+/**
+ * NEO-331: a league NAME on a decision (the operator's `leagueName`, the
+ * enrichment's suggestion) is LINK-ONLY at commit — it never mints a league,
+ * because a league requires a level. Tests whose point is the PRECEDENCE
+ * between names seed the league so the name has something to link.
+ */
+async function seedLeagueNamed(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  level: "major" | "other" = "other",
+): Promise<Id<"leagues">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("leagues", {
+      name,
+      nameNormalized: name.toLowerCase(),
+      sportId,
+      level,
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
 async function leagueNameOf(
   t: ReturnType<typeof convexTest>,
   leagueId: Id<"leagues"> | undefined,
@@ -201,6 +225,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     // step's list, so the decision carries its id.
     const ablId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Australian Baseball League",
         nameNormalized: "australian baseball league",
         sportId,
@@ -273,9 +298,14 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     // THE POINT OF THE TICKET: neither club is filed under Major League
     // Baseball, which is what the sport default would have given them.
     expect(byName.get("Blue Sox")!.leagueId).toBe(ablId);
-    expect(await leagueNameOf(t, byName.get("Beavers")!.leagueId)).toBe(
-      "NCAA Division I baseball",
-    );
+    // NEO-331: a league NAME we hold no row for is link-only — it used to
+    // mint "NCAA Division I baseball" here. Now the team lands with NO league
+    // (still not MLB: a named league counts as answered), and nothing is
+    // minted without the level only a New League step supplies.
+    expect(byName.get("Beavers")!.leagueId).toBeUndefined();
+    expect(
+      (await t.run(async (ctx) => ctx.db.query("leagues").collect())).map((l) => l.name),
+    ).toEqual(["Australian Baseball League"]);
 
     const player = await playerNamed(t, "Travis Bazzana");
     expect(player).not.toBeNull();
@@ -455,9 +485,8 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
   });
 
   test("leagueId: null produces a team with NO league even though the sport has a default", async () => {
-    // The state the nullable union exists for. "No league", said deliberately,
-    // writes no `leagueId` — which is byte-identical to "not answered" unless
-    // `leagueChosen` carries the distinction down to the insert.
+    // "No league", said deliberately, writes no `leagueId`. Unchanged by
+    // NEO-331, which made "not answered" land in the same place.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
@@ -501,15 +530,16 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     expect(teams).toHaveLength(1);
     expect(teams[0].name).toBe("Blue Sox");
     expect(teams[0].leagueId).toBeUndefined();
-    // And no MLB row was invented on the way past — `resolveDefaultLeagueId`
-    // was never consulted, so it never created one.
+    // And no MLB row was invented on the way past — nothing consults the
+    // sport default, so nothing created one.
     const leagues = await t.run(async (ctx) => ctx.db.query("leagues").collect());
     expect(leagues).toEqual([]);
   });
 
-  test("an unanswered staged row still lets the sport default apply to a team it does answer for", async () => {
-    // `leagueChosen` is false when the League question was never put, so the
-    // pre-NEO-236 behaviour is exactly preserved for those rows.
+  test("NEO-331: an unanswered staged row creates its team with NO league, and mints no default", async () => {
+    // Was "still lets the sport default apply". The League field on the New
+    // Team step shows no sport default, so leaving it untouched is not someone
+    // saying MLB — the team lands blank, same as "No league".
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
@@ -544,7 +574,57 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
 
     const teams = await allTeams(t);
     expect(teams).toHaveLength(1);
-    expect(await leagueNameOf(t, teams[0].leagueId)).toBe("Major League Baseball");
+    expect(teams[0].leagueId).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+  });
+
+  test("NEO-331: an unanswered staged row is not filed under the default even when that league row EXISTS", async () => {
+    // The row existing is not an answer either.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        nameNormalized: "major league baseball",
+        abbreviation: "MLB",
+        aliases: ["MLB"],
+        sportId,
+        level: "major",
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const playerRowId = await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Hickory Crawdads", fromYear: 1981 }] },
+    });
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "Hickory Crawdads",
+      source: { kind: "careerTeamOf", playerRowId },
+      decision: {
+        action: "create",
+        create: { location: "Hickory", name: "Crawdads" },
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Tony Gwynn", players: ["Tony Gwynn"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    expect(teams[0].leagueId).toBeUndefined();
   });
 
   test("the operator's leagueName wins over the enrichment's league suggestion", async () => {
@@ -555,6 +635,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
+    await seedLeagueNamed(t, sportId, "Australian Baseball League");
 
     const playerRowId = await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
@@ -866,9 +947,9 @@ describe("commit prelude: a pre-NEO-236 decision carrying createTeams is unchang
     ]);
     const dbacks = teams.find((row) => row.name === "Diamondbacks")!;
     expect(dbacks.location).toBe("Arizona");
-    // Created off a player's career list with no reviewed League, so the sport
-    // default still applies — the old behaviour, unchanged.
-    expect(await leagueNameOf(t, dbacks.leagueId)).toBe("Major League Baseball");
+    // Created off a player's career list with no reviewed League. NEO-331:
+    // that is no league at all — the sport default no longer applies.
+    expect(dbacks.leagueId).toBeUndefined();
 
     const player = await playerNamed(t, "Daulton Varsho");
     expect(player!.teamYears).toHaveLength(2);
@@ -880,6 +961,9 @@ describe("commit prelude: a pre-NEO-236 decision carrying createTeams is unchang
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
+    // NEO-331: the enrichment's league suggestion links an existing row; it no
+    // longer creates one.
+    await seedLeagueNamed(t, sportId, "Major League Baseball", "major");
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
@@ -922,6 +1006,113 @@ describe("commit prelude: a pre-NEO-236 decision carrying createTeams is unchang
     // for exactly the collectors who type the city.
     expect(card!.listingTitle).toContain("San Diego Padres");
   });
+
+  test("an enrichment league that matches NO league leaves the team blank — the sport default does not step in", async () => {
+    // NEO-331: the suggestion is link-only. A Wikidata P118 label NB holds no
+    // row for mints nothing (a league needs a level only the New League step
+    // asks for), and the sport's configured default (MLB, seeded here so it
+    // HAS a row to win with) must not file the team under the top flight
+    // instead — nothing in the prelude applies the default any more.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const mlbId = await seedLeagueNamed(t, sportId, "Major League Baseball", "major");
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "Sacramento Solons",
+      // No league half on the decision: the suggestion is all there is.
+      decision: {
+        action: "create",
+        create: { location: "Sacramento", name: "Solons" },
+      },
+      enrichment: { league: "Pacific Coast League", location: "Sacramento" },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Solons Team Card", teams: ["Sacramento Solons"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    expect(teams[0].name).toBe("Solons");
+    expect(teams[0].leagueId).toBeUndefined();
+    expect(teams[0].leagueId).not.toBe(mlbId);
+    // And the suggestion minted nothing.
+    const leagues = await t.run(async (ctx) => ctx.db.query("leagues").collect());
+    expect(leagues.map((l) => l.name)).toEqual(["Major League Baseball"]);
+  });
+
+  test("NEO-331: a checklist TEAM row with no League answer and no suggestion lands with NO league", async () => {
+    // The ~20-club preview defect, on the checklist team loop: a minor-league
+    // card's team created from the wizard's New Team step with the League
+    // field left blank used to be filed under MLB (and rank tier 1 in the
+    // picker). The field showed nothing; nobody said MLB. MLB is seeded so the
+    // default HAS a row to win with.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const mlbId = await seedLeagueNamed(t, sportId, "Major League Baseball", "major");
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "Hickory Crawdads",
+      decision: {
+        action: "create",
+        create: { location: "Hickory", name: "Crawdads" },
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Crawdads Team Card", teams: ["Hickory Crawdads"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    expect(teams[0].name).toBe("Crawdads");
+    expect(teams[0].leagueId).toBeUndefined();
+    expect(teams[0].leagueId).not.toBe(mlbId);
+  });
+
+  test("NEO-331: an explicit pick of the sport's top league on a checklist TEAM row still lands there", async () => {
+    // Someone said so: the operator picked Major League Baseball.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const mlbId = await seedLeagueNamed(t, sportId, "Major League Baseball", "major");
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "San Diego Padres",
+      decision: {
+        action: "create",
+        create: { location: "San Diego", name: "Padres", leagueId: mlbId } satisfies TeamCreate,
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Padres Team Card", teams: ["San Diego Padres"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    expect(teams[0].leagueId).toBe(mlbId);
+  });
 });
 
 // ===========================================================================
@@ -938,7 +1129,8 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
    * to prevent — a row no per-sport query can explain.
    *
    * The prelude therefore fails SOFT: it drops the league and falls through to
-   * `leagueName`, then the enrichment, then the sport default. Throwing would
+   * `leagueName`, then the enrichment, then no league (NEO-331: never the
+   * sport default). Throwing would
    * abort a whole checklist commit over one team's league, with no operator in
    * front of it to say so.
    */
@@ -949,6 +1141,7 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
 
     const goneLeagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Gone League",
         nameNormalized: "gone league",
         sportId,
@@ -956,6 +1149,9 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
       }),
     );
     await t.run(async (ctx) => ctx.db.delete(goneLeagueId));
+    // NEO-331: the typed name links an existing league; seed it so the
+    // fall-through has a row to land on.
+    await seedLeagueNamed(t, sportId, "Australian Baseball League");
 
     const playerRowId = await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
@@ -995,7 +1191,7 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
     expect(await leagueNameOf(t, teams[0].leagueId)).toBe("Australian Baseball League");
   });
 
-  test("a CROSS-SPORT league is dropped and the sport default applies when nothing else answers", async () => {
+  test("a CROSS-SPORT league is dropped and the team lands league-less when nothing else answers", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
@@ -1011,6 +1207,7 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
     );
     const foreignLeagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "major" as const,
         name: "National Football League",
         nameNormalized: "national football league",
         sportId: otherSportId,
@@ -1051,11 +1248,11 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
 
     const teams = await allTeams(t);
     expect(teams).toHaveLength(1);
-    // NOT the football league. `leagueChosen` also went false, so the sport's
-    // own default is allowed back in rather than leaving the team league-less.
-    const landed = await leagueNameOf(t, teams[0].leagueId);
-    expect(landed).not.toBe("National Football League");
-    expect(landed).toBe("Major League Baseball");
+    // NOT the football league — and, since NEO-331, not the sport default
+    // either: nothing usable answered, so the team has no league.
+    expect(teams[0].leagueId).toBeUndefined();
+    const leagues = await t.run(async (ctx) => ctx.db.query("leagues").collect());
+    expect(leagues.map((l) => l.name)).toEqual(["National Football League"]);
 
     // And the foreign league was not touched or re-parented on the way past.
     const foreign = await t.run(async (ctx) => ctx.db.get(foreignLeagueId));

@@ -120,16 +120,64 @@ export const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
 // ---------------------------------------------------------------------------
 
 /**
- * The level, as six toggles.
+ * Marks a `LevelGroup`'s radiogroup, so a surface can find its tabbable radio
+ * without knowing the group's markup. A data attribute rather than an id: the
+ * group renders on four surfaces, sometimes two at once, and an id would be
+ * nothing a user can perceive (no flow targets it).
+ */
+const LEVEL_GROUP_SELECTOR = "[data-level-group]";
+
+/**
+ * NEO-331 — send focus to the level a held create is waiting on.
  *
- * `aria-pressed` rather than a radio group: level is OPTIONAL, and a radio
- * group with nothing checked has no way back to nothing once something is
- * checked. Pressing the pressed button clears it, which is the affordance a
- * toggle already promises — and "not set" is a state this screen exists to fix,
- * so it must stay reachable.
+ * Level is required and silent (no hint line, no alert — "we don't need more
+ * words"), so a create control that is held ONLY because no level is pressed
+ * answers a press by putting the operator on the group: a screen reader then
+ * announces "Level, radio group, required" and the six choices, which is the
+ * reason the press did nothing, said by the control that resolves it.
  *
- * Shared by the add form and the detail panel so the two can never offer
- * different levels or different wording.
+ * Queried, never a captured ref: the group belongs to a child form, and the
+ * caller only knows a container it owns. The roving radio (`tabindex="0"`) is
+ * the checked one, or the first when none is — exactly where Tab would land.
+ * Synchronous on purpose: a held press changes no state, so there is no render
+ * to wait for, and the press's own focus (the button) is replaced in the same
+ * task rather than flashing.
+ */
+export function focusLevelChoice(scope: ParentNode | null | undefined): void {
+  if (!scope) return;
+  const target =
+    scope.querySelector<HTMLElement>(
+      `${LEVEL_GROUP_SELECTOR} [role="radio"][tabindex="0"]`,
+    ) ??
+    scope.querySelector<HTMLElement>(`${LEVEL_GROUP_SELECTOR} [role="radio"]`);
+  target?.focus();
+}
+
+/**
+ * The level, as a six-way radio group — a SINGLE-SELECT that cannot be cleared.
+ *
+ * NEO-331: level is required (Jason, 2026-10-10: "force a choice"). A new
+ * league opens with nothing checked, so the operator has to make the call
+ * rather than inherit a default nobody looked at; once one is checked, pressing
+ * it again does nothing, because "no level" is no longer a state a league can
+ * be in. Pressing another moves the selection.
+ *
+ * A radiogroup now, not `aria-pressed` toggles. Toggles carry no promise that
+ * they are mutually exclusive and no way to say the set is required; a
+ * radiogroup says both (`aria-required`), and arrow keys move between the
+ * choices as one Tab stop — the WAI-ARIA APG radio pattern, as the pairing
+ * dialog's name conflict already does it (`CardPairingModal`). The pills stay
+ * native buttons, and their text stays byte-identical, so the accessible names
+ * every flow taps (`tapOn: "Major"`) do not move.
+ *
+ * No "required" marker and no hint line: the house convention marks only
+ * optional fields ("(optional)"), and a required one is signalled by its
+ * surface's primary staying held until it is answered (Jason, 2026-10-10: "we
+ * don't need more words"). A press on that held primary focuses this group —
+ * see `focusLevelChoice`.
+ *
+ * Shared by the add form, the detail panel and the New League form so they
+ * can never offer different levels or different wording.
  */
 export function LevelGroup({
   value,
@@ -137,34 +185,82 @@ export function LevelGroup({
   idPrefix,
 }: {
   value: LeagueLevel | null;
-  onChange: (next: LeagueLevel | null) => void;
+  onChange: (next: LeagueLevel) => void;
   /** Only for keys; the group is named by `aria-label`, not by an id. */
   idPrefix: string;
 }) {
+  const groupRef = useRef<HTMLDivElement>(null);
+  const checkedIndex = LEVELS.findIndex((level) => level.value === value);
   return (
     <div>
       <span className={LABEL_CLASS}>Level</span>
-      <div role="group" aria-label="Level" className="flex flex-wrap gap-1.5">
-        {LEVELS.map((level) => {
-          const pressed = value === level.value;
+      <div
+        ref={groupRef}
+        role="radiogroup"
+        aria-label="Level"
+        aria-required="true"
+        data-level-group=""
+        className="flex flex-wrap gap-1.5"
+        onKeyDown={(e) => {
+          if (
+            !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)
+          ) {
+            return;
+          }
+          // APG single-select radio group: focus moves WITH selection and
+          // wraps at both ends. "From" is the radio that has focus — with
+          // nothing checked that is the first pill (the roving Tab stop), so
+          // Right lands on the second and Left wraps to the last, as the APG
+          // describes for an unchecked group.
+          e.preventDefault();
+          const radios = Array.from(
+            e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]'),
+          );
+          const focused = radios.indexOf(e.target as HTMLElement);
+          const at = focused >= 0 ? focused : Math.max(checkedIndex, 0);
+          const step = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+          const next = LEVELS[(at + step + LEVELS.length) % LEVELS.length];
+          if (next.value !== value) onChange(next.value);
+          // Re-queried after the render rather than focusing a captured
+          // element: the radio that must end up focused is the one the
+          // parent's state change makes checked (and so `tabindex="0"`), which
+          // only exists once that render has committed.
+          requestAnimationFrame(() => {
+            groupRef.current
+              ?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')
+              ?.focus();
+          });
+        }}
+      >
+        {LEVELS.map((level, index) => {
+          const checked = value === level.value;
           return (
             <button
               key={`${idPrefix}-${level.value}`}
               type="button"
-              aria-pressed={pressed}
-              onClick={() => onChange(pressed ? null : level.value)}
+              role="radio"
+              aria-checked={checked}
+              // Roving tabindex: one Tab stop for the group — the checked
+              // radio, or the first when none is checked yet, matching native
+              // radio-group behaviour.
+              tabIndex={
+                checked || (checkedIndex === -1 && index === 0) ? 0 : -1
+              }
+              onClick={() => {
+                if (!checked) onChange(level.value);
+              }}
               // min-h-8 clears WCAG 2.2 SC 2.5.8's 24px target floor with room
               // to spare — these sit close together, so the extra is what keeps
               // a mis-tap from setting the wrong level.
               //
-              // `font-semibold` is the pressed state's NON-COLOUR cue (WCAG 2.2
+              // `font-semibold` is the checked state's NON-COLOUR cue (WCAG 2.2
               // SC 1.4.1): teal-on-teal-tint is the whole difference otherwise,
               // and "which of these is set?" is the question this group exists
               // to answer at a glance. Weight rather than a leading glyph on
               // purpose — the label text stays byte-identical, so neither the
               // accessible name nor a Maestro `tapOn: "Major"` moves.
               className={`min-h-8 rounded-md border px-2.5 py-1 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-neon-teal ${
-                pressed
+                checked
                   ? "border-neon-teal bg-neon-teal/15 font-semibold text-neon-teal"
                   : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:text-slate-100"
               }`}
@@ -199,8 +295,6 @@ export interface AddLeagueFormProps {
    * THAT team's sport or it creates a league the team cannot point at.
    */
   lockSport?: boolean;
-  /** Level to open with. Unset by default — "not set" is a legitimate answer. */
-  defaultLevel?: LeagueLevel | null;
   /** Names the form for a dialog's `aria-labelledby`. */
   headingId?: string;
   /**
@@ -234,7 +328,6 @@ export function AddLeagueForm({
   sportId: fixedSportId,
   sportLabel,
   lockSport = false,
-  defaultLevel = null,
   headingId,
   initialFocus = "heading",
   onStatus,
@@ -246,7 +339,9 @@ export function AddLeagueForm({
 
   const [name, setName] = useState("");
   const [abbreviation, setAbbreviation] = useState("");
-  const [level, setLevel] = useState<LeagueLevel | null>(defaultLevel);
+  // NEO-331: nothing pressed for a new league — the operator chooses (Jason:
+  // "force a choice"); Create stays held until they do.
+  const [level, setLevel] = useState<LeagueLevel | null>(null);
   const [sportId, setSportId] = useState<string>(fixedSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -299,17 +394,35 @@ export function AddLeagueForm({
   const panelMatches = exact
     ? (matches ?? []).filter((m) => m._id !== exact._id)
     : matches;
-  const canCreate = trimmed.length > 0 && sportId.length > 0 && !busy;
+  // NEO-331: a level is required, so Create waits for one. The `exact` path
+  // below is not a create and does not wait.
+  const canCreate =
+    trimmed.length > 0 && sportId.length > 0 && level !== null && !busy;
+  /**
+   * Held, not busy: the fields are not answered yet. Painted and announced
+   * with `aria-disabled` rather than native `disabled`, so the control stays in
+   * the tab order — a held press with ONLY the level missing has somewhere to
+   * send the operator (`focusLevelChoice`), and a natively disabled button
+   * cannot be pressed at all. Busy keeps native `disabled`, as before.
+   */
+  const createHeld = !canCreate && !busy;
+  const onlyLevelMissing =
+    trimmed.length > 0 && sportId.length > 0 && level === null;
+  const formRef = useRef<HTMLDivElement>(null);
+  /** A press on a held create: point at the level when that is all it lacks. */
+  const holdCreate = () => {
+    if (onlyLevelMissing) focusLevelChoice(formRef.current);
+  };
 
   const create = async () => {
-    if (!canCreate) return;
+    if (!canCreate || level === null) return;
     setBusy(true);
     onStatus(null);
     try {
       const result = await createByAdmin({
         name: trimmed,
         ...(trimmedAbbreviation ? { abbreviation: trimmedAbbreviation } : {}),
-        ...(level ? { level } : {}),
+        level,
         sportId: sportId as Id<"selectorOptions">,
       });
       onStatus(
@@ -329,7 +442,7 @@ export function AddLeagueForm({
   };
 
   return (
-    <div className="space-y-4">
+    <div ref={formRef} className="space-y-4">
       <h3
         id={headingId}
         ref={headingRef}
@@ -434,9 +547,14 @@ export function AddLeagueForm({
               });
               return;
             }
+            if (createHeld) {
+              holdCreate();
+              return;
+            }
             void create();
           }}
-          disabled={exact ? false : !canCreate}
+          disabled={exact ? false : busy}
+          aria-disabled={!exact && createHeld ? true : undefined}
           // Busy is part of the NAME, not only of the visible text. The label
           // was static while the text flipped to "Adding…", so a screen-reader
           // user pressing it heard "Create league American League" both before
@@ -456,14 +574,21 @@ export function AddLeagueForm({
         {exact && (
           <button
             type="button"
-            onClick={() => void create()}
-            disabled={!canCreate}
+            onClick={() => {
+              if (createHeld) {
+                holdCreate();
+                return;
+              }
+              void create();
+            }}
+            disabled={busy}
+            aria-disabled={createHeld ? true : undefined}
             // Same rule as the primary above: the name says busy because the
             // text does.
             aria-label={
               busy ? "Adding league" : `Create league ${trimmed} anyway`
             }
-            className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
           >
             {busy ? "Adding…" : "Create anyway"}
           </button>
