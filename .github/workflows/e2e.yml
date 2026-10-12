@@ -330,9 +330,9 @@ jobs:
                   ;;
               esac
             done
-            npx --yes convex@1.39.1 env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
+            "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
           else
-            npx --yes convex@1.39.1 env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
+            "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
               || echo "NEONBINDER_PAUSED_PLATFORMS was not set on this preview — nothing to remove."
           fi
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" || true)
@@ -366,7 +366,7 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          npx --yes convex@1.39.1 env set NEONBINDER_ENRICHMENT_FIXTURES 1 --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_ENRICHMENT_FIXTURES 1 --deployment "$CONVEX_NAME"
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_ENRICHMENT_FIXTURES --deployment "$CONVEX_NAME")
           echo "Convex preview NEONBINDER_ENRICHMENT_FIXTURES = $got"
           if [ "$got" != "1" ]; then
@@ -789,9 +789,9 @@ jobs:
                   ;;
               esac
             done
-            npx --yes convex@1.39.1 env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
+            "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
           else
-            npx --yes convex@1.39.1 env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
+            "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
               || echo "NEONBINDER_PAUSED_PLATFORMS was not set on this preview — nothing to remove."
           fi
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" || true)
@@ -813,7 +813,7 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          npx --yes convex@1.39.1 env set NEONBINDER_ENRICHMENT_FIXTURES 1 --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_ENRICHMENT_FIXTURES 1 --deployment "$CONVEX_NAME"
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_ENRICHMENT_FIXTURES --deployment "$CONVEX_NAME")
           echo "Convex preview NEONBINDER_ENRICHMENT_FIXTURES = $got"
           if [ "$got" != "1" ]; then

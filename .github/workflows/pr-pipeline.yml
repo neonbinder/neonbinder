@@ -529,7 +529,7 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          npx --yes convex@1.39.1 env set NEONBINDER_BROWSER_URL "$BROWSER_URL" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BROWSER_URL "$BROWSER_URL" --deployment "$CONVEX_NAME"
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_BROWSER_URL --deployment "$CONVEX_NAME")
           echo "Convex preview NEONBINDER_BROWSER_URL = $got"
           if [ "$got" != "$BROWSER_URL" ]; then
@@ -744,7 +744,7 @@ jobs:
             exit 1
           fi
 
-          npx --yes convex@1.39.1 env set NEONBINDER_PREPROCESS_URL "$HEAVY_URL" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_PREPROCESS_URL "$HEAVY_URL" --deployment "$CONVEX_NAME"
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_PREPROCESS_URL --deployment "$CONVEX_NAME")
           echo "Convex preview NEONBINDER_PREPROCESS_URL = $got"
           if [ "$got" != "$HEAVY_URL" ]; then
@@ -752,7 +752,7 @@ jobs:
           fi
 
           if [ "$FAST_EXISTS" = "true" ]; then
-            npx --yes convex@1.39.1 env set NEONBINDER_PREPROCESS_FAST_URL "$FAST_URL" --deployment "$CONVEX_NAME"
+            "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_PREPROCESS_FAST_URL "$FAST_URL" --deployment "$CONVEX_NAME"
             got_fast=$(npx --yes convex@1.39.1 env get NEONBINDER_PREPROCESS_FAST_URL --deployment "$CONVEX_NAME")
             echo "Convex preview NEONBINDER_PREPROCESS_FAST_URL = $got_fast"
             if [ "$got_fast" != "$FAST_URL" ]; then
@@ -913,14 +913,14 @@ jobs:
           fi
           echo "This PR's Convex preview calls the '${ROW}' preprocess services — targeting heavy=$HEAVY fast=$FAST."
 
-          npx --yes convex@1.39.1 env set HEAVY_PREPROCESS_MAX_PARALLELISM "$HEAVY" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set HEAVY_PREPROCESS_MAX_PARALLELISM "$HEAVY" --deployment "$CONVEX_NAME"
           got_heavy=$(npx --yes convex@1.39.1 env get HEAVY_PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
           echo "Convex preview HEAVY_PREPROCESS_MAX_PARALLELISM = $got_heavy"
           if [ "$got_heavy" != "$HEAVY" ]; then
             echo "::error::read-back mismatch: expected $HEAVY, got '$got_heavy'"; exit 1
           fi
 
-          npx --yes convex@1.39.1 env set PREPROCESS_MAX_PARALLELISM "$FAST" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set PREPROCESS_MAX_PARALLELISM "$FAST" --deployment "$CONVEX_NAME"
           got_fast=$(npx --yes convex@1.39.1 env get PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
           echo "Convex preview PREPROCESS_MAX_PARALLELISM = $got_fast"
           if [ "$got_fast" != "$FAST" ]; then
