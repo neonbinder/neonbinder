@@ -62,8 +62,10 @@ import WizardChrome from "./WizardChrome";
 import CardTitlesStep from "./CardTitlesStep";
 import {
   cardsNeedingTitleReview,
+  shortNameFieldApplies,
   teamIdNamesFromRefs,
   titleAnswersForCommit,
+  validShortName,
   type PreviewCardForTitles,
   type TitleAnswer,
   type TitleCommitFields,
@@ -425,6 +427,7 @@ export default function EntityReviewWizard({
   titleContext,
   existingCardIndexes = NO_CARD_INDEXES,
   onTitleAnswersChange,
+  onListingShortNameChange,
   hasSetTeam = false,
 }: {
   isOpen: boolean;
@@ -507,6 +510,15 @@ export default function EntityReviewWizard({
    * only ever sent for a card the operator actually saw on the step.
    */
   onTitleAnswersChange?: (fields: Array<TitleCommitFields | undefined> | undefined) => void;
+  /**
+   * NEO-335 title rules — the set's short name for titles, as the commit's
+   * batch-level `listingShortName`. Reported only when the titles step was
+   * shown in this sitting, asked for one (no short name stored) and the
+   * operator typed one or took the suggestion; `undefined` otherwise. The
+   * kept titles the step reports were generated with this same value.
+   * Absent: the titles step never asks for a short name.
+   */
+  onListingShortNameChange?: (value: string | undefined) => void;
   /**
    * NEO-335 Phase 2 (C7) — the node these cards save under already carries a
    * set-level team (NEO-277). Without one, a long teams step hints at setting
@@ -903,6 +915,8 @@ export default function EntityReviewWizard({
   >([]);
   /** NEO-335 Phase 2 — the titles step's raw drafts, kept while it unmounts (Next, Back). */
   const [titleDrafts, setTitleDrafts] = useState<Array<TitleAnswer | undefined>>([]);
+  /** NEO-335 — the titles step's short-name draft, kept while it unmounts. */
+  const [shortNameDraft, setShortNameDraft] = useState<string | undefined>(undefined);
   /**
    * NEO-335 Phase 2 — every preview position the titles step has SHOWN in
    * this sitting. Only these may send a title answer: the default ("kept")
@@ -2679,6 +2693,33 @@ export default function EntityReviewWizard({
     setTitlesSeen(new Set([...titlesSeen, ...titleIndexes]));
   }
   /**
+   * NEO-335 — the short name the commit carries: only when the titles step
+   * has been shown, it asks for one (read without the draft, as the step
+   * reads it), and the draft is one the server will accept. The kept titles
+   * below are generated with exactly this value, so the server's regenerated
+   * title matches them.
+   */
+  const shortNameAsked = useMemo(
+    () =>
+      !!onListingShortNameChange &&
+      !!titleContext &&
+      !!previewCards &&
+      shortNameFieldApplies(previewCards, titleContext, teamAnswersSeen, {
+        names: titleNames,
+        existingIndexes: existingCardIndexes,
+      }),
+    [
+      onListingShortNameChange,
+      titleContext,
+      previewCards,
+      teamAnswersSeen,
+      titleNames,
+      existingCardIndexes,
+    ],
+  );
+  const shortNameForCommit =
+    titlesSeen.size > 0 && shortNameAsked ? validShortName(shortNameDraft) : undefined;
+  /**
    * What the commit receives from the titles step: only for positions the
    * step showed, and nothing at all when it never appeared.
    */
@@ -2688,6 +2729,7 @@ export default function EntityReviewWizard({
       names: titleNames,
       existingIndexes: existingCardIndexes,
       answers: titleDrafts,
+      listingShortName: shortNameForCommit,
     }).map((fields, i) => (titlesSeen.has(i) ? fields : undefined));
   }, [
     titlesSeen,
@@ -2697,7 +2739,14 @@ export default function EntityReviewWizard({
     titleNames,
     existingCardIndexes,
     titleDrafts,
+    shortNameForCommit,
   ]);
+  const reportedShortName = useRef<string | undefined | null>(null);
+  useEffect(() => {
+    if (reportedShortName.current === shortNameForCommit) return;
+    reportedShortName.current = shortNameForCommit;
+    onListingShortNameChange?.(shortNameForCommit);
+  }, [shortNameForCommit, onListingShortNameChange]);
   const reportedTitleFields = useRef<string | null>(null);
   useEffect(() => {
     const key = JSON.stringify(titleCommitFields ?? null);
@@ -4862,6 +4911,10 @@ export default function EntityReviewWizard({
                   existingIndexes={existingCardIndexes}
                   answers={titleDrafts}
                   onAnswersChange={setTitleDrafts}
+                  // NEO-335: the set's short name for titles, asked above the
+                  // list; only when the commit can carry it.
+                  shortName={shortNameDraft}
+                  onShortNameChange={onListingShortNameChange ? setShortNameDraft : undefined}
                   disabled={saving}
                   headingId={titlesLeadId}
                 />

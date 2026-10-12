@@ -16,3 +16,4 @@
 - [Wizard chrome strings are suite-wide E2E gates](wizard-chrome-strings-are-suite-wide-e2e-gates.md) — title/counter/"All reviewed" gate ~20 flows + setup.yaml; fix strings in the plan, rewrite setup.yaml first
 - [Listing title inputs are server-assembled](listing-title-inputs-are-server-assembled.md) — assessListingTitle is browser-safe, its inputs are not; extract a pure input builder + ship context on the resolve result
 - [Optional→required is two merges](optional-to-required-is-two-merges.md) — deploy validates existing rows; writers+backfill first, schema flip second; one PR only if prod is hand-cleaned and rechecked (NEO-331)
+- [Old scripts title builder is the title-rule reference](old-scripts-title-builder-is-the-title-rule-reference.md) — insert/parallel names are core; per-leaf short set name rescues overflow; RC-before-short-name is the open disagreement

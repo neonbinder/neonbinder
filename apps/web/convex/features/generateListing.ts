@@ -15,7 +15,7 @@
  *
  * ## The formula, and why the title PACKS rather than stays short
  *
- *   core:      <year> <manufacturer/set> <players> #<cardNumber>
+ *   core:      <year> <manufacturer/set> <insert> <players> #<cardNumber>
  *   then, while each still fits, in this order:
  *              AUTO, RELIC, <parallel>, /<printRun>, <cardVariation>,
  *              RC, SP|SSP, <each team name>, "Rookie", <sport>
@@ -69,6 +69,18 @@ export type ListingCardInputs = {
    */
   manufacturerBrandUnknown?: boolean;
   setName?: string;
+  /**
+   * NEO-335 — the insert's own name ("Dugout Collection"), already gated on
+   * the insert row's NB role by `listingInputsForCard`. Set identity: it
+   * joins the CORE after the set name and is never dropped, only shortened.
+   */
+  insertName?: string;
+  /**
+   * NEO-335 — the set's shorter name for titles. When the generator uses it,
+   * it REPLACES the set-name and insert-name words in the core; the maker is
+   * kept unless the short name already starts with it.
+   */
+  setShortName?: string;
   /** features.parallelName — "Base" for a plain base card, a real name otherwise. */
   parallelName?: string;
   isRookie?: boolean;
@@ -132,7 +144,29 @@ export type ListingTitleAssessment = {
    * see what the title gave up.
    */
   dropped: string[];
+  /**
+   * NEO-335 — present (and true) only when the title was built with the set's
+   * short name (`setShortName`) in place of its set and insert names. Absent
+   * otherwise, so an assessment without a short name is unchanged.
+   */
+  shortNameUsed?: true;
 };
+
+/**
+ * NEO-335 — when a set's short name replaces its full name in a title.
+ *
+ *   - "A": build with the full names; when the core was cut OR any optional
+ *     token that is not filler (the sport, the second "Rookie") was dropped,
+ *     rebuild with the short name and use that.
+ *   - "B": only when the core was cut.
+ *   - "C": always, whenever the set has a short name.
+ *
+ * One switch, read by every caller through `assessListingTitle`'s default, so
+ * the title shown before save, the title written at insert and the title the
+ * Regenerate button rebuilds cannot disagree.
+ */
+export type ShortNameRule = "A" | "B" | "C";
+export const SHORT_NAME_RULE: ShortNameRule = "A";
 
 /**
  * A set node's `value` often already embeds its manufacturer's name as a
@@ -189,6 +223,58 @@ function startsWithWord(value: string, prefix: string): boolean {
   if (!value.toLowerCase().startsWith(prefix.toLowerCase())) return false;
   const boundaryChar = value[prefix.length];
   return boundaryChar === undefined || /\s/.test(boundaryChar);
+}
+
+/**
+ * NEO-335 — the set-identity words of the core: maker and set (collapsed as
+ * above), then the insert's name; or, with `useShortName`, the short name in
+ * place of the set and insert names.
+ *
+ * The insert name is set identity, the way the old title builder treated it:
+ * a 1996 Score "Dugout Collection" card is not a Score base card, and a title
+ * that says so is wrong, not merely short. It is only ever SHORTENED (by the
+ * short name), never dropped.
+ *
+ * An insert named after its set ("Topps Chrome Refractor" under "Topps
+ * Chrome") collapses into the set word for word, like a set named after its
+ * maker; an insert whose every word the set already says adds nothing.
+ *
+ * With the short name, the maker is kept unless the short name already starts
+ * with it — the same rule as a set name that starts with its brand — and is
+ * never kept for a brand NB has not identified (NEO-272).
+ */
+function setIdentityTokens(inputs: ListingCardInputs, useShortName: boolean): string[] {
+  const shortName = inputs.setShortName?.trim();
+  if (useShortName && shortName) {
+    const manufacturer = inputs.manufacturerBrandUnknown
+      ? undefined
+      : inputs.manufacturer?.trim();
+    if (manufacturer && !startsWithWord(shortName, manufacturer)) {
+      return [manufacturer, shortName];
+    }
+    return [shortName];
+  }
+  const tokens = manufacturerAndSetTokens(inputs);
+  const insert = inputs.insertName?.trim();
+  if (!insert) return tokens;
+  if (tokens.length === 0) return [insert];
+  if (startsWithWord(insert, tokens.join(" "))) return [insert];
+  const last = tokens[tokens.length - 1];
+  if (startsWithWord(insert, last)) return [...tokens.slice(0, -1), insert];
+  if (alreadySaid(tokens.join(" "), insert)) return tokens;
+  return [...tokens, insert];
+}
+
+/**
+ * NEO-335 — is this dropped optional token one of the generator's FILLER
+ * words: the sport, or "Rookie" (the second spelling, appended only beside
+ * "RC")? A filler drop is not a loss: those words exist to spend characters
+ * that would otherwise go unused.
+ */
+export function isFillerToken(token: string, inputs: ListingCardInputs): boolean {
+  const sport = inputs.sport?.trim();
+  if (sport && token === sport) return true;
+  return inputs.isRookie === true && token === "Rookie";
 }
 
 function isRealParallel(inputs: ListingCardInputs): boolean {
@@ -403,10 +489,28 @@ function cutAtWordBoundary(
  */
 export function assessListingTitle(
   inputs: ListingCardInputs,
+  options: { shortNameRule?: ShortNameRule } = {},
+): ListingTitleAssessment {
+  const full = buildTitle(inputs, false);
+  if (!inputs.setShortName?.trim()) return full;
+  // NEO-335 — the short name, behind one rule (see `SHORT_NAME_RULE`).
+  const rule = options.shortNameRule ?? SHORT_NAME_RULE;
+  const useShortName =
+    rule === "C" ||
+    !full.coreFits ||
+    (rule === "A" && full.dropped.some((token) => !isFillerToken(token, inputs)));
+  if (!useShortName) return full;
+  return { ...buildTitle(inputs, true), shortNameUsed: true };
+}
+
+/** One title build: full set names, or the short name in their place. */
+function buildTitle(
+  inputs: ListingCardInputs,
+  useShortName: boolean,
 ): ListingTitleAssessment {
   const identityParts: string[] = [];
   if (inputs.year) identityParts.push(inputs.year);
-  identityParts.push(...manufacturerAndSetTokens(inputs));
+  identityParts.push(...setIdentityTokens(inputs, useShortName));
   const playerPart =
     inputs.playerNames && inputs.playerNames.length > 0
       ? inputs.playerNames.join(" & ")
@@ -483,7 +587,10 @@ export function generateListingTitle(inputs: ListingCardInputs): string {
 export function generateListingDescription(inputs: ListingCardInputs): string {
   const sentences: string[] = [];
 
-  const setParts = [inputs.year, ...manufacturerAndSetTokens(inputs)].filter(
+  // NEO-335: the insert's name is part of what the card is, so the
+  // description's set label carries it too. Never the short name: the
+  // description has no cap, so nothing here needs shortening.
+  const setParts = [inputs.year, ...setIdentityTokens(inputs, false)].filter(
     Boolean,
   );
   const isParallel = isRealParallel(inputs);

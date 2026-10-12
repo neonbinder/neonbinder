@@ -1078,3 +1078,74 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
     expect(await t.run((ctx) => ctx.db.get(candidateId))).not.toBeNull();
   });
 });
+
+/**
+ * NEO-335 — the short name for listing titles has two doors, and a refusal at
+ * either persists nothing: the attributes panel's
+ * `setSelectorOptionListingShortName`, and the batch-level `listingShortName`
+ * on `commitCardChecklist`, which the prelude writes onto the leaf row. The
+ * second is the one to watch: a refused commit must not have written the
+ * leaf's metadata on its way to the refusal.
+ */
+describe("NEO-335 — a refused short-name write persists nothing", () => {
+  async function seedSetChain(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const leafId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Collector's Choice",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { sportId, leafId };
+    });
+  }
+
+  test("setSelectorOptionListingShortName refuses an anonymous caller and a non-admin without touching the row", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedSetChain(t);
+    for (const tt of [t, t.withIdentity(MEMBER)]) {
+      await expect(
+        tt.mutation(api.selectorOptions.setSelectorOptionListingShortName, {
+          id: leafId,
+          listingShortName: "UD Choice",
+        }),
+      ).rejects.toThrow();
+    }
+    const row = await t.run(async (ctx) => ctx.db.get(leafId));
+    expect(row!.metadata).toBeUndefined();
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+  });
+
+  test("commitCardChecklist with a short name refuses a non-admin without writing the leaf or a card", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSetChain(t);
+    for (const tt of [t, t.withIdentity(MEMBER)]) {
+      await expect(
+        tt.action(api.selectorOptions.commitCardChecklist, {
+          selectorOptionId: leafId,
+          sportId,
+          cards: [],
+          listingShortName: "UD Choice",
+        }),
+      ).rejects.toThrow();
+    }
+    const row = await t.run(async (ctx) => ctx.db.get(leafId));
+    expect(row!.metadata).toBeUndefined();
+    const cards = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", leafId))
+        .collect(),
+    );
+    expect(cards).toHaveLength(0);
+  });
+});

@@ -28,18 +28,23 @@
  * ## Browser-safe, on purpose
  *
  * Imports only pure modules (`generateListing`, `deriveCardFeatures`,
- * `listingLimits`) and a TYPE from `cardAttention`. Keep it that way: the SPA
- * imports this file.
+ * `listingLimits`, `../listingShortName`) and a TYPE from `cardAttention`.
+ * Keep it that way: the SPA imports this file.
  */
 
 import type { AttentionItem } from "./cardAttention";
 import { deriveCardObservedFeatures } from "./deriveCardFeatures";
 import {
   assessListingTitle,
+  isFillerToken,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./generateListing";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
+import {
+  MAX_LISTING_SHORT_NAME_LENGTH,
+  normalizeListingShortName,
+} from "../listingShortName";
 
 /**
  * The set-level facts a new card's title reads, resolved once per commit (or
@@ -55,6 +60,28 @@ export type ListingSetContext = {
   manufacturerBrandUnknown?: boolean;
   /** The leaf row's complete `features` snapshot (NEO-71-74). */
   inheritedFeatures?: Record<string, string>;
+  /**
+   * NEO-335 — the chain's insert-level row's value ("Dugout Collection").
+   * Carried with `insertIsRole`; it reaches the title only when that is true.
+   */
+  insertNameValue?: string;
+  /**
+   * NEO-335 — the insert-level row's NB role: `metadata.isInsert === true`
+   * (variantRole.ts). The insert name enters the title core on this flag,
+   * never on the row's level or name.
+   */
+  insertIsRole?: boolean;
+  /**
+   * NEO-335 — a directly-synced parallel LEAF's own value, set only when the
+   * leaf carries the NB parallel role (`metadata.isParallel === true`). Used
+   * as the parallel token when the features snapshot names no parallel.
+   */
+  parallelLeafValue?: string;
+  /**
+   * NEO-335 — the chain's resolved `listingShortName` (nearest self-or-ancestor
+   * up to the setName row), or the operator's draft on the Card titles step.
+   */
+  listingShortName?: string;
 };
 
 /**
@@ -139,6 +166,18 @@ export function listingInputsForCard(
   names: { playerNames: string[]; teamNames?: string[] },
   mergedFeatures: Record<string, string> = mergeCardFeatures(card, set),
 ): ListingCardInputs {
+  // NEO-335 — the insert's name joins the core on the insert row's NB ROLE,
+  // never on its level or its name (product invariant 4).
+  const insertName =
+    set.insertIsRole === true ? set.insertNameValue?.trim() || undefined : undefined;
+  // NEO-335 — a parallel leaf synced straight from a marketplace has no
+  // `features.parallelName`; its own value (set only for the NB parallel
+  // role) is the parallel token then. A named parallel in the features wins.
+  const parallelName =
+    mergedFeatures.parallelName?.trim()
+      ? mergedFeatures.parallelName
+      : set.parallelLeafValue?.trim() || undefined;
+  const setShortName = set.listingShortName?.trim() || undefined;
   return {
     cardNumber: card.cardNumber,
     playerNames: names.playerNames,
@@ -146,7 +185,9 @@ export function listingInputsForCard(
     manufacturer: mergedFeatures.manufacturer,
     manufacturerBrandUnknown: set.manufacturerBrandUnknown,
     setName: set.setNameValue,
-    parallelName: mergedFeatures.parallelName,
+    ...(insertName ? { insertName } : {}),
+    ...(setShortName ? { setShortName } : {}),
+    parallelName,
     isRookie: card.isRookie,
     isRelic: card.isRelic,
     autographed: mergedFeatures.autographed,
@@ -265,12 +306,10 @@ function wordsOf(text: string): string[] {
 /**
  * NEO-335 — is this dropped token one of the generator's FILLER words: the
  * sport, or "Rookie" (the second spelling, appended only beside "RC")?
+ * Lives in generateListing.ts now (the short-name rule reads it there);
+ * re-exported so existing importers keep working.
  */
-export function isFillerToken(token: string, inputs: ListingCardInputs): boolean {
-  const sport = inputs.sport?.trim();
-  if (sport && token === sport) return true;
-  return inputs.isRookie === true && token === "Rookie";
-}
+export { isFillerToken };
 
 /**
  * NEO-335 — what the title had to leave out, in the order the generator
@@ -303,11 +342,13 @@ export function leftOutOfTitle(
   const present = new Set(wordsOf(assessment.title));
   const out: string[] = [];
   if (!assessment.coreFits) {
-    const segments = [
-      inputs.year,
-      inputs.manufacturerBrandUnknown ? undefined : inputs.manufacturer,
-      inputs.setName,
-    ];
+    // NEO-335 — the insert's name is core identity now, so its words are
+    // reported like the set's. A title built with the short name reads the
+    // short name in their place: the full names were left out on purpose.
+    const maker = inputs.manufacturerBrandUnknown ? undefined : inputs.manufacturer;
+    const segments = assessment.shortNameUsed
+      ? [inputs.year, maker, inputs.setShortName]
+      : [inputs.year, maker, inputs.setName, inputs.insertName];
     for (const segment of segments) {
       const words = (segment ?? "").split(/\s+/).filter(Boolean);
       const missing = words.filter((w) => w !== "&" && !present.has(w.toLowerCase()));
@@ -376,4 +417,73 @@ export function checkTitleAnswer(
     if (variation) out.cardVariation = variation;
   }
   return out;
+}
+
+/**
+ * NEO-335 — a shorter set name to OFFER on the Card titles step: the maker
+ * (unless NB has not identified the brand, NEO-272), then the first word of
+ * the insert's name — or, with no insert, the first word of the set's name
+ * that is not the maker's. 1990 Upper Deck Collector's Choice, Hologram
+ * insert → "Upper Deck Hologram".
+ *
+ * Reads NB row values only: the maker from the set's features snapshot, the
+ * insert name only when the insert row carries the NB insert role. Only ever
+ * shown as a suggestion; nothing stores it unless the operator accepts it.
+ * Undefined when there is nothing shorter to offer.
+ */
+export function suggestShortSetName(set: ListingSetContext): string | undefined {
+  const maker = set.manufacturerBrandUnknown
+    ? undefined
+    : set.inheritedFeatures?.manufacturer?.trim() || undefined;
+  const makerWords = maker ? maker.split(/\s+/) : [];
+  const insert = set.insertIsRole === true ? set.insertNameValue?.trim() : undefined;
+  const firstWord = (text: string | undefined, skip: readonly string[]): string | undefined => {
+    const words = (text ?? "").split(/\s+/).filter(Boolean);
+    // Skip the maker's words only where the name LEADS with them ("Upper
+    // Deck Collector's Choice"), never a matching word later on.
+    let at = 0;
+    while (
+      at < skip.length &&
+      at < words.length &&
+      words[at].toLowerCase() === skip[at].toLowerCase()
+    ) {
+      at += 1;
+    }
+    if (at > 0 && at < skip.length) at = 0;
+    return words[at];
+  };
+  const word = firstWord(insert, makerWords) ?? firstWord(set.setNameValue, makerWords);
+  if (!word) return undefined;
+  const suggestion = [maker, word].filter(Boolean).join(" ");
+  // Nothing shorter to offer: the suggestion says what the set name already does.
+  const full = [maker, set.setNameValue?.trim(), insert].filter(Boolean).join(" ");
+  if (suggestion.length >= full.length) return undefined;
+  return suggestion;
+}
+
+/**
+ * NEO-335 — a short name as the operator typed it, checked BEFORE it is sent:
+ * the same rule both write paths apply (`normalizeListingShortName`, the
+ * attributes panel's mutation and the commit's batch-level arg), read without
+ * throwing so the Card titles step can say what is wrong in place.
+ *
+ * `value` is the trimmed short name to send (undefined when blank: nothing is
+ * sent); `error` is the server's own sentence when it would be refused.
+ */
+export function checkShortNameAnswer(
+  raw: string | undefined,
+): { value?: string; error?: string } {
+  if (raw === undefined) return {};
+  try {
+    const value = normalizeListingShortName(raw);
+    return value === undefined ? {} : { value };
+  } catch (e) {
+    const data = (e as { data?: unknown }).data;
+    return {
+      error:
+        typeof data === "string"
+          ? data
+          : `A short name is at most ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
+    };
+  }
 }

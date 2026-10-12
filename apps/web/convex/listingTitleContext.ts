@@ -14,7 +14,9 @@
  * `commitCardChecklistPrelude` is what the insert's titles are actually built
  * from: the leaf's own `features` snapshot, the NEAREST `setName` ancestor's
  * value, that set's parent manufacturer ROLE (NEO-272), the sport row's value,
- * and (NEO-277, in the chunk) the leaf's set-level teams. `titleSetFacts`
+ * the chain's insert role, parallel leaf and short name (NEO-335,
+ * `listingShortName.titleChainFacts`), and (NEO-277, in the chunk) the leaf's
+ * set-level teams. `titleSetFacts`
  * reads exactly those, the same way, so a title shown before save is the
  * title written at insert.
  *
@@ -36,6 +38,7 @@ import { teamFullName } from "../lib/teams/team-name";
 import type { TitleContext } from "./features/listingInputs";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
 
 /** Player ids read per `playerNamesByIds` call: one transaction's budget. */
 export const TITLE_CONTEXT_PLAYER_PAGE = 200;
@@ -51,6 +54,8 @@ export const titleContextValidator = v.object({
   setNameValue: v.optional(v.string()),
   manufacturerBrandUnknown: v.optional(v.boolean()),
   inheritedFeatures: v.optional(v.record(v.string(), v.string())),
+  // NEO-335 — the insert role, a parallel leaf, the nearest short name.
+  ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
   players: nameMapValidator,
   teams: nameMapValidator,
@@ -61,6 +66,7 @@ const setFactsValidator = v.object({
   setNameValue: v.optional(v.string()),
   manufacturerBrandUnknown: v.optional(v.boolean()),
   inheritedFeatures: v.optional(v.record(v.string(), v.string())),
+  ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
 });
 
@@ -84,11 +90,15 @@ export const titleSetFacts = internalQuery({
 
     let setNameNode: Doc<"selectorOptions"> | null =
       leaf?.level === "setName" ? leaf : null;
+    // NEO-335 — the rows walked, leaf first up to the setName row, for the
+    // title's chain facts; the prelude reads the same rows the same way.
+    const titleChain: Array<Doc<"selectorOptions"> | null> = [leaf];
     let cursorId: Id<"selectorOptions"> | undefined = setNameNode ? undefined : leaf?.parentId;
     let depth = 0;
     while (!setNameNode && cursorId && depth < MAX_ANCESTOR_DEPTH) {
       const node: Doc<"selectorOptions"> | null = await ctx.db.get(cursorId);
       if (!node) break;
+      titleChain.push(node);
       if (node.level === "setName") setNameNode = node;
       cursorId = node.parentId;
       depth += 1;
@@ -116,6 +126,7 @@ export const titleSetFacts = internalQuery({
       ...(setNameNode?.value !== undefined ? { setNameValue: setNameNode.value } : {}),
       ...(manufacturerBrandUnknown !== undefined ? { manufacturerBrandUnknown } : {}),
       ...(inheritedFeatures ? { inheritedFeatures } : {}),
+      ...titleChainFacts(titleChain),
       setTeamNames,
     };
   },

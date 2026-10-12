@@ -175,6 +175,7 @@ vi.mock("./EntityReviewWizard", () => ({
     titleContext,
     existingCardIndexes,
     onTitleAnswersChange,
+    onListingShortNameChange,
   }: {
     // NEO-335 Phase 2 — the titles step, reduced to the parent's half: the
     // context and positions it hands down, and the commit-field channel.
@@ -183,6 +184,8 @@ vi.mock("./EntityReviewWizard", () => ({
     onTitleAnswersChange?: (
       fields: Array<{ listingTitleKept?: string; listingTitle?: string } | undefined> | undefined,
     ) => void;
+    // NEO-335 title rules — the step's short name for titles.
+    onListingShortNameChange?: (value: string | undefined) => void;
     // NEO-335 — the final step's teams section, reduced to what the parent
     // owns: whether the wizard opened teams-only, and the answer channel.
     teamsOnly?: boolean;
@@ -252,6 +255,16 @@ vi.mock("./EntityReviewWizard", () => ({
       {onTitleAnswersChange && (
         <button type="button" onClick={() => onTitleAnswersChange(undefined)}>
           Report no titles step
+        </button>
+      )}
+      {onListingShortNameChange && (
+        <button type="button" onClick={() => onListingShortNameChange("Topps Hologram")}>
+          Report a short name
+        </button>
+      )}
+      {onListingShortNameChange && (
+        <button type="button" onClick={() => onListingShortNameChange(undefined)}>
+          Report no short name
         </button>
       )}
       <button type="button" onClick={onConfirm}>
@@ -1140,6 +1153,33 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         expect(card).not.toHaveProperty("listingTitle");
         expect(card).not.toHaveProperty("cardVariationAnswered");
       }
+    });
+
+    it("NEO-335: the titles step's short name rides on the commit as the batch-level arg", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report a short name"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.listingShortName).toBe("Topps Hologram");
+      for (const card of args.cards) expect(card).not.toHaveProperty("listingShortName");
+    });
+
+    it("NEO-335: no short name reported (or withdrawn) — the commit carries no such arg", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report a short name"));
+      fireEvent.click(screen.getByText("Report no short name"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("listingShortName");
     });
 
     it("a re-synced row carrying only a pending team name is settled, not asked about", async () => {

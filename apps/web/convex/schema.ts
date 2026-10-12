@@ -332,6 +332,26 @@ export const selectorOptionMetadataFields = {
    * the operator writes it, and re-stamping on each move keeps it true.
    */
   brandSetByOperator: v.optional(v.boolean()),
+  /**
+   * NEO-335 — a SHORTER NAME FOR LISTING TITLES, operator-typed, on a
+   * `setName`, `variantType`, `insert` or `parallel` row. "Upper Deck
+   * Hologram" in place of "Upper Deck Collector's Choice Hologram Holograms".
+   *
+   * Read by the listing title generator only: the nearest row up the chain
+   * (self first, stopping at the `setName` row) that carries one supplies it,
+   * and when the title would otherwise be cut or drop a token the short name
+   * REPLACES the set-name + insert-name words in the title's core. Nothing
+   * else reads it — not a features key, so it never reaches a card's
+   * aspects; never derived from a marketplace value.
+   *
+   * Writers: `setSelectorOptionListingShortName` (the set attributes panel)
+   * and the card-checklist commit (the wizard's Card titles step, patched on
+   * the LEAF row before any chunk titles a card). Both trim, drop the key on
+   * `""`, refuse control characters and cap at
+   * `MAX_LISTING_SHORT_NAME_LENGTH`. Absent means "use the full names".
+   * Existing titles are never rewritten when it changes (write-once titles).
+   */
+  listingShortName: v.optional(v.string()),
 };
 
 export const selectorOptionFields = {

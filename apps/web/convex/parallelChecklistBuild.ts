@@ -120,6 +120,7 @@ import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+import { titleChainFacts } from "./listingShortName";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { classifyAdapterError } from "./observability";
 import {
@@ -1419,6 +1420,10 @@ async function parallelSetContext(
         ? brandRow.metadata?.isBrandUnknown === true
         : undefined,
     inheritedFeatures: features,
+    // NEO-335 — the insert role (the parallel's insert parent, when it is
+    // one), the parallel leaf and the nearest short name, read off the same
+    // rows the commit prelude reads, leaf first. `loadChain` is root first.
+    ...titleChainFacts([...rows].reverse()),
   };
 }
 

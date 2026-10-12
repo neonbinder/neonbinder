@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
-import type { TitleContext } from "../../convex/features/listingInputs";
+import {
+  checkShortNameAnswer,
+  suggestShortSetName,
+  type TitleContext,
+} from "../../convex/features/listingInputs";
+import { MAX_LISTING_SHORT_NAME_LENGTH } from "../../convex/listingShortName";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -8,6 +14,7 @@ import {
 } from "./TitleLengthMeter";
 import {
   buildTitleGroups,
+  shortNameFieldApplies,
   titleDraftState,
   type CardTitleAssessment,
   type PreviewCardForTitles,
@@ -56,12 +63,48 @@ import type { TeamAnswer } from "./teams-on-cards";
  * the wizard's own Enter). Escape undoes what was typed since the field took
  * focus, in place; with nothing to undo it is the wizard's Escape. Focus is
  * never taken on mount.
+ *
+ * ## A shorter set name (NEO-335 title rules)
+ *
+ * When titles are trimmed and the set has no short name yet, one field ABOVE
+ * the lists asks for a shorter name for titles, with a suggestion
+ * (`suggestShortSetName`) and "Use suggestion". Every title is regenerated
+ * with the draft as it is typed, so the list empties as titles fit. Whether
+ * the field shows is read without the draft, so it never vanishes under the
+ * operator's typing. A card the operator wrote their own title for stays,
+ * even once it fits as generated ("Now fits as generated."), and their title
+ * is what saves until they press "Use generated title" — an operator's title
+ * is never dropped silently. The draft settles up like the other edits
+ * (`onShortNameChange`), and keys the same way: Enter settles in place,
+ * Escape undoes in place.
+ *
+ * ## A long list is capped
+ *
+ * A long insert can put hundreds of cards here. The first
+ * `TITLE_ROWS_SHOWN` rows are drawn; the rest are counted ("And N more, kept
+ * as trimmed.") and save with their trimmed titles, exactly as an untouched
+ * row does.
  */
 
 /** Approved copy (Jason, 2026-10-10). */
 const TITLES_LEAD = "Trimmed to fit. Keep it, or make it yours.";
 const VARIATION_LEAD = "Variation's too long to list. Trim it to 65.";
 const TITLE_OVER = "Too long to list as-is.";
+
+/** NEO-335 short-name copy — DRAFTS pending Jason's sign-off. */
+const SHORT_LEAD =
+  "This set's name runs long. Give it a shorter one for titles, and every card here uses it.";
+const SHORT_LABEL = "Shorter set name for titles";
+const USE_SUGGESTION = "Use suggestion";
+const suggestedLine = (name: string) => `Suggested: ${name}`;
+const stillTrimmedLine = (n: number) =>
+  n === 0 ? "Every title fits now." : n === 1 ? "1 title still trimmed." : `${n} titles still trimmed.`;
+const moreRowsLine = (n: number) => `And ${n} more, kept as trimmed.`;
+const FITS_NOW = "Now fits as generated.";
+const USE_GENERATED = "Use generated title";
+
+/** Title rows drawn before the rest are counted instead (a long insert). */
+export const TITLE_ROWS_SHOWN = 50;
 
 /**
  * A title is one line. The field wraps so the whole 80 characters are in view
@@ -120,6 +163,8 @@ export default function CardTitlesStep({
   existingIndexes,
   answers,
   onAnswersChange,
+  shortName,
+  onShortNameChange,
   disabled = false,
   headingId,
 }: {
@@ -137,6 +182,17 @@ export default function CardTitlesStep({
   answers: ReadonlyArray<TitleAnswer | undefined>;
   /** Told the whole edit list whenever an edit settles. */
   onAnswersChange: (answers: Array<TitleAnswer | undefined>) => void;
+  /**
+   * NEO-335 — the short-name draft as the wizard last heard it (kept while the
+   * step unmounts). Raw, as typed; undefined = none.
+   */
+  shortName?: string;
+  /**
+   * NEO-335 — told the short-name draft when it settles (blur, Enter, a beat
+   * after typing, "Use suggestion", unmount). Trimmed; undefined when blank.
+   * Absent: the step never asks for a short name.
+   */
+  onShortNameChange?: (value: string | undefined) => void;
   /** A commit is in flight; the fields hold still. */
   disabled?: boolean;
   /**
@@ -182,15 +238,59 @@ export default function CardTitlesStep({
   }, [flush]);
   useEffect(() => () => flushRef.current(), []);
 
+  // NEO-335 — the short-name draft, local until it settles (same reasons).
+  const [shortDraft, setShortDraft] = useState<string>(() => shortName ?? "");
+  const shortSettled = useRef<string | undefined>(shortName?.trim() || undefined);
+  const shortLatest = useRef<string>(shortDraft);
+  // Escape's undo point for the short name: its value when it took focus.
+  const shortUndo = useRef<string>(shortDraft);
+  const shortFieldRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    shortLatest.current = shortDraft;
+  }, [shortDraft]);
+  const flushShort = useCallback(() => {
+    const next = shortLatest.current.trim() || undefined;
+    if (shortSettled.current === next) return;
+    shortSettled.current = next;
+    onShortNameChange?.(next);
+  }, [onShortNameChange]);
+  useEffect(() => {
+    const timer = setTimeout(flushShort, SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [shortDraft, flushShort]);
+  const flushShortRef = useRef(flushShort);
+  useEffect(() => {
+    flushShortRef.current = flushShort;
+  }, [flushShort]);
+  useEffect(() => () => flushShortRef.current(), []);
+
   const existing = existingIndexes ?? NO_POSITIONS;
+  // Whether the field shows is read WITHOUT the draft: a name that makes
+  // every title fit must not take the field away mid-word.
+  const showShortName = useMemo(
+    () =>
+      !!onShortNameChange &&
+      shortNameFieldApplies(cards, titleContext, teamAnswers, {
+        names,
+        existingIndexes: existing,
+      }),
+    [onShortNameChange, cards, titleContext, teamAnswers, names, existing],
+  );
+  const shortCheck = useMemo(() => checkShortNameAnswer(shortDraft), [shortDraft]);
+  const liveShortName = showShortName ? shortCheck.value : undefined;
+  const suggestion = useMemo(
+    () => (showShortName ? suggestShortSetName(titleContext) : undefined),
+    [showShortName, titleContext],
+  );
   const { variationGroups, titleGroups } = useMemo(
     () =>
       buildTitleGroups(cards, titleContext, teamAnswers, {
         names,
         existingIndexes: existing,
         answers: drafts,
+        listingShortName: liveShortName,
       }),
-    [cards, titleContext, teamAnswers, names, existing, drafts],
+    [cards, titleContext, teamAnswers, names, existing, drafts, liveShortName],
   );
 
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
@@ -239,10 +339,42 @@ export default function CardTitlesStep({
       }
     };
 
-  if (variationGroups.length === 0 && titleGroups.length === 0) return null;
+  /** Enter settles the short name in place; Escape undoes in place, or is the wizard's. */
+  const shortKeys = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      flushShort();
+    } else if (event.key === "Escape" && shortLatest.current !== shortUndo.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      setShortDraft(shortUndo.current);
+    }
+  };
+
+  if (variationGroups.length === 0 && titleGroups.length === 0 && !showShortName) return null;
   const variationsId =
     headingId && titleGroups.length === 0 ? headingId : `${uid}-variations`;
   const titlesId = headingId ?? `${uid}-titles`;
+  // The wizard's Next is described by `headingId`: on the titles lead, else
+  // the variation lead, else (every title fits with the short name) here.
+  const shortLeadId =
+    headingId && titleGroups.length === 0 && variationGroups.length === 0
+      ? headingId
+      : `${uid}-short`;
+  const shortStatusId = `${uid}-short-status`;
+  const shortSuggestId = `${uid}-short-suggest`;
+  // A row kept only for the operator's own title (it fits as generated) is
+  // not "still trimmed".
+  const stillTrimmed = titleGroups.reduce(
+    (n, g) => n + g.cards.filter((c) => !c.fitsNow).length,
+    0,
+  );
+  const shortStatus = shortCheck.error
+    ? shortCheck.error
+    : liveShortName
+      ? stillTrimmedLine(stillTrimmed)
+      : "";
 
   return (
     <div
@@ -251,6 +383,81 @@ export default function CardTitlesStep({
         undoPoint.current = latest.current;
       }}
     >
+      {showShortName && (
+        // One answer for every card, set apart from the per-card fields
+        // below by a rule down its left edge.
+        <section aria-labelledby={shortLeadId} className="border-l-2 border-[#00B7FF] pl-3">
+          <h3 id={shortLeadId} className="text-sm font-normal text-gray-200">
+            {SHORT_LEAD}
+          </h3>
+          <label className="mt-2 block text-xs text-gray-400">
+            {SHORT_LABEL}
+            <Input
+              bare
+              ref={shortFieldRef}
+              type="text"
+              value={shortDraft}
+              onChange={(e) => setShortDraft(e.target.value)}
+              onFocus={() => {
+                shortUndo.current = shortLatest.current;
+              }}
+              onBlur={flushShort}
+              onKeyDown={shortKeys}
+              // The server's cap; typing stops there rather than erroring.
+              maxLength={MAX_LISTING_SHORT_NAME_LENGTH}
+              placeholder={suggestion}
+              autoComplete="off"
+              spellCheck={false}
+              aria-label={SHORT_LABEL}
+              aria-describedby={[suggestion ? shortSuggestId : null, shortStatusId]
+                .filter(Boolean)
+                .join(" ")}
+              aria-invalid={shortCheck.error ? true : undefined}
+              aria-disabled={disabled || undefined}
+              readOnly={disabled}
+              className={`mt-1 block w-full p-1.5 text-sm ${disabled ? "opacity-60" : ""}`}
+            />
+          </label>
+          {suggestion && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 text-[11px]">
+              <span id={shortSuggestId} className="text-gray-400">
+                {suggestedLine(suggestion)}
+              </span>
+              {shortDraft.trim() !== suggestion && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (disabled) return;
+                    shortLatest.current = suggestion;
+                    setShortDraft(suggestion);
+                    flushShort();
+                    // a11y: this button unmounts once the field holds the
+                    // suggestion; hand focus to the field it filled.
+                    shortFieldRef.current?.focus();
+                  }}
+                  aria-disabled={disabled || undefined}
+                  // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
+                  className="-my-1 rounded py-1 leading-4 text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+                >
+                  {USE_SUGGESTION}
+                </button>
+              )}
+            </div>
+          )}
+          {/* Always mounted, so a change is announced. Polite: it is
+              progress, not a fault — unless the name would be refused. */}
+          <p
+            id={shortStatusId}
+            role="status"
+            className={`mt-1 text-[11px] empty:hidden ${
+              shortCheck.error ? "text-[#FF2EB3]" : "text-gray-300"
+            }`}
+          >
+            {shortStatus}
+          </p>
+        </section>
+      )}
+
       {variationGroups.length > 0 && (
         <section aria-labelledby={variationsId}>
           <h3 id={variationsId} className="text-sm font-normal text-gray-200">
@@ -292,6 +499,10 @@ export default function CardTitlesStep({
             drafts={drafts}
             onChange={(index, value) => setField([index], "listingTitle", value)}
             onReset={(index) => clearField([index], "listingTitle")}
+            // A row that fits as generated leaves the list once its own
+            // title is dropped; focus goes back to the short name that
+            // made it fit rather than to <body>.
+            onLeaveList={() => shortFieldRef.current?.focus()}
             onBlur={flush}
             keysFor={(index) => fieldKeys([index], "listingTitle")}
             disabled={disabled}
@@ -393,6 +604,7 @@ function TitleGroups({
   drafts,
   onChange,
   onReset,
+  onLeaveList,
   onBlur,
   keysFor,
   disabled,
@@ -401,59 +613,78 @@ function TitleGroups({
   drafts: ReadonlyArray<TitleAnswer | undefined>;
   onChange: (index: number, value: string) => void;
   onReset: (index: number) => void;
+  /** Where focus goes when a row's reset takes it off the list. */
+  onLeaveList: () => void;
   onBlur: () => void;
   keysFor: (index: number) => (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   disabled: boolean;
 }) {
   const labels = useMemo(() => rowNames(groups.flatMap((g) => g.cards)), [groups]);
   const uid = useId();
+  // NEO-335 — draw at most TITLE_ROWS_SHOWN rows, in list order; count the rest.
+  const shown: number[] = [];
+  let budget = TITLE_ROWS_SHOWN;
+  for (const group of groups) {
+    const take = Math.min(group.cards.length, budget);
+    shown.push(take);
+    budget -= take;
+  }
+  const total = groups.reduce((n, g) => n + g.cards.length, 0);
+  const hidden = total - shown.reduce((n, k) => n + k, 0);
   return (
-    <ul className="mt-1 divide-y divide-gray-800">
-      {groups.map((group, groupIndex) => {
-        const lineId = `${uid}-group-${groupIndex}`;
-        const hasLine = group.leftOut.length > 0;
-        return (
-          <li key={group.key} className="py-2">
-            {/* a11y: a group described by its shared "Left out to fit" line, so
-                tabbing into any of its fields says what the trim cost them all.
-                A div inside the <li> rather than role="group" ON the <li>: that
-                would strip the list item from its <ul> (axe "list"). */}
-            <div role="group" aria-describedby={hasLine ? lineId : undefined}>
-              {/* The shared reason first, so a run of cards that lost the same
-                  words reads as one decision. TitleFixer's wording and tone.
-                  Absent when the only losses are each card's own names, which
-                  every row states for itself. */}
-              {hasLine && (
-                <p id={lineId} className="mb-1.5 break-words text-xs text-[#FFB020]">
-                  Left out to fit: {group.leftOut.join(", ")}
-                  {group.cards.length > 1 && (
-                    <span className="text-gray-400">
-                      {" "}
-                      (<span className="tabular-nums">{group.cards.length}</span> cards)
-                    </span>
-                  )}
-                </p>
-              )}
-              <ul className="space-y-2">
-                {group.cards.map((card) => (
-                  <TitleRow
-                    key={card.index}
-                    card={card}
-                    label={labels.get(card.index) ?? `#${card.cardNumber}`}
-                    draft={drafts[card.index]?.listingTitle}
-                    onChange={(value) => onChange(card.index, value)}
-                    onReset={() => onReset(card.index)}
-                    onBlur={onBlur}
-                    onKeyDown={keysFor(card.index)}
-                    disabled={disabled}
-                  />
-                ))}
-              </ul>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+    <>
+      <ul className="mt-1 divide-y divide-gray-800">
+        {groups.map((group, groupIndex) => {
+          if (shown[groupIndex] === 0) return null;
+          const lineId = `${uid}-group-${groupIndex}`;
+          const hasLine = group.leftOut.length > 0;
+          return (
+            <li key={group.key} className="py-2">
+              {/* a11y: a group described by its shared "Left out to fit" line, so
+                  tabbing into any of its fields says what the trim cost them all.
+                  A div inside the <li> rather than role="group" ON the <li>: that
+                  would strip the list item from its <ul> (axe "list"). */}
+              <div role="group" aria-describedby={hasLine ? lineId : undefined}>
+                {/* The shared reason first, so a run of cards that lost the same
+                    words reads as one decision. TitleFixer's wording and tone.
+                    Absent when the only losses are each card's own names, which
+                    every row states for itself. */}
+                {hasLine && (
+                  <p id={lineId} className="mb-1.5 break-words text-xs text-[#FFB020]">
+                    Left out to fit: {group.leftOut.join(", ")}
+                    {group.cards.length > 1 && (
+                      <span className="text-gray-400">
+                        {" "}
+                        (<span className="tabular-nums">{group.cards.length}</span> cards)
+                      </span>
+                    )}
+                  </p>
+                )}
+                <ul className="space-y-2">
+                  {group.cards.slice(0, shown[groupIndex]).map((card) => (
+                    <TitleRow
+                      key={card.index}
+                      card={card}
+                      label={labels.get(card.index) ?? `#${card.cardNumber}`}
+                      draft={drafts[card.index]?.listingTitle}
+                      onChange={(value) => onChange(card.index, value)}
+                      onReset={() => onReset(card.index)}
+                      onLeaveList={onLeaveList}
+                      onBlur={onBlur}
+                      onKeyDown={keysFor(card.index)}
+                      disabled={disabled}
+                    />
+                  ))}
+                </ul>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {hidden > 0 && (
+        <p className="mt-1 text-xs text-gray-400">{moreRowsLine(hidden)}</p>
+      )}
+    </>
   );
 }
 
@@ -463,6 +694,7 @@ function TitleRow({
   draft,
   onChange,
   onReset,
+  onLeaveList,
   onBlur,
   onKeyDown,
   disabled,
@@ -472,6 +704,8 @@ function TitleRow({
   draft: string | undefined;
   onChange: (value: string) => void;
   onReset: () => void;
+  /** NEO-335 — focus target when a reset takes this (fits-now) row off the list. */
+  onLeaveList: () => void;
   onBlur: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   disabled: boolean;
@@ -479,6 +713,7 @@ function TitleRow({
   const meterId = useId();
   const alertId = useId();
   const ownLineId = useId();
+  const fitsNowId = useId();
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const value = draft ?? card.title;
   const state = titleDraftState(draft, card.title);
@@ -504,6 +739,7 @@ function TitleRow({
           aria-label={`Title for ${label}`}
           aria-describedby={[
             card.ownLeftOut.length > 0 ? ownLineId : null,
+            card.fitsNow ? fitsNowId : null,
             meterId,
             over ? alertId : null,
           ]
@@ -521,6 +757,14 @@ function TitleRow({
             Left out to fit: {card.ownLeftOut.join(", ")}
           </p>
         )}
+        {card.fitsNow && (
+          // NEO-335 — the short name made the generated title fit; the row
+          // stays because this title is the operator's, and theirs is what
+          // saves until they switch.
+          <p id={fitsNowId} className="mt-0.5 break-words text-[11px] text-gray-300">
+            {FITS_NOW}
+          </p>
+        )}
         <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 text-[11px]">
           {edited ? (
             <button
@@ -531,15 +775,17 @@ function TitleRow({
                 // a11y: this button unmounts the moment the title is the
                 // trimmed one again, which would drop focus to <body> inside
                 // the modal. Hand it to the field it just reset, before the
-                // re-render removes the button.
-                fieldRef.current?.focus();
+                // re-render removes the button — or, for a row that fits as
+                // generated (it leaves the list), to the short name.
+                if (card.fitsNow) onLeaveList();
+                else fieldRef.current?.focus();
               }}
-              aria-label={`Use trimmed title for ${label}`}
+              aria-label={`${card.fitsNow ? USE_GENERATED : "Use trimmed title"} for ${label}`}
               aria-disabled={disabled || undefined}
               // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
               className="-my-1 rounded py-1 leading-4 text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
             >
-              Use trimmed title
+              {card.fitsNow ? USE_GENERATED : "Use trimmed title"}
             </button>
           ) : (
             <span />

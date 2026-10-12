@@ -218,6 +218,13 @@ type FetchPreview = {
    * state only, zipped on by `runCommit` like `teamAnswers`.
    */
   titleAnswers?: Array<TitleCommitFields | undefined>;
+  /**
+   * NEO-335 title rules — the short name for titles the Card titles step
+   * collected, sent as the commit's batch-level `listingShortName`. Absent
+   * unless the step was shown, asked for one, and the operator typed one or
+   * took the suggestion. Client state only.
+   */
+  listingShortName?: string;
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -1576,6 +1583,11 @@ export default function CardChecklist({
         ...(preview.operatorDeleteIds.length > 0
           ? { operatorDeleteIds: preview.operatorDeleteIds }
           : {}),
+        // NEO-335: the set's short name for titles, only when the titles
+        // step collected one. The kept titles above were generated with it.
+        ...(preview.listingShortName
+          ? { listingShortName: preview.listingShortName }
+          : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than
@@ -1746,6 +1758,17 @@ export default function CardChecklist({
     },
     [],
   );
+
+  /**
+   * NEO-335 — the titles step's short name for titles, held on the preview
+   * until commit. `undefined` = none to send.
+   */
+  const handleListingShortName = useCallback((value: string | undefined) => {
+    setPendingPreview((prev) => {
+      if (!prev || prev.listingShortName === value) return prev;
+      return { ...prev, listingShortName: value };
+    });
+  }, []);
 
   const handleWizardConfirm = async () => {
     if (!pendingPreview) return;
@@ -3016,6 +3039,8 @@ export default function CardChecklist({
           titleContext={pendingPreview.titleContext}
           existingCardIndexes={pendingPreview.existingIndexes}
           onTitleAnswersChange={handleTitleAnswers}
+          // NEO-335: the set's short name for titles, from the same step.
+          onListingShortNameChange={handleListingShortName}
           /**
            * NEO-221 (D9) — BACK, not abort.
            *

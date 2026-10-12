@@ -1113,6 +1113,41 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     expect(row!.metadata).toBeUndefined();
   });
 
+  /**
+   * NEO-335 — the short name for listing titles is the second operator-typed
+   * metadata key, with its own narrow mutation gated exactly like the prefix
+   * above. Valid, inert value on a set-level row so the refusal is the gate,
+   * not argument validation or the level check.
+   */
+  test("selectorOptions.setSelectorOptionListingShortName refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const setNameId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Collector's Choice",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionListingShortName, {
+        id: setNameId,
+        listingShortName: "UD Choice",
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(setNameId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(setNameId)))!.metadata).toEqual({
+      listingShortName: "UD Choice",
+    });
+  });
+
   test("the whole-metadata mutation stays deleted", () => {
     // `api` is a proxy that resolves any name, so the source is the proof.
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");

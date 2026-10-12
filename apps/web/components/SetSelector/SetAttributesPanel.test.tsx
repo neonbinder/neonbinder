@@ -81,6 +81,8 @@ vi.mock("../../convex/_generated/api", () => ({
       getBaseVariantBySet: "getBaseVariantBySet",
       // NEO-291
       setSelectorOptionCardNumberPrefix: "setSelectorOptionCardNumberPrefix",
+      // NEO-335
+      setSelectorOptionListingShortName: "setSelectorOptionListingShortName",
       // NEO-277
       setSelectorOptionTeams: "setSelectorOptionTeams",
       getSelectorOptionTeamCascadePreview:
@@ -126,6 +128,8 @@ const mockSetBaseVariantType = vi.fn();
 const mockDeleteSelectorOption = vi.fn();
 /** NEO-291 */
 const mockSetSelectorOptionCardNumberPrefix = vi.fn();
+/** NEO-335 */
+const mockSetSelectorOptionListingShortName = vi.fn();
 /** NEO-237 */
 const mockSetSelectorOptionSetNamePrefix = vi.fn();
 const mockSetManufacturerSlViaAllBrands = vi.fn();
@@ -185,6 +189,8 @@ vi.mock("convex/react", () => ({
     if (mutation === "setBaseVariantType") return mockSetBaseVariantType;
     if (mutation === "setSelectorOptionCardNumberPrefix")
       return mockSetSelectorOptionCardNumberPrefix;
+    if (mutation === "setSelectorOptionListingShortName")
+      return mockSetSelectorOptionListingShortName;
     if (mutation === "setSelectorOptionTeams") return mockSetSelectorOptionTeams;
     if (mutation === "brandView.setSelectorOptionSetNamePrefix")
       return mockSetSelectorOptionSetNamePrefix;
@@ -1531,6 +1537,143 @@ describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
         screen.getByText("Failed: A card prefix is at most 32 characters."),
       ).toBeTruthy();
     });
+  });
+});
+
+/**
+ * NEO-335 — "Short name for titles": at the set and at the levels cards hang
+ * from, saved through its own mutation; an empty row shows the short name it
+ * inherits as its placeholder.
+ */
+describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetSelectorOptionListingShortName.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const field = () =>
+    screen.getByLabelText("Value for Short name for titles") as HTMLInputElement;
+
+  it.each(["setName", "insert", "parallel"])("renders at level %s", (level) => {
+    currentRow = makeRow({ level, value: "Hologram" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.getByLabelText("Set feature Short name for titles")).toBeTruthy();
+  });
+
+  it("renders at the base variant type, not at another variant type", () => {
+    currentRow = makeRow({ level: "variantType", value: "Base", metadata: { isBase: true } });
+    currentChain = makeChain("Baseball");
+    const { unmount } = renderPanel();
+    expect(screen.getByLabelText("Set feature Short name for titles")).toBeTruthy();
+    unmount();
+    currentRow = makeRow({ level: "variantType", value: "Insert", metadata: { isInsert: true } });
+    renderPanel();
+    expect(screen.queryByLabelText("Set feature Short name for titles")).toBeNull();
+  });
+
+  it.each(["sport", "year", "manufacturer"])("is absent at level %s", (level) => {
+    currentRow = makeRow({ level, value: "Topps" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.queryByLabelText("Set feature Short name for titles")).toBeNull();
+  });
+
+  it("is described by its hint", () => {
+    currentRow = makeRow({ level: "setName", value: "Collector's Choice" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const id = field().getAttribute("aria-describedby");
+    expect(document.getElementById(id ?? "")?.textContent).toBe(
+      "Used in card titles when the full name won't fit. New cards only.",
+    );
+  });
+
+  it("saves through its own mutation with the server's arg names", async () => {
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const input = field();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "Upper Deck Hologram" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+    await waitFor(() => {
+      expect(mockSetSelectorOptionListingShortName).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        listingShortName: "Upper Deck Hologram",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    });
+  });
+
+  it("clearing sends \"\" and says Cleared", async () => {
+    currentRow = makeRow({
+      level: "setName",
+      value: "Collector's Choice",
+      metadata: { listingShortName: "UD CC" },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const input = field();
+    expect(input.value).toBe("UD CC");
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+    await waitFor(() => {
+      expect(mockSetSelectorOptionListingShortName).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        listingShortName: "",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Cleared Short name for titles")).toBeTruthy();
+    });
+  });
+
+  it("a refusal shows the server's sentence", async () => {
+    mockSetSelectorOptionListingShortName.mockRejectedValueOnce(
+      new ConvexError("A short name is at most 60 characters."),
+    );
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const input = field();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "x".repeat(61) } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Failed: A short name is at most 60 characters.")).toBeTruthy();
+    });
+  });
+
+  it("an empty insert row shows the set's short name it inherits as the placeholder", () => {
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = [
+      ...makeChain("Baseball").map((c) =>
+        c.level === "setName" ? { ...c, metadata: { listingShortName: "UD Collector's" } } : c,
+      ),
+      { _id: SELECTOR_OPTION_ID, value: "Hologram", level: "insert" },
+    ];
+    renderPanel();
+    expect(field().placeholder).toBe("UD Collector's");
   });
 });
 

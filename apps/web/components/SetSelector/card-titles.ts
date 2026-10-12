@@ -4,6 +4,7 @@ import { teamFullName } from "../../lib/teams/team-name";
 // Browser-safe: pure feature derivations only, the same ones the insert runs.
 import {
   assessNewCardListing,
+  checkShortNameAnswer,
   leftOutOfTitle,
   type TitleAttentionItem,
   type TitleContext,
@@ -248,6 +249,13 @@ export interface CardTitleAssessment {
   sharedLeftOut: string[];
   /** The kinds the row would be born with, read with the card's ORIGINAL variation. */
   items: TitleAttentionItem[];
+  /**
+   * NEO-335 — the short name made this card's generated title fit, and it is
+   * on the list ONLY because the operator wrote their own title for it. An
+   * operator's title is never dropped silently: it stays, and is sent, until
+   * they choose the generated one.
+   */
+  fitsNow?: true;
 }
 
 /** Options shared by every entry point. */
@@ -257,14 +265,51 @@ export interface TitleReviewOptions {
   existingIndexes?: Iterable<number>;
   /** The operator's edits; only a variation answer changes what is generated. */
   answers?: ReadonlyArray<TitleAnswer | undefined>;
+  /**
+   * NEO-335 — the short name the operator is giving the set on this step,
+   * ALREADY CHECKED (`validShortName`). Titles are generated with it as the
+   * set's short name, so the list empties as titles fit and the commit's
+   * kept titles are the ones the server will generate with it.
+   */
+  listingShortName?: string;
+}
+
+/**
+ * NEO-335 — the short-name draft that counts: trimmed, within the rule both
+ * write paths apply. A draft the server would refuse counts as none, so the
+ * titles shown and the titles kept never assume a name that will not land.
+ */
+export function validShortName(draft: string | undefined): string | undefined {
+  return checkShortNameAnswer(draft).value;
+}
+
+/**
+ * NEO-335 — does the step ask for a short name? Only when it lists titles
+ * trimmed to fit (read WITHOUT any draft, so the field never vanishes under
+ * the operator's typing) and the set carries no short name yet.
+ */
+export function shortNameFieldApplies(
+  cards: readonly PreviewCardForTitles[],
+  titleContext: TitleContext,
+  teamAnswers?: ReadonlyArray<TeamAnswer | undefined>,
+  options?: Omit<TitleReviewOptions, "answers" | "listingShortName">,
+): boolean {
+  if (titleContext.listingShortName?.trim()) return false;
+  return assessAll(cards, titleContext, teamAnswers, options).some((a) =>
+    a.items.some((i) => i.kind === "titleTruncated"),
+  );
 }
 
 function assessAll(
   cards: readonly PreviewCardForTitles[],
-  context: TitleContext,
+  titleContext: TitleContext,
   teamAnswers: ReadonlyArray<TeamAnswer | undefined> | undefined,
   options: TitleReviewOptions | undefined,
 ): CardTitleAssessment[] {
+  // NEO-335 — the operator's short name stands in for the set's own.
+  const context = options?.listingShortName
+    ? { ...titleContext, listingShortName: options.listingShortName }
+    : titleContext;
   const index = nameIndex(context, options?.names);
   const existing = new Set(options?.existingIndexes ?? []);
   const out: CardTitleAssessment[] = [];
@@ -282,7 +327,22 @@ function assessAll(
     // Membership is read with the card's OWN variation, so trimming it on
     // the step never takes the card off the step under the operator's cursor.
     const own = assessNewCardListing({ ...facts, cardVariation: card.cardVariation }, context, names);
-    if (own.items.length === 0) return;
+    let fitsNow = false;
+    if (own.items.length === 0) {
+      // NEO-335 — fits with the short name. Gone from the list, unless the
+      // operator wrote their own title for it while it was trimmed.
+      // Any draft at all keeps the row: one typed back to the generated
+      // title must not vanish from under the operator's cursor.
+      const draft = options?.answers?.[i]?.listingTitle;
+      if (!options?.listingShortName || draft === undefined) return;
+      const before = assessNewCardListing(
+        { ...facts, cardVariation: card.cardVariation },
+        titleContext,
+        names,
+      );
+      if (!before.items.some((it) => it.kind === "titleTruncated")) return;
+      fitsNow = true;
+    }
     const variation = effectiveVariation(card, options?.answers?.[i]);
     const shown =
       variation === card.cardVariation
@@ -315,6 +375,7 @@ function assessAll(
       ownLeftOut: leftOut.filter(isOwn),
       sharedLeftOut: leftOut.filter((e) => !isOwn(e)),
       items: own.items,
+      ...(fitsNow ? { fitsNow: true as const } : {}),
     });
   });
   return out;
@@ -324,13 +385,15 @@ function assessAll(
  * The preview positions the "Card titles" step asks about, ascending: NEW
  * cards whose row would be born flagged `titleTruncated` or
  * `aspectValueOverLimit`. Empty → no step. Recomputed from the team answers
- * (the team is part of the title); never from the step's own answers.
+ * (the team is part of the title); never from the step's own answers — nor
+ * its short-name draft, so a name that makes every title fit does not take
+ * the step away while the operator is on it.
  */
 export function cardsNeedingTitleReview(
   cards: readonly PreviewCardForTitles[],
   titleContext: TitleContext,
   teamAnswers?: ReadonlyArray<TeamAnswer | undefined>,
-  options?: Omit<TitleReviewOptions, "answers">,
+  options?: Omit<TitleReviewOptions, "answers" | "listingShortName">,
 ): number[] {
   return assessAll(cards, titleContext, teamAnswers, options).map((a) => a.index);
 }
@@ -375,7 +438,7 @@ export function buildTitleGroups(
       group.cards.push({ index: a.index, cardNumber: a.cardNumber, cardName: a.cardName });
       variationGroups.set(variation, group);
     }
-    if (a.items.some((i) => i.kind === "titleTruncated")) {
+    if (a.fitsNow || a.items.some((i) => i.kind === "titleTruncated")) {
       const key = `left:${a.sharedLeftOut.join("\u0000")}`;
       const group = titleGroups.get(key) ?? { key, leftOut: a.sharedLeftOut, cards: [] };
       group.cards.push(a);
@@ -428,6 +491,11 @@ export function titleAnswersForCommit(
       const state = titleDraftState(answer?.listingTitle, a.title);
       if (state.kind === "own") fields.listingTitle = state.title;
       else if (state.kind === "kept") fields.listingTitleKept = a.title;
+    } else if (a.fitsNow) {
+      // NEO-335 — fits as generated, but the operator wrote their own: send
+      // theirs. Kept (or over the cap) sends nothing; the generated one fits.
+      const state = titleDraftState(answer?.listingTitle, a.title);
+      if (state.kind === "own") fields.listingTitle = state.title;
     }
     if (a.items.some((i) => i.kind === "aspectValueOverLimit")) {
       const variation = validVariationAnswer(cards[a.index], answer);

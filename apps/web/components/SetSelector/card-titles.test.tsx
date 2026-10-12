@@ -13,9 +13,11 @@ import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listi
 import {
   buildTitleGroups,
   cardsNeedingTitleReview,
+  shortNameFieldApplies,
   teamIdNamesFromRefs,
   titleAnswersForCommit,
   titleDraftState,
+  validShortName,
   withTitleAnswer,
   type PreviewCardForTitles,
   type TitleReviewRow,
@@ -277,5 +279,128 @@ describe("titleAnswersForCommit — never blocks, never invents", () => {
     expect(
       withTitleAnswer(c, { cardVariation: "Throwback", cardVariationAnswered: true }),
     ).toMatchObject({ cardVariation: "Throwback", cardVariationAnswered: true, cardNumber: "2" });
+  });
+});
+
+describe("NEO-335 — the short name on the step", () => {
+  const cards = [card("1"), card("2", { players: ["Doc Gooden"] })];
+
+  test("the field applies only with trimmed titles and no stored short name", () => {
+    expect(shortNameFieldApplies(cards, context())).toBe(true);
+    // Nothing trimmed: no field.
+    expect(shortNameFieldApplies(cards, SHORT)).toBe(false);
+    // Only a variation over 65 on the step: no field (the name would not help).
+    expect(
+      shortNameFieldApplies([card("3", { cardVariation: LONG_VARIATION })], SHORT),
+    ).toBe(false);
+    // A short name already stored in the chain: no field.
+    expect(shortNameFieldApplies(cards, context({ listingShortName: "Topps Sapphire" }))).toBe(
+      false,
+    );
+  });
+
+  test("a stored short name titles the cards, so they are not on the step at all", () => {
+    expect(cardsNeedingTitleReview(cards, context({ listingShortName: "Topps Sapphire" }))).toEqual(
+      [],
+    );
+  });
+
+  test("the list empties as titles fit; membership of the STEP ignores the draft", () => {
+    const before = buildTitleGroups(cards, context());
+    expect(before.titleGroups.flatMap((g) => g.cards.map((c) => c.index))).toEqual([0, 1]);
+    const after = buildTitleGroups(cards, context(), undefined, {
+      listingShortName: "Topps Sapphire",
+    });
+    expect(after.titleGroups).toEqual([]);
+    // The step itself stays: its membership is never read with the draft.
+    expect(cardsNeedingTitleReview(cards, context())).toEqual([0, 1]);
+  });
+
+  test("a short name that still cuts one card leaves that card, titled with it", () => {
+    const longPlayer = card("3", {
+      players: ["Shohei Ohtani", "Doc Gooden"],
+    });
+    const { titleGroups } = buildTitleGroups([card("1"), longPlayer], context(), undefined, {
+      listingShortName: "Topps Chrome Update Series Sapphire Edition Platinum",
+    });
+    const shown = titleGroups.flatMap((g) => g.cards);
+    expect(shown.map((c) => c.index)).toEqual([1]);
+    for (const c of shown) expect(c.title).toContain("Platinum");
+  });
+
+  test("the commit's kept titles are generated with the short name; fitted cards send nothing", () => {
+    const fields = titleAnswersForCommit(cards, context(), undefined, {
+      listingShortName: "Topps Sapphire",
+    });
+    expect(fields).toEqual([undefined, undefined]);
+    const without = titleAnswersForCommit(cards, context());
+    expect(without[0]?.listingTitleKept).toContain("Chrome Update");
+  });
+
+  test("validShortName: the server's rule, read without throwing", () => {
+    expect(validShortName("  Topps Sapphire ")).toBe("Topps Sapphire");
+    expect(validShortName("")).toBeUndefined();
+    expect(validShortName(undefined)).toBeUndefined();
+    expect(validShortName("x".repeat(61))).toBeUndefined();
+    expect(validShortName("Topps\tSapphire")).toBeUndefined();
+  });
+});
+
+describe("NEO-335 — an operator's own title is never dropped by the short name", () => {
+  const cards = [card("1"), card("2", { players: ["Doc Gooden"] })];
+  const SHORT_NAME = "Topps Sapphire";
+
+  test("their own title keeps the card on the list, marked as fitting now, and is what saves", () => {
+    const answers = [{ listingTitle: "My Ohtani title #1" }, undefined];
+    const { titleGroups } = buildTitleGroups(cards, context(), undefined, {
+      answers,
+      listingShortName: SHORT_NAME,
+    });
+    const shown = titleGroups.flatMap((g) => g.cards);
+    expect(shown.map((c) => [c.index, c.fitsNow])).toEqual([[0, true]]);
+    expect(shown[0].title).toContain(SHORT_NAME);
+    expect(
+      titleAnswersForCommit(cards, context(), undefined, { answers, listingShortName: SHORT_NAME }),
+    ).toEqual([{ listingTitle: "My Ohtani title #1" }, undefined]);
+  });
+
+  test("a draft typed back to the generated title stays on the list but sends nothing", () => {
+    const generated = buildTitleGroups([card("1")], context(), undefined, {
+      listingShortName: SHORT_NAME,
+      answers: [{ listingTitle: "x" }],
+    }).titleGroups[0].cards[0].title;
+    const answers = [{ listingTitle: ` ${generated} ` }];
+    const { titleGroups } = buildTitleGroups([card("1")], context(), undefined, {
+      answers,
+      listingShortName: SHORT_NAME,
+    });
+    expect(titleGroups.flatMap((g) => g.cards.map((c) => c.fitsNow))).toEqual([true]);
+    expect(
+      titleAnswersForCommit([card("1")], context(), undefined, {
+        answers,
+        listingShortName: SHORT_NAME,
+      }),
+    ).toEqual([undefined]);
+  });
+
+  test("an over-cap own title on a card that now fits sends nothing: the generated one fits", () => {
+    const answers = [{ listingTitle: "t".repeat(90) }];
+    expect(
+      titleAnswersForCommit([card("1")], context(), undefined, {
+        answers,
+        listingShortName: SHORT_NAME,
+      }),
+    ).toEqual([undefined]);
+  });
+
+  test("never 'fits now' without a short name, nor for a card that was never trimmed", () => {
+    const answers = [{ listingTitle: "Mine #1" }];
+    const plain = buildTitleGroups([card("1")], context(), undefined, { answers });
+    expect(plain.titleGroups.flatMap((g) => g.cards.map((c) => c.fitsNow))).toEqual([undefined]);
+    const neverTrimmed = buildTitleGroups([card("1")], SHORT, undefined, {
+      answers,
+      listingShortName: SHORT_NAME,
+    });
+    expect(neverTrimmed.titleGroups).toEqual([]);
   });
 });

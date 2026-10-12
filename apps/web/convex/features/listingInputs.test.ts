@@ -15,11 +15,13 @@ import { buildCardRowForInsert, type NewCardRow } from "../cardRowCreate";
 import { deriveCardAttention } from "./cardAttention";
 import {
   assessNewCardListing,
+  checkShortNameAnswer,
   checkTitleAnswer,
   isFillerToken,
   leftOutOfTitle,
   listingInputsForCard,
   mergeCardFeatures,
+  suggestShortSetName,
   titleAttentionItems,
   type ListingCardFacts,
   type ListingSetContext,
@@ -423,5 +425,156 @@ describe("filler is never listed as a loss (collector review)", () => {
     expect(isFillerToken("Rookie", base)).toBe(false);
     expect(isFillerToken("RC", { ...base, isRookie: true })).toBe(false);
     expect(isFillerToken("Los Angeles Dodgers", base)).toBe(false);
+  });
+});
+
+describe("NEO-335 — the insert name, the parallel leaf and the short name reach the inputs", () => {
+  test("the insert name joins only on the insert ROLE", () => {
+    const withRole = listingInputsForCard(
+      { cardNumber: "5" },
+      { ...SET, insertNameValue: "Dugout Collection", insertIsRole: true },
+      { playerNames: ["Ken Griffey Jr."] },
+    );
+    expect(withRole.insertName).toBe("Dugout Collection");
+    expect(assessListingTitle(withRole).title).toBe(
+      "2026 Topps Chrome Dugout Collection Ken Griffey Jr. #5 Baseball",
+    );
+    // An insert-level row without the role (a parallels-type child) is not an insert.
+    for (const insertIsRole of [undefined, false]) {
+      const inputs = listingInputsForCard(
+        { cardNumber: "5" },
+        { ...SET, insertNameValue: "Dugout Collection", insertIsRole },
+        { playerNames: ["Ken Griffey Jr."] },
+      );
+      expect(inputs).not.toHaveProperty("insertName");
+    }
+  });
+
+  test("a parallel leaf's own value is the parallel token when the features name none", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "5" },
+      { ...SET, parallelLeafValue: "Gold Refractor" },
+      { playerNames: ["A"] },
+    );
+    expect(inputs.parallelName).toBe("Gold Refractor");
+    expect(assessListingTitle(inputs).title).toBe("2026 Topps Chrome A #5 Gold Refractor Baseball");
+  });
+
+  test("a parallel the features already name wins over the leaf's value", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "5" },
+      {
+        ...SET,
+        inheritedFeatures: { ...SET.inheritedFeatures, parallelName: "Refractor" },
+        parallelLeafValue: "Gold Refractor",
+      },
+      { playerNames: ["A"] },
+    );
+    expect(inputs.parallelName).toBe("Refractor");
+  });
+
+  test("the short name rides through trimmed; blank is none", () => {
+    const set = { ...SET, listingShortName: "  Topps Hologram  " };
+    expect(listingInputsForCard({ cardNumber: "1" }, set, { playerNames: [] }).setShortName).toBe(
+      "Topps Hologram",
+    );
+    expect(
+      listingInputsForCard({ cardNumber: "1" }, { ...SET, listingShortName: " " }, { playerNames: [] }),
+    ).not.toHaveProperty("setShortName");
+  });
+});
+
+describe("NEO-335 — leftOutOfTitle reports the set and insert words", () => {
+  const LONG_INSERT: ListingSetContext = {
+    ...SET,
+    setNameValue: "Chrome Update Series",
+    insertNameValue: "Sapphire Edition Platinum Anniversary Collectors Box",
+    insertIsRole: true,
+  };
+
+  test("a cut core reports the insert's lost words", () => {
+    const inputs = listingInputsForCard({ cardNumber: "300" }, LONG_INSERT, {
+      playerNames: ["Shohei Ohtani"],
+    });
+    const assessment = assessListingTitle(inputs);
+    expect(assessment.coreFits).toBe(false);
+    const left = leftOutOfTitle(inputs, assessment);
+    expect(left).toContain("Shohei Ohtani");
+    expect(left.some((entry) => entry.includes("Box"))).toBe(true);
+  });
+
+  test("with the short name in use, the full names are not reported — they were replaced", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "300" },
+      { ...LONG_INSERT, listingShortName: "Topps Sapphire" },
+      { playerNames: ["Shohei Ohtani"] },
+    );
+    const assessment = assessListingTitle(inputs);
+    expect(assessment.shortNameUsed).toBe(true);
+    expect(assessment.coreFits).toBe(true);
+    expect(leftOutOfTitle(inputs, assessment)).toEqual([]);
+  });
+});
+
+describe("NEO-335 — suggestShortSetName", () => {
+  const COLLECTORS_CHOICE: ListingSetContext = {
+    sportValue: "Baseball",
+    setNameValue: "Collector's Choice",
+    inheritedFeatures: { manufacturer: "Upper Deck", season: "1990" },
+  };
+
+  test("the maker and the insert's first word: Upper Deck Hologram", () => {
+    expect(
+      suggestShortSetName({ ...COLLECTORS_CHOICE, insertNameValue: "Hologram", insertIsRole: true }),
+    ).toBe("Upper Deck Hologram");
+  });
+
+  test("no insert: the first word of the set name that is not the maker's", () => {
+    expect(
+      suggestShortSetName({ ...COLLECTORS_CHOICE, setNameValue: "Upper Deck Collector's Choice" }),
+    ).toBe("Upper Deck Collector's");
+  });
+
+  test("an insert-level row without the role is not read", () => {
+    expect(
+      suggestShortSetName({ ...COLLECTORS_CHOICE, insertNameValue: "Hologram", insertIsRole: false }),
+    ).toBe("Upper Deck Collector's");
+  });
+
+  test("an unknown brand is never offered", () => {
+    expect(
+      suggestShortSetName({
+        ...COLLECTORS_CHOICE,
+        manufacturerBrandUnknown: true,
+        inheritedFeatures: { manufacturer: "All Brands" },
+        insertNameValue: "Hologram Heroes",
+        insertIsRole: true,
+      }),
+    ).toBe("Hologram");
+  });
+
+  test("nothing shorter to offer: undefined", () => {
+    expect(
+      suggestShortSetName({ sportValue: "Baseball", setNameValue: "Topps", inheritedFeatures: { manufacturer: "Topps" } }),
+    ).toBeUndefined();
+    expect(suggestShortSetName({ sportValue: "Baseball" })).toBeUndefined();
+  });
+});
+
+describe("NEO-335 — checkShortNameAnswer (the write paths' rule, without throwing)", () => {
+  test("trimmed; blank and absent are nothing to send", () => {
+    expect(checkShortNameAnswer("  Upper Deck Hologram ")).toEqual({ value: "Upper Deck Hologram" });
+    expect(checkShortNameAnswer("   ")).toEqual({});
+    expect(checkShortNameAnswer(undefined)).toEqual({});
+  });
+
+  test("60 is the cap", () => {
+    expect(checkShortNameAnswer("x".repeat(60))).toEqual({ value: "x".repeat(60) });
+    expect(checkShortNameAnswer("x".repeat(61)).error).toMatch(/60/);
+  });
+
+  test("control and invisible characters are refused with the server's sentence", () => {
+    expect(checkShortNameAnswer("Upper\tDeck").error).toMatch(/control characters/);
+    expect(checkShortNameAnswer("Upper\u200bDeck").error).toMatch(/invisible/);
   });
 });

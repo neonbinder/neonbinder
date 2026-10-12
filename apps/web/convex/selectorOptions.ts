@@ -39,7 +39,11 @@ import {
   type ListingCardInputs,
 } from "./features/generateListing";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
-import { checkTitleAnswer, type TitleContext } from "./features/listingInputs";
+import {
+  checkTitleAnswer,
+  listingInputsForCard,
+  type TitleContext,
+} from "./features/listingInputs";
 import {
   buildTitleContext,
   emptyResolvedNames,
@@ -273,6 +277,15 @@ import {
 // NEO-291 — the one rule for a card number prefix, shared with the
 // reconciler's write path in setReconciliation.ts.
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
+// NEO-335 — the one rule for a listing short name and the one reading of a
+// chain's title facts, shared by every walk below and by listingTitleContext.ts.
+import {
+  LISTING_SHORT_NAME_LEVELS,
+  normalizeListingShortName,
+  titleChainFacts,
+  titleChainFactsFields,
+  type TitleChainFacts,
+} from "./listingShortName";
 // Re-exported for callers that reached the ceiling through this module before
 // the rule moved; convex/cardNumberPrefix.ts is its home.
 export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
@@ -4693,20 +4706,28 @@ export const renameSelectorOption = mutation({
 async function findAncestorLabels(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   node: any,
-): Promise<{
-  setName?: string;
-  sport?: string;
-  manufacturerBrandUnknown?: boolean;
-}> {
+): Promise<
+  {
+    setName?: string;
+    sport?: string;
+    manufacturerBrandUnknown?: boolean;
+  } & TitleChainFacts
+> {
   const labels: {
     setName?: string;
     sport?: string;
     manufacturerBrandUnknown?: boolean;
   } = {};
   if (!node) return labels;
+  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
+  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
+  // nearest short name). Collected on the way past: this walk already passes
+  // every one of them before it can stop.
+  const titleChain: any[] = [];
   let current = node;
   let depth = 0;
   while (current && depth < 16) {
+    if (labels.setName === undefined) titleChain.push(current);
     if (current.level === "setName" && labels.setName === undefined) {
       labels.setName = current.value;
     }
@@ -4740,7 +4761,7 @@ async function findAncestorLabels(
     current = await ctx.db.get(parentId);
     depth += 1;
   }
-  return labels;
+  return { ...labels, ...titleChainFacts(titleChain) };
 }
 
 
@@ -5559,58 +5580,52 @@ export const addCustomCard = mutation({
       setName: setNameValue,
       sport: sportValue,
       manufacturerBrandUnknown,
+      ...chainFacts
     } = await findAncestorLabels(ctx, parentNode);
-    const listingInputs: ListingCardInputs = {
-      cardNumber: args.cardNumber,
-      /*
-       * NEO-254 — the CANONICAL name, deliberately, not `playerLinks`'s
-       * printed one.
-       *
-       * A listing title is what a buyer searches for today, and they search
-       * the name the player is known by — "Dwight Gooden", not the "Doc
-       * Gooden" a 1986 card happens to print. Changing that is a separate
-       * decision with marketplace consequences (titles are write-once, and a
-       * re-titled listing is a different listing to eBay), so the printed name
-       * is recorded on the card and read by the detail panel only.
-       */
-      playerNames: hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames,
-      year: mergedFeatures.season,
-      manufacturer: mergedFeatures.manufacturer,
-      // NEO-272: the ancestor manufacturer row's NB ROLE. When NB has not
-      // identified the set's brand — the set hangs off the marketplace's
-      // all-brands filter option — the generator drops the manufacturer
-      // entirely, see `manufacturerAndSetTokens`. The name above is still
-      // passed, and still stored on the row's `features`; only the title and
-      // description skip it.
-      manufacturerBrandUnknown,
-      setName: setNameValue,
-      parallelName: mergedFeatures.parallelName,
-      isRookie: (args.attributes ?? []).includes("RC"),
-      isRelic: (args.attributes ?? []).includes("RELIC"),
-      autographed: mergedFeatures.autographed,
-      shortPrint: mergedFeatures.shortPrint,
-      // NEO-101: the add-custom-card form has no print-run field either (see
-      // `cardVariation` below); both arrive later through `updateCard`.
-      printRun: undefined,
-      // NEO-101: named explicitly even though it is always absent here — the
-      // add-custom-card form has no variation field, so a custom card acquires
-      // its `cardVariation` later via `updateCard` (which never regenerates the
-      // title; write-once). Spelled out so this stays visibly the same input
-      // shape as the commit insert branch below.
-      cardVariation: undefined,
-      // NEO-208: a hand-added card CAN now be born linked — the quick-add
-      // form's TeamPicker sends real `teams` ids — so the title says the
-      // linked teams' stored names, read once by
-      // `resolveTeamOnCardIdsForWrite` above.
-      //
-      // NEO-101's fallback still stands underneath it, for an old SPA bundle
-      // that sent `teams: [string]`: those names live in `pendingTeamNames`
-      // until a sync resolves them (see `deriveCardAttention`, which counts a
-      // pending name as an answer for exactly the same reason). Either way the
-      // title says what the operator meant, resolved or not.
-      teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
-      sport: sportValue,
-    };
+    /*
+     * NEO-335 — built by `listingInputsForCard`, the mapping the commit's
+     * insert, the parallel build and the pre-save Card titles step share,
+     * rather than by a hand-kept copy of it. The fields it maps are the ones
+     * this object listed by hand before (year/manufacturer/parallel/autograph/
+     * short print off `mergedFeatures`, the set name, the brand ROLE, the
+     * sport), plus the chain's insert role, parallel leaf and short name.
+     *
+     * NEO-254 — `playerNames` is the CANONICAL name, deliberately, not
+     * `playerLinks`'s printed one: a buyer searches "Dwight Gooden", not the
+     * "Doc Gooden" a 1986 card prints, and titles are write-once.
+     *
+     * NEO-272 — `manufacturerBrandUnknown` is the ancestor manufacturer row's
+     * ROLE; the generator drops a brand NB has not identified.
+     *
+     * NEO-101 — no print run and no variation: the add-custom-card form has
+     * neither field, and both arrive later through `updateCard`, which never
+     * regenerates the title (write-once).
+     *
+     * NEO-208 — a hand-added card CAN be born linked (the quick-add
+     * TeamPicker sends ids), so the title says the linked teams' names; an old
+     * bundle's typed names (`pendingTeamNames`) are the fallback, exactly as
+     * for players (NEO-220).
+     */
+    const listingInputs: ListingCardInputs = listingInputsForCard(
+      {
+        cardNumber: args.cardNumber,
+        isRookie: (args.attributes ?? []).includes("RC"),
+        isRelic: (args.attributes ?? []).includes("RELIC"),
+        printRun: undefined,
+        cardVariation: undefined,
+      },
+      {
+        sportValue: sportValue ?? "",
+        setNameValue,
+        manufacturerBrandUnknown,
+        ...chainFacts,
+      },
+      {
+        playerNames: (hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames) ?? [],
+        teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
+      },
+      mergedFeatures,
+    );
     const listingTitle = assessListingTitle(listingInputs);
 
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
@@ -6063,6 +6078,10 @@ export const previewListingTitle = query({
       // the generator dropped would be a lie.
       manufacturerBrandUnknown: v.optional(v.boolean()),
       setName: v.optional(v.string()),
+      // NEO-335 — the insert's name (already gated on its NB role) and the
+      // set's short name for titles, so the TitleFixer can chip them.
+      insertName: v.optional(v.string()),
+      setShortName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -6138,27 +6157,33 @@ export const previewListingTitle = query({
       setName: setNameValue,
       sport: sportValue,
       manufacturerBrandUnknown,
+      ...chainFacts
     } = await findAncestorLabels(ctx, parentNode);
 
-    const inputs: ListingCardInputs = {
-      cardNumber: card.cardNumber,
-      playerNames,
-      year: features.season,
-      manufacturer: features.manufacturer,
-      // NEO-272: same ROLE the insert branches read, from the same walk, so a
-      // regenerated title cannot disagree with the one creation wrote.
-      manufacturerBrandUnknown,
-      setName: setNameValue,
-      parallelName: features.parallelName,
-      isRookie: card.isRookie,
-      isRelic: card.isRelic,
-      autographed: features.autographed,
-      shortPrint: features.shortPrint,
-      printRun: card.printRun,
-      cardVariation: card.cardVariation,
-      teamNames,
-      sport: sportValue,
-    };
+    // NEO-335 — the insert branch's own mapping (`listingInputsForCard`), fed
+    // the STORED row's `features` as the merged snapshot, rather than a
+    // hand-kept mirror of it. Same fields as before — year/manufacturer/
+    // parallel/autograph/short print off `features`, the card's own RC/relic/
+    // print run/verbatim variation, the set name, the NEO-272 brand ROLE and
+    // the sport — plus the chain's insert role, parallel leaf and short name,
+    // so Regenerate and the TitleFixer read the short name an operator set.
+    const inputs: ListingCardInputs = listingInputsForCard(
+      {
+        cardNumber: card.cardNumber,
+        isRookie: card.isRookie,
+        isRelic: card.isRelic,
+        printRun: card.printRun,
+        cardVariation: card.cardVariation,
+      },
+      {
+        sportValue: sportValue ?? "",
+        setNameValue,
+        manufacturerBrandUnknown,
+        ...chainFacts,
+      },
+      { playerNames, teamNames },
+      features,
+    );
 
     const { title, coreFits, dropped } = assessListingTitle(inputs);
     return {
@@ -6789,6 +6814,46 @@ export const setSelectorOptionCardNumberPrefix = mutation({
     await ctx.db.patch(args.id, {
       // Every other key rides along untouched; an emptied object is dropped
       // rather than stored as `{}`.
+      metadata: Object.keys(next).length > 0 ? next : undefined,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * NEO-335 — set or clear a row's `metadata.listingShortName`, the shorter
+ * name listing titles use when the full set + insert names will not fit (the
+ * set attributes panel's "Short name for titles").
+ *
+ * Same shape as `setSelectorOptionCardNumberPrefix` directly above: one key,
+ * nothing else in `metadata` touched; trim, `""` DELETES the key, control /
+ * invisible characters and over-length refused with a string `ConvexError`
+ * (`normalizeListingShortName`, shared with the commit's batch-level arg).
+ * Refused on a row above the set (a sport, year or brand), which no title
+ * walk reads a short name from. Existing titles are not rewritten: they are
+ * write-once, and Regenerate reads the new value.
+ */
+export const setSelectorOptionListingShortName = mutation({
+  args: {
+    id: v.id("selectorOptions"),
+    listingShortName: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new ConvexError("That row is gone. Refresh and try again.");
+    }
+    if (!LISTING_SHORT_NAME_LEVELS.has(row.level)) {
+      throw new ConvexError("A short name goes on a set or a part of one.");
+    }
+    const shortName = normalizeListingShortName(args.listingShortName);
+    const next = { ...(row.metadata ?? {}) };
+    if (shortName) next.listingShortName = shortName;
+    else delete next.listingShortName;
+    await ctx.db.patch(args.id, {
       metadata: Object.keys(next).length > 0 ? next : undefined,
       lastUpdated: Date.now(),
     });
@@ -14691,6 +14756,17 @@ export const commitCardChecklistPrelude = internalMutation({
      * unpaged and so has no ceiling to lower.
      */
     cardYearTeamReads: v.optional(v.number()),
+    /**
+     * NEO-335 — the operator's short name for titles, from the wizard's Card
+     * titles step. Written onto the LEAF row (`metadata.listingShortName`) by
+     * the call that opens the commit — the first "creates" page, or a
+     * whole-prelude call — so it is stored before any chunk titles a card,
+     * and every later page's walk (the set facts below) reads it back. The
+     * action has already normalised it; it is normalised again here because
+     * this mutation is separately callable. Absent or blank writes nothing:
+     * the commit never CLEARS a short name, the attributes panel does.
+     */
+    listingShortName: v.optional(v.string()),
   },
   returns: v.object({
     /**
@@ -14772,6 +14848,12 @@ export const commitCardChecklistPrelude = internalMutation({
     // whole commit, and handed to every chunk so the insert branch generates
     // the same title `previewListingTitle` would regenerate.
     manufacturerBrandUnknown: v.optional(v.boolean()),
+    // NEO-335 — the chain's title facts (`titleChainFacts`): the insert-level
+    // row's value when it carries the insert ROLE, the leaf's own value when
+    // it carries the parallel role, and the nearest short name — read AFTER
+    // this commit's own short name was written, so the chunks title with it
+    // and a kept title (`listingTitleKept`) regenerates identically.
+    ...titleChainFactsFields,
     existingCustomCardNumbers: v.array(v.string()),
     // ── NEO-203: the match maps, all four resolved ONCE against the
     // pre-commit state of the checklist — and built ONLY over this
@@ -14854,6 +14936,28 @@ export const commitCardChecklistPrelude = internalMutation({
      * skipped rather than guessed.
      */
     const setSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+
+    // NEO-335 — the Card titles step's short name, onto the leaf, ONCE: by
+    // the call that opens the commit (see the arg). First, before any other
+    // write of this transaction, so a refusal costs nothing; and before the
+    // leaf is read for the set facts at the end of this handler, which then
+    // see it (a transaction reads its own writes).
+    const opensCommit =
+      args.phase === undefined || (args.phase === "creates" && !args.resume);
+    if (opensCommit && args.listingShortName !== undefined) {
+      const shortName = normalizeListingShortName(args.listingShortName);
+      if (shortName) {
+        const leaf = await ctx.db.get(args.selectorOptionId);
+        if (!leaf || !LISTING_SHORT_NAME_LEVELS.has(leaf.level)) {
+          throw new ConvexError("A short name goes on a set or a part of one.");
+        }
+        if (leaf.metadata?.listingShortName !== shortName) {
+          await ctx.db.patch(args.selectorOptionId, {
+            metadata: { ...(leaf.metadata ?? {}), listingShortName: shortName },
+          });
+        }
+      }
+    }
 
     // NEO-251 (security review) — the LAST place these names can be bounded
     // before they become `players` / `teams` rows.
@@ -16721,6 +16825,11 @@ export const commitCardChecklistPrelude = internalMutation({
 
     // Still need the nearest setName ancestor id (unrelated to features — used
     // only for the totalCardCount/lastSyncedAt patch in the finalize phase).
+    //
+    // NEO-335 — the rows this walk passes (leaf first, up to the setName row)
+    // also carry the title's chain facts: the insert role, a parallel leaf
+    // and the nearest short name (`titleChainFacts`). Kept, not re-walked.
+    const titleChain: Array<Doc<"selectorOptions"> | null> = [leafNode];
     let setNameAncestorId: Id<"selectorOptions"> | undefined =
       leafNode?.level === "setName" ? leafNode._id : undefined;
     if (!setNameAncestorId) {
@@ -16728,10 +16837,12 @@ export const commitCardChecklistPrelude = internalMutation({
       while (cursorId && !setNameAncestorId) {
         const node: Doc<"selectorOptions"> | null = await ctx.db.get(cursorId);
         if (!node) break;
+        titleChain.push(node);
         if (node.level === "setName") setNameAncestorId = node._id;
         cursorId = node.parentId;
       }
     }
+    const chainFacts = titleChainFacts(titleChain);
     // Fetched once for the whole batch (not per-card) — used only for
     // listing-title/description generation on newly-inserted rows.
     const setNameNode = setNameAncestorId
@@ -16815,6 +16926,8 @@ export const commitCardChecklistPrelude = internalMutation({
       setNameAncestorId,
       setNameValue,
       manufacturerBrandUnknown,
+      // NEO-335 — see the returns validator.
+      ...chainFacts,
       // NEO-239 — the numbers that must survive the marketplace upsert:
       // rows with no ref on either side. Field name kept so the action and
       // finalize phases keep agreeing about ordering without a rename ripple.
@@ -16853,6 +16966,11 @@ type CommitPrelude = {
   setNameValue?: string;
   /** NEO-272 — see the returns validator. */
   manufacturerBrandUnknown?: boolean;
+  /** NEO-335 — see the returns validator (`titleChainFacts`). */
+  insertNameValue?: string;
+  insertIsRole?: boolean;
+  parallelLeafValue?: string;
+  listingShortName?: string;
   existingCustomCardNumbers: string[];
   existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
   existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
@@ -17094,6 +17212,10 @@ export const commitCardChecklistChunk = internalMutation({
     // so a caller that predates this is unchanged: absent means "the brand is
     // known", which is what every row said before the flag existed.
     manufacturerBrandUnknown: v.optional(v.boolean()),
+    // NEO-335 — the chain's title facts, resolved once by the prelude (after
+    // the commit's own short name was written). All optional: absent is the
+    // title every card had before them.
+    ...titleChainFactsFields,
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     // ── NEO-221: names this commit SETTLED, commit-wide ───────────────────
     //
@@ -17665,6 +17787,11 @@ export const commitCardChecklistChunk = internalMutation({
             setNameValue: args.setNameValue,
             manufacturerBrandUnknown: args.manufacturerBrandUnknown,
             inheritedFeatures: args.inheritedFeatures,
+            // NEO-335 — the insert role, a parallel leaf, the short name.
+            insertNameValue: args.insertNameValue,
+            insertIsRole: args.insertIsRole,
+            parallelLeafValue: args.parallelLeafValue,
+            listingShortName: args.listingShortName,
           },
           // NEO-313 — the new card's player index, kept inside
           // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
@@ -19841,6 +19968,13 @@ export const commitCardChecklist = action({
     // dropping a card never deletes anything on its own — see the note on
     // `commitCardChecklistFinalize`.
     operatorDeleteIds: v.optional(v.array(v.id("cardChecklist"))),
+    /**
+     * NEO-335 — the short name for titles the wizard's Card titles step
+     * collected, for the WHOLE batch (one set, one name). Checked before any
+     * phase writes; written onto the leaf row by the prelude before any chunk
+     * titles a card. Absent or blank writes nothing.
+     */
+    listingShortName: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -19951,6 +20085,16 @@ export const commitCardChecklist = action({
         );
       }
     }
+    // NEO-335 — the Card titles step's short name, held to its rule (trim,
+    // no control or invisible characters, `MAX_LISTING_SHORT_NAME_LENGTH`)
+    // before ANY phase writes, so a refusal costs the operator nothing. The
+    // step never sends an invalid one; a refusal here is a client that
+    // skipped it. The prelude re-checks — it is separately callable.
+    const listingShortName =
+      args.listingShortName === undefined
+        ? undefined
+        : normalizeListingShortName(args.listingShortName);
+
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];
@@ -20104,6 +20248,8 @@ export const commitCardChecklist = action({
         ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
       ),
       batchId: args.batchId,
+      // NEO-335 — written by the page that opens the commit, read by all.
+      ...(listingShortName ? { listingShortName } : {}),
     };
     /** Walk one phase to the end, returning every page it produced. */
     const walkPrelude = async (
@@ -20503,6 +20649,11 @@ export const commitCardChecklist = action({
             // NEO-272 — see the prelude's returns validator.
             manufacturerBrandUnknown: prelude.manufacturerBrandUnknown,
             inheritedFeatures: prelude.inheritedFeatures,
+            // NEO-335 — the chain's title facts, from the same last page.
+            insertNameValue: prelude.insertNameValue,
+            insertIsRole: prelude.insertIsRole,
+            parallelLeafValue: prelude.parallelLeafValue,
+            listingShortName: prelude.listingShortName,
             // NEO-221 — the names this commit settled, so the chunk's update
             // branch retires only what it is entitled to. The same two lists
             // the finalize phase is handed below.
