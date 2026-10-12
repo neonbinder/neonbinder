@@ -55,8 +55,8 @@ BuySportsCards alone for the whole run:
   added through the column's own "+ Custom" form by the path's **sole
   writer**: `Topps` under Baseball → 2024 and `Bowman` under Baseball → 2026
   by the seed (`manufacturer.whenMissing: "create"`, the server path behind
-  the "+ Custom" form); `Bowman` under Baseball → 2025 by
-  `bowman-2025-sportlots-review-save` (via `util-drill-to-cold-real-set`); `Score` under
+  the "+ Custom" form); `Bowman` under Baseball → 2023 by
+  `bowman-2023-sportlots-review-save` (via `util-drill-to-cold-real-set`); `Score` under
   Baseball → 1996 by `inserts-1996-score-…` (via `CREATE_MANUFACTURER: "1"`
   on the drill); `Topps` under Hockey → 2024 by `set-rename-…` (via
   `util-drill-to-cold-real-set`, which adds a ROW under the pause), and
@@ -109,8 +109,8 @@ BuySportsCards alone for the whole run:
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
-| Baseball → 2026 → Bowman (the whole brand-year) | **seed:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | **seed** (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row — server-side since NEO-339; the review's UI is proved on 2025 Bowman instead), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
-| Baseball → 2025 (the whole year) → Bowman | Bowman's Sets synced cold (BSC's 2025 list is year-wide, so every 2025 BSC set is filed under the year's brands) and its SportLots review SAVED through the UI — 175 rows: `Best` its own set (`Bowman Best`), `Prospects` under Bowman › `Insert`, the other 173 under Bowman › `Parallel`; Bowman's Variant Types synced inside the review. The year's Manufacturers column is synced cold by the same drill. No checklist is fetched (NOT pre-synced) | `flows/set-selector/bowman-2025-sportlots-review-save.yaml` — **sole writer** of the year; under the pause it also hand-makes the `Bowman` row. ✅ Approved by Jason 2026-10-11 (NEO-339); see "2025 Bowman — the SportLots review flow" |
+| Baseball → 2026 → Bowman (the whole brand-year) | **seed:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | **seed** (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row — server-side since NEO-339; the review's UI is proved on 2023 Bowman instead), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
+| Baseball → 2023 (the whole year) → Bowman | Bowman's Sets synced cold (BSC's 2023 list is year-wide, so every 2023 BSC set is filed under the year's brands) and its SportLots review SAVED through the UI — 143 rows: `Best` its own set (`Bowman Best`), `Prospect Autos` under Bowman › `Insert`, the other 141 under Bowman › `Parallel`; Bowman's Variant Types synced inside the review. The year's Manufacturers column is synced cold by the same drill. No checklist is fetched (NOT pre-synced) | `flows/set-selector/bowman-2023-sportlots-review-save.yaml` — **sole writer** of the year; under the pause it also hand-makes the `Bowman` row. ⚠️ RELOCATED from 2025 (NEO-333 collision), needs Jason's sign-off — he approved 2025 Bowman on 2026-10-11 (NEO-339); see "2023 Bowman — the SportLots review flow" |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 | Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED with every unknown name SKIPPED — no player, team or league minted (NOT pre-synced) | `flows/set-selector/checklist-dual-team-card-links-both-teams.yaml` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
@@ -305,7 +305,7 @@ NEO-312 split):
 
 | claim | proved by | steps |
 | -- | -- | -- |
-| 1 — Sync Sets mints nothing; the review files it | on 2026 Bowman, the seed (server-side: it syncs the Sets, applies the review's named decisions and checks the result); the UI half is `set-selector/bowman-2025-sportlots-review-save.yaml` on 2025 Bowman (NEO-339) | 1 |
+| 1 — Sync Sets mints nothing; the review files it | on 2026 Bowman, the seed (server-side: it syncs the Sets, applies the review's named decisions and checks the result); the UI half is `set-selector/bowman-2023-sportlots-review-save.yaml` on 2023 Bowman (NEO-339) | 1 |
 | 2–3 — Insert reconcile, Group Parallels, re-sync; the parallel build | `set-selector/bowman-insert-grouping-builds-parallels.yaml` | 2–9 |
 | 4–5 — `Blue` pairs, Promote / Make parallel of; Make insert of… | `set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` | 10–14 |
 | 9 — a moved SportLots link is never re-created by a later sync (NEO-312) | `set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` | 15–16 |
@@ -341,8 +341,8 @@ split it again along lines that are measured disjoint (below), with the one
 brand-wide write both halves need — Sync Sets and the review — moved into
 the seed, where nothing races it. Every assertion of the merged flow is kept.
 NEO-339 then made the seed a server-side bulk load; the review's UI claim
-moved to its own brand-year, 2025 Bowman, so that the two 2026 flows still
-find exactly the state they always did (see "2025 Bowman — the SportLots
+moved to its own brand-year, 2023 Bowman, so that the two 2026 flows still
+find exactly the state they always did (see "2023 Bowman — the SportLots
 review flow").
 
 **Why the split is safe — the write sets, measured (code read + CI Convex
@@ -383,7 +383,7 @@ marketplace data, and the harness must never dictate the data shape.
 | | |
 | -- | -- |
 | drills | the seed syncs the Sets and the Variant Types server-side; under the pause it creates the manufacturer row `Bowman` (`manufacturer.whenMissing: "create"`). The two flows' drills are WARM and pass no `CREATE_MANUFACTURER` — the seed is that row's sole writer, and two concurrent guarded creates could mint it twice |
-| review (live) | the seed's spec names each decision: every row → Bowman › `Parallel`, `All-America Game Autos` → Bowman › `Insert`, `Bowman Sterling` → its own set (the same filing the retired UI step made; the UI path itself is now proved on 2025 Bowman) |
+| review (live) | the seed's spec names each decision: every row → Bowman › `Parallel`, `All-America Game Autos` → Bowman › `Insert`, `Bowman Sterling` → its own set (the same filing the retired UI step made; the UI path itself is now proved on 2023 Bowman) |
 | Insert reconcile (live) | `Sync Inserts` (the column holds the review's row); filters Ready and BSC to "Anime"; `Anime` its own set when Pending; the BSC filter cleared, then "Keep all" on the WHOLE BSC column — every pending BSC insert its own set (NEO-308; it was the "Anime"-filtered column before); **saves every Ready set** (the review's row comes back restored) |
 | grouping | Group Parallels → `Accept all suggestions (N)` with N ≥ 201, asserted → `Save N changes` → the modal closes within 7000 (the save cut into ≤200-entry calls, NEO-308); every prefix pair nests, `Anime Kanji` and the other Anime parallels under `Anime`; a re-open reads `No changes yet` with no Accept-all button (every chunk landed) and leaves through Cancel |
 | re-sync (NEO-300) | "Sync Inserts" again; live the reconcile re-opens and is saved with no edits, paused the single-platform store runs; both say "N already grouped as parallels. Leaving those be." and do not re-create a grouped row as an insert |
@@ -482,23 +482,35 @@ step timings):
 `ensureSelectorOptions` has no "already syncing" guard; with one flow on the
 brand-year nothing races it any more.
 
-### 2025 Bowman — the SportLots review flow (NEO-339) ✅ Approved by Jason 2026-10-11
+### 2023 Bowman — the SportLots review flow (NEO-339) ⚠️ RELOCATED from 2025 (NEO-333 collision), needs Jason's sign-off
 
 The SportLots review's UI (claim 1 of the 2026 Bowman table above) was
 proved by the old seed on 2026 Bowman. The seed now saves that review
 server-side, so the two 2026 flows find exactly the state they always did,
 and the UI claim moved to a brand-year nobody else touches:
-`bowman-2025-sportlots-review-save.yaml`, **sole writer of Baseball → 2025**.
+`bowman-2023-sportlots-review-save.yaml`, **sole writer of Baseball → 2023**.
+
+**Why 2023, not 2025.** Jason approved 2025 Bowman on 2026-10-11. NEO-333
+(#316) merged first with `checklist-dual-team-card-links-both-teams`, which
+claims all of Baseball → 2025 through the same kind of cold, year-wide
+drill (next section). Two flows syncing one cold year in parallel race, so
+this one moved. 2023 is the most recent Baseball year no flow, seed spec
+(`baseline`, `oneshot`, `parallel`, `mcp-smoke`) or registry row touches:
+2024 is the seed's and the 2024 Topps flows', 2025 is NEO-333's, 2026 is
+the seed's 2026 Bowman. 2022 measures the same size (143 rows) but has the
+same `Best Top Prospects` problem described below and a `Dual Bowman
+Prospects Autos` row that sorts above `Prospects Autos`.
 
 | | |
 | -- | -- |
-| drills | Baseball (seeded) → 2025 → Bowman, COLD (`util-drill-to-cold-real-set`): the year's Manufacturers sync and Bowman's Sets sync (BSC's 2025 list is year-wide, so every 2025 BSC set is filed under the year's brands); under the pause the util hand-makes `Bowman` |
+| drills | Baseball (seeded) → 2023 → Bowman, COLD (`util-drill-to-cold-real-set`): the year's Manufacturers sync and Bowman's Sets sync (BSC's 2023 list is year-wide, so every 2023 BSC set is filed under the year's brands); under the pause the util hand-makes `Bowman` |
 | proves | Sync Sets asks SportLots and mints no SportLots-only set (the own-set label searched in the Sets column: `No matches found`); the pill opens the review; Select all → Bowman (its Variant Types sync inside the dialog) → Parallel; one row → Insert; one row → its own set; Save → `Saved 1 set, N parallels, 1 insert.`; the pill gone; the own set a row under the same search |
 | writes | the year's manufacturer rows and set filing; Bowman's Variant Types; the review's rows (one set, one insert, the rest parallels). No checklist, card, player or team |
-| readers | none: no other flow drills Baseball → 2025 |
+| readers | none: no other flow drills Baseball → 2023 |
 | paused | the skip sentence and no pill; nothing else |
 | re-runs | fresh-only per deployment: a second run finds no pill and the own set already a row, and fails at the claim-1 search by name |
-| measured | 2026-10-11, read-only against a seeded PR preview (SportLots' 2025 Bowman list and BSC's 2025 baseball sets, classified with the sync's own `routeSlSets`; nothing synced): the review holds **175** rows (cap 200), no twins, folded order `Base Set` first, then the `Best …` family. OWN_LABEL `Best` (Bowman's Best) → OWN_SET `Bowman Best`, no substring of any 2025 BSC set under Bowman (`Bowman's Best` differs by its apostrophe; 2025 Bowman Sterling is not in SportLots' list). INSERT_ROW `Prospects`; no insert-like row sorts first, so the flow filters to it before the tick and erases the filter before OWN_LABEL. Expected toast `Saved 1 set, 173 parallels, 1 insert.` (the flow matches the parallel count by shape). NOT YET measured: a live run's wall time — drop the own-set sub-step only if it exceeds ~480 s of the 600 s kill |
+| measured | 2026-10-12, read-only against a seeded PR preview (SportLots' 2023 Bowman list, 864 sets, and BSC's 2023 baseball sets, 509, classified with the sync's own `routeSlSets`; nothing synced, no NB write). The same script reproduces 2025's 175 rows. The review holds **143** rows (cap 200): 721 SportLots entries hidden as variants of a BSC set, none truncated, no twins, and every filed row name distinct. Folded order: `Base Set` first, then the 94-row `Best …` family. OWN_LABEL `Best` (Bowman's Best) → OWN_SET `Bowman Best`, no substring of any 2023 BSC set (`Bowman's Best` differs by its apostrophe). INSERT_ROW `Prospect Autos`, the first of the 8 rows its filter shows. Not `Prospects`: the review's filter matches anywhere in a label, and the 15 `Best Top Prospects …` rows sort above it. No insert-like row sorts first, so the flow filters to INSERT_ROW before the tick and erases the filter before OWN_LABEL. Expected toast `Saved 1 set, 141 parallels, 1 insert.` (the flow matches the parallel count by shape). NOT YET measured: a live run's wall time — drop the own-set sub-step only if it exceeds ~480 s of the 600 s kill |
+
 ### Baseball → 2025 — the NEO-333 dual-team fixture (Bowman Draft › Insert › Prospect Dual Autographs)
 
 `checklist-dual-team-card-links-both-teams.yaml` proves NEO-333 live: a BSC
@@ -1241,7 +1253,7 @@ read:
    **Superseded by NEO-306 (kept for the record).** The review is now the
    surface where SportLots-only names are seen and filed, proved on 2026
    Bowman (then the retired `setup.yaml`'s 2026 Bowman step; since NEO-339
-   `bowman-2025-sportlots-review-save` on 2025 Bowman). What follows
+   `bowman-2023-sportlots-review-save` on 2023 Bowman). What follows
    described the auto-save world. **The gap, and the affordance that would
    close it.** No step proves a set was SAVED, because nothing on screen tells an SL-minted set from a
    BSC-filed one: a set row is not terminal, so the view shows no `SL` pill

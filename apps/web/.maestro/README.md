@@ -360,7 +360,7 @@ the seed was `flows/setup.yaml`, which R5 exempted as a class because every
 step in it ran the COLD path behind a live marketplace round-trip. That
 exemption retired with the file: every flow left, including the three that
 took over its UI behaviours (`topps-chrome-insert-known-roster-no-wizard`,
-`gold-wave-build-from-base-row`, `bowman-2025-sportlots-review-save`), is held
+`gold-wave-build-from-base-row`, `bowman-2023-sportlots-review-save`), is held
 to the 7s bar, and a long wait in one of them is R5's marketplace exception,
 recorded at the site, or nothing.
 
@@ -984,7 +984,7 @@ runner's own worker credentials still come from its Phase-0 bootstrap.
 Before NEO-339 the seed was a Maestro flow, `flows/setup.yaml`. The UI
 behaviours it happened to exercise now have flows of their own
 (`topps-chrome-insert-known-roster-no-wizard`, `gold-wave-build-from-base-row`,
-`bowman-2025-sportlots-review-save`) — except the pairing dialog's two
+`bowman-2023-sportlots-review-save`) — except the pairing dialog's two
 `Keep all` buttons, which no Topps Chrome insert can reach (see
 `SET-REGISTRY.md` → "The NEO-339 flows on 2024 Topps Chrome") and which
 are covered by `CardPairingModal.test.tsx` only — and a UI behaviour is never put back

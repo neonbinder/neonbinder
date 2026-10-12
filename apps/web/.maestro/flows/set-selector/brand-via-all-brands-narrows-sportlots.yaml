@@ -17,7 +17,7 @@ tags:
 #      it no longer writes what SportLots alone lists: every such name waits
 #      in that BRAND's review (the "N SportLots sets to sort" pill on a
 #      brand's own Sets column — never on this view, which spans every
-#      brand; `bowman-2025-sportlots-review-save` drives it for 2025 Bowman). What
+#      brand; `bowman-2023-sportlots-review-save` drives it for 2023 Bowman). What
 #      STEP 2 proves is that the phase RAN: the column's done state carries
 #      no "SportLots skipped" notice, the one thing the sync says about the
 #      SportLots side here. Nothing this flow reads depends on a SportLots-
@@ -235,7 +235,7 @@ tags:
 #
 # ── WHAT IT DOES NOT PROVE ────────────────────────────────────────────
 # What the phase classified. That belongs to the brand's review, which is
-# proved on 2025 Bowman (`bowman-2025-sportlots-review-save`, NEO-339 — once
+# proved on 2023 Bowman (`bowman-2023-sportlots-review-save`, NEO-339 — once
 # the retired seed flow's 2026 Bowman step, NEO-312);
 # on THIS fixture none of `SPx`'s SportLots entries would even reach one —
 # `routeSlSets` hides every SportLots entry a set NB already has equals or

@@ -1,12 +1,12 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "2025 Bowman — Sync Sets mints no SportLots-only set, and the brand's review files them as a set, an insert and parallels (NEO-339)"
+name: "2023 Bowman — Sync Sets mints no SportLots-only set, and the brand's review files them as a set, an insert and parallels (NEO-339)"
 tags:
   - set-selector
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE FEATURE: A BRAND'S SPORTLOTS-ONLY SETS WAIT IN A REVIEW, AND THE
-# REVIEW FILES THEM (NEO-306). On live data, Baseball → 2025 → Bowman:
+# REVIEW FILES THEM (NEO-306). On live data, Baseball → 2023 → Bowman:
 #
 #   1. A cold `Sync Sets` asks SportLots (no skip sentence) and mints NO
 #      SportLots-only name as a set — the own-set label below is searched in
@@ -23,42 +23,46 @@ tags:
 # when the seed became a server-side bulk load. The bulk load still saves
 # 2026 Bowman's review (the two Bowman flows need it), but through the
 # server, so the review's UI needed a flow of its own and a brand-year no one
-# else touches: 2025 Bowman, approved by Jason 2026-10-11 (NEO-339).
+# else touches. Jason approved 2025 Bowman on 2026-10-11; NEO-333 (#316)
+# then merged first with a sole-writer claim on all of Baseball → 2025, so
+# this flow moved to 2023 Bowman — RELOCATED, pending Jason's re-approval
+# (SET-REGISTRY.md → "2023 Bowman").
 #
 # R3 — NOT RE-PROVED HERE: what the filed rows become later (Insert reconcile,
 # grouping, Promote, Make insert of… — the two 2026 Bowman flows); the
 # review's twin suffixes and name clashes (NEO-325 unit tests,
 # `SlSetReviewModal.test.tsx`).
 #
-# ── THE FIXTURE AND THE WRITE SET (R7a, SET-REGISTRY.md → 2025 Bowman) ──────
-#   Baseball → 2025 is this flow's alone: it pays the year's cold
+# ── THE FIXTURE AND THE WRITE SET (R7a, SET-REGISTRY.md → 2023 Bowman) ──────
+#   Baseball → 2023 is this flow's alone: it pays the year's cold
 #   Manufacturers sync, Bowman's Sets sync (BSC's list is year-wide, so every
-#   2025 BSC set is filed under the year's brands) and the review save. No
-#   other flow drills 2025. Paused, the cold util hand-makes the `Bowman` row
-#   (its guarded create — this flow is that row's sole writer). Fresh-only:
-#   a re-run finds no pill and the own set already a row, and fails by name
-#   at the claim-1 search; CI reseeds every run.
+#   2023 BSC set is filed under the year's brands) and the review save. No
+#   other flow drills 2023 (2025 is `checklist-dual-team-card-links-both-
+#   teams`'). Paused, the cold util hand-makes the `Bowman` row (its guarded
+#   create — this flow is that row's sole writer). Fresh-only: a re-run finds
+#   no pill and the own set already a row, and fails by name at the claim-1
+#   search; CI reseeds every run.
 #
-#   THE ROWS (MEASURED read-only 2026-10-11 against a seeded PR preview: the
-#   SportLots 2025 Bowman list and BSC's 2025 baseball sets, classified with
-#   the sync's own `routeSlSets`; nothing was synced). The review holds 175
+#   THE ROWS (MEASURED read-only 2026-10-12 against a seeded PR preview: the
+#   SportLots 2023 Bowman list and BSC's 2023 baseball sets, classified with
+#   the sync's own `routeSlSets`; nothing was synced). The review holds 143
 #   rows (cap 200), no twins, sorted by folded label — `Base Set` first, then
-#   the `Best …` family:
+#   the `Best …` family. Every row's filed name is distinct.
 #     * OWN_LABEL = `Best` — SportLots' brand-stripped label for Bowman's Best,
 #       a product of its own. Its default set name (`candidateDefaultName`) is
-#       OWN_SET = `Bowman Best`, which is not a substring of any 2025 BSC set
-#       filed under Bowman (`Bowman`, `Bowman Chrome`, `Bowman Chrome Sapphire
-#       Edition`, `Bowman Draft`, `Bowman Draft Sapphire Edition`, `Bowman
-#       Sapphire Edition`, `Bowman's Best` — the apostrophe keeps the last one
-#       out). 2025 Bowman Sterling is not in SportLots' 2025 Bowman list at
-#       all, so it could not be the own set. `Best` is the first row its own
-#       filter shows (its ~110 `Best …` siblings sort after it).
-#     * INSERT_ROW = `Prospects` — the Bowman Prospects subset. NO insert-like
-#       row sorts first (`Base Set` does), so step 2b types INSERT_ROW into
-#       the filter before the tick, and step 2c erases it before typing
-#       OWN_LABEL. `Prospects` is the first row its own filter shows (its 30
-#       `Prospects …` siblings sort after it).
-#     * Every other row (173) is filed under Bowman › Parallel.
+#       OWN_SET = `Bowman Best`, which is not a substring of any 2023 BSC set
+#       (the 17 that start `Bowman` include `Bowman's Best` — the apostrophe
+#       keeps it out — and no `Bowman Best`). `Best` is the first row its own
+#       filter shows (its 93 `Best …` siblings sort after it).
+#     * INSERT_ROW = `Prospect Autos` — Bowman's prospect autographs insert.
+#       NO insert-like row sorts first (`Base Set` does), so step 2b types
+#       INSERT_ROW into the filter before the tick, and step 2c erases it
+#       before typing OWN_LABEL. NOT `Prospects`, 2025's choice: the filter
+#       matches anywhere in a label, and 2023's 15 `Best Top Prospects …`
+#       rows would sort above it. `Prospect Autos` is the first row its own
+#       filter shows (its 7 `Prospect Autos …` colours sort after it; nothing
+#       else contains the phrase).
+#     * Every other row (141) is filed under Bowman › Parallel.
 #   NEO-339 decision: if the measured run exceeds ~480 s of the 600 s per-flow kill,
 #   drop step 2c (the own set) and its read-back, and change the tallies to
 #   `0 sets`.
@@ -80,14 +84,14 @@ tags:
     file: ../util/util-paused-platforms.yaml
 
 - evalScript: '${output.BRAND = "Bowman"}'
-- evalScript: '${output.YEAR = "2025"}'
-# Measured 2025 Bowman review rows — see the header ("THE ROWS").
+- evalScript: '${output.YEAR = "2023"}'
+# Measured 2023 Bowman review rows — see the header ("THE ROWS").
 - evalScript: '${output.OWN_LABEL = "Best"}'
 - evalScript: '${output.OWN_SET = "Bowman Best"}'
 # Escaped once for the full-match `text:` selectors (runtime names need regex
 # escaping); the raw form goes into the search box.
 - evalScript: '${output.OWN_SET_RE = output.OWN_SET.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
-- evalScript: '${output.INSERT_ROW = "Prospects"}'
+- evalScript: '${output.INSERT_ROW = "Prospect Autos"}'
 - evalScript: '${output.TYPE_PARALLEL = "Parallel"}'
 - evalScript: '${output.TYPE_INSERT = "Insert"}'
 
@@ -100,7 +104,7 @@ tags:
 # STEP 1 — COLD SYNC SETS; NO SPORTLOTS-ONLY NAME IS A SET
 # ============================================================
 
-# R9 — the cold util: Baseball (warm, the seed's) → 2025 → Bowman, each cold
+# R9 — the cold util: Baseball (warm, the seed's) → 2023 → Bowman, each cold
 # level waited out on its own R5 marketplace ceilings. It returns with
 # Bowman's Sets column open and its sync running or done. Paused it adds the
 # hand-made `Bowman` row first (header).
@@ -324,9 +328,10 @@ tags:
           id: "${output.TYPE_INSERT}: where ${output.INSERT_ROW} is filed"
 
       # 2c — PER ROW: OWN_LABEL BACK TO ITS OWN SET, through its own "Belongs
-      # to" picker. The filter still holds INSERT_ROW from 2b, a short value,
-      # so the centre tap lands past its end and the erase clears it (surplus
-      # backspaces on an empty box are inert). Rows sort by folded label, so
+      # to" picker. The filter still holds INSERT_ROW from 2b, a short value
+      # (14 characters in a box up to 320px wide), so the centre tap lands
+      # past its end and the erase clears it (surplus backspaces on an empty
+      # box are inert). Rows sort by folded label, so
       # the bare label is the FIRST row the filter shows and its list opens at
       # the top of the body (R8 case 2).
       - tapOn:
@@ -360,7 +365,7 @@ tags:
           text: "Save [0-9]+ SportLots sets?"
       # The dialog closes and the column toasts the server's own counts
       # (`slReviewSavedText`) — the same three numbers and NO "skipped" tail:
-      # this flow is 2025's only writer, so nothing can have linked a row
+      # this flow is 2023's only writer, so nothing can have linked a row
       # between the sync and the save. R5 — an NB write, the 7000 bar
       # (measured 0.71 s on 2026 Bowman). A save that misses it is a product
       # finding, never a bigger number.

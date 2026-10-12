@@ -143,3 +143,4 @@ Non-markdown helpers: `tools/`
 - [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML failure PNG, x=8 nodes, modal in flow at page bottom; `Search sports...` bounds fingerprint; full rerun
 - [takeScreenshot paths + nested runFlow env](patterns_screenshots_and_nested_env.md) — absolute paths refused; env is inherited, so pass SET to the discard util
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~0.7 rows/s live; walk util covers ~125 names; teams settle last; READY rows present at once
+- [SL review filter is substring](patterns_sl_review_filter_is_substring.md) — "first row its own filter shows" covers every label CONTAINING it (`Best Top Prospects` above `Prospects`)

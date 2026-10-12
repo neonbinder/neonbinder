@@ -32,8 +32,8 @@ tags:
 # (`flagship-colour-is-a-parallel-both-ways`) until it reached 570 s of the
 # 600 s kill (CI run 36524859308). Its STEP 1 — Sync Sets and the SportLots
 # review — is now provisioned by the seed (`npm run setbuild`,
-# docs/operations/neo339-setbuild.md); its UI is proved on 2025 Bowman by
-# `bowman-2025-sportlots-review-save`. STEPS 2–9 are here; STEPS
+# docs/operations/neo339-setbuild.md); its UI is proved on 2023 Bowman by
+# `bowman-2023-sportlots-review-save`. STEPS 2–9 are here; STEPS
 # 10–14 are the sibling's. The numbers are kept so a CI history, the
 # registry and the sibling read across without a lookup table.
 #
