@@ -1333,6 +1333,15 @@ const SL_NAME_SUFFIXES = new Set([
 ]);
 
 /**
+ * NEO-333 — a split part that is ONLY a generational suffix, surrounding
+ * whitespace allowed: " Jr.", "SR", "iii". Re-attached to the subject before
+ * it by `parseSlSubjects`; the same set the shared `splitMarketplaceNames`
+ * re-attaches (`v` is deliberately absent — a bare "V" part is not safe to
+ * read as a suffix).
+ */
+const SL_SUFFIX_ONLY_PART = /^\s*(?:jr|sr|ii|iii|iv)\.?\s*$/i;
+
+/**
  * Whole-word veto list. If any of these appears as a word anywhere in a
  * candidate subject, the WHOLE row is rejected — "Team Checklist", "Yankee
  * Stadium", "Header Card" and friends are not people, and a bad player name
@@ -1470,10 +1479,18 @@ const SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH;
  *  1. Reject if `<`, `>` or any control character (newline included) is
  *     present. This is the caller's single decode already applied, so an
  *     entity-encoded `<` that resolved during it is caught here.
- *  3. Split into subjects on `|`, ` / ` and ` & ` (the last two require
+ *  3. Split into subjects on `|`, `,`, ` / ` and ` & ` (the last two require
  *     surrounding spaces, so "A/B" and "R&B" are one subject, not two).
+ *     NEO-333: `,` joined the separators, so "Mike Trout, Shohei Ohtani" is
+ *     two subjects rather than a refused row. A part that is ONLY a
+ *     generational suffix ("Ken Griffey, Jr.") re-attaches to the subject
+ *     before it, the same rule the shared `splitMarketplaceNames` applies;
+ *     with no subject before it, it stays a part and rule 8 refuses it.
+ *     Unlike the shared splitter this parser still REFUSES on an empty part
+ *     (a trailing or doubled separator): any doubt rejects the row.
  *  4. More than `SL_MAX_SUBJECTS` (4, under NB's own `MAX_CARD_PLAYERS`)
- *     subjects → reject. A five-name row is a checklist line.
+ *     subjects → reject. A five-name row is a checklist line. Counted after
+ *     suffix re-attachment, so a suffix is never a subject of its own.
  *  5. Per subject: collapse whitespace, trim; reject if empty, longer than
  *     `MAX_PLAYER_NAME_LENGTH` (NB's own bound, 120), or containing any
  *     digit.
@@ -1498,7 +1515,16 @@ export function parseSlSubjects(residual: string): { players?: string[] } {
   // on the same bytes production derives every other field from.
   if (/[<>]/.test(residual) || SL_CONTROL_CHARS.test(residual)) return {};
 
-  const parts = residual.split(/\||\s\/\s|\s&\s/);
+  // NEO-333: `,` is a separator too. A bare suffix part ("Ken Griffey, Jr.")
+  // re-attaches to the part before it rather than standing as a subject.
+  const parts: string[] = [];
+  for (const part of residual.split(/\||,|\s\/\s|\s&\s/)) {
+    if (parts.length > 0 && SL_SUFFIX_ONLY_PART.test(part)) {
+      parts[parts.length - 1] = `${parts[parts.length - 1].trimEnd()} ${part.trim()}`;
+      continue;
+    }
+    parts.push(part);
+  }
   if (parts.length > SL_MAX_SUBJECTS) return {};
 
   const players: string[] = [];

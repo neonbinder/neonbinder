@@ -4367,3 +4367,248 @@ describe("CardChecklist — NEO-321 the Base checklist is held while a base run 
     ).toBe(PARALLEL_BUILD_HEADING_ID);
   });
 });
+
+/**
+ * NEO-333 — the BSC team lookup is the fetch's LAST step, and Convex resolves
+ * an action's promise without waiting for subscriptions to catch up. The row
+ * count matched ~70s earlier, so a client that waited on the count alone took
+ * its snapshot before the teams landed: the review wizard never saw BSC's
+ * teams, and the commit saved team-less cards.
+ *
+ * The fetch now returns a fence — the batch it wrote and the `ready` count the
+ * server saw after its last team write — and both paths wait for the
+ * subscription to reach it before they hand cards on.
+ */
+describe("CardChecklist — the team fence (NEO-333)", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  /** Only BSC attached: the set's BSC link, and no SportLots set id. */
+  const soloBscChain = () => [
+    {
+      _id: SPORT_ID,
+      level: "sport",
+      value: "Baseball",
+      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "1" } },
+    },
+    {
+      _id: SET_ID,
+      level: "setName",
+      value: "Test Set",
+      platformData: { bsc: { b0: "2024-topps" } },
+    },
+    { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+  ];
+
+  const bscCandidate = (n: string, teams?: string[]) => ({
+    cardNumber: n,
+    cardName: `BSC Card ${n}`,
+    bucket: "bscOnly" as const,
+    platformData: { bsc: { ref: `bsc-${n}` } },
+    ...(teams ? { teams, teamResolved: true } : { teamResolved: false }),
+  });
+
+  /** Every row there, no team resolved yet — the state the count matched on. */
+  const rowsWithoutTeams = {
+    batchId: "batch-333",
+    ready: 0,
+    total: 2,
+    cards: [bscCandidate("1"), bscCandidate("2")],
+  };
+  /** The same batch once the lookup's writes have reached the client. */
+  const rowsWithTeams = {
+    batchId: "batch-333",
+    ready: 2,
+    total: 2,
+    cards: [
+      bscCandidate("1", ["Cleveland Guardians", "Washington Nationals"]),
+      bscCandidate("2", ["San Diego Padres"]),
+    ],
+  };
+  const fencedResult = {
+    success: true,
+    message: "0 matched, 2 BSC-only, 0 SL-only",
+    candidateCount: 2,
+    candidateBatchId: "batch-333",
+    readyAfterTeams: 2,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.liveCandidates = null;
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockDiffChecklist.mockResolvedValue({
+      cards: [],
+      removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 },
+      conflicts: [],
+      collisionInsertCount: 0,
+      ambiguityBlockedCount: 0,
+    });
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  it("one marketplace: waits for the teams, not just the rows, before it hands the cards on", async () => {
+    state.ancestorChain = soloBscChain();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    // The rows arrived long ago; the action resolves before the team writes
+    // reach the subscription.
+    await streamCandidates(rerender, rowsWithoutTeams);
+    await act(async () => {
+      resolveFetch({ ...fencedResult, attachedSides: ["bsc"] });
+    });
+
+    // The count matches, but the fence does not: nothing handed on yet.
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    // The team writes land.
+    await streamCandidates(rerender, rowsWithTeams);
+    await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    // The wizard's entity resolution sees BSC's teams — a dual-team card as
+    // two names — and so does the commit.
+    expect(mockResolveEntities.mock.calls[0][0].cards).toEqual([
+      expect.objectContaining({
+        cardNumber: "1",
+        teams: ["Cleveland Guardians", "Washington Nationals"],
+      }),
+      expect.objectContaining({ cardNumber: "2", teams: ["San Diego Padres"] }),
+    ]);
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+    expect(
+      mockCommitChecklist.mock.calls[0][0].cards.map(
+        (c: { teams?: string[] }) => c.teams,
+      ),
+    ).toEqual([
+      ["Cleveland Guardians", "Washington Nationals"],
+      ["San Diego Padres"],
+    ]);
+  });
+
+  it("one marketplace: a met fence still waits for a row whose lookup is retried after the action returned", async () => {
+    // NEO-333 + NEO-341. The fence is the `ready` count the server saw when
+    // the action returned; `resolveCandidateTeams` can still owe one retry for
+    // a row the paged write had not reached, and that retry lands later. The
+    // fence alone would hand card 2 on without its team. Every row `ready` is
+    // the half of the gate that holds it — and it cannot hang on rows that
+    // never needed a lookup, because the server writes those `ready`
+    // (pinned in fetchCardChecklist.teamFence.test.ts and
+    // checklistCandidates.test.ts).
+    state.ancestorChain = soloBscChain();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, {
+      ...rowsWithTeams,
+      ready: 1,
+      cards: [rowsWithTeams.cards[0], bscCandidate("2")],
+    });
+    await act(async () => {
+      resolveFetch({ ...fencedResult, readyAfterTeams: 1, attachedSides: ["bsc"] });
+    });
+    // The fence is met; the batch is not settled. Give the poll a few turns.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    // The retry lands.
+    await streamCandidates(rerender, rowsWithTeams);
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+    expect(
+      mockCommitChecklist.mock.calls[0][0].cards.map(
+        (c: { teams?: string[] }) => c.teams,
+      ),
+    ).toEqual([
+      ["Cleveland Guardians", "Washington Nationals"],
+      ["San Diego Padres"],
+    ]);
+  });
+
+  it("one marketplace: a fence naming another batch is never met by this one", async () => {
+    // Same count, teams and all — but not the batch this run wrote.
+    state.ancestorChain = soloBscChain();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, { ...rowsWithTeams, batchId: "batch-old" });
+    await act(async () => {
+      resolveFetch({ ...fencedResult, attachedSides: ["bsc"] });
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+
+    await streamCandidates(rerender, rowsWithTeams);
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+  });
+
+  it("two marketplaces: Confirm stays locked until the teams have reached the dialog", async () => {
+    state.ancestorChain = twoSidedChain();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, rowsWithoutTeams);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch({ ...fencedResult, attachedSides: ["bsc", "sportlots"] });
+    });
+    // The fetch is done, but a Confirm pressed now would hand on cards whose
+    // teams the dialog has not absorbed.
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Loading…",
+    );
+
+    await streamCandidates(rerender, rowsWithTeams);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Confirm",
+      ),
+    );
+    expect(screen.getByText("0 matched, 2 BSC-only, 0 SL-only")).toBeTruthy();
+  });
+
+  it("two marketplaces: a stream that never settles unlocks Confirm after the budget instead of hanging", async () => {
+    // The bound on the combined gate. The server leaves no row `pending` that
+    // is not owed a lookup, so this is only a lost team write — but a lock
+    // nothing will ever lift would strand the operator's review.
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      state.ancestorChain = twoSidedChain();
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, rowsWithoutTeams);
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
+      await act(async () => {
+        resolveFetch({ ...fencedResult, attachedSides: ["bsc", "sportlots"] });
+      });
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Loading…",
+      );
+
+      // Just short of the budget: still locked.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(29_000);
+      });
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Loading…",
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Confirm",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

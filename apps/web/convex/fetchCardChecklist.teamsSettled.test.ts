@@ -66,13 +66,22 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
     }),
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(v.string(), v.string()),
-      handler: async (_ctx, args): Promise<Record<string, string>> => {
+      // NEO-333's wire shape: BSC's raw value and its comma split. Every team
+      // in this file is one comma-free name, so the two are the same.
+      returns: v.record(
+        v.string(),
+        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      ),
+      handler: async (
+        _ctx,
+        args,
+      ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
         await mockState.onLookup?.(args.bscCardIds);
-        const out: Record<string, string> = {};
+        const out: Record<string, { rawTeamName: string; teamNames: string[] }> =
+          {};
         for (const ref of args.bscCardIds) {
           const team = mockState.teamByRef[ref];
-          if (team) out[ref] = team;
+          if (team) out[ref] = { rawTeamName: team, teamNames: [team] };
         }
         return out;
       },

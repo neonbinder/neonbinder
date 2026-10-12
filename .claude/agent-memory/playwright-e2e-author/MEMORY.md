@@ -49,3 +49,4 @@
 - [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write proof; level pills required; no sport default, pick MLB (seed-owned row); held rows never say "No matches."
 - [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search_name reads, same text, in one query: other-filter inserts never invalidate; prove via HTTP API + ws frames
 - [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML failure PNG, x=8 nodes, modal in flow at page bottom; `Search sports...` bounds fingerprint; full rerun
+- [Multi-team row needs a team count](patterns_multi_team_row_needs_a_team_count.md) — "A, B" sub-line = 2 links OR 1 combined team; Team Mgmt "1 of" on one half closes it; settle lookups before checking team steps

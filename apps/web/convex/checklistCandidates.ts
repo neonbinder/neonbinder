@@ -10,6 +10,11 @@ import { cardNumberStem } from "../lib/cards/variations";
 // at this boundary too — see `startCandidateBatch`'s handler.
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+// NEO-333 — the whole-name-first team match, through the one resolution the
+// review gate and the commit prelude also use.
+import { resolveTeamForSetYear } from "./lib/teamRow";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import { findSportForSelectorOption } from "./cardChecklist";
 
 /**
  * NEO-195 — the streaming half of a checklist fetch.
@@ -160,8 +165,11 @@ const candidateInputValidator = v.object({
  * Nothing downstream observes the split. The auto-keep path already polls
  * `getReadyCandidates` until `total` equals the count the action reported
  * (`CardChecklist.awaitStreamedBatch`, 30s budget) before it commits anything,
- * and the pairing modal's Confirm waits for that same count with every row
- * `ready` (NEO-341). The
+ * and the pairing modal's Confirm waits for that same count too. Both also
+ * wait for this run's batch (the action's `candidateBatchId`) to show `ready`
+ * at or past the action's `readyAfterTeams` (NEO-333) AND every row `ready`
+ * (NEO-341), so the team lookup's writes — including a retry that lands after
+ * the action returned — are on the client before anything is committed. The
  * one ordering that had to be made explicit is the team lookup's — see
  * `resolveCandidateTeams`, which now retries a card whose row this chain had
  * not reached yet.
@@ -244,7 +252,8 @@ export const clearCandidatesTail = internalMutation({
 
 /**
  * Open a batch: drop anything left from THIS OPERATOR's previous run on this
- * row, then write every candidate as `pending`.
+ * row, then write every candidate: `pending` if it awaits a BSC team lookup,
+ * `ready` otherwise (NEO-341 — see `teamPending`).
  *
  * Clearing first is deliberate. A re-sync before the operator cancelled would
  * otherwise leave two runs' candidates interleaved in the modal, and the older
@@ -484,6 +493,74 @@ async function writeCandidatePage(
 }
 
 /**
+ * NEO-333 — which team names a candidate card carries: BSC's WHOLE value, or
+ * its comma split.
+ *
+ * Whole-name first (Jason, 2026-10-10). A comma is not a reliable team
+ * separator: real team names and aliases carry one ("Korea, South", "Scranton,
+ * Wilkes-Barre RailRiders"). So when the raw string matches ANY existing team
+ * row in the sport — by name or alias, through `resolveTeamForSetYear`, the
+ * same resolution the review gate (`teams.findByNameAndSport`) and the commit
+ * prelude use — the card carries that one string. Exactly one row: both later
+ * passes find it by that string. Several rows the year cannot separate: the
+ * gate asks the operator which era, as it does for any name. Only when the
+ * whole string matches NOTHING does the card carry the split parts; any part
+ * NB does not hold goes to review, and the operator can then add an alias.
+ *
+ * The match is only attempted when it could change the answer: a value with
+ * no comma splits to itself, and resolving it here would be a second read for
+ * the answer the gate reaches anyway.
+ *
+ * Bounds: the split is refused, not trimmed — an over-cap list or an
+ * over-length part (only reachable by a caller that skipped the adapter)
+ * yields no teams, the same rule `startCandidateBatch` applies to `teams`.
+ * An over-length raw string is never matched.
+ */
+async function chooseCandidateTeams(
+  ctx: MutationCtx,
+  rawTeamName: string | undefined,
+  teamNames: string[] | undefined,
+  scope: () => Promise<{
+    sportId: Id<"selectorOptions"> | undefined;
+    setYear: number | undefined;
+  }>,
+): Promise<string[] | undefined> {
+  const raw = rawTeamName?.trim() ?? "";
+  const parts = (teamNames ?? []).map((n) => n.trim()).filter(Boolean);
+  const splitIsJustRaw = parts.length === 1 && parts[0] === raw;
+  if (raw && !splitIsJustRaw && raw.length <= MAX_PLAYER_NAME_LENGTH) {
+    const { sportId, setYear } = await scope();
+    if (sportId) {
+      const { teamId, candidates } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        raw,
+        setYear,
+        {
+          // NEO-307: a SET year — a card can show a team's past. Must agree
+          // with the gate and the prelude, which pass the same option.
+          allowPastEra: true,
+        },
+      );
+      // ANY row answering to the whole string makes it one team, even when
+      // the year cannot pick between several (or the only row is a later
+      // era). The card keeps the raw string so the gate asks ITS question —
+      // which era — instead of this cutting a known name at its comma and the
+      // wizard offering two teams nobody meant.
+      if (teamId || candidates.length > 0) return [raw];
+    }
+  }
+  if (
+    parts.length === 0 ||
+    parts.length > MAX_CARD_TEAMS ||
+    parts.some((n) => n.length > MAX_PLAYER_NAME_LENGTH)
+  ) {
+    return undefined;
+  }
+  return parts;
+}
+
+/**
  * Attach resolved team names to the cards a lookup chunk covered, then release
  * every stem group that is now complete.
  *
@@ -515,9 +592,16 @@ async function writeCandidatePage(
 export const resolveCandidateTeams = internalMutation({
   args: {
     batchId: v.string(),
-    // bsc ref → team name. A ref present with no name resolved to "no team".
+    // bsc ref → the card's team value. NEO-333: BOTH forms — BSC's raw,
+    // unsplit string and the adapter's comma split. The raw string wins when
+    // it names exactly one existing team (see `chooseCandidateTeams`). A ref
+    // present with neither resolved to "no team".
     resolved: v.array(
-      v.object({ bscRef: v.string(), teamName: v.optional(v.string()) }),
+      v.object({
+        bscRef: v.string(),
+        rawTeamName: v.optional(v.string()),
+        teamNames: v.optional(v.array(v.string())),
+      }),
     ),
     // NEO-294 — set on the one retry, so a miss cannot reschedule forever.
     retry: v.optional(v.boolean()),
@@ -528,6 +612,10 @@ export const resolveCandidateTeams = internalMutation({
     // NEO-294 — refs this call found no row for. Retried once (see above) and
     // then reported.
     missing: v.number(),
+    // NEO-333 — the batch's `ready` count as this call commits it. The fetch
+    // hands the LAST one back to the client as its team fence: see
+    // `readyAfterTeams` on `fetchCardChecklist`.
+    ready: v.number(),
   }),
   handler: async (ctx, args) => {
     const rows = await ctx.db
@@ -550,18 +638,51 @@ export const resolveCandidateTeams = internalMutation({
 
     const touchedStems = new Set<string>();
     /** NEO-294 — refs with no row yet; see the retry note above. */
-    const missed: Array<{ bscRef: string; teamName?: string }> = [];
+    const missed: Array<(typeof args.resolved)[number]> = [];
     let patched = 0;
-    for (const { bscRef, teamName } of args.resolved) {
-      const sameRef = byBscRef.get(bscRef);
+    // NEO-333 — the set's sport and year, read once per call (every row in a
+    // batch belongs to one selectorOption) and only if some card needs a
+    // whole-name match. `undefined` sport = no whole-name match possible.
+    let teamScope:
+      | { sportId: Id<"selectorOptions"> | undefined; setYear: number | undefined }
+      | undefined;
+    for (const entry of args.resolved) {
+      const sameRef = byBscRef.get(entry.bscRef);
       if (!sameRef) {
-        missed.push(teamName === undefined ? { bscRef } : { bscRef, teamName });
+        // Forwarded as received, raw string included, so the retry decides
+        // exactly what this pass would have.
+        missed.push(entry);
         continue;
       }
+      // One answer per REF: every row sharing it carries the same BSC value,
+      // so the whole-name decision is made once and written to all of them.
+      const scopeRow = sameRef[0];
+      const teams = await chooseCandidateTeams(
+        ctx,
+        entry.rawTeamName,
+        entry.teamNames,
+        async () => {
+          if (!teamScope) {
+            teamScope = {
+              sportId: await findSportForSelectorOption(
+                ctx,
+                scopeRow.selectorOptionId,
+              ),
+              setYear: await findSetYearForSelectorOption(
+                ctx,
+                scopeRow.selectorOptionId,
+              ),
+            };
+          }
+          return teamScope;
+        },
+      );
       for (const row of sameRef) {
         await ctx.db.patch(row._id, {
           // An empty result is an answer, not a failure — see the note above.
-          ...(teamName ? { teams: [teamName] } : {}),
+          // So is a refused split (`undefined`): the row is settled with no
+          // team, and the operator picks one in review — never a guess here.
+          ...(teams ? { teams } : {}),
           status: "ready",
           lastUpdated: Date.now(),
         });
@@ -583,6 +704,7 @@ export const resolveCandidateTeams = internalMutation({
     for (const stem of touchedStems) {
       if (!pendingByStem.has(stem)) released++;
     }
+    const ready = fresh.filter((r) => r.status === "ready").length;
 
     /*
      * NEO-294 — the one retry. `args.retry` marks the retry itself, so this
@@ -609,7 +731,7 @@ export const resolveCandidateTeams = internalMutation({
         }),
       );
     }
-    return { patched, released, missing: missed.length };
+    return { patched, released, missing: missed.length, ready };
   },
 });
 
@@ -625,11 +747,13 @@ export const resolveCandidateTeams = internalMutation({
  *
  * Returns EVERY candidate in the operator's batch, pending teams included — pairing does
  * not need a team. `ready` counts the rows whose team lookup is settled, so the
- * UI can show enrichment progress — and, since NEO-341, `ready === total` (with
- * `total` equal to the fetch's own `candidateCount`) is the observed marker the
- * client gates Confirm and the one-marketplace auto-keep on: every lookup the
- * fetch owed has been written AND has reached this subscriber. The action's
- * promise cannot say the second half.
+ * UI can show enrichment progress — and it is what the client gates Confirm and
+ * the one-marketplace auto-keep on: `batchId` equal to the fetch's
+ * `candidateBatchId`, `ready` at or past its `readyAfterTeams` (NEO-333), and
+ * `ready === total` with `total` equal to its `candidateCount` (NEO-341). A row
+ * is `pending` only while a lookup it is owed is outstanding, so together these
+ * say every lookup the fetch owed has been written AND has reached this
+ * subscriber. The action's promise cannot say the second half.
  *
  * ## NEO-203 — admin-gated, but still non-throwing
  *

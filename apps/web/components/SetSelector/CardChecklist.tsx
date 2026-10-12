@@ -39,10 +39,7 @@ import { pausedSyncMessage } from "../../convex/selectorSyncStore";
 import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
-import {
-  streamedBatchSettled,
-  type StreamedBatchTarget,
-} from "@/lib/cards/streamed-batch";
+import { streamedBatchSettled } from "@/lib/cards/streamed-batch";
 import {
   candidateToPairingCard,
   candidatesToPairingCards,
@@ -268,6 +265,62 @@ export const soloProgressMessage = (
  */
 export const SOLO_STREAM_TIMEOUT_MESSAGE =
   "The fetched cards did not arrive — nothing was saved. Run the sync again.";
+
+/**
+ * NEO-333 — what the fetch says it published: how many candidates, in which
+ * batch, and the batch's `ready` count after its last team write. See
+ * `fetchCardChecklist`'s `readyAfterTeams`.
+ */
+export type StreamFence = {
+  count: number;
+  batchId?: string;
+  readyAfterTeams?: number;
+};
+
+/**
+ * NEO-333 + NEO-341 — has the candidate subscription caught up with everything
+ * the fetch wrote, teams included?
+ *
+ * Three conditions, all on the LIVE subscription value:
+ *
+ *  - The batch is THIS run's: named by the fence when the server sent one,
+ *    otherwise merely different from the one on screen before Sync (an
+ *    abandoned run's rows, same count, must never pass for this one's).
+ *  - `ready` has reached the server's own post-lookup count
+ *    (`readyAfterTeams`, NEO-333), so the subscription is at or past the last
+ *    team write the action made before it returned.
+ *  - Every row is there and every row is `ready` (`streamedBatchSettled`,
+ *    NEO-341). The server writes a row `pending` only while a BSC team lookup
+ *    it is owed is outstanding, so `ready === total` cannot be held back by a
+ *    row that never needed one; what it adds over the fence is a lookup the
+ *    action's own count could not include — the one retry
+ *    `resolveCandidateTeams` schedules for a row the paged write had not
+ *    reached yet, which can land after the action returned.
+ *
+ * The fence alone would pass that retried row without its team; the readiness
+ * alone cannot name the batch. Together they say "this run's batch, with every
+ * team it is owed". Callers bound the wait (`SOLO_STREAM_TIMEOUT_MS`), so a row
+ * that somehow never settles costs a timeout, never a hang.
+ */
+export function streamHasCaughtUp(
+  live: { batchId?: string; total: number; ready: number; cards: readonly unknown[] },
+  fence: StreamFence,
+  previousBatchId: string | undefined,
+): boolean {
+  // A named batch must match exactly. With no name, `streamedBatchSettled`
+  // below refuses the batch that was on screen before Sync; a view with no
+  // batch at all is the empty one, which no non-zero count can match.
+  if (fence.batchId !== undefined && live.batchId !== fence.batchId) {
+    return false;
+  }
+  return (
+    live.ready >= (fence.readyAfterTeams ?? 0) &&
+    streamedBatchSettled(live, {
+      candidateCount: fence.count,
+      previousBatchId,
+    })
+  );
+}
 
 /** How often the auto-keep path re-reads the candidate subscription. */
 const SOLO_STREAM_POLL_MS = 50;
@@ -809,19 +862,27 @@ export default function CardChecklist({
   const [fetchInFlight, setFetchInFlight] = useState(false);
   /**
    * NEO-341 — what the current run's fetch REPORTED, once it has resolved:
-   * how many candidates it published, and which batch the subscription showed
+   * its team fence (NEO-333: the batch, the candidate count and the `ready`
+   * count after its last team write), and which batch the subscription showed
    * before the call. Null until then, and reset by every new sync.
    *
    * `fetchInFlight` going false is not "the cards are here". An action's
    * promise resolves on its own response, independently of the subscription
    * that carries the writes it made, so the last chunk of BSC teams can reach
    * this client after it. Confirm therefore also waits for the subscription to
-   * show this run's whole batch with every row `ready` — see
-   * `streamedBatchSettled`.
+   * show this run's whole batch with every team it is owed — see
+   * `streamHasCaughtUp`.
+   *
+   * `gaveUp` is the bound on that wait: set when the stream has not caught up
+   * within `SOLO_STREAM_TIMEOUT_MS` of the fetch resolving, and it unlocks
+   * Confirm on what the dialog holds rather than stranding the review behind a
+   * lock nothing will lift (see the dialog branch of `handleSync`).
    */
-  const [settleTarget, setSettleTarget] = useState<StreamedBatchTarget | null>(
-    null,
-  );
+  const [settleTarget, setSettleTarget] = useState<{
+    fence: StreamFence;
+    previousBatchId: string | undefined;
+    gaveUp: boolean;
+  } | null>(null);
   // NEO-195 — which sync run is current. Bumped whenever the operator cancels,
   // so a run whose result arrives afterwards knows it was abandoned.
   //
@@ -957,7 +1018,7 @@ export default function CardChecklist({
    * in bounded PAGES, chained through the scheduler, so the subscription can
    * legitimately show a half-written batch for a moment. That is exactly what
    * this wait is for and no change was needed here: the loop polls until
-   * `live.total === expectedCount` inside a 30s budget, so a chained write
+   * `live.total === fence.count` inside a 30s budget, so a chained write
    * only makes it wait a few more milliseconds. What it must never do is
    * treat a short count as final.
    *
@@ -965,33 +1026,44 @@ export default function CardChecklist({
    * — same set, same operator, coincidentally the same count — would satisfy
    * the equality and be committed as if they were this fetch's.
    *
-   * NEO-341 — and every row must be `ready`. This path commits the teams it
-   * reads here, and the action's promise resolves before the client has
-   * necessarily seen the last chunk of its BSC team writes; committing then
-   * would save those cards with no team and keep them out of the entity
-   * wizard. `ready` used to be unusable for this (every row was written
-   * `pending` whenever any row needed a lookup, so it never reached `total`);
-   * the server now writes `pending` only on rows that really await one. The
-   * dialog's Confirm waits on the same marker (`streamedBatchSettled`).
+   * ## NEO-333 + NEO-341 — and the TEAMS must have landed
+   *
+   * The count alone let this return before the teams did. The team lookup is
+   * the fetch's LAST step, ~70s after the rows were written, so the count has
+   * long matched by the time the action resolves — and Convex resolves an
+   * action's promise without waiting for subscriptions to catch up (unlike a
+   * mutation's). The snapshot taken here then carried no BSC teams: the wizard
+   * never asked about them and the commit saved team-less cards, which the
+   * background queue linked seconds later, unreviewed.
+   *
+   * So the gate is `streamHasCaughtUp`: THIS run's batch (the action's
+   * `candidateBatchId`), `ready` at or past the action's `readyAfterTeams`,
+   * and every row `ready`. `ready` used to be unusable for the last part —
+   * every row was written `pending` whenever any row needed a lookup, so on a
+   * set where some cards arrived with teams already parsed it never reached
+   * `total`, and a gate on it would have hung this path on exactly the BSC-only
+   * sets it exists for. The server now writes `pending` only on rows that
+   * really await a lookup, so `ready === total` is reachable on every set, and
+   * it also covers the one lookup the fence cannot: a retry that lands after
+   * the action returned. It costs one subscription round trip after the action
+   * returns — the fetch's own time, not the operator's.
+   *
+   * An absent fence (a server older than this client, in the deploy window)
+   * falls back to the moved-batch, count and readiness checks alone. Either
+   * way the wait is bounded: a batch that never settles times out, and the
+   * caller decides what that means (the auto-keep path saves nothing; the
+   * dialog unlocks Confirm). The dialog's Confirm waits on the same gate (`streamSettled`).
    */
   const awaitStreamedBatch = useCallback(
     async (
-      expectedCount: number,
+      fence: StreamFence,
       previousBatchId: string | undefined,
       abandoned: () => boolean,
     ): Promise<typeof liveCandidates> => {
       const deadline = Date.now() + SOLO_STREAM_TIMEOUT_MS;
       while (!abandoned()) {
         const live = liveCandidatesRef.current;
-        if (
-          live &&
-          live.batchId !== undefined &&
-          live.batchId !== previousBatchId &&
-          streamedBatchSettled(live, {
-            candidateCount: expectedCount,
-            previousBatchId,
-          })
-        ) {
+        if (live && streamHasCaughtUp(live, fence, previousBatchId)) {
           return live;
         }
         if (Date.now() > deadline) return undefined;
@@ -1130,12 +1202,14 @@ export default function CardChecklist({
         await handlePairingConfirm({ cards: [], conflictsByIndex: {} });
         return;
       }
+      const fence: StreamFence = {
+        count: result.candidateCount,
+        batchId: result.candidateBatchId,
+        readyAfterTeams: result.readyAfterTeams,
+      };
       // NEO-341 — Confirm now waits for the subscription to show what this
       // fetch reported, with every team lookup landed (see `settleTarget`).
-      setSettleTarget({
-        candidateCount: result.candidateCount,
-        previousBatchId,
-      });
+      setSettleTarget({ fence, previousBatchId, gaveUp: false });
       /**
        * NEO-255 — exactly one marketplace attached: keep everything, no dialog.
        *
@@ -1167,7 +1241,7 @@ export default function CardChecklist({
         expectedSides.every((side, i) => side === serverSides[i]);
       if (expectSolo && agreed && serverSides.length === 1) {
         const live = await awaitStreamedBatch(
-          result.candidateCount,
+          fence,
           previousBatchId,
           abandoned,
         );
@@ -1240,7 +1314,32 @@ export default function CardChecklist({
         setSoloFetch(null);
         setPairingPhase("review");
       }
+      /*
+       * NEO-333 + NEO-341 — the dialog's Confirm is NOT unlocked by this
+       * promise. The action can resolve before the subscription carries its
+       * last team writes (see `awaitStreamedBatch`), and a Confirm pressed in
+       * that window would hand the wizard and the commit cards whose teams the
+       * modal had not absorbed. Confirm waits on `streamSettled` instead: the
+       * same `streamHasCaughtUp` gate the auto-keep path uses, read reactively
+       * off the subscription, and only once the dialog's own reducer has
+       * absorbed the settled batch (`CardPairingModal`'s `streamSettled`).
+       *
+       * Bounded, so it cannot hang. The same wait runs here in the background;
+       * if the stream has not caught up within `SOLO_STREAM_TIMEOUT_MS` it sets
+       * `gaveUp`, and Confirm unlocks on what the dialog holds rather than
+       * stranding the review behind a lock nothing will lift. The server
+       * leaves no row `pending` that is not owed a lookup, so this is only
+       * reachable when a team write was lost outright, and then Confirm behaves
+       * as it did before NEO-333 for that card. Not awaited: `fetchInFlight` and
+       * the Sync button release as soon as the fetch itself is over.
+       */
       setSyncMessage(result.message);
+      void awaitStreamedBatch(fence, previousBatchId, abandoned).then(
+        (caughtUp) => {
+          if (caughtUp || abandoned()) return;
+          setSettleTarget((t) => (t ? { ...t, gaveUp: true } : t));
+        },
+      );
     } catch (error) {
       // Same abandonment rule as the resolved path: a cancelled run that
       // rejects afterwards must not overwrite "Sync cancelled — no cards
@@ -2082,10 +2181,21 @@ export default function CardChecklist({
    * A candidate carries its bucket, so the three columns come straight off it
    * rather than being re-derived here.
    */
-  /** NEO-341 — the client has SEEN the end of this run's team lookups. */
+  /**
+   * NEO-333 + NEO-341 — the client has SEEN the end of this run's team
+   * lookups (`streamHasCaughtUp`), or has waited its full budget for it
+   * (`gaveUp`; see the dialog branch of `handleSync`).
+   */
   const streamSettled =
     settleTarget !== null &&
-    streamedBatchSettled(liveCandidates, settleTarget);
+    (settleTarget.gaveUp ||
+      (liveCandidates !== undefined &&
+        liveCandidates !== null &&
+        streamHasCaughtUp(
+          liveCandidates,
+          settleTarget.fence,
+          settleTarget.previousBatchId,
+        )));
   const streamedPairing = useMemo(() => {
     if (
       pairingPhase === "closed" ||
