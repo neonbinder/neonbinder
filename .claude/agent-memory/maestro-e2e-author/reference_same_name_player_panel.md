@@ -1,30 +1,40 @@
 ---
 name: same-name-player-panel
-description: NEO-254 "Same name, different people" wizard panel — the bulk never decides these rows, so any wizard drain must answer them; selectors and why to tap the TOP candidate only
+description: NEO-332 same-name PICK STEP ("Which <name> is this?") — inserted READY with no lookup, bulk create skips it, bulk skip decides it; selectors, why to tap the TOP candidate, and why an untouched pick step yields to a settled team
 metadata:
   type: reference
 ---
 
-`SameNamePlayerPanel` renders on a player row when 2+ NB players share the
-normalized name. The footer bulk (`Add remaining players as new`) SKIPS these
-rows on purpose (live `players.isAmbiguousPlayerName`), so they stay undecided
-and `Confirm & Save` never renders until each is answered by hand.
+Since NEO-332 a player row that 2+ NB players answer to (and the card's year
+and team do not narrow to one) is its own wizard step, the PICK step. The old
+"Same name, different people" panel inside the New Player step is gone.
 
 Selectors (all user-visible):
-- heading text node, full match: `Same name, different people`
-- list: `id: "Players already filed under this name"`
-- each candidate: `id: "Link to <name>, [On a roster that year, ]b. YYYY · <career>"`
-  (ordinal `option N of M` when nothing is on file). One tap = a link decision;
-  the walk then advances to the next undecided row.
-- The footer's `Link to existing instead` also matches `Link to .*` — scope with
-  `childOf: {id: "Players already filed under this name"}`.
+- heading, the `<h3>`'s direct text: `text: "Which .* is this\\?"`
+- intro line: `We've got N on file under that name. Pick the one on this card.`
+  (capped: `More than N answer to that name — …`)
+- list: `id: "Players already filed under this name"`, each candidate
+  `id: "Link to <name>, [On a roster that year, ]b. YYYY · <career>"`. One tap
+  = a link decision. Footer `Link to existing instead` also matches `Link to .*`,
+  so scope with `childOf` the list.
+- footer: `Create new` (NOT `Add as New Player`), `Link to existing instead`,
+  `Skip <name> — not a person`. `Create new` opens the New Player step
+  (`Add as New Player` + `Back to the list`) and only then runs the lookup.
+- read-back: `Linked to <name>, b. YYYY` (Decided list, which collapses past 5,
+  and the `Decision for <name>` panel).
 
-Tap `index: 0` (top). Candidates are sorted by birth year, not by the
-roster-year flag, and the panel sits right under the row name, so rows 5+ can
-fall under the dialog footer where a tap hits a footer button
+Bulk: `Add remaining players as new (N)` excludes these rows and can read (0)
+while they remain; `Skip remaining names (N)` decides them.
+
+Tap `index: 0` (top): rows lower down can fall under the dialog footer
 ([[inner-scroller-clip-is-invisible-to-maestro]], [[guard-a-tap-at-a-footer-buttons-x]]).
 
-Why it matters: a deployment pre-loaded with a player catalogue (NEO-330) turns
-a ~300-name "all new" batch into a handful of rows, several of them same-name.
-A drain loop that only knows `Add as New (Team|League)` + `Confirm & Save`
-parks on such a row until its wait times out. Related: [[wizard-drain-loop-one-footer-guard]].
+**It can be the step on screen when the wizard opens** (READY, no lookup), and
+an UNTOUCHED pick step is an implicit player pin: it yields to the first
+settled undecided team/league (`resolveNav`), including career teams staged
+by OTHER rows' lookups. `Create new` pins it (an edit); `Back to the list`
+unpins. So a flow that must hold the pick step for several steps needs the
+batch's other lookups to be slow or already drained — on a catalogue-loaded
+preview a set with a handful of unknowns stages and settles career teams in
+seconds. Any drain loop must wake on the heading too, or it parks.
+Related: [[wizard-drain-loop-one-footer-guard]], [[catalogue-seeded-wizard-staging]].

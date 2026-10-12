@@ -86,6 +86,18 @@ tags:
 #   wizard-headings-include-staged-career-teams). The catalogue holds none of
 #   the eight clubs.
 #
+#   NEO-332: two of the 200 players are SAME-NAME rows on that preview
+#   (checked read-only 2026-10-11: "Alex Gonzalez", 2 Baseball players on
+#   file, and "Ramon Hernandez", 3; neither narrows on a 1996 card), so they
+#   are inserted READY as pick steps ("Which <name> is this?") with no lookup,
+#   and the wizard may OPEN on one. Nothing below changes: an untouched pick
+#   step is an implicitly presented player row, and it yields to the first
+#   settled team exactly as before (`resolveNav`), so the walk in PART 3 still
+#   sees every team step first, and the pick step carries the same
+#   `Skip <name> — not a person` that ends it. The bulk skip in PART 4
+#   decides both rows like any other. Without their lookups, the two staged
+#   career teams above may not appear; the walk skips whatever is staged.
+#
 #   THE TWO ROWS UNDER TEST ARE NAMED, NOT "WHICHEVER COMES FIRST". The walk
 #   reads each team/league step's heading and acts on two checklist clubs by
 #   name — "Navegantes del Magallanes" for the alias, "Tigres de Aragua" for

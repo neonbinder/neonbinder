@@ -40,6 +40,14 @@ absent; NHL-only catalogue).
 retro card naming "Kansas City Monarchs" links to the 2021– independent club,
 not the 1920–48 one. A same-name modern club silently wins.
 
+**Will a name stage, and as a pick step?** Run the real gate read-only:
+`npx convex run --preview-name <branch> --codegen disable --typecheck disable
+players:resolveNameForReview '{"name":…,"sportId":…,"cardYear":…,"cardTeamNames":[…]}'`.
+No `playerId` = staged; `matchCount >= 2` with no `playerId` = NEO-332 pick
+step. Pass the card's team: most same-name pairs (Will Smith, Pedro Martinez)
+only narrow on it. Card names/teams come from BSC public search
+(`players` / `teamName` aggregations per `setName`/`variantName` slug).
+
 **Checking a name read-only:** `npx convex run --deployment <preview>
 --codegen disable --typecheck disable --inline-query '…'` is sandboxed
 read-only. Key = `nameNormalized` (diacritics folded, lowercase, punctuation
@@ -52,7 +60,7 @@ plus `playerAliases.by_alias_normalized_and_sport_id` and
 **Retro/legend sets stage SAME-NAME legends (measured 2026-10-11).** A
 retired star's career span never covers a modern card year (tolerance 2), so
 any legend who shares a name with another catalogue row gets 0 survivors and
-a "Same name, different people" step: Frank Thomas, Randy Johnson, Tony
+a same-name pick step (NEO-332; was the "Same name, different people" panel): Frank Thomas, Randy Johnson, Tony
 Gwynn (Jr. holds the alias), Joe Morgan, Bob Gibson, Pedro Martinez, Billy
 Williams, Sam Crawford, Eddie Collins, John McGraw recur across Tribute,
 Museum, Gilded, Archives, Diamond Kings, Cooperstown. Every 90–400-card retro

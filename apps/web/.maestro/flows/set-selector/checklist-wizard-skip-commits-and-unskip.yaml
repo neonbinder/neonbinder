@@ -64,6 +64,15 @@ tags:
 #   not a {person|team}"), and the bulk skip decides team steps, league steps
 #   and players alike.
 #
+#   NEO-332: one of the 16 is a SAME-NAME row — "Taylor Hall", two Hockey
+#   players on file (b. 1964 and b. 1991), neither narrowed by a 1995 card
+#   (checked read-only on PR #314's preview, 2026-10-11) — so it is inserted
+#   READY as a pick step ("Which Taylor Hall is this?") and the wizard can
+#   open on it. Nothing here depends on which step is up: the bulk skip
+#   decides EVERY undecided row, pick steps included (`isBulkCandidate`:
+#   "SKIP takes every other row"), and it lives in the footer the pick step
+#   shares.
+#
 # R3 — DEDUP: the skip CONTROL is checklist-wizard-skip-not-a-person (read-only,
 #   on its own 1995 hockey set). This flow adds only the commit side. The fetch
 #   is `util-fetch-one-marketplace-set-checklist-to-wizard` (the BSC-only path).
