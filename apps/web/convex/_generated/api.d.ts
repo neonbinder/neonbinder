@@ -39,6 +39,7 @@ import type * as brandRehome from "../brandRehome.js";
 import type * as brandView from "../brandView.js";
 import type * as browserAudience from "../browserAudience.js";
 import type * as bscFacets from "../bscFacets.js";
+import type * as bscTeamCheck from "../bscTeamCheck.js";
 import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
@@ -168,6 +169,7 @@ declare const fullApi: ApiFromModules<{
   brandView: typeof brandView;
   browserAudience: typeof browserAudience;
   bscFacets: typeof bscFacets;
+  bscTeamCheck: typeof bscTeamCheck;
   bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
   cardNumberPrefix: typeof cardNumberPrefix;
