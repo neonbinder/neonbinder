@@ -22,8 +22,8 @@
 }
 
 /* Reserve space for the sticky binder-header (~80px tall) so any
- * Element.scrollIntoView() call (and Maestro's headless scroll
- * implementation, which uses the same primitive) lands the target
+ * Element.scrollIntoView() call (including the scroll Playwright does
+ * before an action, which uses the same primitive) lands the target
  * BELOW the sticky header instead of underneath it. Without this,
  * scrolled-into-view buttons end up occluded by the header and any
  * coordinate-based click hits the header instead of the button. */

@@ -182,8 +182,9 @@ function TestingSignInContent() {
 }
 
 // Automated sign-in page for E2E testing.
-// Only functional when NEXT_PUBLIC_CLERK_TESTING_ENABLED=true.
-// Maestro flows navigate here instead of filling out the sign-in form.
+// Only functional when VITE_CLERK_TESTING_ENABLED=true.
+// E2E specs navigate here (support/fixtures.ts `signIn`) instead of filling out
+// the sign-in form.
 export default function TestingSignInPage() {
   return (
     <Suspense

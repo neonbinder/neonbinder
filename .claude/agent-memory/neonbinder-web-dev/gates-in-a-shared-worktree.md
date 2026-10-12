@@ -1,6 +1,6 @@
 ---
 name: gates-in-a-shared-worktree
-description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay
+description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay; plain rm not git rm; npm install -D can prune unrelated lock entries
 metadata:
   type: feedback
 ---
@@ -67,6 +67,21 @@ Things that look like failures during the apps/web fast gates but are not.
    seconds earlier; no stash, no commit). Keep a scratchpad copy of each file
    you edit, and before reporting grep each file for a marker of your change
    (`grep -c <newSymbol> file`) and re-apply from your scripts if it is gone.
+
+8. **Delete with plain `rm`, never `git rm`, in a shared worktree.** `git rm`
+   STAGES the deletion, and the coordinator's next commit (for any other
+   agent's work) sweeps it in, split from your paired edits. NEO-341: a staged
+   `convex/e2eQueue.ts` deletion landed in a docs commit while `http.ts` still
+   called `api.e2eQueue.*` unstaged, so that commit does not typecheck alone.
+   Leave everything unstaged; the coordinator stages by path.
+9. **`npm install -D <pkg>` can rewrite unrelated lock entries.** NEO-341: npm
+   11.19 pruned ~500 lines of `"peer": true` esbuild entries (vite's optional
+   peer) along with adding the plugin, AND deleted `node_modules/esbuild` from
+   the shared install. Back up the lock first; if the diff is not just your
+   package, restore it and hand-insert the new `packages` entries (copy them
+   from npm's version), then check `npm ci --dry-run`. Restore anything npm
+   pruned from `node_modules` by extracting the locked tarballs (`npm pack
+   <pkg>@<ver>`, verify the sha512 against the lock's `integrity`).
 
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.

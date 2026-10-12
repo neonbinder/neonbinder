@@ -3,12 +3,11 @@
 # Keeps an app alive at http://localhost:3000 for local E2E, restarting Vite
 # whenever it exits.
 #
-# HTTP, not HTTPS — this serves the URL run-e2e-smoke.sh defaults to, which is
-# the same one CI drives (its maestro-runner proxy listens on plain
-# http://localhost:3000). Under the mkcert HTTPS server, Chrome for Testing
-# hangs after launchApp and every flow dies on a 180s getCurrentUrl timeout;
-# see the APP_URL comment in run-e2e-smoke.sh. http://localhost is a secure
-# context per spec, so Clerk and crypto.subtle are unaffected.
+# HTTP, not HTTPS — this serves the plain http://localhost:3000 that the
+# Playwright suite's APP_URL points at locally. The mkcert HTTPS server adds a
+# self-signed certificate for the browser to trip on and nothing the tests
+# need: http://localhost is a secure context per spec, so Clerk and
+# crypto.subtle are unaffected.
 #
 # Disabling mkcert also removes the reason this keeper exists: local Vite
 # SIGSEGVs intermittently inside the mkcert plugin's bundled undici, which is
@@ -25,7 +24,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
-# Serve plain HTTP so the app matches run-e2e-smoke.sh's APP_URL default.
+# Serve plain HTTP so the app matches the local APP_URL (http://localhost:3000).
 # vite.config.ts skips the mkcert plugin entirely when this is set.
 if [ "${VITE_DEV_DISABLE_HTTPS:-1}" != "0" ]; then
   export VITE_DEV_DISABLE_HTTPS=1

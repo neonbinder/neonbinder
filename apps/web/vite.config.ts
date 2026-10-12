@@ -22,8 +22,8 @@ async function loadMkcertIfHttpsEnabled(): Promise<Plugin | null> {
   return mkcert();
 }
 
-// Dev-only middleware that mirrors api/auth/testing.ts so that Maestro E2E
-// flows can hit /testing/sign-in against `vite dev` without needing a full
+// Dev-only middleware that mirrors api/auth/testing.ts so that Playwright E2E
+// specs can hit /testing/sign-in against `vite dev` without needing a full
 // `vercel dev` setup. Same security layers and account selector as the
 // Vercel handler.
 type DevTestAccount =
@@ -204,17 +204,15 @@ export default defineConfig(async ({ mode }) => {
   },
   server: {
     port: 3000,
-    // Maestro writes thousands of session/log files into maestro-report/ and
-    // tmp/ during local e2e runs (run-e2e-smoke.sh concatenates $PWD with
-    // $REPORT_DIR, so absolute REPORT_DIR values still land inside the
-    // project root). Without this ignore list, Vite's HMR fires a page
-    // reload on every Maestro write and can OOM the laptop mid-suite.
+    // Files written inside the project root during local runs must not
+    // trigger HMR: vite-keeper.sh appends Vite's own log to
+    // maestro-report/logs/vite.log (a reload per log line), and Playwright
+    // writes its report and per-test results under playwright/. Without this
+    // ignore list, every write fires a page reload under the running test.
     watch: {
       ignored: [
         "**/maestro-report/**",
-        "**/maestro-report-*/**",
         "**/tmp/**",
-        "**/.maestro/tests/**",
         "**/playwright/report/**",
         "**/playwright/results/**",
       ],

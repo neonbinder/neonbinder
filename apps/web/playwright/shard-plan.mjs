@@ -10,12 +10,13 @@
 //
 // Playwright's own --shard splits by test COUNT in file order, so one shard
 // can draw every multi-minute set-builder spec. This assigns each spec to the
-// currently lightest shard, heaviest spec first, which is what the Maestro
-// work queue achieves dynamically (NEO-61).
+// currently lightest shard, heaviest spec first, which is what the retired
+// Maestro work queue achieved dynamically (NEO-61).
 //
-// Timings: timings.json (seconds per spec path under tests/), else
-// .maestro/flow-timings.tsv. Only relative size matters. A spec with no
-// timing gets the median. setup.spec.ts (the seed job) and
+// Timings: timings.json (seconds per spec path under tests/) is the only
+// source. Only relative size matters. A spec with no timing (a new spec, or
+// no timings.json at all) gets the median of the known timings, or 1s when
+// there are none. setup.spec.ts (the seed job) and
 // profile/worker-bootstrap.spec.ts (every shard's `bootstrap` project
 // dependency) are never planned.
 //
@@ -29,7 +30,6 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
 const TESTS = path.join(HERE, "tests");
 const TIMINGS_JSON = path.join(HERE, "timings.json");
-const TIMINGS_TSV = path.join(WEB, ".maestro", "flow-timings.tsv");
 const EXCLUDED = new Set(["setup.spec.ts", "profile/worker-bootstrap.spec.ts"]);
 
 const toPosix = (p) => p.split(path.sep).join("/");
@@ -43,19 +43,8 @@ function listSpecs() {
 }
 
 function loadTimings() {
-  if (fs.existsSync(TIMINGS_JSON)) {
-    return JSON.parse(fs.readFileSync(TIMINGS_JSON, "utf8")).seconds ?? {};
-  }
-  const out = {};
-  if (fs.existsSync(TIMINGS_TSV)) {
-    for (const line of fs.readFileSync(TIMINGS_TSV, "utf8").split("\n")) {
-      if (!line.trim() || line.startsWith("#")) continue;
-      const [secs, flow] = line.split("\t");
-      const spec = flow.replace(/^\.maestro\/flows\//, "").replace(/\.yaml$/, ".spec.ts");
-      out[spec] = Number(secs);
-    }
-  }
-  return out;
+  if (!fs.existsSync(TIMINGS_JSON)) return {};
+  return JSON.parse(fs.readFileSync(TIMINGS_JSON, "utf8")).seconds ?? {};
 }
 
 function median(values) {

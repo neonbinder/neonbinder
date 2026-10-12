@@ -1,13 +1,13 @@
-// Shared logic for minting Clerk sign-in + testing tokens so that Maestro
-// E2E flows can bypass the password form and Clerk's bot detection.
+// Shared logic for minting Clerk sign-in + testing tokens so that E2E specs
+// can bypass the password form and Clerk's bot detection.
 //
 // Used by:
 // - Vite dev-server middleware (vite.config.ts) for local `vite dev`
 // - Vercel serverless function (api/auth/testing.ts) for Vercel preview deploys
 //
 // Clerk Backend API is rate-limited and occasionally returns 5xx under
-// burst load (3 parallel Maestro workers each hitting /v1/users +
-// /v1/sign_in_tokens per flow). Without retries those transient failures
+// burst load (parallel E2E workers each hitting /v1/users +
+// /v1/sign_in_tokens per test). Without retries those transient failures
 // surface as misleading "user not found" / "token creation failed"
 // errors because the wrapper has no way to distinguish a 200 with empty
 // data from a 429/5xx with an error body. We now retry transient failures

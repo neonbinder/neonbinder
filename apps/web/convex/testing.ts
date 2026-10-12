@@ -1,12 +1,12 @@
 // Per-user state reset for E2E test isolation.
 //
 // Problem: NEW_PROFILE_TEST_EMAIL_<worker> and TEST_EMAIL_<worker> resolve to
-// fixed Clerk users that are reused across CI runs. After a flow successfully
-// saves profile data, the next run's `assertVisible "→ paypal.me/<expected>"`
-// step sees the *previous* run's handle and Maestro `inputText` (which appends
-// rather than replaces) produces concatenated garbage.
+// fixed Clerk users that are reused across CI runs. After a test successfully
+// saves profile data, the next run starts from the *previous* run's values
+// (under the retired Maestro suite, whose `inputText` appended rather than
+// replaced, that produced concatenated garbage).
 //
-// Fix: a test flow signs the user in, then calls this mutation to wipe that
+// Fix: a test signs the user in, then calls this mutation to wipe that
 // user's own per-user state before the assertions run.
 //
 // Security posture — why this is safe as a *public* mutation:
@@ -18,7 +18,7 @@
 //   production has no value, so the mutation throws there and real users'
 //   profiles can never be deleted. (We check presence, not the value — it's
 //   purely an on/off flag here. The value is never sent to the client, so it
-//   can't leak through the bundle the way a Maestro `-e` secret would.)
+//   can't leak through the bundle or the test runner's artifacts.)
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
@@ -227,10 +227,11 @@ export const seedMyTestPlaceholderStream = mutation({
 
 // Server-side marketplace-credential seeding for E2E test isolation (NEO-29).
 //
-// Problem: Maestro flows used to receive real BSC/SportLots passwords via `-e`
-// env, which Maestro serializes into its public CI debug artifacts. Instead,
-// the dev test user's credentials are now seeded server-side from Convex env
-// vars and never touch Maestro at all.
+// Problem: the retired Maestro flows received real BSC/SportLots passwords via
+// `-e` env, which Maestro serialized into its public CI debug artifacts. The
+// rule that came out of it still holds for Playwright, whose traces, reports
+// and logs are public CI artifacts too: the test user's credentials are seeded
+// server-side from Convex env vars and never pass through the test runner.
 //
 // Same security posture as resetMyTestState: scoped to the CALLER (seeds only
 // getCurrentUserId's own credentials), gated by presence of TESTING_RESET_SECRET

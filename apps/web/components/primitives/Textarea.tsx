@@ -3,11 +3,9 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 
 /**
  * NEO-44 — the app's shared multi-line text field. The `<textarea>` counterpart
- * to {@link ./Input}: same dark-neon styling, same auto-applied
- * {@link useFieldTestClass} marker class for Maestro `inputText` targeting, and
- * the same hard rule — **never emits an `id` of its own**, because Maestro reads
- * `resource-id = node.id || node.ariaLabel`, so an invented id would clobber the
- * aria-label our flows select on.
+ * to {@link ./Input}: same dark-neon styling, same auto-applied (legacy)
+ * {@link useFieldTestClass} marker class, and the same hard rule — **never
+ * emits an `id` of its own**; see Input's header for why.
  *
  * `bare` renders the lone `<textarea>` with no wrapper chrome, which is how
  * existing markup migrates without any DOM or selector change.

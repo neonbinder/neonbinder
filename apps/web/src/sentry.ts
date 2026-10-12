@@ -1,12 +1,12 @@
 import * as Sentry from "@sentry/react";
 import { scrubSignedStorageUrls } from "../lib/observability/scrub-signed-urls";
 
-// Skip Sentry entirely when running under Maestro/E2E tests. Sentry's
-// Replay integration spawns Web Workers and same-origin iframes for
-// session capture; Maestro's CdpWebDriver `detectWindowChange` latches
-// onto those transient handles and never switches back, causing
-// subsequent CDP JS calls to fail with `null cannot be cast to non-null
-// type kotlin.Int`. See NEO-13 / Maestro issues #3176, #3271, #3289.
+// Skip Sentry entirely when running under E2E tests, so test sessions never
+// reach Sentry as errors, traces or replays. (It began as a Maestro
+// workaround: Replay's Web Workers and same-origin iframes made Maestro's
+// CdpWebDriver latch onto transient window handles — NEO-13, Maestro issues
+// #3176, #3271, #3289. That driver is retired; the skip stays for the
+// noise.)
 //
 // VITE_CLERK_TESTING_ENABLED is the existing flag that gates the
 // /testing/sign-in page and is already set on Vercel preview + local

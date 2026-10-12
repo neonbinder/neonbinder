@@ -4,6 +4,7 @@ import { FlatCompat } from "@eslint/eslintrc";
 import tsParser from "@typescript-eslint/parser";
 import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
+import playwright from "eslint-plugin-playwright";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -15,18 +16,17 @@ const compat = new FlatCompat({
 /**
  * NEO-44 — raw text inputs must go through the shared primitive.
  *
- * maestro-web's `inputText` does not type into the field it tapped: it reads
- * `document.activeElement`, re-derives an XPath from it (unique `id` → `class` →
- * positional), then sends keys to whatever that XPath resolves to. Two inputs
- * with no `id` and the same Tailwind `className` produce a non-unique XPath, so
- * Selenium types into the FIRST one on the page. That produced a long tail of
- * "is it a product bug or a test bug?" E2E failures; upstream
- * (mobile-dev-inc/maestro#1083) closed it as not-planned, so the fix lives here.
+ * `components/primitives/Input` / `Textarea` carry the app's field styling and
+ * behaviour in one place, so every text field looks and acts the same. This
+ * rule keeps that true for code written from now on — without it the
+ * consistency decays the moment somebody types `<input`.
  *
- * `components/primitives/Input` applies a document-unique marker class
- * internally, so anything rendered through it is immune with no per-call work.
- * This rule is what keeps that true for code written from now on — without it
- * the fix decays the moment somebody types `<input`.
+ * History: the rule was introduced for the retired Maestro web driver, whose
+ * `inputText` re-found the focused field by an XPath built from `id` → `class`
+ * → position, so two identical raw inputs sent keystrokes to the first one on
+ * the page (mobile-dev-inc/maestro#1083). The primitives still add a
+ * document-unique marker class from that era (useFieldTestClass); the
+ * Playwright suite does not use it.
  *
  * Scope: only text-ish inputs. Checkboxes, radios, file and colour pickers are
  * genuinely different controls (some have their own primitives) and are left
@@ -51,9 +51,8 @@ const NON_TEXT_INPUT_TYPES = [
 const rawInputSelector = `JSXOpeningElement[name.name="input"]:not(:has(JSXAttribute[name.name="type"][value.value=/^(${NON_TEXT_INPUT_TYPES.join("|")})$/]))`;
 
 const RAW_FIELD_MESSAGE =
-  "Use `<Input bare>` from components/primitives/Input instead of a raw <input>. " +
-  "It applies the document-unique class maestro-web's inputText needs to target " +
-  "the right field, plus the app's field styling. See NEO-44.";
+  "Use `<Input bare>` from components/primitives/Input instead of a raw <input>, " +
+  "so the field gets the app's shared styling and behaviour. See NEO-44.";
 
 const RAW_TEXTAREA_MESSAGE =
   "Use `<Textarea bare>` from components/primitives/Textarea instead of a raw " +
@@ -131,9 +130,9 @@ const jsxA11yHouseRules = {
     // `stopPropagation()`; list rows are click-to-open with a real button
     // inside for keyboard users. Every one of these is an audited decision and
     // the only rule-compliant edit is to add roles, tabindex or keyboard
-    // handlers — exactly what the Maestro web driver is sensitive to
-    // (.maestro/README.md: `pressKey` re-finds `document.activeElement` by
-    // XPath). Reviewed per component, never as a blind sweep.
+    // handlers, which change the focus order and the accessible tree that
+    // keyboard users and the E2E suite's role-based locators both depend on.
+    // Reviewed per component, never as a blind sweep.
     "jsx-a11y/no-static-element-interactions": "off",
     "jsx-a11y/click-events-have-key-events": "off",
     "jsx-a11y/no-noninteractive-element-interactions": "off",
@@ -158,11 +157,13 @@ const jsxA11yHouseRules = {
 
 /**
  * The SetSelector card panels render `<label>` as a purely VISUAL caption and
- * put the accessible name on the control's own `aria-label`. Associating them
- * (`id` + `htmlFor`) would switch Maestro's resource-id for the field and break
- * the E2E flows — see the "Variation of" note in CardDetailPanel.tsx. The
- * rule-compliant cleanup is to demote those captions to <span>/<div>, which is
- * a markup change across three files and tracked separately (NEO-259 report).
+ * put the accessible name on the control's own `aria-label`. They were never
+ * associated (`id` + `htmlFor`) because the retired Maestro driver used a
+ * field's `id` in place of its aria-label as the selector handle — see the
+ * "Variation of" note in CardDetailPanel.tsx. The Playwright suite has no such
+ * constraint. The rule-compliant cleanup is to demote those captions to
+ * <span>/<div>, a markup change across three files tracked separately (NEO-259
+ * report).
  * Until then the rule is off for exactly these files; it stays on everywhere
  * else so new forms are held to it.
  */
@@ -178,8 +179,97 @@ const visualCaptionLabels = {
   },
 };
 
+/**
+ * NEO-341 — the Playwright E2E suite (apps/web/playwright/**). These are plain
+ * `.ts` files, which nothing else here gives a parser, so the block names its
+ * own. playwright/GUIDE.md is the authority; the rules below enforce the parts
+ * of it a linter can see.
+ *
+ * Locators (GUIDE hard rule 2): a spec finds things only by what a user
+ * perceives — getByRole/getByLabel/getByText and friends. `.locator(...)`
+ * takes CSS or XPath, `getByTestId` reads a test-only attribute, and
+ * `$`/`$$`/`waitForSelector` are CSS element handles; all are banned.
+ *
+ * Waits (hard rule 4): no `waitForTimeout`, no `networkidle`. The plugin's own
+ * `no-wait-for-timeout` and `no-networkidle` rules are used for these instead
+ * of a hand-written selector because they also catch the option forms
+ * (`goto(url, { waitUntil: "networkidle" })`), raised to errors.
+ *
+ * `test` comes from support/fixtures.ts, which extends Playwright's `test` with
+ * the worker-scoped env and `signIn`; importing the bare one skips both.
+ */
+const PLAYWRIGHT_FILES = ["playwright/**/*.ts"];
+
+const playwrightRecommended = {
+  ...playwright.configs["flat/recommended"],
+  files: PLAYWRIGHT_FILES,
+};
+
+const playwrightHouseRules = {
+  files: PLAYWRIGHT_FILES,
+  languageOptions: {
+    parser: tsParser,
+    parserOptions: { sourceType: "module" },
+  },
+  plugins: playwright.configs["flat/recommended"].plugins,
+  rules: {
+    "no-restricted-properties": [
+      "error",
+      {
+        property: "locator",
+        message:
+          "Locate by what a user perceives (getByRole/getByLabel/getByText/...), never CSS or XPath. playwright/GUIDE.md hard rule 2.",
+      },
+      {
+        property: "getByTestId",
+        message:
+          "No data-testid: locate by role, label or text. playwright/GUIDE.md hard rule 2.",
+      },
+    ],
+    "no-restricted-imports": [
+      "error",
+      {
+        paths: [
+          {
+            name: "@playwright/test",
+            importNames: ["test"],
+            message:
+              "Import `test` from playwright/support/fixtures.ts (it carries the worker env and signIn).",
+          },
+        ],
+      },
+    ],
+    "playwright/no-wait-for-timeout": "error",
+    "playwright/no-networkidle": "error",
+    "playwright/no-element-handle": "error",
+    "playwright/no-wait-for-selector": "error",
+    "playwright/no-force-option": "error",
+    "playwright/no-page-pause": "error",
+    "playwright/no-skipped-test": "error",
+    // Off: GUIDE rule R2 sanctions a genuine branch (paused vs live
+    // marketplace, panel already open or not) provided every branch ends in
+    // hard asserts. These two rules flag every `if` and every expect inside
+    // one (300+ warnings on the suite at NEO-341) whether or not it is that
+    // shape, so they cannot tell a silent fall-through from a correct
+    // branch. R2 review is where that judgement lives.
+    "playwright/no-conditional-in-test": "off",
+    "playwright/no-conditional-expect": "off",
+  },
+};
+
+/** The one file allowed to import Playwright's own `test`: it extends it. */
+const playwrightFixturesFile = {
+  files: ["playwright/support/fixtures.ts"],
+  rules: {
+    "no-restricted-imports": "off",
+  },
+};
+
 const eslintConfig = [
   ...reactHooksLegacyScope,
+  playwrightRecommended,
+  playwrightHouseRules,
+  playwrightFixturesFile,
   jsxA11yRecommended,
   jsxA11yHouseRules,
   visualCaptionLabels,

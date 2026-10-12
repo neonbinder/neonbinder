@@ -1,9 +1,9 @@
 /**
- * NEO-170 — the release E2E's door into the upload path.
+ * NEO-170 — the E2E suite's door into the upload path.
  *
- * This page exists because maestro-web cannot drive a file input (`addMedia` on
- * web is a silent no-op stub, so a flow that "attaches" a file passes and
- * uploads nothing). Its entire value is that it bypasses the PICKER and nothing
+ * The page was built because the retired maestro-web driver could not drive a
+ * file input; the Playwright placeholder specs still enter through it. Its
+ * entire value is that it bypasses the PICKER and nothing
  * else — so the case that matters is the negative one: that it goes through the
  * same `usePlaceholderUpload` path the product page uses, rather than a
  * test-only shortcut that could stay green while /placeholders was broken.

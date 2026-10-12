@@ -13,7 +13,8 @@
 #
 # Jason, 2026-09-04: "I frequently want to wipe dev/preview data so we need to
 # make sure it is callable from the command line locally." That's the whole
-# reason this isn't just three lines inside run-e2e-smoke.sh: it has to be
+# reason this isn't just three lines inside the Playwright seed
+# (`npm run test:e2e:seed` calls `./e2e-baseline.sh reset`): it has to be
 # runnable standalone, print what it's about to hit, and refuse prod, whether
 # it's CI or a laptop calling it.
 #
@@ -28,8 +29,7 @@
 #   3. (neither set)         No --deployment flag is passed at all — the Convex
 #                            CLI resolves its own default from CONVEX_DEPLOYMENT
 #                            in .env.local / .env.convex, i.e. a maintainer's
-#                            personal dev deployment. Same resolution
-#                            e2e-local-up.sh:53-68 already relies on.
+#                            personal dev deployment.
 #
 # Safety:
 #   - `--prod` is refused outright.
@@ -65,10 +65,9 @@ PROD_DEPLOYMENT_NAME="first-starfish-800"
 # and the guard right before deployment resolution) was verified 2026-09-04
 # by reading THIS version's source in node_modules/convex/dist/esm/cli/lib/
 # deploymentSelection.js, not by assumption — pin what was actually read.
-# `npx --yes` makes this hermetic regardless: the `seed` job in e2e.yml never
-# runs `npm ci` for apps/web (Maestro needs no node_modules), so a bare
-# `npx convex` would have nothing installed to resolve and no TTY to confirm
-# an ad-hoc install. Pinning also means local and CI runs execute the
+# `npx --yes` makes this hermetic regardless: a caller that has not run
+# `npm ci` for apps/web would leave a bare `npx convex` with nothing installed
+# to resolve and no TTY to confirm an ad-hoc install. Pinning also means local and CI runs execute the
 # identical CLI build regardless of what's in apps/web's own node_modules.
 CONVEX_CLI="convex@1.45.0"
 
@@ -150,7 +149,7 @@ if [ -z "$DEPLOY_KEY" ] && [ -f .env.local ]; then
   # CONVEX_DEPLOY_KEY in .env.local at all), and under `set -e` a bare
   # `VAR="$(grep ... )"` with no match silently kills the whole script right
   # here — verified empirically, this file's `-e` makes it fatal even though
-  # it's inside an assignment (unlike e2e-local-up.sh, which has no `-e`).
+  # it's inside an assignment.
   DEPLOY_KEY="$(grep -E '^CONVEX_DEPLOY_KEY=' .env.local 2>/dev/null | head -1 | sed -E 's/^CONVEX_DEPLOY_KEY=//; s/[[:space:]]*#.*$//; s/^["'\'']//; s/["'\'']$//' || true)"
 fi
 if [ -n "$DEPLOY_KEY" ]; then
@@ -186,8 +185,7 @@ if [ -n "$TARGET" ]; then
 else
   # Nothing explicit — read CONVEX_DEPLOYMENT purely to PRINT/GUARD it. The
   # actual `convex run` call below still passes no --deployment flag, so the
-  # CLI does its own resolution from .env.local / .env.convex, exactly as
-  # e2e-local-up.sh:53-68 does for CONVEX_SITE_URL.
+  # CLI does its own resolution from .env.local / .env.convex.
   RESOLVED=""
   for f in .env.convex .env.local; do
     [ -f "$f" ] || continue

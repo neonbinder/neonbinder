@@ -133,8 +133,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             path="/testing/seed-placeholder-run"
             element={<TestSeedPlaceholderRun />}
           />
-          {/* The release E2E's door into the real upload path — maestro-web
-              cannot drive a file input, so only the picker is bypassed. */}
+          {/* The E2E suite's door into the real upload path: only the file
+              picker is bypassed. Built because the retired maestro-web driver
+              could not drive a file input; the Playwright placeholder specs
+              still enter through it. */}
           <Route
             path="/testing/seed-placeholder-upload"
             element={<TestSeedPlaceholderUpload />}
@@ -217,10 +219,11 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                   <Route path="pipeline-runs" element={<PipelineRuns />} />
                 </Route>
                 {/* The old top-level routes. Kept forever rather than 404ing:
-                    /set-selector is bookmarked, and ~48 Maestro flows navigate
-                    here by URL (/testing/sign-in?redirect=/set-selector)
-                    instead of tapping the nav tab — this redirect is what
-                    keeps them green across the rename. /pipeline-runs gets the
+                    /set-selector is bookmarked, and most E2E specs navigate
+                    here by URL (signIn("/set-selector") →
+                    /testing/sign-in?redirect=/set-selector) instead of
+                    tapping the nav tab — this redirect is what keeps them
+                    green across the rename. /pipeline-runs gets the
                     same treatment for the NEO-170 era. */}
                 <Route path="/set-selector" element={<LegacySetSelector />} />
                 <Route

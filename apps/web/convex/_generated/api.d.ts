@@ -48,7 +48,6 @@ import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
 import type * as drillPath from "../drillPath.js";
-import type * as e2eQueue from "../e2eQueue.js";
 import type * as enrichmentFixtures from "../enrichmentFixtures.js";
 import type * as entityReviewQueue from "../entityReviewQueue.js";
 import type * as entityReviewSkips from "../entityReviewSkips.js";
@@ -177,7 +176,6 @@ declare const fullApi: ApiFromModules<{
   credentials: typeof credentials;
   crons: typeof crons;
   drillPath: typeof drillPath;
-  e2eQueue: typeof e2eQueue;
   enrichmentFixtures: typeof enrichmentFixtures;
   entityReviewQueue: typeof entityReviewQueue;
   entityReviewSkips: typeof entityReviewSkips;

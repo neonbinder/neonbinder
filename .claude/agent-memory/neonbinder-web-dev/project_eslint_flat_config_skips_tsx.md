@@ -1,6 +1,6 @@
 ---
 name: eslint-flat-config-skips-ts
-description: apps/web ESLint lints .tsx (react-hooks + the NEO-44 raw-input rule) but still NOT plain .ts — a .ts file reports "File ignored because no matching configuration was supplied" and exits 0
+description: apps/web ESLint lints .tsx (react-hooks + the NEO-44 raw-input rule) but NOT plain .ts outside playwright/ (NEO-341 added a TS-parser + eslint-plugin-playwright block for playwright/**/*.ts) — any other .ts reports "File ignored because no matching configuration was supplied" and exits 0
 metadata:
   type: project
 ---
@@ -27,3 +27,8 @@ against those rather than expecting zero). Adding `.ts` to the globs is its own
 scoped task, not a drive-by.
 
 Related: [[vercel-build-runs-convex-typecheck]], [[convex-codegen-only-blocks-types]].
+
+Exception since NEO-341: `playwright/**/*.ts` has its own block (TS parser,
+eslint-plugin-playwright recommended, bans on `.locator(`/`getByTestId`/sleeps,
+and `test` must come from `support/fixtures.ts`). Convex and lib `.ts` are
+still unlinted.
