@@ -36,41 +36,69 @@ tags:
 #          screen. Nothing pressed on it — the caller asserts its own
 #          "Save N cards?" and owns the commit.
 #
+# ── HOW IT LOOPS: ON A VALUE, NOT ON THE SCREEN (R10) ───────────────────────
+#   The footer is read ONCE per screen (`copyTextFrom` on the one pattern
+#   that matches either state) into `output.ADVANCE_ON_SAVE`, and the loop
+#   runs `while: true:` on that value. A script condition costs nothing to
+#   evaluate. The earlier `while: notVisible: Confirm & Save` paid Maestro's
+#   ~7s optional timeout on the pass where it EXITED, because a `notVisible`
+#   condition waits for a visible element to go away before it reports
+#   false. Measured 7.00s per call, on every caller. Maestro re-evaluates the
+#   `while:` script on every pass: `RepeatCommand.evaluateScripts` resolves
+#   only `times` and `label`, and `repeatCommand$checkCondition` runs
+#   `Condition.evaluateScripts` each time (decompiled from the pinned jars).
+#
 # ── R2 ──────────────────────────────────────────────────────────────────────
-#   The `when:` that presses Next is preceded by a hard wait for one of the
-#   two footer states and followed by a hard wait for Confirm & Save and an
+#   Each Next press is proved to have MOVED the wizard: the "Step x of y"
+#   counter (WizardChrome, header, every screen) is read before the tap and
+#   the wait after it needs that x gone. A Next that does nothing fails there
+#   by name. The loop is followed by a hard wait for Confirm & Save and an
 #   assert of the "Ready to save" subtitle, so a wizard stuck on the teams or
-#   titles step (Next doing nothing) fails here by name rather than in the
-#   caller's commit.
+#   titles step fails here rather than in the caller's commit. No guard/tap
+#   race: the wizard never leaves a post-review step on its own, only on the
+#   operator's Next or Back (entity-review-steps.ts).
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
 #   7000 throughout: Next is a client-side step change, no server round-trip.
 #
 # `times: 3` is a runaway guard, not a budget: at most two screens sit between
-# the names and Save, so a third press means Next stopped moving the wizard,
+# the names and Save, so a third press means the footer never read as Save,
 # and the gate under the loop fails by name.
 # ════════════════════════════════════════════════════════════════════════════
+
+# The footer, read once: "Next (Enter)" on the teams / titles steps,
+# "Confirm & Save (Enter)" on Save. The two never share a footer.
+- extendedWaitUntil:
+    visible:
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
+    timeout: 7000
+- copyTextFrom:
+    text: "Next \\(Enter\\)|.*Confirm & Save.*"
+- evalScript: '${output.ADVANCE_ON_SAVE = maestro.copiedText.indexOf("Confirm & Save") >= 0}'
 
 - repeat:
     times: 3
     while:
-      notVisible:
-        text: ".*Confirm & Save.*"
+      true: "${!output.ADVANCE_ON_SAVE}"
     commands:
+      # x before the press; "Step 5 of …" is a full match, so it cannot
+      # answer for "Step 15 of …".
+      - copyTextFrom:
+          text: "Step [0-9]+ of [0-9]+"
+      - evalScript: '${output.ADVANCE_STEP = maestro.copiedText.match(/^Step ([0-9]+)/)[1]}'
+      - tapOn:
+          text: "Next \\(Enter\\)"
+      - extendedWaitUntil:
+          notVisible: "Step ${output.ADVANCE_STEP} of [0-9]+"
+          timeout: 7000
+      # The new screen's footer, read once for the next `while:`.
       - extendedWaitUntil:
           visible:
             text: "Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 7000
-      # No guard/tap race: the wizard never leaves a post-review step on its
-      # own, only on the operator's Next or Back (entity-review-steps.ts), so
-      # the button the guard saw is still there for the tap.
-      - runFlow:
-          when:
-            visible:
-              text: "Next \\(Enter\\)"
-          commands:
-            - tapOn:
-                text: "Next \\(Enter\\)"
+      - copyTextFrom:
+          text: "Next \\(Enter\\)|.*Confirm & Save.*"
+      - evalScript: '${output.ADVANCE_ON_SAVE = maestro.copiedText.indexOf("Confirm & Save") >= 0}'
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"

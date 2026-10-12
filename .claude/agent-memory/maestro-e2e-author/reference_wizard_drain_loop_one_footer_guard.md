@@ -85,4 +85,10 @@ COMPLETED) with `Confirm & Save` on screen the whole time; the entry check,
 with X absent, cost ~1s. Every caller of a `while: notVisible`-exit loop pays
 that 7s once. Where it matters, read the state once (`copyTextFrom` the
 footer, as in [[branch-on-copied-button-text]]) and loop on a `true:` script
-condition, which costs nothing to evaluate.
+condition, which costs nothing to evaluate. `repeat while: true: "${…}"` IS
+re-evaluated every pass: `RepeatCommand.evaluateScripts` resolves only
+`times`/`label`, and `repeatCommand$checkCondition` re-runs
+`Condition.evaluateScripts` (javap on the pinned jars). Done in
+`util-wizard-advance-to-save` and measured A/B on the same one-Next walk:
+11.55s → 5.40s. Prove each press moved the wizard by copying `Step x of y`
+before the tap and waiting `notVisible: "Step <x> of [0-9]+"` after (~1s).
