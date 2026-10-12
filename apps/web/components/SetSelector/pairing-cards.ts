@@ -58,6 +58,8 @@ export type ReadyCandidate = {
   };
   bucket: "matched" | "bscOnly" | "slOnly";
   teamLookup?: TeamLookup;
+  /** NEO-335 — BSC's unsplit team value; see `PairingCard.rawTeamName`. */
+  rawTeamName?: string;
 };
 
 /**
@@ -98,6 +100,9 @@ export function candidateToPairingCard(
     // NEO-335: spread only when present, so a card with no lookup is
     // byte-identical to what this mapping built before the field existed.
     ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
+    // NEO-335: BSC's raw team value, only on the rows the server kept one for
+    // (a split or refused split). Spread on the same terms as `teamLookup`.
+    ...(c.rawTeamName ? { rawTeamName: c.rawTeamName } : {}),
   };
 }
 

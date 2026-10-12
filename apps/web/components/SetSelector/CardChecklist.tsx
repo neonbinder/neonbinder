@@ -147,6 +147,11 @@ type FetchPreview = {
      */
     teamLookup?: "answered" | "failed";
     /**
+     * NEO-335 — BSC's unsplit team value, carried from the pairing so the
+     * commit's "Listed as:" hint is what BSC listed (`PairingCard.rawTeamName`).
+     */
+    rawTeamName?: string;
+    /**
      * NEO-335 — the operator's answer from the wizard's "K cards have no team
      * yet". Never set on `cards` while the preview is held — they ride in
      * `teamAnswers` below and `runCommit` puts them on (`withTeamAnswer`), so

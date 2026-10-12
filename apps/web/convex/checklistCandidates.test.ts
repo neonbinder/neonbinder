@@ -172,6 +172,68 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
     expect(by.get("4")!.teamResolved).toBe(true);
   });
 
+  test("NEO-335: BSC's raw value rides to the client only where `teams` does not already say it", async () => {
+    // The commit's "Listed as:" hint for an answered teamless card must be
+    // what BSC listed, as `applyBscTeamResolution` keeps it. A split card
+    // carries parts and a refused split carries nothing, so the raw string is
+    // kept beside them; a card carrying exactly the raw string needs nothing.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "b1"),
+      cand("2", "b2"),
+      cand("3", "b3"),
+      cand("4", "b4"),
+      cand("5", "b5"),
+    ]);
+    const overCap = Array.from({ length: 9 }, (_, i) => `Team ${i}`);
+
+    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
+      batchId: "batch-1",
+      resolved: [
+        // Split: the row has no sport, so no whole-name match — the parts ride.
+        {
+          bscRef: "b1",
+          rawTeamName: "Cleveland Guardians, Washington Nationals",
+          teamNames: ["Cleveland Guardians", "Washington Nationals"],
+          teamLookup: "answered",
+        },
+        // Over the cap: the split is refused, the raw value is all there is.
+        {
+          bscRef: "b2",
+          rawTeamName: overCap.join(", "),
+          teamNames: overCap,
+          teamLookup: "answered",
+        },
+        // One team, no comma: `teams` already says it.
+        { bscRef: "b3", rawTeamName: "Phillies", teamNames: ["Phillies"], teamLookup: "answered" },
+        // Over the length cap: dropped, never truncated.
+        {
+          bscRef: "b4",
+          rawTeamName: `${"Y".repeat(70)}, ${"Z".repeat(60)}`,
+          teamNames: ["Y".repeat(70), "Z".repeat(60)],
+          teamLookup: "answered",
+        },
+        // Whitespace only: nothing.
+        { bscRef: "b5", rawTeamName: "   ", teamLookup: "answered" },
+      ],
+    });
+
+    const res = await readAs(t, ADMIN, id);
+    const by = new Map(res.cards.map((c) => [c.cardNumber, c]));
+    expect(by.get("1")).toMatchObject({
+      teams: ["Cleveland Guardians", "Washington Nationals"],
+      rawTeamName: "Cleveland Guardians, Washington Nationals",
+    });
+    expect(by.get("2")!.teams).toBeUndefined();
+    expect(by.get("2")!.rawTeamName).toBe(overCap.join(", "));
+    expect(by.get("3")!.teams).toEqual(["Phillies"]);
+    expect(by.get("3")!.rawTeamName).toBeUndefined();
+    expect(by.get("4")!.teams).toEqual(["Y".repeat(70), "Z".repeat(60)]);
+    expect(by.get("4")!.rawTeamName).toBeUndefined();
+    expect(by.get("5")!.rawTeamName).toBeUndefined();
+  });
+
   test("NEO-335: a retried ref keeps its lookup outcome", async () => {
     const t = convexTest(schema, modules);
     const id = await seedRow(t);

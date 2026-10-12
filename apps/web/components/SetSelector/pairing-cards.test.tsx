@@ -156,3 +156,22 @@ describe("NEO-335 — the fetch-time team lookup outcome rides to the commit", (
     expect(card.teamLookup).toBe("answered");
   });
 });
+
+describe("NEO-335 — BSC's raw team value rides to the commit", () => {
+  const RAW = "Cleveland Guardians, Washington Nationals";
+
+  test("carried onto the card when the server kept one", () => {
+    expect(candidateToPairingCard({ ...FULL, rawTeamName: RAW }).rawTeamName).toBe(RAW);
+  });
+
+  test("absent leaves no key at all, so the card is byte-identical to before", () => {
+    expect("rawTeamName" in candidateToPairingCard(FULL)).toBe(false);
+  });
+
+  test("the committable form (the no-dialog auto-keep path) keeps it", () => {
+    const [card] = candidatesToPairingCards([
+      { ...FULL, bucket: "bscOnly", teamLookup: "answered", rawTeamName: RAW },
+    ]);
+    expect(card.rawTeamName).toBe(RAW);
+  });
+});

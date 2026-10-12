@@ -3538,6 +3538,8 @@ type CardNameBearing = {
   // NEO-335 — operator-chosen NB team ids. Only the COUNT is bounded here;
   // the ids themselves are validated against the table by the commit.
   teamIds?: ReadonlyArray<unknown>;
+  // NEO-335 — BSC's unsplit team value, the commit's hint source.
+  rawTeamName?: string;
 };
 
 /**
@@ -3617,6 +3619,18 @@ function assertCardBatchWithinLimits(
           `${fnName}: ${where} carries a team name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
         );
       }
+    }
+    // NEO-335 — the raw, unsplit team value rides beside the split (NEO-333's
+    // rule: bounded at every consumer). The server only ever hands out one
+    // within this cap (`checklistCandidates.candidateRawTeamHint`), so a longer
+    // one is not ours and is refused like any over-long name.
+    if (
+      card.rawTeamName !== undefined &&
+      card.rawTeamName.length > MAX_PLAYER_NAME_LENGTH
+    ) {
+      throw new Error(
+        `${fnName}: ${where} carries a listed team value of ${card.rawTeamName.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
     }
     // NEO-251 — the conflict field is two more rosters, on the same terms.
     // `startCandidateBatch` bounds it on the way OUT to the browser; this
@@ -13035,6 +13049,15 @@ const previewCardFields = {
   // about OUR call, never a value from the marketplace, and it decides only
   // whether that call is repeated.
   teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  // `rawTeamName` — BSC's team value for this card exactly as the fetch-time
+  // lookup returned it, unsplit (`checklistCandidates.rawTeamName`, present
+  // only where `teams` does not already say it). Read by the commit for one
+  // thing: the "Listed as:" hint (`bscTeamName`) on an ANSWERED card that ends
+  // with no team, so it matches what `applyBscTeamResolution` would keep. A
+  // listing claim, never matched on and never a team. Held to
+  // `MAX_PLAYER_NAME_LENGTH` by `assertCardBatchWithinLimits` — it comes back
+  // from the client.
+  rawTeamName: v.optional(v.string()),
   // `teamIds` — NB teams the operator picked for this card in the wizard.
   // A client-chosen id, so the commit re-validates every one before any write
   // (`validateOperatorTeamIds`): another sport's team refuses the commit, a
@@ -17105,13 +17128,13 @@ function settleCardTeamAnswer(a: {
   if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
   if (a.teamLookup === "answered") {
     const hint = a.hasPendingTeam ? "" : (a.bscTeamHint ?? "").trim();
-    // The cap below cannot bite on today's only caller: the action takes the
-    // hint from a card team string `assertCardBatchWithinLimits` already held
-    // to MAX_PLAYER_NAME_LENGTH, which is the same 120. Kept on purpose, as
-    // the house does for every internal arg that lands in a stored field
-    // (`boundPendingNames`): this function is the WRITER, the two constants
-    // live in different modules, and moving either must not let an
-    // over-long `bscTeamName` through.
+    // The cap below is the same slice `applyBscTeamResolution` puts on its
+    // hint. A raw value cannot reach it (`assertCardBatchWithinLimits` holds
+    // `rawTeamName` to MAX_PLAYER_NAME_LENGTH, the same 120), but the joined
+    // fallback can: several team strings, each within the cap, joined. Cut
+    // like the background path cuts it, so both store the same hint. Kept as
+    // the WRITER's own bound in any case, as the house does for every
+    // internal arg that lands in a stored field (`boundPendingNames`).
     return {
       fields: {
         teamCheckDoneAt: a.now,
@@ -20570,11 +20593,24 @@ export const commitCardChecklist = action({
       // nothing and pending nothing: the operator skipped it. Only offered to
       // the chunk as a HINT for an answered card with no team (see
       // `settleCardTeamAnswer`); it is never a team and never matched on.
+      //
+      // The SAME hint `applyBscTeamResolution` keeps for the same card, so
+      // "Listed as:" reads alike whichever path settled it: BSC's raw value
+      // as the lookup returned it (`rawTeamName` — a split card whose parts
+      // were all skipped, or one whose split was refused over the cap and so
+      // carries no `teams` at all), else the card's team strings joined the
+      // way that mutation joins its parts when it has no raw string. Never
+      // the first part alone: that names one team of a card listed as two.
       const bscTeamHint =
         c.teamLookup === "answered" &&
         teamOnCardIds.length === 0 &&
         pendingTeamNames.length === 0
-          ? teamSources.map((t) => t.trim()).find(Boolean)
+          ? c.rawTeamName?.trim() ||
+            teamSources
+              .map((t) => t.trim())
+              .filter(Boolean)
+              .join(", ") ||
+            undefined
           : undefined;
       // "No team on this card" — teams win. A card carrying any team id or a
       // pending team name drops the answer here; the chunk drops it again if

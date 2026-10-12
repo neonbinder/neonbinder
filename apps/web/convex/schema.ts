@@ -2663,6 +2663,19 @@ export default defineSchema({
     // re-asking BSC after save. Optional and additive; the table is drained at
     // commit, so no backfill.
     teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+    // NEO-335 — BSC's team value for this card exactly as the lookup returned
+    // it (trimmed, UNSPLIT; NEO-333's `rawTeamName`), written by
+    // `resolveCandidateTeams` only when `teams` does not already say it — a
+    // split card ("Cleveland Guardians, Washington Nationals" carried as two
+    // parts) or one whose split was refused over the cap. Rides to the commit
+    // on the preview card, where an answered card that ends teamless stores it
+    // as `bscTeamName`: the same raw hint `applyBscTeamResolution` keeps, so
+    // the missing-team fixer's "Listed as:" reads the same whichever path
+    // settled the card. A listing claim, never NB team data. At most
+    // `MAX_PLAYER_NAME_LENGTH` (dropped above it, never truncated — the
+    // adapter's N1 rule). Optional and additive; drained at commit, no
+    // backfill.
+    rawTeamName: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_batch", ["batchId"])
