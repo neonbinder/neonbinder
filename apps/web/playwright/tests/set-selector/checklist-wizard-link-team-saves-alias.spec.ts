@@ -15,6 +15,13 @@ import type { Page } from "@playwright/test";
 
 const SET = "Topps MLB at Rickwood Field Negro Leagues Collection";
 const RETRO_CLUB = "Pittsburgh Crawfords";
+// Club names that OTHER specs' sets also present (Topps Big League raises
+// "Montreal Royals" for every wizard spec). An alias is GLOBAL: while this
+// spec holds one on such a name, a concurrent worker's "Add as New Team" is
+// refused (CI run 38236921629). This spec therefore never links one of these;
+// it skips them (a skip creates nothing) and links a club only Rickwood
+// presents. Add a name here if another spec's set starts presenting it.
+const SHARED_CLUBS = ["Montreal Royals"];
 
 /** The admin Team Management page, filtered to `query`. */
 async function openTeams(page: Page, query: string) {
@@ -127,14 +134,28 @@ test(
     const stepHeading = wizard.getByRole("heading", { name: /^New (Team|League): / });
 
     // A club's lookup can stage its LEAGUE as a step ahead of it: skip
-    // leagues (a skip creates nothing) until a team row is presented.
-    for (let i = 0; i < 20; i++) {
+    // leagues (a skip creates nothing) until a team row is presented. Skip
+    // team rows another spec's set also presents (SHARED_CLUBS) too, so the
+    // alias below lands on a name only this spec's set produces.
+    let found = false;
+    for (let i = 0; i < 30; i++) {
       await expect(teamSkip.or(leagueSkip)).toBeVisible();
-      if (await teamSkip.isVisible()) break;
+      if (await teamSkip.isVisible()) {
+        const club = ((await stepHeading.textContent()) ?? "").replace(/^New Team: /, "").trim();
+        if (!SHARED_CLUBS.includes(club)) {
+          found = true;
+          break;
+        }
+        const name = (await teamSkip.getAttribute("aria-label")) ?? "";
+        await teamSkip.click();
+        await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
+        continue;
+      }
       const name = (await leagueSkip.getAttribute("aria-label")) ?? "";
       await leagueSkip.click();
       await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
     }
+    expect(found, "a Rickwood-only club row (not in SHARED_CLUBS) must be presented").toBe(true);
     await expect(teamSkip).toBeVisible();
 
     // The row's raw checklist spelling: the string the alias will be.

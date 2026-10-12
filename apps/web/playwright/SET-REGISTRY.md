@@ -1330,6 +1330,17 @@ That is the Roanoke Express shape above, on a warm drill.
 two-sided Match Cards dialog this set never shows. The flow hand-rolls the
 Base tap → picker cancel → sync, exactly as the one-marketplace flow does.
 
+**Never an alias on a name another spec can meet (CI run 38236921629).** A
+saved alias is GLOBAL and specs run concurrently across workers, so an alias on
+a real club name that another set also presents (Topps Big League raises
+"Montreal Royals" for every `fetchChecklistToWizard` spec) makes that spec's
+"Add as New Team" refuse with "already answers to this name as an alias". The
+spec therefore skips every team step named in its `SHARED_CLUBS` list
+(`Montreal Royals`) and links the first club only Rickwood presents. This spec
+is the **sole writer of team aliases** in the suite (no other spec ticks a
+"Remember …" box or fills an alias field on a name it did not mint); keep
+`SHARED_CLUBS` in step with any set another spec adds that presents a club.
+
 **Sole writer, self-cleaning on the TEAM side.** The flow links the first
 club to a per-attempt team it created (`Loc<token> Ali<token>`), commits,
 reads the alias back in Team Management, then REMOVES it and saves. So the
