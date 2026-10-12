@@ -75,7 +75,8 @@ tags:
 #
 # R5 — every wait states its ceiling. 7000 in-app. The longer ones, each named
 #   at its step: the post-launchApp gate (45s), the fetch util's live BSC and
-#   wizard-open waits, and the batch's one Wikidata lookup.
+#   wizard-open waits, and the batch's one lookup (20s, Jason-approved
+#   2026-10-12 as a stopgap until NEO-341; the arithmetic is at the step).
 #
 # R6/R8 — every centred scroll precedes a read or a tap and is not followed by
 #   an assert of the same element. Inside the wizard (a fixed dialog whose
@@ -113,15 +114,19 @@ tags:
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
 
-# The batch's one lookup (the team's Wikidata/ESPN enrichment). R5 external
-# round-trip through the deployment-wide lookup pool, which every runner's
-# wizard flows share FIFO. MEASURED live on a laptop: ~8s; the NEO-289
-# recording now answers it (`team|Q5369|philadelphia athletics`), so on CI it
-# waits only on the pool. 60000 is the fetch util's own wizard-open ceiling for
-# the same pool; tighten it from the first green CI run's convex-logs.
+# The batch's one lookup (the team's Wikidata/ESPN enrichment). R5 exception
+# above 7000, approved by Jason 2026-10-12 at 20000 as a STOPGAP until the
+# Playwright rewrite (NEO-341). The lookup itself is a recorded fixture hit
+# (NEO-289 recording, `team|Q5369|philadelphia athletics`), so it costs no
+# network. MEASURED in CI run 38209599290: 11.0s, and all of it was QUEUE
+# time — this lookup waited behind another runner's ~45 Venezuelan player
+# lookups in the deployment-wide lookup pool, which every runner's wizard
+# flows share FIFO. So the 11s is the pool's depth, not this step's work.
+# Raising this further is a new decision for Jason, not a tuning knob; the
+# Playwright rewrite retires it.
 - extendedWaitUntil:
     notVisible: ".*still being looked up.*"
-    timeout: 60000
+    timeout: 20000
 
 # ============================================================
 # PART 2 — THE OPERATOR'S PAST-ERA LINK (R2b, c, d)
