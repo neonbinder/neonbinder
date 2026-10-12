@@ -39,7 +39,7 @@ local runs on 2026-09-06:
    return resets nav. The write lands a few seconds AFTER the row appears —
    long enough to assert the player row and then tap into a team step.
 
-## The fix: `util-wizard-walk-to-player-row{,-creating-teams}.yaml`
+## The fix: `util-wizard-walk-to-player-row.yaml`
 
 Order matters and all four steps are load-bearing:
 
@@ -56,10 +56,12 @@ Order matters and all four steps are load-bearing:
    fails when no hand-off comes nor returns as soon as the screen stops moving.
 4. Repeat 1+2, then `extendedWaitUntil visible: id "Skip .* not a person"`.
 
-Two variants because the drain's decisions land in the same `Decided` list the
-caller asserts on: the **skip** variant leaves everything "Skipped" (so a
-caller's create is the only "Added as new"); the **creating-teams** variant taps
-`Add as New Team` (so the one caller that skips owns the only "Skipped").
+The drain answers every step as a SKIP, so a caller's create or link is the
+only non-skip decision. A `-creating-teams` variant (team steps answered as
+creates, for a caller that skips) lost its last caller in NEO-330 and was
+deleted; callers now prove their own decision by the header's `K of N
+reviewed` delta instead of the Decided list
+([[wizard-decisions-read-from-header-and-summary]]).
 
 ## Selectors
 

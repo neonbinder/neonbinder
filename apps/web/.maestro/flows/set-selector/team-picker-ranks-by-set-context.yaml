@@ -32,18 +32,27 @@ tags:
 # WHERE "MAJOR LEAGUE BASEBALL" COMES FROM — THE SEED, NOT THIS FLOW. Since
 # NEO-331 an unanswered League leaves a team league-less (no sport default),
 # so Z and X pick the league explicitly, as an EXISTING row: type-ahead, then
-# the plain-name option, never a `Create “…”`. On a fresh preview that row is
-# written by setup.yaml's Base wizard drain: a player's lookup names
-# Wikidata's P118 "Major League Baseball" (committed enrichment recording,
-# abbreviation "MLB"), the wizard stages a New League step for it, the drain
-# presses "Other" and adds it, and Confirm & Save creates the row (measured on
-# the seed of a green PR run: the league lookup at the drain's first league
-# step, `enrichLeague` for it seconds after Confirm & Save). The set's "MLB"
-# reaches that row by name or alias, else by its unique abbreviation
-# (`pickerContext` in convex/teams.ts). If the seed
-# ever stops creating it, the combobox offers `Create “Major League Baseb”`
-# instead of the row and the plain-name tap fails by name — this flow must not
-# create it (its level and abbreviation are the seed's, shared by every flow).
+# the plain-name option, never a `Create “…”`. Which seed writes it depends on
+# the preview (NEO-330):
+#   - WITH the reference catalogue (CI, `NB_REFERENCE_BUNDLE` set): the row is
+#     the catalogue's, imported before setup.yaml runs — level Major,
+#     abbreviation "MLB", aliases American League / National League / AL / NL
+#     (read on the NEO-330 preview, 2026-10-11: the only league of 132 whose
+#     name, abbreviation or aliases mention MLB). The Base wizard links to it
+#     and stages no New League step for it.
+#   - WITHOUT it (the plain reset): setup.yaml's Base wizard drain writes it. A
+#     player's lookup names Wikidata's P118 "Major League Baseball" (committed
+#     enrichment recording, abbreviation "MLB"), the wizard stages a New League
+#     step for it, the drain presses "Other" and adds it, and Confirm & Save
+#     creates the row (measured on the seed of a green PR run: the league
+#     lookup at the drain's first league step, `enrichLeague` for it seconds
+#     after Confirm & Save).
+# Tier 1 and tier 3 key on the league ROW, never its level, so either source
+# ranks the same. The set's "MLB" reaches that row by name or alias, else by
+# its unique abbreviation (`pickerContext` in convex/teams.ts). If neither
+# seed provides it, the combobox offers `Create “Major League Baseb”` instead
+# of the row and the plain-name tap fails by name — this flow must not create
+# it (its level and abbreviation are the seed's, shared by every flow).
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #   - ROUND 1: typing the shared prefix lists all four, and Y sits below Z, X

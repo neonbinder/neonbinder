@@ -348,7 +348,24 @@ vi.mock("convex/react", () => ({
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import CardChecklist from "./CardChecklist";
+import CardChecklist, {
+  SOLO_STREAM_TIMEOUT_MESSAGE,
+  TEAMS_LATE_NOTICE,
+  streamRowsArrived,
+  streamTeamsLanded,
+} from "./CardChecklist";
+
+/**
+ * Every live-region line on the page, hidden ones included: the sync banner
+ * sits behind the pairing dialog, which may hide the page from AT queries.
+ */
+function liveRegionText(): string {
+  return Array.from(
+    document.querySelectorAll('[role="status"], [role="alert"]'),
+  )
+    .map((el) => el.textContent ?? "")
+    .join(" | ");
+}
 
 /**
  * The fetch's own words when it published nothing because neither marketplace
@@ -474,6 +491,31 @@ const streamedCandidate = {
   },
 };
 
+/**
+ * NEO-330 — the fetch PUBLISHES the batch it reports.
+ *
+ * Both paths now wait, before anything can be confirmed or committed, for the
+ * subscription to show a batch whose id MOVED since Sync was pressed, whose
+ * size matches `candidateCount`, and whose every row is `ready`. A fixture that
+ * stages its rows on `state.liveCandidates` before Sync has no batch id to move
+ * from, so this stamps a fresh one at the moment the fetch resolves — which is
+ * what the real action's write does — and hands the result back unchanged.
+ */
+let publishedBatches = 0;
+function publish<T>(result: T): T {
+  const staged = state.liveCandidates as {
+    total: number;
+    batchId?: string;
+  } | null;
+  if (staged && staged.total > 0) {
+    state.liveCandidates = {
+      ...staged,
+      batchId: `published-${++publishedBatches}`,
+    };
+  }
+  return result;
+}
+
 describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
   let resolveFetch: (value: unknown) => void;
 
@@ -587,20 +629,26 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     );
 
     await act(async () => {
-      resolveFetch({
-        success: true,
-        message: "1 matched, 0 BSC-only, 0 SL-only",
-        candidateCount: 1,
-        attachedSides: ["bsc", "sportlots"],
-      });
+      resolveFetch(
+        publish({
+          success: true,
+          message: "1 matched, 0 BSC-only, 0 SL-only",
+          candidateCount: 1,
+          attachedSides: ["bsc", "sportlots"],
+        }),
+      );
     });
 
     // Still open — this is the assertion that fails the moment the dialog is
     // gated on the fetch rather than on the review session.
     expect(screen.queryByText(/Match Cards/)).toBeTruthy();
     // And the streaming gate lifted, which is the E2E flow's sync point.
-    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
-      "Confirm",
+    // NEO-330: once the published batch has settled on the subscription, not
+    // in the same tick the action resolves.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Confirm",
+      ),
     );
     expect(
       screen.getByText("1 matched, 0 BSC-only, 0 SL-only"),
@@ -608,6 +656,302 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // Nothing was written by merely finishing the fetch.
     expect(mockResolveEntities).not.toHaveBeenCalled();
     expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+
+  /**
+   * NEO-330 — on the two-marketplace path, Confirm waits for the teams too.
+   *
+   * The action resolves before the subscription shows its last team patch, so
+   * unlocking Confirm on the action's promise let an operator confirm cards
+   * whose teams were still on their way. `fetchInFlight` (the dialog's
+   * `isStreaming`) now holds until the published batch is whole and every row
+   * is `ready`, and the dialog keeps saying so in the words it already uses.
+   */
+  describe("Confirm waits for every row to be ready (NEO-330)", () => {
+    const pair = (n: string, player: string, teams?: string[]) => ({
+      cardNumber: n,
+      cardName: player,
+      players: [player],
+      ...(teams ? { teams } : {}),
+      bucket: "matched" as const,
+      confidence: 1,
+      platformData: {
+        bsc: { ref: `bsc-${n}` },
+        sportlots: { ref: `sl-${n}` },
+      },
+    });
+    /** Both rows published; one team lookup has not reached the client. */
+    const halfResolved = {
+      batchId: "batch-330-pair",
+      ready: 1,
+      total: 2,
+      cards: [
+        pair("1", "Elly De La Cruz", ["Cincinnati Reds"]),
+        pair("2", "Hunter Greene"),
+      ],
+    };
+    const allResolved = {
+      batchId: "batch-330-pair",
+      ready: 2,
+      total: 2,
+      cards: [
+        pair("1", "Elly De La Cruz", ["Cincinnati Reds"]),
+        pair("2", "Hunter Greene", ["Cincinnati Reds"]),
+      ],
+    };
+    const fetchDone = {
+      success: true,
+      message: "2 matched, 0 BSC-only, 0 SL-only",
+      candidateCount: 2,
+      attachedSides: ["bsc", "sportlots"],
+    };
+
+    beforeEach(() => {
+      // Nothing on the wire when Sync is pressed: the batch has to be seen
+      // arriving, which is also what gives its id something to move from.
+      state.liveCandidates = null;
+      mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    });
+
+    it("stays gated after the fetch resolves, says how far the teams have got, and unlocks once they land", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      await act(async () => {
+        resolveFetch(fetchDone);
+      });
+      // Several poll turns on a complete batch with a team still missing.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+
+      const confirm = screen.getByLabelText("Confirm card matches");
+      expect(confirm.textContent).toBe("Loading…");
+      expect(confirm.getAttribute("aria-disabled")).toBe("true");
+      // The existing line, now literally true: the fetch's own promise has
+      // resolved, the teams have not all landed.
+      expect(
+        document.getElementById("pairing-streaming-status")?.textContent,
+      ).toContain("(1 of 2 done)");
+
+      // Activating the still-focusable Confirm does nothing.
+      await act(async () => {
+        fireEvent.click(confirm);
+      });
+      expect(mockDiffChecklist).not.toHaveBeenCalled();
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+      // The last team lands.
+      await streamCandidates(rerender, allResolved);
+      await waitFor(() =>
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Confirm",
+        ),
+      );
+      expect(document.getElementById("pairing-streaming-status")).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+      // The late team reached the dialog's cards (its append-only absorb merges
+      // `teams` onto rows already shown) and from there entity resolution.
+      const cards = mockResolveEntities.mock.calls[0][0].cards;
+      expect(cards).toHaveLength(2);
+      for (const card of cards) {
+        expect(card.teams).toEqual(["Cincinnati Reds"]);
+      }
+    });
+
+    /**
+     * Jason, 2026-10-11: "If a team lookup never returns then the user must
+     * select a team." The wait ends; the operator's pairing survives it.
+     */
+    it("when a team misses the wait, unlocks Confirm with the notice and commits that card with no team", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch(fetchDone);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // Confirm unlocks; the dialog — and the pairing in it — is still there.
+      await waitFor(() =>
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Confirm",
+        ),
+      );
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
+      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      const cards = mockResolveEntities.mock.calls[0][0].cards;
+      expect(cards).toHaveLength(2);
+      expect(cards.find((c: { cardNumber: string }) => c.cardNumber === "1").teams).toEqual([
+        "Cincinnati Reds",
+      ]);
+      // Never a guess: the card whose lookup never landed carries no team.
+      expect(
+        cards.find((c: { cardNumber: string }) => c.cardNumber === "2").teams,
+      ).toBeUndefined();
+      // Said again on the line the cards land with.
+      await waitFor(() =>
+        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
+      );
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+    });
+
+    it("with a team fence the subscription never reaches, still ends the wait with the notice (NEO-330 × NEO-333)", async () => {
+      // The fence is the readiness signal, but it does not lift the bound: a
+      // fence the stream never reaches ends like any other late team.
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch({
+            ...fetchDone,
+            candidateBatchId: "batch-330-pair",
+            readyAfterTeams: 2,
+          });
+        });
+        // Still locked before the bound runs out.
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Loading…",
+        );
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(() =>
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Confirm",
+        ),
+      );
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
+      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+    });
+
+    it("drops the notice if the late teams all land before Confirm", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch(fetchDone);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      await waitFor(() =>
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Confirm",
+        ),
+      );
+
+      // The straggler lands while the operator is still pairing.
+      await streamCandidates(rerender, allResolved);
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+      await waitFor(() =>
+        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
+      );
+      expect(liveRegionText()).not.toContain(TEAMS_LATE_NOTICE);
+      for (const card of mockResolveEntities.mock.calls[0][0].cards) {
+        expect(card.teams).toEqual(["Cincinnati Reds"]);
+      }
+    });
+
+    it("still saves nothing when the ROWS never arrive", async () => {
+      // A short batch is a partial checklist, not a late team.
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch({ ...fetchDone, candidateCount: 3 });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(() =>
+        expect(screen.getByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeTruthy(),
+      );
+      expect(screen.queryByText(/Match Cards/)).toBeNull();
+      expect(mockDiscardCandidates).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+      });
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      expect(liveRegionText()).not.toContain(TEAMS_LATE_NOTICE);
+    });
+
+    it("cancelling while it waits ends the run with the cancel message, not the timeout", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      await act(async () => {
+        resolveFetch(fetchDone);
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Cancel card matching"));
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByText("Sync cancelled — no cards saved."),
+        ).toBeTruthy(),
+      );
+
+      // The teams landing afterwards revive nothing.
+      await streamCandidates(rerender, allResolved);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      expect(screen.queryByText(/Match Cards/)).toBeNull();
+      expect(screen.queryByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeNull();
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+    });
   });
 
   it("skips the dialog entirely when the run produced no candidates, using the ancestor chain's sport", async () => {
@@ -676,6 +1020,22 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
+  });
+
+  it("a11y: the same notice set twice is a NEW live region, so it is said again", async () => {
+    // A live region announces a change. Keyed by tone alone, the second
+    // identical refusal changed nothing and a screen-reader user heard silence.
+    state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    const first = await screen.findByText(/no sport ancestor/);
+
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await waitFor(() =>
+      expect(screen.getByText(/no sport ancestor/)).not.toBe(first),
+    );
+    expect(screen.getAllByText(/no sport ancestor/)).toHaveLength(1);
+    expect(first.isConnected).toBe(false);
   });
 });
 
@@ -1306,6 +1666,188 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     expect(screen.getByText(/Match Cards/)).toBeTruthy();
     expect(mockResolveEntities).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  /**
+   * NEO-330 — the teams have to land before anything is committed.
+   *
+   * A Convex action's promise resolves before the client's subscription shows
+   * its last writes. The fetch publishes its rows and THEN patches each BSC
+   * team lookup in, so the instant `fetchChecklist` resolves the subscription
+   * can show the right batch id and the right count with no teams on it. The
+   * old gate accepted that snapshot, entity resolution saw no team names, and
+   * a small set lost every team. The server now writes `ready` per row, so
+   * `ready === total` is "the teams are in".
+   */
+  describe("waits for every row to be ready (NEO-330)", () => {
+    /** BSC attached at the set, nothing on the variant: one marketplace. */
+    const soloBscChain = () => [
+      {
+        _id: SPORT_ID,
+        level: "sport",
+        value: "Baseball",
+        platformData: { bsc: { b0: "baseball" } },
+      },
+      {
+        _id: SET_ID,
+        level: "setName",
+        value: "Test Set",
+        platformData: { bsc: { b0: "2024-topps" } },
+      },
+      { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+    ];
+
+    const bscCard = (n: string, player: string, teams?: string[]) => ({
+      cardNumber: n,
+      cardName: player,
+      players: [player],
+      ...(teams ? { teams } : {}),
+      bucket: "bscOnly" as const,
+      platformData: { bsc: { ref: `bsc-${n}` } },
+    });
+
+    /** Right batch, right count — and the team lookup not yet visible. */
+    const prePatch = {
+      batchId: "batch-330",
+      ready: 0,
+      total: 2,
+      cards: [bscCard("1", "Elly De La Cruz"), bscCard("2", "Hunter Greene")],
+    };
+    /** The same batch once the lookup chunk's patch has reached the client. */
+    const patched = {
+      batchId: "batch-330",
+      ready: 2,
+      total: 2,
+      cards: [
+        bscCard("1", "Elly De La Cruz", ["Cincinnati Reds"]),
+        bscCard("2", "Hunter Greene", ["Cincinnati Reds"]),
+      ],
+    };
+
+    const fetchDone = {
+      success: true,
+      message: "0 matched, 2 BSC-only, 0 SL-only",
+      candidateCount: 2,
+      attachedSides: ["bsc"],
+    };
+
+    beforeEach(() => {
+      state.ancestorChain = soloBscChain();
+    });
+
+    it("does not commit a complete batch whose teams have not landed, and hands entity resolution the teams once they do", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
+
+      await streamCandidates(rerender, prePatch);
+      await act(async () => {
+        resolveFetch(fetchDone);
+      });
+
+      // Several poll turns on the pre-patch snapshot: the count agrees, the
+      // batch id moved, and it must still not commit.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockDiffChecklist).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+      // The patch lands.
+      await streamCandidates(rerender, patched);
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+
+      // The teams reach entity resolution ON the cards, which is also where the
+      // player gate's card-team tie-break (`cardTeamNamesByPlayer`) reads them.
+      expect(mockResolveEntities).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+        sportId: SPORT_ID,
+        cards: [
+          expect.objectContaining({
+            cardNumber: "1",
+            players: ["Elly De La Cruz"],
+            teams: ["Cincinnati Reds"],
+            unmatched: "sl",
+          }),
+          expect.objectContaining({
+            cardNumber: "2",
+            players: ["Hunter Greene"],
+            teams: ["Cincinnati Reds"],
+            unmatched: "sl",
+          }),
+        ],
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+        expect(card.teams).toEqual(["Cincinnati Reds"]);
+      }
+    });
+
+    it("when the teams miss the wait, commits anyway with no team on those cards, and says so", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, prePatch);
+
+      // Fake the clock only for the wait itself: `awaitStreamedBatch` reads
+      // `Date.now()` for its deadline and polls on `setTimeout`.
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch(fetchDone);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
+      // Never a guess: what arrived is what commits.
+      for (const card of mockResolveEntities.mock.calls[0][0].cards) {
+        expect(card.teams).toBeUndefined();
+      }
+      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+        expect(card.teams).toBeUndefined();
+      }
+      await waitFor(() =>
+        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
+      );
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+      expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
+    });
+
+    it("still saves nothing when the ROWS never arrive", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, patched);
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch({ ...fetchDone, candidateCount: 3 });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(() =>
+        expect(screen.getByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeTruthy(),
+      );
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      // The session is binned exactly as a short batch's always was.
+      expect(mockDiscardCandidates).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+      });
+      expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
+    });
   });
 });
 
@@ -2924,12 +3466,14 @@ async function pairedEntityReviewPath() {
     total: 2,
     cards: [streamedCandidate, bscOnlyCandidate],
   };
-  mockFetchChecklist.mockResolvedValue({
+  mockFetchChecklist.mockImplementation(async () =>
+    publish({
     success: true,
     message: "Fetched 2 cards",
     candidateCount: 2,
     attachedSides: ["bsc", "sportlots"],
-  });
+    }),
+  );
   mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
   mockResolveEntities.mockResolvedValue({
     unknownPlayers: [{ name: "Unknown Guy" }],
@@ -3315,6 +3859,16 @@ const freshCandidate = {
  */
 async function resyncAndExpectOnlyTheNewBatch() {
   state.liveCandidates = { ready: 1, total: 1, cards: [freshCandidate] };
+  // NEO-330: the re-sync reports the batch it actually published, so its
+  // dialog settles rather than waiting out the budget on a stale count.
+  mockFetchChecklist.mockImplementation(async () =>
+    publish({
+      success: true,
+      message: "Fetched 1 card",
+      candidateCount: 1,
+      attachedSides: ["bsc", "sportlots"],
+    }),
+  );
   await act(async () => {
     fireEvent.click(screen.getByLabelText("Sync card checklist"));
   });
@@ -3467,12 +4021,14 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
       total: 1,
       cards: [conflictedCandidate],
     };
-    mockFetchChecklist.mockResolvedValue({
+    mockFetchChecklist.mockImplementation(async () =>
+      publish({
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
       attachedSides: ["bsc", "sportlots"],
-    });
+      }),
+    );
     // Nothing to settle — which is the POINT on the re-sync this models: the
     // stored row already carries SportLots' roster because the operator chose
     // it last time, so the server suppresses the field and the review is
@@ -3540,12 +4096,14 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
    */
   it("a row the operator FLIPPED reaches the diff with no conflict on it", async () => {
     state.liveCandidates = { ready: 1, total: 1, cards: [conflictedCandidate] };
-    mockFetchChecklist.mockResolvedValue({
+    mockFetchChecklist.mockImplementation(async () =>
+      publish({
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
       attachedSides: ["bsc", "sportlots"],
-    });
+      }),
+    );
     mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
     mockResolveEntities.mockResolvedValue({
       unknownPlayers: [],
@@ -3591,12 +4149,14 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
    */
   it("a row the operator RE-PICKED on its default also arrives with no conflict", async () => {
     state.liveCandidates = { ready: 1, total: 1, cards: [conflictedCandidate] };
-    mockFetchChecklist.mockResolvedValue({
+    mockFetchChecklist.mockImplementation(async () =>
+      publish({
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
       attachedSides: ["bsc", "sportlots"],
-    });
+      }),
+    );
     mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
     mockResolveEntities.mockResolvedValue({
       unknownPlayers: [],
@@ -3629,12 +4189,14 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
   it("leaves an agreeing card untouched on the way to the diff", async () => {
     state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
-    mockFetchChecklist.mockResolvedValue({
+    mockFetchChecklist.mockImplementation(async () =>
+      publish({
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
       attachedSides: ["bsc", "sportlots"],
-    });
+      }),
+    );
     mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
     mockResolveEntities.mockResolvedValue({
       unknownPlayers: [],
@@ -4342,5 +4904,45 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
       ),
     );
     expect(screen.getByText("0 matched, 2 BSC-only, 0 SL-only")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-330 × NEO-333 — the two halves of "has the stream caught up". Rows
+ * decide whether anything may be saved; teams decide whether the wait ended
+ * on time (`teamsLate`). The fence, when sent, is the team signal; without one
+ * the per-row `ready === total` gate stands in.
+ */
+describe("CardChecklist — stream readiness helpers", () => {
+  const live = (over: Partial<{ batchId: string; total: number; ready: number }> = {}) => ({
+    batchId: "b-new",
+    total: 3,
+    ready: 2,
+    cards: [{}, {}, {}],
+    ...over,
+  });
+
+  it("rows: the fence's batch must be the one on screen", () => {
+    expect(streamRowsArrived(live(), { count: 3, batchId: "b-new" }, "b-old")).toBe(true);
+    expect(streamRowsArrived(live(), { count: 3, batchId: "b-other" }, "b-old")).toBe(false);
+  });
+
+  it("rows: with no fence batch, the batch must have moved", () => {
+    expect(streamRowsArrived(live({ batchId: "b-old" }), { count: 3 }, "b-old")).toBe(false);
+    expect(streamRowsArrived(live(), { count: 3 }, "b-old")).toBe(true);
+  });
+
+  it("rows: a short count is never final", () => {
+    expect(streamRowsArrived(live({ total: 2 }), { count: 3, batchId: "b-new" }, undefined)).toBe(false);
+  });
+
+  it("teams: a fence is met at the server's own count, never total", () => {
+    expect(streamTeamsLanded(live({ ready: 2 }), { count: 3, readyAfterTeams: 2 })).toBe(true);
+    expect(streamTeamsLanded(live({ ready: 1 }), { count: 3, readyAfterTeams: 2 })).toBe(false);
+  });
+
+  it("teams: with no fence, every row must be ready", () => {
+    expect(streamTeamsLanded(live({ ready: 2 }), { count: 3 })).toBe(false);
+    expect(streamTeamsLanded(live({ ready: 3 }), { count: 3 })).toBe(true);
   });
 });

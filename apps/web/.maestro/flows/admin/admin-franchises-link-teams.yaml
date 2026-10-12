@@ -41,7 +41,7 @@ tags:
 #
 # R2 — HARD ASSERTIONS, none satisfiable by an inert page:
 #     (a) both teams really were written: after a page load, filtering
-#         `/admin/teams` by this run's token reads "2 of N teams";
+#         `/admin/teams` by this run's token reads "2 matches";
 #     (b) the thread is STARTED, not adopted: typing this run's franchise name
 #         offers `Start “…”` (so nothing of that name existed), and taking it
 #         says "Started the <name> franchise. …" — the create wording, which an
@@ -172,7 +172,7 @@ tags:
 # the list is still loading and the filter box exists during loading, so the
 # heading is actively misleading. The counter renders when the query resolves.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # Both runners inject ATTEMPT_ID with `-e` on every attempt, so the binding is
@@ -424,7 +424,7 @@ tags:
 # admin flows — a full SPA reload and re-auth, not a UI wait.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 
 # R2(a). The filter matches on the COMPOSED name, so one needle finds both rows,
@@ -433,7 +433,7 @@ tags:
 - tapOn: "Filter teams"
 - inputText: "Fr${output.TOKEN}"
 - extendedWaitUntil:
-    visible: "2 of .* teams.*"
+    visible: "2 matches( . [0-9,]+ need attention)?"
     timeout: 7000
 
 # ── TEAM A: START THE FRANCHISE, THEN SAVE ──────────────────────────────────
