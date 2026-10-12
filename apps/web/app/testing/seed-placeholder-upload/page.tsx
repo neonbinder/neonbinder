@@ -243,7 +243,7 @@ function TestingSeedPlaceholderUploadContent() {
       {/* Per-file lines, so a flow that fails mid-upload says WHICH fixture and
           why instead of only "redirect never happened". */}
       {progress.length > 0 && (
-        <ul className="font-mono text-xs text-slate-500">
+        <ul className="font-mono text-xs text-slate-400">
           {progress.map((row) => (
             <li key={row.position}>
               {row.name}: {row.state}

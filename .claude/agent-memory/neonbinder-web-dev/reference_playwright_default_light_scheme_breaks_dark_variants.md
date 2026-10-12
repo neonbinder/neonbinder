@@ -1,22 +1,31 @@
 ---
 name: reference_playwright_default_light_scheme_breaks_dark_variants
-description: Playwright's headless Chromium runs prefers-color-scheme light by default; NB's Radix theme is appearance="dark" but Tailwind `dark:` variants follow the OS, so light-mode users (and axe in E2E) see white header/cards with near-white text
+description: Tailwind `dark:` in apps/web is class-based since NEO-341 (globals.css @custom-variant + class="dark" on <html>); before that it followed prefers-color-scheme and light-OS users (and Playwright's default light scheme) got white-on-white
 metadata:
   type: reference
 ---
 
-The app forces Radix `appearance="dark"` in `src/main.tsx`, but the Tailwind
-`dark:` variants on the marketing pages (`app/landing.tsx`, the header's
-`.neon-header`, feature cards with `bg-white`/`bg-slate-50` plus `dark:`
-overrides) follow `prefers-color-scheme`. Playwright's default `colorScheme`
-is `light`, so in E2E (and for any real user whose OS is set to light) the
-header renders white with `#eceeed` text (contrast about 1.1). axe's
-`color-contrast` reports it on every public page (NEO-341, first
-`expectAccessible` run).
+Fixed in NEO-341. `app/globals.css` declares
+`@custom-variant dark (&:where(.dark, .dark *));`, `index.html` puts
+`class="dark"` on `<html>` (covers `createPortal(document.body)` too; Radix's
+`<Theme appearance="dark">` renders `.radix-themes.dark` inside it), and
+`:root` pins `--background`/`--foreground` dark with `color-scheme: dark`.
+The old `@media (prefers-color-scheme: dark)` block is gone. The compiled
+CSS should contain zero `prefers-color-scheme` rules.
 
-**How to apply:** a contrast failure on a white or `#f8fafc` background in
-an E2E screenshot is this light-scheme mismatch, not the dark neon design.
-It is a real product bug (fix the variants so the page is dark whatever the
-OS says), never a reason to force `colorScheme: "dark"` in the Playwright
-config just to get green. The `text-slate-500`/`text-slate-600` body copy
-on `#101211` fails contrast in both schemes. See [[gates-in-a-shared-worktree]].
+Before the fix, Tailwind v4's default `dark:` followed the OS, so under a
+light OS (and in Playwright, whose default `colorScheme` is light) every
+`bg-white dark:bg-gray-800` / `text-slate-600 dark:text-slate-400` pair
+rendered its light half on the dark Radix page: `bg-background` headers went
+white with near-white `.neon-header` text, axe flagged 10 contrast nodes.
+
+**How to apply:**
+- The light halves of existing `dark:` pairs are now dead code. New code on a
+  dark surface can just use the dark tone; no pair needed.
+- Many comments across SetSelector/ (CardDetailPanel, CardChecklist,
+  ParallelBuildPanel, ReconciliationModal…) still reason about a "light-mode
+  bg-white" render. That render no longer happens; do not design around it.
+- Never fix a contrast failure by forcing `colorScheme` in playwright.config.
+- A white/#f8fafc background in an E2E screenshot now means a hardcoded light
+  class, not the OS scheme.
+See [[gates-in-a-shared-worktree]], [[reference_slate_border_contrast_on_slate_900]].

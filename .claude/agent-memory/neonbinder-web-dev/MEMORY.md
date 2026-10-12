@@ -98,4 +98,4 @@
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — agent shells skip load-nvmrc; export PATH to ~/.nvm/versions/node/v$(cat apps/web/.nvmrc)/bin per gate call
 - [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
 - [Ensure-sync idle window races Playwright](reference_ensure_sync_idle_window_races_playwright.md) — idle "Sync X" shows before the syncing write; wait for data, not the button (NEO-341 SPx notice)
-- [Playwright default light scheme breaks `dark:` variants](reference_playwright_default_light_scheme_breaks_dark_variants.md) — E2E runs prefers-color-scheme light; NB header/cards go white-on-white; a product bug, never force colorScheme
+- [Dark variant is class-based (was OS-based)](reference_playwright_default_light_scheme_breaks_dark_variants.md) — NEO-341: @custom-variant + html.dark; light halves of dark: pairs are dead; never force colorScheme

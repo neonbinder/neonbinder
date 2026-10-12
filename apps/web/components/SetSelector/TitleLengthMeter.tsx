@@ -38,6 +38,11 @@ import {
  *
  * ## Two surfaces, two colour strategies (a11y fix, NEO-101 audit)
  *
+ * Superseded by NEO-341: `dark:` is now class-based (globals.css
+ * `@custom-variant dark`, `class="dark"` on <html>), so the app renders dark
+ * whatever the OS says and both surfaces below are always dark. The history is
+ * kept because the light-mode halves still exist in the code; they are dead.
+ *
  * This component renders on two DIFFERENT kinds of surface, and one fixed set
  * of hexes cannot be correct on both:
  *

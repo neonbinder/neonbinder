@@ -2,23 +2,27 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/* NeonBinder is a dark-only app. Radix renders the root `<Theme
+ * appearance="dark">` as `.radix-themes.dark`, and index.html puts `dark` on
+ * <html> so portals to <body> are covered too. Tailwind's `dark:` variant keys
+ * off that class, NOT the OS `prefers-color-scheme` (Tailwind v4's default):
+ * under a light OS the default rendered every `bg-white dark:bg-gray-800` /
+ * `text-slate-600 dark:text-slate-400` pair as its light half on a dark page,
+ * e.g. near-white header text on white (NEO-341 axe). Never reintroduce a
+ * `prefers-color-scheme` rule; the light halves of existing pairs are dead. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --foreground: #ededed;
   --font-sans: 'Lexend', Arial, Helvetica, sans-serif;
+  color-scheme: dark;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 /* Reserve space for the sticky binder-header (~80px tall) so any
