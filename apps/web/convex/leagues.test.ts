@@ -1,10 +1,11 @@
 /**
- * NEO-156 — leagues as an entity, and the guarantee that every team-creation
- * path attaches one.
+ * NEO-156 — leagues as an entity.
  *
- * The last describe block is the one that matters most: it asserts the
- * guarantee at each real creation site rather than trusting that seven
- * `insert("teams", …)` calls stayed in step with one another.
+ * NEO-156 also guaranteed that every team-creation path attached a league,
+ * falling back to the sport's default. NEO-331 reversed that (Jason,
+ * 2026-10-10: "An unanswered League stays blank, same as No league. No team
+ * lands under MLB without someone saying so."), so the team-creation block
+ * below now pins the opposite at the real entry point: no answer, no league.
  */
 
 import { convexTest } from "convex-test";
@@ -62,6 +63,28 @@ async function seedSport(
 const leagues = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("leagues").collect());
 
+/**
+ * NEO-331: `leagues.create` (level-less, bare id) was deleted; `createByAdmin`
+ * is the one operator path, and it requires a level. This keeps the call
+ * sites below reading as they did.
+ */
+async function createLeague(
+  t: ReturnType<typeof convexTest>,
+  args: {
+    name: string;
+    sportId: Id<"selectorOptions">;
+    abbreviation?: string;
+    level?: "major" | "minor" | "college" | "international" | "independent" | "other";
+  },
+  identity: { subject: string; role: string } = ADMIN,
+): Promise<Id<"leagues">> {
+  const { id } = await t.withIdentity(identity).mutation(api.leagues.createByAdmin, {
+    level: "other",
+    ...args,
+  });
+  return id;
+}
+
 describe("normalizeLeagueName", () => {
   test("does NOT token-sort, unlike the team normalizer", () => {
     // teams.normalizeTeamName sorts to dedup "Yankees, New York". League names
@@ -84,18 +107,14 @@ describe("normalizeLeagueName", () => {
   });
 });
 
-describe("league creation", () => {
+describe("league creation (NEO-331: through createByAdmin)", () => {
   test("is idempotent per (name, sport)", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    const a = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "Pacific Coast League", sportId });
+    const a = await createLeague(t, { name: "Pacific Coast League", sportId });
     await drainScheduled(t);
-    const b = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "pacific coast league  ", sportId });
+    const b = await createLeague(t, { name: "pacific coast league  ", sportId });
 
     expect(a).toBe(b);
     expect(await leagues(t)).toHaveLength(1);
@@ -106,13 +125,9 @@ describe("league creation", () => {
     const baseball = await seedSport(t, { value: "Baseball" });
     const football = await seedSport(t, { value: "Football", withConfig: false });
 
-    const a = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "National League", sportId: baseball });
+    const a = await createLeague(t, { name: "National League", sportId: baseball });
     await drainScheduled(t);
-    const b = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "National League", sportId: football });
+    const b = await createLeague(t, { name: "National League", sportId: football });
     await drainScheduled(t);
 
     expect(a).not.toBe(b);
@@ -122,11 +137,9 @@ describe("league creation", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "Nippon Professional Baseball", sportId });
+    await createLeague(t, { name: "Nippon Professional Baseball", sportId });
     await drainScheduled(t);
-    await t.withIdentity(ADMIN).mutation(api.leagues.create, {
+    await createLeague(t, {
       name: "Nippon Professional Baseball",
       abbreviation: "NPB",
       sportId,
@@ -137,15 +150,12 @@ describe("league creation", () => {
     expect(rows[0].abbreviation).toBe("NPB");
   });
 
-  // ── NEO-240 security review: `create` shares `createByAdmin`'s bounds ────
+  // ── NEO-240 security review: the bounds on the operator's league door ───
   //
-  // This is Team Management's inline add, and two things moved under it: the
-  // insert branch it reaches now schedules a Wikidata lookup, and the caller
-  // now sends an abbreviation. It had no bound on either field. These three
-  // tests are what keep it from drifting away from `createByAdmin` again —
-  // the limits themselves are covered against that mutation in
-  // leagues.management.test.ts, so what is asserted here is that THIS door
-  // has them at all.
+  // These were written against the old inline-add `create`, to keep it from
+  // drifting away from `createByAdmin`. NEO-331 deleted `create`, so they now
+  // run against `createByAdmin` itself — the one remaining door — alongside
+  // the fuller coverage in leagues.management.test.ts.
 
   test("refuses an empty name, as a ConvexError rather than a bare Error", async () => {
     // A deployed Convex backend rewrites a plain `Error`'s message to "Server
@@ -154,10 +164,10 @@ describe("league creation", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "   ", sportId }),
+      createLeague(t, { name: "   ", sportId }),
     ).rejects.toThrow(ConvexError);
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "   ", sportId }),
+      createLeague(t, { name: "   ", sportId }),
     ).rejects.toThrow(/A league name is required/);
     expect(await leagues(t)).toHaveLength(0);
   });
@@ -166,7 +176,7 @@ describe("league creation", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.create, {
+      createLeague(t, {
         name: "L".repeat(121),
         sportId,
       }),
@@ -180,7 +190,7 @@ describe("league creation", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.create, {
+      createLeague(t, {
         name: "Pacific Coast League",
         abbreviation: "A".repeat(17),
         sportId,
@@ -193,35 +203,30 @@ describe("league creation", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
-      t
-        .withIdentity({ subject: "u", role: "user" })
-        .mutation(api.leagues.create, { name: "MLB", sportId }),
+      createLeague(t, { name: "MLB", sportId }, { subject: "u", role: "user" }),
     ).rejects.toThrow(/admin/i);
   });
 });
 
-describe("every team-creation path attaches a league", () => {
-  // The point of routing all seven insert sites through one resolver. Each
-  // case exercises a REAL entry point, so a new path that forgets the resolver
-  // fails here rather than silently producing league-less rows.
+describe("no team-creation path files a team under the sport default (NEO-331)", () => {
+  // Each case exercises a REAL entry point. Before NEO-331 these asserted the
+  // opposite — every path routed through `resolveDefaultLeagueId` — which is
+  // how unanswered minor, indie and college clubs landed in MLB.
 
-  test("teams.findOrCreate", async () => {
+  test("teams.findOrCreate with no league answer creates the team league-less", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
     const teamId = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
-      name: "New York Yankees",
+      name: "Hickory Crawdads",
       sportId,
     });
     await drainScheduled(t);
 
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(team!.leagueId).toBeDefined();
-    const league = await t.run(async (ctx) => ctx.db.get(team!.leagueId!));
-    // Full name from sportConfig.espn.leagueName, abbreviation from .league —
-    // neither invented here.
-    expect(league!.name).toBe("Major League Baseball");
-    expect(league!.abbreviation).toBe("MLB");
+    expect(team!.leagueId).toBeUndefined();
+    // …and the sport's default league was not minted on the way.
+    expect(await leagues(t)).toHaveLength(0);
   });
 
   /**
@@ -281,7 +286,7 @@ describe("every team-creation path attaches a league", () => {
     expect(await leagues(t)).toHaveLength(0);
   });
 
-  test("reuses one league row across many teams", async () => {
+  test("many unanswered teams mint no league at all", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
@@ -290,7 +295,9 @@ describe("every team-creation path attaches a league", () => {
       await drainScheduled(t);
     }
 
-    expect(await leagues(t)).toHaveLength(1);
+    expect(await leagues(t)).toHaveLength(0);
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams.map((team) => team.leagueId)).toEqual([undefined, undefined, undefined]);
   });
 });
 
@@ -316,9 +323,28 @@ describe("legacy league conversion", () => {
     );
   }
 
+  // NEO-331: conversion is FIND-ONLY. A legacy string carries no level and a
+  // league row now requires one, so the league must already exist; these
+  // tests seed it, and the miss case below pins that nothing is minted.
+  async function seedNationalLeague(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "National League",
+        nameNormalized: normalizeLeagueName("National League"),
+        sportId,
+        level: "major",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+  }
+
   test("converts a legacy string to a reference and clears the string", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
+    await seedNationalLeague(t, sportId);
     const teamId = await seedLegacyTeam(t, sportId, "Montreal Expos", "National League");
 
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
@@ -333,9 +359,10 @@ describe("legacy league conversion", () => {
     expect(team!.league).toBeUndefined();
   });
 
-  test("dedupes teams sharing a legacy league name into one row", async () => {
+  test("links teams sharing a legacy league name to the one row", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
+    await seedNationalLeague(t, sportId);
     const a = await seedLegacyTeam(t, sportId, "Expos", "National League");
     const b = await seedLegacyTeam(t, sportId, "Cubs", "National League");
 
@@ -345,14 +372,17 @@ describe("legacy league conversion", () => {
     await drainScheduled(t);
 
     expect(await leagues(t)).toHaveLength(1);
+    const [rowA, rowB] = await t.run(async (ctx) =>
+      Promise.all([ctx.db.get(a), ctx.db.get(b)]),
+    );
+    expect(rowA!.leagueId).toBeDefined();
+    expect(rowB!.leagueId).toBe(rowA!.leagueId);
   });
 
   test("never overwrites a league an operator assigned by hand", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    const assigned = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "Pacific Coast League", sportId });
+    const assigned = await createLeague(t, { name: "Pacific Coast League", sportId });
     await drainScheduled(t);
     const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
     await t.run(async (ctx) => ctx.db.patch(teamId, { leagueId: assigned }));
@@ -375,9 +405,26 @@ describe("legacy league conversion", () => {
     expect(await leagues(t)).toHaveLength(0);
   });
 
+  test("NEO-331: a legacy name no league answers to creates nothing and keeps the string", async () => {
+    // Was "converts by creating the league". A league row now requires a
+    // level the string cannot supply, so the miss leaves the team exactly as
+    // it was — the fact kept for an operator to resolve by hand.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
+
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+
+    const team = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(team!.leagueId).toBeUndefined();
+    expect(team!.league).toBe("National League");
+    expect(await leagues(t)).toHaveLength(0);
+  });
+
   test("is re-runnable", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
+    await seedNationalLeague(t, sportId);
     const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
 
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
@@ -399,12 +446,10 @@ describe("leagues.list", () => {
     const other = await seedSport(t, { value: "Hockey", withConfig: false });
 
     for (const name of ["Pacific Coast League", "American League"]) {
-      await t.withIdentity(ADMIN).mutation(api.leagues.create, { name, sportId });
+      await createLeague(t, { name, sportId });
       await drainScheduled(t);
     }
-    await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.create, { name: "NHL", sportId: other });
+    await createLeague(t, { name: "NHL", sportId: other });
     await drainScheduled(t);
 
     const rows = await t
@@ -422,7 +467,7 @@ describe("leagues.list", () => {
     // that is a collector-facing screen. Leagues carry no user content.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "MLB", sportId });
+    await createLeague(t, { name: "MLB", sportId });
     await drainScheduled(t);
 
     const rows = await t

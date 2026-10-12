@@ -68,6 +68,14 @@ Things that look like failures during the apps/web fast gates but are not.
    you edit, and before reporting grep each file for a marker of your change
    (`grep -c <newSymbol> file`) and re-apply from your scripts if it is gone.
 
+8. **The Bash tool's shell is zsh, which does not word-split `$VAR`.**
+   `FILES=$(grep -l … ); npx vitest run $FILES` hands vitest ONE argument
+   (the whole space-joined list) and it answers "No test files found,
+   exiting with code 1" — looks like a project/glob problem, is not. Use
+   `${=FILES}`, `xargs`, or just a directory filter (`npx vitest run
+   convex/`, ~25s for all of convex). Also: `--project convex-lib` is not
+   needed for a path filter (NEO-331).
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

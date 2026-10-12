@@ -31,7 +31,9 @@ vi.mock("convex/react", () => ({
   useQuery: () => undefined,
   useMutation: () => vi.fn(),
 }));
-vi.mock("../../convex/_generated/api", () => ({ api: { teams: { search: "teams.search" } } }));
+vi.mock("../../convex/_generated/api", () => ({
+  api: { teams: { pickerCandidates: "teams.pickerCandidates" } },
+}));
 
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { MIN_CAREER_YEAR } from "../../lib/players/career-years";

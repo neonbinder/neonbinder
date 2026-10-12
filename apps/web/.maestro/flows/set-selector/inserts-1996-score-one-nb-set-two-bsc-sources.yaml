@@ -564,6 +564,20 @@ tags:
           visible:
             id: "^Add as New (Player|Team|League)$"
           timeout: 30000
+      # NEO-331 — a New League step's primary is HELD until a level is pressed
+      # (none is pre-pressed), so if the row that settled first is a league,
+      # one tap on the primary decides nothing and the "Discard 1 decision"
+      # assert below fails. Which kind it is, is read off the same button the
+      # wait just saw; the batch has stopped moving (the "still looking up"
+      # wait above), so these reads cannot race and stay non-optional. "Other"
+      # is the level that claims nothing (the batch is discarded anyway).
+      - copyTextFrom:
+          id: "^Add as New (Player|Team|League)$"
+      - runFlow:
+          when:
+            true: '${maestro.copiedText === "Add as New League"}'
+          commands:
+            - tapOn: "Other"
       - tapOn:
           id: "^Add as New (Player|Team|League)$"
       - tapOn:
@@ -702,14 +716,16 @@ tags:
             #
             # Full mechanism written once at the corresponding step of
             # `util-wizard-walk-to-player-row.yaml` (R3 — not duplicated).
+            #
+            # NEO-331 — a league step's primary is held until a level is
+            # pressed; the shared util reads the step's kind off this same
+            # button and presses "Other" first (taps optional, as above; the
+            # `.*Confirm & Save.*` wait below still adjudicates).
             - runFlow:
                 when:
                   visible:
                     id: "^Add as New (Team|League)$"
-                commands:
-                  - tapOn:
-                      id: "^Add as New (Team|League)$"
-                      optional: true
+                file: util-wizard-answer-step-as-new.yaml
       # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
       # SETTLED, staying armed for the rest, so this wait is gated on that live
       # external round-trip rather than on one mutation. Raised for that reason;

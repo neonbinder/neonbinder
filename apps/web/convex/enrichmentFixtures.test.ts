@@ -570,6 +570,7 @@ async function seedNames(t: T, sportId: Id<"selectorOptions">) {
       lastUpdated: 1,
     });
     await ctx.db.insert("leagues", {
+      level: "major" as const,
       name: "Major League Baseball",
       nameNormalized: "major league baseball",
       sportId,
@@ -957,6 +958,7 @@ async function seedCatalogue(t: T, sportId: Id<"selectorOptions">, players = CAT
       name: "Catalogue League",
       nameNormalized: "catalogue league",
       sportId,
+      level: "major",
       lastUpdated: 1,
     });
   });

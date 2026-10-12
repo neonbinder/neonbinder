@@ -43,7 +43,7 @@ describe("clampSearchQuery (NEO-330)", () => {
     // behavioural test written with real names.
     const teams = readFileSync(join(__dirname, "..", "teams.ts"), "utf8");
     const players = readFileSync(join(__dirname, "..", "players.ts"), "utf8");
-    for (const name of ["search", "searchForManagement"]) {
+    for (const name of ["search", "searchForManagement", "pickerCandidates"]) {
       const start = teams.indexOf(`export const ${name} = query({`);
       expect(start).toBeGreaterThan(-1);
       const body = teams.slice(start, teams.indexOf("\n});", start));

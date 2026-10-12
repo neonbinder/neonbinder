@@ -198,6 +198,7 @@ describe("enqueueEnrichment wires the final-attempt callback", () => {
         lastUpdated: 1_700_000_000_000,
       });
       const leagueId = await ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "L",
         nameNormalized: "l",
         sportId,

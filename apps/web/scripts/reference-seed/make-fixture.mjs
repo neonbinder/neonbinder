@@ -175,7 +175,7 @@ export function fixtureTables({ emptyTables = [] } = {}) {
     ],
     leagues: [
       { _id: L1, _creationTime: ct(), name: "Fixture League", abbreviation: "FXL", nameNormalized: "fixture league", sportId: S1, level: "major", lastUpdated: 1 },
-      { _id: L2, _creationTime: ct(), name: "Fixture Curling League", nameNormalized: "curling fixture league", sportId: S2, lastUpdated: 1 },
+      { _id: L2, _creationTime: ct(), name: "Fixture Curling League", nameNormalized: "curling fixture league", sportId: S2, level: "major", lastUpdated: 1 },
     ],
     franchises: [
       { _id: F1, _creationTime: ct(), name: "Fixture Nine", nameNormalized: "fixture nine", sportId: S1, lastUpdated: 1 },

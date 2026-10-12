@@ -1,8 +1,9 @@
 /**
  * NEO-330 security review — the server-side bound on typed search text.
  *
- * `teams.search`, `players.search` and `teams.searchForManagement` take a
- * free-form `query: v.string()` from the client and run it through a search
+ * `teams.search`, `teams.pickerCandidates`, `teams.searchForManagement` and
+ * `players.search` take a free-form `query: v.string()` from the client and
+ * run it through a search
  * index (and, for the team searches, a per-word matcher). A Convex deployment
  * URL ships in the client bundle, so nothing but this function stops a caller
  * from sending a megabyte of text or a thousand words: tokenising, normalising

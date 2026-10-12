@@ -82,8 +82,14 @@ vi.mock("convex/react", () => ({
 
 /** The picker owns its own test file — see the note above. */
 vi.mock("./TeamPicker", () => ({
-  default: ({ value }: { value: string[] }) => (
-    <div data-testid="team-picker-stub">
+  default: ({
+    value,
+    contextOptionId,
+  }: {
+    value: string[];
+    contextOptionId?: string;
+  }) => (
+    <div data-testid="team-picker-stub" data-context-option-id={contextOptionId ?? ""}>
       <button type="button">Pick teams</button>
       {/* Stands in for the typeahead: its own Enter handler, like the real one. */}
       <input
@@ -112,7 +118,7 @@ function fixerElement(
 ) {
   const sportId = opts.sportId === null ? undefined : (opts.sportId ?? SPORT_ID);
   return (
-    <AttentionSportContext.Provider value={sportId}>
+    <AttentionSportContext.Provider value={{ sportId }}>
       <MissingTeamFixer
         row={{
           _id: CARD_ID,
@@ -610,5 +616,40 @@ describe("MissingTeamFixer — focus never leaves a picker in use (NEO-330 a11y)
     suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
     view.rerender(fixerElement());
     await waitFor(() => expect(document.activeElement).toBe(saveButton()));
+  });
+});
+
+describe("MissingTeamFixer — NEO-331 the set context reaches its picker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    suggestions = [];
+  });
+
+  it("reads contextOptionId off the attention context", () => {
+    render(
+      <AttentionSportContext.Provider
+        value={{
+          sportId: "sport-1" as unknown as Id<"selectorOptions">,
+          contextOptionId: "variant-1" as unknown as Id<"selectorOptions">,
+        }}
+      >
+        <MissingTeamFixer
+          row={{ _id: CARD_ID, cardNumber: "327", cardName: "Fernando Tatis Jr." }}
+          items={[]}
+          onSaved={vi.fn()}
+          onSkip={vi.fn()}
+        />
+      </AttentionSportContext.Provider>,
+    );
+    expect(
+      screen.getByTestId("team-picker-stub").getAttribute("data-context-option-id"),
+    ).toBe("variant-1");
+  });
+
+  it("passes none outside a provider", () => {
+    renderFixer();
+    expect(
+      screen.getByTestId("team-picker-stub").getAttribute("data-context-option-id"),
+    ).toBe("");
   });
 });

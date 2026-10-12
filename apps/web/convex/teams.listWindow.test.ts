@@ -60,6 +60,7 @@ async function seedLeague(
       name,
       nameNormalized: name.toLowerCase(),
       sportId,
+      level: "major",
       lastUpdated: 1_700_000_000_000,
     }),
   );

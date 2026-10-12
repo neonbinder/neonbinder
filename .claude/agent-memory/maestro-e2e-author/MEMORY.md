@@ -141,5 +141,10 @@ Non-markdown helpers: `tools/`
 - [Scroll pass cost is driver overhead](patterns_scroll_pass_cost_is_driver_overhead.md) — ~2s/312px pass on ANY page (executeJS sleeps 100ms); page size is ~+5%…
 - [Record a fixture set's lookups](patterns_record_a_fixture_sets_lookups.md) — captureFromCli refuses on a catalogue preview…
 - [Insert fixture needs its column writer](patterns_insert_fixture_needs_its_column_writer.md) — insert rows exist only after a reconcile Save…
+- [Branch on copied button text](patterns_branch_on_copied_button_text.md) — vary a drain by step kind: copyTextFrom the guarded button + `when: true:` script; never a 2nd visibility guard
+- [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write proof; level pills required; no sport default, pick MLB (seed-owned row); held rows never say "No matches."
+- [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search_name reads, same text, in one query: other-filter inserts never invalidate; prove via HTTP API + ws frames
+- [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML failure PNG, x=8 nodes, modal in flow at page bottom; `Search sports...` bounds fingerprint; full rerun
 - [takeScreenshot paths + nested runFlow env](patterns_screenshots_and_nested_env.md) — absolute paths refused; env is inherited, so pass SET to the discard util
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~4-5s per live lookup Convex-side (laptop ~0.5s); teams settle last; size a timing claim from it
+- [Reference catalogue on CI previews](patterns_reference_catalogue_on_ci_previews.md) — NEO-330: prod catalogue on every CI preview; check fixture names against the bundle; capped lists
