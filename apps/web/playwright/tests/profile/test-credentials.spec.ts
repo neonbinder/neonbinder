@@ -3,7 +3,7 @@ import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
 
 const LIVE = 30_000; // live marketplace round trip
 
-test("Test BSC and SportLots Credentials", { tag: ["@credentials", "@profile"] }, async ({ page, signIn, env }) => {
+test("BSC and SportLots credentials pass a live test", { tag: ["@credentials", "@profile"] }, async ({ page, signIn, env }) => {
   await signIn("/profile/credentials");
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({
     timeout: LAUNCH_GATE,
