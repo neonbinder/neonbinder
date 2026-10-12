@@ -109,6 +109,19 @@ function sanitize(results: AxeResults, meta: Record<string, unknown>) {
 export async function checkAccessibility(page: Page, testInfo: TestInfo, opts: AccessibleOptions = {}): Promise<void> {
   const path = new URL(page.url()).pathname;
   const label = opts.label ?? path;
+  // axe reads colours as painted right now: a dialog still fading in (Clerk's
+  // modals, Radix overlays) measures its text against a half-transparent
+  // layer and reports contrast the settled screen does not have. Wait for
+  // every finite animation and transition to finish; infinite ones
+  // (spinners, the neon glow) never settle and are ignored.
+  await page.waitForFunction(
+    () =>
+      document
+        .getAnimations()
+        .every((a) => a.playState !== "running" || a.effect?.getComputedTiming().iterations === Infinity),
+    undefined,
+    { timeout: 7_000 },
+  );
   let builder = new AxeBuilder({ page }).withTags([...WCAG_TAGS]);
   for (const { selector } of EXCLUDED_REGIONS) builder = builder.exclude(selector);
 
