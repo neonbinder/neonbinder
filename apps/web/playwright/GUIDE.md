@@ -360,9 +360,11 @@ for each pass, and a skipped test counts as a failure.
   into every name it mints: `ATTEMPT_ID` is `pw3d-a1-…` on desktop and
   `pw3m-a1-…` on mobile, so `ATTEMPT_TOKEN`s never collide and the mobile run
   never meets a row the desktop run made (nothing deletes a minted row
-  mid-run). For a per-WORKER name (a hand-made set), use `env.WORKER_KEY`
-  (`3d` / `3m`), not `env.WORKER_INDEX`, so each project gets its own row.
-  `WORKER_INDEX` stays the bare account number, shared by both projects:
+  mid-run). CI runs the two projects in separate passes, each on its own
+  reset and seed, so a per-worker name built from `env.WORKER_INDEX` never
+  meets the other project's row there. New specs should still prefer
+  `env.WORKER_KEY` (`3d` / `3m`), which also keeps a local run of both
+  projects without a re-seed apart. `WORKER_INDEX` stays the bare account number, shared by both projects:
   it is what `signIn` passes as `worker=`, and it names what the account's
   bootstrap seeded.
 - **Local runs** pass the project you are debugging; to run both, re-seed
@@ -698,7 +700,7 @@ public repo are public. Traces are only on locally (`retain-on-failure`).
       justified at the site and on that call only. Nothing else exceeds 7 s.
 - [ ] No sleeps, no CSS/XPath/test ids; locators are role/label/text.
 - [ ] Minted names come from `env.ATTEMPT_TOKEN` / `env.ATTEMPT_ID` as single
-      tokens; per-worker names use `env.WORKER_KEY`.
+      tokens; new per-worker names prefer `env.WORKER_KEY`.
 - [ ] `expectAccessible` runs at every new screen or state the spec reaches.
 - [ ] The spec passes on `e2e` AND `e2e-mobile`; any mobile branch keys on
       `isMobile` and ends in hard asserts.
