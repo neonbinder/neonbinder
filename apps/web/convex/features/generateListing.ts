@@ -312,8 +312,28 @@ function dropDanglingConnector(text: string): string {
 }
 
 /**
+ * NEO-335 — a generational name suffix: Jr., Sr., II, III, IV, with or
+ * without the period (and a trailing comma tolerated). Case-insensitive.
+ */
+const NAME_SUFFIX = /^(jr|sr|ii|iii|iv)\.?,?$/i;
+
+/** Is `name`'s last word a generational suffix ("Ken Griffey Jr.")? */
+export function endsWithNameSuffix(name: string): boolean {
+  const words = name.trim().split(/\s+/);
+  return words.length > 1 && NAME_SUFFIX.test(words[words.length - 1]);
+}
+
+/**
  * Cut `text` to at most `maxLength` characters at the last WHOLE-WORD boundary
  * that fits.
+ *
+ * NEO-335 — `forbidden` lists space positions the cut may not land on: the
+ * spaces INSIDE a player name that ends in a generational suffix. "Ken Griffey
+ * Jr." and "Ken Griffey Sr." on one card are told apart by nothing else, so a
+ * cut that keeps "Ken Griffey" and drops the suffix titles both cards as the
+ * same man. Such a name is kept whole or dropped whole; the cut moves to an
+ * earlier boundary, and the title stays flagged (`coreFits: false`). When no
+ * allowed boundary fits, the plain last boundary is used, as before.
  *
  * No ellipsis, ever. An `…` in a live eBay title reads to a buyer as a broken
  * listing rather than as a deliberate abbreviation (collector consult,
@@ -322,11 +342,19 @@ function dropDanglingConnector(text: string): string {
  * at — a single unbroken token longer than the budget — because returning
  * nothing at all would be worse.
  */
-function cutAtWordBoundary(text: string, maxLength: number): string {
+function cutAtWordBoundary(
+  text: string,
+  maxLength: number,
+  forbidden: ReadonlySet<number> = new Set(),
+): string {
   if (maxLength <= 0) return "";
   if (text.length <= maxLength) return text;
   const window = text.slice(0, maxLength);
-  const lastSpace = window.lastIndexOf(" ");
+  let lastSpace = window.lastIndexOf(" ");
+  while (lastSpace > 0 && forbidden.has(lastSpace)) {
+    lastSpace = window.lastIndexOf(" ", lastSpace - 1);
+  }
+  if (lastSpace <= 0) lastSpace = window.lastIndexOf(" ");
   if (lastSpace > 0) return dropDanglingConnector(window.slice(0, lastSpace).trimEnd());
   // The fallback cuts at a UTF-16 code unit, which can land BETWEEN the two
   // halves of a surrogate pair — an emoji, or any astral character — leaving an
@@ -383,16 +411,31 @@ export function assessListingTitle(
     inputs.playerNames && inputs.playerNames.length > 0
       ? inputs.playerNames.join(" & ")
       : "";
-  const corePrefix = [identityParts.join(" "), playerPart]
-    .filter(Boolean)
-    .join(" ");
+  const identity = identityParts.join(" ");
+  const corePrefix = [identity, playerPart].filter(Boolean).join(" ");
+
+  // NEO-335 — the spaces inside a player name ending in Jr./Sr./II/III/IV,
+  // where the core cut may not land: the suffix is who the player is (Ken
+  // Griffey Jr. and Sr. share a card). See `cutAtWordBoundary`.
+  const suffixedNameSpaces = new Set<number>();
+  if (playerPart) {
+    let start = identity ? identity.length + 1 : 0;
+    for (const name of inputs.playerNames ?? []) {
+      if (endsWithNameSuffix(name)) {
+        for (let i = 0; i < name.length; i += 1) {
+          if (name[i] === " ") suffixedNameSpaces.add(start + i);
+        }
+      }
+      start += name.length + " & ".length;
+    }
+  }
 
   const reserved = ` #${inputs.cardNumber}`;
   const maxPrefixLen = LISTING_TITLE_MAX - reserved.length;
   const coreFits = corePrefix.length <= maxPrefixLen;
   const prefix = coreFits
     ? corePrefix
-    : cutAtWordBoundary(corePrefix, maxPrefixLen);
+    : cutAtWordBoundary(corePrefix, maxPrefixLen, suffixedNameSpaces);
 
   let title = `${prefix}${reserved}`.trim();
 

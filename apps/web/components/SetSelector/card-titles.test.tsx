@@ -171,6 +171,29 @@ describe("the over-long variation is asked about once", () => {
   });
 });
 
+describe("a generational suffix stays on the name (shared with the insert)", () => {
+  test("a father-and-son card never titles as two bare 'Ken Griffey's", () => {
+    for (let pad = 0; pad < 40; pad += 1) {
+      const ctx = context({
+        setNameValue: `Upper Deck ${"x".repeat(20 + pad)}`,
+        players: [
+          { printed: "Ken Griffey Jr.", name: "Ken Griffey Jr." },
+          { printed: "Ken Griffey Sr.", name: "Ken Griffey Sr." },
+        ],
+      });
+      const groups = buildTitleGroups(
+        [card("1", { players: ["Ken Griffey Jr.", "Ken Griffey Sr."] })],
+        ctx,
+      ).titleGroups;
+      for (const c of groups.flatMap((g) => g.cards)) {
+        expect(c.title).not.toMatch(/Griffey(?! (Jr|Sr)\.)/);
+        expect(c.leftOut).not.toContain("Jr.");
+        expect(c.leftOut).not.toContain("Sr.");
+      }
+    }
+  });
+});
+
 describe("grouping identical drops", () => {
   test("cards that lost the same words share one line, whoever is on them; a different drop is its own", () => {
     const cards = [

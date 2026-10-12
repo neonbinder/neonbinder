@@ -269,10 +269,13 @@ function wordsOf(text: string): string[] {
  *
  * The generator reports the dropped OPTIONAL tokens itself; a core cut it
  * only reports as `coreFits: false`. The core is cut at a word boundary, so
- * what it lost is whichever of its words the title no longer carries — read
- * per segment, so "Mike Trout & Shohei Ohtani" cut after "Shohei" reports
- * "Ohtani" rather than a run of loose words. The maker is skipped when NB
- * does not know the brand (NEO-272): the generator never put it in.
+ * what it lost is read per segment. Year, maker and set report whichever of
+ * their words the title no longer carries. A PLAYER is reported whole when
+ * the title no longer carries the whole name: "Mike Trout & Shohei Ohtani"
+ * cut after "Shohei" reports "Shohei Ohtani", and a dropped "Ken Griffey Sr."
+ * is reported as that, never as a bare "Sr." because "Ken Griffey" survives
+ * in his son's name beside it. The maker is skipped when NB does not know the
+ * brand (NEO-272): the generator never put it in.
  *
  * Display only. Nothing is stored from this.
  */
@@ -287,7 +290,6 @@ export function leftOutOfTitle(
       inputs.year,
       inputs.manufacturerBrandUnknown ? undefined : inputs.manufacturer,
       inputs.setName,
-      ...(inputs.playerNames ?? []),
     ];
     for (const segment of segments) {
       const words = (segment ?? "").split(/\s+/).filter(Boolean);
@@ -295,6 +297,14 @@ export function leftOutOfTitle(
       if (missing.length > 0) {
         const text = missing.join(" ");
         if (!out.includes(text)) out.push(text);
+      }
+    }
+    // Then the players, whole — the core's own order.
+    const titleLower = assessment.title.toLowerCase();
+    for (const raw of inputs.playerNames ?? []) {
+      const name = raw.trim().split(/\s+/).filter(Boolean).join(" ");
+      if (name && !titleLower.includes(name.toLowerCase()) && !out.includes(name)) {
+        out.push(name);
       }
     }
   }

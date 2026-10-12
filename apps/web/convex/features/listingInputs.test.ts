@@ -333,3 +333,64 @@ describe("buildCardRowForInsert — the operator's pre-save answer", () => {
     expect(own.row.listingDescription).toContain("Shohei Ohtani");
   });
 });
+
+describe("a generational suffix is never trimmed off a name (NEO-335 visual pass)", () => {
+  /**
+   * Every identity length from "the core fits" down to "only the year fits",
+   * so the cut is tried at EVERY boundary inside the names, including the one
+   * right before the suffix.
+   */
+  function sweep(playerNames: string[]) {
+    const out: Array<{ title: string; coreFits: boolean; left: string[] }> = [];
+    for (let pad = 0; pad < 70; pad += 1) {
+      const inputs = listingInputsForCard(
+        { cardNumber: "1" },
+        { sportValue: "Baseball", setNameValue: `Upper Deck ${"x".repeat(pad)}`.trim() },
+        { playerNames },
+      );
+      const a = assessListingTitle(inputs);
+      out.push({ title: a.title, coreFits: a.coreFits, left: leftOutOfTitle(inputs, a) });
+    }
+    return out;
+  }
+
+  test("Jr. and Sr. on one card: each name is kept whole or dropped whole", () => {
+    const results = sweep(["Ken Griffey Jr.", "Ken Griffey Sr."]);
+    for (const { title, coreFits, left } of results) {
+      // "Griffey" never ends up without its suffix right after it…
+      expect(title).not.toMatch(/Griffey(?! (Jr|Sr)\.)/);
+      // …a bare suffix is never reported as what was left out…
+      expect(left).not.toContain("Jr.");
+      expect(left).not.toContain("Sr.");
+      // …and a title that lost a name is still flagged.
+      if (left.some((l) => l.startsWith("Ken Griffey"))) expect(coreFits).toBe(false);
+    }
+    // The sweep did reach the case that used to split them.
+    expect(results.some((r) => r.left.includes("Ken Griffey Sr."))).toBe(true);
+    expect(results.some((r) => r.left.includes("Ken Griffey Jr."))).toBe(true);
+  });
+
+  test("a single Jr. stays attached", () => {
+    for (const { title } of sweep(["Bobby Witt Jr."])) {
+      expect(title).not.toMatch(/Witt(?! Jr\.)/);
+    }
+  });
+
+  test("a suffix without a period (Jr, III) stays attached too", () => {
+    for (const { title } of sweep(["Ken Griffey Jr"])) {
+      expect(title).not.toMatch(/Griffey(?! Jr\b)/);
+    }
+    for (const { title } of sweep(["Cal Ripken III"])) {
+      expect(title).not.toMatch(/Ripken(?! III\b)/);
+    }
+  });
+
+  test("a name with no suffix is cut exactly as before (a partial name is still possible)", () => {
+    const results = sweep(["Shohei Ohtani"]);
+    expect(results.some((r) => /Shohei #1$/.test(r.title))).toBe(true);
+    // …and is reported whole.
+    expect(
+      results.filter((r) => /Shohei #1$/.test(r.title)).every((r) => r.left.includes("Shohei Ohtani")),
+    ).toBe(true);
+  });
+});
