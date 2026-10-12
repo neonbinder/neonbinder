@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/checklist-attention-badge-and-filter.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm } from "../../support/cards";
 import type { Page } from "@playwright/test";
@@ -17,6 +17,7 @@ async function addNewTeam(page: Page, name: string) {
   const dialog = page.getByRole("dialog", { name: `New team: ${name}` });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("textbox", { name: "New team name" })).toHaveValue(name);
+  await expectAccessible(page, { within: dialog, label: `New team dialog for ${name}` });
   await dialog.getByRole("button", { name: `Create team ${name}` }).click();
   await expect(page.getByRole("button", { name: `Remove team ${name}` })).toBeVisible();
 }
@@ -50,6 +51,7 @@ test(
       cardNumber: `703-${id}`,
       playerName: `Attn Charlie ${id}`,
       beforeSubmit: async () => {
+        await expectAccessible(page, { label: "Add card form" });
         await addNewTeam(page, teamB);
         // Leaving the picker closes its search.
         await page.getByRole("textbox", { name: "Card name", exact: true }).click();
@@ -64,11 +66,13 @@ test(
     await expect(badge("702")).toBeVisible();
     await expect(page.getByText("2 need attention")).toBeVisible();
     await expect(page.getByText("Fix them one at a time")).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with attention badges and count" });
 
     // Give card 702 a team through its drawer: its badge goes, the count drops.
     await page.getByRole("button", { name: new RegExp(`^Edit card 702-${id}(, .*)?$`) }).click();
     const cardName = page.getByRole("textbox", { name: "Card name", exact: true });
     await expect(cardName).toBeVisible({ timeout: 15_000 });
+    await expectAccessible(page, { within: page.getByRole("dialog", { name: /^Card #/ }), label: "Card detail drawer" });
     await addNewTeam(page, teamA);
     await expect(page.getByText(/Saved Teams/)).toBeVisible();
     await cardName.click();
@@ -83,6 +87,7 @@ test(
     await expect(page.getByText(`Attn Bravo ${id}`)).toBeHidden();
     await expect(page.getByText(`Attn Alpha ${id}`)).toBeVisible();
     await expect(page.getByText(`Attn Charlie ${id}`)).toBeHidden();
+    await expectAccessible(page, { label: "Checklist filtered to cards needing attention" });
     await page.getByRole("button", { name: "Show only cards needing attention (on)" }).click();
     await expect(page.getByText(`Attn Bravo ${id}`)).toBeVisible();
   },

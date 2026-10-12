@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-career-team-entry.yaml (Maestro suite retired in NEO-341; see git history)
 // Cancels out at the end and discards, so nothing is committed.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { discardResumedReviewBatch, fetchChecklistToWizard, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
@@ -32,6 +32,7 @@ test(
     await expect(careerName).toHaveValue(probe);
     await expect(addCareer).toBeDisabled();
     await expect(wizard.getByRole("list", { name: "Staged career teams" })).toBeHidden();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, career team entry refused without a from-year" });
 
     // With a from-year the team stages, and its name is raised as a New Team step.
     await fromYear.fill("2001");
@@ -41,12 +42,22 @@ test(
     await expect(probeStep.or(lookingUp)).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(probeStep).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, New Team step for a career team" });
 
     // Make the team a league of its own: the League step comes first, then the team.
     await wizard.getByRole("combobox", { name: "League" }).fill(league);
     await wizard.getByRole("option", { name: `Create “${league}”` }).click();
     await expect(wizard.getByRole("heading", { name: `New League: ${league}` })).toBeVisible();
-    await wizard.getByRole("button", { name: "Add as New League" }).click();
+    // NEO-331: a league's level is required and none is pre-pressed, so
+    // "Add as New League" is held until one is. "Other" claims nothing (the
+    // batch is discarded, so which level is immaterial).
+    const addLeague = wizard.getByRole("button", { name: "Add as New League", exact: true });
+    await expect(addLeague).toBeDisabled();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, New League step, no level yet" });
+    await wizard.getByRole("radio", { name: "Other", exact: true }).click();
+    await expect(wizard.getByRole("radio", { name: "Other", exact: true })).toBeChecked();
+    await expect(addLeague).toBeEnabled();
+    await addLeague.click();
     await expect(probeStep).toBeVisible();
     await expect(wizard.getByRole("combobox", { name: "League" })).toHaveValue(`${league} (new)`);
     await wizard.getByRole("button", { name: "Add as New Team" }).click();
@@ -54,6 +65,7 @@ test(
     // Back on the player row, the staged team shows with its era.
     await expect(careerName).toBeVisible({ timeout: 30_000 });
     await expect(wizard.getByText(new RegExp(`${probe} \\(2001.2005\\)`))).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, staged career team with its era" });
 
     // Enter commits a staged entry from the keyboard; a second team opens ended "present".
     await careerName.fill(temp);
@@ -80,6 +92,7 @@ test(
     // A staged team can be taken back out.
     await wizard.getByRole("button", { name: `Remove ${temp}` }).click();
     await expect(tempChip).toBeHidden();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, staged team taken back out" });
     await expect(wizard.getByText(new RegExp(`${probe} \\(2001.2005\\)`))).toBeVisible();
 
     // Add as New Player carries the staged history into the decision.

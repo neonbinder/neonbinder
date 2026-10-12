@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/checklist-renders-rich-fields.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToBaseVariant, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -22,5 +22,8 @@ test(
 
     // A rookie badge exists somewhere in the base checklist.
     await expect(page.getByText("RC", { exact: true }).first()).toBeVisible();
+
+    // The populated checklist is a new state: check it, rows and badges included.
+    await expectAccessible(page, { label: "Base checklist with rich card rows" });
   },
 );

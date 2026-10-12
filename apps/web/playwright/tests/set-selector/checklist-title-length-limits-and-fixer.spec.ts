@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 
 test(
@@ -16,6 +16,7 @@ test(
     const attentionBadge = page.getByRole("img", {
       name: new RegExp(`^Card ${num}(, .*)? needs attention: variation text is over the 65-character limit$`),
     });
+    const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
 
     await signIn("/set-selector");
@@ -42,6 +43,7 @@ test(
     const newTeam = page.getByRole("dialog", { name: `New team: ${team}` });
     await expect(newTeam).toBeVisible();
     await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(team);
+    await expectAccessible(page, { within: newTeam, label: "New team dialog" });
     await newTeam.getByRole("button", { name: `Create team ${team}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
     // Focusing another field closes the team search.
@@ -58,6 +60,7 @@ test(
     await expect(page.getByText(/over the 80-character limit/)).toBeVisible();
     const shorten = page.getByText(/Shorten it before saving/);
     await expect(shorten).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer, over-long title refused" });
 
     await cardTitle.press("Enter");
     await expect(page.getByText(/Saved Card title/)).toBeHidden();
@@ -78,6 +81,7 @@ test(
     const variation = page.getByRole("textbox", { name: "Card variation", exact: true });
     await variation.fill("Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout");
     await expect(page.getByText(/a marketplace that caps this field will reject the value/)).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer, over-long variation warned" });
     await variation.press("Enter");
     await expect(page.getByText(/Saved Variation/)).toBeVisible();
     await page.getByRole("button", { name: "Done editing card" }).click();
@@ -86,6 +90,7 @@ test(
     // The row carries an attention badge, and the checklist counts it.
     await expect(attentionBadge).toBeVisible();
     await expect(page.getByText("1 need attention")).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with an attention badge for an over-long variation" });
 
     // ── Walk it to a fix ──
     await page.getByRole("button", { name: /^Fix cards needing attention one at a time/ }).click();
@@ -95,6 +100,7 @@ test(
     await expect(fixer.getByText(/1 card needs attention .{1,3} 0 fixed/)).toBeVisible();
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
     await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
+    await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
 
     await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
     await fixer.getByRole("textbox", { name: `Card variation for #${num}` }).clear();
@@ -103,6 +109,7 @@ test(
 
     await expect(fixer.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();
     await expect(fixer.getByText(/0 cards need attention .{1,3} 1 fixed/)).toBeVisible();
+    await expectAccessible(page, { within: fixer, label: "Attention walker, all clear" });
     await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
     await expect(fixer).toBeHidden();
 

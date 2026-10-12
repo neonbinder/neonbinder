@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-back-to-matching-resumes-decisions.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, reviewWizard, reviewedLine, walkToPlayerRow } from "../../support/wizard";
 
@@ -23,16 +23,22 @@ test(
       const decided = wizard.getByText(/^Decided \([0-9]+\)$/);
       await expect(decided).toBeVisible();
       const decidedBefore = (await decided.textContent()) ?? "";
+      await expectAccessible(page, { within: wizard, label: "Entity review wizard, player decided" });
 
       await wizard.getByRole("button", { name: "Back to matching" }).click();
       await expect(wizard).toBeHidden();
       const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
       await expect(confirmMatches).toBeVisible();
+      await expectAccessible(page, {
+        within: page.getByRole("dialog", { name: /^Match Cards/ }),
+        label: "Match Cards dialog after Back to matching",
+      });
 
       // Re-confirming returns to the same review, the decision still on it.
       await confirmMatches.click();
       await expect(wizard).toBeVisible({ timeout: 60_000 });
       await expect(decided).toHaveText(decidedBefore);
+      await expectAccessible(page, { within: wizard, label: "Entity review wizard, resumed with decision" });
       // Open the decided list: the player added as new is still on it.
       await decided.click();
       await expect(wizard.getByText("Added as new").first()).toBeVisible();

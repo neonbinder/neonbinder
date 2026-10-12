@@ -9,7 +9,7 @@
 // SportLots paused (NEO-287): the dialog has no surface (a one-marketplace
 // sync commits at once), so the paused branch never syncs; it proves the
 // pause on the page instead.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnOption,
@@ -53,6 +53,7 @@ test(
       ).toBeVisible();
       await expect(page.getByText(/Match Cards/)).toBeHidden();
       await expect(page.getByText("Sync cancelled — no cards saved.")).toBeHidden();
+      await expectAccessible(page, { label: "Future Stars checklist, SportLots on pause" });
       return;
     }
 
@@ -74,6 +75,7 @@ test(
     await expect(confirm).toHaveText("Confirm", { timeout: 90_000 });
     const matched = (n: number) => dialog.getByText(new RegExp(`Matched \\(${n}\\)`));
     await expect(matched(20)).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, all cards matched" });
 
     // Unlink two pairs so there is something to mis-pair.
     await dialog.getByRole("button", { name: /^Unlink #FS-1 / }).click();
@@ -104,6 +106,7 @@ test(
     const slPill = dialog.getByRole("radio", { name: /^SportLots: .* — use this name for #FS-1$/ });
     await expect(bscPill).toBeVisible();
     await expect(slPill).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, name conflict on a manual link" });
 
     // Both names are read off the screen, so no live value is hardcoded.
     const bscName = ((await bscPill.getAttribute("aria-label")) ?? "")
@@ -130,6 +133,7 @@ test(
     await dialog.getByRole("button", { name: /^Edit name for #FS-1 / }).click();
     const nameField = dialog.getByRole("textbox", { name: "Edit name for #FS-1" });
     await expect(nameField).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, editing the card name" });
     await nameField.fill("NB Operator Name");
     await nameField.press("Enter");
     await expect(dialog.getByRole("radio", { name: /^Custom: NB Operator Name.* — use this name for #FS-1$/ })).toBeVisible();
@@ -143,10 +147,14 @@ test(
     await expect(dialog.getByText(/19 cards will be saved/)).toBeVisible();
     await expect(confirm).toHaveText("Confirm");
     await expect(confirm).toBeEnabled();
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, custom name chosen" });
 
     // ── STEP 4: Cancel asks to discard (NEO-220) and writes nothing.
     await dialog.getByRole("button", { name: "Cancel card matching" }).click();
-    await page.getByRole("button", { name: /^Discard / }).click();
+    const discard = page.getByRole("button", { name: /^Discard / });
+    await expect(discard).toBeVisible();
+    await expectAccessible(page, { label: "Match Cards dialog, discard confirm" });
+    await discard.click();
     await expect(page.getByText(/Match Cards/)).toBeHidden({ timeout: 10_000 });
     await expect(page.getByText("Sync cancelled — no cards saved.")).toBeVisible();
 
@@ -154,5 +162,6 @@ test(
     // wizard opened.
     await expect(page.getByText("Confirm New Players & Teams")).toBeHidden();
     await expect(syncChecklistButton(page)).toBeVisible();
+    await expectAccessible(page, { label: "Future Stars checklist after the sync was cancelled" });
   },
 );

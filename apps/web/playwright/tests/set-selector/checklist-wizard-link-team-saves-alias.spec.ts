@@ -9,7 +9,7 @@
 //
 // Sole writer of the Rickwood Field Negro Leagues set; fresh-only (it mints
 // "Pittsburgh Crawfords" and commits the set). Re-seed before re-running.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, pick, syncChecklistButton } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
@@ -49,6 +49,7 @@ test(
     await expect(page.getByRole("heading", { name: `Alp${T}`, exact: true })).toBeVisible();
     await expect(page.getByText(`Added Alp${T}`)).toBeVisible();
     await expect(page.getByText("No stints recorded yet.")).toBeVisible();
+    await expectAccessible(page, { label: "Player detail, new player with no stints" });
 
     const addTeam = page.getByRole("button", { name: "Add team" });
     const teamSearch = page.getByRole("textbox", { name: "Search teams" });
@@ -61,6 +62,7 @@ test(
     const newAli = page.getByRole("dialog", { name: `New team: Ali${T}` });
     await expect(newAli).toBeVisible();
     await newAli.getByRole("textbox", { name: "New team location (optional)" }).fill(`Loc${T}`);
+    await expectAccessible(page, { within: newAli, label: "New team dialog, location and name" });
     // The Create button's name is the composed full name: Location then Name.
     await newAli.getByRole("button", { name: `Create team ${FIXTURE_TEAM}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}` })).toBeVisible();
@@ -75,6 +77,7 @@ test(
     await newRetro.getByRole("spinbutton", { name: "New team active from (optional)" }).fill("1926");
     await newRetro.getByRole("spinbutton", { name: "New team active to" }).fill("1940");
     await newRetro.getByRole("textbox", { name: "New team aliases (optional)" }).fill(`Pca${T}`);
+    await expectAccessible(page, { within: newRetro, label: "New team dialog, closed era and alias" });
     await newRetro.getByRole("button", { name: `Create team ${RETRO_CLUB}`, exact: true }).click();
     await expect(page.getByRole("button", { name: `Remove team ${RETRO_CLUB}` })).toBeVisible();
 
@@ -95,6 +98,7 @@ test(
       await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
       await expect(slCandidates).toHaveCount(0);
     }
+    await expectAccessible(page, { within: picker, label: "Select Base Set picker" });
     await picker.getByRole("button", { name: "Cancel" }).click();
     const cancelled = page.getByText(/Base mapping cancelled/);
     await expect(cancelled).toBeVisible();
@@ -109,6 +113,7 @@ test(
     await expect(page.getByText(/Kept all [0-9]+ cards? from /)).toBeVisible({ timeout: 60_000 });
     const wizard = page.getByRole("dialog", { name: "Confirm New Players & Teams" });
     await expect(wizard).toBeVisible({ timeout: 60_000 });
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, opening" });
 
     // ── PART 3: the first TEAM row ──
     const reviewed = wizard.getByText(/^[0-9]+ of [0-9]+ reviewed/);
@@ -152,6 +157,7 @@ test(
     // Default on. (Maestro cannot read a checkbox; it proves this through the
     // "remembered as" read-back below, which is asserted too.)
     await expect(remember).toBeChecked();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, team step with the link section" });
 
     // NEO-307: a New Team name that is another team's alias is refused.
     const teamName = wizard.getByRole("textbox", { name: "New team name" });
@@ -168,6 +174,7 @@ test(
     const countBefore = await reviewed.textContent();
     await expect(wizard.getByRole("button", { name: "Add as New Team" })).toBeDisabled();
     await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, new team name refused as an alias" });
 
     // Link through the search: the typed token finds the fixture by name.
     await searchAll.fill(`Ali${T}`);
@@ -183,6 +190,7 @@ test(
     const decision = wizard.getByRole("group", { name: `Decision for ${ROW}` });
     await expect(decision).toBeVisible();
     await expect(decision).toContainText(`Linked to ${FIXTURE_TEAM} · remembered as “${ROW}”`);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, decided team link" });
     await decision.getByRole("button", { name: "Next" }).click();
 
     // ── PART 5: read every other team/league step, then commit ──
@@ -220,6 +228,7 @@ test(
     await expect(aka).toHaveValue(ROW);
     await expect(currentAliases).toBeVisible();
     await expect(currentAliases.getByText(ROW, { exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Team Management, team detail with its remembered alias" });
 
     // ── PART 7: take it back out, and prove the removal persisted ──
     await aka.clear();

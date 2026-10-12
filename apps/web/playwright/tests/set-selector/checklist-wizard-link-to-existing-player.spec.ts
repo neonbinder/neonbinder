@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-link-to-existing-player.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
@@ -16,12 +16,17 @@ test(
     // Past the team steps, to the first player row.
     await walkToPlayerRow(page);
     const wizard = reviewWizard(page);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, player row" });
 
     // Link the unknown name to a player we already have.
     await wizard.getByRole("button", { name: "Link to existing instead" }).click({ timeout: 30_000 });
     await wizard.getByRole("textbox", { name: "Search existing players" }).fill("Ohtani");
-    await wizard.getByRole("option", { name: "Link to Shohei Ohtani" }).click();
+    const linkOption = wizard.getByRole("option", { name: "Link to Shohei Ohtani" });
+    await expect(linkOption).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, link search results" });
+    await linkOption.click();
     await expect(wizard.getByText("Linked to Shohei Ohtani")).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, linked player" });
 
     await cancelAndDiscard(page);
   },

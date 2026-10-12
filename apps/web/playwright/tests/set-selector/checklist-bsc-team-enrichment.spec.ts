@@ -3,7 +3,7 @@
 // real, marketplace-resolved team into the card detail drawer. READ-ONLY on
 // the shared, pre-synced checklist: nothing is typed, toggled or picked, so
 // closing the drawer leaves it exactly as found.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToBaseVariant, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -28,6 +28,7 @@ test(
     // returns a different team for this printed card it is a data regression.
     await expect(drawer.getByText("Teams", { exact: true })).toBeVisible();
     await expect(drawer.getByRole("button", { name: "Remove team Seattle Mariners" })).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer with resolved team" });
 
     await drawer.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();

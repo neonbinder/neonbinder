@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-skip-commits-and-unskip.yaml (Maestro suite retired in NEO-341; see git history)
 // Skipping every name and committing leaves the set its own "Skipped names"
 // list; Unskip puts a name back for the next sync.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { fetchChecklistToWizard } from "../../support/wizard";
 
@@ -25,14 +25,17 @@ test(
     // The summary counts the names skipped as not-a-name, and nothing was added.
     await expect(wizard.getByText("Skipped as not a name")).toBeVisible();
     await expect(wizard.getByText("Added as new")).toBeHidden();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
 
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: 60_000 });
+    await expect(wizard).toBeHidden();
 
     // The set now keeps its own Skipped names list.
     const skipped = page.getByText(/^Skipped names \([0-9]+\)$/);
     await skipped.click();
     await expect(page.getByText(/Unskip a name to review it on the next sync/)).toBeVisible();
+    await expectAccessible(page, { label: "Skipped names panel" });
 
     await page.getByRole("button", { name: /^Unskip / }).first().click();
     await expect(page.getByText(/Unskipped .* it will be reviewed on the next sync\./)).toBeVisible();

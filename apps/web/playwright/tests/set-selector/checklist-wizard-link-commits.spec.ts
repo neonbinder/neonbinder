@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-link-commits.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: commits the Topps Brooklyn Collection checklist.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand } from "../../support/players";
 import { fetchChecklistToWizard, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
@@ -23,7 +23,10 @@ test(
     await walkToPlayerRow(page);
     await wizard.getByRole("button", { name: "Link to existing instead" }).click();
     await wizard.getByRole("textbox", { name: "Search existing players" }).fill("Ohtani");
-    await wizard.getByRole("option", { name: "Link to Shohei Ohtani" }).click();
+    const linkOhtani = wizard.getByRole("option", { name: "Link to Shohei Ohtani" });
+    await expect(linkOhtani).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, link search results" });
+    await linkOhtani.click();
     await expect(wizard.getByText("Linked to Shohei Ohtani")).toBeVisible();
 
     // Row 2: change the sport this name belongs to, Baseball -> Football.
@@ -32,6 +35,8 @@ test(
     await expect(sportBaseball).toBeVisible();
     await sportBaseball.click();
     const chooser = wizard.getByRole("listbox", { name: "Choose a sport" });
+    await expect(chooser).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, sport chooser open" });
     await chooser.getByRole("option", { name: "Football" }).click();
     await expect(wizard.getByRole("button", { name: "Sport for this name: Football" })).toBeVisible();
 
@@ -48,6 +53,7 @@ test(
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     await expect(confirmSave).toBeVisible({ timeout: 120_000 });
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: 60_000 });
 
@@ -61,5 +67,6 @@ test(
     await expect(cards).toContainText("Brooklyn Collection");
     // Linked across sports: the card keeps its own sport.
     await expect(cards).toContainText("Baseball");
+    await expectAccessible(page, { label: "Player detail with the cross-sport linked card" });
   },
 );

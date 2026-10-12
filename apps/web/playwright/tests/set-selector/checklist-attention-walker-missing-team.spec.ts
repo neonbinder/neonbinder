@@ -5,7 +5,7 @@
 // row changed. Per-worker, per-attempt custom set under the real
 // Baseball > 2024 > Topps ancestors (a real sport row is what lets the team
 // picker create a team at all).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm } from "../../support/cards";
 
@@ -35,6 +35,7 @@ test(
     await addCardViaForm(page, { cardNumber: `801-${A}`, playerName: `Walker Alpha ${A}` });
     await addCardViaForm(page, { cardNumber: `802-${A}`, playerName: `Walker Bravo ${A}` });
     await expect(page.getByText("2 need attention")).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with two cards needing attention" });
 
     // Open the walker: it pins the first flagged row, #801.
     await fixThem.click();
@@ -44,16 +45,19 @@ test(
     await expect(walker.getByText(/2 cards need attention . 0 fixed/)).toBeVisible();
     await expect(walker.getByText("No players on this card.")).toBeVisible();
     await expect(walker.getByText("Pick at least one team, or record that this card has none.")).toBeVisible();
+    await expectAccessible(page, { within: walker, label: "Attention walker, first card" });
 
     // SKIP defers: the walker moves on to #802 and nothing is recorded.
     await walker.getByRole("button", { name: `Skip card 801-${A} for now` }).click();
     await expect(walker.getByRole("button", { name: `Skip card 802-${A} for now` })).toBeVisible();
     await expect(walker.getByText(/1 card needs attention . 0 fixed/)).toBeVisible();
+    await expectAccessible(page, { within: walker, label: "Attention walker, second card" });
 
     // NO TEAM is an answer, not an abandonment.
     await walker.getByRole("button", { name: "No team on this card" }).click();
     await expect(walker.getByText("All clear — nothing on this checklist needs attention.")).toBeVisible();
     await expect(walker.getByText(/0 cards need attention . 1 fixed/)).toBeVisible();
+    await expectAccessible(page, { within: walker, label: "Attention walker, all clear" });
     await walker.getByRole("button", { name: "Done (Esc)" }).click();
     await expect(walker).toBeHidden();
 
@@ -77,8 +81,13 @@ test(
     await search.press("Enter");
     await expect(page.getByText(`New team: ${TEAM}`)).toBeVisible();
     await expect(page.getByRole("textbox", { name: "New team name" })).toHaveValue(TEAM);
+    await expectAccessible(page, {
+      within: page.getByRole("dialog", { name: `New team: ${TEAM}` }),
+      label: "New team dialog opened from the attention walker",
+    });
     await page.getByRole("button", { name: `Create team ${TEAM}` }).click();
     await expect(walker.getByRole("button", { name: `Remove team ${TEAM}` })).toBeVisible();
+    await expectAccessible(page, { within: walker, label: "Attention walker, team picked" });
 
     // Click the walker's title to dismiss the open picker, then Save & Next.
     await walker.getByRole("heading").first().click();
@@ -93,6 +102,7 @@ test(
     await expect(needsTeam("801")).toBeHidden();
     await expect(fixThem).toBeHidden();
     await expect(page.getByText(new RegExp(TEAM)).first()).toBeVisible();
+    await expectAccessible(page, { label: "Checklist after every card was answered" });
 
     // A fresh drill: the answers were persisted, not a local toggle.
     await drillToCustom(page, target);

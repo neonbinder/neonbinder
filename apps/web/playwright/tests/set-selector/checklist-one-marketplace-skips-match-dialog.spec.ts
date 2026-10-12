@@ -6,7 +6,7 @@
 //
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
 // checklist). Re-seed before re-running.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnOption,
@@ -50,6 +50,7 @@ test(
       await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
       await expect(slCandidates).toHaveCount(0);
     }
+    await expectAccessible(page, { within: picker, label: "Select Base Set picker, one marketplace offers a base" });
 
     // Cancel: BSC alone stays attached (no Base mapping).
     await picker.getByRole("button", { name: "Cancel" }).click();
@@ -61,6 +62,7 @@ test(
 
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    await expectAccessible(page, { label: "Empty checklist with an unmapped base" });
     await syncChecklistButton(page).click();
 
     // One live BSC round trip, and the solo path says what it kept (NEO-255).
@@ -73,6 +75,7 @@ test(
         new RegExp(`Kept all ${FETCHED} cards? from BSC\\. Nothing to match, no other marketplace attached\\.`),
       ),
     ).toBeVisible();
+    await expectAccessible(page, { label: "Checklist fetched through the one-marketplace path" });
 
     // No pairing dialog: straight to the entity review.
     await expect(page.getByText(/^Match Cards/)).toBeHidden();
@@ -80,10 +83,12 @@ test(
     await expect(wizard).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText(/^Match Cards/)).toBeHidden();
     await expect(wizard.getByRole("button", { name: "Back to matching" })).toBeHidden();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, first row" });
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
     await expect(wizard.getByRole("button", { name: /Confirm & Save/ })).toBeVisible({ timeout: 60_000 });
     await expect(wizard.getByText(new RegExp(`All reviewed — save ${FETCHED} cards?`))).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await wizard.getByRole("button", { name: /Confirm & Save/ }).click();
     await expect(page.getByText(new RegExp(`Saved ${FETCHED} cards`))).toBeVisible({ timeout: 60_000 });
 
@@ -91,6 +96,7 @@ test(
     await expect(page.getByText(new RegExp(`\\(${FETCHED}\\)`)).first()).toBeVisible();
     await expect(page.getByText("BSC only").first()).toBeVisible();
     await expect(page.getByText("SL only")).toBeHidden();
+    await expectAccessible(page, { label: "Committed checklist, every card BSC only" });
 
     // A card added by hand titles itself from the set, not from Unknown/All Brands.
     const card = `NB272-${env.ATTEMPT_ID}`;
@@ -103,6 +109,7 @@ test(
     const title = page.getByRole("dialog").getByRole("textbox", { name: "Card title" });
     await expect(title).toBeVisible();
     await expect(title).toHaveValue(new RegExp(SET));
+    await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer with an auto title" });
     await expect(title).not.toHaveValue(/Unknown/);
     await expect(title).not.toHaveValue(/All Brands/);
   },

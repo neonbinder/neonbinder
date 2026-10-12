@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-career-team-commits.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { fetchChecklistToWizard, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
@@ -17,6 +17,8 @@ test(
     await walkToPlayerRow(page);
 
     // Stage a career team by hand on the first player row.
+    await expect(wizard.getByRole("combobox", { name: "Career team name" })).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, career team entry" });
     await wizard.getByRole("combobox", { name: "Career team name" }).fill(team);
     await wizard.getByRole("spinbutton", { name: "From year" }).fill("2001");
     await wizard.getByRole("spinbutton", { name: /^To year/ }).fill("2005");
@@ -28,6 +30,7 @@ test(
     await expect(newTeam.or(lookingUp)).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(newTeam).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, New Team step for a career team" });
     await wizard.getByRole("button", { name: "Add as New Team" }).click();
 
     // Back on the player row, the staged team shows with its era.
@@ -39,6 +42,7 @@ test(
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     await expect(confirmSave).toBeVisible({ timeout: 120_000 });
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: 60_000 });
 
@@ -49,5 +53,6 @@ test(
     const count = page.getByText(/^1 of .* teams/);
     await expect(count).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole("button", { name: new RegExp(team) })).toBeVisible();
+    await expectAccessible(page, { label: "Team Management filtered to the new career team" });
   },
 );
