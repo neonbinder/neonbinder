@@ -14954,6 +14954,8 @@ export const commitCardChecklistPrelude = internalMutation({
         if (leaf.metadata?.listingShortName !== shortName) {
           await ctx.db.patch(args.selectorOptionId, {
             metadata: { ...(leaf.metadata ?? {}), listingShortName: shortName },
+            // Same as `setSelectorOptionListingShortName`: an edit is an edit.
+            lastUpdated: Date.now(),
           });
         }
       }

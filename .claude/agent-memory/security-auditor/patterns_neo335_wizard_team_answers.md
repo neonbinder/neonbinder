@@ -37,3 +37,15 @@ Open traps to look for in similar features:
   in `publicFunctionAuth.test.ts`; nothing else fails if one is flipped public.
 - Doc comments of the form "nothing in path X ever SETS flag Y" go stale when a
   feature adds a setter. Grep for them when a new writer of a suppression flag lands.
+
+Listing short name (`metadata.listingShortName`, re-audited 2026-10-11):
+- Two doors, both `requireAdmin` and both through `normalizeListingShortName`;
+  the commit door patches only `args.selectorOptionId` (the leaf it commits),
+  level-checked, once per commit. No public mutation takes a metadata object
+  (grep `selectorOptionMetadataFields`: schema only), so no third door.
+- The trap: an operator-text normaliser copied the zero-width set from
+  `selectorSyncMatch.ts` but not the bidi set `lib/marketplace/safe-text.ts`
+  strips, nor C1 or U+2028/2029. Titles have NO output sanitiser, so whatever
+  the normaliser admits ships in a write-once listing title. For any new
+  operator text that reaches a title, ask for `\p{Cc}\p{Cf}\p{Zl}\p{Zp}` (u
+  flag), and for escaped `\uXXXX` in the regex, never literal invisibles.

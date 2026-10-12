@@ -108,7 +108,8 @@ async function seedTree(
       ...(opts.isInsert === undefined ? {} : { metadata: { isInsert: opts.isInsert } }),
       parentId: typeId,
       children: [],
-      lastUpdated: Date.now(),
+      // Fixed and old, so a write's Date.now() is always later.
+      lastUpdated: 1_000_000,
     });
     return { sportId, setNameId, leafId };
   });
@@ -181,6 +182,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
   test("written onto the leaf BEFORE the chunks: the kept title regenerates identically and is not flagged", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { isInsert: true });
+    const seededAt = (await t.run(async (ctx) => ctx.db.get(ids.leafId)))!.lastUpdated;
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
     // The premise: with the full names the core is cut, the short name fixes it.
     expect((await shownTitle(t, ids, "1")).coreFits).toBe(false);
@@ -190,6 +192,8 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown.title })], "  Topps Sapphire ");
 
     expect(await leafMetadata(t, ids)).toEqual({ isInsert: true, listingShortName: "Topps Sapphire" });
+    // N3 — an edit is an edit: the leaf's lastUpdated moves, as the mutation's does.
+    expect((await t.run(async (ctx) => ctx.db.get(ids.leafId)))!.lastUpdated).toBeGreaterThan(seededAt);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe(shown.title);
     expect(row.listingTitleTruncated).toBeUndefined();
@@ -249,7 +253,9 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
   test.each([
     ["over the cap", "s".repeat(MAX_LISTING_SHORT_NAME_LENGTH + 1), /at most 60 characters/],
     ["a line break", "Topps\nSapphire", /line breaks or control characters/],
-    ["a zero-width character", "Topps​Sapphire", /zero-width or invisible/],
+    ["a zero-width character", "Topps\u200BSapphire", /zero-width or invisible/],
+    ["a right-to-left override", "Topps\u202ESapphire", /zero-width or invisible/],
+    ["a line separator", "Topps\u2028Sapphire", /line breaks or control characters/],
   ])("%s refuses the WHOLE commit before anything is written", async (_label, shortName, message) => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { isInsert: true });

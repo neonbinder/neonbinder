@@ -5,8 +5,8 @@ metadata:
   type: project
 ---
 
-Jason's old script-based app (outside this repo, `~/scripts/src/card-data/cardData.ts`
-`getTitles`, `setData.ts` XS prompts) is the reference ruleset for NB listing
+Jason's pre-NB script app (outside this repo; ask him for it — its title
+builder and its per-set short-name prompts) is the reference ruleset for NB listing
 titles: insert and parallel names are part of the set identity (never dropped),
 the words "Insert"/"Parallel" and the teams drop first, RC-type features next,
 and a per-LEAF short set name (`xs_setName`, asked once at leaf creation,

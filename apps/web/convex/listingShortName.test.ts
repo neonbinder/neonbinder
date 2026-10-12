@@ -43,14 +43,23 @@ describe("normalizeListingShortName", () => {
     ["a newline", "Upper\nDeck"],
     ["a tab inside", "Upper\tDeck"],
     ["DEL", "Upper\u007FDeck"],
+    ["a C1 control (NEL)", "Upper\u0085Deck"],
+    ["a line separator", "Upper\u2028Deck"],
+    ["a paragraph separator", "Upper\u2029Deck"],
   ])("refuses %s", (_label, raw) => {
     expect(() => normalizeListingShortName(raw)).toThrow(/line breaks or control characters/);
   });
 
   test.each([
-    ["a zero-width space", "Upper​Deck"],
-    ["a word joiner", "Upper⁠Deck"],
-    ["a BOM", "Upper﻿Deck"],
+    ["a zero-width space", "Upper\u200BDeck"],
+    ["a word joiner", "Upper\u2060Deck"],
+    ["a BOM", "Upper\uFEFFDeck"],
+    ["a right-to-left override", "Upper\u202EDeck"],
+    ["a bidi isolate", "Upper\u2066Deck"],
+    ["a left-to-right mark", "Upper\u200EDeck"],
+    ["a soft hyphen", "Upper\u00ADDeck"],
+    ["an Arabic letter mark", "Upper\u061CDeck"],
+    ["a tag character", "Upper\u{E0041}Deck"],
   ])("refuses %s", (_label, raw) => {
     expect(() => normalizeListingShortName(raw)).toThrow(/zero-width or invisible/);
   });

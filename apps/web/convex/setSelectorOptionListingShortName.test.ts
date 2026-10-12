@@ -127,7 +127,7 @@ describe("setSelectorOptionListingShortName", () => {
   test.each([
     ["a newline", "UD\nHologram", /line breaks or control characters/],
     ["a control character", "UD Hologram\u0007", /control characters/],
-    ["a zero-width character", "UD​Hologram", /zero-width or invisible/],
+    ["a zero-width character", "UD\u200BHologram", /zero-width or invisible/],
   ])("refuses %s, writing nothing", async (_label, raw, message) => {
     const t = convexTest(schema, modules);
     const id = await insertRow(t, { metadata: { listingShortName: "Kept" } });

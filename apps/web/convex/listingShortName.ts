@@ -47,15 +47,17 @@ export const LISTING_SHORT_NAME_LEVELS: ReadonlySet<string> = new Set([
 export function normalizeListingShortName(raw: string): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
+  // One Unicode-property test (NEO-335 security re-audit), not hand-listed
+  // ranges: Cc covers C0 and C1 controls (incl. NEL U+0085), Zl/Zp the line
+  // and paragraph separators, Cf every format character (zero-widths, bidi
+  // overrides and isolates, LRM/RLM, the soft hyphen, U+061C, tag characters,
+  // the BOM). No literal invisible character appears in this source.
+  const forbidden = trimmed.match(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+  if (forbidden) {
     throw new ConvexError(
-      "A short name cannot contain line breaks or control characters.",
-    );
-  }
-  if (/[​-‍⁠﻿]/.test(trimmed)) {
-    throw new ConvexError(
-      "A short name cannot contain zero-width or invisible characters.",
+      /\p{Cf}/u.test(forbidden[0])
+        ? "A short name cannot contain zero-width or invisible characters."
+        : "A short name cannot contain line breaks or control characters.",
     );
   }
   if (trimmed.length > MAX_LISTING_SHORT_NAME_LENGTH) {
