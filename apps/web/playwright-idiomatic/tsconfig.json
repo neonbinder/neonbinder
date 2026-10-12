@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "./**/*.ts",
+    "../playwright-idiomatic.config.ts"
+  ],
+  "exclude": []
+}
