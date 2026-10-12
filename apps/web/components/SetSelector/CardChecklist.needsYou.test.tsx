@@ -38,6 +38,9 @@ vi.mock("../../convex/_generated/api", () => ({
       discardCandidates: "discardCandidates",
     },
     marketplacePause: { getPausedPlatforms: "getPausedPlatforms" },
+    // NEO-335: CardChecklist reads the set's skip records itself (for the
+    // wizard's teams step), not only through the mocked SkippedNamesPanel.
+    entityReviewSkips: { listForSet: "entityReviewSkips.listForSet" },
   },
 }));
 

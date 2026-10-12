@@ -172,6 +172,8 @@ vi.mock("./EntityReviewWizard", () => ({
     previewCards,
     onTeamAnswersChange,
     cardsWithSettledTeam,
+    cardsWithNoPlayers,
+    skippedPlayerNames,
     titleContext,
     existingCardIndexes,
     onTitleAnswersChange,
@@ -192,6 +194,9 @@ vi.mock("./EntityReviewWizard", () => ({
     previewCards?: unknown[];
     onTeamAnswersChange?: (answers: Array<{ teamNone?: true } | undefined>) => void;
     cardsWithSettledTeam?: number[];
+    // NEO-335 — who the stored data says is on the cards.
+    cardsWithNoPlayers?: number[];
+    skippedPlayerNames?: string[];
     summary: {
       cardCount: number;
       deleteCount: number;
@@ -233,6 +238,12 @@ vi.mock("./EntityReviewWizard", () => ({
       )}
       {cardsWithSettledTeam && (
         <p>{`Settled-team positions: [${cardsWithSettledTeam.join(",")}]`}</p>
+      )}
+      {cardsWithNoPlayers && (
+        <p>{`No-player positions: [${cardsWithNoPlayers.join(",")}]`}</p>
+      )}
+      {skippedPlayerNames && (
+        <p>{`Skipped player names: [${skippedPlayerNames.join(",")}]`}</p>
       )}
       <p>{`Title context: ${titleContext ? "yes" : "no"}`}</p>
       {existingCardIndexes && (
@@ -835,6 +846,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     state.cards = [];
     state.variantRow = { value: "Test Set" };
     state.ancestorChain = soloSlChain();
+    state.skippedNames = [];
     // Nothing streamed at the moment Sync is pressed. The batch this run
     // publishes has to be seen ARRIVING — which is also what gives the "the
     // batch id must move" guard something to move from.
@@ -1205,6 +1217,167 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await syncTeamless(rerender);
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
       expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+
+    /**
+     * The re-sync of an already-saved set, as the E2E drives it
+     * (checklist-one-marketplace-skips-match-dialog STEP 10): the incoming
+     * cards differ from the stored rows, so the content review opens, and
+     * "Skip changes" applies nothing.
+     */
+    async function syncThroughReview(
+      rerender: Parameters<typeof streamCandidates>[0],
+      decide: "skip" | { applyFieldOf: RegExp },
+    ) {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, teamlessBatch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+        });
+      });
+      if (decide === "skip") {
+        const skip = await screen.findByRole("button", { name: /Skip reviewing changes/ });
+        await act(async () => {
+          fireEvent.click(skip);
+        });
+      } else {
+        fireEvent.click(await screen.findByRole("checkbox", { name: decide.applyFieldOf }));
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Apply selected changes" }));
+        });
+      }
+      await screen.findByText("Wizard opened teams-only");
+    }
+
+    const contentChange = (name: string, oldValue: string, newValue: string) => ({
+      name,
+      tier: 1,
+      oldValue,
+      newValue,
+      source: "sportlots",
+      foldEqual: false,
+    });
+
+    it("the stored-team positions survive the content review's Skip", async () => {
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+        settledCard({ _id: "row-2", cardNumber: "2" }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", baseVersion: 1, fields: [] },
+          {
+            index: 1,
+            cardNumber: "2",
+            cardName: "Solo Two",
+            bucket: "contentChanges",
+            existingId: "row-2",
+            baseVersion: 1,
+            fields: [contentChange("teamOnCardIds", "Gotham Knights", "")],
+          },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncThroughReview(rerender, "skip");
+      expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
+    });
+
+    it("hands the wizard the re-synced rows the save keeps with nobody on them", async () => {
+      // Card 1 re-syncs a stored row with no players (its printed name was
+      // skipped as "not a person" in the first save); card 2 re-syncs a row
+      // that has a player. Neither has a team, so both are asked about — but
+      // only card 1 belongs on the no-players line.
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+        settledCard({
+          _id: "row-2",
+          cardNumber: "2",
+          teamOnCardIds: undefined,
+          playerIds: ["player-1"],
+        }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          {
+            index: 0,
+            cardNumber: "1",
+            cardName: "Solo One",
+            bucket: "contentChanges",
+            existingId: "row-1",
+            baseVersion: 1,
+            fields: [contentChange("playerIds", "", "Chris Potter")],
+          },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", baseVersion: 1, fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncThroughReview(rerender, "skip");
+      expect(screen.getByText("Settled-team positions: []")).toBeTruthy();
+      expect(screen.getByText("No-player positions: [0]")).toBeTruthy();
+    });
+
+    it("a row whose incoming players were ACCEPTED in the review is not playerless", async () => {
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+        settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          {
+            index: 0,
+            cardNumber: "1",
+            cardName: "Solo One",
+            bucket: "contentChanges",
+            existingId: "row-1",
+            baseVersion: 1,
+            fields: [contentChange("playerIds", "", "Chris Potter")],
+          },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", baseVersion: 1, fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncThroughReview(rerender, { applyFieldOf: /to #1 Solo One/ });
+      expect(screen.getByText("No-player positions: [1]")).toBeTruthy();
+    });
+
+    it("a stored row still holding a pending player name, and a NEW card, are never playerless", async () => {
+      state.cards = [
+        settledCard({
+          _id: "row-1",
+          cardNumber: "1",
+          teamOnCardIds: undefined,
+          pendingPlayerNames: ["Chris Potter"],
+        }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      expect(screen.getByText("No-player positions: []")).toBeTruthy();
+    });
+
+    it("hands the wizard the set's skipped PLAYER names, and not its skipped team names", async () => {
+      state.skippedNames = [
+        { _id: "skip-1", kind: "player", name: "Chris Potter", skippedAt: 1 },
+        { _id: "skip-2", kind: "team", name: "Team Photo", skippedAt: 1 },
+      ];
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      expect(screen.getByText("Skipped player names: [Chris Potter]")).toBeTruthy();
     });
   });
 

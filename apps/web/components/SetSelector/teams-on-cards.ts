@@ -267,12 +267,63 @@ export function cardTeamStrings(card: PreviewCardForTeams): string[] {
   return Array.from(new Set(named));
 }
 
+/**
+ * Who is on the cards, as the STORED data says it — the half the review rows
+ * cannot say. Both are facts NB already holds (sets → cards → players, and
+ * the set's skip records); nothing here is a stored wizard answer.
+ *
+ * The review rows only describe names that were UNKNOWN when this sitting
+ * opened. A re-sync of a set whose names were settled in an earlier save has
+ * none (the teams-only entry has no rows at all), so without these every
+ * printed name — including the ones an operator ruled "not a person" — would
+ * come back as a player line of its own.
+ */
+export interface StoredPeople {
+  /**
+   * Preview positions whose card re-syncs a stored row that the save keeps
+   * with NO players (its players are not being replaced by an accepted
+   * content change). The save writes nobody onto it, so it is a no-players
+   * card whatever it prints.
+   */
+  playerless?: ReadonlySet<number>;
+  /**
+   * Player names this set's skip records rule "not a person" (normalized with
+   * `normalizeEntityName`, as the records key them). Such a name never reaches
+   * the review rows — the gate drops it before asking — so it is nobody here
+   * too, exactly like a name skipped in this sitting.
+   */
+  skippedPlayerNames?: ReadonlySet<string>;
+}
+
+/**
+ * The host's wire shapes (positions and RAW skipped names) as `StoredPeople`.
+ * Undefined when there is nothing to say, so a caller with neither passes
+ * exactly what it passed before.
+ */
+export function storedPeople(
+  playerlessIndexes?: readonly number[],
+  skippedPlayerNames?: readonly string[],
+): StoredPeople | undefined {
+  const playerless =
+    playerlessIndexes && playerlessIndexes.length > 0 ? new Set(playerlessIndexes) : undefined;
+  const skipped = new Set((skippedPlayerNames ?? []).map(norm).filter(Boolean));
+  if (!playerless && skipped.size === 0) return undefined;
+  return {
+    ...(playerless ? { playerless } : {}),
+    ...(skipped.size > 0 ? { skippedPlayerNames: skipped } : {}),
+  };
+}
+
 interface NamesView {
   teamRowByKey: Map<string, TeamsReviewRow>;
   playerRowByKey: Map<string, TeamsReviewRow>;
+  playerless: ReadonlySet<number>;
+  skippedPlayerNames: ReadonlySet<string>;
 }
 
-function namesView(rows: readonly TeamsReviewRow[]): NamesView {
+const NOBODY: ReadonlySet<never> = new Set<never>();
+
+function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): NamesView {
   const teamRowByKey = new Map<string, TeamsReviewRow>();
   const playerRowByKey = new Map<string, TeamsReviewRow>();
   for (const row of rows) {
@@ -282,7 +333,12 @@ function namesView(rows: readonly TeamsReviewRow[]): NamesView {
       row.kind === "team" ? teamRowByKey : row.kind === "player" ? playerRowByKey : null;
     if (target && !target.has(key)) target.set(key, row);
   }
-  return { teamRowByKey, playerRowByKey };
+  return {
+    teamRowByKey,
+    playerRowByKey,
+    playerless: people?.playerless ?? NOBODY,
+    skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
+  };
 }
 
 /**
@@ -310,8 +366,14 @@ type CardPlayer =
   | { kind: "created"; key: string; display: string; row: TeamsReviewRow }
   | { kind: "server"; key: string; display: string; request: EvidenceRequest };
 
-/** The people on a card, deduped; a name skipped as "not a person" is nobody. */
-function cardPlayers(card: PreviewCardForTeams, view: NamesView): CardPlayer[] {
+/**
+ * The people on a card (at preview position `index`), deduped. A name skipped
+ * as "not a person" — in this sitting, or in an earlier save of this set — is
+ * nobody, and a re-synced card the save keeps with no players has nobody on
+ * it at all (`StoredPeople`).
+ */
+function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView): CardPlayer[] {
+  if (view.playerless.has(index)) return [];
   const out: CardPlayer[] = [];
   const seen = new Set<string>();
   for (const raw of card.players ?? []) {
@@ -322,6 +384,7 @@ function cardPlayers(card: PreviewCardForTeams, view: NamesView): CardPlayer[] {
     const row = view.playerRowByKey.get(key);
     const action = row?.decision?.action;
     if (row && action === "skip") continue;
+    if (!row && view.skippedPlayerNames.has(key)) continue;
     if (row && action === "create") {
       out.push({ kind: "created", key, display, row });
     } else if (row && row.decision?.action === "link" && row.decision.linkedPlayerId) {
@@ -372,11 +435,12 @@ export function evidenceRequests(
   cards: readonly PreviewCardForTeams[],
   rows: readonly TeamsReviewRow[],
   settled?: ReadonlySet<number>,
+  people?: StoredPeople,
 ): EvidenceRequest[] {
-  const view = namesView(rows);
+  const view = namesView(rows, people);
   const out = new Map<string, EvidenceRequest>();
   for (const index of teamlessCardIndexes(cards, rows, settled)) {
-    for (const player of cardPlayers(cards[index], view)) {
+    for (const player of cardPlayers(cards[index], index, view)) {
       if (player.kind === "server" && !out.has(player.request.key)) {
         out.set(player.request.key, player.request);
       }
@@ -407,8 +471,9 @@ export function teamNameRequests(
   cards: readonly PreviewCardForTeams[],
   rows: readonly TeamsReviewRow[],
   settled?: ReadonlySet<number>,
+  people?: StoredPeople,
 ): TeamNameRequest[] {
-  const view = namesView(rows);
+  const view = namesView(rows, people);
   const out = new Map<string, TeamNameRequest>();
   const add = (raw: string) => {
     const key = norm(raw);
@@ -417,7 +482,7 @@ export function teamNameRequests(
   for (const index of teamlessCardIndexes(cards, rows, settled)) {
     const card = cards[index];
     for (const listed of listedClaims(card, view)) add(listed);
-    for (const player of cardPlayers(card, view)) {
+    for (const player of cardPlayers(card, index, view)) {
       if (player.kind !== "created") continue;
       for (const stint of createdStints(player.row)) {
         if (!view.teamRowByKey.has(norm(stint.name))) add(stint.name);
@@ -587,10 +652,12 @@ export function buildTeamsGroups(input: {
   teamNameEvidence?: ReadonlyMap<string, ServerTeam[]>;
   /** The set's preferred league (C2b), for a team staged in this wizard. */
   setLeagueId?: string | null;
+  /** Who the stored data says is on the cards — see `StoredPeople`. */
+  people?: StoredPeople;
 }): TeamsGroup[] {
   const { cards, rows, serverEvidence, setYear, linkedTeamNameById, currentYear, settled } =
     input;
-  const view = namesView(rows);
+  const view = namesView(rows, input.people);
   const rankCtx: RankContext = {
     view,
     teamNameEvidence: input.teamNameEvidence,
@@ -604,7 +671,7 @@ export function buildTeamsGroups(input: {
   const batchSets = new Map<string, Map<string, TeamRef[]>>();
   cards.forEach((card, index) => {
     if (members.has(index)) return;
-    const players = cardPlayers(card, view);
+    const players = cardPlayers(card, index, view);
     if (players.length === 0) return;
     const refs = dedupeRefs(
       cardTeamStrings(card)
@@ -623,7 +690,7 @@ export function buildTeamsGroups(input: {
   const groups = new Map<string, TeamsGroup>();
   for (const index of [...members].sort((a, b) => a - b)) {
     const card = cards[index];
-    const players = cardPlayers(card, view);
+    const players = cardPlayers(card, index, view);
     // A printed string on a member card failed to resolve — that is how it
     // got here — so unless the operator ruled it "not a team", it is a
     // listing's team claim (invariant 8).

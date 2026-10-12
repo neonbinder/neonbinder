@@ -212,6 +212,13 @@ type FetchPreview = {
   /** NEO-335 Phase 2 — positions in `cards` that re-sync a stored row (the diff's `existingId`). */
   existingIndexes?: number[];
   /**
+   * NEO-335 — positions in `cards` that re-sync a stored row with NO players
+   * which this save keeps that way (no accepted `playerIds` change), so the
+   * wizard's teams step files them under "Cards with no players" whatever
+   * they print. See `resolveAndCommit`.
+   */
+  playerlessIndexes?: number[];
+  /**
    * NEO-335 Phase 2 — the titles step's answers, POSITIONALLY ALIGNED with
    * `cards`, as `titleAnswersForCommit` decided them. Absent unless the step
    * was part of the sitting (the wizard reports nothing otherwise). Client
@@ -441,6 +448,40 @@ export default function CardChecklist({
           .map((row) => row._id),
       ),
     [cards],
+  );
+  /**
+   * NEO-335 — stored rows with nobody on them: no player links, and no
+   * player name still waiting to become one (`pendingPlayerNames`, which the
+   * attention walker answers). A re-sync that does not accept a players change
+   * keeps that, so the teams step must not file such a card under whatever
+   * name it prints — most often a name the operator skipped as "not a person"
+   * in the first save, which the review rows of a later sitting never carry.
+   */
+  const storedPlayerlessCardIds = useMemo(
+    () =>
+      new Set<string>(
+        (cards ?? [])
+          .filter(
+            (row) =>
+              (row.playerIds?.length ?? 0) === 0 &&
+              (row.pendingPlayerNames?.length ?? 0) === 0,
+          )
+          .map((row) => row._id),
+      ),
+    [cards],
+  );
+  /**
+   * NEO-335 — the player names this set's skip records rule "not a person".
+   * The gate drops them before queuing anything, so no review row says so;
+   * the wizard's teams step needs it to keep them off the player lines. The
+   * same subscription `SkippedNamesPanel` holds (Convex dedupes it).
+   */
+  const skipRecords = useQuery(api.entityReviewSkips.listForSet, {
+    selectorOptionId: variantId,
+  });
+  const skippedPlayerNames = useMemo(
+    () => (skipRecords ?? []).filter((s) => s.kind === "player").map((s) => s.name),
+    [skipRecords],
   );
   // Names the set in the pairing dialog's header. That dialog is modal and can
   // be hundreds of rows long — without this it says only "Match Cards" and an
@@ -1451,11 +1492,22 @@ export default function CardChecklist({
     const existingIndexes = kept.flatMap(({ index }, position) =>
       existingIdByIndex.has(index) ? [position] : [],
     );
+    // NEO-335 — and the same map for who is on the card: a re-synced row
+    // with nobody on it stays that way unless the operator accepted the
+    // incoming players in the content review (`applyFields`), so the teams
+    // step files it under "Cards with no players" — never under a printed
+    // name the first save ruled "not a person".
+    const playerlessIndexes = kept.flatMap(({ index }, position) => {
+      const existingId = existingIdByIndex.get(index);
+      if (!existingId || !storedPlayerlessCardIds.has(existingId)) return [];
+      return review.applyFieldsByIndex[index]?.includes("playerIds") ? [] : [position];
+    });
     const preview: FetchPreview = {
       sportId,
       batchId,
       settledTeamIndexes,
       existingIndexes,
+      playerlessIndexes,
       ...(titleContext ? { titleContext } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
@@ -3019,6 +3071,11 @@ export default function CardChecklist({
           // cards that would save with no team.
           teamsOnly={pendingPreview.teamsOnly}
           cardsWithSettledTeam={pendingPreview.settledTeamIndexes}
+          // NEO-335: who is on the cards, as the stored data says — the
+          // re-synced rows the save keeps playerless, and the names the set's
+          // skip records rule "not a person".
+          cardsWithNoPlayers={pendingPreview.playerlessIndexes}
+          skippedPlayerNames={skippedPlayerNames}
           // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
           // teams step points at Set details instead.
           hasSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}

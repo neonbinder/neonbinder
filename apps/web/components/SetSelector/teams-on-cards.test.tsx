@@ -25,6 +25,7 @@ import {
   MAX_CARD_TEAMS,
   NO_PLAYERS_GROUP_KEY,
   sameTeamAnswers,
+  storedPeople,
   teamIdKey,
   teamNameRequests,
   toggleTeam,
@@ -34,6 +35,7 @@ import {
   type PreviewCardForTeams,
   type ServerPlayerEvidence,
   type ServerTeam,
+  type StoredPeople,
   type TeamsGroup,
   type TeamsReviewRow,
 } from "./teams-on-cards";
@@ -74,6 +76,8 @@ function build(
   extra: {
     teamNameEvidence?: Record<string, ServerTeam[]>;
     setLeagueId?: string | null;
+    settled?: ReadonlySet<number>;
+    people?: StoredPeople;
   } = {},
 ) {
   return buildTeamsGroups({
@@ -87,6 +91,8 @@ function build(
       ? { teamNameEvidence: new Map(Object.entries(extra.teamNameEvidence)) }
       : {}),
     ...(extra.setLeagueId !== undefined ? { setLeagueId: extra.setLeagueId } : {}),
+    ...(extra.settled ? { settled: extra.settled } : {}),
+    ...(extra.people ? { people: extra.people } : {}),
   });
 }
 
@@ -941,5 +947,142 @@ describe("choices — multi-select (C4), Other team (C1), per-card (C3)", () => 
     expect(
       teamAnswersByCard(groups, { [group.key]: { kind: "later" }, [own]: { kind: "none" } }, 3),
     ).toEqual([undefined, { teamNone: true }, undefined]);
+  });
+});
+
+/**
+ * NEO-335 — who is on a card when the review rows cannot say: a re-sync of a
+ * set whose names were all settled in an earlier save opens the teams step
+ * with NO rows (the teams-only entry), so the stored data has to say it. The
+ * E2E shape (checklist-one-marketplace-skips-match-dialog STEP 10): 25 #NNO
+ * cards, one player created and two cards answered in the first save, every
+ * other printed name skipped as "not a person".
+ */
+describe("stored people — re-synced playerless rows and the set's skip records", () => {
+  const PRINTED = [
+    "Jeff Jablonski",
+    "Chris Potter",
+    "Frank Anzalone",
+    "Tim Christian",
+    "Team Photo",
+  ];
+  const roanoke = () => PRINTED.map((name) => card("NNO", [name], undefined, name));
+
+  test("with no rows and nothing stored, every printed name is a player line (the bug's shape)", () => {
+    const groups = build(roanoke());
+    expect(groups).toHaveLength(PRINTED.length);
+    expect(groups.some((g) => g.key === NO_PLAYERS_GROUP_KEY)).toBe(false);
+  });
+
+  test("re-synced rows the save keeps playerless share ONE no-players line, numbers never the key", () => {
+    const settled = new Set([0]);
+    const people: StoredPeople = { playerless: new Set([1, 2, 3, 4]) };
+    const groups = build(roanoke(), [], {}, 1995, { settled, people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].players).toEqual([]);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([1, 2, 3, 4]);
+    // Nothing is known about a card nobody is on: never pre-filled.
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+    // …and nobody is looked up for it.
+    expect(evidenceRequests(roanoke(), [], settled, people)).toEqual([]);
+  });
+
+  test("a playerless position beats the printed name even when a review row creates that player", () => {
+    // The save keeps the stored row's (empty) players unless the review
+    // accepted the incoming ones — so the created player's career must not
+    // pre-fill a card he will not be on.
+    const rows = [
+      row({
+        kind: "player",
+        name: "Chris Potter",
+        decision: { action: "create" },
+        enrichment: { careerTeams: [{ name: "Roanoke Express", fromYear: 1994, toYear: 1996 }] },
+      }),
+    ];
+    const cards = [card("NNO", ["Chris Potter"]), card("NNO", ["Chris Potter"])];
+    const people: StoredPeople = { playerless: new Set([0]) };
+    const groups = build(cards, rows, {}, 1995, { people });
+    expect(groups.map((g) => g.key)).toEqual([NO_PLAYERS_GROUP_KEY, "players:chris potter"]);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0]);
+    expect(groups[1].cards.map((c) => c.index)).toEqual([1]);
+  });
+
+  test("a name the set's skip records rule 'not a person' is nobody, matched however it is spelled", () => {
+    const people = storedPeople(undefined, ["Chris Potter", "TEAM PHOTO"]);
+    const cards = [
+      card("NNO", ["chris  potter"]),
+      card("NNO", ["Team Photo"]),
+      card("NNO", ["Jeff Jablonski"]),
+    ];
+    const groups = build(cards, [], {}, undefined, { people });
+    expect(groups.map((g) => g.cards.map((c) => c.index))).toEqual([[0, 1], [2]]);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[1].players).toEqual(["Jeff Jablonski"]);
+    // Only the real person is looked up.
+    expect(evidenceRequests(cards, [], undefined, people)).toEqual([
+      { key: "name:jablonski jeff", name: "Jeff Jablonski" },
+    ]);
+  });
+
+  test("a skipped name beside a real one leaves the real one on the card", () => {
+    const people = storedPeople(undefined, ["Checklist"]);
+    const groups = build([card("1", ["Checklist", "Johnny Bench"])], [], {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].players).toEqual(["Johnny Bench"]);
+  });
+
+  test("a review row in THIS sitting outranks an old skip record for the same name", () => {
+    // The operator un-skipped the name (or it came back as unknown): what they
+    // decided now is the answer, not the earlier ruling.
+    const rows = [
+      row({
+        kind: "player",
+        name: "Chris Potter",
+        decision: { action: "link", linkedPlayerId: BENCH },
+      }),
+    ];
+    const people = storedPeople(undefined, ["Chris Potter"]);
+    const cards = [card("NNO", ["Chris Potter"])];
+    expect(evidenceRequests(cards, rows, undefined, people)).toEqual([
+      { key: `id:${BENCH}`, playerId: BENCH },
+    ]);
+  });
+
+  test("a created player's career is not resolved for a card the save keeps playerless", () => {
+    const rows = [
+      row({
+        kind: "player",
+        name: "Chris Potter",
+        decision: { action: "create" },
+        enrichment: { careerTeams: [{ name: "Roanoke Express", fromYear: 1994, toYear: 1996 }] },
+      }),
+    ];
+    const cards = [card("NNO", ["Chris Potter"])];
+    expect(teamNameRequests(cards, rows)).toEqual([
+      { key: "express roanoke", name: "Roanoke Express" },
+    ]);
+    expect(teamNameRequests(cards, rows, undefined, { playerless: new Set([0]) })).toEqual([]);
+  });
+
+  test("stored people never change WHO is in the section — only how the lines group", () => {
+    const cards = roanoke();
+    const people: StoredPeople = { playerless: new Set([0, 1, 2, 3, 4]) };
+    expect(teamlessCardIndexes(cards, [], new Set([0]))).toEqual([1, 2, 3, 4]);
+    expect(
+      build(cards, [], {}, undefined, { settled: new Set([0]), people }).flatMap((g) =>
+        g.cards.map((c) => c.index),
+      ),
+    ).toEqual([1, 2, 3, 4]);
+  });
+
+  test("storedPeople: nothing to say is undefined; names are normalized, blanks dropped", () => {
+    expect(storedPeople()).toBeUndefined();
+    expect(storedPeople([], [])).toBeUndefined();
+    expect(storedPeople([], ["  "])).toBeUndefined();
+    const people = storedPeople([2, 0], ["Chris Potter"]);
+    expect([...(people?.playerless ?? [])]).toEqual([2, 0]);
+    expect([...(people?.skippedPlayerNames ?? [])]).toEqual(["chris potter"]);
   });
 });

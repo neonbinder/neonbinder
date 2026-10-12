@@ -423,6 +423,8 @@ export default function EntityReviewWizard({
   previewCards,
   onTeamAnswersChange,
   cardsWithSettledTeam,
+  cardsWithNoPlayers,
+  skippedPlayerNames,
   teamsOnly = false,
   titleContext,
   existingCardIndexes = NO_CARD_INDEXES,
@@ -480,6 +482,19 @@ export default function EntityReviewWizard({
    * knows which incoming card is which.
    */
   cardsWithSettledTeam?: readonly number[];
+  /**
+   * NEO-335 — positions in `previewCards` that re-sync a stored row the save
+   * keeps with NO players, so the teams step files them on its shared
+   * "Cards with no players" line whatever they print. The parent decides, as
+   * for `cardsWithSettledTeam`.
+   */
+  cardsWithNoPlayers?: readonly number[];
+  /**
+   * NEO-335 — player names this set's skip records rule "not a person", raw.
+   * The gate never queues them, so the batch rows cannot say they are
+   * nobody; the teams step reads it here instead.
+   */
+  skippedPlayerNames?: readonly string[];
   /**
    * NEO-335 — there are no names to review (the name is historical: it is
    * the "no names" entry). The wizard opens past the names, on whichever of
@@ -5061,6 +5076,8 @@ export default function EntityReviewWizard({
                   }
                   onAnswersChange={handleTeamAnswers}
                   settledIndexes={cardsWithSettledTeam}
+                  playerlessIndexes={cardsWithNoPlayers}
+                  skippedPlayerNames={skippedPlayerNames}
                   disabled={saving}
                   showSetTeamHint={showSetTeamHint}
                 />

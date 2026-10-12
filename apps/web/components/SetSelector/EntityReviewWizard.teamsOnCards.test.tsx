@@ -449,12 +449,17 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
  * reads no batch.
  */
 describe("EntityReviewWizard teams-only", () => {
-  function renderTeamsOnly(previewCards: Card[], batchId = "") {
+  function renderTeamsOnly(
+    previewCards: Card[],
+    batchId = "",
+    extra: Record<string, unknown> = {},
+  ) {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
     const onTeamAnswersChange = vi.fn();
     render(
       <EntityReviewWizard
+        {...extra}
         isOpen
         teamsOnly
         selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
@@ -504,6 +509,53 @@ describe("EntityReviewWizard teams-only", () => {
     expect(document.activeElement).toBe(confirm);
     fireEvent.click(confirm);
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The re-sync of a set whose names were settled in its first save
+   * (checklist-one-marketplace-skips-match-dialog STEP 10): there are no batch
+   * rows, so only the parent's stored-data facts can say a printed name is
+   * nobody. Without them every skipped name came back as a player line.
+   */
+  it("files re-synced playerless rows and the set's skipped names on ONE no-players line", () => {
+    serverAnswer = () => ({
+      playerId: "p",
+      answer: { tier: "sameNode", teams: [{ teamId: REDS, name: "Cincinnati Reds" }] },
+      candidates: [],
+    });
+    renderTeamsOnly(
+      [
+        // Re-syncs a stored row with a team: settled, not asked.
+        { cardNumber: "NNO", cardName: "Jeff Jablonski", players: ["Jeff Jablonski"] },
+        // Re-syncs stored rows with nobody on them.
+        { cardNumber: "NNO", cardName: "Chris Potter", players: ["Chris Potter"] },
+        { cardNumber: "NNO", cardName: "Frank Anzalone", players: ["Frank Anzalone"] },
+        // A NEW card whose printed name the set's skip records rule out.
+        { cardNumber: "NNO", cardName: "Team Photo", players: ["Team Photo"] },
+        // A real, known player — still his own line.
+        { cardNumber: "NNO", cardName: "Johnny Bench", players: ["Johnny Bench"] },
+      ],
+      "",
+      {
+        cardsWithSettledTeam: [0],
+        cardsWithNoPlayers: [1, 2],
+        skippedPlayerNames: ["Team Photo"],
+      },
+    );
+    expect(counter()).toBe("Step 1 of 2");
+    const later = screen.getByRole("radio", {
+      name: "Leave for later — Cards with no players (3)",
+    });
+    expect(later.getAttribute("aria-checked")).toBe("true");
+    for (const name of ["Jeff Jablonski", "Chris Potter", "Frank Anzalone", "Team Photo"]) {
+      expect(screen.queryByRole("radiogroup", { name: `Team for ${name}` })).toBeNull();
+    }
+    expect(screen.getByRole("radiogroup", { name: "Team for Johnny Bench" })).toBeTruthy();
+    // Only the real person is looked up; nobody's name reaches the server.
+    // (Every render re-reads the same query, so the calls are counted distinct.)
+    expect([...new Set(suggestionCalls.flatMap((c) => c.players.map((p) => p.name)))]).toEqual([
+      "Johnny Bench",
+    ]);
   });
 
   it("Cancel with no batch closes without asking the server", async () => {

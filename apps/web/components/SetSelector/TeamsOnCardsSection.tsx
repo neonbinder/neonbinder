@@ -29,6 +29,7 @@ import {
   hasCardOverride,
   MAX_CARD_TEAMS,
   sameTeamAnswers,
+  storedPeople,
   teamAnswersByCard,
   teamIdKey,
   teamNameRequests,
@@ -220,6 +221,8 @@ export default function TeamsOnCardsSection({
   onChoose,
   onAnswersChange,
   settledIndexes,
+  playerlessIndexes,
+  skippedPlayerNames,
   disabled = false,
   showSetTeamHint = false,
 }: {
@@ -249,6 +252,18 @@ export default function TeamsOnCardsSection({
    * it holds the diff that matched each card to a stored row.
    */
   settledIndexes?: readonly number[];
+  /**
+   * Preview positions whose card re-syncs a stored row the save keeps with
+   * no players: they join the "Cards with no players" line whatever they
+   * print. The parent decides — it holds the diff and the stored rows.
+   */
+  playerlessIndexes?: readonly number[];
+  /**
+   * Player names this set's skip records rule "not a person" (raw, as the
+   * records list them). Nobody, on any card, like a name skipped in the
+   * Names step.
+   */
+  skippedPlayerNames?: readonly string[];
   /** A commit is in flight; the choices hold still. */
   disabled?: boolean;
   /**
@@ -262,22 +277,26 @@ export default function TeamsOnCardsSection({
     () => (settledIndexes && settledIndexes.length > 0 ? new Set(settledIndexes) : undefined),
     [settledIndexes],
   );
+  const people = useMemo(
+    () => storedPeople(playerlessIndexes, skippedPlayerNames),
+    [playerlessIndexes, skippedPlayerNames],
+  );
 
   const requests = useMemo(
     () =>
-      evidenceRequests(cards, rows, settled).slice(
+      evidenceRequests(cards, rows, settled, people).slice(
         0,
         TEAMS_SECTION_PLAYERS_PER_REQUEST * TEAMS_SECTION_MAX_REQUESTS,
       ),
-    [cards, rows, settled],
+    [cards, rows, settled, people],
   );
   const nameRequests = useMemo(
     () =>
-      teamNameRequests(cards, rows, settled).slice(
+      teamNameRequests(cards, rows, settled, people).slice(
         0,
         TEAMS_SECTION_NAMES_PER_REQUEST * TEAMS_SECTION_MAX_NAME_REQUESTS,
       ),
-    [cards, rows, settled],
+    [cards, rows, settled, people],
   );
   const anyTeamless = useMemo(
     () => buildTeamsGroups({
@@ -288,8 +307,9 @@ export default function TeamsOnCardsSection({
       linkedTeamNameById: new Map(),
       currentYear: 0,
       settled,
+      people,
     }).length > 0,
-    [cards, rows, settled],
+    [cards, rows, settled, people],
   );
 
   // Player slices and name slices are separate calls, so a name lookup never
@@ -377,6 +397,7 @@ export default function TeamsOnCardsSection({
         settled,
         teamNameEvidence,
         setLeagueId,
+        people,
       }),
     [
       cards,
@@ -387,6 +408,7 @@ export default function TeamsOnCardsSection({
       settled,
       teamNameEvidence,
       setLeagueId,
+      people,
     ],
   );
 
