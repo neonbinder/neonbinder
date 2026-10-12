@@ -60,7 +60,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const BASE_UNMAPPED = {
   _id: "vt-base",
   value: "Base",
-  metadata: { isBase: true },
   platformData: { bsc: { b0: "topps-206" } },
 };
 
@@ -68,7 +67,6 @@ const BASE_UNMAPPED = {
 const BASE_MAPPED = {
   _id: "vt-base-mapped",
   value: "Base",
-  metadata: { isBase: true },
   platformData: { sportlots: { s0: "884412" } },
 };
 

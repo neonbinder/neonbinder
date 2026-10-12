@@ -594,6 +594,10 @@ export type WithheldSiblingEntry = {
  *   reason "clash"   — another row under this parent already has the name;
  *                      `clashWith` names it.
  *   reason "invalid" — the name failed validation or names a reserved row.
+ *
+ * NEO-334 — `message`, when present, is the operator's own sentence for the
+ * refusal (a variant type's kind-changing rename, or a singular/plural
+ * sibling clash). Optional and additive, so an older bundle ignores it.
  */
 export const renameRefusedEntryValidator = v.object({
   itemIndex: v.number(),
@@ -604,6 +608,7 @@ export const renameRefusedEntryValidator = v.object({
   clashWith: v.optional(
     v.object({ id: v.id("selectorOptions"), value: v.string() }),
   ),
+  message: v.optional(v.string()),
 });
 
 export type RenameRefusedEntry = {
@@ -613,6 +618,8 @@ export type RenameRefusedEntry = {
   requested: string;
   reason: "clash" | "invalid";
   clashWith?: { id: Id<"selectorOptions">; value: string };
+  /** NEO-334 — the operator's sentence for the refusal, when there is one. */
+  message?: string;
 };
 
 /** At most this many holders are named per withheld entry. */

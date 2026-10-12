@@ -83,7 +83,6 @@ async function seed(t: T) {
     platformData: { bsc: { b0: "insert" } },
     platformFacets: { bsc: { b0: "variant" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { variantRole: "insert" },
     features: { season: "2026" },
   });
   return { insertTypeId };
@@ -107,7 +106,6 @@ function insertRowWith(
       ...(ids.bsc ? { bsc: 1 } : {}),
       ...(ids.sportlots ? { sportlots: 1 } : {}),
     },
-    metadata: { isInsert: true },
     features: { season: "2026", cardType: "Insert" },
   });
 }

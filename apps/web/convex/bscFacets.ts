@@ -82,84 +82,16 @@ export const bscFacetValidator = v.union(
 );
 
 /**
- * NEO-239 / NEO-291 — which of BSC's `variant` facet ids means "the base
- * set", "an insert" or "a parallel"?
- *
- * ## Why this is a marketplace-id question and not a name one
- *
- * NB's variant ROLES (`metadata.isBase`, and since NEO-291 the `isInsert` /
- * `isParallel` flags on the rows beneath a variant type) have to come from
- * somewhere at creation, and the invariant is explicit about which direction
- * is allowed: a row may be DERIVED from marketplace data when it is created.
- * So these compare a marketplace id to marketplace vocabulary, once, on the
- * sync that inserts the row (or, for `variantTypeRole`, on the creation of a
- * child that asks what its parent is). They never read the NB display value,
- * and nothing re-derives afterwards — a rename cannot move the role, and
- * `setBaseVariantType` grants it only to a set that has none (NEO-306).
- *
- * ## What the ids actually are
- *
- * BSC's `variant` facet slugs are the bare literals: `base`, `insert`,
- * `parallel`, `promo` (observed on a live variant-type sync, 2026-09-05,
- * where the Base row came back as `b0: "base"` tagged `variant`). An earlier
- * version of this comment claimed CI had shown the base slug was NOT the bare
- * literal; that CI failure was a different bug — a mis-saved Base mapping had
- * overwritten the row's slot with the parent's setName slug, so the id under
- * test was never a variant id at all (see `backfillVariantFacetAndBaseRole`).
- *
- * ## Why it is still a token test and not `id === "base"`
- *
- * Because the token rule costs nothing and fails closed on the only shapes a
- * marketplace slug could plausibly take. The id is folded to lowercase and
- * split on every non-alphanumeric run, and a role is recognised by a WHOLE
- * token: `base`, `Base`, `base-set`, `base_cards` and `2024-topps-chrome-base`
- * all read as the base variant, while `baseball` — one token, not two — does
- * not, which a substring test would have got wrong. The same rule, with the
- * tokens `insert` and `parallel`, answers the other two roles.
- *
- * ## Ambiguity is not resolved here
- *
- * A token test cannot rank `base` against a hypothetical `base-parallel`, and
- * `insert-parallel` would match BOTH insert and parallel. Callers therefore
- * confer the base role only when EXACTLY ONE id in the batch matches (see
- * `storeSelectorOptions`), and `variantTypeRole` answers `undefined` for an id
- * that matches two roles. Fail-closed: no role is recoverable in one click,
- * two rival base rows make `getBaseVariantBySet` answer by document order.
+ * NEO-334 — there is no "which BSC `variant` id is the base / an insert / a
+ * parallel" classifier any more. NEO-239 / NEO-291 / NEO-306 read the role of
+ * a variant type out of the ids in its `variant`-tagged BSC slot (a whole-token
+ * match on `base` / `insert` / `parallel`) and recorded it as an NB flag. A
+ * variant type's kind is now its TITLE (convex/variantRole.ts): the row is
+ * created with the marketplace's name for it, which is the one direction the
+ * invariant allows, and from then on the title is NB's. So no code asks a
+ * marketplace id what a variant type is, and the classifiers that did are gone
+ * rather than left for a future caller to key behaviour on.
  */
-function bscVariantIdTokens(id: string): string[] {
-  return id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-}
-
-export function isBscBaseVariantId(id: string): boolean {
-  return bscVariantIdTokens(id).includes("base");
-}
-
-/** NEO-291 — BSC's `variant` facet id for "the inserts of this set". */
-export function isBscInsertVariantId(id: string): boolean {
-  return bscVariantIdTokens(id).includes("insert");
-}
-
-/** NEO-291 — BSC's `variant` facet id for "the parallels of this set". */
-export function isBscParallelVariantId(id: string): boolean {
-  return bscVariantIdTokens(id).includes("parallel");
-}
-
-/**
- * The single BSC id in a batch that names the base variant, or `undefined`
- * when none does or more than one does.
- *
- * The batch is the unit because the sync sees every variant of a set at once —
- * which is the only place "exactly one of these is the base" can be checked at
- * all.
- */
-export function soleBscBaseVariantId(
-  ids: ReadonlyArray<string | undefined>,
-): string | undefined {
-  const matches = [
-    ...new Set(ids.filter((id): id is string => !!id && isBscBaseVariantId(id))),
-  ];
-  return matches.length === 1 ? matches[0] : undefined;
-}
 
 /**
  * The facet a SYNC at `level` knows the ids it just fetched belong to.

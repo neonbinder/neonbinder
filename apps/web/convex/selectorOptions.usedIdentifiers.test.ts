@@ -38,13 +38,11 @@ async function seed(t: ReturnType<typeof convexTest>) {
       level: "variantType",
       value: "Insert",
       parentId: setId,
-      metadata: { variantRole: "insert" },
     });
     const parallelTypeId = await insert({
       level: "variantType",
       value: "Parallel",
       parentId: setId,
-      metadata: { variantRole: "parallel" },
     });
     const autosId = await insert({
       level: "insert",

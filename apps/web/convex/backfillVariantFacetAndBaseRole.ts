@@ -1,7 +1,11 @@
 /**
  * NEO-239 — one-shot backfill: tag every existing `variantType` row's BSC slot
- * as the `variant` facet, and give the set's Base row the `metadata.isBase`
- * role.
+ * as the `variant` facet.
+ *
+ * NEO-334 removed the other half, which granted the set's Base row the
+ * `metadata.isBase` role. A variant type's title is its kind now
+ * (`variantRole.ts`), so there is no role flag to grant; the module keeps its
+ * name so the operator commands below stay the same.
  *
  * ## Operator command
  *
@@ -63,16 +67,10 @@
  * (see `marketplaceResolvability.ts`), and waiting for an operator to re-map
  * them through the attach dialog.
  *
- * `metadata.isBase` is set from the SLOT ID folding to "base", never from the
- * display value. A row whose name is "Base" but whose slot says otherwise gets
- * no role from this task; an operator grants it with
- * `selectorOptions:setBaseVariantType`.
- *
  * ## Idempotent
  *
- * A second run reports every row as `already_tagged` / `already_has_role` and
- * writes nothing. Nothing here ever clears a tag or a role, so a run cannot
- * undo an operator's `setBaseVariantType` decision.
+ * A second run reports every row as `already_tagged` and writes nothing.
+ * Nothing here ever clears a tag.
  */
 
 import { v } from "convex/values";
@@ -140,8 +138,6 @@ type SkipReason =
 type Plan = {
   /** Slots to tag `variant`, with the row they sit on. */
   tag: Array<{ id: Id<"selectorOptions">; value: string; slot: string }>;
-  /** Rows to grant `metadata.isBase`. */
-  role: Array<{ id: Id<"selectorOptions">; value: string }>;
   /** Everything left alone, with the reason. Capped in the RETURN, not here. */
   skipped: Array<{ id: Id<"selectorOptions">; value: string; reason: SkipReason }>;
 };
@@ -154,7 +150,7 @@ type Plan = {
  * way is not a dry run of anything.
  */
 function planBackfill(rows: readonly Doc<"selectorOptions">[]): Plan {
-  const plan: Plan = { tag: [], role: [], skipped: [] };
+  const plan: Plan = { tag: [], skipped: [] };
 
   for (const row of rows) {
     if (row.level !== "variantType") continue;
@@ -169,8 +165,6 @@ function planBackfill(rows: readonly Doc<"selectorOptions">[]): Plan {
     let addedTag = false;
     let hadVariantTag = false;
     let corrupted = false;
-    /** Ids that WILL carry the `variant` facet once this run is applied. */
-    const variantIds: string[] = [];
 
     for (const { slot, id } of slots) {
       const existing = slotFacet(row, "bsc", slot);
@@ -179,10 +173,7 @@ function planBackfill(rows: readonly Doc<"selectorOptions">[]): Plan {
         // overwritten — including a `setName` tag on a Base row holding a
         // series split (NEO-189's motivating case), which genuinely IS a
         // setName slot.
-        if (existing === "variant") {
-          hadVariantTag = true;
-          variantIds.push(id);
-        }
+        if (existing === "variant") hadVariantTag = true;
         continue;
       }
       if (selectorValueKey(id) !== valueKey) {
@@ -191,7 +182,6 @@ function planBackfill(rows: readonly Doc<"selectorOptions">[]): Plan {
       }
       plan.tag.push({ id: row._id, value: row.value, slot });
       addedTag = true;
-      variantIds.push(id);
     }
 
     // At most one skip line per row, so the counts read as "rows", not "slots".
@@ -207,16 +197,6 @@ function planBackfill(rows: readonly Doc<"selectorOptions">[]): Plan {
         value: row.value,
         reason: "already_tagged",
       });
-    }
-
-    // The role comes from the SLOT ID, never the display value. A row already
-    // carrying `isBase` (true OR false) keeps it: an operator may have made
-    // that call through `setBaseVariantType`.
-    if (
-      row.metadata?.isBase === undefined &&
-      variantIds.some((id) => selectorValueKey(id) === "base")
-    ) {
-      plan.role.push({ id: row._id, value: row.value });
     }
   }
 
@@ -244,7 +224,6 @@ export const run = internalMutation({
     scanned: v.number(),
     truncated: v.boolean(),
     tagged: v.number(),
-    rolesSet: v.number(),
     /** Rows left alone, by reason. Counts are exact. */
     skippedCounts: v.object({
       alreadyTagged: v.number(),
@@ -289,31 +268,19 @@ export const run = internalMutation({
         if (slots) slots.push(t.slot);
         else tagsByRow.set(t.id, [t.slot]);
       }
-      const roleRows = new Set(plan.role.map((r) => r.id));
-
-      for (const rowId of new Set([...tagsByRow.keys(), ...roleRows])) {
+      for (const [rowId, slots] of tagsByRow) {
         const row = await ctx.db.get(rowId);
         if (!row) continue;
-        const patch: {
-          platformFacets?: Doc<"selectorOptions">["platformFacets"];
-          metadata?: Doc<"selectorOptions">["metadata"];
-          lastUpdated: number;
-        } = { lastUpdated: Date.now() };
-
-        const slots = tagsByRow.get(rowId);
-        if (slots?.length) {
-          patch.platformFacets = {
+        await ctx.db.patch(rowId, {
+          platformFacets: {
             ...(row.platformFacets ?? {}),
             bsc: {
               ...(row.platformFacets?.bsc ?? {}),
               ...Object.fromEntries(slots.map((s) => [s, "variant" as const])),
             },
-          };
-        }
-        if (roleRows.has(rowId)) {
-          patch.metadata = { ...(row.metadata ?? {}), isBase: true };
-        }
-        await ctx.db.patch(rowId, patch);
+          },
+          lastUpdated: Date.now(),
+        });
       }
     }
 
@@ -339,7 +306,6 @@ export const run = internalMutation({
         scanned: rows.length,
         truncated,
         tagged: plan.tag.length,
-        rolesSet: plan.role.length,
         ...skippedCounts,
       }),
     );
@@ -354,7 +320,6 @@ export const run = internalMutation({
       scanned: rows.length,
       truncated,
       tagged: plan.tag.length,
-      rolesSet: plan.role.length,
       skippedCounts,
       needsRemapping: plan.skipped
         .filter((s) => s.reason === "slug_does_not_match_value")

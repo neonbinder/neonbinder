@@ -2,9 +2,8 @@
  * NEO-306 — "Make insert of…" (`setInsertConversion.ts`).
  *
  * The fixture is 2026 Bowman after NEO-305: BSC's Bowman with a Base, a
- * Parallel type and an Insert type (their NB roles as the variant-type sync
- * confers them: `isBase` / `metadata.variantRole`, beside the `variant`-tagged
- * BSC slot it was read from), BSC's "All-America Game Autos" insert with a
+ * Parallel type and an Insert type (their kind is their TITLE, NEO-334, beside
+ * the `variant`-tagged BSC slot each was read from), BSC's "All-America Game Autos" insert with a
  * BSC parallel "Gold" under it (a `variantName`-tagged BSC slot, as NEO-293
  * writes it), a second set with no Insert type, and another brand.
  *
@@ -72,13 +71,12 @@ async function insertRow(
   });
 }
 
-/** A variant type as the BSC variant-type sync writes it, role conferred. */
+/** A variant type as the BSC variant-type sync writes it: slot and facet, no flag. */
 function roleType(role: "base" | "insert" | "parallel") {
   return {
     platformData: { bsc: { b0: role } },
     platformFacets: { bsc: { b0: "variant" as const } },
     platformSlotSeq: { bsc: 1 },
-    metadata: role === "base" ? { isBase: true } : { variantRole: role },
   };
 }
 
@@ -134,7 +132,7 @@ async function seed(t: T) {
     platformFacets: { bsc: { b0: "variantName" } },
     platformLabels: { bsc: { b0: "All-America Game Autos" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { isInsert: true },
+    metadata: { cardNumberPrefix: "AA-" },
     features: { season: "2026", cardType: "Insert" },
   });
   const goldId = await insertRow(t, {
@@ -144,7 +142,6 @@ async function seed(t: T) {
     platformData: { bsc: { b0: "aa-autos-gold" } },
     platformFacets: { bsc: { b0: "variantName" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { isParallel: true },
   });
 
   // A second set of the brand with a Parallel type and NO Insert type.
@@ -211,7 +208,6 @@ async function slSet(
     level: "variantType",
     value: "Base",
     parentId: setId,
-    metadata: { isBase: true },
     features: { cardType: "Base", parallelName: "Base" },
     platformData: {
       sportlots: Object.fromEntries(links.map((l, i) => [`s${i}`, l.id])),
@@ -244,7 +240,6 @@ async function slRow(
       sportlots: Object.fromEntries(links.map((l, i) => [`s${i}`, l.label])),
     },
     platformSlotSeq: { sportlots: links.length },
-    metadata: { isParallel: true },
     features: { cardType: "Parallel", season: "2026" },
     ...extra,
   });
@@ -681,7 +676,7 @@ describe("convertToInsert — the landings", () => {
       {
         base: {
           primaryPlatformId: { sportlots: "s1" },
-          metadata: { isBase: true, cardNumberPrefix: "BS-" },
+          metadata: { cardNumberPrefix: "BS-" },
           features: { cardType: "Base", parallelName: "Base", printRun: "/99" },
         },
       },
@@ -711,7 +706,8 @@ describe("convertToInsert — the landings", () => {
       sportlots: { s0: "Bowman Stars Update", s1: "Bowman Stars" },
     });
     expect(dest.parentId).toBe(ids.insertTypeId);
-    expect(dest.metadata).toEqual({ isInsert: true, cardNumberPrefix: "BS-" });
+    // The operator's data comes along; no kind flag is written (the title is the kind).
+    expect(dest.metadata).toEqual({ cardNumberPrefix: "BS-" });
     // Type copy-down, then the operator's data, then the row's own level; the
     // Base's own "Base" keys stay behind.
     expect(dest.features).toEqual({ season: "2026", printRun: "/99", cardType: "Insert" });
@@ -740,7 +736,7 @@ describe("convertToInsert — the landings", () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     const redInk = await slRow(t, ids.parallelTypeId, "All-America Game Autos Red Ink", [RED_INK], {
-      metadata: { isParallel: true, cardNumberPrefix: "RI-" },
+      metadata: { cardNumberPrefix: "RI-" },
     });
     const [c1] = await addCards(t, redInk, [{ n: "AA-1", sl: { ref: "#AA-1", src: "s0" } }]);
     const [existing] = await addCards(t, ids.autosId, [
@@ -768,7 +764,7 @@ describe("convertToInsert — the landings", () => {
     expect(dest.platformData.sportlots).toEqual({ s0: RED_INK.id });
     expect(dest.platformLabels?.sportlots).toEqual({ s0: RED_INK.label });
     // Joining never writes over the operator's data on the destination.
-    expect(dest.metadata).toEqual({ isInsert: true });
+    expect(dest.metadata).toEqual({ cardNumberPrefix: "AA-" });
     expect((await card(t, c1))!).toMatchObject({
       selectorOptionId: ids.autosId,
       platformData: { sportlots: { ref: "#AA-1", src: "s0" } },
@@ -806,8 +802,9 @@ describe("convertToInsert — the landings", () => {
       parentId: ids.autosId,
       platformData: { sportlots: { s0: "SL-RED-INK" } },
       platformLabels: { sportlots: { s0: "Bowman All-America Game Autos Red Ink" } },
-      metadata: { isParallel: true },
     });
+    // The kind is the level and the parent's title: no flag is written.
+    expect(dest.metadata).toBeUndefined();
     // The insert's copy-down, the row's own "season"; its old "Parallel"
     // cardType is re-derived for the new level, not carried.
     expect(dest.features).toEqual({ season: "2026", cardType: "Parallel" });
@@ -879,16 +876,16 @@ describe("convertToInsert — the landings", () => {
     expect(insert).toMatchObject({
       parentId: ids.insertTypeId,
       platformData: {},
-      metadata: { isInsert: true },
       features: { season: "2026", cardType: "Insert" },
     });
+    expect(insert.metadata).toBeUndefined();
     const parallel = (await get(t, result.path[3]._id))!;
     expect(parallel).toMatchObject({
       parentId: insert._id,
       platformData: { sportlots: { s0: "SL-RA-BLUE" } },
       platformLabels: { sportlots: { s0: "Bowman Rookie Autos Blue Ink" } },
-      metadata: { isParallel: true },
     });
+    expect(parallel.metadata).toBeUndefined();
     expect(insert.children).toEqual([parallel._id]);
     expect((await card(t, c1))!.selectorOptionId).toBe(parallel._id);
     expect(await get(t, row)).toBeNull();
@@ -900,7 +897,6 @@ describe("convertToInsert — the landings", () => {
     const ids = await seed(t);
     // The SportLots-only review files names under an Insert type too.
     const row = await slRow(t, ids.insertTypeId, "All-America Game Autos Red Ink", [RED_INK], {
-      metadata: { isInsert: true },
       features: { cardType: "Insert" },
     });
     const result = await convert(t, row, ids.insertTypeId, {
@@ -957,12 +953,19 @@ describe("convertToInsert — refusals", () => {
     );
   });
 
-  test("target guards: other brand, not an Insert type (by role, never name), gone", async () => {
+  test("target guards: other brand, not an Insert type (by title, never a flag), gone", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     const row = await slRow(t, ids.parallelTypeId, "Red Ink", [RED_INK]);
-    // A type NAMED "Insert" with no NB role is not an Insert type.
-    const named = await insertRow(t, { level: "variantType", value: "Insert", parentId: ids.chromeId });
+    // The title is the kind, exactly: "Insert Set" is not an Insert type, and
+    // a stray retired flag on a type titled Gold does not make it one.
+    const named = await insertRow(t, { level: "variantType", value: "Insert Set", parentId: ids.chromeId });
+    const flagged = await insertRow(t, {
+      level: "variantType",
+      value: "Gold",
+      parentId: ids.chromeId,
+      metadata: { variantRole: "insert" },
+    });
     const landing = { kind: "newInsert" as const };
     await expectRefusal(
       t,
@@ -977,7 +980,12 @@ describe("convertToInsert — refusals", () => {
     await expectRefusal(
       t,
       () => convert(t, row, named, landing),
-      insertConversionRefusal.notInsertType("Insert", "Bowman Chrome"),
+      insertConversionRefusal.notInsertType("Insert Set", "Bowman Chrome"),
+    );
+    await expectRefusal(
+      t,
+      () => convert(t, row, flagged, landing),
+      insertConversionRefusal.notInsertType("Gold", "Bowman Chrome"),
     );
     await expectRefusal(
       t,

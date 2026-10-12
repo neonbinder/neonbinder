@@ -230,7 +230,6 @@ describe("backfillKnownBrands — the armed run", () => {
         platformSlotSeq: { sportlots: 1 },
         parentId: setId,
         children: [],
-        metadata: { isBase: true },
         lastUpdated: SENTINEL,
       }),
     );

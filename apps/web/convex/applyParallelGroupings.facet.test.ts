@@ -84,6 +84,9 @@ async function seedChainToInsertVariantType(t: T) {
       parentId: set,
       platformData: { bsc: { b0: "insert" } },
       platformFacets: { bsc: { b0: "variant" } },
+      // NEO-334: the role the variantType sync confers from that tagged slot
+      // (NEO-306). Grouping lands rows as sub-variants, which live only under
+      // an Insert type.
       children: [],
       lastUpdated: SENTINEL,
     });

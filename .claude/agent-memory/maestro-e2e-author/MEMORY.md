@@ -133,6 +133,9 @@ Non-markdown helpers: `tools/`
 - [NEO-325 Base check selectors](reference_neo325_base_check_selectors.md) — toggle `N that don't match the Base, <side>` never flips (prove by revealed row); `Keep all[ N], <side> sets`
 - [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
+- [NEO-334 variant type title is its kind](reference_neo334_sub_variants_column_is_role_gated.md) — Base/Insert(s)/Parallel(s) by exact title, hand-made too; column 7 only under Insert; refusal selectors; re-point the panel
+- [NEO-334 title kind vs Insert › Base pair](reference_neo334_title_kind_and_insert_base_pair.md) — kind read at variantType level only; the "Base" insert is not the Base; keep the type "Insert"
+- [centerElement is one-sided](patterns_center_element_is_one_sided.md) — UP accepts centre > 0.3H, DOWN < 0.7H, one ~313px swipe; scroll to each row you assert
 - [Multi-team row needs a team count](patterns_multi_team_row_needs_a_team_count.md) — "A, B" sub-line = 2 links OR 1 combined team; Team Mgmt "1 of" on one half closes it; settle lookups before checking team steps
 - [Closed <details> content is in the hierarchy](patterns_closed_details_content_is_in_the_hierarchy.md) — listed with live bounds while hidden; open the summary before asserting inside
 - [Branch on copied button text](patterns_branch_on_copied_button_text.md) — vary a drain by step kind: copyTextFrom the guarded button + `when: true:` script; never a 2nd visibility guard

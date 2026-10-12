@@ -84,6 +84,7 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { materializeSelectorOptionFeature } from "./selectorOptions";
+import { derivedVariantFlags } from "./variantRole";
 import {
   deriveSetLevelFeatures,
   type SetLevelFeatureInputs,
@@ -190,10 +191,13 @@ async function backfillSetSubtree(
   //    correctly treated as an override and skipped.
   const variantNodes = await collectVariantNodesByDepth(ctx, setNameNode._id);
   for (const { node } of variantNodes) {
+    // NEO-334: insert/parallel is read from where the node sits (its level
+    // and its variant type's title), never from a stored metadata flag.
+    const flags = derivedVariantFlags(node.level, node.parentVariantType);
     const leafInputs: SetLevelFeatureInputs = {
       leafLevel: node.level,
-      leafIsInsert: node.metadata?.isInsert ?? undefined,
-      leafIsParallel: node.metadata?.isParallel ?? undefined,
+      leafIsInsert: flags?.isInsert,
+      leafIsParallel: flags?.isParallel,
     };
     const cardType = deriveSetLevelFeatures(leafInputs).cardType;
     if (cardType === undefined) continue;
@@ -216,8 +220,9 @@ async function backfillSetSubtree(
 type VariantNode = {
   _id: Id<"selectorOptions">;
   level: Level;
-  metadata?: { isInsert?: boolean; isParallel?: boolean };
   features?: Record<string, string>;
+  /** The variantType row this node sits under directly, for an insert. */
+  parentVariantType?: { value?: string };
 };
 
 /**
@@ -231,12 +236,14 @@ async function collectVariantNodesByDepth(
   setNameNodeId: Id<"selectorOptions">,
 ): Promise<Array<{ depth: number; node: VariantNode }>> {
   const out: Array<{ depth: number; node: VariantNode }> = [];
-  const queue: Array<{ id: Id<"selectorOptions">; depth: number }> = [
-    { id: setNameNodeId, depth: 0 },
-  ];
+  const queue: Array<{
+    id: Id<"selectorOptions">;
+    depth: number;
+    parent?: { level?: string; value?: string };
+  }> = [{ id: setNameNodeId, depth: 0 }];
   const seen = new Set<string>([setNameNodeId as unknown as string]);
   while (queue.length > 0) {
-    const { id, depth } = queue.shift()!;
+    const { id, depth, parent } = queue.shift()!;
     const row = await ctx.db.get(id);
     if (!row) continue;
     if (
@@ -244,13 +251,25 @@ async function collectVariantNodesByDepth(
       row.level === "insert" ||
       row.level === "parallel"
     ) {
-      out.push({ depth, node: row as VariantNode });
+      out.push({
+        depth,
+        node: {
+          ...(row as VariantNode),
+          ...(parent?.level === "variantType"
+            ? { parentVariantType: { value: parent.value } }
+            : {}),
+        },
+      });
     }
     for (const childId of row.children ?? []) {
       const key = childId as unknown as string;
       if (seen.has(key)) continue;
       seen.add(key);
-      queue.push({ id: childId, depth: depth + 1 });
+      queue.push({
+        id: childId,
+        depth: depth + 1,
+        parent: { level: row.level, value: row.value },
+      });
     }
   }
   // Deepest-first so each node seeds its own cardType before any ancestor

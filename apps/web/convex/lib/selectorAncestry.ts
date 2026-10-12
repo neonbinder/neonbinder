@@ -16,9 +16,25 @@
  * NEO-279 added the DOWNWARD walk (`collectDescendantIds`) beside the upward
  * ones, for the same reason: three writers over one subtree must agree about
  * what the subtree is.
+ *
+ * NEO-334 added the variant-type rename guard (`variantTypeRenameCheck` /
+ * `assertVariantTypeRenameAllowed`), which needs indexed queries, so it takes
+ * `Pick<QueryCtx, "db">` (a type-only import; a mutation ctx satisfies it).
  */
 
+import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
+import type { QueryCtx } from "../_generated/server";
+import {
+  SUB_VARIANT_INSERT_ONLY,
+  SUB_VARIANT_INSERT_ONLY_MESSAGE,
+  subVariantsAllowedUnder,
+  variantTypeKind,
+  variantTypeKindFromTitle,
+  variantTypeRenameOutcome,
+  type VariantKindRow,
+  type VariantTypeRenameOutcome,
+} from "../variantRole";
 
 /**
  * Depth cutoff for every walk here.
@@ -131,4 +147,189 @@ export async function findSetYearForSelectorOption(
     depth += 1;
   }
   return undefined;
+}
+
+/**
+ * What the sub-variant gate reads of a row: where it sits, and (for the
+ * variant type) its title, which is its kind. Structural, like
+ * `AncestryCtx`, so a query or a mutation ctx both pass.
+ */
+type SubVariantGateCtx = {
+  db: {
+    get: (id: Id<"selectorOptions">) => Promise<
+      | ({
+          _id: Id<"selectorOptions">;
+          level?: string;
+          parentId?: Id<"selectorOptions">;
+        } & VariantKindRow)
+      | null
+    >;
+  };
+};
+
+/**
+ * NEO-334 — may a `parallel`-level row be created under `parentId`?
+ *
+ * Only when the parent is an `insert`-level row whose own parent is a
+ * `variantType` row of kind `insert` (`subVariantsAllowedUnder`: titled
+ * "Insert" or "Inserts"). No parent, a missing row, a parent at another
+ * level, or a variant type of any other kind (Base, Parallel, none) is a
+ * no. Two point reads.
+ */
+export async function subVariantParentAllowed(
+  ctx: SubVariantGateCtx,
+  parentId: Id<"selectorOptions"> | undefined,
+): Promise<boolean> {
+  if (!parentId) return false;
+  const insert = await ctx.db.get(parentId);
+  if (!insert || insert.level !== "insert" || !insert.parentId) return false;
+  const variantType = await ctx.db.get(insert.parentId);
+  if (!variantType || variantType.level !== "variantType") return false;
+  return subVariantsAllowedUnder(variantType);
+}
+
+/**
+ * NEO-334 — the refusal every write path that creates rows at `level` under
+ * `parentId` runs first. A no-op at every level but `parallel`; at
+ * `parallel` it throws a structured `ConvexError`
+ * (`{ code: SUB_VARIANT_INSERT_ONLY, reason }`) unless
+ * `subVariantParentAllowed`. Thrown before anything is written, so a refused
+ * call leaves the tree exactly as it was.
+ */
+export async function assertSubVariantParent(
+  ctx: SubVariantGateCtx,
+  level: string,
+  parentId: Id<"selectorOptions"> | undefined,
+): Promise<void> {
+  if (level !== "parallel") return;
+  if (await subVariantParentAllowed(ctx, parentId)) return;
+  throw new ConvexError({
+    code: SUB_VARIANT_INSERT_ONLY,
+    reason: SUB_VARIANT_INSERT_ONLY_MESSAGE,
+  });
+}
+
+/** The row a rename door is about to retitle, as far as the guard reads it. */
+type RenameGuardRow = {
+  _id: Id<"selectorOptions">;
+  level?: string;
+  value?: string;
+  parentId?: Id<"selectorOptions">;
+};
+
+/**
+ * NEO-334: may this row be retitled `next`? A variant type's title is its
+ * kind (`variantRole.ts`), so a rename that changes the kind would silently
+ * change what every row beneath it is. This gathers the facts
+ * `variantTypeRenameOutcome` decides on and returns its answer without
+ * throwing, for the doors that collect refusals rather than throw
+ * (`applySelectorSyncSuggestions`, the suggestions query, the
+ * reconciliation store's title edit).
+ *
+ * Any row that is not a `variantType` is `{ ok: true }` with no reads. Reads
+ * only what the answer needs, every one of them `.first()` or a single
+ * parent's children:
+ *
+ *   - kind unchanged and not becoming Base: nothing.
+ *   - becoming Base: the set's variant types (one `by_level_and_parent`
+ *     page, a handful of rows) for another Base.
+ *   - kind changes: one `.first()` child (`by_parent`), one `.first()` card
+ *     printed on the type and one `.first()` card cross-listed into it
+ *     (both `by_selector_option`); and, from an Insert type, the type's
+ *     inserts with a `.first()` sub-variant each, stopping at the first.
+ */
+export async function variantTypeRenameCheck(
+  ctx: Pick<QueryCtx, "db">,
+  row: RenameGuardRow,
+  next: string,
+): Promise<VariantTypeRenameOutcome> {
+  if (row.level !== "variantType") return { ok: true };
+  const current = row.value ?? "";
+  const from = variantTypeKindFromTitle(current);
+  const to = variantTypeKindFromTitle(next);
+  if (from === to && to !== "base") return { ok: true };
+
+  let siblingBase = false;
+  if (to === "base" && from !== "base" && row.parentId) {
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "variantType").eq("parentId", row.parentId),
+      )
+      .collect();
+    siblingBase = siblings.some(
+      (s) => s._id !== row._id && variantTypeKind(s) === "base",
+    );
+  }
+  if (from === to) {
+    return variantTypeRenameOutcome(current, next, {
+      hasRowsBeneath: false,
+      subVariants: 0,
+      cards: 0,
+      siblingBase,
+    });
+  }
+
+  const child = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_parent", (q) => q.eq("parentId", row._id))
+    .first();
+  const printed = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+    .first();
+  const crossListed = printed
+    ? null
+    : await ctx.db
+        .query("cardCrossListings")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", row._id),
+        )
+        .first();
+  const cards = printed || crossListed ? 1 : 0;
+
+  let subVariants = 0;
+  if (from === "insert" && child) {
+    const inserts = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "insert").eq("parentId", row._id),
+      )
+      .collect();
+    for (const insert of inserts) {
+      const sub = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "parallel").eq("parentId", insert._id),
+        )
+        .first();
+      if (sub) {
+        subVariants = 1;
+        break;
+      }
+    }
+  }
+
+  return variantTypeRenameOutcome(current, next, {
+    hasRowsBeneath: child !== null || cards > 0,
+    subVariants,
+    cards,
+    siblingBase,
+  });
+}
+
+/**
+ * NEO-334: the throwing form of `variantTypeRenameCheck`, for
+ * `renameSelectorOption`. Run BEFORE `planValueRename`, so a refused rename
+ * writes nothing. Throws `ConvexError({ code: VARIANT_TYPE_RENAME_REFUSED,
+ * message })`, the payload `RenameEntityControl` already renders.
+ */
+export async function assertVariantTypeRenameAllowed(
+  ctx: Pick<QueryCtx, "db">,
+  row: RenameGuardRow,
+  next: string,
+): Promise<void> {
+  const outcome = await variantTypeRenameCheck(ctx, row, next);
+  if (outcome.ok) return;
+  throw new ConvexError({ code: outcome.code, message: outcome.message });
 }
