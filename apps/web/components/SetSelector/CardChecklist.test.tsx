@@ -680,6 +680,219 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 });
 
 /**
+ * NEO-341 — Confirm waits for the end of the team lookups the client has SEEN.
+ *
+ * `fetchCardChecklist` patches BSC teams onto its candidates in chunks through
+ * `ctx.runMutation`. An action's promise resolves on the action's response,
+ * not when this client's subscription has caught up with those writes, so the
+ * dialog used to unlock Confirm while the last chunk's teams were still on
+ * their way — those cards were saved without a team and the entity-review
+ * wizard never saw it. The gate is now the subscription itself: this run's
+ * whole batch (`total === candidateCount`) with every row `ready`.
+ */
+describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341)", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  const pair = (n: string, teams?: string[]) => ({
+    cardNumber: n,
+    cardName: `Player ${n}`,
+    bucket: "matched" as const,
+    confidence: 1,
+    platformData: { bsc: { ref: `bsc-${n}` }, sportlots: { ref: `sl-${n}` } },
+    ...(teams ? { teams } : {}),
+  });
+
+  /** Card 2's BSC team lookup has not reached this client yet. */
+  const lookupOutstanding = {
+    batchId: "batch-341",
+    ready: 1,
+    total: 2,
+    cards: [pair("1", ["Reds"]), pair("2")],
+  };
+  /** ...and now it has. */
+  const lookupsLanded = {
+    batchId: "batch-341",
+    ready: 2,
+    total: 2,
+    cards: [pair("1", ["Reds"]), pair("2", ["Cubs"])],
+  };
+
+  const fetched = {
+    success: true,
+    message: "2 matched, 0 BSC-only, 0 SL-only",
+    candidateCount: 2,
+    attachedSides: ["bsc", "sportlots"],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockDiffChecklist.mockResolvedValue({
+      cards: [],
+      removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 },
+      conflicts: [],
+      collisionInsertCount: 0,
+      ambiguityBlockedCount: 0,
+    });
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  it("keeps Confirm blocked after the fetch resolves until the last team lookup is seen, then confirms with it", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, lookupOutstanding);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    // The promise resolves while card 2's team is still in flight.
+    await act(async () => {
+      resolveFetch(fetched);
+    });
+
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.textContent).toBe("Loading…");
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText(/teams are still resolving in the background \(1 of 2 done\)/),
+    ).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+
+    // The last lookup reaches the subscription: the marker is observed.
+    await streamCandidates(rerender, lookupsLanded);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    const sent = mockResolveEntities.mock.calls[0][0].cards as Array<{
+      cardNumber: string;
+      teams?: string[];
+    }>;
+    expect(sent.find((c) => c.cardNumber === "2")?.teams).toEqual(["Cubs"]);
+  });
+
+  it("does not settle on a batch shorter than the count the fetch reported", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    // Every row that has ARRIVED is ready, but only one of two has arrived.
+    await streamCandidates(rerender, {
+      batchId: "batch-341",
+      ready: 1,
+      total: 1,
+      cards: [pair("1", ["Reds"])],
+    });
+    await act(async () => {
+      resolveFetch(fetched);
+    });
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Loading…",
+    );
+
+    await streamCandidates(rerender, lookupsLanded);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+  });
+
+  it("a failed fetch releases everything: no dialog, Sync usable, and the next run gates afresh", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, lookupOutstanding);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch({
+        success: false,
+        message: "Failed to fetch checklist: BSC timed out",
+        candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
+      });
+    });
+
+    // Nothing is left waiting on lookups that will never land.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.queryByText(/teams are still resolving/)).toBeNull();
+    const sync = screen.getByLabelText("Sync card checklist");
+    expect((sync as HTMLButtonElement).disabled).toBe(false);
+
+    // A second run is gated on ITS OWN report, not the failed one's.
+    await streamCandidates(rerender, null);
+    fireEvent.click(sync);
+    await streamCandidates(rerender, lookupOutstanding);
+    await act(async () => {
+      resolveFetch(fetched);
+    });
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Loading…",
+    );
+    await streamCandidates(rerender, lookupsLanded);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+  });
+
+  it("the one-marketplace auto-keep waits for the same marker before committing", async () => {
+    state.ancestorChain = soloSlChain();
+    const solo = (ready: number) => ({
+      batchId: "batch-341-solo",
+      ready,
+      total: 2,
+      cards: [
+        {
+          cardNumber: "1",
+          cardName: "Solo One",
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-1" } },
+        },
+        {
+          cardNumber: "2",
+          cardName: "Solo Two",
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-2" } },
+        },
+      ],
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, solo(1));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    // Give the auto-keep's poll a few ticks: it must still be waiting.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    await streamCandidates(rerender, solo(2));
+    await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+  });
+});
+
+/**
  * NEO-255 — the Match Cards dialog only when TWO OR MORE marketplaces are
  * ATTACHED to the set.
  *

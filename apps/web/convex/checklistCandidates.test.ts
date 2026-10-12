@@ -760,3 +760,122 @@ describe("resolveCandidateTeams survives a row that is not written yet (NEO-294)
     expect(await scheduledRetries(t)).toBe(0);
   });
 });
+
+/**
+ * NEO-341 — `ready === total` is the client's "every team lookup has landed"
+ * marker (the pairing dialog's Confirm and the one-marketplace auto-keep both
+ * wait on it, because the fetch action's promise can resolve before the client
+ * has seen its last team writes). So a row may be `pending` only while a
+ * lookup it is owed is outstanding, and every such row must get settled.
+ */
+describe("ready === total marks the end of the team lookups (NEO-341)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("teamPending:false lands ready, teamPending:true waits for its lookup", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [
+        { ...cand("1", "b1"), teamPending: true },
+        { ...cand("2", "b2"), teams: ["Mets"], teamPending: false },
+      ],
+      readyImmediately: false,
+    });
+    expect(await readAs(t, ADMIN, id)).toMatchObject({ total: 2, ready: 1 });
+
+    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
+      batchId: "batch-1",
+      resolved: [{ bscRef: "b1", teamName: "Orioles" }],
+    });
+    expect(await readAs(t, ADMIN, id)).toMatchObject({ total: 2, ready: 2 });
+  });
+
+  test("the flag is never stored on the row", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [{ ...cand("1", "b1"), teamPending: false }],
+      readyImmediately: false,
+    });
+    const rows = await t.run((ctx) =>
+      ctx.db.query("checklistCandidates").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect("teamPending" in rows[0]).toBe(false);
+  });
+
+  test("two rows sharing one BSC ref are both settled by its lookup", async () => {
+    // Keyed last-wins, one of them stayed pending forever — harmless while
+    // `ready` was only a progress count, a Confirm that never unlocks now.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [
+        { ...cand("1", "shared"), teamPending: true },
+        { ...cand("1b", "shared"), teamPending: true },
+      ],
+      readyImmediately: false,
+    });
+
+    const res = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      { batchId: "batch-1", resolved: [{ bscRef: "shared", teamName: "Cubs" }] },
+    );
+
+    expect(res.patched).toBe(2);
+    const v = await readAs(t, ADMIN, id);
+    expect(v).toMatchObject({ total: 2, ready: 2 });
+    expect(v.cards.every((c) => c.teams?.[0] === "Cubs")).toBe(true);
+  });
+
+  test("a row whose lookup is retried holds the marker until the RETRY lands", async () => {
+    // The retry runs after the action may already have returned, which is
+    // exactly why the client cannot trust the action's promise.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [{ ...cand("1", "b1"), teamPending: true }],
+      readyImmediately: false,
+    });
+    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
+      batchId: "batch-1",
+      resolved: [
+        { bscRef: "b1", teamName: "Orioles" },
+        { bscRef: "b2", teamName: "Padres" },
+      ],
+    });
+    // b2's row lands on a later page of the write chain, still owed its team.
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [
+        { ...cand("1", "b1"), teamPending: true },
+        { ...cand("2", "b2"), teamPending: true },
+      ],
+      readyImmediately: false,
+      from: 1,
+    });
+    expect(await readAs(t, ADMIN, id)).toMatchObject({ total: 2, ready: 1 });
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await readAs(t, ADMIN, id)).toMatchObject({ total: 2, ready: 2 });
+  });
+});

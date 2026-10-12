@@ -40,6 +40,10 @@ import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import {
+  streamedBatchSettled,
+  type StreamedBatchTarget,
+} from "@/lib/cards/streamed-batch";
+import {
   candidateToPairingCard,
   candidatesToPairingCards,
 } from "./pairing-cards";
@@ -803,6 +807,21 @@ export default function CardChecklist({
   // NEO-195: true from the moment a sync starts until the action resolves.
   // Distinct from `syncing`, which also covers the commit phase.
   const [fetchInFlight, setFetchInFlight] = useState(false);
+  /**
+   * NEO-341 — what the current run's fetch REPORTED, once it has resolved:
+   * how many candidates it published, and which batch the subscription showed
+   * before the call. Null until then, and reset by every new sync.
+   *
+   * `fetchInFlight` going false is not "the cards are here". An action's
+   * promise resolves on its own response, independently of the subscription
+   * that carries the writes it made, so the last chunk of BSC teams can reach
+   * this client after it. Confirm therefore also waits for the subscription to
+   * show this run's whole batch with every row `ready` — see
+   * `streamedBatchSettled`.
+   */
+  const [settleTarget, setSettleTarget] = useState<StreamedBatchTarget | null>(
+    null,
+  );
   // NEO-195 — which sync run is current. Bumped whenever the operator cancels,
   // so a run whose result arrives afterwards knows it was abandoned.
   //
@@ -946,15 +965,14 @@ export default function CardChecklist({
    * — same set, same operator, coincidentally the same count — would satisfy
    * the equality and be committed as if they were this fetch's.
    *
-   * `ready` is deliberately NOT part of the gate, and that is not an oversight.
-   * It counts rows whose TEAM has resolved, and `startCandidateBatch` writes
-   * every row `pending` whenever ANY row needs a BSC team lookup while the
-   * enrichment loop only flips the rows it actually looked up — so on a set
-   * where some cards arrived with teams already parsed, `ready` never reaches
-   * `total` at all. Gating on it would hang this path forever on exactly the
-   * BSC-only sets it exists for. Teams do not gate Confirm in the dialog
-   * either (`CardPairingModal` gates on the fetch, not on enrichment), so this
-   * waits on the same thing the dialog does.
+   * NEO-341 — and every row must be `ready`. This path commits the teams it
+   * reads here, and the action's promise resolves before the client has
+   * necessarily seen the last chunk of its BSC team writes; committing then
+   * would save those cards with no team and keep them out of the entity
+   * wizard. `ready` used to be unusable for this (every row was written
+   * `pending` whenever any row needed a lookup, so it never reached `total`);
+   * the server now writes `pending` only on rows that really await one. The
+   * dialog's Confirm waits on the same marker (`streamedBatchSettled`).
    */
   const awaitStreamedBatch = useCallback(
     async (
@@ -969,8 +987,10 @@ export default function CardChecklist({
           live &&
           live.batchId !== undefined &&
           live.batchId !== previousBatchId &&
-          live.total === expectedCount &&
-          live.cards.length === expectedCount
+          streamedBatchSettled(live, {
+            candidateCount: expectedCount,
+            previousBatchId,
+          })
         ) {
           return live;
         }
@@ -1078,6 +1098,8 @@ export default function CardChecklist({
     setPairingInstance((n) => n + 1);
     setCommitError(null);
     setSyncMessage(null);
+    // NEO-341: a new run has reported nothing yet.
+    setSettleTarget(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
       // Cancelled while the fetch was still running: leave the operator's own
@@ -1108,6 +1130,12 @@ export default function CardChecklist({
         await handlePairingConfirm({ cards: [], conflictsByIndex: {} });
         return;
       }
+      // NEO-341 — Confirm now waits for the subscription to show what this
+      // fetch reported, with every team lookup landed (see `settleTarget`).
+      setSettleTarget({
+        candidateCount: result.candidateCount,
+        previousBatchId,
+      });
       /**
        * NEO-255 — exactly one marketplace attached: keep everything, no dialog.
        *
@@ -2054,6 +2082,10 @@ export default function CardChecklist({
    * A candidate carries its bucket, so the three columns come straight off it
    * rather than being re-derived here.
    */
+  /** NEO-341 — the client has SEEN the end of this run's team lookups. */
+  const streamSettled =
+    settleTarget !== null &&
+    streamedBatchSettled(liveCandidates, settleTarget);
   const streamedPairing = useMemo(() => {
     if (
       pairingPhase === "closed" ||
@@ -2887,6 +2919,9 @@ export default function CardChecklist({
           // late join without disturbing a decision already made.
           initialData={streamedPairing}
           isStreaming={fetchInFlight}
+          // NEO-341: Confirm also waits for the subscription to show this
+          // run's whole batch with every team lookup landed.
+          streamSettled={streamSettled}
           streamProgress={
             liveCandidates
               ? { ready: liveCandidates.ready, total: liveCandidates.total }

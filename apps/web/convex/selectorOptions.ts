@@ -13880,15 +13880,29 @@ export const fetchCardChecklist = action({
       const needsTeamLookup = out.filter(
         (c) => !c.teams?.length && !c.team && c.platformData.bsc,
       );
+      // NEO-341 — exactly these rows are written `pending`; every other row is
+      // `ready` the moment it lands (its team came from the parse, or it has no
+      // BSC ref to look one up by). So `ready === total` on the client's
+      // subscription is the observed marker that EVERY lookup this fetch owes
+      // has been written — the signal the pairing dialog's Confirm and the
+      // one-marketplace auto-keep both wait for. They cannot wait on this
+      // action's promise instead: an action resolves on its own response, not
+      // when the client's subscription has caught up with the `runMutation`
+      // writes it made, so the last chunk's teams could land after Confirm.
+      // By identity, not by ref: these are the same objects `toCandidate` is
+      // handed below.
+      const awaitingTeam = new Set<ReconciledCard>(needsTeamLookup);
 
       // NEO-195 — publish the reconciled candidates NOW, before the team
       // lookup, so the modal can start filling in at ~6s instead of ~80s.
       //
-      // Every row goes in as `pending` when a lookup is outstanding; the chunk
-      // loop below flips each to `ready` as its team lands. `status` reports
-      // enrichment progress, it does not gate visibility — pairing needs card
-      // numbers and descriptions, not teams, and Confirm is separately blocked
-      // until the whole fetch finishes (see checklistCandidates.ts).
+      // A row whose lookup is outstanding goes in as `pending` and the chunk
+      // loop below flips it to `ready` as its team lands; every other row is
+      // `ready` from the start (NEO-341). `status` reports enrichment
+      // progress, it does not gate visibility — pairing needs card numbers and
+      // descriptions, not teams. It DOES gate Confirm: the client holds it
+      // until its subscription shows `ready === total` for this batch (see
+      // `awaitingTeam` above and checklistCandidates.ts).
       //
       // This is the ONLY copy that reaches the client. The action used to
       // return the same three buckets again at the end; that second wire is
@@ -13925,6 +13939,8 @@ export const fetchCardChecklist = action({
         playersConflict: card.playersConflict,
         bucket,
         confidence,
+        // NEO-341 — see `awaitingTeam` above.
+        teamPending: awaitingTeam.has(card),
       });
       await ctx.runMutation(
         internal.checklistCandidates.startCandidateBatch,

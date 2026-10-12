@@ -40,8 +40,11 @@ import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
  *
  * Teams are consumed AFTER Confirm, by the entity-review wizard. So the honest
  * gate is on CONFIRM, not on visibility — and that gate already exists in
- * CardPairingModal (`isStreaming` disables the button). Withholding rows on top
- * of it bought nothing and cost the operator the head start.
+ * CardPairingModal (`isStreaming` disables the button; since NEO-341 it also
+ * stays shut until this subscription shows `ready === total`, because the
+ * action's promise resolves before the client has seen its last team writes).
+ * Withholding rows on top of it bought nothing and cost the operator the head
+ * start.
  *
  * Candidates are therefore released as soon as they are reconciled. `status`
  * still tracks whether a row's team has resolved, so the UI can show enrichment
@@ -102,6 +105,16 @@ const candidateInputValidator = v.object({
   playersConflict: v.optional(playersConflictValidator),
   bucket: bucketValidator,
   confidence: v.optional(v.number()),
+  /**
+   * NEO-341 — this card is waiting on a BSC team lookup, so it is written
+   * `pending` and `resolveCandidateTeams` flips it. `false` writes it `ready`:
+   * its team is already known (or there is no BSC ref to look one up by), and
+   * holding it `pending` would keep `ready` below `total` forever — which is
+   * exactly why the client could not use `ready === total` as its "every team
+   * has landed" signal before this. Absent keeps the old batch-wide rule
+   * (`readyImmediately`). An input flag only: never stored on the row.
+   */
+  teamPending: v.optional(v.boolean()),
 });
 
 
@@ -147,7 +160,8 @@ const candidateInputValidator = v.object({
  * Nothing downstream observes the split. The auto-keep path already polls
  * `getReadyCandidates` until `total` equals the count the action reported
  * (`CardChecklist.awaitStreamedBatch`, 30s budget) before it commits anything,
- * and the pairing modal's Confirm is gated on the action's own promise. The
+ * and the pairing modal's Confirm waits for that same count with every row
+ * `ready` (NEO-341). The
  * one ordering that had to be made explicit is the team lookup's — see
  * `resolveCandidateTeams`, which now retries a card whose row this chain had
  * not reached yet.
@@ -266,8 +280,9 @@ export const startCandidateBatch = internalMutation({
     userId: v.string(),
     candidates: v.array(candidateInputValidator),
     // Whether every card's team is already known. When false the rows are still
-    // shown — see the note above — and simply carry `pending` until enrichment
-    // reaches them.
+    // shown — see the note above — and a row carries `pending` until enrichment
+    // reaches it, unless its own `teamPending: false` says no lookup is coming
+    // (NEO-341).
     readyImmediately: v.boolean(),
     // NEO-294 — the index of the first candidate THIS call writes. Absent
     // starts at the head and clears the operator's previous run first.
@@ -442,14 +457,17 @@ async function writeCandidatePage(
 
   const page = args.candidates.slice(from, from + CHECKLIST_CANDIDATE_PAGE);
   const now = Date.now();
-  for (const c of page) {
+  for (const { teamPending, ...c } of page) {
     await ctx.db.insert("checklistCandidates", {
       ...c,
       selectorOptionId: args.selectorOptionId,
       batchId: args.batchId,
       createdByUserId: args.userId,
       stem: cardNumberStem(c.cardNumber),
-      status: args.readyImmediately ? "ready" : "pending",
+      // NEO-341 — per row when the caller says which rows await a lookup, so
+      // `ready === total` means "every lookup this fetch owes has landed".
+      status:
+        args.readyImmediately || teamPending === false ? "ready" : "pending",
       lastUpdated: now,
     });
   }
@@ -517,10 +535,17 @@ export const resolveCandidateTeams = internalMutation({
       .withIndex("by_batch", (q) => q.eq("batchId", args.batchId))
       .collect();
 
-    const byBscRef = new Map<string, (typeof rows)[number]>();
+    // NEO-341 — EVERY row per ref, not the last one seen. A row this skipped
+    // used to cost only its team; now that `ready === total` is the client's
+    // "every lookup has landed" signal, a row left `pending` would hold the
+    // pairing dialog's Confirm shut for good.
+    const byBscRef = new Map<string, Array<(typeof rows)[number]>>();
     for (const r of rows) {
       const ref = r.platformData.bsc?.ref;
-      if (ref) byBscRef.set(ref, r);
+      if (!ref) continue;
+      const same = byBscRef.get(ref);
+      if (same) same.push(r);
+      else byBscRef.set(ref, [r]);
     }
 
     const touchedStems = new Set<string>();
@@ -528,19 +553,21 @@ export const resolveCandidateTeams = internalMutation({
     const missed: Array<{ bscRef: string; teamName?: string }> = [];
     let patched = 0;
     for (const { bscRef, teamName } of args.resolved) {
-      const row = byBscRef.get(bscRef);
-      if (!row) {
+      const sameRef = byBscRef.get(bscRef);
+      if (!sameRef) {
         missed.push(teamName === undefined ? { bscRef } : { bscRef, teamName });
         continue;
       }
-      await ctx.db.patch(row._id, {
-        // An empty result is an answer, not a failure — see the note above.
-        ...(teamName ? { teams: [teamName] } : {}),
-        status: "ready",
-        lastUpdated: Date.now(),
-      });
-      touchedStems.add(row.stem);
-      patched++;
+      for (const row of sameRef) {
+        await ctx.db.patch(row._id, {
+          // An empty result is an answer, not a failure — see the note above.
+          ...(teamName ? { teams: [teamName] } : {}),
+          status: "ready",
+          lastUpdated: Date.now(),
+        });
+        touchedStems.add(row.stem);
+        patched++;
+      }
     }
 
     // Release whole stems only. A stem is complete when nothing in it is still
@@ -597,9 +624,12 @@ export const resolveCandidateTeams = internalMutation({
  * honest answer and a throw would only surface as a broken subscription.
  *
  * Returns EVERY candidate in the operator's batch, pending teams included — pairing does
- * not need a team, and Confirm is separately blocked until the fetch finishes.
- * `ready` counts how many have their team so the UI can show enrichment
- * progress.
+ * not need a team. `ready` counts the rows whose team lookup is settled, so the
+ * UI can show enrichment progress — and, since NEO-341, `ready === total` (with
+ * `total` equal to the fetch's own `candidateCount`) is the observed marker the
+ * client gates Confirm and the one-marketplace auto-keep on: every lookup the
+ * fetch owed has been written AND has reached this subscriber. The action's
+ * promise cannot say the second half.
  *
  * ## NEO-203 — admin-gated, but still non-throwing
  *

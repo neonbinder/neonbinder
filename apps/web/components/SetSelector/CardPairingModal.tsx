@@ -382,6 +382,17 @@ type State = {
    * be one more thing to keep in sync with `ABSORB`.
    */
   seedMatchedKeys: Set<string>;
+  /**
+   * NEO-341 — has an `ABSORB` carried the parent's word that this fetch's
+   * whole batch, with every team lookup landed, has reached the client?
+   *
+   * Latched (once true it stays true for this instance, which is one per
+   * fetch) and carried HERE rather than read off the prop at click time, so it
+   * can only turn true in the same dispatch that folds in the teams it vouches
+   * for: Confirm can never read a state that has the flag but not the last
+   * chunk's teams.
+   */
+  streamSettled: boolean;
 };
 
 type Action =
@@ -458,6 +469,8 @@ type Action =
       autoMatched: MatchedPair[]; // already through `seedMatched`
       unmatchedBsc: PairingCard[];
       unmatchedSl: PairingCard[];
+      /** NEO-341 — the parent has seen this fetch end; see `State.streamSettled`. */
+      settled: boolean;
     };
 
 /**
@@ -875,6 +888,8 @@ function seedState(initialData: PairingInitialData): State {
     keptBsc: [],
     keptSl: [],
     seedMatchedKeys: new Set(matched.map((m) => candidateKey(m.card))),
+    // NEO-341: only an ABSORB may say so — see `State.streamSettled`.
+    streamSettled: false,
   });
 }
 
@@ -1038,15 +1053,24 @@ function baseReducer(state: State, action: Action): State {
       const keptBsc = state.keptBsc.map(enrich);
       const keptSl = state.keptSl.map(enrich);
 
+      const streamSettled = state.streamSettled || action.settled;
+
       // Nothing arrived and nothing changed — return the SAME state object so
       // the render this dispatch would otherwise cause does not happen. The
       // stream fires this on every reactive update of a 900-row batch.
-      if (!newMatched.length && !newBsc.length && !newSl.length && !enriched) {
+      if (
+        !newMatched.length &&
+        !newBsc.length &&
+        !newSl.length &&
+        !enriched &&
+        streamSettled === state.streamSettled
+      ) {
         return state;
       }
 
       return {
         ...state,
+        streamSettled,
         matched: [...matched, ...newMatched],
         unmatchedBsc: [...unmatchedBsc, ...newBsc],
         unmatchedSl: [...unmatchedSl, ...newSl],
@@ -1705,6 +1729,7 @@ export default function CardPairingModal({
   setLabel,
   initialData,
   isStreaming,
+  streamSettled,
   streamProgress,
   restoreFocusRef,
 }: {
@@ -1722,6 +1747,16 @@ export default function CardPairingModal({
    * that had not arrived yet. Early review is the point; early commit is a bug.
    */
   isStreaming?: boolean;
+  /**
+   * NEO-341 — the parent has SEEN this fetch's whole batch with every team
+   * lookup landed (`streamedBatchSettled`). Confirm stays blocked until it
+   * has, even after `isStreaming` goes false: the fetch action's promise
+   * resolves before the client necessarily has its last team writes, and a
+   * card confirmed without its team skips the entity-review wizard.
+   *
+   * Omitted means "nothing to wait for" — a caller that does not stream.
+   */
+  streamSettled?: boolean;
   /** Progress for the streaming banner: cards released / cards found so far. */
   streamProgress?: { ready: number; total: number };
   /**
@@ -1860,8 +1895,17 @@ export default function CardPairingModal({
       autoMatched: seedMatched(initialData.autoMatched),
       unmatchedBsc: initialData.unmatchedBsc,
       unmatchedSl: initialData.unmatchedSl,
+      settled: streamSettled === true,
     });
-  }, [initialData]);
+  }, [initialData, streamSettled]);
+  /**
+   * NEO-195 / NEO-341 — Confirm is blocked while the fetch runs AND until the
+   * reducer holds the end of its team lookups. Everything that used to read
+   * `isStreaming` for the gate reads this.
+   */
+  const confirmBlocked =
+    isStreaming === true ||
+    (streamSettled !== undefined && !state.streamSettled);
   // Everything paired and nothing set aside: the columns and keep shelf have
   // nothing to show and only add noise. Derived from CURRENT state, not the
   // initial snapshot, so unlinking a pair brings the columns straight back.
@@ -2154,7 +2198,8 @@ export default function CardPairingModal({
     if (confirming) return;
     // NEO-195: never commit a partial checklist. The button is disabled while
     // streaming; this is the guard for a keyboard or programmatic path.
-    if (isStreaming) return;
+    // NEO-341: nor one whose last team lookups have not reached us yet.
+    if (confirmBlocked) return;
     setConfirming(true);
     try {
       // Only confirmed pairs and deliberately-kept singles become NB cards.
@@ -2213,7 +2258,7 @@ export default function CardPairingModal({
     } finally {
       setConfirming(false);
     }
-  }, [confirming, isStreaming, onConfirm, state]);
+  }, [confirming, confirmBlocked, onConfirm, state]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -2316,7 +2361,7 @@ export default function CardPairingModal({
             {/* NEO-195: cards arrive as they become reviewable, so say so.
                 Without this the list silently grows under the operator and a
                 disabled Confirm looks broken rather than deliberate. */}
-            {isStreaming && (
+            {confirmBlocked && (
               <p
                 id="pairing-streaming-status"
                 className="text-xs text-[#00B7FF] mt-1"
@@ -3269,27 +3314,27 @@ export default function CardPairingModal({
                 // isn't doing anything, and `title` tooltips aren't reliably
                 // announced by screen readers and can't be triggered by
                 // keyboard on an unfocusable control either way. aria-disabled
-                // keeps it reachable; handleConfirm's own isStreaming guard
+                // keeps it reachable; handleConfirm's own confirmBlocked guard
                 // (above) makes activating it a no-op, so this is safe.
                 disabled={confirming}
-                aria-disabled={isStreaming || undefined}
+                aria-disabled={confirmBlocked || undefined}
                 // Ties the reason to the control itself so it's available the
                 // moment Confirm receives focus, rather than depending on the
                 // operator having caught the aria-live banner when it first
                 // appeared (or on every re-announcement as progress ticks).
                 aria-describedby={
-                  isStreaming ? "pairing-streaming-status" : undefined
+                  confirmBlocked ? "pairing-streaming-status" : undefined
                 }
                 aria-label="Confirm card matches"
                 title={
-                  isStreaming
+                  confirmBlocked
                     ? "Still loading cards — confirming now would save only what has arrived"
                     : undefined
                 }
               >
                 {confirming
                   ? "Saving…"
-                  : isStreaming
+                  : confirmBlocked
                     ? "Loading…"
                     : "Confirm"}
               </NeonButton>
