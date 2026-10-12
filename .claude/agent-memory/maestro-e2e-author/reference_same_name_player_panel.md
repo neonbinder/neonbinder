@@ -21,7 +21,15 @@ Selectors (all user-visible):
   `Skip <name> — not a person`. `Create new` opens the New Player step
   (`Add as New Player` + `Back to the list`) and only then runs the lookup.
 - read-back: `Linked to <name>, b. YYYY` (Decided list, which collapses past 5,
-  and the `Decision for <name>` panel).
+  and the `Decision for <name>` panel). After a walk's skips the list is
+  usually folded: link, then tap the next step's footer `id: "Back to previous
+  decision"` and read `text: "Linked to …"` `childOf: id: "Decision for <name>"`
+  (the read-only panel; the live footer group of the same name is not
+  rendered then).
+- the catalogue holds real same-name rows: on a catalogue preview a name you
+  fork twice can list THREE (NPB `Shuya Yamada`: the catalogue row survives
+  the narrowing on a ±2 span, its stint starts after the card). Count the
+  catalogue's rows read-only before asserting `N on file`.
 
 Bulk: `Add remaining players as new (N)` excludes these rows and can read (0)
 while they remain; `Skip remaining names (N)` decides them.

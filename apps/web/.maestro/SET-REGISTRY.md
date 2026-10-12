@@ -1570,9 +1570,17 @@ fetch.
 **Why NPB, and not an MLB team set.** The name only reaches the pick step while
 card-year narrowing (`narrowSameNamePlayersByCardYear`) cannot pick one row: no
 same-name player may hold a stint on the card's printed team covering 2024. The
-forks hold no stints at all. An NPB club can never be that team for a
-catalogue player either, including NEO-330's prod catalogue, whereas any MLB
-team set's names would narrow to the catalogue's row and skip the step.
+forks hold no stints at all. On an MLB team set the catalogue's own row for the
+name would carry that stint and the step would never open.
+
+**Three on file, not two (NEO-330 catalogue, measured 2026-10-11).** The
+reference catalogue is a prod snapshot and already holds a `Shuya Yamada`:
+Wikidata-linked, Hanshin Tigers from 2026, no birth year. His span covers a 2024
+card within the ±2-year tolerance, so he survives the narrowing; his only stint
+starts after 2024, so the card's team does not pick him outright. The step
+therefore lists three and its intro reads `We've got 3 on file under that name.`
+⚠️ If a catalogue refresh moves his stint to 2024 or earlier, the narrowing
+picks him and the step disappears: the flow fails at STEP 1 by name.
 
 **Read-only on the set.** The flow leaves through Cancel → Discard: it commits
 nothing and creates nothing from the wizard. It does write two GLOBAL `players`
@@ -1585,24 +1593,56 @@ rows named `Shuya Yamada` that nothing deletes, so:
   of the run.
 * **Re-runs are idempotent.** On a deployment that already holds both forks,
   each create ADOPTS (a birth year exactly one row carries), and the flow
-  asserts both rows exist rather than that it created them. The flow also
-  clears a review batch a red attempt left behind
-  (`util-discard-resumed-review-batch`, with `SET` passed through).
+  asserts both rows exist rather than that it created them. A review batch a
+  red attempt left behind is detected by one read of the decided count and
+  cleared through `util-discard-resumed-review-batch` (with `SET` passed
+  through) only when that count is not 0, so the normal path pays no 7s dwell.
 
-**It is the one wizard flow that does not walk.** The set is large: the first
-live fetch (dev, 2026-10-10) brought **244 unknown names, 216 players + 28
-teams**, every one behind a live Wikidata lookup (none are in the enrichment
-recording). 129 of them settled in 180s, so `util-wizard-walk-to-player-row`'s
-first wait — the sanctioned 180s Wikidata ceiling — expired with 115 still
-looking up and no team settled. The flow does not need it: the same-name row
-arrives READY (no lookup until Create new), so the wizard opens on its pick
-step while the rest are still looking up, and it holds still because
-`startBatch` inserts every player before any team and the pool drains FIFO, so
-no team settles for minutes. The flow states this at its STEP 1.
+**What the fetch stages, on the catalogue-loaded preview (2026-10-11).** Of the
+set's 216 player names the catalogue holds 196, so the batch is **21 player
+rows**: Shuya Yamada, inserted READY (no lookup until Create new), and **20
+unknown NPB names** — Akinobu Okada, Adam Walker, Daisuke Miura, Hironori
+Miyoshi, Kazuyoshi Tatsunami, Keishi Tsuda, Keisuke Honda, Kosuke Kawachi, Kota
+Nishidate, Leandro Cedeno, Ryusei Satoh, Ryutaro Hatsuki, Satoshi Nakajima,
+Taisei Ota, Takashi Uemoto, Takayuki Kajitani, Takero Okajima, Takumi Ohshiro,
+Yuki Udagawa, Yuya Shinto. None is in the enrichment recording; Wikidata knows
+all twenty. All twelve card teams are in the catalogue, so no team row exists at
+open. Two lookups stage career teams the catalogue lacks: Adam Walker (Kanagawa
+Future Dreams, Oisix Niigata Albirex Baseball Club, Rakuten Monkeys) and Leandro
+Cedeno (Caribes de Anzoátegui, Leones del Caracas), plus any league those teams
+need. Shuya Yamada's own lookup finds no career team. Every catalogue refresh can
+change these counts: prod builds sets, and a name prod has built is known.
+(Before the catalogue, on dev 2026-10-10, the same fetch staged 244 unknown
+names.)
 
-**Measured (fill in from the first green PR-preview run):** fetch-to-wizard
-time, total flow time against the 600s per-flow cap, and that the wizard opened
-on the pick step with `0 of 244 reviewed · 243 still being looked up`.
+**The timing claim, and why it holds.** STEP 1 asserts that the wizard opens on
+the pick step while the other names are still being looked up (Jason,
+2026-10-11: the claim stays in E2E). One live lookup of a name Wikidata knows
+takes ~4-5s Convex-side, not the ~0.5s a laptop sees: CI run 38073638557 had
+the 5-wide pool to itself for this set and started 21 NPB lookups in 21s. So the
+20 lookups keep the header's `· N still being looked up` on screen for ≥ ~16s,
+and the staged career teams (looked up after them) for longer; contention from
+other flows only lengthens it. The flow's first read after the wizard opens is
+that assertion, ~1s after the batch starts (in that run the wizard's title
+painted 0.6s before the first NPB lookup started).
+
+**Then the flow walks.** An untouched pick step yields to the first settled
+team or league (teams first, NEO-236), and the career teams above settle ~17-25s
+in, inside the window the Create new / Back to the list / link steps need. So
+after STEP 1 the flow runs `util-wizard-walk-to-player-row`, which waits the
+batch out, answers each team and league step as a skip, and stops on the first
+player row: Shuya Yamada's pick step, because rows are inserted in card order
+and he is card #1. Every later count is read relative to those skips (K), and
+the link's read-back comes from `Back to previous decision` → `Decision for
+Shuya Yamada`, because the Decided list folds past five.
+
+**What a green CI run must show** (fill in from the first green run on the
+catalogue preview): in the flow's `maestro.log`, STEP 1's
+`"Which Shuya Yamada is this\?", Below "0 of [0-9]+ reviewed · [0-9]+ still
+being looked up"` COMPLETED within ~1-2s of the fetch util's `Confirm New
+Players & Teams` gate; in `convex-logs`, the 20 NPB names' `enrichment_fixture`
+miss lines spread over ≥ ~12s and the first staged `team` lookup starting after
+STEP 1 completed; total flow time against the per-flow cap.
 
 **The kind guard.** Two flows (`link-to-existing`, `career-team`) act on
 controls only a PLAYER row renders, and which row settles first is a race
