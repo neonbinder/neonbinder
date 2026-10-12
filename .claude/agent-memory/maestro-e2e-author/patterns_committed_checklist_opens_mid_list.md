@@ -17,7 +17,10 @@ bottom edge, and the cards a flow wanted (#2–#34) were ~140 rows away.
 the card you assert one of the LAST in natural card-number order. Find which
 cards a club owns from the marketplace's facets before choosing (BSC
 `teamName` + `cardNo` aggregations). Small sets (≤ ~7 rows) need none of
-this. Worked example: `checklist-wizard-link-team-saves-alias` R2(h)
-(Tigres de Aragua owns #290–#297), re-entering through
-`util-open-one-marketplace-set-base`. Related:
+this. Worked example: `checklist-wizard-past-era-team-link-commits`
+(#34–#36 are the last rows of a 36-card Base; #25–#27 are reached by one DOWN
+touch drag that starts on a row, `swipe` 45%→98%, ~5 rows), re-entering
+through `util-open-one-marketplace-set-base`. Pin a sub-line to ONE row with
+`below: "#<n>"` + `above: "#<n+1>"` (top-edge semantics: the sub-line's top
+sits between its own number's top and the next row's). Related:
 [[virtualized-list-phantom-rows]], [[inner-scroller-clip-is-invisible-to-maestro]].

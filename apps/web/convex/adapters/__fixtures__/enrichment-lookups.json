@@ -16194,6 +16194,19 @@
         }
       }
     },
+    "team|Q5369|philadelphia athletics": {
+      "kind": "team",
+      "name": "Philadelphia Athletics",
+      "result": {
+        "wikidataId": "Q1264750",
+        "league": "National League",
+        "leagueWikidataId": "Q858082",
+        "yearsActive": {
+          "from": 1860,
+          "to": 1876
+        }
+      }
+    },
     "team|Q5369|philadelphia phillies": {
       "kind": "team",
       "name": "Philadelphia Phillies",

@@ -1,6 +1,6 @@
 ---
 name: neo284-team-alias-fixture
-description: NEO-284 team-alias E2E — since NEO-330 the one-sided 1996 Line Up Venezuelan Winter League fixture (300 cards, 8 unknown clubs, two clubs acted on BY NAME), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
+description: NEO-284 team-alias E2E — since NEO-330 the one-sided 1996 Line Up Venezuelan Winter League fixture (300 cards, 8 unknown clubs, one club acted on BY NAME), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
 metadata:
   type: reference
 ---
@@ -14,10 +14,10 @@ unknown; 211 rows settle (a staged league + 2 staged career teams) after
 ~144 s of LIVE lookups; all 211 are now in the NEO-289 recording, so the
 settle time must be re-measured from CI (see
 [[record-a-fixture-sets-lookups]]). The walk reads every team/league heading and acts on
-two checklist clubs BY NAME (Navegantes → alias link; Tigres → past-era link
-to the catalogue's single `Pittsburgh Crawfords`, remember-box UNTICKED so no
-alias lands on a shared catalogue row), skipping the rest — `runFlow when:
-true: ${heading === …}` branches are free. The alias-clash holder (`Pca`) now
+one checklist club BY NAME (Navegantes → alias link), skipping the rest —
+`runFlow when: true: ${heading === …}` branches are free. The past-era claims
+(Tigres → the catalogue's single `Pittsburgh Crawfords`) moved out in NEO-330
+to `checklist-wizard-past-era-team-link-commits`, see [[past-era-team-fixture]]. The alias-clash holder (`Pca`) now
 lives on the minted `Loc Ali` team. Until NEO-330 it was the 4-card Rickwood
 Field set, whose clubs the reference catalogue now holds.
 

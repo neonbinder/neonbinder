@@ -149,3 +149,4 @@ Non-markdown helpers: `tools/`
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — one lookup 0.3-20s Convex-side, never a guarantee; size a window on the 5-wide pool's depth; teams settle last
 - [Reference catalogue on CI previews](patterns_reference_catalogue_on_ci_previews.md) — NEO-330: prod catalogue on every CI preview; check fixture names against the bundle; capped lists
 - [Merged flows miss a branch copy sweep](patterns_merged_flows_miss_a_branch_copy_sweep.md) — after merging main, grep the old copy a branch sweep replaced; main-added flows keep it
+- [Past-era team fixture (3X MVP)](reference_past_era_team_fixture.md) — era options are a 192px inner list (pin, tap the era line); no card shows an era; fixer/Fill paths cannot share the one commit; Fill rows need fillable>0

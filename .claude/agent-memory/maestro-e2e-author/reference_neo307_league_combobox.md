@@ -72,8 +72,9 @@ team step, `copyTextFrom "New Team: .*"`, compare, and skip. A card's sub-line
 prints an unresolved team as "<name> (unconfirmed)", so match the link with a
 negative lookahead. Cached Wikidata career stints (for sizing an era so the
 strict stint resolver stages nothing) are in
-`convex/adapters/__fixtures__/enrichment-lookups.json`. Worked example: the
-alias flow's R2(h), on card RW-2's "Pittsburgh Crawfords".
+`convex/adapters/__fixtures__/enrichment-lookups.json`. Worked example:
+`checklist-wizard-past-era-team-link-commits` (#34/#35 "Philadelphia
+Athletics" read back between the "#34"/"#35"/"#36" number nodes).
 
 **Team Management Franchise field (same ticket).** It is the same combobox:
 `id: "Franchise"` (the `team-franchise` id is on the wrapper). It rests on

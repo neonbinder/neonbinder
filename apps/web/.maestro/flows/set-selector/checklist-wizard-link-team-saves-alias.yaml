@@ -50,28 +50,18 @@ tags:
 #         alias — remove it there before a team can take the name.", offers
 #         "Link to Loc<token> Ali<token>", and "Add as New Team" records
 #         nothing (the header's reviewed-count is unchanged seconds later).
-#     (h) NEO-307, re-scoped in NEO-330 — A CARD CAN SHOW A TEAM'S PAST, by
-#         the operator's link. The checklist club "Tigres de Aragua" is
-#         linked to the reference catalogue's `Pittsburgh Crawfords`, a
-#         defunct club whose era (1932–1938) ended decades before this 1996
-#         set. The search offers it WITH that era; the remember-box is
-#         UNTICKED first, so the decision reads exactly "Linked to Pittsburgh
-#         Crawfords" (no "· remembered as" tail — the opt-out half of the box,
-#         and no alias written onto a shared catalogue row); on commit a card
-#         carrying the club prints "Pittsburgh Crawfords" in its sub-line, not
-#         "… (unconfirmed)"; and Team Management still lists exactly one
-#         `Pittsburgh Crawfords` (the link minted no second era).
 #
-# ── WHAT (h) USED TO PROVE, AND WHERE THAT WENT ─────────────────────────────
-#   Until NEO-330 (h) was the AUTOMATIC past-era link: the flow created
-#   Pittsburgh Crawfords itself, the 2024 Rickwood Field set carried it on
-#   card RW-2, and the review gate resolved the name without raising a step
-#   (`resolveTeamForSetYear`, `allowPastEra`). The reference catalogue now
-#   holds the Negro League clubs (and their players), so that fixture stages
-#   nothing and the flow could not create the club ("No matches." failed, CI
-#   run 38063558063). Jason re-scoped (h) to the operator's link onto the
-#   catalogue's own row (2026-10-10). The automatic resolution is unit-tested
-#   in `lib/teams/team-era.test.ts`.
+# ── (h), THE PAST-ERA TEAM LINK, IS NOT HERE ────────────────────────────────
+#   NEO-307's past-era claims (a card resolving a club whose era ended before
+#   the set's year, on its own or by the operator's link) moved out in
+#   NEO-330. Jason, 2026-10-10: the operator's past-era link belongs only
+#   where the catalogue holds SEVERAL same-name clubs and none covers the
+#   set's year; a club the catalogue holds once links on its own. This set's
+#   clubs are absent from the catalogue, so it has neither shape. Both claims
+#   live in `checklist-wizard-past-era-team-link-commits.yaml`, on 2025 Topps
+#   Welcome to the Club: 3X MVP (approved by Jason 2026-10-11; SET-REGISTRY.md).
+#   Until then this flow linked "Tigres de Aragua" to the catalogue's single
+#   `Pittsburgh Crawfords` row, which was the wrong case.
 #
 # ── THE FIXTURE (NEO-330) ───────────────────────────────────────────────────
 #   `Baseball → 1996 → All Brands → Line Up Venezuelan Winter League → Base`,
@@ -98,16 +88,12 @@ tags:
 #   decides both rows like any other. Without their lookups, the two staged
 #   career teams above may not appear; the walk skips whatever is staged.
 #
-#   THE TWO ROWS UNDER TEST ARE NAMED, NOT "WHICHEVER COMES FIRST". The walk
-#   reads each team/league step's heading and acts on two checklist clubs by
-#   name — "Navegantes del Magallanes" for the alias, "Tigres de Aragua" for
-#   (h) — and skips every other step (a skip creates nothing, R7). Both are
-#   BSC `teamName` values on this set's cards, so neither can be a staged
-#   career team, and the walk works whichever order the wizard presents them
-#   in. After the walk the flow asserts BOTH were reached. Tigres is (h)'s
-#   club because it owns the END of the checklist (#290–#297 of 300, BSC
-#   facets 2026-10-10), which is where a fresh load opens the virtualized
-#   list — see PART 4.
+#   THE ROW UNDER TEST IS NAMED, NOT "WHICHEVER COMES FIRST". The walk reads
+#   each team/league step's heading, acts on one checklist club by name —
+#   "Navegantes del Magallanes" — and skips every other step (a skip creates
+#   nothing, R7). It is a BSC `teamName` value on this set's cards, so it
+#   cannot be a staged career team, and the walk works wherever the wizard
+#   presents it. After the walk the flow asserts it was reached.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET (R7a). It commits — the alias is
 #   written at commit and nowhere else, so a read-only version could pass with
@@ -229,7 +215,7 @@ tags:
 # R2(i)'s holder: one alias, `Pca<token>`, typed here because the dialog
 # already asks for aliases, which costs one field instead of a Team
 # Management detour. It is inert: no checklist carries it, and the flow never
-# searches for it. PART 7 removes it with the checklist alias.
+# searches for it. PART 6 removes it with the checklist alias.
 - tapOn:
     id: "New team aliases \\(optional\\)"
 - inputText: "Pca${output.TOKEN}"
@@ -273,22 +259,21 @@ tags:
     timeout: 180000
 
 # ============================================================
-# PART 3 — WALK THE TEAM AND LEAGUE STEPS, acting on two clubs by name
+# PART 3 — WALK THE TEAM AND LEAGUE STEPS, acting on one club by name
 # ============================================================
 # The wizard presents every settled undecided TEAM (and LEAGUE) row before any
 # player row, one row at a time (`entity-review-nav.ts`), so this walk reads
 # every team step the batch raised; a player row coming up ("Skip … not a
 # person") is the product saying there are no more.
 #
-# Per pass: read the presented step's heading, then exactly ONE of three
+# Per pass: read the presented step's heading, then exactly ONE of two
 # branches runs, each keyed on a `true:` expression (evaluated JS — free,
 # unlike a `visible:` guard that misses):
 #   * "New Team: Navegantes del Magallanes" → the alias link, R2(b)(c)(d)(i)
-#   * "New Team: Tigres de Aragua"          → the past-era link, R2(h)
 #   * anything else (a league, another club, a staged career team) → skip.
 # A skip creates nothing (R7). `optional: true` on the skip tap is the
 # guard/tap race noted at `util-wizard-walk-to-player-row.yaml` (R3).
-- evalScript: '${output.ALIAS_DONE = false; output.PAST_DONE = false}'
+- evalScript: '${output.ALIAS_DONE = false}'
 - repeat:
     times: 20
     while:
@@ -455,71 +440,10 @@ tags:
                   text: "Already decided:.*"
             - evalScript: '${output.ALIAS_DONE = true}'
 
-      # ── R2(h): THE PAST-ERA LINK ─────────────────────────────────────────
-      - runFlow:
-          when:
-            true: '${output.STEP_HEADING === "New Team: Tigres de Aragua"}'
-          commands:
-            - assertVisible:
-                id: "Skip .* not a team"
-            - extendedWaitUntil:
-                visible:
-                  id: "Search all teams"
-                  text: "Type a team name"
-                timeout: 7000
-            # UNTICK the remember-box FIRST, while the combobox is closed: it
-            # sits directly under the combobox, so an open option list would
-            # cover it. The label wraps the checkbox, so a tap on its text
-            # toggles it. Proven by the decision line below, which a ticked
-            # box would extend with "· remembered as …" — and an alias on the
-            # catalogue's row would outlive this flow.
-            - tapOn:
-                text: "Remember “Tigres de Aragua” as a name for this team"
-            - tapOn:
-                id: "Search all teams"
-            - inputText: "Crawfords"
-            - extendedWaitUntil:
-                visible:
-                  id: "Search all teams"
-                  text: "Crawfords"
-                timeout: 7000
-            # The catalogue's ONE row of the name (verified read-only on the
-            # preview, 2026-10-10: one Baseball team "Pittsburgh Crawfords",
-            # 1932–1938, Negro National League II, no aliases). The option's
-            # full name is one node; its "league · years" line is another,
-            # and the era in it is what makes this a PAST-era team for a 1996
-            # card (en dash matched with ".").
-            - extendedWaitUntil:
-                visible:
-                  text: "Pittsburgh Crawfords"
-                timeout: 7000
-            - assertVisible:
-                text: ".*1932.1938.*"
-            - tapOn:
-                text: "Pittsburgh Crawfords"
-            - extendedWaitUntil:
-                notVisible:
-                  text: "New Team: Tigres de Aragua"
-                timeout: 7000
-            - tapOn:
-                id: "Back to previous decision"
-            - extendedWaitUntil:
-                visible:
-                  id: "Decision for Tigres de Aragua"
-                timeout: 7000
-            # Full match: the link, and no "· remembered as" tail.
-            - assertVisible:
-                text: "Linked to Pittsburgh Crawfords"
-            - tapOn:
-                text: "Next"
-                below:
-                  text: "Already decided:.*"
-            - evalScript: '${output.PAST_DONE = true}'
-
       # ── every other step: skip it ────────────────────────────────────────
       - runFlow:
           when:
-            true: '${output.STEP_HEADING !== "New Team: Navegantes del Magallanes" && output.STEP_HEADING !== "New Team: Tigres de Aragua"}'
+            true: '${output.STEP_HEADING !== "New Team: Navegantes del Magallanes"}'
           commands:
             - tapOn:
                 id: "Skip .*(not a team|has no league)"
@@ -528,17 +452,16 @@ tags:
     visible:
       id: "Skip .* not a person"
     timeout: 7000
-# Both rows under test came up and were decided — the walk cannot have ended
-# on the player rows without passing them.
+# The row under test came up and was decided — the walk cannot have ended on
+# the player rows without passing it.
 - assertTrue: ${output.ALIAS_DONE}
-- assertTrue: ${output.PAST_DONE}
 
 # ============================================================
 # PART 4 — COMMIT (R2e)
 # ============================================================
-# Everything else is a skip: skips create nothing, so the only rows this
-# commit links or mints are the two links above. The batch is settled (PART
-# 2), so the bulk skip is one mutation — in-app, 7000.
+# Everything else is a skip: skips create nothing, so the only row this
+# commit links is the one link above. The batch is settled (PART 2), so the
+# bulk skip is one mutation — in-app, 7000.
 - tapOn:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
@@ -550,31 +473,6 @@ tags:
 - extendedWaitUntil:
     visible:
       text: ".*Saved [0-9]+ cards.*"
-    timeout: 7000
-
-# R2(h) — a card of this set LINKS to the past-era club, read back on a
-# FRESH load of the set. Not on the page the commit leaves: the checklist's
-# virtualized list mounts on the commit's first streamed batch and keeps that
-# position as the rest arrive (measured: rows #146–#150 at the list's bottom
-# edge, the Tigres cards ~140 rows below, behind an inner scroller
-# `scrollUntilVisible` cannot move). A fresh mount opens at the LAST row
-# (`initialTopMostItemIndex`), and the last cards are Tigres de Aragua's
-# (#290–#297). The re-entry is the same util the fetch used (R3).
-- runFlow:
-    file: util-open-one-marketplace-set-base.yaml
-    env:
-      SPORT: "Baseball"
-      YEAR: "1996"
-      SET: "Line Up Venezuelan Winter League"
-# A card's sub-line prints its resolved teams by full name
-# (`CardChecklistItem`: `teamFullName` over `teamOnCardIds`) and an unresolved
-# one as "<name> (unconfirmed)", so the negative lookahead is what makes this
-# the link and not the raw string. The sub-line is one text node
-# (`subParts.join`), which the regex assumes.
-- scrollUntilVisible:
-    element:
-      text: ".*Pittsburgh Crawfords(?! \\(unconfirmed\\)).*"
-    centerElement: true
     timeout: 7000
 
 # ============================================================
@@ -669,20 +567,3 @@ tags:
     text: "LSU, Louisiana State, LSU Tigers baseball"
     below:
       text: "Also known as"
-
-# ============================================================
-# PART 7 — THE PAST-ERA CLUB IS STILL ONE ROW (R2h)
-# ============================================================
-# The link must not have minted a second era of the club. A fresh load, so the
-# filter box starts empty (the one above still holds "Ali<token>", and a label
-# tap would put the caret at 0). The counter is the page's own count of rows
-# matching the filter.
-- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
-- extendedWaitUntil:
-    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
-    timeout: 30000
-- tapOn: "Filter teams"
-- inputText: "Pittsburgh Crawfords"
-- extendedWaitUntil:
-    visible: "1 match( . [0-9,]+ need attention)?"
-    timeout: 7000

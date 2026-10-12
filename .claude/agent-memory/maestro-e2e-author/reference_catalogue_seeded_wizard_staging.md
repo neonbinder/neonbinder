@@ -73,14 +73,15 @@ Montreal Expos, California Angels = ONE dated row (auto past-era link);
 St. Louis Browns (2), Washington Senators (3), Philadelphia Athletics (4),
 St. Louis Stars (3), Detroit Stars (2) = ambiguous for any year after
 their eras; Kansas City Monarchs = in-era 2021– trap.
-**"Ambiguous" did NOT mean a wizard step (measured 2026-10-11, 2025 Topps
-WttC 3X MVP, BSC-only fetch):** the fetch went straight to `Saved 36 cards.
-2 need attention`: Campanella's Brooklyn Dodgers linked (one row, past era),
-the two Phil. Athletics cards committed TEAMLESS with `bscTeamName` kept and
-`teamCheckDoneAt` stamped, surfacing as `2 cards need a team` (the attention
-chip / fixer), not as `New Team: …`. The team names never reached the
-review gate on that fetch. So a predicted team step must be PROBED; an
-offline `pickTeamForYear` run only says how a name resolves once it gets there.
+**An ambiguous club only reaches the wizard if the fetch waits for its team
+lookups.** Before NEO-330's race fix the BSC-only fetch on 2025 Topps WttC 3X
+MVP went straight to `Saved 36 cards. 2 need attention` (the action resolved
+before the team patches arrived, so the two Phil. Athletics cards committed
+TEAMLESS and surfaced as `2 cards need a team`). With the fix (re-probed
+2026-10-11) the same fetch stages `0 new players + 1 new teams` and opens on
+`New Team: Philadelphia Athletics`. A predicted team step must still be
+PROBED; an offline `pickTeamForYear` run only says how a name resolves once
+it gets there. See [[past-era-team-fixture]].
 
 **Reading a wizard red:** a walk util that spins its 200-iteration repeat
 (~1.7s each, ~340s) and then fails on `Skip .* not a person` means the batch
