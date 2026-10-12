@@ -4,6 +4,7 @@
 // by picking its option, Franchise Management shows both, and "Remove <team>"
 // takes one back off. All names are single search tokens.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 
 test(
   "Franchises — two team rows are strung onto one franchise from the team side, and taken off again from the franchise side",
@@ -16,7 +17,7 @@ test(
     const franchise = `Fran${token}F`;
 
     await signIn("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectPlayersLoaded(page, LAUNCH_GATE);
 
     // Scaffolding: a player (empty list first, so "Baseball" is the picker's).
     await page.getByRole("textbox", { name: "Filter players" }).fill("zzzznotaplayer");
@@ -49,9 +50,10 @@ test(
 
     // Team Management: both teams are listed.
     await page.goto("/admin/teams");
-    await expect(page.getByText(/of .* teams/)).toBeVisible({ timeout: 30_000 });
+    await expectTeamsLoaded(page, 30_000);
     await page.getByRole("textbox", { name: "Filter teams" }).fill(`Fr${token}`);
-    await expect(page.getByText(/^2 of .* teams/)).toBeVisible();
+    // NEO-330: the filtered counter reads "2 matches" (no "of N").
+    await expect(teamsCounter(page, "2 matches")).toBeVisible();
     await expectAccessible(page, { label: "Team Management" });
     const franchiseField = page.getByRole("combobox", { name: "Franchise" });
     const saved = (team: string) => page.getByText(new RegExp(`Saved ${team}`));

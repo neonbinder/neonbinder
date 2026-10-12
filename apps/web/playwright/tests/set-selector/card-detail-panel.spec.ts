@@ -9,7 +9,7 @@ test(
   async ({ page, signIn, env }) => {
     const id = env.ATTEMPT_ID;
     const cardNumber = `888-${id}`;
-    const renamed = `Renamed Detail Player ${id}`;
+    const renamed = `RenamedDetail${env.ATTEMPT_TOKEN}`;
     const editCard = page.getByRole("button", { name: new RegExp(`^Edit card ${cardNumber}(, .*)?$`) });
     const deleteCard = page.getByRole("button", { name: new RegExp(`^Delete card ${cardNumber}(, .*)?$`) });
     const confirmDelete = page.getByRole("button", {
@@ -23,7 +23,7 @@ test(
     await addCustomCard(page, env, {
       set: `cd-${env.WORKER_INDEX}`,
       cardNumber,
-      playerName: `Detail Panel Test ${id}`,
+      playerName: `DetailPanelTest${env.ATTEMPT_TOKEN}`,
     });
 
     await editCard.click();

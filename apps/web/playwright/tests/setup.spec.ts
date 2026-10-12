@@ -10,6 +10,15 @@
 //   * 2024 Topps Big League: Base mapped, checklist left empty;
 //   * 2026 Bowman: SportLots sets sorted (NEO-312 fixture).
 //
+// NOT provisioned here, deliberately: the entity-review fixtures each wizard
+// spec owns (since NEO-330 the Hockey 1995 minor-league sets, Tulsa Oilers /
+// Memphis RiverKings / San Antonio Iguanas / Fort Worth Fire CHL, and the
+// Hockey 1995 columns above them). Each set is owned by exactly one spec and
+// the fetch helpers handle the cold first-time path, so each spec provisions
+// its own set, in parallel. Several workers syncing the shared Hockey 1995
+// columns at once double a round-trip and never a row (SET-REGISTRY.md, "The
+// 1995 minor-league hockey wizard fixtures"), so those are not pre-synced.
+//
 // R5 exempts the seed as a class: every wait below is the flow's own measured
 // cold-path value (live marketplace round trips on unwarmed data).
 // "A SYNC THAT HALF-WORKED IS A FAILED SEED": after every sync the partial-
@@ -234,12 +243,35 @@ test(
       // (NEO-331), and answerStepAsNew presses "Other" first.
       const addAsNew = addAsNewStep(page);
       const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
+      // NEO-330: with the reference catalogue loaded the Base batch is a
+      // handful of names, and some are same-name players the bulk leaves for
+      // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
+      // it can be on screen from the start. It is answered by LINKING the top
+      // candidate, never `Add as New Player` (that mints one more same-name
+      // player). No spec reads these rows and the reset rebuilds them. Scoped
+      // to the candidate list so the footer's `Link to existing instead` is out.
+      const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
+      const firstCandidate = wizard
+        .getByRole("list", { name: "Players already filed under this name" })
+        .getByRole("button", { name: /^Link to / })
+        .first();
       // Teams and leagues are walked one at a time (enrichment lookups; the
-      // flow's 240 s per step and 250 steps at most).
+      // flow's 240 s per step and 250 steps at most). The wait wakes on every
+      // answerable outcome: a team/league step, a pick step, or the end.
       for (let i = 0; i < 250; i++) {
-        await expect(addAsNew.or(confirmSave).first()).toBeVisible({ timeout: 240_000 });
+        await expect(addAsNew.or(pickStep).or(confirmSave).first()).toBeVisible({ timeout: 240_000 });
         if (await confirmSave.isVisible()) break;
-        await answerStepAsNew(page);
+        if (await pickStep.isVisible()) {
+          const step = ((await pickStep.textContent()) ?? "").trim();
+          await firstCandidate.click();
+          // By the exact heading: a following pick step has another name.
+          await expect(
+            wizard.getByRole("heading", { level: 3, name: step, exact: true }),
+            `"${step}" is still on screen after Link to`,
+          ).toBeHidden();
+        } else {
+          await answerStepAsNew(page);
+        }
       }
       await confirmSave.click();
     }

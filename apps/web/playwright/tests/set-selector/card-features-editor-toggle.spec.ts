@@ -11,7 +11,7 @@ test(
   async ({ page, signIn, env }) => {
     const A = env.ATTEMPT_ID;
     const number = `991-${A}`;
-    const player = `Features Toggle Player ${A}`;
+    const player = `FeaturesTogglePlayer${env.ATTEMPT_TOKEN}`;
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });

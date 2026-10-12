@@ -151,7 +151,7 @@ vi.mock("@/components/SetSelector/TeamPicker", () => ({
 // Component under test — imported after the mocks
 // ---------------------------------------------------------------------------
 
-import PlayerManagement from "./PlayerManagement";
+import PlayerManagement, { playerCounterSentence } from "./PlayerManagement";
 
 // ---------------------------------------------------------------------------
 // Fixtures. Stable object identities on purpose: `useQuery` returning a fresh
@@ -527,13 +527,14 @@ describe("PlayerManagement — the list", () => {
 
   it("counts the loaded page while the filter is short", () => {
     render(<PlayerManagement />);
-    expect(screen.getByText("3 of 3 players")).toBeTruthy();
+    expect(screen.getByText("3 players")).toBeTruthy();
 
-    // One character still filters the loaded page — no search subscription.
+    // One character still filters the loaded page — no search subscription —
+    // and anything typed makes the count a count of matches.
     fireEvent.change(screen.getByLabelText("Filter players"), {
-      target: { value: "r" },
+      target: { value: "g" },
     });
-    expect(screen.getByText("3 of 3 players")).toBeTruthy();
+    expect(screen.getByText("1 match")).toBeTruthy();
     expect((seenArgs["players.search"] ?? []).every((a) => a === "skip")).toBe(
       true,
     );
@@ -546,7 +547,7 @@ describe("PlayerManagement — the list", () => {
     });
 
     await waitFor(() =>
-      expect(lastArgs("players.search")).toEqual({ query: "gr" }),
+      expect(lastArgs("players.search")).toEqual({ query: "gr", limit: 10 }),
     );
     expect(screen.getByText("2 matches")).toBeTruthy();
   });
@@ -567,16 +568,40 @@ describe("PlayerManagement — the list", () => {
       expect(lastArgs("players.search")).toEqual({
         query: "ric",
         sportId: "sport-football",
+        limit: 10,
       }),
     );
   });
 
-  it("says the list is truncated rather than implying it is complete", () => {
+  it("gives a bare count on a truncated list — no 'of N', no truncation note", () => {
     management = { players: [GRIFFEY], totalCount: 1, truncated: true };
     render(<PlayerManagement />);
+    expect(screen.getByText("1 player")).toBeTruthy();
+    // The "type to search" hint lives in the filter's placeholder.
     expect(
-      screen.getByText("1 of 1 players · list truncated, type to search"),
-    ).toBeTruthy();
+      screen.getByLabelText("Filter players").getAttribute("placeholder"),
+    ).toBe("Start typing a player name…");
+  });
+
+  it("says 10+ when the search answers with as many rows as it asked for", async () => {
+    searchResults = Array.from({ length: 10 }, (_, i) => ({
+      ...GRIFFEY,
+      _id: `p-griffey-${i}`,
+    }));
+    render(<PlayerManagement />);
+    fireEvent.change(screen.getByLabelText("Filter players"), {
+      target: { value: "gr" },
+    });
+    expect(await screen.findByText("10+ matches")).toBeTruthy();
+  });
+
+  it("says 0 matches when the search finds nobody", async () => {
+    searchResults = [];
+    render(<PlayerManagement />);
+    fireEvent.change(screen.getByLabelText("Filter players"), {
+      target: { value: "zz" },
+    });
+    expect(await screen.findByText("0 matches")).toBeTruthy();
   });
 
   /**
@@ -2044,10 +2069,10 @@ describe("PlayerManagement — accessibility", () => {
 
   it("announces the result counter as it changes", () => {
     // The counter is the only feedback a filter did anything. Silent for a
-    // screen-reader user until it was a live region; the E2E flow waits on the
-    // text, so the FORMAT must not move.
+    // screen-reader user until it was a live region; the E2E flows wait on the
+    // text, so the FORMAT must not move without them.
     render(<PlayerManagement />);
-    const counter = screen.getByText("3 of 3 players");
+    const counter = screen.getByText("3 players");
     expect(counter.getAttribute("role")).toBe("status");
     expect(counter.getAttribute("aria-live")).toBe("polite");
   });
@@ -2780,5 +2805,45 @@ describe("NEO-313: the Cards list", () => {
     render(<PlayerManagement />);
     const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
     expect(within(row).queryByText(/^Also:/)).toBeNull();
+  });
+});
+
+describe("playerCounterSentence (NEO-330)", () => {
+  it("is a bare count of players with nothing typed", () => {
+    expect(playerCounterSentence({ typed: "", matched: 2000, capped: false })).toBe(
+      "2,000 players",
+    );
+    expect(playerCounterSentence({ typed: "", matched: 1, capped: false })).toBe(
+      "1 player",
+    );
+  });
+
+  it("counts matches once anything is typed", () => {
+    expect(playerCounterSentence({ typed: "g", matched: 12, capped: false })).toBe(
+      "12 matches",
+    );
+    expect(playerCounterSentence({ typed: "gr", matched: 1, capped: false })).toBe(
+      "1 match",
+    );
+    expect(playerCounterSentence({ typed: "gr", matched: 0, capped: false })).toBe(
+      "0 matches",
+    );
+  });
+
+  it("says the search's limit with a plus when capped", () => {
+    expect(playerCounterSentence({ typed: "gr", matched: 10, capped: true })).toBe(
+      "10+ matches",
+    );
+  });
+
+  it("never carries an 'of N' or a truncation note", () => {
+    for (const sample of [
+      playerCounterSentence({ typed: "", matched: 3, capped: false }),
+      playerCounterSentence({ typed: "g", matched: 3, capped: false }),
+      playerCounterSentence({ typed: "gr", matched: 10, capped: true }),
+    ]) {
+      expect(sample).not.toMatch(/of /);
+      expect(sample).not.toMatch(/truncated|type to search|keep typing/);
+    }
   });
 });

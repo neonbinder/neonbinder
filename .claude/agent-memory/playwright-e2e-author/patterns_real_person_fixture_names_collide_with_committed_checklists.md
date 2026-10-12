@@ -18,9 +18,17 @@ that spec lands first, `/admin/players`' near-match panel finds the row, the
 primary button reads `Open Tony Gwynn`, and `getByRole("button", { name: "Create
 player Tony Gwynn" })` matches nothing: the spec reds by name. Replaced with a
 player who retired before the oldest committed set and is in none of them.
+Since NEO-330 the preview also holds the reference catalogue (every prod player),
+which absorbed the first replacement too, so the live-proof name is now a Hockey
+player the NHL-only catalogue never holds (Vladislav Tretiak). Add a fourth
+check: the preview's `players` and `playerAliases` read-only, plus one `Q5`
+binding for the adapter SPARQL with `LIMIT` removed.
 
-**How to apply:** re-read `SET-REGISTRY.md` for the current committed-checklist
-list. Prefer a player who retired before the oldest committed set's year and is
+**How to apply:** the committed-checklist set (NEO-330) is 2024 Topps Chrome (seed),
+the 1995 CHL/ECHL hockey team sets (Tulsa, Memphis, San Antonio, Roanoke), 1996 Line
+Up Venezuelan Winter League and 1996 Score Dugout Collection. Re-read
+`SET-REGISTRY.md` for the current list, and check the preview's reference catalogue
+too. Prefer a player who retired before the oldest committed set's year and is
 not a legend of any team the team sets honour. Such a spec is FRESH-ONLY: an
 existing row is ADOPTED by `createByAdmin` and never re-enqueued for enrichment,
 so a re-run needs a reset, and an optional "anyway" hedge on the create button

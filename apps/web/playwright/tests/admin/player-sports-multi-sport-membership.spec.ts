@@ -3,7 +3,7 @@
 // baseball player ("Also: Baseball"), a baseball card's picker finds him on
 // its default path, and Baseball cannot be removed while that card links him.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
+import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { drillToCustom } from "../../support/set-builder";
 
 test(
@@ -30,7 +30,7 @@ test(
     await page.goto("/admin/players");
     await expectPlayersLoaded(page, 20_000);
     await page.getByLabel("Filter players").fill(player);
-    const counter = page.getByText(/matches/);
+    const counter = playersCounter(page, PLAYERS_MATCHES);
     await expect(counter).toBeVisible();
     await page.getByLabel("Sport", { exact: true }).selectOption({ label: "Baseball" });
     // The Baseball-scoped search returns him through the added-sport leg, and
@@ -43,7 +43,7 @@ test(
     await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set, variantType: "Insert", variant: "Base" });
     await page.getByRole("button", { name: "Open add card form" }).click();
     await page.getByRole("textbox", { name: "Card number" }).fill(cardNumber);
-    await page.getByRole("textbox", { name: "Card name" }).fill(`Two Sport Card ${env.ATTEMPT_ID}`);
+    await page.getByRole("textbox", { name: "Card name" }).fill(`TwoSportCard${env.ATTEMPT_TOKEN}`);
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     await page.getByRole("textbox", { name: "Find a player for the new card" }).fill(player);
     // Nothing was switched: the popover still searches the set's sport.

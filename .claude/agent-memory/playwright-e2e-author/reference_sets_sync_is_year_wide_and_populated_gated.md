@@ -15,10 +15,13 @@ sets at all:
    manufacturer facet; the whole year list is filed under every brand by prefix,
    rest under `Unknown`) **but brand-scoped on the SportLots side**
    (`manufacturerId` = the brand whose column fired it).
-3. **No "already syncing" guard.** Two clients opening the same cold column
-   together can both run the sync. Writes are id-keyed and set clashes are refused
-   in-mutation, so expect a doubled round-trip, not a doubled row, but it is a
-   reason to keep one cold driller per brand-year.
+3. **No "already syncing" guard, MEASURED harmless (NEO-330).** Five simultaneous
+   `ensureSelectorOptions` calls (five admin accounts, via `npx convex run --identity`
+   with an admin subject) on a cold year, manufacturer level then the All Brands view's
+   year-wide Sets: all ran, each ~2x slower, zero duplicate rows (by name or id), one
+   `Unknown`, no stuck status. So several specs may drill the same cold column; do not
+   pre-sync it in setup. Re-measure this way (on an unused cold path) if the store code
+   changes.
 
 **Consequence:** once brand A's column has synced a year, brand B of that year is
 already populated by BSC's filing, so opening B runs NO SportLots phase: a spec

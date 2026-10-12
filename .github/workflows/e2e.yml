@@ -241,8 +241,17 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      # NEO-330: wall-clock ms when the seed began; seed-mobile and the report
+      # job pass it to their coverage calls as the `since` boundary.
+      seed_since_ms: ${{ steps.seed_start.outputs.since_ms }}
+    # NEO-330: id-token:write lets this job mint a WIF token to read the private
+    # reference-seed bundle. A job-level block REPLACES the workflow-level one,
+    # so the existing grant is repeated. Callers must grant id-token:write too
+    # (a called workflow cannot exceed its caller): see pr-pipeline.yml `e2e:`.
     permissions:
       contents: read
+      id-token: write
     defaults:
       run:
         working-directory: apps/web
@@ -380,6 +389,76 @@ jobs:
             echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # NEO-330 (D3/D7): every pass's seed loads a private reference-seed bundle
+      # (a production-shaped catalogue of teams, players, leagues and
+      # franchises) from a DEV-project bucket. Fail loudly when any input is
+      # missing (fork PRs get no secrets): never skip silently, a skipped load
+      # would seed nothing and the specs would meet a catalogue-less preview.
+      - name: Require reference-seed inputs
+        env:
+          REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
+          WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+        run: |
+          if [ -z "${REFERENCE_SEED_URI:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_REFERENCE_SEED_URI is not set. The E2E seed needs the reference-seed bundle location."
+            exit 1
+          fi
+          if [ -z "${WIF_PROVIDER:-}" ] || [ -z "${WIF_SERVICE_ACCOUNT:-}" ]; then
+            echo "::error::GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV are not available to this run (fork PR or missing secrets). The E2E seed cannot fetch the reference-seed bundle."
+            exit 1
+          fi
+          # vars.* are not masked and gcloud echoes the URI: mask the whole URI
+          # and the bucket name so neither reaches the public log.
+          echo "::add-mask::${REFERENCE_SEED_URI}"
+          bucket="${REFERENCE_SEED_URI#gs://}"
+          echo "::add-mask::${bucket%%/*}"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Download reference-seed bundle
+        env:
+          REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
+        run: |
+          start=$(date +%s)
+          gcloud storage cp --no-user-output-enabled "$REFERENCE_SEED_URI" "$RUNNER_TEMP/reference-bundle.zip"
+          secs=$(( $(date +%s) - start ))
+          # Drop the GCP credentials so later steps (npx installs, PR scripts)
+          # cannot use them: revoke gcloud's stored account, delete the WIF
+          # credential file, and blank every variable the pinned auth action
+          # exports (CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE,
+          # GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_GHA_CREDS_PATH and the
+          # project vars) plus the account setup-gcloud may set.
+          gcloud auth revoke --all --quiet || true
+          rm -f "${GOOGLE_GHA_CREDS_PATH:-}"
+          rm -rf "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
+          for v in CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE GOOGLE_APPLICATION_CREDENTIALS \
+                   GOOGLE_GHA_CREDS_PATH CLOUDSDK_CORE_ACCOUNT CLOUDSDK_CORE_PROJECT \
+                   CLOUDSDK_PROJECT GCLOUD_PROJECT GCP_PROJECT GOOGLE_CLOUD_PROJECT; do
+            echo "$v=" >> "$GITHUB_ENV"
+          done
+          echo "NB_REFERENCE_BUNDLE=$RUNNER_TEMP/reference-bundle.zip" >> "$GITHUB_ENV"
+          echo "NB_REFERENCE_SEED_SUMMARY=$RUNNER_TEMP/reference-seed-summary.txt" >> "$GITHUB_ENV"
+          {
+            echo "### Reference seed (NEO-330), desktop pass"
+            echo "- Bundle download: ${secs}s"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # NEO-330: the seed's start time in ms, for the fixture coverage calls.
+      # `since` bounds which rows count as "looked up by this run"; passing it
+      # explicitly beats the backend's first-year-row inference.
+      - name: Record seed start time
+        id: seed_start
+        run: |
+          since_ms=$(date +%s%3N)
+          echo "NB_SEED_SINCE_MS=${since_ms}" >> "$GITHUB_ENV"
+          echo "since_ms=${since_ms}" >> "$GITHUB_OUTPUT"
+
       # NEO-214: the scripted reset is the single writer of the global baseline
       # (shared with local use via `npm run test:e2e:seed`). It needs a PREVIEW
       # deploy key + the deployment slug to reach THIS PR's Convex preview
@@ -390,7 +469,14 @@ jobs:
       # passed the CLI selects the target BY THAT NAME and the key only
       # authenticates the call, so a right key + wrong name is exactly the
       # "reach another PR's preview" failure mode, not a fail-closed one.
-      - name: Scripted reset (e2e-baseline.sh reset)
+      #
+      # NEO-330: with NB_REFERENCE_BUNDLE exported by the download step,
+      # e2e-seed-reset.sh checks the bundle, resets everything EXCEPT the
+      # eight reference tables, then loads the bundle (`convex import
+      # --replace`, which is the clear for those tables). The reset alone does
+      # not empty them, so each pass must load again; the sequence is
+      # idempotent on a preview the earlier pass wrote to.
+      - name: Scripted reset + reference catalogue (e2e-seed-reset.sh)
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
@@ -399,7 +485,16 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          ./e2e-baseline.sh reset
+          reset_start=$(date +%s)
+          ./e2e-seed-reset.sh
+          # Plain "label: value" lines (counts, table names, seconds only)
+          # written by the script; nothing is parsed from its log output.
+          {
+            echo "- Reset + reference import wall-clock: $(( $(date +%s) - reset_start ))s"
+            if [ -s "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
+              sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # The `setup` project answers one New Team step per team the first sync
       # stages (NEO-236, ~13 min on CI), so the project carries its own 25 min
@@ -413,7 +508,10 @@ jobs:
           WORKER_INDEX: "0"
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
           PW_REPORT_DIR: playwright/report
-        run: npx playwright test --project=setup
+        run: |
+          setup_start=$(date +%s)
+          npx playwright test --project=setup
+          echo "- Setup project wall-clock: $(( $(date +%s) - setup_start ))s" >> "$GITHUB_STEP_SUMMARY"
 
       # NEO-289: report how much of the seed's name set the fixture recording
       # actually covered, without blocking the run on it. `continue-on-error`
@@ -435,63 +533,19 @@ jobs:
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the seed"
+          COVERAGE_SINCE_MS: "${{ env.NB_SEED_SINCE_MS }}"
         run: |
           set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No Convex preview name from setup — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
             exit 0
           fi
-          report=$(npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
-            '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
-            --deployment "$CONVEX_NAME" 2>&1)
-          status=$?
-          echo "$report"
-          if [ $status -ne 0 ]; then
-            # Name the cause: a missing function means the Convex side is not
-            # on this preview yet; anything else is a real error to look at.
-            case "$report" in
-              *"Could not find"*|*"not found"*|*"does not exist"*)
-                why="function not on this preview yet (Convex side not deployed here)";;
-              *)
-                why="coverage action returned an error";;
-            esac
-            echo "::warning::Enrichment fixture coverage report could not be run — ${why}. See job log for details."
-            {
-              echo "### Enrichment fixture coverage (NEO-289)";
-              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — ${why}; see job log.";
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          # The report is the LAST line of output (Convex CLI may print log lines
-          # above it); parse defensively and never fail the job on a parse miss.
-          parsed=$(echo "$report" | tail -n 1 | python3 -c '
-          import json, sys
-          try:
-              d = json.load(sys.stdin)
-              covered = d.get("covered", [])
-              missing = d.get("missing", [])
-              covered_n = len(covered) if isinstance(covered, list) else covered
-              missing_joined = ",".join(missing) if isinstance(missing, list) else missing
-              print(str(covered_n) + "|" + str(missing_joined))
-          except Exception:
-              print("?|")
-          ' 2>/dev/null || echo "?|")
-          covered_n="${parsed%%|*}"
-          missing="${parsed#*|}"
-          {
-            echo "### Enrichment fixture coverage (NEO-289)";
-            echo "- covered: \`${covered_n}\`";
-            echo "- missing: \`${missing:-<none>}\`";
-            echo '<details><summary>Raw report</summary>';
-            echo;
-            echo '```json';
-            echo "$report";
-            echo '```';
-            echo '</details>';
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$missing" ]; then
-            echo "::warning::Enrichment fixture coverage gaps for sportQid Q5369: ${missing}"
-          fi
+          "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
 
       # NEO-301: stop the background capture and filter before upload.
       # Filtered, not raw: keep only ERROR/WARN log lines and our structured
@@ -728,8 +782,15 @@ jobs:
     if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      # NEO-330: wall-clock ms when this pass's seed began; the report job uses
+      # it as the `since` boundary for the mobile shards' coverage call.
+      seed_since_ms: ${{ steps.seed_start.outputs.since_ms }}
+    # NEO-330: id-token:write for the WIF read of the reference-seed bundle
+    # (see the `seed` job). Job-level replaces the workflow-level block.
     permissions:
       contents: read
+      id-token: write
     defaults:
       run:
         working-directory: apps/web
@@ -833,7 +894,103 @@ jobs:
             echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Scripted reset for the mobile pass (e2e-baseline.sh reset)
+      # The desktop pass's lookups, read BEFORE the reset below wipes them.
+      # `since` is the desktop seed's start (seed job output). Non-failing.
+      - name: Enrichment fixture coverage (desktop shards drained)
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the desktop shards drained"
+          COVERAGE_SINCE_MS: "${{ needs.seed.outputs.seed_since_ms }}"
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No Convex preview name from setup — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
+
+      # NEO-330 (D3/D7): every pass's seed loads a private reference-seed bundle
+      # (a production-shaped catalogue of teams, players, leagues and
+      # franchises) from a DEV-project bucket. Fail loudly when any input is
+      # missing (fork PRs get no secrets): never skip silently, a skipped load
+      # would seed nothing and the specs would meet a catalogue-less preview.
+      - name: Require reference-seed inputs
+        env:
+          REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
+          WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+        run: |
+          if [ -z "${REFERENCE_SEED_URI:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_REFERENCE_SEED_URI is not set. The E2E seed needs the reference-seed bundle location."
+            exit 1
+          fi
+          if [ -z "${WIF_PROVIDER:-}" ] || [ -z "${WIF_SERVICE_ACCOUNT:-}" ]; then
+            echo "::error::GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV are not available to this run (fork PR or missing secrets). The E2E seed cannot fetch the reference-seed bundle."
+            exit 1
+          fi
+          # vars.* are not masked and gcloud echoes the URI: mask the whole URI
+          # and the bucket name so neither reaches the public log.
+          echo "::add-mask::${REFERENCE_SEED_URI}"
+          bucket="${REFERENCE_SEED_URI#gs://}"
+          echo "::add-mask::${bucket%%/*}"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Download reference-seed bundle
+        env:
+          REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
+        run: |
+          start=$(date +%s)
+          gcloud storage cp --no-user-output-enabled "$REFERENCE_SEED_URI" "$RUNNER_TEMP/reference-bundle.zip"
+          secs=$(( $(date +%s) - start ))
+          # Drop the GCP credentials so later steps (npx installs, PR scripts)
+          # cannot use them: revoke gcloud's stored account, delete the WIF
+          # credential file, and blank every variable the pinned auth action
+          # exports (CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE,
+          # GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_GHA_CREDS_PATH and the
+          # project vars) plus the account setup-gcloud may set.
+          gcloud auth revoke --all --quiet || true
+          rm -f "${GOOGLE_GHA_CREDS_PATH:-}"
+          rm -rf "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
+          for v in CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE GOOGLE_APPLICATION_CREDENTIALS \
+                   GOOGLE_GHA_CREDS_PATH CLOUDSDK_CORE_ACCOUNT CLOUDSDK_CORE_PROJECT \
+                   CLOUDSDK_PROJECT GCLOUD_PROJECT GCP_PROJECT GOOGLE_CLOUD_PROJECT; do
+            echo "$v=" >> "$GITHUB_ENV"
+          done
+          echo "NB_REFERENCE_BUNDLE=$RUNNER_TEMP/reference-bundle.zip" >> "$GITHUB_ENV"
+          echo "NB_REFERENCE_SEED_SUMMARY=$RUNNER_TEMP/reference-seed-summary.txt" >> "$GITHUB_ENV"
+          {
+            echo "### Reference seed (NEO-330), mobile pass"
+            echo "- Bundle download: ${secs}s"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # NEO-330: the seed's start time in ms, for the fixture coverage calls.
+      # `since` bounds which rows count as "looked up by this run"; passing it
+      # explicitly beats the backend's first-year-row inference.
+      - name: Record seed start time
+        id: seed_start
+        run: |
+          since_ms=$(date +%s%3N)
+          echo "NB_SEED_SINCE_MS=${since_ms}" >> "$GITHUB_ENV"
+          echo "since_ms=${since_ms}" >> "$GITHUB_OUTPUT"
+
+      # The mobile pass reloads the reference catalogue after its own reset: the
+      # desktop shards wrote to the same preview, and the reset (except the
+      # reference tables) plus the bundle's `import --replace` returns it to the
+      # same baseline as the first pass. See the `seed` job's step for why.
+      - name: Scripted reset + reference catalogue for the mobile pass (e2e-seed-reset.sh)
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
@@ -842,7 +999,14 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          ./e2e-baseline.sh reset
+          reset_start=$(date +%s)
+          ./e2e-seed-reset.sh
+          {
+            echo "- Reset + reference import wall-clock: $(( $(date +%s) - reset_start ))s"
+            if [ -s "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
+              sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Seed global baseline for the mobile pass (setup project, worker 0)
         env:
@@ -853,7 +1017,10 @@ jobs:
           WORKER_INDEX: "0"
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
           PW_REPORT_DIR: playwright/report
-        run: npx playwright test --project=setup
+        run: |
+          setup_start=$(date +%s)
+          npx playwright test --project=setup
+          echo "- Setup project wall-clock: $(( $(date +%s) - setup_start ))s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enrichment fixture coverage
         working-directory: apps/web
@@ -861,63 +1028,19 @@ jobs:
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the mobile seed"
+          COVERAGE_SINCE_MS: "${{ env.NB_SEED_SINCE_MS }}"
         run: |
           set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No Convex preview name from setup — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
             exit 0
           fi
-          report=$(npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
-            '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
-            --deployment "$CONVEX_NAME" 2>&1)
-          status=$?
-          echo "$report"
-          if [ $status -ne 0 ]; then
-            # Name the cause: a missing function means the Convex side is not
-            # on this preview yet; anything else is a real error to look at.
-            case "$report" in
-              *"Could not find"*|*"not found"*|*"does not exist"*)
-                why="function not on this preview yet (Convex side not deployed here)";;
-              *)
-                why="coverage action returned an error";;
-            esac
-            echo "::warning::Enrichment fixture coverage report could not be run — ${why}. See job log for details."
-            {
-              echo "### Enrichment fixture coverage (NEO-289)";
-              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — ${why}; see job log.";
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          # The report is the LAST line of output (Convex CLI may print log lines
-          # above it); parse defensively and never fail the job on a parse miss.
-          parsed=$(echo "$report" | tail -n 1 | python3 -c '
-          import json, sys
-          try:
-              d = json.load(sys.stdin)
-              covered = d.get("covered", [])
-              missing = d.get("missing", [])
-              covered_n = len(covered) if isinstance(covered, list) else covered
-              missing_joined = ",".join(missing) if isinstance(missing, list) else missing
-              print(str(covered_n) + "|" + str(missing_joined))
-          except Exception:
-              print("?|")
-          ' 2>/dev/null || echo "?|")
-          covered_n="${parsed%%|*}"
-          missing="${parsed#*|}"
-          {
-            echo "### Enrichment fixture coverage (NEO-289)";
-            echo "- covered: \`${covered_n}\`";
-            echo "- missing: \`${missing:-<none>}\`";
-            echo '<details><summary>Raw report</summary>';
-            echo;
-            echo '```json';
-            echo "$report";
-            echo '```';
-            echo '</details>';
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$missing" ]; then
-            echo "::warning::Enrichment fixture coverage gaps for sportQid Q5369: ${missing}"
-          fi
+          "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
 
       - name: Stop Convex log capture (seed-mobile)
         if: always()
@@ -1315,7 +1438,7 @@ jobs:
   report:
     # Publish even when the gate is red. Informational only: the `e2e` job is
     # the verdict, so this check publishes results without double-failing.
-    needs: [e2e]
+    needs: [setup, seed-mobile, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1324,6 +1447,36 @@ jobs:
       checks: write
       pull-requests: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # NEO-330: the seed-time calls never see what the specs look up. Run it
+      # once more after the mobile shards have finished, with the mobile seed's
+      # `since` (the reset before it wiped the desktop pass's rows; the desktop
+      # pass is read in seed-mobile before that reset). Non-failing; skipped
+      # with a note when the deploy key or deployment name is missing (e.g. a
+      # Dependabot run, or setup did not produce a name).
+      - name: Enrichment fixture coverage (mobile shards drained)
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the mobile shards drained"
+          COVERAGE_SINCE_MS: "${{ needs.seed-mobile.outputs.seed_since_ms }}"
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No Convex preview name from setup — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
+
       - name: Download merged report
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

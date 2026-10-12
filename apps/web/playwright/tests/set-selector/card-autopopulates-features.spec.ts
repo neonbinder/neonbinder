@@ -11,7 +11,7 @@ test(
   async ({ page, signIn, env }) => {
     const A = env.ATTEMPT_ID;
     const number = `777-${A}`;
-    const player = `Autopop Card Player ${A}`;
+    const player = `AutopopPlayer${env.ATTEMPT_TOKEN}`;
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });

@@ -24,7 +24,7 @@ test(
       variantType: "Insert",
       insertName: "Base",
       cardNumber: card,
-      playerName: `Cross Home ${env.ATTEMPT_ID}`,
+      playerName: `CrossHome${env.ATTEMPT_TOKEN}`,
     });
 
     // The guest set receives it.

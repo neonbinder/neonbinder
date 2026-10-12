@@ -29,7 +29,7 @@ test(
     const A = env.ATTEMPT_ID;
     const W = env.WORKER_INDEX;
     const card = `992-${A}`;
-    const player = `Propagation Test Player ${A}`;
+    const player = `PropagationPlayer${env.ATTEMPT_TOKEN}`;
     const target = {
       sport: "Baseball",
       year: "2024",

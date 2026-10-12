@@ -86,7 +86,7 @@ test(
       await p.getByRole("button", { name: `Delete card ${n}-${A}` }).click();
       await expect(p.getByText("Confirm?")).toBeVisible();
       await p.getByRole("button", { name: `Confirm delete card ${n}-${A}` }).click();
-      await expect(p.getByText(`${label} ${A}`)).toBeHidden();
+      await expect(p.getByText(`${label}${env.ATTEMPT_TOKEN}`)).toBeHidden();
     }
 
     await signIn("/set-selector");
@@ -123,10 +123,10 @@ test(
     await expect(page.getByRole("heading", { name: "Inserts", exact: true })).toBeVisible();
     await selectOrCreate(page, "Inserts", "Base", { via: "list" });
 
-    await addCardViaForm(page, { cardNumber: `771-${A}`, playerName: `Set Team Alpha ${A}` });
+    await addCardViaForm(page, { cardNumber: `771-${A}`, playerName: `SetTeamAlpha${env.ATTEMPT_TOKEN}` });
     // Card #1's row sub-line prints the set's team.
     await expect(rowWithTeam("771", teamA.full)).toBeVisible();
-    await addCardViaForm(page, { cardNumber: `772-${A}`, playerName: `Set Team Bravo ${A}` });
+    await addCardViaForm(page, { cardNumber: `772-${A}`, playerName: `SetTeamBravo${env.ATTEMPT_TOKEN}` });
 
     // ── STEP 4: card #2 is hand-set to a second team in its drawer.
     await page.getByRole("button", { name: `Edit card 772-${A}` }).click();
@@ -194,8 +194,8 @@ test(
     await expect(rowWithTeam("772", teamB.full)).toBeVisible();
 
     // Cleanup: both cards go, leaving the checklist empty.
-    await deleteCard(page, "771", "Set Team Alpha");
-    await deleteCard(page, "772", "Set Team Bravo");
+    await deleteCard(page, "771", "SetTeamAlpha");
+    await deleteCard(page, "772", "SetTeamBravo");
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   },
 );

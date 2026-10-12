@@ -8,7 +8,7 @@ test(
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const num = `779-${env.ATTEMPT_ID}`;
-    const player = `Row Click Player ${env.ATTEMPT_ID}`;
+    const player = `RowClickPlayer${env.ATTEMPT_TOKEN}`;
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });

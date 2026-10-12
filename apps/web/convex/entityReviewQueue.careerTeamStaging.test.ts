@@ -1767,11 +1767,13 @@ describe("NEO-341: a bulk skip takes the steps its rows staged, however late the
 
     await skipPage(t, sportId, await skipCandidates(t, sportId));
     await landLookup(t, wisdom, [{ name: "Kia Tigers", fromYear: 2025 }]);
+    // The wizard's belt-and-braces pass sends the row id alone (its career
+    // teams are read server-side). Typed names on a skipped row are refused
+    // outright instead (NEO-330, `entityReviewQueue.skipStaging.test.ts`).
     const added = await t
       .withIdentity(ADMIN_IDENTITY)
       .mutation(api.entityReviewQueue.stageCareerTeamRows, {
         reviewRowId: wisdom,
-        careerTeamNames: ["Kia Tigers"],
       });
 
     expect(added).toBe(0);

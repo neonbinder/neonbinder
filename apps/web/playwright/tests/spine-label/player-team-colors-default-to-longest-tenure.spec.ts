@@ -4,6 +4,7 @@
 // deliberately different colours. The asymmetry is the whole point: a designer
 // that defaulted to the wrong team (or none) fails on the hex.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 
 test(
   "Spine Labels — a player's colours default to their longest-tenure team",
@@ -17,7 +18,7 @@ test(
     const teamB = `SLB${token}`;
 
     await signIn("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectPlayersLoaded(page, LAUNCH_GATE);
 
     // Filtering to a name nothing matches clears the list, so "Baseball" then
     // belongs to the sport picker alone.
@@ -59,9 +60,9 @@ test(
     // teams.colors, so give each team its own primary.
     const colourTeam = async (team: string, hex: string) => {
       await page.goto("/admin/teams");
-      await expect(page.getByText(/of .* teams/)).toBeVisible({ timeout: 30_000 });
+      await expectTeamsLoaded(page, 30_000);
       await page.getByRole("textbox", { name: "Filter teams" }).fill(team);
-      await expect(page.getByText(/^1 of .* teams/)).toBeVisible({ timeout: 15_000 });
+      await expect(teamsCounter(page, "1 match")).toBeVisible({ timeout: 15_000 });
       await page.getByText(team, { exact: true }).click();
       await page.getByRole("textbox", { name: /Primary/ }).first().fill(hex);
       await page.getByRole("button", { name: "Save", exact: true }).click();

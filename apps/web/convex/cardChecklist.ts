@@ -27,6 +27,7 @@ import {
   internalQuery,
   mutation,
   query,
+  type MutationCtx,
 } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -34,10 +35,14 @@ import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
-import { resolveTeamForSetYear } from "./lib/teamRow";
+import { findTeamsByFullName, resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
+import { teamOptionLabel } from "../lib/teams/team-era";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
+// NEO-330: the key `entityReviewSkips.nameNormalized` is written with (the
+// commit prelude's `norm`). A skip lookup keyed any other way would miss.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -308,6 +313,41 @@ export const getForBscTeamCheck = internalQuery({
  */
 const MAX_BSC_TEAM_NAME_LENGTH = 120;
 
+/**
+ * NEO-330 — which of these team names has an operator ruled "not a team" for
+ * this set, as normalized keys.
+ *
+ * One indexed point lookup per distinct name on
+ * `entityReviewSkips.by_selector_option_and_kind_and_name`, keyed exactly as
+ * the commit prelude writes the row (`normalizeEntityName`). Called with BSC's
+ * raw value plus its split parts, so at most `1 + MAX_CARD_TEAMS` reads (the
+ * caller has already set an over-cap split aside).
+ */
+async function findSkippedTeamNameKeys(
+  ctx: MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  names: string[],
+): Promise<Set<string>> {
+  const skipped = new Set<string>();
+  const asked = new Set<string>();
+  for (const name of names) {
+    const key = normalizeEntityName(name);
+    if (!key || asked.has(key)) continue;
+    asked.add(key);
+    const row = await ctx.db
+      .query("entityReviewSkips")
+      .withIndex("by_selector_option_and_kind_and_name", (q) =>
+        q
+          .eq("selectorOptionId", selectorOptionId)
+          .eq("kind", "team")
+          .eq("nameNormalized", key),
+      )
+      .first();
+    if (row) skipped.add(key);
+  }
+  return skipped;
+}
+
 export const applyBscTeamResolution = internalMutation({
   args: {
     cardChecklistId: v.id("cardChecklist"),
@@ -402,6 +442,59 @@ export const applyBscTeamResolution = internalMutation({
       return { applied: false, unmatched: false };
     }
 
+    // ── NEO-330: the operator's "not a team" ruling for this set ───────────
+    //
+    // "Skip <name> — not a team" in the checklist wizard writes an
+    // `entityReviewSkips` row for the set, and the commit then lands the card
+    // with that name settled: no team, nothing pending. The card can still be
+    // queued here (the commit queues every BSC card left without a team, and
+    // `enqueueBscTeamBackfill` scans for the same shape), and BSC will answer
+    // with the very string the operator threw out. Linking it, or keeping it
+    // as the `bscTeamName` hint, would put "The listing names “<name>”" in
+    // the missing-team fixer — contradicting the operator's ruling.
+    //
+    // Checked HERE, on a fresh read inside the writing mutation, for the same
+    // reason `teamNoneConfirmedAt` is above: a re-fetch can record the skip
+    // while this lookup is in flight. One check covers all three ways in (the
+    // commit's queue, the backfill, and a skip that lands mid-flight), which
+    // an enqueue-time filter could not — the chunk that queues the card no
+    // longer holds the name it skipped, and the backfill never had it.
+    //
+    // NEO-333 split, decided per form:
+    //  - The RAW value skipped: the card's whole claim is ruled out. The
+    //    wizard only offers the raw string when it is the card's whole team
+    //    value (no comma, or a string that already names a held team), so its
+    //    parts were never names the card carried; none is consulted.
+    //  - A PART skipped: that part is dropped from the split, exactly as the
+    //    commit prelude drops a skipped name from a card's teams. The rest
+    //    keep the usual all-or-nothing walk, and an unmatched card's hint
+    //    names only them. Every part skipped is a ruling on the whole card.
+    //  - The whole-name match still runs first when the raw value itself was
+    //    not skipped: a skipped "South" says nothing about a held team called
+    //    "Korea, South", and the whole string is not the name thrown out.
+    const skippedKeys = await findSkippedTeamNameKeys(
+      ctx,
+      row.selectorOptionId,
+      rawTeamName ? [rawTeamName, ...teamNames] : teamNames,
+    );
+    const rawSkipped =
+      !!rawTeamName && skippedKeys.has(normalizeEntityName(rawTeamName));
+    const liveTeamNames = teamNames.filter(
+      (name) => !skippedKeys.has(normalizeEntityName(name)),
+    );
+    const partSkipped = liveTeamNames.length < teamNames.length;
+    if (rawSkipped || (partSkipped && liveTeamNames.length === 0)) {
+      // The lookup has been and gone (stamped, so no queue or backfill asks
+      // again), no team is written, and any hint is cleared: a hint naming
+      // the skipped string is the contradiction this exists to prevent. Not
+      // `unmatched` — "not a team" is an answer, not an unknown name.
+      await ctx.db.patch(row._id, {
+        teamCheckDoneAt: Date.now(),
+        bscTeamName: undefined,
+      });
+      return { applied: false, unmatched: false };
+    }
+
     // NEO-333: what an unmatched card keeps as its hint — BSC's raw value,
     // exactly as it was given, so the operator sees what the marketplace said
     // rather than our reading of it. The join is only a fallback for a caller
@@ -411,6 +504,13 @@ export const applyBscTeamResolution = internalMutation({
       0,
       MAX_BSC_TEAM_NAME_LENGTH,
     );
+    // NEO-330: the split path's hint. With a part skipped, the raw value would
+    // carry the skipped name back to the operator, so it names only the parts
+    // still standing. The whole-name branch keeps `hint`: there the raw string
+    // is one held team's name, not the part that was thrown out.
+    const splitHint = partSkipped
+      ? liveTeamNames.join(", ").slice(0, MAX_BSC_TEAM_NAME_LENGTH)
+      : hint;
 
     const sportId = await findSportForSelectorOption(ctx, row.selectorOptionId);
     if (!sportId) {
@@ -495,9 +595,11 @@ export const applyBscTeamResolution = internalMutation({
     // `MAX_CARD_TEAMS` and N2 above set it aside) cannot resolve: the same
     // landing as an unknown team — stamped, hinted with the raw value, left
     // for the operator. NOT "no team on file": BSC did name a team.
+    //
+    // NEO-330: walks only the parts the operator did not skip.
     const resolvedTeamIds: Id<"teams">[] = [];
-    let allResolved = teamNames.length > 0;
-    for (const teamName of allResolved ? teamNames : []) {
+    let allResolved = liveTeamNames.length > 0;
+    for (const teamName of allResolved ? liveTeamNames : []) {
       const { teamId } = await resolveTeamForSetYear(
         ctx,
         sportId,
@@ -546,13 +648,14 @@ export const applyBscTeamResolution = internalMutation({
       //
       // NEO-333: the hint is BSC's raw value — on a multi-team card that
       // includes the parts that DID resolve, so the operator sees the whole
-      // card's claim, not just the half we could not place.
+      // card's claim, not just the half we could not place. NEO-330: minus
+      // any part the operator skipped (`splitHint`).
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: Date.now(),
         // No hint at all when there is nothing displayable to keep (the raw
         // string was over the adapter's cap AND the split was over
         // `MAX_CARD_TEAMS`): an empty "Marketplace says:" helps nobody.
-        bscTeamName: hint || undefined,
+        bscTeamName: splitHint || undefined,
       });
       return { applied: false, unmatched: true };
     }
@@ -753,31 +856,73 @@ export const confirmCardNoTeam = mutation({
  * "Legends" insert, the whole premise of a legends set — has no stint
  * covering the set year, and the filtered list came back empty, so the fixer
  * showed zero chips for a card whose answer was one lookup away. The career
- * is then offered whole, still deduped by team and attributed to the first
- * player naming it. Still suggestions: a chip the operator judges, never a
- * fill. The set-level "Fill teams" (`convex/teamFill.ts`) is where a
- * one-team career becomes a write, and only after a preview.
+ * is then offered whole, one suggestion per player per team. Still
+ * suggestions: a chip the operator judges, never a fill. The set-level "Fill
+ * teams" (`convex/teamFill.ts`) is where a one-team career becomes a write,
+ * and only after a preview. Each fallback suggestion carries the year it
+ * looked for (`uncoveredSetYear`), so the fixer can say "No 2025 team on file
+ * — here's the whole career".
  *
- * ## Deduped by teamId
+ * ## One per (player, team)
  *
  * A multi-player card whose players share a team (the common League Leaders
- * case) yields one chip, attributed to the first player that produced it —
- * `playerName` is there so the operator can see WHY a team is being suggested,
- * which is the difference between a suggestion they can judge and a guess.
+ * case) yields one suggestion PER PLAYER for that team, and the fixer folds
+ * them into one chip that says "Bench & Rose played here" — `playerName` is
+ * there so the operator can see WHY a team is being suggested, which is the
+ * difference between a suggestion they can judge and a guess. (NEO-330: this
+ * used to keep only the first player, so a shared chip named one of them.)
  *
- * Bounded: one read per distinct `playerId` on the card plus one per distinct
- * team those players name. A dangling player or team link is skipped rather
- * than surfaced as a blank chip.
+ * ## `inSetYear` — what the fixer may preselect (NEO-330)
+ *
+ * The career fallback above is a list of everywhere the player ever played,
+ * and it used to arrive preselected with focus on Save: one Enter wrote Jimmie
+ * Foxx's whole career (Athletics, Red Sox, Cubs, Phillies) onto a single-team
+ * 2025 retro card. Only a stint that COVERS the set year is evidence for the
+ * card; a fallback chip is a list to choose from. So each suggestion says
+ * which it is, and `MissingTeamFixer` preselects only `inSetYear: true`. With
+ * no resolvable year nothing is in the set year, so nothing is preselected.
+ *
+ * ## `label` — the era, when the name alone does not say which team
+ *
+ * There are four Philadelphia Athletics rows. A chip reading "Philadelphia
+ * Athletics" does not say which franchise the operator is about to write, so
+ * when the team's sport holds more than one row under its full name the label
+ * carries the era — `teamOptionLabel`, the same "Name · 1901–1954" every
+ * other team picker shows. A unique name stays bare: "San Diego Padres ·
+ * 1969–present" on every chip is noise.
+ *
+ * Bounded: one read per distinct `playerId` on the card, plus per distinct
+ * team those players name one read and one identity lookup counted to two
+ * (`findTeamsByFullName`'s `limit`, at most four operations). A dangling
+ * player or team link is skipped rather than surfaced as a blank chip.
  */
 export const suggestedTeamsForCard = query({
   args: { cardId: v.id("cardChecklist") },
   returns: v.array(
     v.object({
       teamId: v.id("teams"),
+      /** The team's full name ("San Diego Padres"). */
       name: v.string(),
+      /**
+       * What a chip shows: the full name, plus the era when the sport holds
+       * several rows under that name ("Philadelphia Athletics · 1901–1954").
+       */
+      label: v.string(),
       source: v.literal("career"),
       /** Which player on the card this team came from. */
       playerName: v.string(),
+      /**
+       * NEO-330: a stint covering the set year produced this. False for the
+       * whole-career fallback and for a set with no resolvable year — the
+       * fixer preselects only `true`.
+       */
+      inSetYear: v.boolean(),
+      /**
+       * NEO-330: on a whole-career fallback made because no stint covers the
+       * set's year, that year. Absent on a set-year suggestion and when the
+       * set has no resolvable year.
+       */
+      uncoveredSetYear: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -807,44 +952,72 @@ export const suggestedTeamsForCard = query({
     type Suggestion = {
       teamId: Id<"teams">;
       name: string;
+      label: string;
       source: "career";
       playerName: string;
+      inSetYear: boolean;
+      uncoveredSetYear?: number;
     };
-    const teamNameById = new Map<string, string | null>();
+    const teamTextById = new Map<string, { name: string; label: string } | null>();
 
     const collect = async (
       inYear: (fromYear: number, toYear?: number) => boolean,
+      inSetYear: boolean,
+      uncoveredSetYear?: number,
     ): Promise<Array<Suggestion>> => {
       const out: Array<Suggestion> = [];
-      const seenTeamIds = new Set<string>();
       for (const player of players) {
+        // Per player: two stints at one team are one suggestion, but a team
+        // two players share is one suggestion EACH (the fixer folds them).
+        const seenTeamIds = new Set<string>();
         for (const entry of player.teamYears ?? []) {
           if (!inYear(entry.fromYear, entry.toYear)) continue;
           if (seenTeamIds.has(entry.teamId)) continue;
-          if (!teamNameById.has(entry.teamId)) {
+          if (!teamTextById.has(entry.teamId)) {
             const team = await ctx.db.get(entry.teamId);
-            // NEO-236: the FULL name. This chip is a suggestion an operator
-            // judges at a glance, and "Padres" does not say which Padres.
-            teamNameById.set(entry.teamId, team ? teamFullName(team) : null);
+            if (!team) {
+              teamTextById.set(entry.teamId, null);
+            } else {
+              // NEO-236: the FULL name. This chip is a suggestion an operator
+              // judges at a glance, and "Padres" does not say which Padres.
+              const name = teamFullName(team);
+              // NEO-330: counted to two, never listed — the label only needs
+              // to know whether this name is shared.
+              const sameName = await findTeamsByFullName(ctx, team.sportId, name, 2);
+              teamTextById.set(entry.teamId, {
+                name,
+                label: sameName.length > 1 ? teamOptionLabel(name, team.yearsActive) : name,
+              });
+            }
           }
-          const name = teamNameById.get(entry.teamId);
-          if (!name) continue; // never suggest a blank chip
+          const text = teamTextById.get(entry.teamId);
+          if (!text || !text.name) continue; // never suggest a blank chip
           seenTeamIds.add(entry.teamId);
-          out.push({ teamId: entry.teamId, name, source: "career", playerName: player.name });
+          out.push({
+            teamId: entry.teamId,
+            name: text.name,
+            label: text.label,
+            source: "career",
+            playerName: player.name,
+            inSetYear,
+            ...(uncoveredSetYear !== undefined ? { uncoveredSetYear } : {}),
+          });
         }
       }
       return out;
     };
 
     const wholeCareer = () => true;
-    if (year === undefined) return collect(wholeCareer);
+    if (year === undefined) return collect(wholeCareer, false);
 
     const filtered = await collect(
       (fromYear, toYear) => fromYear <= year && year <= (toYear ?? thisYear),
+      true,
     );
     if (filtered.length > 0) return filtered;
     // Nothing covers the set year: the retired-player case (see "when it lets
-    // go" above). Offer the career rather than an empty fixer.
-    return collect(wholeCareer);
+    // go" above). Offer the career rather than an empty fixer — as choices,
+    // never as an answer (`inSetYear: false`).
+    return collect(wholeCareer, false, year);
   },
 });

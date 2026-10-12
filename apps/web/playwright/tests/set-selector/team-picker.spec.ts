@@ -14,7 +14,7 @@ test(
     const A = env.ATTEMPT_ID;
     const TEAM = `TPT${env.ATTEMPT_TOKEN}`;
     const card = `889-${A}`;
-    const player = `Team Feature Player ${A}`;
+    const player = `TeamFeaturePlayer${env.ATTEMPT_TOKEN}`;
     const target = {
       sport: "Baseball",
       year: "2024",

@@ -71,7 +71,7 @@
 - [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed, body-bounded; focus returns use focusWithoutOpening; act() around el.focus() in tests
 - [Variant type title is its kind](project_base_role_and_row_are_one_thing.md) — NEO-334: Base/Insert(s)/Parallel(s) exact word via variantTypeKind; no flags; kind-changing rename refused with rows beneath
 - [SetRowActionButton quiet tone is dark-only](reference_setrowactionbutton_quiet_tone_is_dark_only.md) — on the white-in-light-OS checklist card use NeonButton + its contract
-- [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes; an ACTION's do not — fence on a server-read count
+- [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes but no render yet; an ACTION's do not — fence on a server-read count
 - [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's
 - [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery on bg-white dark:bg-gray-800 never passes both themes; two CSS vars, per-theme surfaces incl. hover + /20 tint
 - [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
@@ -91,6 +91,9 @@
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
+- [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
+- [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
+- [Panel-wide shortcut via capture phase](reference_panel_wide_shortcut_via_capture_phase.md) — Ctrl+Enter over a typeahead: onKeyDownCapture + stopPropagation, guard nested role=dialog; stub spy proves the typeahead never sees it
 - [Required-field flip breaks test fixtures](reference_required_field_flip_breaks_test_fixtures.md) — convex-test validates raw fixture inserts; grep insert("<table>") first; required args pre-empt auth-guard tests
 - [Source-slice tests key on export names](reference_source_slice_tests_key_on_export_names.md) — deleting/renaming an export breaks readFileSync slice tests (indexOf -1 = whole file); grep before deleting
 - [Search mock must honour query args](reference_search_mock_must_honour_query_args.md) — a useQuery mock ignoring args hides a client re-filter; emulate the server before trusting its rows
@@ -107,3 +110,6 @@
 - [Review walk holds for open controls](reference_review_walk_holds_for_open_controls.md) — pinnedRowHasEdits gates only teams-first; open popovers/forms report onOpenChange (row-id keyed) into rowInteractionOpen
 - [Gate on the subscription, not the action promise](reference_gate_on_the_subscription_not_the_action_promise.md) — action promise beats its runMutation writes; data-as-marker + latch the flag inside ABSORB (NEO-341)
 - [Bulk walk gap strands late-staged steps](reference_bulk_walk_gap_strands_late_staged_steps.md) — lookup landing between listBulkCandidates and decideRowsByIds stages an unseen step; sweep by_source_* in the write
+- [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
+- [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
+- [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel

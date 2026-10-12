@@ -87,18 +87,21 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `tests/setup.spec.ts` |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `tests/set-selector/base-mapping-cancel-recovers.spec.ts` — **sole writer**, and it writes nothing |
-| Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `tests/setup.spec.ts` (structure); **sole writer** `tests/set-selector/checklist-wizard-skip-commits-and-unskip.spec.ts` |
-| Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `tests/setup.spec.ts` (structure); **sole writer** `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` |
-| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `tests/setup.spec.ts` (structure); **sole writer** `tests/set-selector/checklist-wizard-link-commits.spec.ts` — since NEO-313 it also moves ONE review row to Football and links it to the minted football player `Gw<token>` (ticket decision 8: this fixture, no new real set); the committed card then links a player of another sport, which nothing else reads |
+| Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only, every name SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-commits-and-unskip.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (19 review rows once three players' Wikidata career clubs are staged) — see "The 1995 minor-league hockey wizard fixtures" |
+| Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; ONE player created with ONE hand-staged career team, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **15 unknown players, 0 teams** (15 rows settled) |
+| Hockey → 1995 → Unknown (via the All Brands view) → San Antonio Iguanas CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; one row LINKED to the catalogue's Wayne Gretzky, one moved to Football and linked to the minted `Gw<token>`, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-link-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
+| Hockey → 1995 → Unknown (via the All Brands view) → Fort Worth Fire CHL | `Base` — 18 cards fetched in-flow, BSC only, and DISCARDED (Cancel → Discard; nothing saved) (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-not-a-person.spec.ts` — **sole reader**, writes nothing. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `tests/set-selector/sets-base.spec.ts` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `tests/set-selector/set-rename-survives-resync-and-suggests-bsc-name.spec.ts` — **sole writer** |
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `tests/set-selector/brand-via-all-brands-narrows-sportlots.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
-| Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
+| Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | none since NEO-330 — RETIRED as a fixture: the reference catalogue holds its Negro League clubs and players, so it no longer raises the team steps the alias flow needs | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-284, approved 2026-09-16); no flow touches it now |
+| Baseball → 1996 → All Brands (the view; the set is filed under the year's `Unknown` row) → Line Up Venezuelan Winter League | `Base` — 300 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): one club LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **200 unknown players + 8 unknown teams** (211 rows once lookups settle) — see "The TEAM-link alias fixture" |
+| Baseball → 2025 (the whole year) → Topps → Topps Welcome to the Club: 3X MVP | `Base` — 36 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the one team step, `Philadelphia Athletics`, LINKED by the operator to the catalogue's 1901–1954 row (remember-box unticked, no alias written); Brooklyn Dodgers linked automatically at the fetch. The year's Manufacturers and Topps Sets syncs are this flow's too: no other flow drills Baseball → 2025 | `tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts` — **sole writer** of the year. ✅ **Approved by Jason 2026-10-11** (NEO-330). Measured: **0 unknown players + 1 unknown team** (1 row once its lookup settles) — see "The PAST-ERA team fixture" |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `tests/setup.spec.ts` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `tests/set-selector/known-brand-files-set-and-operator-move-sticks.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
-| Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED with every unknown name SKIPPED — no player, team or league minted (NOT pre-synced) | `tests/set-selector/checklist-dual-team-card-links-both-teams.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
+| Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED (on the catalogue every name is known, so the fetch commits with no wizard; any name the wizard does stage is SKIPPED) — no player, team or league minted (NOT pre-synced) | `tests/set-selector/checklist-dual-team-card-links-both-teams.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `tests/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.spec.ts` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
@@ -487,8 +490,10 @@ Witherspoon (Detroit Tigers).
   react-virtuoso list opens at its end and renders only its ~440px window
   plus overscan. So the last row is the one row certain to be in the DOM; a
   card in the first half of a 14-row list may not be.
-* Both clubs are current names that the seed's 2024 Topps Chrome commit
-  creates, so neither half raises a team step.
+* Each club is ONE Baseball row in the reference catalogue, current and
+  open-ended, with no alias (the only other "Detroit Tigers" is a Football
+  row, and team resolution is per sport), so neither half raises a team
+  step.
 * No other card in the set carries either club, so the pair alone
   identifies the row.
 
@@ -502,34 +507,43 @@ left unsaved, and nothing reads it.
 **What it writes.** Everything the cold drill syncs (Manufacturers, Sets,
 `Bowman Draft`'s Variant Types), every Ready set of the Insert reconcile
 (the target family made its own sets by "Keep all" on the BSC column
-filtered to its name), the insert's committed `cardChecklist` rows, and
-per-set `entityReviewSkips` for the names it skips. It creates no player,
+filtered to its name), the insert's committed `cardChecklist` rows, and,
+only if the wizard opens, per-set `entityReviewSkips` for the names it
+skips. It creates no player,
 team or league, and it renames, moves or deletes nothing. Fresh-only: a
 re-run on the same preview finds the Insert column saved and fails at the
 reconcile gate, by name.
 
-**Which names are new on a fresh preview.**
-* Players: all of them, about 21 distinct draftees. All are skipped.
-* Teams: none expected from the checklist; every half is a seeded MLB club.
-* Possible exception: PDA-DM's "Athletics" spelling if the seed holds only
-  "Oakland Athletics". It, and any career team staged from Wikidata, is
-  checked for a comma and skipped.
+**Which names are new on a fresh preview: none** (measured 2026-10-12,
+NEO-330, read-only against a preview holding the catalogue). The catalogue
+is a prod snapshot and prod has built this set:
+* Players: all 21 draftees are single Baseball rows, and
+  `players.resolveNameForReview` (set year 2025) answers each with one
+  `playerId`.
+* Teams: all 16 clubs BSC names resolve to exactly one row for 2025, BSC's
+  bare "Athletics" on PDA-DM included. Every club with older same-name eras
+  (Milwaukee Brewers, Washington Nationals, Baltimore Orioles, Cincinnati
+  Reds) has one open-ended row covering 2025. No comma-joined value on the
+  set names a team or an alias.
+So the fetch commits straight to `Saved 14 cards` with no wizard. An
+unsplit value would resolve to nothing and open the wizard on a comma-joined
+`New Team:` step, which is what the flow's STEP 5 checks for. The wizard
+branch stays for a catalogue refresh that drops a name or a SportLots set
+pairing with the insert; it skips every staged name. Before the catalogue
+all 21 draftees were unknown, their live lookups took 34.8 s to settle, and
+one staged a Wikidata career team (`Sydney Blue Sox`), skipped.
 
-**No recorded lookups are needed.** A name absent from the recording goes
-live (README → "Enrichment fixtures"). The flow decides nothing that depends
-on a lookup's answer, and the capture reads `players` rows, which a skipped
-name never becomes. The cost is the live lookup wait (STEP 5, 180 s
-ceiling): about 21 names, five at a time, in a pool shared with every runner.
+**No recorded lookups are needed.** Nothing is staged on the catalogue, so
+nothing is looked up. Should a refresh stage names again, a name absent from
+the recording goes live (README → "Enrichment fixtures"); the flow decides
+nothing that depends on a lookup's answer.
 
-**Not yet verified against BSC** (it needs a seller token or the private shop
-endpoints; the first run reads them, and the step that disagrees fails by
-name):
-* the set's BSC name `Bowman Draft`, and that it files under the `Bowman`
-  row;
-* the insert's variantName `Prospect Dual Autographs`;
-* PDA-WW's BSC team value;
-* whether SportLots pairs a set with the insert;
-* the cold drill, reconcile and lookup timings.
+**Verified 2026-10-12** against BSC's public catalog facets and #316's green
+CI run: the set is `Bowman Draft` under the `Bowman` row, the insert's
+variantName is `Prospect Dual Autographs` (14 cards, PDA-AD … PDA-WW), and
+PDA-WW's BSC teams are Detroit Tigers and Boston Red Sox. In that run
+SportLots paired no set with the insert (Pending → Keep all), so the fetch
+took the one-marketplace path.
 
 ### The one sanctioned read-only visitor
 
@@ -619,17 +633,21 @@ names a marketplace fetch returned that NeonBinder does not already hold, and
 only **BSC** returns names at all — so the fixture has to be a real,
 BSC-listed set, synced through the real hierarchy. It is
 `Baseball → 2024 → Topps → Topps Big League → Base`; read its section below
-before touching any of these four.
+before touching any of these three.
 
 | flow | what it owns |
 |---|---|
 | `checklist-wizard-back-to-matching-resumes-decisions` | "Back to matching" parks the review; re-confirming resumes the SAME batch with its decisions |
-| `checklist-wizard-skip-not-a-person` | the per-row skip, and "Skip Remaining" deciding every row that is left, lookups included |
 | `checklist-wizard-link-to-existing-player` | "Link to Existing" resolves onto a roster player instead of minting a duplicate |
 | `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
 
-all sharing `fetchChecklistToWizard` (support/wizard.ts), and all four
-READ-ONLY (Cancel → Discard).
+all sharing `fetchChecklistToWizard`, and all three
+READ-ONLY (Cancel → Discard). A fourth, `checklist-wizard-skip-not-a-person`
+(the per-row skip, and "Skip remaining names" deciding every row that is left,
+lookups included), read this set until NEO-330: with the reference catalogue
+loaded, Big League stages too few names for its footer skip, so it moved to
+its own BSC-only set, Fort Worth Fire CHL (Jason, 2026-10-10; see "The 1995
+minor-league hockey wizard fixtures"). It is still read-only.
 
 Three SIBLING flows cover the **commit** side — what a decision is worth once it
 is saved — and each gets its own real set so it can write without racing
@@ -637,20 +655,108 @@ anything:
 
 | flow | fixture |
 |---|---|
-| `checklist-wizard-skip-commits-and-unskip` | Topps Chicago Cubs |
-| `checklist-wizard-career-team-commits` | Topps Baltimore Orioles |
-| `checklist-wizard-link-commits` | Topps Brooklyn Collection |
-| `checklist-wizard-link-team-saves-alias` | Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284, one-sided — see its own section) |
+| `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL (NEO-330; Topps Chicago Cubs before) |
+| `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL (NEO-330; Topps Baltimore Orioles before) |
+| `checklist-wizard-link-commits` | Hockey 1995 San Antonio Iguanas CHL (NEO-330; Topps Brooklyn Collection before) |
+| `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League (NEO-330; Topps MLB at Rickwood Field before) — one-sided, see its own section |
 
-See "The three COMMITTING entity-review fixtures" below, and "The TEAM-link
-alias fixture" after the one-marketplace section.
+See "The 1995 minor-league hockey wizard fixtures" below (and, for the history,
+"The three COMMITTING entity-review fixtures"), and "The TEAM-link alias
+fixture" after the one-marketplace section.
 
 **They no longer own a custom-set prefix.** `wbr-`, `skp-`, `lce-` and `cte-`
 are retired along with `fcd-` and `kod-`: these flows create nothing. The
 discard confirm and the Enter commit live in STEP 6 of
 `tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts`.
 
-### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) ✅ APPROVED
+### The 1995 minor-league hockey wizard fixtures — one set per flow (NEO-330) ✅ APPROVED by Jason 2026-10-10
+
+Every CI preview now loads prod's reference catalogue (README → "A reference
+catalogue is on every CI preview"), and the wizard stages only names the
+deployment does not know. The three MLB team sets below and Topps Big League
+no longer stage enough: CI run 38063558063 committed Cubs and Orioles straight
+through with no wizard, Brooklyn's walk ran out of player rows, and
+`checklist-wizard-skip-not-a-person` found nothing left for its footer skip.
+Jason moved four flows onto four of the 1995 minor-league hockey spares listed
+under the one-marketplace fixture. Each set is BSC-only and filed under the
+year's `Unknown` row; Hockey's catalogue players are NHL-only, so their
+rosters stay unknown.
+
+| flow | fixture | role | cards | measured unknowns (at open → settled) |
+|---|---|---|---|---|
+| `checklist-wizard-skip-commits-and-unskip` | Hockey → 1995 → Unknown → **Tulsa Oilers CHL** | sole writer (commits; every name skipped) | 18 | **16 players, 0 teams** → 19 rows (three Wikidata career clubs staged, e.g. `New Team: Columbus Chill`) |
+| `checklist-wizard-career-team-commits` | Hockey → 1995 → Unknown → **Memphis RiverKings CHL** | sole writer (commits; one player + one hand-staged team) | 18 | **15 players, 0 teams** → 15 |
+| `checklist-wizard-link-commits` | Hockey → 1995 → Unknown → **San Antonio Iguanas CHL** | sole writer (commits; two links) | 18 | **16 players, 0 teams** → 16 |
+| `checklist-wizard-skip-not-a-person` | Hockey → 1995 → Unknown → **Fort Worth Fire CHL** | sole READER (Cancel → Discard) | 18 | **16 players, 0 teams** → 16 |
+
+**How measured.** A throwaway probe per set (never committed) on PR #314's
+preview, 2026-10-10, with the catalogue loaded and SportLots live: drill
+Hockey → 1995 → the All Brands view, pick the set, cancel the base picker,
+fetch on BSC, read the wizard (`Kept all N cards from BSC … N new players + M
+new teams need confirmation`, the header, `Add remaining players as new (P)` and
+`Skip remaining names (R)` once every lookup had settled), then Cancel —
+nothing saved. Each probe left only the set's synced `Base` variant type
+behind. Re-measure after every catalogue refresh: a bundle that gains these
+rosters drains the fixtures. **A set an operator builds in PRODUCTION becomes
+known on the next refresh**: the bundle is a copy of prod's players and teams,
+so the moment someone builds one of these sets (or a set sharing its roster)
+in prod, the next bundle carries its names and the fixture stops staging
+them. The refresh procedure in `docs/operations/neo330-reference-seed.md`
+re-measures every wizard fixture for exactly this reason.
+
+**The path.** All four reach the wizard through
+`fetchOneMarketplaceSetChecklistToWizard` (support/wizard.ts) (extracted from
+`checklist-wizard-link-team-saves-alias`'s inline path; its drill, set pick and
+cancelled picker are `openOneMarketplaceSetBase`, which a flow
+re-entering a set it committed calls again): the cold drill util
+with `MANUFACTURER: "All Brands"`, the set picked from the view, the base
+picker CANCELLED (BSC answers; SportLots' 1995 catalogue is offered and
+declined), the fetch takes the NEO-255 solo path ("Kept all 18 cards from
+BSC") and opens the review with no pairing session behind it. Because the Base
+stays unmapped on SportLots, every later drill would auto-open the picker
+again; none happens, since each flow is its set's only visitor.
+
+**Link target.** `checklist-wizard-link-commits` links one row to **Wayne
+Gretzky**, a reference-catalogue Hockey player. Verified read-only on the
+preview: exactly one `players` row "Wayne Gretzky" (`gretzky wayne`) under
+Hockey; the search for "Gretzky" also returns Brent Gretzky, a different
+accessible name.
+
+**Shared columns, concurrent first syncs — measured, nothing added to the
+seed.** These four flows and `checklist-one-marketplace-skips-match-dialog`
+all drill Hockey → 1995 → the All Brands view, cold, on parallel runners, and
+`ensureSelectorOptions` has no in-flight guard (a column that opens empty
+fires it; the action skips only when the column is already populated). Fired
+FIVE `ensureSelectorOptions` calls at once, as five different E2E admin
+accounts, on a cold Hockey year of the same preview (1994, which no flow
+uses), first at the manufacturer level and then at the year-wide Sets level
+the view opens: all ten ran (`ran: true, reason: synced`), each Sets sync took
+~11s instead of ~6s, and the result held **no duplicate manufacturer row, one
+`Unknown` row, no duplicate set (by name under a parent, by name across the
+year, or by BSC or SportLots id) and no leftover sync-status row**. Every
+store is an id-keyed mutation, so concurrent writers serialise on Convex's
+transactions. The cost of a race is a doubled marketplace round-trip, never
+a doubled row, so the columns are not pre-synced in `tests/setup.spec.ts` (whose time
+every PR pays), and each flow keeps paying its own cold drill.
+
+**Drain and re-runs.** The three writers commit, so after one run their sets
+hold cards and re-sync instead (no review): a local re-run fails at the util's
+`No cards in this checklist yet.` precondition until the preview is
+re-seeded. The reader discards, so it can re-run; a red attempt leaves its
+review batch, which the next fetch by the same account RESUMES (`N of M
+reviewed`), so discard it before re-running locally. CI does not retry flows
+(`MAESTRO_FLOW_RETRIES` defaults to 1) and reseeds every run.
+
+**Remaining spares** (same shape, untouched): `Dayton Bombers ECHL`, `Dunkin
+Donuts Portland Pirates AHL`, `Halifax Mooseheads QMJHL`. Swapping one in needs
+Jason's approval and a probe like the one above.
+
+### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) — RETIRED by NEO-330
+
+> **History.** These three sets are no longer used by any flow: NEO-330 moved
+> their flows onto the 1995 minor-league hockey sets above, because the
+> reference catalogue knows their rosters. Kept for the measurements and the
+> two-sided mapping rule, which still governs `fetchChecklistToWizard`.
 
 The four `checklist-wizard-*` flows on Topps Big League are read-only: they
 prove the wizard's decisions and always exit through Cancel → Discard. Three
@@ -1112,8 +1218,10 @@ silently disagree — but they must be changed together.
 Same shape, same ancestors, all verified present in the 134-set column and all
 regex-safe: `Dayton Bombers ECHL` (**32 cards — already committed on PR #242's
 preview by the pilot probe, so it is spent there**), `Dunkin Donuts Portland
-Pirates AHL`, `Tulsa Oilers CHL`, `Memphis RiverKings CHL`,
-`San Antonio Iguanas CHL`, `Fort Worth Fire CHL`, `Halifax Mooseheads QMJHL`.
+Pirates AHL`, `Halifax Mooseheads QMJHL`. (`Tulsa Oilers CHL`, `Memphis
+RiverKings CHL`, `San Antonio Iguanas CHL` and `Fort Worth Fire CHL` were
+spares too; since NEO-330 each is a wizard flow's own fixture — see "The 1995
+minor-league hockey wizard fixtures".)
 Swapping is a one-line edit to `output.SET` in the flow's STEP 0 plus the two
 name literals in this section. Avoid names carrying regex metacharacters or a
 `/` (`Electrolarm/Z-104 …`, `Kellogg´s …`).
@@ -1354,95 +1462,138 @@ stamp to survive either. The move CONTROL itself needs no marketplace, and
 that half lives marketplace-free in `tests/set-selector/move-set-to-another-brand.spec.ts`
 (`msb-` prefix below); only the two claims above need a real year.
 
-### The TEAM-link alias fixture — Baseball / 2024 / Topps / Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284) — approved by Jason 2026-09-16
+### The TEAM-link alias fixture — Baseball / 1996 / All Brands / Line Up Venezuelan Winter League (NEO-330) — approved by Jason 2026-10-10
 
-One new real set, touched by exactly one flow,
+One real set, touched by exactly one flow,
 `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts`, which fetches and COMMITS its
-checklist. Rule 1 above applies: this is a proposal for the owner, not an
-approval. Measured live on PR #262's Convex preview on 2026-09-16.
+checklist. Approved by Jason 2026-10-10 for a probe and, on a measured team
+row, the re-fixture; measured live on PR #314's Convex preview that day with
+the reference catalogue loaded and SportLots live.
 
 **What the flow proves** (NEO-284): a LINK decision on a TEAM row in the
 entity-review wizard (since NEO-307 taken from the step's one `Search all
-teams` combobox — teams have no "Link to Existing…" or near-match Link buttons
-any more; players and leagues keep theirs; since NEO-326 the combobox starts
-empty inside a "Link to existing team" section, with the "Remember …" box
-directly under it) keeps the checklist's raw spelling as an alias
-of the linked team, by default, and the alias is written at COMMIT — so it
-needs a real set whose wizard opens on a TEAM row, and it needs to commit.
+teams` combobox; since NEO-326 the combobox starts empty inside a "Link to
+existing team" section, with the "Remember …" box directly under it) keeps
+the checklist's raw spelling as an alias of the linked team, by default, and
+the alias is written at COMMIT — so it needs a real set whose wizard raises
+TEAM steps, and it needs to commit. Plus NEO-307's alias-clash refusal.
+NEO-307's past-era team claims are not here (Jason, 2026-10-10: the
+operator's past-era link belongs where the catalogue holds several
+same-name clubs, and this set's clubs are absent from it); see "The PAST-ERA
+team fixture" below.
 
-**Why this set.** The suite's only teams are the MLB clubs `tests/setup.spec.ts`'s
-Topps Chrome commit creates, so a team row needs a set whose clubs are not
-MLB clubs — and the three committing fixtures above are team sets of MLB
-clubs (0 unknown teams each) or already spoken for (Brooklyn Collection, 1
-team, sole writer `checklist-wizard-link-commits`). Among the 167 sets BSC
-lists under 2024 Topps this is the smallest with that shape:
+**Why this set.** The reference catalogue holds every MLB-era club, the
+Negro League clubs and current MiLB/indie clubs. On the old fixture (2024
+Topps MLB at Rickwood Field Negro Leagues Collection) the flow could no longer
+create its own `Pittsburgh Crawfords` (CI run 38063558063 failed on its
+"No matches." precondition), and the set's clubs and players are catalogue
+rows, so its review would not raise the team steps the flow needs. Jason
+asked for national-team or defunct-MiLB candidates; this Venezuelan winter
+league set is the one he approved for a probe. Its eight clubs are absent
+from the catalogue.
 
 | | |
 | -- | -- |
-| BSC cards | **4** — RW-1 Satchel Paige, RW-2 Josh Gibson, RW-3 Jackie Robinson, RW-4 Willie Mays |
-| unknown names | **8** — 4 players, the Negro League clubs (Pittsburgh Crawfords on RW-2, …; "Homestead Grays" is a STAGED career team from Gibson's Wikidata stint, not a card's club), and ONE staged league ("Negro league baseball", raised by the first club's Wikidata lookup and asked once for the batch) |
-| first row presented | the staged **League** step; the flow skips it ("Skip — no league") and the first **team** row follows |
-| cost | ~60s to the wizard on a warm Baseball drill, ~3 min end to end |
+| BSC cards | **300** (BSC `teamName` facets: Tigres de Aragua 47 listings, Leones del Caracas 38, Navegantes del Magallanes 35, Aguilas del Zulia 33, Pastora de Occidente 32, Tiburones de la Guaira 31, Caribes de Oriente 29, Cardenales de Lara 26) |
+| unknown names | **200 players + 8 teams** at open (`Kept all 300 cards from BSC … 200 new players + 8 new teams need confirmation`, `0 of 208 reviewed · 208 still being looked up`) |
+| settled | **211 rows** after ~144 s of LIVE Wikidata lookups (no other runner on the pool; measured before the recording, which now answers all 211): the 8 clubs, ONE staged league (`New League: Venezuelan Professional Baseball League`) and TWO staged career teams (`New Team: EDA Rhinos`, `New Team: Athletics` — Wikidata stints, not checklist clubs) |
+| step order seen | the league, EDA Rhinos, Athletics, Navegantes, Cardenales, Tigres, Aguilas, Leones, Pastora, Caribes, Tiburones — the flow does not depend on it |
+| cost | ~6–7 min end to end locally with LIVE lookups, ~144 s of it the lookups (before the recording) |
 
-**It is ONE-SIDED, and the flow keeps it that way.** SportLots does not carry
-this set. The base picker's SportLots column is the year's whole catalogue —
-"Base Set" flagged "likely match" is 2024 Topps flagship (352 cards); the rows
-under it are 1989 Topps inserts — so the honest operator action is to CANCEL
-the picker. The author's first probe attached that "likely match" by taking
-the util's first-candidate path, and it paired 0 of 4 cards (BSC only 4 /
-SportLots only 352). Cancelling leaves exactly one attached side (the BSC slug
-Sync Variant Types wrote on Base), so the fetch takes the NEO-255 solo path —
-no Match Cards dialog, "Kept all 4 cards from BSC", straight to the review.
-That is the Roanoke Express shape above, on a warm drill.
+**The row under test is named.** The flow walks every team/league step,
+reads its heading, links **Navegantes del Magallanes** to its minted team
+`Loc<token> Ali<token>` (alias kept) and skips every other step. Until the
+past-era claim moved out (NEO-330), it also linked **Tigres de Aragua** to
+the catalogue's single `Pittsburgh Crawfords` row and read the linked card
+back on a re-entry of the set; that wrote nothing onto the catalogue row
+(remember-box unticked), so no cleanup was needed when it was dropped.
 
-**Not through `fetchChecklistToWizard`**, which waits on the
-two-sided Match Cards dialog this set never shows. The flow hand-rolls the
-Base tap → picker cancel → sync, exactly as the one-marketplace flow does.
+**One-sided, and the flow keeps it that way.** The set row and its `Base`
+carry a BSC id only (it is in the All Brands view because no SportLots brand
+claims it). The fetch util CANCELS the base picker, so exactly one side is
+attached and the fetch takes the NEO-255 solo path ("Kept all 300 cards from
+BSC").
 
-**Never an alias on a name another spec can meet (CI run 38236921629).** A
-saved alias is GLOBAL and specs run concurrently across workers, so an alias on
-a real club name that another set also presents (Topps Big League raises
-"Montreal Royals" for every `fetchChecklistToWizard` spec) makes that spec's
-"Add as New Team" refuse with "already answers to this name as an alias". The
-spec therefore skips every team step named in its `SHARED_CLUBS` list
-(`Montreal Royals`) and links the first club only Rickwood presents. This spec
-is the **sole writer of team aliases** in the suite (no other spec ticks a
-"Remember …" box or fills an alias field on a name it did not mint); keep
-`SHARED_CLUBS` in step with any set another spec adds that presents a club.
+**Sole writer, self-cleaning on the TEAM side.** The flow links Navegantes to
+its per-attempt team, commits, reads the alias back in Team Management, then
+REMOVES it (and the `Pca<token>` alias it gave the team for the clash check)
+and saves. The set itself drains within a run like the other committing
+fixtures (a committed set's names are known; a re-sync raises no review), and
+CI reseeds every run. A LOCAL re-run needs a fresh seed.
 
-**Sole writer, self-cleaning on the TEAM side.** The flow links the first
-club to a per-attempt team it created (`Loc<token> Ali<token>`), commits,
-reads the alias back in Team Management, then REMOVES it and saves. So the
-alias never outlives the flow: while it exists, any checklist naming that
-club would resolve to the flow's own team through the alias union, which is
-the feature — and why it is taken out again before the flow ends. The set
-itself drains within a run like the other committing fixtures (a committed
-set's names are known; a re-sync raises no review), and CI reseeds every run.
-A LOCAL re-run needs a fresh seed.
+**Concurrency and load.** No other flow reads this set. The Baseball → 1996
+columns above it are shared with `inserts-1996-score-one-nb-set-two-bsc-sources`
+(Score), which drills the `Score` brand; this flow opens the year's All Brands
+view, whose first Sets sync is year-wide on BSC. A concurrent first sync
+doubles the round-trip, never the rows (measured for Hockey 1994, see the 1995
+hockey section). The batch's lookups no longer leave the deployment: the
+NEO-289 enrichment recording answers all 211 of them (200 players, the 8
+clubs, the 2 staged career teams and the staged league; checked offline
+against the committed file, 2026-10-10). They still run through the
+deployment-wide pool (`maxParallelism: 5`) that every runner's wizard flows
+share, so on CI they can queue FIFO behind other flows' LIVE lookups. The
+flow's 180 s lookup ceiling is the live-lane value, kept until the first CI
+run with the recording deployed measures the recorded settle time to tighten
+it to (R5). Read the convex-logs artifact before touching that number.
 
-**NEO-307 — the retro-card proof rides here (approved by Jason 2026-09-25 as
-"Homestead Grays"; the swap to the club below needs his re-approval).**
-Before the fetch the flow also creates `Pittsburgh Crawfords` with the era
-1926–1940 through the same career-editor picker. It is a REAL name, the
-suite's one exception to "minted names are single tokens", because the rule
-under test is about a checklist's own spelling. It is the club on card RW-2
-(Josh Gibson), MEASURED on the PR preview 2026-09-25 (a committed run's link
-saved exactly that string as the alias). "Homestead Grays", the first pick,
-is NOT on any card: it is a STAGED career team raised by Gibson's Wikidata
-stint (CI run 36139385192). The 2024 set is after the era, and the sport holds
-exactly one row of the name, so the review gate links it (`allowPastEra`) and
-raises no step. The flow reads every team step's heading to prove it, then
-checks that card RW-2's sub-line prints the name (not `… (unconfirmed)`), and
-that Team Management still lists one `Pittsburgh Crawfords`. The era spans
-the club's whole life, so any real Crawfords stint resolves strictly inside it
-and stages no career step of the same name (the cached lookups give Gibson's
-1932–1936; Paige's teams are undated). The row is inert elsewhere: no other
-flow fetches this set or types "Pittsburgh"/"Crawfords" into a search, and
-the run-start reset wipes it.
+**Retired:** `Pittsburgh Crawfords` is no longer created or linked by the
+flow (the catalogue has it). Both past-era claims (the automatic link of a
+club held once, and the operator's link among several eras) live in
+`tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts`; the resolution rule itself
+(`resolveTeamForSetYear` with `allowPastEra`) is unit-tested in
+`lib/teams/team-era.test.ts`.
 
-**Concurrency.** No other flow reads this set, and nothing reads
-`Loc<token> Ali<token>`. The four read-only Big League flows and the three
-committing fixtures share no `selectorOptionId` with it.
+### The PAST-ERA team fixture — Baseball / 2025 / Topps / Topps Welcome to the Club: 3X MVP (NEO-330) — approved by Jason 2026-10-11
+
+One real set, touched by exactly one flow,
+`tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts`, which fetches and COMMITS
+its `Base`. The flow also claims the whole of **Baseball → 2025**: its drill
+runs the year's first Manufacturers and Topps Sets syncs, and no other flow
+drills that year. Approved by Jason 2026-10-11 after the probe below; the
+earlier candidate, 2024 Topps' "1989 Topps Baseball 35th Anniversary
+All-Stars" insert, clashed with the SportLots-twins flow's `Insert` column.
+
+**What the flow proves** (NEO-307, both halves): on a 2025 set, a club the
+catalogue holds ONCE in an era that ended long ago links on its own at the
+fetch (Brooklyn Dodgers, cards #25–#27), and a club it holds in SEVERAL past
+eras, none covering 2025, comes to the operator as one team step offering
+every era by its label. The era the operator picks is what the commit writes
+onto that club's cards (#34 and #35).
+
+**Why this set.** Every retro Base checked (Archives, Tribute, Gilded, Museum,
+Diamond Kings, Cooperstown) stages same-name legends as pick steps, so its
+review is never just the team step. This is a 36-card star set whose twelve
+players each resolve to one catalogue row (the fetch stages no player). Its clubs, per
+BSC's `teamName` facets: Philadelphia Athletics on #34 and #35 (Jimmie Foxx),
+Boston Red Sox on #36 (Foxx), Brooklyn Dodgers on #25–#27 (Roy Campanella),
+and current MLB clubs on the rest.
+
+| | |
+| -- | -- |
+| BSC cards | **36** (`Base`; the set also lists 13 parallels of 36 and 208 insert cards, which no flow touches) |
+| unknown names | **0 players + 1 team** at open (`Kept all 36 cards from BSC … 0 new players + 1 new teams need confirmation`, `0 of 1 reviewed · 1 still being looked up`) |
+| the step | `New Team: Philadelphia Athletics`; its empty `Search all teams` list offers the catalogue's four rows of the name, `same name · NA · 1871–1875`, `same name · MLB · 1876–1876`, `same name · AA · 1882–1890`, `same name · MLB · 1901–1954`, then one close match (`ACL Athletics`) |
+| settled | the one lookup (Wikidata Q1264750 and ESPN) took ~8 s live; the NEO-289 recording now answers it (the team entry `philadelphia athletics` under Baseball's Q5369) |
+| after the commit | MEASURED read-only: #34 and #35 carry the 1901–1954 row, #36 the Boston Red Sox, #25–#27 the one Brooklyn Dodgers row (1911–1957); no alias on any Athletics row |
+| cost | 2m50s end to end locally (PR #314's preview, 2026-10-11) |
+
+**The catalogue facts it depends on.** Four Baseball teams named
+`Philadelphia Athletics` (eras above), one `Brooklyn Dodgers`, and a `Jimmie
+Foxx` whose stints include the 1901–1954 Athletics (1925–1935) and the Red
+Sox (1936–1942). A refresh that adds a row covering 2025, drops an era or
+gives the name an alias changes the step or removes it, and the flow fails
+on R2(a)–(c) by name: re-probe before re-pointing it.
+
+**One-sided, and the flow keeps it that way.** The set's `Base` is listed on
+BSC; the fetch util CANCELS the base picker, so the fetch takes the NEO-255
+solo path ("Kept all 36 cards from BSC"). The re-entry for the read-back
+cancels it again.
+
+**Sole writer, drains within a run.** The operator's link is made with the
+remember-box UNTICKED, so nothing is written onto the shared catalogue rows;
+the only writes are the set's structure and its 36 cards. A committed set's
+names are known and a re-sync raises no review, so the fixture is spent once
+per run; CI reseeds every run. A LOCAL re-run needs a fresh seed.
 
 ### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
 
@@ -1532,50 +1683,102 @@ the flow syncs its variant types and maps Base on both sides on its first drill,
 through `fetchChecklistToWizard`, like the three committing
 fixtures above.
 
-**What the flow does to make the fixture.** Before it fetches, it forks two
-Baseball players named after card #1 on `/admin/players` — `Shuya Yamada`,
-b. 1851 and b. 1852 — so that name reaches the wizard as a row two players on
-file answer to, which is what the pick step ("Which Shuya Yamada is this?") is
-for. Card #1 is Shuya Yamada RC, Hanshin Tigers (TCDb), and BSC spells it the
+**What the flow does to make the fixture.** Before it fetches, it adds a
+Baseball player named after card #1 on `/admin/players` — `Shuya Yamada`,
+b. 1851 — beside the catalogue's own `Shuya Yamada` (below), so that name
+reaches the wizard as a row two players on file answer to, which is what the
+pick step ("Which Shuya Yamada is this?") is for. Card #1 is Shuya Yamada RC, Hanshin Tigers (TCDb), and BSC spells it the
 same: the pick heading read `Which Shuya Yamada is this?` on the first live
 fetch.
 
 **Why NPB, and not an MLB team set.** The name only reaches the pick step while
 card-year narrowing (`narrowSameNamePlayersByCardYear`) cannot pick one row: no
 same-name player may hold a stint on the card's printed team covering 2024. The
-forks hold no stints at all. An NPB club can never be that team for a
-catalogue player either, including NEO-330's prod catalogue, whereas any MLB
-team set's names would narrow to the catalogue's row and skip the step.
+b. 1851 row holds no stints at all. On an MLB team set the catalogue's own row for the
+name would carry that stint and the step would never open.
+
+**Two on file: the catalogue's man and ours (NEO-330 catalogue, measured
+2026-10-11).** The reference catalogue is a prod snapshot and already holds a
+`Shuya Yamada`: Wikidata-linked, Hanshin Tigers from 2026, no birth year. His
+span covers a 2024 card within the ±2-year tolerance, so he survives the
+narrowing; his only stint starts after 2024, so the card's team does not pick
+him outright. The step therefore lists two and its intro reads `We've got 2 on
+file under that name.` ⚠️ If a catalogue refresh moves his stint to 2024 or
+earlier, or drops him, the step disappears: the flow fails at STEP 1 by name.
+
+**Why one row of our own, not two (CI run 38197074499).** The flow used to fork
+b. 1851 and b. 1852. On a catalogue preview the second create is REFUSED, every
+time: `createByAdmin` (`adoptOrForkOnCreate`, NEO-254) forks past one undated
+rival but refuses once there are several and any is undated — "2 players are
+already filed under Shuya Yamada. Pick the right one instead of adding
+another." The catalogue's row is undated, so a second dated fork cannot be made
+through the product while he is on file.
 
 **Read-only on the set.** The flow leaves through Cancel → Discard: it commits
-nothing and creates nothing from the wizard. It does write two GLOBAL `players`
-rows named `Shuya Yamada` that nothing deletes, so:
+nothing and creates nothing from the wizard. It does write one GLOBAL `players`
+row named `Shuya Yamada` (b. 1851) that nothing deletes, so:
 
 * ⚠️ **No other flow may fetch a checklist carrying that name.** Its wizard
   would open a pick step where it expects a New Player step.
 * ⚠️ **No flow may commit this set.** A commit creates or links a Yamada with a
   2024 Hanshin stint, which narrows the name and removes the step for the rest
   of the run.
-* **Re-runs are idempotent.** On a deployment that already holds both forks,
-  each create ADOPTS (a birth year exactly one row carries), and the flow
-  asserts both rows exist rather than that it created them. The flow also
-  clears a review batch a red attempt left behind
-  (`discardResumedReviewBatch`, with `SET` passed through).
+* **Re-runs are idempotent.** On a deployment that already holds the b. 1851
+  row, the create ADOPTS (a birth year exactly one row carries), and the flow
+  asserts the row exists rather than that it created it. A review batch a
+  red attempt left behind is detected by one read of the decided count and
+  cleared through `discardResumedReviewBatch` (with `SET` passed
+  through) only when that count is not 0, so the normal path pays no 7s dwell.
 
-**It is the one wizard flow that does not walk.** The set is large: the first
-live fetch (dev, 2026-10-10) brought **244 unknown names, 216 players + 28
-teams**, every one behind a live Wikidata lookup (none are in the enrichment
-recording). 129 of them settled in 180s, so `walkToPlayerRow`'s
-first wait — the sanctioned 180s Wikidata ceiling — expired with 115 still
-looking up and no team settled. The flow does not need it: the same-name row
-arrives READY (no lookup until Create new), so the wizard opens on its pick
-step while the rest are still looking up, and it holds still because
-`startBatch` inserts every player before any team and the pool drains FIFO, so
-no team settles for minutes. The flow states this at its STEP 1.
+**What the fetch stages, on the catalogue-loaded preview (2026-10-11).** Of the
+set's 216 player names the catalogue holds 196, so the batch is **21 player
+rows**: Shuya Yamada, inserted READY (no lookup until Create new), and **20
+unknown NPB names** — Akinobu Okada, Adam Walker, Daisuke Miura, Hironori
+Miyoshi, Kazuyoshi Tatsunami, Keishi Tsuda, Keisuke Honda, Kosuke Kawachi, Kota
+Nishidate, Leandro Cedeno, Ryusei Satoh, Ryutaro Hatsuki, Satoshi Nakajima,
+Taisei Ota, Takashi Uemoto, Takayuki Kajitani, Takero Okajima, Takumi Ohshiro,
+Yuki Udagawa, Yuya Shinto. None is in the enrichment recording; Wikidata knows
+all twenty. All twelve card teams are in the catalogue, so no team row exists at
+open. Two lookups stage career teams the catalogue lacks: Adam Walker (Kanagawa
+Future Dreams, Oisix Niigata Albirex Baseball Club, Rakuten Monkeys) and Leandro
+Cedeno (Caribes de Anzoátegui, Leones del Caracas), plus any league those teams
+need. Shuya Yamada's own lookup finds no career team. Every catalogue refresh can
+change these counts: prod builds sets, and a name prod has built is known.
+(Before the catalogue, on dev 2026-10-10, the same fetch staged 244 unknown
+names.)
 
-**Measured (fill in from the first green PR-preview run):** fetch-to-wizard
-time, total flow time against the 600s per-flow cap, and that the wizard opened
-on the pick step with `0 of 244 reviewed · 243 still being looked up`.
+**The timing claim, and why it holds.** STEP 1 asserts that the wizard opens on
+the pick step while the other names are still being looked up (Jason,
+2026-10-11: the claim stays in E2E). What holds the window open is the pool's depth, not
+how slow one lookup is: the 20 unknown names need at least four rounds of the
+deployment's 5-wide FIFO pool, and every career team they stage is queued behind
+all of them, so the header's `· N still being looked up` stays on screen until
+the last settles. One lookup's Convex-side time varies widely — 0.3s to 20s in
+one batch on the PR preview (2026-10-11, with Wikidata 502 retries), ~4-5s in CI
+run 38073638557 — so even an all-fast batch keeps the tail ≥ ~2.5s; contention
+from other flows only lengthens it. The flow's first read after the wizard opens
+is that assertion, ~1s after the batch starts. Measured on the PR preview,
+2026-10-11 (laptop and Convex clocks): batch start +0.0s, first five lookups
++0.5s, STEP 1 COMPLETED +1.1s, last player lookup started +13.3s, first team
+settled +14.1s, tail gone +44s (+26.7s without one late 502 retry).
+
+**Then the flow walks.** An untouched pick step yields to the first settled
+team or league (teams first, NEO-236), and the career teams above settle ~14-25s
+in, inside the window the Create new / Back to the list / link steps need. So
+after STEP 1 the flow runs `walkToPlayerRow`, which waits the
+batch out, answers each team and league step as a skip, and stops on the first
+player row: Shuya Yamada's pick step, because rows are inserted in card order
+and he is card #1. Every later count is read relative to those skips (K), and
+the link's read-back comes from `Back to previous decision` → `Decision for
+Shuya Yamada`, because the Decided list folds past five.
+
+**What a green CI run must show** (fill in from the first green run on the
+catalogue preview): in the flow's `maestro.log`, STEP 1's
+`"Which Shuya Yamada is this\?", Below "0 of [0-9]+ reviewed · [0-9]+ still
+being looked up"` COMPLETED within ~1-2s of the fetch util's `Confirm New
+Players & Teams` gate; in `convex-logs`, the 20 NPB names' `enrichment_fixture`
+miss lines spread over ≥ ~12s and the first staged `team` lookup starting after
+STEP 1 completed; total flow time against the per-flow cap.
 
 **The kind guard.** Two flows (`link-to-existing`, `career-team`) act on
 controls only a PLAYER row renders, and which row settles first is a race
@@ -1649,6 +1852,7 @@ would put the wrong question on screen.
 | `ftl-` | `tests/set-selector/set-fill-teams-from-teammate-card.spec.ts` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-combobox reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
 | `msp-` | `tests/admin/player-sports-multi-sport-membership.spec.ts` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the flow gives a football player Baseball and proves a baseball card's picker finds him); `Insert` › `Base`, one card `316-<attempt>` linking the player `Gm<token>`, DELETED at the end. The set and its rows stand. |
 | `msb-` | `tests/set-selector/move-set-to-another-brand.spec.ts` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
+| `mtf-` | `tests/set-selector/checklist-missing-team-fixer-hand-added-card.spec.ts` (NEO-330, also `-${ATTEMPT_ID}`) — under the REAL `Baseball` › 2024 › `Topps`: the quick-add PlayerPicker and the fixer's TeamPicker search the set's sport, where the reference catalogue's Baseball rows live, and the real 2024 year is what makes the fixer offer the player's whole career ("No 2024 team on file"). `Insert` › `Base`, one card `851-<attempt>` linking the catalogue's **George Brett** with no team, then given the catalogue's **Kansas City Royals** in the attention walker's fixer; the card is DELETED at the end. Both catalogue rows are only READ (the flow writes the card alone). Per-attempt because the header count and the walker queue are exact. The set and its rows stand. |
 | `parallel-feature-` | `tests/set-selector/cards-parallel-custom.spec.ts` — under `E2E Test Sport <w>` › 2026 › Topps; its hand-made `Parallel` type is a Parallel type by its title (NEO-334), so its rows are parallels of a Base the set never gets (the checklist shows the build-from-Base stand-in). |
 | `pg-cancel-` | `tests/set-selector/parallel-grouping-cancel-discards.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `pg-demote-` | `tests/set-selector/parallel-grouping-demoted-parallel-takes-parallels.spec.ts` (also `-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_ID> Stars` / `Stars Gold` / `Stars Blue`; Gold and Blue are saved as parallels of Stars, then Gold is demoted and Blue re-parented under it in one save (NEO-300). Per-attempt because the flow taps inside the Group Parallels body at positions that hold only for exactly these three rows. |
@@ -1659,7 +1863,6 @@ would put the wrong question on screen.
 | `rnm-` | `tests/set-selector/rename-selector-option.spec.ts` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
 | `stt-` | `tests/set-selector/set-team-carries-down-to-cards.spec.ts` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's `League` combobox (NEO-307) then lists only leagues this worker minted, so its typed filters match exactly what the flow expects. It mints ONE league, `STL<token>L`, on STA's dialog and picks it back on STB's (see the minted-names table). Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
 | `tlf-` | `tests/set-selector/checklist-title-length-limits-and-fixer.spec.ts` (also `-${ATTEMPT_ID}`) |
-| `tpr-` | `team-picker-ranks-by-set-context` (NEO-331) — under the REAL `Baseball` › 2024 › `Topps`: the picker ranks by the set's League feature, which is derived ONLY at the sport level for the four stick-and-ball sports (Baseball → "MLB"), so a synthetic sport would leave nothing to rank by. `Insert` › `Base`, whose checklist row is the picker's context. **Writes no card**: the whole flow runs in the quick-add form's TeamPicker, whose chips are local state, and cancels the form. Mints four teams and one league (see the team-names table); the set and its rows stand. Per-worker only. |
 | `tp-` | `tests/set-selector/team-picker.spec.ts` |
 | `tpr-` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` (NEO-331) — under the REAL `Baseball` › 2024 › `Topps`: the picker ranks by the set's League feature, which is derived ONLY at the sport level for the four stick-and-ball sports (Baseball → "MLB"), so a synthetic sport would leave nothing to rank by. `Insert` › `Base`, whose checklist row is the picker's context. **Writes no card**: the whole flow runs in the quick-add form's TeamPicker, whose chips are local state, and cancels the form. Mints four teams and one league (see the team-names table); the set and its rows stand. Per-worker only. |
 | `tpc-` | `tests/set-selector/team-picker-create-custom-card.spec.ts` |
@@ -1973,7 +2176,7 @@ whole thing; never assume which letter the worker half starts with.
 | `FTT` | `tests/set-selector/set-fill-teams-from-teammate-card.spec.ts` | the team card #781 is born with and card #782 borrows through Fill teams. Carries the Location `Loc<token>` (typed into the DIALOG, never into a picker) so the composed `Loc<token> FTT<token>` is what rows, chips and the Fill teams ledger print |
 | `NBTeam` | `tests/set-selector/team-picker-create-custom-card.spec.ts` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `tests/set-selector/player-picker-create-custom-card.spec.ts` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
-| `Gw` | `tests/set-selector/checklist-wizard-link-commits.spec.ts` | a FOOTBALL player (NEO-313), made on `/admin/players` through `addPlayerByHand` (support/players.ts), which the review wizard links a Topps Brooklyn Collection name to after switching that row to Football. `Gp`/`Gm` below are its siblings; the three diverge at their SECOND character, so none is a prefix of another |
+| `Gw` | `tests/set-selector/checklist-wizard-link-commits.spec.ts` | a FOOTBALL player (NEO-313), made on `/admin/players` through `admin/`addPlayerByHand`, which the review wizard links a Topps Brooklyn Collection name to after switching that row to Football. `Gp`/`Gm` below are its siblings; the three diverge at their SECOND character, so none is a prefix of another |
 | `Gp` | `tests/set-selector/card-player-picker-cross-sport.spec.ts` | a FOOTBALL player (NEO-313), linked as a guest onto a baseball card from the card picker's sport switch |
 | `Gm` | `tests/admin/player-sports-multi-sport-membership.spec.ts` | a FOOTBALL player (NEO-313) who is given Baseball as an added sport, then picked on a baseball card |
 | `PM` | `tests/admin/player-management-add-and-career-history.spec.ts` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
@@ -1986,11 +2189,10 @@ whole thing; never assume which letter the worker half starts with.
 | `TMT` | `tests/admin/team-management-edit-a-team.spec.ts` | the ONLY team in the suite with a `location` (`Loc${WORKER_INDEX}`), so once it saves its composed name is `Loc<w> TMT<token>` — see the composed-name note above for why the extra term is inert |
 | `Alp` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | the throwaway PLAYER that flow creates to reach a career editor; `Ali` below is the team it makes there. The two diverge at their third character |
 | `Ali` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | the team a checklist club is LINKED to; carries the Location `Loc<token>` (typed into the DIALOG, never into a picker), so the composed `Loc<token> Ali<token>` is what the link option, the decision line and Team Management print. The link SEARCH types the single token `Ali<token>`. Its alias (the club's marketplace spelling) is removed again before the flow ends |
+| `Pca` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | an ALIAS, not a team: typed into `Ali<token>`'s New Team dialog so the wizard's alias-clash refusal (NEO-307) has a holder. Never searched; removed with the club's alias before the flow ends |
 | `MintedTeam` | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` | |
 | `TPT` | `tests/set-selector/team-picker.spec.ts` | |
-| `TPR` | `team-picker-ranks-by-set-context` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. Z and X PICK the existing "Major League Baseball" in the New Team dialog's League combobox (an unanswered League leaves a team league-less since NEO-331); that row is the seed's, and the spec never creates it. The spec types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
-| `TPRLg` | `team-picker-ranks-by-set-context` | a LEAGUE, named `TPRLg<token>M`, level **Minor** (load-bearing: it is what puts `TPR<token>QY` in tier 2), created from Y's New Team dialog (`Create “TPRLg<token>M”` → `Minor` → `Add league`) in **Baseball**. Trailing letter for the `STL<token>L` reason. Nothing deletes it, so one row per attempt stands in Baseball |
-| `TPR` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. Z and X PICK the existing "Major League Baseball" in the New Team dialog's League combobox (an unanswered League leaves a team league-less since NEO-331); that row is `tests/setup.spec.ts`'s (its Base wizard drain adds the New League step, level Other, abbreviation MLB), and this flow never creates it. The flow types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
+| `TPR` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. Z and X PICK the existing "Major League Baseball" in the New Team dialog's League combobox (an unanswered League leaves a team league-less since NEO-331); that row is the reference catalogue's on a catalogue preview (NEO-330: level Major, abbreviation MLB) and otherwise `tests/setup.spec.ts`'s (its Base wizard drain adds the New League step, level Other, abbreviation MLB), and this flow never creates it. The flow types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
 | `TPRLg` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | a LEAGUE, named `TPRLg<token>M`, level **Minor** (load-bearing: it is what puts `TPR<token>QY` in tier 2), created from Y's New Team dialog (`Create “TPRLg<token>M”` → `Minor` → `Add league`) in **Baseball**. Trailing letter for the `STL<token>L` reason. No flow deletes it, so one row per attempt stands in Baseball |
 | `ProbeTeam` / `TempTeam` | `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` | never persisted — the flow discards its batch |
 | `STL` | `tests/set-selector/set-team-carries-down-to-cards.spec.ts` | a LEAGUE, not a team, named `STL<token>L`: created from STA's New Team dialog (`Create “STL<token>L”` → `Add league`) under `E2E Test Sport <w>`, then picked as an existing league on STB's by typing `<token>L`. The trailing `L` is load-bearing: the create option appears only when the typed text is a substring of NO league, the token's random tail varies in length, so a bare `STL<token>` can sit inside an older attempt's name — a letter after the digits makes it contained in none. No flow deletes it, so one row per attempt stands in that worker's sport; nothing else types into that sport's League combobox except `No lea` |

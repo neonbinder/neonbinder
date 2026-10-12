@@ -21,12 +21,16 @@
     "test:unit": "vitest run --reporter=default --reporter=json --outputFile=.vitest-results.json && node scripts/verify-test-completeness.mjs",
     "test:unit:watch": "vitest",
     "link-deps": "./link-deps.sh",
+    "reference-seed:build": "node scripts/reference-seed/cli.mjs build",
+    "reference-seed:check": "node scripts/reference-seed/cli.mjs check",
+    "reference-seed:load": "node scripts/reference-seed/cli.mjs load",
+    "reference-seed:clear": "node scripts/reference-seed/cli.mjs clear",
     "builder": "npx builder.io@latest launch --app --serverUrl http://localhost:3000",
     "postinstall": "husky install",
     "test:e2e": "playwright test",
     "test:e2e:list": "playwright test --list",
     "test:e2e:typecheck": "tsc -p playwright/tsconfig.json",
-    "test:e2e:seed": "./e2e-baseline.sh reset && playwright test --project=setup"
+    "test:e2e:seed": "./e2e-seed-reset.sh && playwright test --project=setup"
   },
   "dependencies": {
     "@clerk/backend": "^3.18.1",

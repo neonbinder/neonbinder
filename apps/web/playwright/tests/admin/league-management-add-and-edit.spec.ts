@@ -1,14 +1,20 @@
 // Origin: .maestro/flows/admin/league-management-add-and-edit.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectTeamsLoaded } from "../../support/players";
 
 test(
   "League Management — add a league by hand, classify it, and edit what we know about it",
   { tag: ["@admin"] },
   async ({ page, signIn, env }) => {
-    const name = `LG-${env.WORKER_INDEX}-${env.ATTEMPT_ID}`;
-    const abbreviation = `L${env.ATTEMPT_ID}`;
-    const aliasOne = `Alias-${env.ATTEMPT_ID}`;
-    const aliasTwo = `Second-${env.ATTEMPT_ID}`;
+    // Every minted name is ONE search token carrying worker AND attempt
+    // (NEO-330: a hyphenated name is several search terms, and a reference
+    // catalogue of real leagues sits on every CI preview). The abbreviation
+    // stays under createByAdmin's 16-character cap.
+    const token = env.ATTEMPT_TOKEN;
+    const name = `Lg${token}`;
+    const abbreviation = `L${token}`;
+    const aliasOne = `Alias${token}`;
+    const aliasTwo = `Second${token}`;
 
     // The count is shown and also announced in an sr-only live region; read the announcement.
     const count = (pattern: RegExp) => page.getByRole("status").filter({ hasText: pattern });
@@ -76,7 +82,7 @@ test(
 
     // The Teams screen offers the league in its filter, abbreviation and all.
     await page.goto("/admin/teams");
-    await expect(page.getByText(/ of .* teams/)).toBeVisible({ timeout: 30_000 });
+    await expectTeamsLoaded(page, 30_000);
     await expect(
       page.getByLabel("League", { exact: true }).getByRole("option", { name: abbreviation }),
     ).toBeAttached();

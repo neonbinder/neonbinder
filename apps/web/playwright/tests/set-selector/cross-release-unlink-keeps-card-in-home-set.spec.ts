@@ -14,7 +14,7 @@ test(
   async ({ page, signIn, env }) => {
     const A = env.ATTEMPT_ID;
     const number = `957-${A}`;
-    const player = `Cross Unlink ${A}`;
+    const player = `CrossUnlink${env.ATTEMPT_TOKEN}`;
     const home = `xds-${env.WORKER_INDEX}`;
     const guest = `xdg-${env.WORKER_INDEX}`;
 

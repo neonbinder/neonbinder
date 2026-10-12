@@ -160,6 +160,8 @@ function makePreview(fillable: number) {
       },
     ],
     groupsTotal: 1,
+    conflicts: 0,
+    conflictCards: [],
   };
 }
 

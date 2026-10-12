@@ -3,7 +3,7 @@
 // stints at ONE team out of order, edit the pending stint with Enter, save,
 // reload: both stints survive in year order.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
+import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 
 test(
   "Player Management — add a player by hand and record two stints at one team",
@@ -80,7 +80,8 @@ test(
     await page.goto("/admin/players");
     await expectPlayersLoaded(page, 30_000);
     await page.getByLabel("Filter players").fill(player);
-    await expect(page.getByText(/matches/)).toBeVisible();
+    // NEO-330: a filter in the box reads "{N} match(es)", never "of N".
+    await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
     await page.getByRole("button", { name: player }).click();
     const reloaded = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
     await expect(reloaded).toHaveCount(2);

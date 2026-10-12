@@ -5,6 +5,7 @@
 // the typeahead (so an operator typing "San Diego Padres" never makes a second
 // Padres). "Discover" is never pressed: it is a live fetch of a third party.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 
 test(
   "Team Management — select a team and edit it",
@@ -17,7 +18,7 @@ test(
     const fullName = `${location} ${team}`;
 
     await signIn("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectPlayersLoaded(page, LAUNCH_GATE);
 
     // Scaffolding: a player, so there is a career editor to create a team in.
     // Empty the list first so "Baseball" belongs to the sport picker alone.
@@ -47,9 +48,11 @@ test(
     // The master row prints the short name but is labelled with the full one.
     const openTeam = async (name: string, rowLabel: string) => {
       await page.goto("/admin/teams");
-      await expect(page.getByText(/of .* teams/)).toBeVisible({ timeout: 30_000 });
+      await expectTeamsLoaded(page, 30_000);
       await page.getByRole("textbox", { name: "Filter teams" }).fill(name);
-      await expect(page.getByText(/^1 of .* teams/)).toBeVisible({ timeout: 15_000 });
+      // NEO-330: "1 match" is the filtered counter, so this cannot pass against an
+      // unfiltered list ("{N} teams") that merely happens to contain the team.
+      await expect(teamsCounter(page, "1 match")).toBeVisible({ timeout: 15_000 });
       await page.getByRole("button", { name: rowLabel, exact: true }).click();
     };
     await openTeam(team, team);
@@ -75,7 +78,7 @@ test(
 
     // Back in the typeahead, the FULL name finds the same team.
     await page.goto("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: 30_000 });
+    await expectPlayersLoaded(page, 30_000);
     await page.getByRole("textbox", { name: "Filter players" }).fill(player);
     const row = page.getByRole("button", { name: player });
     await expect(row).toBeVisible({ timeout: 15_000 });

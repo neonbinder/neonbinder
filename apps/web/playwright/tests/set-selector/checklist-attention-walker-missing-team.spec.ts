@@ -32,8 +32,8 @@ test(
     await drillToCustom(page, target);
 
     // Two hand-made cards, each with no team.
-    await addCardViaForm(page, { cardNumber: `801-${A}`, playerName: `Walker Alpha ${A}` });
-    await addCardViaForm(page, { cardNumber: `802-${A}`, playerName: `Walker Bravo ${A}` });
+    await addCardViaForm(page, { cardNumber: `801-${A}`, playerName: `WalkerAlpha${T}` });
+    await addCardViaForm(page, { cardNumber: `802-${A}`, playerName: `WalkerBravo${T}` });
     await expect(page.getByText("2 need attention")).toBeVisible();
     await expectAccessible(page, { label: "Checklist with two cards needing attention" });
 
@@ -106,8 +106,8 @@ test(
 
     // A fresh drill: the answers were persisted, not a local toggle.
     await drillToCustom(page, target);
-    await expect(page.getByText(`Walker Bravo ${A}`, { exact: true })).toBeVisible();
-    await expect(page.getByText(`Walker Alpha ${A}`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`WalkerBravo${T}`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`WalkerAlpha${T}`, { exact: true })).toBeVisible();
     await expect(needsTeam("802")).toBeHidden();
     await expect(needsTeam("801")).toBeHidden();
     await expect(fixThem).toBeHidden();

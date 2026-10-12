@@ -19,7 +19,7 @@ test(
     await addCustomCard(page, env, {
       set: `xsrc-${w}`,
       cardNumber: number,
-      playerName: `Cross Filter ${env.ATTEMPT_ID}`,
+      playerName: `CrossFilter${env.ATTEMPT_TOKEN}`,
     });
     await drillToCustom(page, {
       sport: customSport(env),

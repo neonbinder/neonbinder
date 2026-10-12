@@ -48,11 +48,11 @@ test(
     });
 
     // Two cards with no team, one with a team.
-    await addCardViaForm(page, { cardNumber: `701-${id}`, playerName: `Attn Alpha ${id}` });
-    await addCardViaForm(page, { cardNumber: `702-${id}`, playerName: `Attn Bravo ${id}` });
+    await addCardViaForm(page, { cardNumber: `701-${id}`, playerName: `AttnAlpha${token}` });
+    await addCardViaForm(page, { cardNumber: `702-${id}`, playerName: `AttnBravo${token}` });
     await addCardViaForm(page, {
       cardNumber: `703-${id}`,
-      playerName: `Attn Charlie ${id}`,
+      playerName: `AttnCharlie${token}`,
       beforeSubmit: async () => {
         await expectAccessible(page, { label: "Add card form" });
         await addNewTeam(page, teamB);
@@ -87,11 +87,11 @@ test(
 
     // The filter keeps only cards that still need attention, and restores the rest.
     await page.getByRole("button", { name: "Show only cards needing attention", exact: true }).click();
-    await expect(page.getByText(`Attn Bravo ${id}`)).toBeHidden();
-    await expect(page.getByText(`Attn Alpha ${id}`)).toBeVisible();
-    await expect(page.getByText(`Attn Charlie ${id}`)).toBeHidden();
+    await expect(page.getByText(`AttnBravo${token}`)).toBeHidden();
+    await expect(page.getByText(`AttnAlpha${token}`)).toBeVisible();
+    await expect(page.getByText(`AttnCharlie${token}`)).toBeHidden();
     await expectAccessible(page, { label: "Checklist filtered to cards needing attention" });
     await page.getByRole("button", { name: "Show only cards needing attention (on)" }).click();
-    await expect(page.getByText(`Attn Bravo ${id}`)).toBeVisible();
+    await expect(page.getByText(`AttnBravo${token}`)).toBeVisible();
   },
 );

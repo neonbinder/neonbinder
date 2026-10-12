@@ -5,6 +5,7 @@
 //   a birth year exactly one row carries  -> ADOPT
 // The name is one search token (no hyphens): players.search tokenizes.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectPlayersLoaded } from "../../support/players";
 
 test(
   "Player Management — a birth year is bounded, shows on the row, and is what lets a repeated name become a genuinely second player",
@@ -12,7 +13,7 @@ test(
   async ({ page, signIn, env }) => {
     const name = `Samename${env.ATTEMPT_TOKEN}`;
     await signIn("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectPlayersLoaded(page, LAUNCH_GATE);
 
     // Empty the list, so "Baseball" belongs to the sport picker alone; pick the
     // sport with the add form closed.
@@ -50,7 +51,7 @@ test(
 
     // (c) The year is stored: a fresh search re-reads the row.
     await filter.fill(name);
-    await expect(page.getByText("1 matches", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 match", { exact: true })).toBeVisible();
     const list = page.getByRole("main");
     await expect(list.getByText(/b\. 1960/)).toBeVisible();
 
@@ -61,7 +62,7 @@ test(
     await newName.fill(name);
     await page.getByRole("button", { name: `Create player ${name} anyway` }).click();
     await expect(page.getByText("That player already exists — opened it.")).toBeVisible();
-    await expect(page.getByText("1 matches", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 match", { exact: true })).toBeVisible();
     await expect(list.getByText(/b\. 1960/)).toBeVisible();
 
     // (f) "Create anyway" with a year nobody carries FORKS a second player.

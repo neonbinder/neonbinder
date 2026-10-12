@@ -8,7 +8,16 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
-import { drillToBaseVariant, syncChecklistButton, type DrillTarget } from "./set-builder";
+import {
+  columnHeading,
+  columnOption,
+  columnSearch,
+  drillToBaseVariant,
+  drillToColdManufacturer,
+  syncChecklistButton,
+  VARIANT_TYPES_SYNC,
+  type DrillTarget,
+} from "./set-builder";
 
 /** A live marketplace fetch, or a whole batch's lookups (the flows' 120 s / 180 s). */
 const FETCH = 120_000;
@@ -53,6 +62,104 @@ export async function fetchChecklistToWizard(
   }
   await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
   // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
+  await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
+}
+
+export interface OneMarketplaceSet {
+  /** The set's NB name, as the Sets column lists it. */
+  set: string;
+  /** Ancestors; default Hockey / 1995 / the pinned "All Brands" view. */
+  sport?: string;
+  year?: string;
+  manufacturer?: string;
+}
+
+/**
+ * util-open-one-marketplace-set-base.yaml (NEO-330): drill to a REAL set that
+ * carries ONE marketplace (BuySportsCards), select it, open `Base`, and CANCEL
+ * the base picker so exactly one side stays attached. Nothing is fetched. The
+ * Base stays unmapped on SportLots ("Map Base Set" is on screen) and the
+ * checklist section is below it. A flow that has committed the set calls this
+ * again for a fresh load of its checklist (the picker re-opens on a committed
+ * set too: only the SportLots slot counts as a mapping, and cancelling never
+ * writes one).
+ */
+export async function openOneMarketplaceSetBase(
+  page: Page,
+  env: FlowEnv,
+  { set, sport = "Hockey", year = "1995", manufacturer = "All Brands" }: OneMarketplaceSet,
+): Promise<void> {
+  await drillToColdManufacturer(page, env, { sport, year, manufacturer });
+
+  // The drill's own "Syncing Sets" gate can report done while the year-wide
+  // BSC phase is still storing, so the rows can still be one marketplace round
+  // trip away (the util's 15 s, an R5 marketplace exception).
+  await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: 15_000 });
+  await columnSearch(page, "Sets").fill(set);
+  await columnOption(page, "Sets", set).click();
+  // Selecting the set fires its cold, BSC-only variant-type sync (measured ~15 s).
+  await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
+  await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+
+  // An unmapped Base (`baseHasMapping` counts the SportLots slot only) opens the picker.
+  await columnOption(page, "Variant Types", "Base").click();
+  const picker = page.getByRole("dialog", { name: "Select Base Set" });
+  await expect(picker).toBeVisible();
+  // The confirm reads "Loading…" until the picker's live SportLots + BSC round trip lands (measured ~8 s).
+  await expect(picker.getByRole("button", { name: "Confirm Base Set" })).toBeVisible({ timeout: 60_000 });
+  // R2 precondition: BSC really answers for this set, so the fetch is a real one-marketplace fetch.
+  await expect(picker.getByRole("option", { name: /^BSC base candidate: / }).first()).toBeVisible();
+  const slCandidates = picker.getByRole("option", { name: /^SportLots base candidate: / });
+  if (!env.SL_PAUSED) {
+    // Live, the year's SportLots catalogue is OFFERED (offering is not attaching) and declined.
+    await expect(slCandidates.first()).toBeVisible();
+  } else {
+    await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+    await expect(slCandidates).toHaveCount(0);
+  }
+  await expectAccessible(page, { within: picker, label: "Select Base Set picker, one marketplace offers a base" });
+
+  // Cancelling writes nothing and is what keeps exactly one marketplace attached.
+  await picker.getByRole("button", { name: "Cancel" }).click();
+  const cancelled = page.getByText(/Base mapping cancelled/);
+  await expect(cancelled).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(cancelled).toBeHidden();
+  // Positive proof that Cancel left the row UNMAPPED: a Base that had picked up
+  // a SportLots mapping would offer "Re-map Base" instead.
+  await expect(page.getByRole("button", { name: "Map Base Set" })).toBeVisible();
+}
+
+/**
+ * util-fetch-one-marketplace-set-checklist-to-wizard.yaml (NEO-330): the
+ * one-marketplace twin of `fetchChecklistToWizard`. Opens the set's Base
+ * (`openOneMarketplaceSetBase`), syncs the never-fetched checklist and lands
+ * in the entity-review wizard with nothing decided. There is no parked
+ * pairing session behind it ("Back to matching" is not offered). The caller
+ * owns the exit: Cancel -> Discard for a reader, Confirm & Save for the set's
+ * sole writer (SET-REGISTRY.md).
+ */
+export async function fetchOneMarketplaceSetChecklistToWizard(
+  page: Page,
+  env: FlowEnv,
+  target: OneMarketplaceSet,
+): Promise<void> {
+  await openOneMarketplaceSetBase(page, env, target);
+
+  // The precondition for a FIRST fetch (a committed set re-syncs instead, and a
+  // re-sync raises no review). A local re-run against an already-committed
+  // preview fails here, by name, which is correct: re-seed first.
+  await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+  await syncChecklistButton(page).click();
+
+  // One live BSC round trip. `soloKeptMessage` prints only on the NEO-255
+  // branch, once the streamed batch has arrived in full, and names the one side
+  // it asked: both the sync point and the proof that one marketplace was attached.
+  await expect(page.getByText(/Kept all [0-9]+ cards? from BSC/)).toBeVisible({ timeout: 60_000 });
+
+  // Every fetched name the deployment does not hold is queued, each behind a
+  // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s).
+  await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
 

@@ -21,7 +21,16 @@
 # Runbook: docs/operations/neo214-set-builder-admin-scripts.md
 #
 # Usage:
-#   ./e2e-baseline.sh reset [--deployment <name>] [--dry-run]
+#   ./e2e-baseline.sh reset [--deployment <name>] [--except-reference-seed] [--dry-run]
+#
+# --except-reference-seed (NEO-330) passes `scope: "exceptReferenceSeed"`:
+# the reset skips the eight tables the reference-seed bundle carries
+# (selectorOptions, leagues, franchises, teams, teamAliases, players,
+# playerAliases, playerSports) and drains everything else. It exists only to
+# run immediately before `scripts/reference-seed/cli.mjs load`, whose
+# `convex import --replace` is the clear for those eight — run-e2e-smoke.sh
+# does exactly that when NB_REFERENCE_BUNDLE is set. Every guard below
+# applies to it unchanged.
 #
 # Deployment targeting (first match wins):
 #   1. --deployment <name>   Explicit override (CI passes the PR's preview slug).
@@ -73,7 +82,7 @@ CONVEX_CLI="convex@1.45.0"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: ./e2e-baseline.sh reset [--deployment <name>] [--dry-run]
+Usage: ./e2e-baseline.sh reset [--deployment <name>] [--except-reference-seed] [--dry-run]
 
   reset             Run selectorOptions:resetSetBuilderDataFromCli. DESTRUCTIVE
                      — wipes selectorOptions / cardChecklist / cardCrossListings
@@ -81,6 +90,11 @@ Usage: ./e2e-baseline.sh reset [--deployment <name>] [--dry-run]
 
   --deployment NAME  Target Convex deployment slug (e.g. a PR preview). Same
                      as setting $CONVEX_NAME; this flag wins if both are given.
+  --except-reference-seed
+                     Keep selectorOptions / leagues / franchises / teams /
+                     teamAliases / players / playerAliases / playerSports and
+                     wipe everything else. Only for use right before a
+                     reference-seed load, which replaces those tables.
   --dry-run          Resolve and print the target deployment, then exit 0
                      without calling convex or prompting for confirmation.
 
@@ -107,6 +121,8 @@ SUBCOMMAND="${1:-}"
 
 DEPLOYMENT_ARG=""
 DRY_RUN=""
+RESET_ARGS_JSON='{"confirm":"RESET"}'
+SCOPE_LABEL="all tables"
 while [ $# -gt 0 ]; do
   case "$1" in
     --deployment)
@@ -114,6 +130,10 @@ while [ $# -gt 0 ]; do
       DEPLOYMENT_ARG="$2"; shift 2 ;;
     --deployment=*) DEPLOYMENT_ARG="${1#--deployment=}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --except-reference-seed)
+      RESET_ARGS_JSON='{"confirm":"RESET","scope":"exceptReferenceSeed"}'
+      SCOPE_LABEL="all except the reference-seed tables"
+      shift ;;
     --prod)
       echo "✗ refusing: --prod is never allowed here — this script cannot target production. See docs/operations/neo214-set-builder-admin-scripts.md." >&2
       exit 1 ;;
@@ -225,6 +245,7 @@ fi
 
 echo "── e2e-baseline.sh $SUBCOMMAND ──"
 echo "   target deployment: $DISPLAY_TARGET"
+echo "   scope:             $SCOPE_LABEL"
 
 if [ -n "$DRY_RUN" ]; then
   echo "── --dry-run: stopping before calling convex ──"
@@ -285,7 +306,7 @@ while [ "$pass_n" -lt "$RESET_MAX_PASSES" ]; do
   reset_out=""
   reset_rc=0
   reset_out="$("${DOTENV[@]+"${DOTENV[@]}"}" npx --yes "$CONVEX_CLI" run selectorOptions:resetSetBuilderDataFromCli \
-    '{"confirm":"RESET"}' \
+    "$RESET_ARGS_JSON" \
     --typecheck disable --codegen disable \
     "${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}")" || reset_rc=$?
   # Echo the JSON so the per-table counts stay in the log as before.

@@ -15,6 +15,7 @@ import {
   playerKey,
   splitKey,
   teamKey,
+  TEAM_FILL_CONFLICT_CAP,
   TEAM_FILL_GROUP_CAP,
   TEAM_FILL_GROUP_NODE_CAP,
   type TeamFillCard,
@@ -227,6 +228,8 @@ describe("planTeamFill — empty and degenerate input", () => {
       groups: [],
       groupsTotal: 0,
       candidates: 0,
+      conflicts: [],
+      conflictsTotal: 0,
     });
   });
 
@@ -1546,5 +1549,297 @@ describe("planTeamFill — groups", () => {
     expect(result.fills).toHaveLength(distinctGroups);
     expect(result.groups).toHaveLength(TEAM_FILL_GROUP_CAP);
     expect(result.groupsTotal).toBe(distinctGroups);
+  });
+});
+
+// ===========================================================================
+// NEO-330 — a marketplace that names a different team
+// ===========================================================================
+
+/**
+ * The Jimmie Foxx shape from the 2025 Topps Welcome to the Club diagnosis.
+ * #36 carries the Red Sox; #34 and #35 carry no team and BSC's
+ * "Philadelphia Athletics", a name the catalogue holds in four eras. Tier 1
+ * would copy the Red Sox onto #34/#35 and contradict BSC without anyone
+ * seeing it. Product invariant 7: surface it, never settle it.
+ */
+describe("planTeamFill — BSC names a different team (NEO-330)", () => {
+  const FOXX = "player_foxx" as Id<"players">;
+  const RED_SOX = "team_red_sox" as Id<"teams">;
+  const ATHLETICS = [
+    "team_pha_1871",
+    "team_pha_1876",
+    "team_pha_1882",
+    "team_pha_1901",
+  ] as Array<Id<"teams">>;
+  const BSC_NAMES = new Map<string, ReadonlySet<string>>([
+    ["Philadelphia Athletics", new Set<string>(ATHLETICS)],
+    ["Boston Red Sox", new Set<string>([RED_SOX])],
+  ]);
+
+  function foxxCards() {
+    const evidence = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const c34 = card({ cardNumber: "34", playerIds: [FOXX], bscTeamName: "Philadelphia Athletics" });
+    const c35 = card({ cardNumber: "35", playerIds: [FOXX], bscTeamName: "Philadelphia Athletics" });
+    return { evidence, c34, c35 };
+  }
+
+  test("a fill BSC contradicts is not made, and each card is reported with the team it would have got", () => {
+    const { evidence, c34, c35 } = foxxCards();
+    const result = plan({ cards: [evidence, c34, c35], bscTeamIdsByName: BSC_NAMES });
+
+    expect(result.fills).toEqual([]);
+    expect(result.byRule.samePlayerInSet).toBe(0);
+    expect(result.groups).toEqual([]);
+    expect(result.conflictsTotal).toBe(2);
+    expect(result.conflicts).toEqual([
+      {
+        cardId: c34._id,
+        teamIds: [RED_SOX],
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        mixed: false,
+        bscTeamName: "Philadelphia Athletics",
+        // #36 was the whole of the evidence, so the preview can say "from #36".
+        sourceCardId: evidence._id,
+      },
+      {
+        cardId: c35._id,
+        teamIds: [RED_SOX],
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        mixed: false,
+        bscTeamName: "Philadelphia Athletics",
+        sourceCardId: evidence._id,
+      },
+    ]);
+    // A conflict is its own bucket, not "no rule could answer".
+    expect(result.remaining).toBe(0);
+    expect(result.candidates).toBe(result.fills.length + result.remaining + result.conflictsTotal);
+  });
+
+  test("a fill BSC agrees with goes ahead — any of the name's eras counts", () => {
+    const evidence = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [ATHLETICS[3]] });
+    const target = card({ cardNumber: "34", playerIds: [FOXX], bscTeamName: "Philadelphia Athletics" });
+    const result = plan({ cards: [evidence, target], bscTeamIdsByName: BSC_NAMES });
+
+    expect(result.fills).toEqual([
+      { cardId: target._id, teamIds: [ATHLETICS[3]], rule: "samePlayerInSet", scope: "sameNode", mixed: false },
+    ]);
+    expect(result.conflicts).toEqual([]);
+    expect(result.conflictsTotal).toBe(0);
+  });
+
+  test("BSC's name is compared trimmed", () => {
+    const evidence = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const target = card({ cardNumber: "34", playerIds: [FOXX], bscTeamName: "  Boston Red Sox " });
+    const result = plan({ cards: [evidence, target], bscTeamIdsByName: BSC_NAMES });
+    expect(result.fills.map((f) => f.cardId)).toEqual([target._id]);
+  });
+
+  test("a name the caller could not resolve cannot vouch for a fill — conflict, never a silent fill", () => {
+    const { evidence, c34 } = foxxCards();
+    // No map at all, and a map without the name: both are "cannot vouch".
+    expect(plan({ cards: [evidence, c34] }).conflictsTotal).toBe(1);
+    expect(
+      plan({ cards: [evidence, c34], bscTeamIdsByName: new Map() }).conflictsTotal,
+    ).toBe(1);
+    expect(
+      plan({
+        cards: [evidence, c34],
+        bscTeamIdsByName: new Map([["Philadelphia Athletics", new Set<string>()]]),
+      }).fills,
+    ).toEqual([]);
+  });
+
+  test("a card without a BSC name fills exactly as before", () => {
+    const evidence = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const target = card({ cardNumber: "34", playerIds: [FOXX] });
+    const blank = card({ cardNumber: "35", playerIds: [FOXX], bscTeamName: "   " });
+    const result = plan({ cards: [evidence, target, blank], bscTeamIdsByName: BSC_NAMES });
+    expect(result.fills.map((f) => f.cardId)).toEqual([target._id, blank._id]);
+    expect(result.conflictsTotal).toBe(0);
+  });
+
+  /**
+   * Invariant 8 (Jason, 2026-10-11): on a multi-team fill EVERY team written
+   * must be one the listing names. A two-team card whose listing names only
+   * one of them would have Fill write a team no data names — a guess — so the
+   * card is the operator's. This used to fill on ANY match.
+   */
+  test("a two-team fill where the listing names only one of the teams is a conflict, not a fill", () => {
+    const players = byId([
+      player({ _id: P1, teamYears: [{ teamId: T1, fromYear: 2000 }] }),
+      player({ _id: P2, teamYears: [{ teamId: T2, fromYear: 2000 }] }),
+    ]);
+    const target = card({ playerIds: [P1, P2], bscTeamName: "Team Two" });
+    const result = plan({
+      cards: [target],
+      playersById: players,
+      bscTeamIdsByName: new Map([["Team Two", new Set<string>([T2])]]),
+    });
+    expect(result.fills).toEqual([]);
+    expect(result.conflictsTotal).toBe(1);
+    expect(result.conflicts).toHaveLength(1);
+    expect([...result.conflicts[0].teamIds].sort()).toEqual([T1, T2].sort());
+    expect(result.conflicts[0]).toMatchObject({
+      cardId: target._id,
+      rule: "oneTeamCareer",
+      scope: "career",
+      mixed: false,
+      bscTeamName: "Team Two",
+    });
+    // A combo card's players each brought their own evidence: no one source.
+    expect(result.conflicts[0].sourceCardId).toBeUndefined();
+  });
+
+  test("a two-team fill goes ahead when the listing's name covers BOTH teams", () => {
+    const players = byId([
+      player({ _id: P1, teamYears: [{ teamId: T1, fromYear: 2000 }] }),
+      player({ _id: P2, teamYears: [{ teamId: T2, fromYear: 2000 }] }),
+    ]);
+    const target = card({ playerIds: [P1, P2], bscTeamName: "Shared Name" });
+    const result = plan({
+      cards: [target],
+      playersById: players,
+      // Two eras under one name, one per player's team.
+      bscTeamIdsByName: new Map([["Shared Name", new Set<string>([T1, T2])]]),
+    });
+    expect(result.fills.map((f) => [...f.teamIds].sort())).toEqual([[T1, T2].sort()]);
+    expect(result.conflictsTotal).toBe(0);
+  });
+
+  test("a two-team card copied from a neighbour is a conflict when the listing names one team", () => {
+    const evidence = card({ cardNumber: "1", playerIds: [P1, P2], teamOnCardIds: [T1, T2] });
+    const target = card({ cardNumber: "2", playerIds: [P1, P2], bscTeamName: "Team One" });
+    const result = plan({
+      cards: [evidence, target],
+      bscTeamIdsByName: new Map([["Team One", new Set<string>([T1])]]),
+    });
+    expect(result.fills).toEqual([]);
+    expect(result.conflicts).toEqual([
+      {
+        cardId: target._id,
+        teamIds: [T1, T2],
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        mixed: false,
+        bscTeamName: "Team One",
+        sourceCardId: evidence._id,
+      },
+    ]);
+  });
+
+  test("every tier is checked — a career fill BSC contradicts is a conflict too", () => {
+    const players = byId([player({ _id: P1, teamYears: [{ teamId: T1, fromYear: 1990 }] })]);
+    const target = card({ playerIds: [P1], bscTeamName: "Team Three" });
+    const result = plan({
+      cards: [target],
+      playersById: players,
+      bscTeamIdsByName: new Map([["Team Three", new Set<string>([T3])]]),
+    });
+    expect(result.fills).toEqual([]);
+    expect(result.conflicts).toEqual([
+      {
+        cardId: target._id,
+        teamIds: [T1],
+        rule: "oneTeamCareer",
+        scope: "career",
+        mixed: false,
+        bscTeamName: "Team Three",
+      },
+    ]);
+  });
+
+  test("a fill whose team does not exist stays in remaining — it was never a fill to disagree with", () => {
+    const { evidence, c34 } = foxxCards();
+    const result = plan({
+      cards: [evidence, c34],
+      bscTeamIdsByName: BSC_NAMES,
+      teamIdsThatExist: new Set<string>(),
+    });
+    expect(result.remaining).toBe(1);
+    expect(result.conflictsTotal).toBe(0);
+  });
+
+  test("tier 1 with two agreeing neighbours has no single source card — the preview names the rule", () => {
+    const a = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const b = card({ cardNumber: "37", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const target = card({ cardNumber: "34", playerIds: [FOXX], bscTeamName: "Philadelphia Athletics" });
+    const result = plan({ cards: [a, b, target], bscTeamIdsByName: BSC_NAMES });
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0].sourceCardId).toBeUndefined();
+    expect(result.conflicts[0].scope).toBe("sameNode");
+  });
+
+  test("a parallel's conflict names the original it copied", () => {
+    const original = card({
+      selectorOptionId: INSERT,
+      cardNumber: "7",
+      playerIds: [FOXX],
+      teamOnCardIds: [RED_SOX],
+    });
+    const target = card({
+      selectorOptionId: PARALLEL,
+      cardNumber: "7",
+      playerIds: [FOXX],
+      bscTeamName: "Philadelphia Athletics",
+    });
+    const result = plan({
+      cards: [original, target],
+      nodesById: TREE,
+      bscTeamIdsByName: BSC_NAMES,
+    });
+    expect(result.conflicts).toEqual([
+      {
+        cardId: target._id,
+        teamIds: [RED_SOX],
+        rule: "samePlayerInSet",
+        scope: "parallelOf",
+        mixed: false,
+        bscTeamName: "Philadelphia Athletics",
+        sourceCardId: original._id,
+      },
+    ]);
+  });
+
+  test("a base-card conflict on a one-player card names the one base card", () => {
+    const base = card({
+      selectorOptionId: BASE,
+      cardNumber: "36",
+      playerIds: [FOXX],
+      teamOnCardIds: [RED_SOX],
+    });
+    const target = card({
+      selectorOptionId: INSERT,
+      cardNumber: "34",
+      playerIds: [FOXX],
+      bscTeamName: "Philadelphia Athletics",
+    });
+    const result = plan({
+      cards: [base, target],
+      nodesById: TREE,
+      baseNodeId: BASE,
+      bscTeamIdsByName: BSC_NAMES,
+    });
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0]).toMatchObject({ scope: "baseSet", sourceCardId: base._id });
+  });
+
+  test("a fill never carries the source card — it is conflict-only attribution", () => {
+    const evidence = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const target = card({ cardNumber: "34", playerIds: [FOXX] });
+    const result = plan({ cards: [evidence, target], bscTeamIdsByName: BSC_NAMES });
+    expect(Object.keys(result.fills[0]).sort()).toEqual(["cardId", "mixed", "rule", "scope", "teamIds"]);
+  });
+
+  test("the conflict list is capped, the total is not", () => {
+    const evidence = card({ cardNumber: "36", playerIds: [FOXX], teamOnCardIds: [RED_SOX] });
+    const many = Array.from({ length: TEAM_FILL_CONFLICT_CAP + 3 }, (_, i) =>
+      card({ cardNumber: `${i}`, playerIds: [FOXX], bscTeamName: "Philadelphia Athletics" }),
+    );
+    const result = plan({ cards: [evidence, ...many], bscTeamIdsByName: BSC_NAMES });
+    expect(result.conflicts).toHaveLength(TEAM_FILL_CONFLICT_CAP);
+    expect(result.conflictsTotal).toBe(TEAM_FILL_CONFLICT_CAP + 3);
   });
 });

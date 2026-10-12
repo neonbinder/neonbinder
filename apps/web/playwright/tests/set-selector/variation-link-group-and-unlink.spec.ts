@@ -20,11 +20,11 @@ test(
     await addCustomCard(page, env, {
       set: `cvar-${env.WORKER_INDEX}`,
       cardNumber: base,
-      playerName: `Base Player ${id}`,
+      playerName: `BasePlayer${env.ATTEMPT_TOKEN}`,
     });
     await page.getByRole("button", { name: "Open add card form" }).click();
     await page.getByRole("textbox", { name: "Card number" }).fill(vari);
-    await cardName.fill(`Variation Player ${id}`);
+    await cardName.fill(`VariationPlayer${env.ATTEMPT_TOKEN}`);
     await page.getByRole("button", { name: "Submit new card" }).click();
     await expect(page.getByRole("button", { name: named("Edit", vari) })).toBeVisible();
     await expect(page.getByText(`#${base}`, { exact: true })).toBeVisible();
@@ -37,7 +37,7 @@ test(
     await parent.fill(base);
     await parent.press("Enter");
     await expect(page.getByRole("button", { name: "Clear variation parent" })).toBeVisible();
-    await expect(page.getByText(new RegExp(`#${base} Base Player ${id}`))).toBeVisible();
+    await expect(page.getByText(new RegExp(`#${base} BasePlayer${env.ATTEMPT_TOKEN}`))).toBeVisible();
     await expectAccessible(page, { label: "Card drawer with a variation parent set" });
 
     await page.getByRole("button", { name: "Close card detail" }).click();

@@ -23,7 +23,7 @@ test(
     };
 
     await signIn("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expect(page.getByText(/^[\d,]+ players?$/)).toBeVisible({ timeout: LAUNCH_GATE });
     await expectAccessible(page, { label: "Players admin page" });
 
     // A football player, made by hand.
@@ -34,7 +34,7 @@ test(
     await openVariant(page, "Insert", "Base");
     await page.getByRole("button", { name: "Open add card form" }).click();
     await page.getByRole("textbox", { name: "Card number" }).fill(card);
-    await page.getByRole("textbox", { name: "Card name" }).fill(`Guest Card ${A}`);
+    await page.getByRole("textbox", { name: "Card name" }).fill(`GuestCard${env.ATTEMPT_TOKEN}`);
 
     // Search for him: the picker searches Baseball until the sport is switched.
     // The results popover opens below the field and is fixed to the viewport,
@@ -66,9 +66,9 @@ test(
 
     // On /admin/players he is a Football player, not on Baseball's roster.
     await page.goto("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible();
+    await expect(page.getByText(/^[\d,]+ players?$/)).toBeVisible();
     await page.getByRole("textbox", { name: "Filter players" }).fill(PLAYER);
-    await expect(page.getByText(/matches/).first()).toBeVisible();
+    await expect(page.getByText(/^[\d,+]+ match(es)?$/).first()).toBeVisible();
     const sport = page.getByRole("combobox", { name: "Sport" });
     await sport.selectOption("Baseball");
     await expect(page.getByText("No players match that filter.")).toBeVisible();

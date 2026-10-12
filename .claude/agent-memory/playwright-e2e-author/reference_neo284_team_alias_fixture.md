@@ -1,20 +1,30 @@
 ---
 name: neo284-team-alias-fixture
-description: NEO-284 team-alias E2E — the one-sided Rickwood fixture (4 BSC cards, Negro League clubs, SportLots picker CANCELLED), how the "remember as alias" checkbox is asserted, the decision read-back, the wizard's TWO "Cancel (Esc)" controls, the NEO-326 team-step shape, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
+description: NEO-284 team-alias E2E — since NEO-330 the one-sided 1996 Line Up Venezuelan Winter League fixture (300 cards, 8 unknown clubs, one club acted on BY NAME; the older Rickwood fixture and its SportLots picker CANCELLED path), how the "remember as alias" checkbox is asserted, the decision read-back, the wizard's TWO "Cancel (Esc)" controls, the NEO-326 team-step shape, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
 metadata:
   type: reference
 ---
 
 # NEO-284 — `checklist-wizard-link-team-saves-alias` facts (2026-09-16)
 
-**Fixture:** Baseball > 2024 > Topps > *Topps MLB at Rickwood Field Negro Leagues
+**Fixture (since NEO-330):** Baseball > 1996 > All Brands > *Line Up Venezuelan Winter
+League* > Base, BSC only, through the fetch-to-wizard helper. 200 players + 8 clubs
+unknown; 211 rows settle (a staged league + 2 staged career teams) after ~144 s of LIVE
+lookups. All 211 are now in the NEO-289 recording, so re-measure the settle time from CI
+(see [[record-a-fixture-sets-lookups]]). The walk reads every team/league heading and acts
+on one checklist club BY NAME (Navegantes, an alias link), skipping the rest; branching on
+the heading text is free in a Playwright spec. The past-era claims (Tigres, the catalogue's
+single `Pittsburgh Crawfords`) moved to the past-era team-link spec, see
+[[past-era-team-fixture]]. The alias-clash holder (`Pca`) now lives on the minted `Loc Ali`
+team. Until NEO-330 the fixture was the 4-card Rickwood Field set below, whose clubs the
+reference catalogue now holds; the Rickwood history follows.
+
+Rickwood history: Baseball > 2024 > Topps > *Topps MLB at Rickwood Field Negro Leagues
 Collection* > Base. BSC: 4 cards on Negro League clubs; 8 unknown names = 4 players +
 clubs + ONE staged league ("Negro league baseball", presented FIRST: skip it with the
-`Skip ... has no league` control, then the first team row follows). It is the smallest
-2024 Topps set whose wizard opens on a TEAM row (team sets of MLB clubs have 0 unknown
-teams because the Chrome seed commit creates all 30).
+`Skip ... has no league` control, then the first team row follows).
 
-**It is ONE-SIDED: cancel the base picker.** SportLots does not carry the set; the
+**It is ONE-SIDED: cancel the base picker.** (Rickwood history:) SportLots did not carry the set; the
 picker's SL column is the year's whole catalogue with "Base Set" flagged "likely
 match" (2024 Topps flagship, 352 cards). Taking the first-candidate path
 (`drillToBaseVariant`) attaches that wrong set and pairs 0 of 4. Cancel, "Base mapping

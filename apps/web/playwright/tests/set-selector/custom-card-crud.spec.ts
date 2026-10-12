@@ -18,7 +18,7 @@ test(
     await addCustomCard(page, env, {
       set: `ccrud-${env.WORKER_INDEX}`,
       cardNumber: number,
-      playerName: `Test Player ${A}`,
+      playerName: `TestPlayer${env.ATTEMPT_TOKEN}`,
       cardName: `CRUDName-${A}`,
     });
 

@@ -53,7 +53,10 @@ import { findSportForSelectorOption } from "./cardChecklist";
  *
  * Candidates are therefore released as soon as they are reconciled. `status`
  * still tracks whether a row's team has resolved, so the UI can show enrichment
- * in progress — it just no longer decides what may be seen.
+ * in progress — it just no longer decides what may be seen. Since NEO-330 it is
+ * per row (`pending` only while a lookup for THAT row is outstanding), so
+ * `ready === total` means every team this fetch will produce has landed — the
+ * signal the one-marketplace auto-keep path waits on before it commits.
  *
  * ## Stems still travel together
  *
@@ -111,16 +114,46 @@ const candidateInputValidator = v.object({
   bucket: bucketValidator,
   confidence: v.optional(v.number()),
   /**
-   * NEO-341 — this card is waiting on a BSC team lookup, so it is written
-   * `pending` and `resolveCandidateTeams` flips it. `false` writes it `ready`:
-   * its team is already known (or there is no BSC ref to look one up by), and
-   * holding it `pending` would keep `ready` below `total` forever — which is
-   * exactly why the client could not use `ready === total` as its "every team
-   * has landed" signal before this. Absent keeps the old batch-wide rule
-   * (`readyImmediately`). An input flag only: never stored on the row.
+   * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
+   * is about to run, so it is written `pending` and `resolveCandidateTeams`
+   * flips it. `false` writes it `ready`: its team is already known (or there
+   * is no BSC ref to look one up by), and holding it `pending` would keep
+   * `ready` below `total` forever — which is exactly why the client could not
+   * use `ready === total` as its "every team has landed" signal before this.
+   * Absent keeps the old batch-wide rule (`readyImmediately`); see
+   * `initialCandidateStatus`. An input flag only: it describes the write, not
+   * the card, and is never stored on the row.
    */
   teamPending: v.optional(v.boolean()),
 });
+
+/**
+ * NEO-330 — the status a candidate row is written with.
+ *
+ * Per ROW, not per batch. The batch-wide `readyImmediately` wrote every row
+ * `pending` whenever ANY row needed a lookup, while `resolveCandidateTeams`
+ * only ever flips the rows it looked up — so a row whose team was already
+ * parsed, or a SportLots-only row with no BSC ref to look up, stayed `pending`
+ * for the life of the batch and `ready` could never reach `total`. That made
+ * `ready` unusable as "every team this fetch is going to have has landed",
+ * which is exactly what the one-marketplace auto-keep path needs to wait on: an
+ * action's promise resolves before the client's subscription shows the
+ * action's last writes, so a count the pre-patch snapshot already satisfies
+ * (`total`) cannot tell the client the teams are in.
+ *
+ * The per-row flag wins when the caller sends it. A caller that does not
+ * (every caller before NEO-330, and the tests that predate it) gets the old
+ * batch-wide answer, so `readyImmediately` keeps its meaning.
+ */
+export function initialCandidateStatus(
+  teamPending: boolean | undefined,
+  readyImmediately: boolean,
+): "pending" | "ready" {
+  if (teamPending !== undefined) {
+    return teamPending ? "pending" : "ready";
+  }
+  return readyImmediately ? "ready" : "pending";
+}
 
 
 /**
@@ -168,8 +201,9 @@ const candidateInputValidator = v.object({
  * and the pairing modal's Confirm waits for that same count too. Both also
  * wait for this run's batch (the action's `candidateBatchId`) to show `ready`
  * at or past the action's `readyAfterTeams` (NEO-333) AND every row `ready`
- * (NEO-341), so the team lookup's writes — including a retry that lands after
- * the action returned — are on the client before anything is committed. The
+ * (NEO-330 / NEO-341), so the team lookup's writes — including a retry that
+ * lands after the action returned — are on the client before anything is
+ * committed. The
  * one ordering that had to be made explicit is the team lookup's — see
  * `resolveCandidateTeams`, which now retries a card whose row this chain had
  * not reached yet.
@@ -252,8 +286,9 @@ export const clearCandidatesTail = internalMutation({
 
 /**
  * Open a batch: drop anything left from THIS OPERATOR's previous run on this
- * row, then write every candidate: `pending` if it awaits a BSC team lookup,
- * `ready` otherwise (NEO-341 — see `teamPending`).
+ * row, then write every candidate — `pending` if it awaits a BSC team lookup,
+ * `ready` if not (NEO-330 / NEO-341, `teamPending` and
+ * `initialCandidateStatus`).
  *
  * Clearing first is deliberate. A re-sync before the operator cancelled would
  * otherwise leave two runs' candidates interleaved in the modal, and the older
@@ -290,8 +325,8 @@ export const startCandidateBatch = internalMutation({
     candidates: v.array(candidateInputValidator),
     // Whether every card's team is already known. When false the rows are still
     // shown — see the note above — and a row carries `pending` until enrichment
-    // reaches it, unless its own `teamPending: false` says no lookup is coming
-    // (NEO-341).
+    // reaches it. NEO-330 / NEO-341: a candidate's own `teamPending` overrides
+    // this for that row — see `initialCandidateStatus`.
     readyImmediately: v.boolean(),
     // NEO-294 — the index of the first candidate THIS call writes. Absent
     // starts at the head and clears the operator's previous run first.
@@ -473,10 +508,10 @@ async function writeCandidatePage(
       batchId: args.batchId,
       createdByUserId: args.userId,
       stem: cardNumberStem(c.cardNumber),
-      // NEO-341 — per row when the caller says which rows await a lookup, so
-      // `ready === total` means "every lookup this fetch owes has landed".
-      status:
-        args.readyImmediately || teamPending === false ? "ready" : "pending",
+      // NEO-330 / NEO-341 — per row when the caller says which rows await a
+      // lookup, so `ready === total` means "every lookup this fetch owes has
+      // landed"; see `initialCandidateStatus`.
+      status: initialCandidateStatus(teamPending, args.readyImmediately),
       lastUpdated: now,
     });
   }
@@ -623,17 +658,45 @@ export const resolveCandidateTeams = internalMutation({
       .withIndex("by_batch", (q) => q.eq("batchId", args.batchId))
       .collect();
 
-    // NEO-341 — EVERY row per ref, not the last one seen. A row this skipped
-    // used to cost only its team; now that `ready === total` is the client's
-    // "every lookup has landed" signal, a row left `pending` would hold the
-    // pairing dialog's Confirm shut for good.
+    // NEO-330 / NEO-341 — EVERY row carrying a ref, not the last one seen. A
+    // ref is BSC's own card id and is normally unique in a batch, but nothing
+    // guarantees it, and now that `ready === total` is the client's "every
+    // lookup has landed" signal (the auto-keep wait and the dialog's Confirm),
+    // a second row left `pending` would hold that run until it times out. Both
+    // rows asked BSC the same question; both get the answer.
     const byBscRef = new Map<string, Array<(typeof rows)[number]>>();
     for (const r of rows) {
       const ref = r.platformData.bsc?.ref;
       if (!ref) continue;
-      const same = byBscRef.get(ref);
-      if (same) same.push(r);
+      const list = byBscRef.get(ref);
+      if (list) list.push(r);
       else byBscRef.set(ref, [r]);
+    }
+
+    // NEO-330 (security review) — one answer per ref BEFORE the patch loop.
+    // Every row sharing a ref is patched for each entry naming it, so k rows
+    // and k entries for one ref used to cost k² writes, with k set by
+    // marketplace data. The caller sends one entry per looked-up CARD, which
+    // repeats a ref exactly when the rows share it. Entries for one ref come
+    // from one lookup and agree; if two ever disagree, neither is written —
+    // the row goes `ready` with no team and the operator picks (root
+    // CLAUDE.md, invariant 8: a guess is never made between two claims).
+    //
+    // NEO-333 — an answer is BOTH forms (raw string + split); two entries
+    // agree only when both forms do. `undefined` marks a disagreement.
+    type ResolvedEntry = (typeof args.resolved)[number];
+    const answerKey = (e: ResolvedEntry) =>
+      JSON.stringify([e.rawTeamName ?? null, e.teamNames ?? null]);
+    const answerByRef = new Map<string, ResolvedEntry | undefined>();
+    for (const entry of args.resolved) {
+      if (!answerByRef.has(entry.bscRef)) {
+        answerByRef.set(entry.bscRef, entry);
+      } else {
+        const prior = answerByRef.get(entry.bscRef);
+        if (prior && answerKey(prior) !== answerKey(entry)) {
+          answerByRef.set(entry.bscRef, undefined);
+        }
+      }
     }
 
     const touchedStems = new Set<string>();
@@ -646,42 +709,46 @@ export const resolveCandidateTeams = internalMutation({
     let teamScope:
       | { sportId: Id<"selectorOptions"> | undefined; setYear: number | undefined }
       | undefined;
-    for (const entry of args.resolved) {
-      const sameRef = byBscRef.get(entry.bscRef);
-      if (!sameRef) {
+    for (const [bscRef, entry] of answerByRef) {
+      const matching = byBscRef.get(bscRef);
+      if (!matching) {
         // Forwarded as received, raw string included, so the retry decides
-        // exactly what this pass would have.
-        missed.push(entry);
+        // exactly what this pass would have. A disagreement travels as the
+        // bare ref: no team, never one side of it.
+        missed.push(entry ?? { bscRef });
         continue;
       }
-      // One answer per REF: every row sharing it carries the same BSC value,
-      // so the whole-name decision is made once and written to all of them.
-      const scopeRow = sameRef[0];
-      const teams = await chooseCandidateTeams(
-        ctx,
-        entry.rawTeamName,
-        entry.teamNames,
-        async () => {
-          if (!teamScope) {
-            teamScope = {
-              sportId: await findSportForSelectorOption(
-                ctx,
-                scopeRow.selectorOptionId,
-              ),
-              setYear: await findSetYearForSelectorOption(
-                ctx,
-                scopeRow.selectorOptionId,
-              ),
-            };
-          }
-          return teamScope;
-        },
-      );
-      for (const row of sameRef) {
+      // One choice per ref (NEO-330 dedupe): every row sharing the ref asked
+      // BSC the same question, so they share the one answer.
+      const scopeRow = matching[0];
+      const teams = entry
+        ? await chooseCandidateTeams(
+            ctx,
+            entry.rawTeamName,
+            entry.teamNames,
+            async () => {
+              if (!teamScope) {
+                teamScope = {
+                  sportId: await findSportForSelectorOption(
+                    ctx,
+                    scopeRow.selectorOptionId,
+                  ),
+                  setYear: await findSetYearForSelectorOption(
+                    ctx,
+                    scopeRow.selectorOptionId,
+                  ),
+                };
+              }
+              return teamScope;
+            },
+          )
+        : undefined;
+      for (const row of matching) {
         await ctx.db.patch(row._id, {
           // An empty result is an answer, not a failure — see the note above.
-          // So is a refused split (`undefined`): the row is settled with no
-          // team, and the operator picks one in review — never a guess here.
+          // So is a refused split or a disagreement (`undefined`): the row is
+          // settled with no team, and the operator picks one in review —
+          // never a guess here.
           ...(teams ? { teams } : {}),
           status: "ready",
           lastUpdated: Date.now(),

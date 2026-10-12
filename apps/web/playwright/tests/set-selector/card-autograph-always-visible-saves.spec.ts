@@ -11,7 +11,7 @@ test(
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const card = `778-${env.ATTEMPT_ID}`;
-    const player = `Autograph Test Player ${env.ATTEMPT_ID}`;
+    const player = `AutographPlayer${env.ATTEMPT_TOKEN}`;
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });

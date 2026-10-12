@@ -21,6 +21,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { BSC_TEAM_CHECK_MAX_PASSES } from "./adapters/buysportscards";
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
@@ -30,8 +31,12 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
     ...actual,
     resolveBscCardTeam: internalAction({
       args: { cardChecklistId: v.id("cardChecklist") },
-      returns: v.null(),
-      handler: async (): Promise<null> => {
+      returns: v.union(
+        v.literal("answered"),
+        v.literal("notNeeded"),
+        v.literal("failed"),
+      ),
+      handler: async (): Promise<"failed"> => {
         throw new Error("simulated resolveBscCardTeam failure");
       },
     }),
@@ -68,9 +73,11 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       errorLines.push(args.map(String).join(" "));
     });
-    // The drain also logs "queue drained." on `console.log`; same RPC, same
-    // race, so it is captured too.
+    // The drain also logs "queue drained." on `console.log`, and (NEO-330)
+    // the retry and give-up lines on `console.warn`; same RPC, same race, so
+    // they are captured too.
     vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -140,21 +147,29 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
     // shields every card, not just the first, from wedging the queue.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    // Neither card was actually resolved (the mock always throws before
-    // doing anything useful), but critically nothing in the chain blew up.
+    // NEO-330 — a throw counts as a failed lookup: each card is retried up to
+    // the queue's bound and then handed to the operator. Nothing was ever
+    // resolved, so nothing was linked — the cards are only FLAGGED, which is
+    // `teamCheckDoneAt` with no team.
     const a = await t.run(async (ctx) => ctx.db.get(cardA));
     const b = await t.run(async (ctx) => ctx.db.get(cardB));
-    expect(a!.teamCheckDoneAt).toBeUndefined();
-    expect(b!.teamCheckDoneAt).toBeUndefined();
+    expect(a!.teamOnCardIds).toBeUndefined();
+    expect(b!.teamOnCardIds).toBeUndefined();
+    expect(a!.teamCheckDoneAt).toBeTypeOf("number");
+    expect(b!.teamCheckDoneAt).toBeTypeOf("number");
 
-    // …and the outer catch ran for EVERY card, not just the first. Without
-    // this the test could pass on a queue that silently stopped after cardA:
-    // "neither card was resolved" is true in that case too.
+    // …and the outer catch ran for EVERY card on EVERY pass, not just the
+    // first. Without this the test could pass on a queue that silently
+    // stopped after cardA.
     const failures = errorLines.filter((line) =>
       line.includes("resolveBscCardTeam"),
     );
-    expect(failures).toHaveLength(2);
-    expect(failures.some((line) => line.includes(cardA))).toBe(true);
-    expect(failures.some((line) => line.includes(cardB))).toBe(true);
+    expect(failures).toHaveLength(2 * BSC_TEAM_CHECK_MAX_PASSES);
+    expect(failures.filter((line) => line.includes(cardA))).toHaveLength(
+      BSC_TEAM_CHECK_MAX_PASSES,
+    );
+    expect(failures.filter((line) => line.includes(cardB))).toHaveLength(
+      BSC_TEAM_CHECK_MAX_PASSES,
+    );
   });
 });

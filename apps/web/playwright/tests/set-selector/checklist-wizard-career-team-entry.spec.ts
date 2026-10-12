@@ -62,8 +62,11 @@ test(
     await expect(wizard.getByRole("combobox", { name: "League" })).toHaveValue(`${league} (new)`);
     await wizard.getByRole("button", { name: "Add as New Team" }).click();
 
-    // Back on the player row, the staged team shows with its era.
-    await expect(careerName).toBeVisible({ timeout: 30_000 });
+    // Back on the player row, the staged team shows with its era. One decision
+    // write plus the walk's return (NEO-330): 7 s, no external round trip. The
+    // walk comes back to THIS player, so the chips below are on the row the
+    // clubs were typed on by construction.
+    await expect(careerName).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${probe} \\(2001.2005\\)`))).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, staged career team with its era" });
 
@@ -85,7 +88,7 @@ test(
     await wizard.getByRole("option", { name: `${league} (new)` }).click();
     await expect(wizard.getByRole("combobox", { name: "League" })).toHaveValue(`${league} (new)`);
     await wizard.getByRole("button", { name: "Add as New Team" }).click();
-    await expect(careerName).toBeVisible({ timeout: 30_000 });
+    await expect(careerName).toBeVisible();
     const tempChip = wizard.getByText(new RegExp(`${temp} \\(2010.present\\)`));
     await expect(tempChip).toBeVisible();
 

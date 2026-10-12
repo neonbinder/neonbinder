@@ -18,6 +18,7 @@ import {
   FIXTURE_VERSION,
   fixtureKey,
   getEnrichmentFixture,
+  normaliseLookupName,
   parseFixtureFile,
   type EnrichmentFixtureEntry,
 } from "./adapters/enrichmentFixtures";
@@ -26,10 +27,14 @@ const FIXTURE_PATH = join(__dirname, "adapters", "__fixtures__", "enrichment-loo
 
 /**
  * The player the `admin/player-live-wikidata-enrichment` flow adds to prove
- * the live lane. Baseball, and deliberately absent from every seeded set so
- * no other flow confirms the name through the wizard.
+ * the live lane. Hockey (NEO-330: the reference catalogue every CI preview
+ * loads holds every NHL player and the old baseball pick, so the name has to
+ * come from outside it), and deliberately absent from every seeded set so no
+ * other flow confirms the name through the wizard.
  */
-const LIVE_PROOF_PLAYER = "Harmon Killebrew";
+const LIVE_PROOF_PLAYER = "Vladislav Tretiak";
+/** Ice hockey — the `sportConfig.wikidata.sportQid` the flow's lookup filters on. */
+const LIVE_PROOF_SPORT_QID = "Q41466";
 
 function readCommitted(): unknown {
   return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
@@ -155,7 +160,13 @@ describe("the committed enrichment fixture", () => {
     const parsed = parseFixtureFile(readCommitted());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.fixture.entries[fixtureKey("player", parsed.fixture.sportQid, LIVE_PROOF_PLAYER)]).toBeUndefined();
+    const { entries, sportQid } = parsed.fixture;
+    expect(entries[fixtureKey("player", LIVE_PROOF_SPORT_QID, LIVE_PROOF_PLAYER)]).toBeUndefined();
+    expect(entries[fixtureKey("player", sportQid, LIVE_PROOF_PLAYER)]).toBeUndefined();
+    // Under any kind and any sport: a re-capture that ever spans more than one
+    // sport must not sweep the name in either.
+    const suffix = `|${normaliseLookupName(LIVE_PROOF_PLAYER)}`;
+    expect(Object.keys(entries).filter((key) => key.endsWith(suffix))).toEqual([]);
   });
 
   test("carries names and lookup answers only — no credentials, URLs or deployment names", () => {

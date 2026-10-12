@@ -2,7 +2,7 @@
 // One location + nickname can be two teams when their eras differ; the second
 // is created only after the operator confirms ("Create again").
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
+import { addPlayerByHand, expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 
 test(
   "Teams — one location and nickname can be two teams when their eras differ, and the second is only created once the operator confirms it",
@@ -61,9 +61,10 @@ test(
 
     // Teams admin: both eras are listed as separate teams.
     await page.goto("/admin/teams");
-    await expect(page.getByText(/ of .* teams/)).toBeVisible({ timeout: 30_000 });
+    await expectTeamsLoaded(page, 30_000);
     await page.getByLabel("Filter teams").fill(nickname);
-    await expect(page.getByText(/^2 of .* teams/)).toBeVisible();
+    // NEO-330: "2 matches" (no "of N") names the two rows of one name.
+    await expect(teamsCounter(page, "2 matches")).toBeVisible();
     const first = page.getByRole("button", { name: /1972–1996/ });
     const second = page.getByRole("button", { name: /2011–present/ });
     await expect(first).toBeVisible();

@@ -4,8 +4,13 @@
 // Tigers") becomes TWO team links, never one combined team. Proved on live
 // data through the operator's own path (Sync card checklist -> Confirm New
 // Players & Teams -> Confirm & Save):
-//   (a) while the wizard drains, no team step is ever about a comma-joined
-//       name, nor about either half of PDA-WW's value;
+//   (a) the fetch stages no team named after a comma-joined value. On the
+//       reference catalogue (NEO-330) every name on the set is known, so the
+//       correct fetch commits straight to "Saved N cards" with no wizard (an
+//       UNSPLIT value resolves to no team, is an unknown team, and always
+//       opens the wizard). Whenever the wizard does open, no team step it
+//       presents is about a comma-joined name, nor about either half of
+//       PDA-WW's value;
 //   (b) after the save, the dual card's row reads both clubs, resolved;
 //   (c) Team Management holds exactly ONE team containing "Boston Red Sox"
 //       (the row alone cannot tell two links from one combined team, so the
@@ -32,6 +37,7 @@ import {
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
+import { expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
@@ -120,13 +126,19 @@ test(
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     await syncChecklistButton(page).click();
 
-    // Two legitimate shapes: a SportLots set paired with the insert opens
-    // "Match Cards"; one source takes the one-marketplace path. A fetch that
-    // lost the BSC side matches neither. BSC's per-card team lookup (the code
-    // NEO-333 changed) runs INSIDE this fetch: live round trip.
+    // Legitimate shapes: a SportLots set paired with the insert opens "Match
+    // Cards"; one source takes the one-marketplace path ("Kept all N cards
+    // from BSC"), and with every name known (the catalogue) that path commits
+    // at once, the commit's "Saved N cards" REPLACING the Kept-all line (the
+    // checklist holds one notice). "Saved" is accepted as the same fetch's
+    // later state: the checklist was empty a step ago, so it can only be this
+    // fetch's. A fetch that lost the BSC side would carry no BSC team values,
+    // and STEP 6's row read fails it by name. BSC's per-card team lookup (the
+    // code NEO-333 changed) runs INSIDE this fetch: live round trip.
     const matchCards = page.getByText(/Match Cards/).first();
     const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expect(matchCards.or(kept)).toBeVisible({ timeout: CHECKLIST_FETCH });
+    const saved = page.getByText(/Saved [1-9][0-9]* cards?/);
+    await expect(matchCards.or(kept).or(saved).first()).toBeVisible({ timeout: CHECKLIST_FETCH });
     // NEO-287: paused, nothing was asked of SportLots, so the pairing dialog is the bug.
     if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
     if (await matchCards.isVisible()) {
@@ -143,70 +155,79 @@ test(
       await expect(page.getByText(/Match Cards/)).toBeHidden();
     }
 
-    // ── STEP 5: claim (a): drain the wizard; no team step is a comma-joined name ──
-    // The wizard MUST open: every player on this set is unknown on a fresh
-    // preview, so a fetch that committed straight through would leave (a)
-    // unexercised.
-    await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
-    await expectAccessible(page, { within: wizard, label: "Confirm New Players & Teams wizard" });
+    // ── STEP 5: claim (a): no team step is a comma-joined name ──
+    // TWO LEGITIMATE SHAPES, and the gate names both (R2): "Saved N cards" (the
+    // fetch committed straight through; EXPECTED on the catalogue, where every
+    // player and club on the set is known, and itself the proof of (a) on that
+    // path: an unsplit value would have opened the wizard), or the wizard
+    // (something was staged: a catalogue refresh dropped a name, a SportLots
+    // pairing brought its own spellings, or the split regressed), which is
+    // drained below with every team/league step checked before it is answered.
+    // The wizard opens behind the entity check's batch and the direct commit
+    // behind the card write (the flow's 60 s, a live round trip).
+    await expect(wizard.or(saved).first()).toBeVisible({ timeout: WIZARD_OPENS });
+    if (await wizard.isVisible()) {
+      await expectAccessible(page, { within: wizard, label: "Confirm New Players & Teams wizard" });
 
-    // Wait out the lookups first: team rows go through the same Wikidata pool
-    // as players and are presented only once settled, so draining earlier
-    // would let a still-pending combined row be skipped unseen by "Skip
-    // remaining names" below, and (a) would pass without looking.
-    await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
-
-    const person = personSkip(page);
-    const stepSkip = wizard.getByRole("button", {
-      name: /^Skip .* — (not a team|this team has no league)$/,
-      disabled: false,
-    });
-    // The settled wizard is presenting a row (a team, a league or a player),
-    // so the loop cannot exit on a blank or wedged dialog.
-    await expect(person.or(stepSkip)).toBeVisible();
-
-    // Every settled undecided team (and the league step staged ahead of a team
-    // that needs one) is presented before any player, so "a player is
-    // presented" is the product saying the team queue is empty. Two passes,
-    // as walkToPlayerRow: rows behind a step settle only once it is decided.
-    // Each presented step is CHECKED on its footer control's accessible name
-    // (which carries the row's name), then SKIPPED. Skipping, never "Add as
-    // New": this spec mints no team, which is what lets STEP 7 count to one.
-    //  * `[^,]+` is the claim "this step's name has no comma" (before NEO-333
-    //    the wizard presented `New Team: Cleveland Guardians, Washington
-    //    Nationals`);
-    //  * a step named for either HALF of PDA-WW's value means the split
-    //    happened but a part failed to resolve (both clubs are seeded current
-    //    teams), and the card would commit with that club missing.
-    const stepName = /^Skip (?!Boston Red Sox —|Detroit Tigers —)[^,]+ — (not a team|this team has no league)$/;
-    const commaOrHalf = /^New Team: (Boston Red Sox|Detroit Tigers)$|^New (Team|League): .*,/;
-    for (let pass = 0; pass < 2; pass++) {
+      // Wait out the lookups first: team rows go through the same Wikidata pool
+      // as players and are presented only once settled, so draining earlier
+      // would let a still-pending combined row be skipped unseen by "Skip
+      // remaining names" below, and (a) would pass without looking.
       await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
-      for (let i = 0; i < 40; i++) {
-        await expect(person.or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
-        if (await person.isVisible()) break;
-        const name = (await stepSkip.first().getAttribute("aria-label")) ?? "";
-        expect(name, "a team/league step must not be a comma-joined name or a half of PDA-WW's value").toMatch(stepName);
-        await expect(newStepHeading(page).filter({ hasText: commaOrHalf })).toHaveCount(0);
-        await stepSkip.first().click();
-        // The step's own skip names it, so its going away means the step moved on.
-        await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
-      }
-      await expect(person).toBeVisible();
-    }
 
-    // The players are not what this spec is about: skip them all in one press.
-    // Landing on the first player can stage its Wikidata career teams a few
-    // seconds later; those are Wikidata labels, not BSC values, so they are
-    // skipped with the players. That is why the press is repeated until the
-    // commit is offered: a late staged row leaves one row undecided.
-    const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-    const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
-    await expect(async () => {
-      if (await skipRemaining.isVisible()) await skipRemaining.click();
-      await expect(confirmSave).toBeVisible({ timeout: 1_500 });
-    }).toPass({ timeout: 7_000 });
-    await confirmSave.click();
+      const person = personSkip(page);
+      const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
+      const stepSkip = wizard.getByRole("button", {
+        name: /^Skip .* — (not a team|this team has no league)$/,
+        disabled: false,
+      });
+      // The settled wizard is presenting a row (a team, a league or a player),
+      // or every row is decided (a batch that staged teams and no player), so
+      // the loop cannot exit on a blank or wedged dialog.
+      await expect(person.or(confirmSave).or(stepSkip)).toBeVisible();
+
+      // Every settled undecided team (and the league step staged ahead of a team
+      // that needs one) is presented before any player, so "a player is
+      // presented" is the product saying the team queue is empty. Two passes,
+      // as walkToPlayerRow: rows behind a step settle only once it is decided.
+      // Each presented step is CHECKED on its footer control's accessible name
+      // (which carries the row's name), then SKIPPED. Skipping, never "Add as
+      // New": this spec mints no team, which is what lets STEP 7 count to one.
+      //  * `[^,]+` is the claim "this step's name has no comma" (before NEO-333
+      //    the wizard presented `New Team: Cleveland Guardians, Washington
+      //    Nationals`);
+      //  * a step named for either HALF of PDA-WW's value means the split
+      //    happened but a part failed to resolve (both clubs are seeded current
+      //    teams), and the card would commit with that club missing.
+      const stepName = /^Skip (?!Boston Red Sox —|Detroit Tigers —)[^,]+ — (not a team|this team has no league)$/;
+      const commaOrHalf = /^New Team: (Boston Red Sox|Detroit Tigers)$|^New (Team|League): .*,/;
+      for (let pass = 0; pass < 2; pass++) {
+        await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+        for (let i = 0; i < 40; i++) {
+          await expect(person.or(confirmSave).or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
+          if ((await person.isVisible()) || (await confirmSave.isVisible())) break;
+          const name = (await stepSkip.first().getAttribute("aria-label")) ?? "";
+          expect(name, "a team/league step must not be a comma-joined name or a half of PDA-WW's value").toMatch(stepName);
+          await expect(newStepHeading(page).filter({ hasText: commaOrHalf })).toHaveCount(0);
+          await stepSkip.first().click();
+          // The step's own skip names it, so its going away means the step moved on.
+          await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
+        }
+        await expect(person.or(confirmSave)).toBeVisible();
+      }
+
+      // The players are not what this spec is about: skip them all in one press.
+      // Landing on the first player can stage its Wikidata career teams a few
+      // seconds later; those are Wikidata labels, not BSC values, so they are
+      // skipped with the players. That is why the press is repeated until the
+      // commit is offered: a late staged row leaves one row undecided.
+      const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
+      await expect(async () => {
+        if (await skipRemaining.isVisible()) await skipRemaining.click();
+        await expect(confirmSave).toBeVisible({ timeout: 1_500 });
+      }).toPass({ timeout: 7_000 });
+      await confirmSave.click();
+    }
 
     // The commit: our own write, the 7 s bar.
     await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
@@ -228,16 +249,17 @@ test(
     // ── STEP 7: claim (c): no combined team exists ──
     // Exactly one team on the deployment has "Boston Red Sox" in its full name
     // or an alias: the seed's club. A team minted from the joined value would
-    // contain it too, whichever half came first, and make this "2 of". The
-    // filter is a client-side SUBSTRING match, so "1 of" is the positive and
+    // contain it too, whichever half came first, and make this "2 matches". The
+    // filter is a SUBSTRING match, so "1 match" is the positive and
     // the negative in one read. Scoped to this club, not a bare ",": other
     // specs' comma-bearing teams are not this claim. A reload separates the
     // database from the session.
     await page.goto("/admin/teams");
-    await expect(page.getByText(/of .* teams/)).toBeVisible({ timeout: 30_000 });
+    await expectTeamsLoaded(page, 30_000);
     await page.getByRole("textbox", { name: "Filter teams" }).fill("Boston Red Sox");
-    // Full match, so "11 of ..." cannot answer "1 of".
-    await expect(page.getByText(/^1 of .* teams/)).toBeVisible();
+    // The counter is a bare "1 match" for exactly one (not "11 matches"), the
+    // positive and the negative in one read.
+    await expect(teamsCounter(page, "1 match")).toBeVisible();
     // And the one row is the club (the master row is labelled with the full name).
     await expect(page.getByRole("button", { name: /^Boston Red Sox/ })).toBeVisible();
     await expectAccessible(page, { label: "Team Management, filtered to Boston Red Sox" });

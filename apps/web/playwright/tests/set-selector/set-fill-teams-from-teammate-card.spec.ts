@@ -47,7 +47,7 @@ test(
     await page.getByRole("button", { name: "Open add card form" }).click();
     await expect(cardName).toBeVisible();
     await page.getByRole("textbox", { name: "Card number" }).fill(`781-${A}`);
-    await cardName.fill(`Fill Alpha ${A}`);
+    await cardName.fill(`FillAlpha${env.ATTEMPT_TOKEN}`);
 
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     const findPlayer = page.getByRole("textbox", { name: "Find a player for the new card" });
@@ -96,7 +96,7 @@ test(
     await page.getByRole("button", { name: "Open add card form" }).click();
     await expect(cardName).toBeVisible();
     await page.getByRole("textbox", { name: "Card number" }).fill(`782-${A}`);
-    await cardName.fill(`Fill Bravo ${A}`);
+    await cardName.fill(`FillBravo${env.ATTEMPT_TOKEN}`);
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     await findPlayer.fill(PLAYER);
     await expect(page.getByRole("option", { name: `Create player ${PLAYER}` })).toBeHidden();
@@ -141,11 +141,11 @@ test(
     await expect(page.getByText(FULL_TEAM, { exact: true }).first()).toBeVisible();
 
     // Cleanup: delete both cards, leaving the set's checklist empty.
-    for (const [n, label] of [["781", "Fill Alpha"], ["782", "Fill Bravo"]] as const) {
+    for (const [n, label] of [["781", "FillAlpha"], ["782", "FillBravo"]] as const) {
       await page.getByRole("button", { name: `Delete card ${n}-${A}` }).click();
       await expect(page.getByText("Confirm?")).toBeVisible();
       await page.getByRole("button", { name: `Confirm delete card ${n}-${A}` }).click();
-      await expect(page.getByText(`${label} ${A}`)).toBeHidden();
+      await expect(page.getByText(`${label}${env.ATTEMPT_TOKEN}`)).toBeHidden();
     }
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   },

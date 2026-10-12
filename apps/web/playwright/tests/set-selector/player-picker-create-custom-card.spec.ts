@@ -24,7 +24,7 @@ test(
     await addCustomCard(page, env, {
       set: `pp-${env.WORKER_INDEX}`,
       cardNumber,
-      playerName: `Player Picker Card ${id}`,
+      playerName: `PlayerPickerCard${env.ATTEMPT_TOKEN}`,
     });
 
     await editCard.click();
@@ -60,6 +60,6 @@ test(
     await deleteCard.click();
     await expect(page.getByText("Confirm?")).toBeVisible();
     await confirmDelete.click();
-    await expect(page.getByText(`Player Picker Card ${id}`)).toBeHidden();
+    await expect(page.getByText(`PlayerPickerCard${env.ATTEMPT_TOKEN}`)).toBeHidden();
   },
 );

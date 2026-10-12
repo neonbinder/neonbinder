@@ -15,7 +15,15 @@
 //   QX  Major League Baseball, 1900-1957                   -> tier 3
 //   QW  no league, from 1958                               -> tier 4
 // "Major League Baseball" is the seed's row (no sport default since NEO-331,
-// so Z and X PICK it; this spec never creates it). Writes NO card: everything
+// so Z and X PICK it; this spec never creates it). Which seed writes it
+// depends on the preview (NEO-330): WITH the reference catalogue (CI,
+// NB_REFERENCE_BUNDLE set) it is the catalogue's row, level Major,
+// abbreviation "MLB", imported before setup and the only league whose name,
+// abbreviation or aliases mention MLB; WITHOUT it, setup's Base wizard drain
+// creates it. Tiers 1 and 3 key on the league ROW, never its level, so either
+// source ranks the same. If neither seed provides it, the combobox offers
+// `Create “Major League Baseb”` and the plain-name pick fails by name.
+// Writes NO card: everything
 // runs in the quick-add form's picker (chips are local state) and the form is
 // cancelled. The set (Baseball > 2024 > Topps > tpr-<worker> > Insert > Base)
 // and the minted teams/league stand; per-worker only (SET-REGISTRY.md `tpr-`).

@@ -8,7 +8,7 @@ test(
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const num = `776-${env.ATTEMPT_ID}`;
-    const player = `Team Create Card ${env.ATTEMPT_ID}`;
+    const player = `TeamCreateCard${env.ATTEMPT_TOKEN}`;
     const team = `NBTeam${env.ATTEMPT_TOKEN}`;
     const edit = page.getByRole("button", { name: new RegExp(`^Edit card ${num}(, .*)?$`) });
 

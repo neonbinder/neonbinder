@@ -42,7 +42,7 @@ refuted by timing.)
   needs no deploy key. `--history` caps at whatever the deployment still holds
   (~983 entries on a busy preview, 14 minutes), so **pull them while the run is
   still finishing or not at all.** It streams after printing the history, so wrap it
-  in `timeout`.
+  in a timeout. macOS has none (no coreutils), so use `perl -e 'alarm 60; exec @ARGV' npx convex logs ...` (exit 142 is the alarm, the file is complete).
 - **PostHog query API: NOT accessible from repo env** (only the client ingestion
   key; HogQL needs a personal API key that isn't present).
 - **Shared dev backend:** read-only `npx convex logs`/`env list` works, but `npx

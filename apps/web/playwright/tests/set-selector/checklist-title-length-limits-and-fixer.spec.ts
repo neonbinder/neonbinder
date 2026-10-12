@@ -35,7 +35,7 @@ test(
     // ── A card with a brand-new team, so the generated title has a team in it ──
     await page.getByRole("button", { name: "Open add card form" }).click();
     await page.getByRole("textbox", { name: "Card number" }).fill(num);
-    await cardName.fill(`Title Cap ${id}`);
+    await cardName.fill(`TitleCap${env.ATTEMPT_TOKEN}`);
     await page.getByRole("button", { name: "Add team" }).click();
     const teamSearch = page.getByRole("textbox", { name: "Search teams" });
     await teamSearch.fill(team);
