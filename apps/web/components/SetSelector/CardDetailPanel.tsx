@@ -888,7 +888,7 @@ export default function CardDetailPanel({
             disabled={!hasPrev}
             aria-label="Previous card"
             title="Previous card (↑)"
-            className="px-2 py-1 text-sm rounded text-gray-500 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↑
           </button>
@@ -897,7 +897,7 @@ export default function CardDetailPanel({
             disabled={!hasNext}
             aria-label="Next card"
             title="Next card (↓)"
-            className="px-2 py-1 text-sm rounded text-gray-500 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↓
           </button>
@@ -1264,7 +1264,7 @@ export default function CardDetailPanel({
                     className={`text-xs px-2 py-0.5 rounded border transition-colors aria-disabled:cursor-progress aria-disabled:opacity-60 ${
                       active
                         ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-                        : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+                        : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
                     }`}
                   >
                     {ATTRIBUTE_LABEL[token]}

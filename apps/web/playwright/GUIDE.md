@@ -392,10 +392,12 @@ await expect(dialog.getByRole("textbox", { name: "Location" })).toBeVisible();
 await expectAccessible(page, { within: dialog, label: "New Team dialog" });
 ```
 
-- **Call it at every new screen or state a spec reaches**, right after the
-  assertion that proves the screen is showing (never before: axe checks
-  whatever is in the DOM at that moment). A dialog opening, a wizard step, an
-  error state and an empty state are each a state. It runs on both projects
+- **Call it at every new screen or state a spec reaches**, after the
+  assertion that proves the screen is showing and after any transition has
+  finished (a dialog's open animation, a page flip, a list still filling):
+  axe checks whatever is in the DOM at that moment, and a half-faded element
+  measures as a contrast failure that no user sees. A dialog opening, a
+  wizard step, an error state and an empty state are each a state. It runs on both projects
   with the same call, so the phone layout is checked too.
 - **Helpers.** A `support/` helper whose product is a screen, dialog or
   wizard it opens and returns with showing (`fetchChecklistToWizard`,
@@ -414,12 +416,20 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   NeonBinder's and that NeonBinder cannot change, each entry with its reason.
   Never add NeonBinder's own UI to it, and never exclude something to make a
   spec pass.
-- The browser runs in Playwright's default light colour scheme, as a user
-  with a light OS setting sees the app. A contrast failure that only shows in
-  light mode is still a real failure.
+- The browser runs in Playwright's default light colour scheme. The app
+  renders dark whatever the OS setting (`dark:` keys off `<html
+  class="dark">`, NEO-341), so this is what every user sees; never force a
+  colour scheme in a spec.
 - `incomplete` results in the attachment (axe could not decide, e.g. text
   over an image or gradient) never fail a test; read them when changing a
   screen's colours.
+
+A green axe run is not WCAG conformance. axe reads one DOM snapshot, so it
+cannot see keyboard traps, focus order or focus lost to `<body>` (2.1.2,
+2.4.3), whether a status change is announced (4.1.3), contrast in hover,
+focus and disabled states, or reflow at 320 CSS px (1.4.10; the Pixel 7
+project is 412 px wide). Those stay with the spec's own keyboard and
+live-region assertions and with the accessibility-auditor's review.
 
 ## Worker-state seeding
 

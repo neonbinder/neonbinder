@@ -41,6 +41,24 @@ body {
   font-family: var(--font-sans);
 }
 
+/* Paper is white. Labels, sheets and QR codes print from their own isolated
+ * documents (lib/print/print-html.ts, the QR popup), which pin black on white
+ * themselves and never load this file. This block covers the page itself being
+ * printed (Ctrl+P): the dark-only base above would otherwise put #ededed body
+ * text on paper, under a dark colour scheme. The selectors are weighted on
+ * purpose: Radix's stylesheet loads after this one and sets `color-scheme:
+ * dark` on `:root` (via `:has()`) and on `.radix-themes:where(.dark)`, so a
+ * bare `:root` here loses; `html:root` and `:root .radix-themes` win. */
+@media print {
+  html:root,
+  :root .radix-themes {
+    color-scheme: light;
+    --background: #fff;
+    --foreground: #000;
+    --color-background: #fff;
+  }
+}
+
 @font-face {
   font-family: 'Neon';
   src: url('/Neon.ttf') format('truetype');

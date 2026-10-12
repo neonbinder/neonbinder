@@ -2091,7 +2091,7 @@ export default function CardChecklist({
     return (
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Cards</h2>
-        <div className="text-gray-500">Loading checklist...</div>
+        <div className="text-gray-400">Loading checklist...</div>
       </div>
     );
   }
@@ -2190,7 +2190,7 @@ export default function CardChecklist({
           <h2 className="text-xl font-semibold">
             Cards{" "}
             {cards.length > 0 && (
-              <span className="text-sm font-normal text-gray-500">
+              <span className="text-sm font-normal text-gray-400">
                 ({cards.length})
               </span>
             )}

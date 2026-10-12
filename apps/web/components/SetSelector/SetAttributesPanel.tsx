@@ -565,7 +565,7 @@ export default function SetAttributesPanel({
               onDeleted={onDeleted}
             />
           </div>
-          <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
+          <p className="text-xs text-gray-400 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
             {/* NEO-277: the set's team, said the way a collector says it —
                 "Bulls", in Durham Bulls blue — on the collapsed summary bar,

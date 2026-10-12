@@ -239,7 +239,7 @@ function CheckboxValueControl({
         className={`text-xs px-2 py-0.5 rounded border transition-colors ${
           checked
             ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-            : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+            : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
         }`}
       >
         {label}
@@ -310,7 +310,7 @@ function ToggleOptionsValueControl({
               className={`text-xs px-2 py-0.5 rounded border transition-colors ${
                 active
                   ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-                  : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+                  : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
               }`}
             >
               {pillLabel}

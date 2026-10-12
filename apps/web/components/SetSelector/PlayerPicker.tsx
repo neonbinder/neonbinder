@@ -613,7 +613,7 @@ export default function PlayerPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
-            className="text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            className="text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
           >
             ×
           </button>
@@ -721,12 +721,12 @@ export default function PlayerPicker({
             )}
 
             {!candidates && (
-              <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>
+              <div className="text-xs text-gray-400 px-2 py-1">Loading…</div>
             )}
             {candidates &&
               matches.length === 0 &&
               query.trim().length === 0 && (
-                <div className="text-xs text-gray-500 px-2 py-1">
+                <div className="text-xs text-gray-400 px-2 py-1">
                   Start typing a player name…
                 </div>
               )}

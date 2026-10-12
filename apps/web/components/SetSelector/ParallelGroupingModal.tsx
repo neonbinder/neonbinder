@@ -576,12 +576,12 @@ function DropZone({
           {title}
         </div>
         {subtitle && (
-          <div className="text-xs text-gray-500 mt-0.5">{subtitle}</div>
+          <div className="text-xs text-gray-400 mt-0.5">{subtitle}</div>
         )}
       </div>
       <div className="p-3 space-y-1.5 min-h-[48px]">
         {showEmpty ? (
-          <p className="text-xs text-gray-500 italic py-1">
+          <p className="text-xs text-gray-400 italic py-1">
             {emptyText ?? "Drop rows here"}
           </p>
         ) : (
@@ -1345,7 +1345,7 @@ export default function ParallelGroupingModal({
                   : ""}
               </>
             ) : (
-              <span className="text-gray-500">No changes yet</span>
+              <span className="text-gray-400">No changes yet</span>
             )}
           </div>
           {/* NEO-300 — the selection count, in the footer because the footer

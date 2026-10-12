@@ -17,6 +17,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import {
+  buildDocument,
   imageBodyHtml,
   waitForImages,
   type ImageBearingDocument,
@@ -214,5 +215,27 @@ describe("waitForImages", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// NEO-341 made the app dark-only (`color-scheme: dark`, #ededed body text). The
+// print iframe sits inside that page, so its document must say "light, black on
+// white" itself; a label must never inherit the screen's scheme onto paper.
+describe("buildDocument", () => {
+  const doc = buildDocument({
+    title: "Label",
+    bodyHtml: "<p>To: Ken Griffey Jr.</p>",
+    css: "",
+    page: { widthIn: 4, heightIn: 6 },
+  });
+
+  test("declares a light colour scheme for the printed page", () => {
+    expect(doc).toMatch(/:root\s*\{\s*color-scheme:\s*light;/);
+  });
+
+  test("prints black text on a white page", () => {
+    const rule = doc.match(/html, body \{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("background: #fff;");
+    expect(rule).toContain("color: #000;");
   });
 });

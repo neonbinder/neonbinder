@@ -2989,7 +2989,7 @@ export default function CardPairingModal({
                   screen — the columns are what "the other column" means. */}
               {(state.unmatchedBsc.length > 0 ||
                 state.unmatchedSl.length > 0) && (
-                <p className="text-xs text-gray-500 mb-2">
+                <p className="text-xs text-gray-400 mb-2">
                   Drag a card onto its match in the other column to link them
                   (or click one, then click its match).
                 </p>

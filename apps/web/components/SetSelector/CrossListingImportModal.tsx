@@ -671,11 +671,11 @@ export default function CrossListingImportModal({
               {/* One level's options — the flexible, scrollable region. */}
               {!confirmedPick &&
                 (activeLoading ? (
-                  <div className="shrink-0 text-sm text-gray-500 py-2 text-center">
+                  <div className="shrink-0 text-sm text-gray-400 py-2 text-center">
                     Loading…
                   </div>
                 ) : filteredOptions.length === 0 ? (
-                  <div className="shrink-0 text-sm text-gray-500 py-2 text-center">
+                  <div className="shrink-0 text-sm text-gray-400 py-2 text-center">
                     {(activeOptions?.length ?? 0) === 0
                       ? parentValue
                         ? `No ${LEVEL_LABEL[activeLevel]} options under ${parentValue}.`
@@ -735,7 +735,7 @@ export default function CrossListingImportModal({
                     aria-label="Card numbers to cross-list"
                     className="w-full px-3 py-2 text-sm aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   />
-                  <span className="block text-xs text-gray-500">
+                  <span className="block text-xs text-gray-400">
                     Ranges expand; separate entries with commas.
                   </span>
                 </label>

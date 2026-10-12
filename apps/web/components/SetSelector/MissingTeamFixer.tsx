@@ -345,7 +345,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           number and name follow in this panel.
         */}
         {row.bscTeamName && (
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-400">
             Marketplace says:{" "}
             <span className="text-gray-300">{row.bscTeamName}</span>
           </p>

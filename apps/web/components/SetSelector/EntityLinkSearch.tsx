@@ -284,10 +284,10 @@ export default function EntityLinkSearch({
       />
 
       {idle && (
-        <div className="text-xs text-gray-500 px-2 py-1">Type to search</div>
+        <div className="text-xs text-gray-400 px-2 py-1">Type to search</div>
       )}
-      {searching && <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>}
-      {empty && <div className="text-xs text-gray-500 px-2 py-1">No matches</div>}
+      {searching && <div className="text-xs text-gray-400 px-2 py-1">Loading…</div>}
+      {empty && <div className="text-xs text-gray-400 px-2 py-1">No matches</div>}
       {matches.map((m, idx) => {
         const stints = m.stints ?? [];
         const shown = stints.slice(0, MAX_STINTS_SHOWN);
@@ -348,7 +348,7 @@ export default function EntityLinkSearch({
         type="button"
         onClick={onCancel}
         aria-label="Cancel linking"
-        className="w-full text-left px-2 py-1 text-xs text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+        className="w-full text-left px-2 py-1 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
       >
         Cancel (Esc)
       </button>

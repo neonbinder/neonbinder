@@ -96,7 +96,7 @@ export default function SearchableDropdown({
       >
         <span
           className={
-            selectedOption ? "text-gray-900 dark:text-white" : "text-gray-500"
+            selectedOption ? "text-gray-900 dark:text-white" : "text-gray-400"
           }
         >
           {selectedOption ? selectedOption.label : placeholder}
