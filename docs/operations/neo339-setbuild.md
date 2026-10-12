@@ -205,14 +205,20 @@ with the set's path; the draft comes back with:
 - `spec`: the whole set, every **proposal** filled in, every open decision
   left out;
 - `proposals`: what the draft filled and why (a sole or pre-selected Base
-  candidate, the Reconcile dialog's own auto-matches, Group Parallels prefix
+  candidate, the Reconcile dialog's own auto-matches, an explicit `leave` for
+  every pending marketplace set nobody pairs, Group Parallels prefix
   suggestions, Match Cards' keep-all defaults, `create` for a player or team
-  no NB row is named like, observed counts, parallel builds);
-- `openDecisions` and `template`: what the operator must answer (every pending
-  marketplace set: `own-set` or `leave`, never proposed; a Base side with
-  several candidates and no pre-selection; a card disagreement; any player or
-  team with an existing NB candidate, never linked by name), each as a `<…>`
-  fill-in in the template;
+  no NB row is named like, observed counts, parallel builds). The `leave`
+  entries are one spec line per marketplace id (no wildcard), listed as one
+  `reconcile-leave` proposal per variant type with the count and the ids;
+  `own-set` is never proposed (Jason, 2026-10-11);
+- `openDecisions` and `template`: what the operator must answer (a Base side
+  with several candidates and no pre-selection; a card disagreement; any
+  player or team with an existing NB candidate, never linked by name; a
+  checklist the draft could not preview), each as a `<…>` fill-in in the
+  template. To make a pending set its own set instead, change its `leave` to
+  `own-set` in the spec and raise that type's `expectRows` (and, for an
+  Insert type with a `group`, `expectUngrouped`) by one;
 - `confirmPhrase`, only when nothing is open. It is not an approval: the
   operator reads the draft and the proposals and gives the phrase.
 
@@ -260,8 +266,8 @@ in; a later checklist does not repeat it.
 parallel with the runner pool, required by the `e2e` gate. Fixture: 2024
 Topps Chrome Black (`.maestro/seed/oneshot.spec.json`, the committed spec;
 `oneshot.expect.json`, its expectations). `setbuild oneshot-smoke` drafts it,
-requires exactly `draft.openDecisions` open decisions, merges the draft's
-template with the committed spec (each `<…>` from the committed file,
+requires **no** open decision (the draft settles the whole fixture itself),
+merges the draft with the committed spec (any `<…>` from the committed file,
 everything else from the draft; `credentials` from the committed file) and
 requires the merge to have the committed spec's digest, then `nb_plan`,
 `nb_apply` (`stopAt: "end"`, no stop, the expected `reconciled`, `grouped`,
@@ -275,14 +281,15 @@ Measuring the fixture (once the server previews are on the PR preview):
 1. `npm run setbuild -- draft-set --path "Baseball/2024/Topps/Topps Chrome Black"
    --out oneshot.draft.json --report oneshot.report.json --auth testing
    --app-url <preview> --convex-url https://<slug>.convex.cloud --worker 8`.
-2. Answer every `<…>` in `oneshot.draft.json` (pending sets: `leave` unless
-   the operator says otherwise), add the `credentials` block the baseline spec
-   uses, and commit it as `.maestro/seed/oneshot.spec.json`.
+2. The report's `openCount` must be 0 (a fixture whose draft leaves a
+   decision open is the wrong fixture for this proof). Add the `credentials`
+   block the baseline spec uses to `oneshot.draft.json` and commit it as
+   `.maestro/seed/oneshot.spec.json`.
 3. `plan` it against the same preview; then `apply --collect` on a throwaway
    preview run to read the counts, and commit `oneshot.expect.json`:
-   `{ "path", "draft": { "openDecisions": <the report's openCount> },
-   "apply": { "counts": { "reconciled", "grouped", "committed", "built" } },
-   "builtFromBaseType": "Parallel", "after": [] }`.
+   `{ "path", "apply": { "counts": { "reconciled", "grouped", "committed",
+   "built" } }, "builtFromBaseType": "Parallel", "after": [] }` (optionally
+   `"draft": { "teamLookupBudget": n }`).
 4. A red merge later is drift: the failing line names the paths that differ.
    Re-measure in the same PR as the evidence.
 

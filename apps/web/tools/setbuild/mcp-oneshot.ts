@@ -6,9 +6,9 @@
  * an agent builds a set for an operator:
  *
  *   1. tools/list has `nb_draft_set`;
- *   2. `nb_draft_set` on the fixture: drafted, with exactly the expected
- *      number of open decisions (`expect.draft.openDecisions`; 0 means the
- *      draft settled everything itself);
+ *   2. `nb_draft_set` on the fixture: drafted with NO open decision (the draft
+ *      settles the whole set itself; a pending marketplace set is a `leave`
+ *      proposal, never an open question);
  *   3. the draft MERGED with the committed answers (`mergeDraftAnswers`: each
  *      `<…>` fill-in taken from the answers file, everything else from the
  *      draft) has the committed answers file's digest: marketplace or NB
@@ -60,10 +60,10 @@ export const oneshotExpectSchema = z
       .strict(),
     draft: z
       .object({
-        openDecisions: z.number().int().min(0),
         teamLookupBudget: z.number().int().min(0).optional(),
       })
-      .strict(),
+      .strict()
+      .default({}),
     apply: z.object({ counts: z.record(z.string(), z.number()) }).strict(),
     /** The Parallel type's title whose rows are built from Base (all must hold cards). */
     builtFromBaseType: z.string().min(1).default("Parallel"),
@@ -104,6 +104,21 @@ export function differingPaths(a: unknown, b: unknown, max = 10, at = ""): strin
   walk(a, b, at);
   return out;
 }
+
+/** Where the open decisions are, by kind and spec location (never adapter text). */
+function openSummary(d: DraftedOpen): string {
+  const at = [
+    ...d.names.map((n) => `${n.kind} at ${n.at}`),
+    ...d.baseCandidates.map((b) => `Base ${b.side} at ${b.at}`),
+    ...d.reconcile.map((r) => `reconcile at ${r.at}`),
+    ...d.review.players.map((p) => `player "${p.name}" at ${p.at}`),
+    ...d.review.teams.map((t) => `team "${t.name}" at ${t.at}`),
+    ...d.conflicts.map((c) => `card #${c.cardNumber} at ${c.at}`),
+    ...(d.grouping ?? []).map((g) => `grouping at ${g.at}`),
+  ];
+  return at.slice(0, 5).join("; ") + (at.length > 5 ? `; +${at.length - 5} more` : "");
+}
+type DraftedOpen = Extract<DraftReport, { status: "drafted" }>["openDecisions"];
 
 /** An insert row holding at least one parallel with cards. */
 export function insertWithBuiltParallel(report: InspectReport): string | undefined {
@@ -168,11 +183,11 @@ export async function runOneshotSequence(
     );
     if (draft.status !== "drafted") return record(false, "nb_draft_set", `the set did not resolve (${draft.kind})`);
     const open = countOpenDecisions(draft.openDecisions);
-    const okOpen = open === o.expect.draft.openDecisions;
+    const okOpen = open === 0;
     record(
       okOpen,
       "nb_draft_set",
-      `${open} open decision(s)${okOpen ? "" : `, expected ${o.expect.draft.openDecisions}`}; ${draft.proposals.length} proposals; ${draft.marketplaceCalls} marketplace requests in ${Math.round(draft.durationMs / 1000)}s`,
+      `${open} open decision(s)${okOpen ? "" : ` (${openSummary(draft.openDecisions)}), expected none`}; ${draft.proposals.length} proposals; ${draft.marketplaceCalls} marketplace requests in ${Math.round(draft.durationMs / 1000)}s`,
     );
     const merged = mergeDraftAnswers(draft.template ?? draft.spec, o.answers);
     const left = placeholdersIn(merged);

@@ -22,7 +22,7 @@ const TARGET = parseTarget("https://happy-otter-123.convex.cloud");
 const PATH = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: "Topps Chrome Black" };
 const SCOPE = "Baseball/2024/Topps/Topps Chrome Black";
 
-/** The committed answers: the draft's spec with its one pending set answered. */
+/** The committed spec: the draft's spec, its pending set a `leave` proposal. */
 const ANSWERS = {
   version: 1,
   scope: SCOPE,
@@ -40,16 +40,16 @@ const ANSWERS = {
     },
   ],
 };
-const TEMPLATE = structuredClone(ANSWERS) as typeof ANSWERS;
-(TEMPLATE.steps[0].variants[0].sync.pending[0] as { decision: string }).decision = '<"own-set" | "leave"> — X';
+/** The draft settles everything: no template, just the spec. */
+const DRAFTED = structuredClone(ANSWERS);
 const PHRASE = specConfirmPhrase(TARGET, parseSpec(ANSWERS));
 
 function none(): OpenDecisions {
   return { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [], grouping: [] };
 }
-const ONE_PENDING: OpenDecisions = {
+const ONE_OPEN: OpenDecisions = {
   ...none(),
-  reconcile: [{ at: "steps[0].variants[0].sync", path: SCOPE, type: "Insert", proposedPairs: [], pending: [{ side: "sportlots", id: "sl-x", name: "X" }] }],
+  baseCandidates: [{ at: "steps[0].base.map.sportlots", path: SCOPE, side: "sportlots", candidates: [{ id: "a", name: "A" }, { id: "b", name: "A" }] }],
 };
 
 const built: InspectReport = {
@@ -77,11 +77,10 @@ const built: InspectReport = {
 
 const EXPECT: OneshotExpect = oneshotExpectSchema.parse({
   path: PATH,
-  draft: { openDecisions: 1 },
   apply: { counts: { reconciled: 2, grouped: 1, committed: 110, built: 110 } },
 });
 
-function fakeService(o: { template?: unknown; open?: OpenDecisions; counts?: Record<string, number> } = {}) {
+function fakeService(o: { spec?: unknown; open?: OpenDecisions; counts?: Record<string, number> } = {}) {
   return {
     target: TARGET,
     read: {
@@ -90,9 +89,9 @@ function fakeService(o: { template?: unknown; open?: OpenDecisions; counts?: Rec
       reviewItems: vi.fn(),
       draftSet: vi.fn(async () => ({
         status: "drafted",
-        spec: ANSWERS,
-        template: o.template ?? TEMPLATE,
-        openDecisions: o.open ?? ONE_PENDING,
+        spec: o.spec ?? DRAFTED,
+        template: null,
+        openDecisions: o.open ?? none(),
         proposals: [],
         marketplaceCalls: 12,
         durationMs: 3000,
@@ -156,9 +155,9 @@ describe("runOneshotSequence", () => {
   });
 
   test("drift: a draft that no longer merges to the committed spec stops before any write, naming where", async () => {
-    const drifted = structuredClone(TEMPLATE);
+    const drifted = structuredClone(DRAFTED);
     drifted.steps[0].variants[0].sync.pairs.push({ name: "New Insert", bsc: ["new"] });
-    const service = fakeService({ template: drifted });
+    const service = fakeService({ spec: drifted });
     const checks = await run(service);
     const merge = checks.find((c) => c.label === "draft + answers")!;
     expect(merge.ok).toBe(false);
@@ -166,10 +165,12 @@ describe("runOneshotSequence", () => {
     expect(service.write.apply).not.toHaveBeenCalled();
   });
 
-  test("an unexpected number of open decisions fails, and nothing is applied", async () => {
-    const service = fakeService({ open: none() });
+  test("any open decision in the draft fails, naming where, and nothing is applied", async () => {
+    const service = fakeService({ open: ONE_OPEN });
     const checks = await run(service);
-    expect(checks.find((c) => c.label === "nb_draft_set")!.ok).toBe(false);
+    const draft = checks.find((c) => c.label === "nb_draft_set")!;
+    expect(draft.ok).toBe(false);
+    expect(draft.detail).toContain("1 open decision(s) (Base sportlots at steps[0].base.map.sportlots), expected none");
     expect(service.write.apply).not.toHaveBeenCalled();
   });
 

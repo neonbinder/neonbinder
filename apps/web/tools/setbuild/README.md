@@ -29,8 +29,10 @@ the server's three read-only previews (`previewSetStructure`,
 `previewCardChecklist`, `previewChecklistEntities`), through the same
 `lib/set-build` modules the UI runs. They return `{ spec, proposals,
 openDecisions, template, confirmPhrase, marketplaceCalls }`: proposals are
-what the UI settles without asking (and the two Jason ruled pre-filled:
-Group Parallels suggestions and `create` for a name with no NB candidate);
+what the UI settles without asking (and the three Jason ruled pre-filled:
+Group Parallels suggestions, `create` for a name with no NB candidate, and an
+explicit `leave` per id for every pending marketplace set nobody pairs, shown
+as one `reconcile-leave` proposal per type; `own-set` is never proposed);
 everything else is an open decision with a `<…>` fill-in. `confirmPhrase` is
 null while anything is open, and is never an approval. The draft runs on
 `draftClient` (`DRAFT_READ_ACTIONS` = `fetchRawOptions` + the two preview
@@ -139,5 +141,5 @@ by the gate): `oneshot-smoke --answers .maestro/seed/oneshot.spec.json
 --expect .maestro/seed/oneshot.expect.json` drafts 2024 Topps Chrome Black,
 checks the draft merged with the committed answers has the committed spec's
 digest (`mergeDraftAnswers`), then plans, applies (`stopAt: "end"`) and
-inspects. Placeholder fixture files (`"measured": false`) fail it on purpose.
+inspects. The draft must have no open decision. Placeholder fixture files (`"measured": false`) fail it on purpose.
 Neither job prints the deployment: the host is masked and redacted.

@@ -440,8 +440,9 @@ export interface DraftOptions {
  * A value the drafter filled because the Set Builder UI would settle it
  * without asking (or Jason ruled it is pre-filled): a sole or pre-selected
  * Base candidate, the Reconcile dialog's own auto-matches, a Group Parallels
- * prefix suggestion, the Match Cards defaults, a `create` for a name with no
- * NB candidate, an observed count, a build entry. Listed beside the spec so
+ * prefix suggestion, a `leave` for every pending marketplace set nobody
+ * pairs, the Match Cards defaults, a `create` for a name with no NB
+ * candidate, an observed count, a build entry. Listed beside the spec so
  * approving it is informed. The value itself is in the spec at `at`.
  */
 export interface DraftProposal {
@@ -449,6 +450,8 @@ export interface DraftProposal {
   kind:
     | "base-map"
     | "reconcile-pairs"
+    /** Every pending marketplace set nobody pairs, left in Pending: one per type, the ids listed. */
+    | "reconcile-leave"
     | "grouping"
     | "pairing"
     | "review-create"

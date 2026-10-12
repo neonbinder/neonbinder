@@ -21,11 +21,11 @@
  * |-------------------------|------------------------------------------------------|------------------------------------------------|
  * | variant types           | the set's variant-type sync (always)                  | —                                              |
  * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
- * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking | EVERY pending marketplace set (`own-set` or `leave`; `own-set` is never proposed); a title clash |
+ * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave` for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed) | a title clash |
  * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types)  | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair |
  * | entity review           | `create` for a name with ZERO NB candidates           | a name with one or more candidates (never linked by name) |
- * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed (only when no open answer can change them) | — |
+ * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
  * | builds                  | Parallel rows from Base; an insert's grouped parallels from the insert | — |
  *
  * Checklists are previewed with `previewCardChecklist`: by row when the row
@@ -499,7 +499,6 @@ export async function draftSet(
     const brandHeld = heldRowsReturnedBy(brandHolders, result);
 
     let rows: DraftRow[];
-    let pendingOpen = 0;
     const bothSides = result.bscOptions.length > 0 && result.slOptions.length > 0;
     const single = bothSides ? null : singlePlatform(result, [...groupedHeld, ...brandHeld], usedIds);
     if (single && single.kind === "blocked") {
@@ -532,17 +531,36 @@ export async function draftSet(
       open.names.push(...decisions.names);
       const clashed = new Set(decisions.names.filter((n) => n.kind === "reconcile-title").map((n) => n.name));
       const syncPairs = pairs.map((p) => ({ name: p.name, ...(p.bsc ? { bsc: [...p.bsc] } : {}), ...(p.sportlots ? { sportlots: [...p.sportlots] } : {}) }));
-      entry.sync = { pairs: syncPairs, pending: [] };
+      // Every marketplace set nobody pairs: an explicit `leave`, one line per
+      // id (Jason, 2026-10-11). It is what Save does with a set left in
+      // Pending; `own-set` is never proposed.
+      const leave = decisions.reconcile.pending.map((p) => ({
+        side: p.side === "buysportscards" ? ("bsc" as const) : ("sportlots" as const),
+        id: p.id,
+        decision: "leave" as const,
+      }));
+      entry.sync = { pairs: syncPairs, pending: leave };
       syncPairs.forEach((p, k) => {
         if (clashed.has(p.name)) fills.push({ at: `${at}.sync.pairs[${k}].name`, value: `<rename: two sets would save as "${p.name}">` });
       });
-      if (decisions.reconcile.pending.length > 0) {
-        open.reconcile.push(decisions.reconcile);
-        pendingOpen = decisions.reconcile.pending.length;
-        fills.push({
-          at: `${at}.sync.pending`,
-          value: decisions.reconcile.pending.map((p) => ({ side: p.side === "buysportscards" ? "bsc" : "sportlots", id: p.id, decision: `<"own-set" | "leave"> — ${p.name}` })),
-        });
+      // An auto-match the dialog would offer as a pair is never left silently
+      // (the draft names every Ready set, so this stays empty; kept open if not).
+      if (decisions.reconcile.proposedPairs.length > 0) {
+        open.reconcile.push({ ...decisions.reconcile, pending: [] });
+      }
+      if (leave.length > 0) {
+        const ids = (side: "bsc" | "sportlots") => leave.filter((l) => l.side === side).map((l) => l.id);
+        const bscIds = ids("bsc");
+        const slIds = ids("sportlots");
+        propose(
+          `${at}.sync.pending`,
+          "reconcile-leave",
+          `${leave.length} ${title} set(s) not paired; the dialog leaves them in Pending (` +
+            [bscIds.length ? `BSC ${bscIds.length}: ${bscIds.join(", ")}` : "", slIds.length ? `SportLots ${slIds.length}: ${slIds.join(", ")}` : ""]
+              .filter(Boolean)
+              .join("; ") +
+            ")",
+        );
       }
       if (pairs.length > 0) propose(`${at}.sync.pairs`, "reconcile-pairs", `the Reconcile dialog's ${pairs.length} Ready set(s) (its auto-matches and saved rows, by marketplace id)`);
       rows = seed.state.ready.map((s) => ({
@@ -562,12 +580,8 @@ export async function draftSet(
     const listed = new Set(rows.map((r) => r.existingId).filter(Boolean));
     const unseeded = existingRows.filter((r) => !listed.has(r._id));
     const expectRows = rows.length + unseeded.length + grouped.length;
-    if (pendingOpen === 0) {
-      entry.expectRows = expectRows;
-      propose(`${at}.expectRows`, "expect", `${expectRows} rows after the sync, as drafted`);
-    } else {
-      fills.push({ at: `${at}.expectRows`, value: `<${expectRows} + one per "own-set" answer>` });
-    }
+    entry.expectRows = expectRows;
+    propose(`${at}.expectRows`, "expect", `${expectRows} rows after the sync, as drafted`);
 
     // Group Parallels (insert types only: a Parallel row grouped under
     // another would stop being a row Build from Base can reach).
@@ -576,8 +590,7 @@ export async function draftSet(
     if (t.role === "insert") {
       const grouping = draftGrouping(rows, unseeded, tree, `${at}.group`, title);
       if (grouping.parents.length > 0) {
-        entry.group = { parents: grouping.parents, ...(pendingOpen === 0 ? { expectUngrouped: grouping.ungrouped } : {}) };
-        if (pendingOpen > 0) fills.push({ at: `${at}.group.expectUngrouped`, value: `<${grouping.ungrouped} + one per "own-set" answer>` });
+        entry.group = { parents: grouping.parents, expectUngrouped: grouping.ungrouped };
         propose(`${at}.group`, "grouping", `${grouping.moves} prefix suggestion(s) from Group Parallels (detectGroupings), under ${grouping.parents.length} insert(s)`);
       }
       for (const [parent, kids] of grouping.children) children.set(parent, kids);

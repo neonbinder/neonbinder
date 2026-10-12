@@ -190,7 +190,7 @@ async function drafted(client: FakeClient, opts = {}): Promise<DraftedReport> {
 }
 
 describe("draftSet: proposals vs open decisions", () => {
-  test("a cold set is drafted whole: proposals filled, every pending set and every name with candidates left open", async () => {
+  test("a cold set is drafted whole: proposals filled (pending sets left, explicitly), every name with candidates left open", async () => {
     const client = world();
     const r = await drafted(client);
     const spec = r.spec as unknown as Spec;
@@ -198,20 +198,29 @@ describe("draftSet: proposals vs open decisions", () => {
 
     // Base: the sole BSC candidate, SportLots' sole exact match.
     expect(step.base!.map).toEqual({ bsc: "topps-chrome-black", sportlots: "sl-black", whenPaused: "bsc-only" });
-    // Insert: the two auto-matches are pairs; the pending SportLots set is OPEN
-    // (never proposed own-set), and the set Topps Chrome holds is not pending.
+    // Insert: the two auto-matches are pairs; the pending SportLots set is an
+    // explicit `leave` (what Save does with Pending; own-set is never
+    // proposed), and the set Topps Chrome holds is not pending at all.
     const insert = step.variants!.find((v) => v.type === "Insert")!;
     expect(insert.sync).toEqual({
       pairs: [
         { name: "Future Stars", bsc: ["fs"], sportlots: ["sl-fs"] },
         { name: "Future Stars Gold", bsc: ["fs-gold"], sportlots: ["sl-fsg"] },
       ],
-      pending: [],
+      pending: [{ side: "sportlots", id: "sl-other", decision: "leave" }],
     });
-    expect(r.openDecisions.reconcile).toHaveLength(1);
-    expect(r.openDecisions.reconcile[0].pending).toEqual([{ side: "sportlots", id: "sl-other", name: "2024 Topps Chrome Black Something" }]);
-    // expectRows waits on the own-set answer: a fill-in, not a proposal.
-    expect(insert.expectRows).toBeUndefined();
+    expect(r.openDecisions.reconcile).toEqual([]);
+    expect(r.proposals.filter((p) => p.kind === "reconcile-leave")).toEqual([
+      {
+        at: "steps[0].variants[0].sync.pending",
+        kind: "reconcile-leave",
+        detail: "1 Insert set(s) not paired; the dialog leaves them in Pending (SportLots 1: sl-other)",
+      },
+    ]);
+    expect(JSON.stringify(r.spec)).not.toContain("own-set");
+    // With every pending set answered, the counts are proposals too.
+    expect(insert.expectRows).toBe(2);
+    expect(insert.group!.expectUngrouped).toBe(0);
 
     // Review: zero candidates → create; candidates → open, never linked.
     expect(step.base!.checklist!.review).toEqual({
@@ -229,18 +238,13 @@ describe("draftSet: proposals vs open decisions", () => {
 
     // Open → no phrase; the template carries every fill-in and nothing else is missing.
     expect(r.openCount).toBe(countOpenDecisions(r.openDecisions));
-    expect(r.openCount).toBe(2);
+    expect(r.openCount).toBe(1);
     expect(r.confirmPhrase).toBeNull();
-    expect(placeholdersIn(r.template)).toEqual([
-      "steps[0].base.checklist.review.players[2].decision",
-      "steps[0].variants[0].sync.pending[0].decision",
-      "steps[0].variants[0].group.expectUngrouped",
-      "steps[0].variants[0].expectRows",
-    ]);
+    expect(placeholdersIn(r.template)).toEqual(["steps[0].base.checklist.review.players[2].decision"]);
     // The partial spec is still a spec.
     expect(() => parseSpec(r.spec)).not.toThrow();
     expect(r.proposals.map((p) => p.kind)).toEqual(
-      expect.arrayContaining(["base-map", "reconcile-pairs", "grouping", "review-create", "pairing", "expect", "build"]),
+      expect.arrayContaining(["base-map", "reconcile-pairs", "reconcile-leave", "grouping", "review-create", "pairing", "expect", "build"]),
     );
   });
 
@@ -446,16 +450,12 @@ describe("pure helpers", () => {
   test("mergeDraftAnswers fills every <…> from the answers and keeps the rest from the draft", async () => {
     const r = await drafted(world());
     const answers = mergeDraftAnswers(r.template, {}) as Record<string, unknown>;
-    // With no answers, the fill-ins stay.
-    expect(placeholdersIn(answers)).toHaveLength(4);
+    // With no answers, the fill-in stays.
+    expect(placeholdersIn(answers)).toHaveLength(1);
     // A committed answers file: the template with each fill-in answered.
     const committed = structuredClone(r.template) as Spec;
     const base = committed.steps[0].base!.checklist!.review as { players: Array<{ name: string; decision: unknown }> };
     base.players[2].decision = { link: "Aaron Judge" };
-    const insert = committed.steps[0].variants![0];
-    (insert.sync!.pending[0] as { decision: string }).decision = "leave";
-    insert.expectRows = 2;
-    insert.group!.expectUngrouped = 0;
     const withCreds = { ...committed, credentials: { seed: ["buysportscards", "sportlots"], warm: true } };
     const merged = mergeDraftAnswers(r.template, withCreds);
     expect(placeholdersIn(merged)).toEqual([]);

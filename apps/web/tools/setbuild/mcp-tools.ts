@@ -368,9 +368,10 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "a marketplace session, as any fetch does). Drafts the complete set-build spec for one set: variant types, " +
         "the Base mapping, every Insert/Parallel reconcile pair, Group Parallels nesting, every checklist with its " +
         "Match Cards answers and entity-review proposals, and every parallel build. Returns spec (proposals only; " +
-        "open decisions left out), proposals (what was filled and why), openDecisions (what the operator must " +
-        "answer: every pending marketplace set, Base candidates when there is no sole or pre-selected one, card " +
-        "conflicts, any name with existing NB candidates), template (the spec with a <…> fill-in per open " +
+        "open decisions left out), proposals (what was filled and why, including an explicit \"leave\" for every " +
+        "pending marketplace set nobody pairs; \"own-set\" is never proposed), openDecisions (what the operator must " +
+        "answer: Base candidates when there is no sole or pre-selected one, card conflicts, any name with " +
+        "existing NB candidates, a checklist the draft could not preview), template (the spec with a <…> fill-in per open " +
         "decision), notes, marketplaceCalls, and confirmPhrase only when nothing is open. An unknown set comes " +
         'back as status "unresolved" with candidates (and, when the brand\'s Sets were never synced, the prepare ' +
         "spec); nothing is created. Slow on a big set (minutes): it previews every checklist. " +
