@@ -67,4 +67,4 @@
 - [Patterns neo325 identity-only and twins](patterns_neo325_identity_only_and_twins.md) — forced-insert flag vs multi-id insert; upstream label bound on notice rows; pin internal id readers
 - [Inline re-auth bypasses backoff](patterns_inline_reauth_bypasses_backoff.md) — adapter 401 → authenticate* skips NEO-278 backoff + lock; batches multiply logins
 - [Patterns neo318 derived copy column](patterns_neo318_derived_copy_column.md) — exported *Impl split of a gated query is safe if gate stays in handler; derived copy: strip in public helper, spread-insert gap, two-step revert
-- [Patterns neo335 wizard team answers](patterns_neo335_wizard_team_answers.md) — commit teamIds/teamNone/teamLookup: server sport, requireAdmin id; fill skips applyFields + retires ruling; string answers drop on existing rows
+- [Patterns neo335 wizard team answers](patterns_neo335_wizard_team_answers.md) — server match decides insert-only title answers; "kept" flag unbound to text; pin trusting internal queries

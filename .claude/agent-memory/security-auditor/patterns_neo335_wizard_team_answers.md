@@ -1,32 +1,39 @@
 ---
 name: patterns-neo335-wizard-team-answers
-description: NEO-335 pre-save team answers on commitCardChecklist (teamIds/teamNone/teamLookup) — what held, and the two traps (fill path skips applyFields so it can retire an operator ruling; string answers on existing rows need applyFields and silently drop)
+description: NEO-335 pre-save wizard answers on commitCardChecklist (teamIds/teamsAnswered/teamNone/teamLookup, listingTitle/listingTitleKept/cardVariationAnswered) — what holds, the fixed traps, and the open ones (client-asserted "kept" flag unbound to text; trusting internal queries left unpinned)
 metadata:
   type: project
 ---
 
-NEO-335 moved "fill teams" into the entity-review wizard. Preview cards gained
-three client-supplied fields read by `commitCardChecklist`:
-`teamIds` (NB ids), `teamNone: true`, `teamLookup: "answered"|"failed"`.
+NEO-335 moved "fill teams" and a "Card titles" step into the entity-review
+wizard, BEFORE save. Every answer rides on the preview card as an optional,
+client-supplied field read by `commitCardChecklist`.
 
-What held at audit (2026-10-10), and what to re-check if it changes:
-- `teamIds` re-read in an internalQuery before any phase writes; sport walked
-  from the row, never the client `sportId`; foreign sport refuses the commit,
-  deleted ids are dropped; per-card count capped in `assertCardBatchWithinLimits`.
-- `teamNone` stamps `teamNoneConfirmedByUserId` from `requireAdmin`'s return,
-  passed into the internal chunk; teams win; never over an existing confirmation.
-- `teamLookup` is a status of OUR call, not a marketplace value. Forging
-  "answered" only stamps `teamCheckDoneAt`, which SURFACES missingTeam rather
-  than hiding it; `bscTeamName` hint is capped and rendered as React text.
+What holds (re-audited 2026-10-11), and what to re-check if it changes:
+- `teamIds` re-read in the internalQuery `validateOperatorTeamIds` before any
+  phase writes; sport walked from the row, never the client `sportId`; foreign
+  sport refuses the commit, deleted ids dropped; per-card cap in
+  `assertCardBatchWithinLimits`. `teamsAnswered` only promotes strings the
+  commit itself resolved (`teamIdByName`), so it cannot name a foreign team.
+- Operator fill on an existing row: fills only an EMPTY row and never a row
+  ruled teamless (`teamNoneConfirmedAt`); only an accepted content change
+  retires the ruling. (Both 2026-10-10 traps were fixed this way.)
+- `teamNone` stamps the `requireAdmin` return as the confirming user.
+- Title answers: insert vs re-sync is decided by the SERVER match
+  (`existingIdByIndex`), never by the client's view, so a crafted title cannot
+  land on a stored row. Title capped (trimmed) before any phase AND again in the
+  chunk writer; parity with `updateCard`'s cap.
+- `teamSuggestionsForPreview`: requireAdmin first, players and teamNames both
+  count-capped, names length-capped, every team row sport-checked.
 
-Traps:
-- The update branch's operator fill bypasses `applyFields`/`baseVersion`
-  ("fill only an empty row"), and retires an existing `teamNoneConfirmedAt`.
-  The client excludes ruled rows from the section via a live query, so this only
-  bites in the in-flight window or with a forged client. Asymmetric with
-  `teamNone`, which never overrides a confirmation. See [[patterns-neo102-card-team-none]].
-- Team answers carried as STRINGS (`teams`) go through `card.teamOnCardIds`,
-  which on an existing row is written only via `applyFields`, so they do
-  nothing on a re-synced teamless row. Only `teamIds` fill.
+Open traps to look for in similar features:
+- A boolean "operator kept what the step showed" flag (`listingTitleKept`) that
+  suppresses an attention flag while the server REGENERATES the content: if the
+  client's prediction drifts, the flag hides a result nobody saw. Bind the
+  answer to the shown text (send it; suppress only on equality). See
+  [[patterns-attention-flag-suppression]].
+- New internalQueries that trust their args (`titleSetFacts`,
+  `playerNamesByIds`) must join the "internal queries stay internal" pin block
+  in `publicFunctionAuth.test.ts`; nothing else fails if one is flipped public.
 - Doc comments of the form "nothing in path X ever SETS flag Y" go stale when a
   feature adds a setter. Grep for them when a new writer of a suppression flag lands.
