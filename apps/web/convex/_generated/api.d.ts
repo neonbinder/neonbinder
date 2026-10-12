@@ -15,6 +15,7 @@ import type * as adapters_enrichmentFixtures from "../adapters/enrichmentFixture
 import type * as adapters_espn from "../adapters/espn.js";
 import type * as adapters_gcs from "../adapters/gcs.js";
 import type * as adapters_index from "../adapters/index.js";
+import type * as adapters_marketplaceNames from "../adapters/marketplaceNames.js";
 import type * as adapters_mycardpost from "../adapters/mycardpost.js";
 import type * as adapters_myslabs from "../adapters/myslabs.js";
 import type * as adapters_placeholderUploads from "../adapters/placeholderUploads.js";
@@ -45,6 +46,7 @@ import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
 import type * as cardRowCreate from "../cardRowCreate.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
+import type * as combinedNamesReport from "../combinedNamesReport.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
 import type * as drillPath from "../drillPath.js";
@@ -144,6 +146,7 @@ declare const fullApi: ApiFromModules<{
   "adapters/espn": typeof adapters_espn;
   "adapters/gcs": typeof adapters_gcs;
   "adapters/index": typeof adapters_index;
+  "adapters/marketplaceNames": typeof adapters_marketplaceNames;
   "adapters/mycardpost": typeof adapters_mycardpost;
   "adapters/myslabs": typeof adapters_myslabs;
   "adapters/placeholderUploads": typeof adapters_placeholderUploads;
@@ -174,6 +177,7 @@ declare const fullApi: ApiFromModules<{
   cardPlayerLinks: typeof cardPlayerLinks;
   cardRowCreate: typeof cardRowCreate;
   checklistCandidates: typeof checklistCandidates;
+  combinedNamesReport: typeof combinedNamesReport;
   credentials: typeof credentials;
   crons: typeof crons;
   drillPath: typeof drillPath;

@@ -230,6 +230,77 @@ describe("stripBrandPrefixForLabel", () => {
  * row rather than emitting the subjects around it.
  */
 describe("parseSlSubjects", () => {
+  describe("NEO-333: a comma separates subjects", () => {
+    test("'Mike Trout, Shohei Ohtani' is two subjects", () => {
+      expect(parseSlSubjects("Mike Trout, Shohei Ohtani")).toEqual({
+        players: ["Mike Trout", "Shohei Ohtani"],
+      });
+    });
+
+    test("a comma with no following space also splits", () => {
+      expect(parseSlSubjects("Mike Trout,Shohei Ohtani")).toEqual({
+        players: ["Mike Trout", "Shohei Ohtani"],
+      });
+    });
+
+    test("'Ken Griffey, Jr.' is ONE subject, the suffix re-attached", () => {
+      expect(parseSlSubjects("Ken Griffey, Jr.")).toEqual({
+        players: ["Ken Griffey Jr."],
+      });
+    });
+
+    test("a suffix part between two names attaches to the first, not the second", () => {
+      expect(parseSlSubjects("Ken Griffey, Jr., Mike Trout")).toEqual({
+        players: ["Ken Griffey Jr.", "Mike Trout"],
+      });
+    });
+
+    test("a suffix part does not count toward the four-subject cap", () => {
+      expect(
+        parseSlSubjects("Ken Griffey, Jr., Mike Trout, Aaron Judge, Juan Soto"),
+      ).toEqual({
+        players: ["Ken Griffey Jr.", "Mike Trout", "Aaron Judge", "Juan Soto"],
+      });
+    });
+
+    test("the comma works alongside the existing pipe separator", () => {
+      expect(parseSlSubjects("Mike Trout, Aaron Judge|Juan Soto")).toEqual({
+        players: ["Mike Trout", "Aaron Judge", "Juan Soto"],
+      });
+    });
+
+    const refused = (desc: string) => expect(parseSlSubjects(desc)).toEqual({});
+
+    test("'Smith, John' (last-first order) is refused: each side is one token", () => {
+      refused("Smith, John");
+    });
+
+    test("one single-token part refuses the whole row, even beside a real name", () => {
+      refused("Ichiro, Mike Trout");
+    });
+
+    test("a trailing comma refuses the row (an empty part is doubt)", () => {
+      refused("Mike Trout,");
+      refused("Mike Trout, Shohei Ohtani,");
+    });
+
+    test("a doubled comma refuses the row", () => {
+      refused("Mike Trout,, Shohei Ohtani");
+    });
+
+    test("a suffix after an EMPTY part ('Ken Griffey,,Jr.') is refused: any doubt rejects the row", () => {
+      refused("Ken Griffey,,Jr.");
+    });
+
+    test("a leading suffix with no subject before it is refused", () => {
+      refused("Jr., Mike Trout");
+    });
+
+    test("five comma-separated subjects are a checklist line, refused", () => {
+      refused("Mike Trout, Aaron Judge, Bryce Harper, Juan Soto, Shohei Ohtani");
+    });
+  });
+
   describe("names it accepts", () => {
     test("a plain two-token name", () => {
       expect(parseSlSubjects("Coby Mayo")).toEqual({ players: ["Coby Mayo"] });
