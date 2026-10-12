@@ -87,8 +87,37 @@ export type NavRow = {
   /** A team row's own name, and a player row's career-team labels — the two
    *  sides the blocker rule matches on. Optional so a test may omit them. */
   name?: string;
-  enrichment?: { careerTeams?: readonly { name: string }[] } | null;
+  enrichment?: {
+    careerTeams?: readonly { name: string }[];
+    /**
+     * NEO-332 — the NB players already filed under this player row's name,
+     * as the server stored them (`enrichment.existingCandidates`). Two or
+     * more makes the row a CHOICE between people we already have; see
+     * `isAmbiguousPlayerRow`. Only the length is read, so the element type is
+     * left open and the wizard's rows pass straight through.
+     */
+    existingCandidates?: readonly unknown[];
+  } | null;
 };
+
+/**
+ * NEO-332 — is this row a pick between two or more players already on file?
+ *
+ * Read off the STORED marker, the same one the server writes at enqueue and
+ * refreshes when the lookup lands. Such a row opens the wizard's pick step
+ * ("Which {name} is this?") rather than the New Player step, and the bulk
+ * create leaves it alone server-side (`decideAllRemaining` skips an ambiguous
+ * name), so the count on the bulk button must leave it out too — otherwise
+ * the label promises to add a row the button will never touch.
+ *
+ * The wizard's pick step reads its stored candidates through THIS predicate
+ * too, so the step and the count share one threshold (two or more) and
+ * cannot disagree about a row. Its live `nearMatches` fallback is separate
+ * and uses the same number: more than one exact row.
+ */
+export function isAmbiguousPlayerRow(row: NavRow): boolean {
+  return (row.enrichment?.existingCandidates?.length ?? 0) >= 2;
+}
 
 /**
  * NEO-236 — is this player row still waiting on a team the batch has to create?
@@ -406,10 +435,19 @@ function isBulkCreatable(row: NavRow): boolean {
   return row.kind !== "team" && row.kind !== "league";
 }
 
-/** Undecided rows the bulk create will act on — the number its label shows. */
+/**
+ * Undecided rows the bulk create will act on — the number its label shows.
+ *
+ * NEO-332 — minus the same-name picks (`isAmbiguousPlayerRow`): the server
+ * leaves those undecided, so counting them made "Add remaining players as new"
+ * promise rows it would not add. `countPendingBulkCreatable` deliberately does
+ * NOT take the same exclusion — a pending row's marker can still change when
+ * its lookup lands, and that count only arms the auto-add loop.
+ */
 export function countBulkCreatable(rows: readonly NavRow[]): number {
   return rows.reduce(
-    (n, r) => (!r.decision && isBulkCreatable(r) ? n + 1 : n),
+    (n, r) =>
+      !r.decision && isBulkCreatable(r) && !isAmbiguousPlayerRow(r) ? n + 1 : n,
     0,
   );
 }
@@ -549,17 +587,29 @@ export function resolveNav<T extends NavRow>(
  * one side effect of the decision the operator cannot otherwise see until the
  * batch commits. `rememberedName` is the ROW's name (the checklist string),
  * never the target's; a link with the box unticked reads exactly as before.
+ *
+ * NEO-332: a link to one of several players filed under the same name says
+ * WHICH one — "Linked to Shuya Yamada, b. 1852" — with `linkedDetail`, the
+ * same distinguishing line the pick step showed on the row the operator
+ * chose (`candidateDetail`: alias, birth year, career). Without it the
+ * decided list reads "Linked to Shuya Yamada" for either man, which is the
+ * one thing the pick step exists to settle. Ordinary links pass nothing and
+ * read exactly as before. Dropped with the name: a detail with no name to
+ * qualify ("Linked to an existing record, b. 1852") says nothing useful.
  */
 export function describeDecision(
   decision: NavDecision | null | undefined,
   linkedName?: string | null,
   rememberedName?: string | null,
+  linkedDetail?: string | null,
 ): string {
   if (!decision) return "Not yet decided";
   if (decision.action === "create") return "Added as new";
   if (decision.action === "skip") return "Skipped";
   const linked = linkedName
-    ? `Linked to ${linkedName}`
+    ? linkedDetail
+      ? `Linked to ${linkedName}, ${linkedDetail}`
+      : `Linked to ${linkedName}`
     : "Linked to an existing record";
   const remembered =
     decision.saveAsAlias && decision.linkedTeamId && rememberedName?.trim();

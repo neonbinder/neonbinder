@@ -1,0 +1,372 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a checklist name two players on file share asks which one it is, and Create new is a step you can back out of"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-332): the entity-review wizard's PICK STEP. When two
+# or more players on file share a checklist name, the wizard does not offer
+# "Add as New Player" first; it asks "Which <name> is this?" and lists the
+# players we hold, each told apart by what is on file (here, a birth year).
+# "Create new" opens the New Player step, "Back to the list" returns without
+# deciding anything, and taking a candidate records a link to THAT player.
+#
+# R2 — HARD ASSERTIONS, every one unhedged:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) the wizard OPENS on the pick step, while every other name is still
+#         being looked up — the same-name row arrives ready, with no lookup
+#         of its own: the question, the intro that counts the players on
+#         file, one `Link to Shuya Yamada, b. <year>` per fork, `Create new`,
+#         and the row's own Skip;
+#     (c) Create new shows the New Player step and NOT the list: `Add as New
+#         Player`, `Back to the list`, the heading's sr-only "New Player: "
+#         prefix, and neither the question nor either candidate on screen;
+#     (d) Back to the list returns to the same list with nothing decided: the
+#         question and both candidates are back, the footer says "Back at the
+#         list. 2 on file.", and the counter has not moved;
+#     (e) taking the b. 1852 candidate records a decision (the counter moves
+#         by exactly one, the question is gone) and its read-back names WHICH
+#         man — "Linked to Shuya Yamada, b. 1852" — in the Decided list.
+#         Neither a create ("Added as new"), a skip ("Skipped") nor a link to
+#         the 1851 fork can produce it.
+#
+# NOT DRIVEN HERE: Escape from the New Player step back to the list.
+#   maestro-web's `pressKey` supports Enter only, so it is left to the
+#   wizard's unit tests. The CardChecklist banner's "· N to pick from the
+#   roster" tail is unit-tested beside CardChecklist for the same reason as
+#   the rest of the banner: it renders before the wizard and asserting it
+#   would be a second feature (R1).
+#
+# ── THE FIXTURE ─────────────────────────────────────────────────────────────
+#   `Baseball → 2024 → Topps → Topps Chrome NPB → Base`, owned by this flow
+#   alone (SET-REGISTRY.md → "Topps Chrome NPB"). Card #1 is Shuya Yamada RC,
+#   Hanshin Tigers (TCDb's checklist; BSC's spelling confirmed on the first
+#   live run, see the registry entry).
+#
+#   The flow makes the ambiguity itself, through the product: two Baseball
+#   players named "Shuya Yamada" on /admin/players, born 1851 and 1852 (the
+#   form's floor is 1850). Neither has a career stint, so card-year narrowing
+#   (`narrowSameNamePlayersByCardYear`) can never pick one of them, and an NPB
+#   club can never be the printed team of a catalogue player's 2024 stint —
+#   which is why this is an NPB set and not an MLB team set.
+#
+#   ⚠️ THE NAME IS A REAL, TWO-TOKEN CHECKLIST NAME, NOT A MINTED ONE. That is
+#   the exception to "minted names are single tokens", and it is safe only
+#   because no other flow fetches a checklist carrying it and this flow never
+#   asserts a search COUNT (other "Yamada" rows may share a token). The
+#   registry entry says so.
+#
+#   Re-runs are idempotent. On a deployment that already holds both forks
+#   (a retry, a local re-run) each create ADOPTS — a birth year exactly one
+#   row carries is an adopt — so the create button and its result line are
+#   matched for either outcome, and what is asserted hard is the state after:
+#   both rows on file, b. 1851 and b. 1852.
+#
+# R3 — DEDUP: `admin/admin-players-same-name-birth-year` owns the fork itself
+#   (bounds, adopt vs fork) and is the reason this flow can make two people of
+#   one name; it never opens the wizard. `checklist-wizard-link-to-existing-
+#   player` owns "Link to Existing…" search; nothing here searches.
+#
+# R4 — the entry URL is the whole sign-in; no in-body login.
+#
+# R5 — every in-app step is 7000. The long waits are the utils' own sanctioned
+#   ones and nothing else: the live BSC + SportLots fetch and the cold Base
+#   mapping (util-fetch-real-set-checklist-to-wizard / util-drill-to-base-
+#   variant) and the post-launch sign-in gate (45s). Nothing waits on Wikidata:
+#   STEP 1 says why the walk util is not used. "Create new" starts this row's
+#   lookup (queued behind the batch's own); nothing here waits on it — "Back
+#   to the list" is immediate whatever the lookup is doing.
+#
+# R7 / R7a — READ-ONLY on the set: the flow leaves through Cancel → Discard,
+#   commits nothing, and creates nothing from the wizard. It provisions the
+#   set's structure on its first drill and writes two GLOBAL `players` rows
+#   that nothing deletes (registry entry).
+#
+# R9 — drilled through util-fetch-real-set-checklist-to-wizard with a SET
+#   override; no hand-rolled drill.
+#
+# R10 — no conditional branches of this flow's own. The one deliberate dwell is
+#   util-discard-resumed-review-batch's guard (~7s on the normal path), paid so
+#   a retry after a red attempt does not resume that attempt's decisions.
+
+- launchApp
+# The list COUNTER, not the heading: the heading paints before the list query
+# answers (admin-players-same-name-birth-year).
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# ============================================================
+# FIXTURE — two Baseball players named Shuya Yamada, b. 1851 and b. 1852
+# The steps are admin-players-same-name-birth-year's, whose header explains
+# each geometry note; only what differs is commented here.
+# ============================================================
+
+# Empty the list so "Baseball" belongs to the sport picker alone, and pick the
+# sport with the add form CLOSED (a native option tap resolves against the
+# FIRST <select> on the page). The add form opens with Baseball chosen.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- tapOn: "All sports"
+- tapOn: "Baseball"
+- assertVisible: "Baseball"
+# The counter blanks while the sport-scoped search re-runs and "Add player"
+# slides ~110px (util-add-player-by-hand); the count coming back is the
+# toolbar holding still.
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
+
+# --- the first fork, b. 1851
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
+# Retried once against its own result gate: the cross-runner moving target
+# admin-players-same-name-birth-year documents (another runner's sport delete
+# resizes the sport <select> between the read and the click).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Add player"
+      - extendedWaitUntil:
+          visible: "Add a player"
+          timeout: 7000
+- tapOn: "New player name"
+- inputText: "Shuya Yamada"
+- tapOn: "Birth year \\(optional\\)"
+- inputText: "1851"
+# `( anyway)?` for a re-run only: with nobody on file the primary reads
+# "Create player Shuya Yamada"; once rows exist creation is demoted to
+# "Create player Shuya Yamada anyway". Either way the server keys on the year.
+- scrollUntilVisible:
+    element:
+      id: "Create player Shuya Yamada( anyway)?"
+    timeout: 7000
+- tapOn:
+    id: "Create player Shuya Yamada( anyway)?"
+# The filter row sits under the sticky app bar after a create's reveal, so it
+# is brought back to the centre before the next step (positioning only).
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+# "Added" on a fresh deployment, "already exists" on a re-run (adopt). Either
+# is a row on file; the hard proof that BOTH forks exist is the list read below.
+- extendedWaitUntil:
+    visible: "(.*Added Shuya Yamada\\..*|That player already exists — opened it\\.)"
+    timeout: 7000
+
+# --- the second fork, b. 1852. A row exists now, so creation is ALWAYS the
+# demoted "anyway" control here: matched hard.
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Add player"
+      - extendedWaitUntil:
+          visible: "Add a player"
+          timeout: 7000
+- tapOn: "New player name"
+- inputText: "Shuya Yamada"
+- tapOn: "Birth year \\(optional\\)"
+- inputText: "1852"
+- scrollUntilVisible:
+    element:
+      id: "Create player Shuya Yamada anyway"
+    timeout: 7000
+- tapOn:
+    id: "Create player Shuya Yamada anyway"
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "(.*Added Shuya Yamada\\..*|That player already exists — opened it\\.)"
+    timeout: 7000
+
+# --- both forks are on file. Past `SEARCH_MIN_CHARS` the list is a server
+# search, so these rows are read back from the database. Anchored `below:`
+# the counter because the filter box's own value is the name. No count is
+# asserted: `players.search` matches tokens, and another "Yamada" may answer.
+- tapOn: "Filter players"
+- eraseText: 20
+- inputText: "Shuya Yamada"
+- extendedWaitUntil:
+    visible:
+      text: ".*b. 1851.*"
+      below:
+        text: "[0-9]+ matches"
+    timeout: 7000
+- assertVisible:
+    text: ".*b. 1852.*"
+    below:
+      text: "[0-9]+ matches"
+
+# ============================================================
+# SETUP — this flow's own real set, a live fetch, the wizard open
+# The util navigates itself (its drill opens the set builder) and maps Base on
+# both sides on the cold first drill.
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SET: "Topps Chrome NPB"
+
+# A red attempt leaves its review batch on this set and the fetch above would
+# RESUME it. SET is passed so the util's own refetch drills THIS set (env is
+# inherited by the nested runFlow). No-op on the normal path; see the util.
+- runFlow:
+    file: util-discard-resumed-review-batch.yaml
+    env:
+      SET: "Topps Chrome NPB"
+
+# R2(a)
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 1 — R2(b): THE PICK STEP, PRESENTED AS THE WIZARD OPENS
+#
+# NO util-wizard-walk-to-player-row HERE, and that is the feature, not a
+# shortcut. A name two players on file answer to is inserted READY: no
+# Wikidata lookup runs for it until Create new (NEO-332, Jason 2026-10-10).
+# Every other name on this set is still being looked up when the wizard
+# opens, so the pick step is the one presentable row and the wizard opens on
+# it. A product that looked the name up first would show "Looking up N more
+# names…" here instead, and this wait fails by name.
+#
+# WHY IT HOLDS STILL while the steps below run. The walk yields a player only
+# to a SETTLED undecided team (`resolveNav`), and none settles for minutes:
+# `startBatch` inserts every player row before any team row, and the Wikidata
+# pool drains FIFO, so this set's ~28 teams settle after its ~215 player
+# lookups. Measured on dev 2026-10-10: 129 of 244 rows settled in 180s and no
+# team had settled at that point. This flow needs ~30s on the step.
+#
+# The walk util is not usable on this set anyway: its first wait (180s, the
+# sanctioned Wikidata ceiling) expired with 115 of 244 rows still looking up
+# on that same measurement.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      text: "Which Shuya Yamada is this\\?"
+    timeout: 7000
+- assertVisible:
+    text: "We've got 2 on file under that name\\. Pick the one on this card\\."
+- assertVisible:
+    id: "Link to Shuya Yamada, b\\. 1851"
+- assertVisible:
+    id: "Link to Shuya Yamada, b\\. 1852"
+- assertVisible:
+    id: "Create new"
+- assertVisible:
+    id: "Skip Shuya Yamada — not a person"
+
+# ── THE COUNTER: ONLY THE DECIDED NUMBER IS EVER ASSERTED ──────────────────
+# The header reads "<decided> of <total> reviewed[ · K still being looked up]".
+# Nothing is decided until STEP 4, so <decided> is 0 here and 0 again after
+# Back to the list (R2(a) already read it), and 1 after the link. <total> is
+# NOT this flow's to pin: it GROWS while the batch's lookups land, because a
+# settled player's Wikidata career teams are staged as New Team rows. CI run
+# 38068520584 copied "0 of 221" here and read "0 of 229" ten seconds later on
+# a screen that was otherwise exactly right. So every counter read below is
+# "<decided> of [0-9]+ reviewed.*" — a full-match regex, so "0 of" cannot
+# match "10 of" — and the total and the lookup tail are left free.
+
+# ============================================================
+# STEP 2 — R2(c): CREATE NEW OPENS THE NEW PLAYER STEP, WITHOUT THE LIST
+# ============================================================
+
+- tapOn:
+    id: "Create new"
+# The footer's primary slot is the same element, relabelled.
+- extendedWaitUntil:
+    visible:
+      id: "Add as New Player"
+    timeout: 7000
+- assertVisible:
+    text: "Back to the list"
+# The heading's sr-only prefix: the h3 itself reads the bare name, and this is
+# what tells a screen reader which step "Create new" landed on.
+- assertVisible:
+    text: "New Player: ?"
+- assertNotVisible:
+    text: "Which Shuya Yamada is this\\?"
+- assertNotVisible:
+    id: "Link to Shuya Yamada, b\\. 185[12]"
+
+# ============================================================
+# STEP 3 — R2(d): BACK TO THE LIST DECIDES NOTHING
+# ============================================================
+
+- tapOn:
+    text: "Back to the list"
+- extendedWaitUntil:
+    visible:
+      text: "Which Shuya Yamada is this\\?"
+    timeout: 7000
+- assertVisible:
+    id: "Link to Shuya Yamada, b\\. 1851"
+- assertVisible:
+    id: "Link to Shuya Yamada, b\\. 1852"
+# The footer's live region says where the operator is (a11y S3).
+- assertVisible:
+    text: "Back at the list\\. 2 on file\\."
+# Nothing was recorded: still none decided (the total is free, see STEP 1).
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 4 — R2(e): TAKE ONE, AND THE READ-BACK SAYS WHICH
+# ============================================================
+
+- tapOn:
+    id: "Link to Shuya Yamada, b\\. 1852"
+# Exactly one decision: the link (the total is free, see STEP 1).
+- extendedWaitUntil:
+    visible:
+      text: "1 of [0-9]+ reviewed.*"
+    timeout: 7000
+- assertNotVisible:
+    text: "Which Shuya Yamada is this\\?"
+
+# The read-back lives in the Decided list. With every other name still being
+# looked up there is no next row to present, so the body is just
+# "Looking up N more names…" over that list — short, and on screen (README →
+# "Asserting inside a dialog" warns about a TALL body; this one is two lines).
+# One decision means the list renders expanded (it collapses past five).
+- extendedWaitUntil:
+    visible:
+      text: "Linked to Shuya Yamada, b\\. 1852"
+      childOf:
+        id: "Decided names"
+    timeout: 7000
+- assertVisible:
+    id: "Change decision for Shuya Yamada"
+
+# ============================================================
+# STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
+# ============================================================
+
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+- assertVisible:
+    text: "Discard [0-9]+ decisions?.*"
+- tapOn:
+    text: "Discard"
+- extendedWaitUntil:
+    visible: "Fetch cancelled — no cards saved."
+    timeout: 7000
