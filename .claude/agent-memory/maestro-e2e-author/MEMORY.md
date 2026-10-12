@@ -148,3 +148,4 @@ Non-markdown helpers: `tools/`
 - [takeScreenshot paths + nested runFlow env](patterns_screenshots_and_nested_env.md) — absolute paths refused; env is inherited, so pass SET to the discard util
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~4-5s per live lookup Convex-side (laptop ~0.5s); teams settle last; size a timing claim from it
 - [Reference catalogue on CI previews](patterns_reference_catalogue_on_ci_previews.md) — NEO-330: prod catalogue on every CI preview; check fixture names against the bundle; capped lists
+- [Merged flows miss a branch copy sweep](patterns_merged_flows_miss_a_branch_copy_sweep.md) — after merging main, grep the old copy a branch sweep replaced; main-added flows keep it

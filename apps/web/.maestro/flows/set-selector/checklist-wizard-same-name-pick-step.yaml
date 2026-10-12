@@ -131,9 +131,10 @@ tags:
 
 - launchApp
 # The list COUNTER, not the heading: the heading paints before the list query
-# answers (admin-players-same-name-birth-year).
+# answers (admin-players-same-name-birth-year). NEO-330's concise counter:
+# "500 players" browsing, "N matches" / "10+ matches" with a filter typed.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ============================================================
@@ -238,7 +239,10 @@ tags:
 # --- both forks are on file. Past `SEARCH_MIN_CHARS` the list is a server
 # search, so these rows are read back from the database. Anchored `below:`
 # the counter because the filter box's own value is the name. No count is
-# asserted: `players.search` matches tokens, and another "Yamada" may answer.
+# asserted: `players.search` matches ANY token, so on the catalogue other
+# Baseball "Yamada"s may answer and fill the page's 10-row search, which the
+# counter prints as "10+ matches". The rows matching both tokens rank first,
+# so both forks are in that answer either way.
 - tapOn: "Filter players"
 - eraseText: 20
 - inputText: "Shuya Yamada"
@@ -246,12 +250,12 @@ tags:
     visible:
       text: ".*b. 1851.*"
       below:
-        text: "[0-9]+ matches"
+        text: "[0-9,]+\\+? matches"
     timeout: 7000
 - assertVisible:
     text: ".*b. 1852.*"
     below:
-      text: "[0-9]+ matches"
+      text: "[0-9,]+\\+? matches"
 
 
 # ============================================================
