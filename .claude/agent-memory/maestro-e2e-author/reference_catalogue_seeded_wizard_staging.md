@@ -83,6 +83,17 @@ TEAMLESS and surfaced as `2 cards need a team`). With the fix (re-probed
 PROBED; an offline `pickTeamForYear` run only says how a name resolves once
 it gets there. See [[past-era-team-fixture]].
 
+**A fixture that expected unknown names can now commit with no wizard.**
+Prod has built 2025 Bowman Draft, so all its draftees are catalogue rows
+(NEO-333's dual-team flow, re-measured 2026-10-12). On the one-marketplace
+path with nothing staged, the commit's `Saved N cards` REPLACES the
+`Kept all N cards from BSC` line (CardChecklist holds one notice), so a fetch
+gate must accept `Saved` too, and a wizard gate must be the either/or
+`Confirm New Players & Teams|.*Saved [1-9][0-9]* cards?.*`. Make the wizard
+drain exit on a player OR `Confirm & Save` (a batch can stage teams and no
+player). Prove "nothing was staged" through the unknown-name route: an
+unresolvable value always lands in `unknownTeams` and opens the wizard.
+
 **Reading a wizard red:** a walk util that spins its 200-iteration repeat
 (~1.7s each, ~340s) and then fails on `Skip .* not a person` means the batch
 ran out of player rows, not a slow page — check `N of N reviewed` in the

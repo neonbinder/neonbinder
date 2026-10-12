@@ -101,7 +101,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2025 (the whole year) → Topps → Topps Welcome to the Club: 3X MVP | `Base` — 36 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the one team step, `Philadelphia Athletics`, LINKED by the operator to the catalogue's 1901–1954 row (remember-box unticked, no alias written); Brooklyn Dodgers linked automatically at the fetch. The year's Manufacturers and Topps Sets syncs are this flow's too: no other flow drills Baseball → 2025 | `flows/set-selector/checklist-wizard-past-era-team-link-commits.yaml` — **sole writer** of the year. ✅ **Approved by Jason 2026-10-11** (NEO-330). Measured: **0 unknown players + 1 unknown team** (1 row once its lookup settles) — see "The PAST-ERA team fixture" |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/setup.yaml` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
-| Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED with every unknown name SKIPPED — no player, team or league minted (NOT pre-synced) | `flows/set-selector/checklist-dual-team-card-links-both-teams.yaml` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
+| Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED (on the catalogue every name is known, so the fetch commits with no wizard; any name the wizard does stage is SKIPPED) — no player, team or league minted (NOT pre-synced) | `flows/set-selector/checklist-dual-team-card-links-both-teams.yaml` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
@@ -489,8 +489,10 @@ Witherspoon (Detroit Tigers).
   react-virtuoso list opens at its end and renders only its ~440px window
   plus overscan. So the last row is the one row certain to be in the DOM; a
   card in the first half of a 14-row list may not be.
-* Both clubs are current names that the seed's 2024 Topps Chrome commit
-  creates, so neither half raises a team step.
+* Each club is ONE Baseball row in the reference catalogue, current and
+  open-ended, with no alias (the only other "Detroit Tigers" is a Football
+  row, and team resolution is per sport), so neither half raises a team
+  step.
 * No other card in the set carries either club, so the pair alone
   identifies the row.
 
@@ -504,34 +506,43 @@ left unsaved, and nothing reads it.
 **What it writes.** Everything the cold drill syncs (Manufacturers, Sets,
 `Bowman Draft`'s Variant Types), every Ready set of the Insert reconcile
 (the target family made its own sets by "Keep all" on the BSC column
-filtered to its name), the insert's committed `cardChecklist` rows, and
-per-set `entityReviewSkips` for the names it skips. It creates no player,
+filtered to its name), the insert's committed `cardChecklist` rows, and,
+only if the wizard opens, per-set `entityReviewSkips` for the names it
+skips. It creates no player,
 team or league, and it renames, moves or deletes nothing. Fresh-only: a
 re-run on the same preview finds the Insert column saved and fails at the
 reconcile gate, by name.
 
-**Which names are new on a fresh preview.**
-* Players: all of them, about 21 distinct draftees. All are skipped.
-* Teams: none expected from the checklist; every half is a seeded MLB club.
-* Possible exception: PDA-DM's "Athletics" spelling if the seed holds only
-  "Oakland Athletics". It, and any career team staged from Wikidata, is
-  checked for a comma and skipped.
+**Which names are new on a fresh preview: none** (measured 2026-10-12,
+NEO-330, read-only against a preview holding the catalogue). The catalogue
+is a prod snapshot and prod has built this set:
+* Players: all 21 draftees are single Baseball rows, and
+  `players.resolveNameForReview` (set year 2025) answers each with one
+  `playerId`.
+* Teams: all 16 clubs BSC names resolve to exactly one row for 2025, BSC's
+  bare "Athletics" on PDA-DM included. Every club with older same-name eras
+  (Milwaukee Brewers, Washington Nationals, Baltimore Orioles, Cincinnati
+  Reds) has one open-ended row covering 2025. No comma-joined value on the
+  set names a team or an alias.
+So the fetch commits straight to `Saved 14 cards` with no wizard. An
+unsplit value would resolve to nothing and open the wizard on a comma-joined
+`New Team:` step, which is what the flow's STEP 5 checks for. The wizard
+branch stays for a catalogue refresh that drops a name or a SportLots set
+pairing with the insert; it skips every staged name. Before the catalogue
+all 21 draftees were unknown, their live lookups took 34.8 s to settle, and
+one staged a Wikidata career team (`Sydney Blue Sox`), skipped.
 
-**No recorded lookups are needed.** A name absent from the recording goes
-live (README → "Enrichment fixtures"). The flow decides nothing that depends
-on a lookup's answer, and the capture reads `players` rows, which a skipped
-name never becomes. The cost is the live lookup wait (STEP 5, 180 s
-ceiling): about 21 names, five at a time, in a pool shared with every runner.
+**No recorded lookups are needed.** Nothing is staged on the catalogue, so
+nothing is looked up. Should a refresh stage names again, a name absent from
+the recording goes live (README → "Enrichment fixtures"); the flow decides
+nothing that depends on a lookup's answer.
 
-**Not yet verified against BSC** (it needs a seller token or the private shop
-endpoints; the first run reads them, and the step that disagrees fails by
-name):
-* the set's BSC name `Bowman Draft`, and that it files under the `Bowman`
-  row;
-* the insert's variantName `Prospect Dual Autographs`;
-* PDA-WW's BSC team value;
-* whether SportLots pairs a set with the insert;
-* the cold drill, reconcile and lookup timings.
+**Verified 2026-10-12** against BSC's public catalog facets and #316's green
+CI run: the set is `Bowman Draft` under the `Bowman` row, the insert's
+variantName is `Prospect Dual Autographs` (14 cards, PDA-AD … PDA-WW), and
+PDA-WW's BSC teams are Detroit Tigers and Boston Red Sox. In that run
+SportLots paired no set with the insert (Pending → Keep all), so the fetch
+took the one-marketplace path.
 
 ### The one sanctioned read-only visitor
 
