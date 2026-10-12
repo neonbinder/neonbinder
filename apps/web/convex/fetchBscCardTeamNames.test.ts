@@ -61,10 +61,11 @@ function makeCardListingFetch(opts: {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("fetchBscCardTeamNames", () => {
-  test("all cards resolve — returns a bscCardId -> teamName map with only non-empty entries", async () => {
+  test("all cards resolve — returns a bscCardId -> { rawTeamName, teamNames } map with only non-empty entries", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
       "fetch",
@@ -80,8 +81,8 @@ describe("fetchBscCardTeamNames", () => {
     );
 
     expect(result).toEqual({
-      "bsc-1": "New York Yankees",
-      "bsc-2": "Boston Red Sox",
+      "bsc-1": { rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
+      "bsc-2": { rawTeamName: "Boston Red Sox", teamNames: ["Boston Red Sox"] },
     });
   });
 
@@ -100,7 +101,9 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1", "bsc-2"] },
     );
 
-    expect(result).toEqual({ "bsc-1": "New York Yankees" });
+    expect(result).toEqual({
+      "bsc-1": { rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
+    });
     expect(result["bsc-2"]).toBeUndefined();
   });
 
@@ -122,7 +125,9 @@ describe("fetchBscCardTeamNames", () => {
       t.action(internal.adapters.buysportscards.fetchBscCardTeamNames, {
         bscCardIds: ["bsc-1", "bsc-2", "bsc-3"],
       }),
-    ).resolves.toEqual({ "bsc-1": "New York Yankees" });
+    ).resolves.toEqual({
+      "bsc-1": { rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
+    });
   });
 
   test("empty input array — returns an empty map and makes no fetch calls", async () => {
@@ -181,5 +186,98 @@ describe("fetchBscCardTeamNames", () => {
     // would push this past 10.
     expect(maxInFlight).toBe(10);
     expect(Object.keys(result)).toHaveLength(25);
+  });
+
+  test("NEO-333: a comma-separated value comes back raw AND split, in BSC's order", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({
+        responses: { "bsc-1": "Cleveland Guardians, Washington Nationals" },
+        calls: [],
+      }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(result).toEqual({
+      "bsc-1": {
+        rawTeamName: "Cleveland Guardians, Washington Nationals",
+        teamNames: ["Cleveland Guardians", "Washington Nationals"],
+      },
+    });
+  });
+
+  test("NEO-333: a slash is not a team separator on the wire either", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({ responses: { "bsc-1": "Bodø/Glimt" }, calls: [] }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(result["bsc-1"]).toEqual({ rawTeamName: "Bodø/Glimt", teamNames: ["Bodø/Glimt"] });
+  });
+
+  test("NEO-333: more teams than a card carries keeps the raw string and refuses the split", async () => {
+    const t = convexTest(schema, modules);
+    const raw = Array.from({ length: 9 }, (_, i) => `Team ${i}`).join(", ");
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": raw }, calls: [] }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(result["bsc-1"]).toEqual({ rawTeamName: raw, teamNames: [] });
+    // Flagged, with the card id only: never the marketplace text.
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("bsc-1");
+    expect(logged).not.toContain("Team 3");
+    warn.mockRestore();
+  });
+
+  test("NEO-333 (security N1): a raw value over 120 characters is sent as '' while its parts stand", async () => {
+    const t = convexTest(schema, modules);
+    const a = "A".repeat(70);
+    const b = "B".repeat(70);
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({ responses: { "bsc-1": `${a}, ${b}` }, calls: [] }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    // Dropped, never truncated.
+    expect(result["bsc-1"]).toEqual({ rawTeamName: "", teamNames: [a, b] });
+    expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain(a);
+    warn.mockRestore();
+  });
+
+  test("NEO-333 (security N1): an over-length value whose parts are ALSO unusable is absent", async () => {
+    const t = convexTest(schema, modules);
+    const raw = "X".repeat(200);
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": raw }, calls: [] }));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    // One 200-char part is over-length and dropped; raw is dropped: nothing.
+    expect(result).toEqual({});
   });
 });

@@ -267,6 +267,45 @@ export const soloProgressMessage = (
 export const SOLO_STREAM_TIMEOUT_MESSAGE =
   "The fetched cards did not arrive — nothing was saved. Run the sync again.";
 
+/**
+ * NEO-333 — what the fetch says it published: how many candidates, in which
+ * batch, and the batch's `ready` count after its last team write. See
+ * `fetchCardChecklist`'s `readyAfterTeams`.
+ */
+export type StreamFence = {
+  count: number;
+  batchId?: string;
+  readyAfterTeams?: number;
+};
+
+/**
+ * NEO-333 — has the candidate subscription caught up with everything the fetch
+ * wrote, teams included?
+ *
+ * The batch must be THIS run's: named by the fence when the server sent one,
+ * otherwise merely different from the one on screen before Sync (an abandoned
+ * run's rows, same count, must never pass for this one's). Every row must be
+ * there, and `ready` must have reached the server's own post-lookup count —
+ * never `total`, which rows with a pre-parsed team never reach.
+ */
+export function streamHasCaughtUp(
+  live: { batchId?: string; total: number; ready: number; cards: unknown[] },
+  fence: StreamFence,
+  previousBatchId: string | undefined,
+): boolean {
+  if (live.batchId === undefined) return false;
+  if (fence.batchId !== undefined) {
+    if (live.batchId !== fence.batchId) return false;
+  } else if (live.batchId === previousBatchId) {
+    return false;
+  }
+  return (
+    live.total === fence.count &&
+    live.cards.length === fence.count &&
+    live.ready >= (fence.readyAfterTeams ?? 0)
+  );
+}
+
 /** How often the auto-keep path re-reads the candidate subscription. */
 const SOLO_STREAM_POLL_MS = 50;
 /** How long it waits for the batch before giving up and saving nothing. */
@@ -914,7 +953,7 @@ export default function CardChecklist({
    * in bounded PAGES, chained through the scheduler, so the subscription can
    * legitimately show a half-written batch for a moment. That is exactly what
    * this wait is for and no change was needed here: the loop polls until
-   * `live.total === expectedCount` inside a 30s budget, so a chained write
+   * `live.total === fence.count` inside a 30s budget, so a chained write
    * only makes it wait a few more milliseconds. What it must never do is
    * treat a short count as final.
    *
@@ -928,26 +967,41 @@ export default function CardChecklist({
    * enrichment loop only flips the rows it actually looked up — so on a set
    * where some cards arrived with teams already parsed, `ready` never reaches
    * `total` at all. Gating on it would hang this path forever on exactly the
-   * BSC-only sets it exists for. Teams do not gate Confirm in the dialog
-   * either (`CardPairingModal` gates on the fetch, not on enrichment), so this
-   * waits on the same thing the dialog does.
+   * BSC-only sets it exists for.
+   *
+   * ## NEO-333 — but the TEAMS must have landed
+   *
+   * The count alone let this return before the teams did. The team lookup is
+   * the fetch's LAST step, ~70s after the rows were written, so the count has
+   * long matched by the time the action resolves — and Convex resolves an
+   * action's promise without waiting for subscriptions to catch up (unlike a
+   * mutation's). The snapshot taken here then carried no BSC teams: the wizard
+   * never asked about them and the commit saved team-less cards, which the
+   * background queue linked seconds later, unreviewed.
+   *
+   * So the action now returns a fence (`candidateBatchId`, `readyAfterTeams`):
+   * the batch it wrote and the `ready` count the server saw after its last
+   * team write. `ready` never falls within a batch, so `ready >= readyAfterTeams`
+   * on THAT batch means the subscription is at or past every team the fetch
+   * resolved. It is the server's own count, not `total`, which is what keeps
+   * the hang above impossible: rows stuck `pending` are not in it. It costs one
+   * subscription round trip after the action returns — the fetch's own time,
+   * not the operator's. The dialog path waits on the same fence before it
+   * unlocks Confirm (see `handleSync`).
+   *
+   * An absent fence (a server older than this client, in the deploy window)
+   * falls back to the count-and-moved-batch gate alone.
    */
   const awaitStreamedBatch = useCallback(
     async (
-      expectedCount: number,
+      fence: StreamFence,
       previousBatchId: string | undefined,
       abandoned: () => boolean,
     ): Promise<typeof liveCandidates> => {
       const deadline = Date.now() + SOLO_STREAM_TIMEOUT_MS;
       while (!abandoned()) {
         const live = liveCandidatesRef.current;
-        if (
-          live &&
-          live.batchId !== undefined &&
-          live.batchId !== previousBatchId &&
-          live.total === expectedCount &&
-          live.cards.length === expectedCount
-        ) {
+        if (live && streamHasCaughtUp(live, fence, previousBatchId)) {
           return live;
         }
         if (Date.now() > deadline) return undefined;
@@ -1113,9 +1167,14 @@ export default function CardChecklist({
       const agreed =
         expectedSides.length === serverSides.length &&
         expectedSides.every((side, i) => side === serverSides[i]);
+      const fence: StreamFence = {
+        count: result.candidateCount,
+        batchId: result.candidateBatchId,
+        readyAfterTeams: result.readyAfterTeams,
+      };
       if (expectSolo && agreed && serverSides.length === 1) {
         const live = await awaitStreamedBatch(
-          result.candidateCount,
+          fence,
           previousBatchId,
           abandoned,
         );
@@ -1187,6 +1246,24 @@ export default function CardChecklist({
         // guessed right.
         setSoloFetch(null);
         setPairingPhase("review");
+      }
+      /*
+       * NEO-333 — the dialog's Confirm unlocks when this run's `finally` clears
+       * `fetchInFlight`. Until now that was the instant the action resolved,
+       * which can be before the subscription carries the last teams (see
+       * `awaitStreamedBatch`); a Confirm pressed in that window handed the
+       * wizard and the commit cards whose teams the modal had not absorbed yet.
+       * So hold the lock until the stream has caught up — one round trip.
+       *
+       * Only with a fence: a server that sent none gets the old behaviour, not
+       * a 30s wait on a batch id that will never match. And a stream that
+       * never catches up unlocks Confirm anyway rather than stranding the
+       * review — that is what the dialog did before, and the background queue
+       * still links the teams after save.
+       */
+      if (fence.batchId !== undefined) {
+        await awaitStreamedBatch(fence, previousBatchId, abandoned);
+        if (abandoned()) return;
       }
       setSyncMessage(result.message);
     } catch (error) {
