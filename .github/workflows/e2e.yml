@@ -1139,6 +1139,9 @@ jobs:
         working-directory: apps/web
     steps:
       - name: Upstream jobs
+        # Runs before (or without) checkout: apps/web, the default
+        # working directory, may not exist yet.
+        working-directory: ${{ github.workspace }}
         env:
           R_SETUP: ${{ needs.setup.result }}
           R_SEED: ${{ needs.seed.result }}
@@ -1281,6 +1284,9 @@ jobs:
       # crash) while the surviving results still looked complete.
       - name: Shard jobs
         if: always()
+        # Runs before (or without) checkout: apps/web, the default
+        # working directory, may not exist yet.
+        working-directory: ${{ github.workspace }}
         env:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
