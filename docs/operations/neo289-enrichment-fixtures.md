@@ -147,17 +147,17 @@ Then:
   added to `setup.yaml`'s Base/Future Stars/Gold Wave coverage).
 - The coverage warning (§3) shows a growing `missing` list.
 - An operator spots a wrong entity in a recorded answer (e.g. during the
-  live-proof flow below, or from a §4 review) — re-capture that name's
+  live-proof spec below, or from a §4 review) — re-capture that name's
   neighbourhood and diff before committing.
 
-## 6. The one live-proof flow
+## 6. The one live-proof spec
 
-One flow deliberately proves the live lane still works end to end, using a
-player who is real but is **not** in the recording: `.maestro/flows/admin/
-player-live-wikidata-enrichment.yaml` adds **Harmon Killebrew** (Baseball) through
+One spec deliberately proves the live lane still works end to end, using a
+player who is real but is **not** in the recording:
+`apps/web/playwright/tests/admin/player-live-wikidata-enrichment.spec.ts` adds **Harmon Killebrew** (Baseball) through
 `/admin/players` and asserts the resulting `Wikidata Q[0-9]+` link in the
 detail header. Harmon Killebrew is deliberately not a Topps Chrome subject, so this
-flow always makes a real Wikidata round-trip regardless of the fixture
+spec always makes a real Wikidata round-trip regardless of the fixture
 switch. A red run here during a live Wikidata outage is expected — rerun
-rather than treating it as a product bug (same as any other flow that
+rather than treating it as a product bug (same as any other spec that
 depends on a live third party).

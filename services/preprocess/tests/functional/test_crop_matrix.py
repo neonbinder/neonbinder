@@ -3,8 +3,8 @@
 ## Why this suite exists, and why it is not in E2E
 
 The 2026-08-27 border-shaving bug shipped to production and ran for a week with
-every other gate green. E2E could not see it: Maestro drives rendered UI, and a
-card cropped to 87% of itself still renders, still classifies, still pairs. The
+every other gate green. E2E could not see it: Playwright drives rendered UI, and a card
+cropped to 87% of itself still renders, still classifies, still pairs. The
 defect was a geometric property of bytes the UI never asserts on.
 
 So this suite asserts the geometry directly, against the real container — real

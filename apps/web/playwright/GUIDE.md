@@ -1,74 +1,201 @@
-# Idiomatic Playwright suite: authoring guide (NEO-338 bake-off)
+# E2E suite: authoring and running guide
 
-This suite answers one question: how fast is the NeonBinder web E2E suite
-when it is written the way an experienced Playwright engineer writes tests?
-`apps/web/playwright/` already holds a line-by-line port onto a
-Maestro-shaped driver; this is the other arm of the comparison.
+The NeonBinder web E2E suite is Playwright, in `apps/web/playwright/`. This is
+THE guide: every spec is written to it, and the `playwright-e2e-author` agent
+and the `test-coverage-auditor` read it first. The suite is web-only; the React
+Native app is paused and has no E2E.
 
-The Maestro flows under `apps/web/.maestro/flows/` are the **specification**:
-every test case, every assertion and every branch they cover must be covered
-here. They are **not a script**. Do not translate step by step, do not
-reproduce driver workarounds, and never import `playwright/support/maestro.ts`.
+Layout:
 
-Read first: `apps/web/.maestro/README.md` (rules R1-R10, budgets), then the
-pilots in this directory, which show every pattern below:
+| Path | What |
+|---|---|
+| `tests/<area>/<name>.spec.ts` | one `test()` per file |
+| `support/` | shared helpers (see "Support") |
+| `SET-REGISTRY.md` | every real set the suite touches, who provisions it, who may write |
+| `shard-plan.mjs`, `timings.json` | how CI splits files across shards |
+| `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e`; 7 s budget; no retries |
 
-| Pilot | Shows |
+Reference specs that show the patterns below:
+
+| Spec | Shows |
 |---|---|
 | `tests/setup.spec.ts` | the seed: dialogs, app-state branches, a bounded loop, paused-SportLots branches |
-| `tests/profile/worker-bootstrap.spec.ts` | the `bootstrap` project; an `optional: true` sub-flow |
-| `tests/home/landing-smoke.spec.ts` | signed-out page, `scrollUntilVisible` that IS the assertion |
+| `tests/profile/worker-bootstrap.spec.ts` | the `bootstrap` project; an optional sub-step |
+| `tests/home/landing-smoke.spec.ts` | signed-out page, reachability as the assertion |
 | `tests/set-selector/admin-missing-both-shows-warning.spec.ts` | dedicated `account=`, role-scoped asserts, `toBeHidden` |
-| `tests/set-selector/topps-chrome-add-feature.spec.ts` | the drill helper, a genuine "is it open?" branch, asserting state Maestro could not see |
-| `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | entity-review wizard, minted names, `copyTextFrom` |
+| `tests/set-selector/topps-chrome-add-feature.spec.ts` | the drill helper, a genuine "is it open?" branch |
+| `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | entity-review wizard, minted names |
 | `tests/labels/scan-visibility.spec.ts` | scoping to one list item; hidden-then-shown text |
 | `tests/admin/player-live-wikidata-enrichment.spec.ts` | a link whose name carries sr-only text; a sanctioned long wait |
 
 ## Hard rules
 
-1. **No product changes.** Only `apps/web/playwright/**` changes.
-   If the product is wrong, assert the CORRECT behaviour (the test goes red)
-   and report it; never weaken the test to pass.
+1. **Tests prove the product; they never bend to it.** If the product is
+   wrong, assert the CORRECT behaviour (the test goes red) and report it;
+   never weaken a test to pass. Never add app code whose only purpose is to
+   appease a test.
 2. **Locate only by what a user perceives:** `getByRole` (with `name`),
    `getByLabel`, `getByPlaceholder`, `getByText`, `getByTitle`,
    `getByAltText`. **Never** CSS, XPath, DOM ids, classes, `data-testid`,
    `page.locator("...")` or `nth-child`. Chaining and filtering are
    encouraged: `dialog.getByRole("button", { name: "Save" })`,
    `.filter({ hasText })`, `.filter({ has: page.getByText(x, { exact: true }) })`,
-   `.or()`. `.first()` / `.nth()` only where the flow means "any one of
-   these" (e.g. "a card number is shown").
-3. **Budgets are UX budgets.** The config gives every action and `expect` 7 s.
-   A step for which the YAML states a longer `timeout:` (a live marketplace
-   round trip, the 45 s launch gate, the seed's cold syncs) passes **that same
-   number** on that one call: `toBeVisible({ timeout: 60_000 })`. Never
-   invent a number, never raise one because a run was slow.
-4. **No sleeps, no settle waits.** No `waitForTimeout`, no
+   `.or()`. `.first()` / `.nth()` only where the test means "any one of
+   these" (e.g. "a card number is shown"). A control a test must drive by
+   keyboard needs a distinct user-visible handle (an `aria-label`); if two
+   siblings read the same, fix the product with distinct labels, not the test
+   with an id.
+3. **Budgets are UX budgets (R5).** The config gives every action and
+   `expect` 7 s. Jason, 2026-09-09: the bar for any user-facing interaction
+   is 7 s unless he has explicitly approved more. A slow non-marketplace
+   response is a product finding to raise, never a timeout to inflate; a
+   multi-transaction save of our own is still our server answering a user and
+   gets 7 s (2026-09-25: "A real user will never wait 30 seconds"). The only
+   longer waits, each passed on that one call as `toBeVisible({ timeout: 60_000 })`
+   and commented at the site with which exception it is:
+   - a step that directly drives a live BSC/SportLots round trip on data that
+     is not pre-synced;
+   - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
+     data-loading track, and its ceilings are the measured COLD-path values.
+     A measurement means nothing until you know which branch, warm or cold,
+     it came from);
+   - the post-sign-in launch gate (`LAUNCH_GATE`, 45 s);
+   - the one live Wikidata proof (`player-live-wikidata-enrichment`);
+   - a ceiling Jason has signed off, with the date, the measurement and what
+     would void it recorded in the spec's own comment.
+   Never invent a number, never raise one because a run was slow.
+4. **No sleeps, no settle waits (R10).** No `waitForTimeout`, no
    `waitForLoadState("networkidle")`, no polling loops around `isVisible`.
    Use web-first assertions (`toBeVisible`, `toBeHidden`, `toHaveText`,
    `toHaveValue`, `toHaveAttribute`, `toHaveCount`, `toBeInViewport`) and let
-   actions auto-wait.
+   actions auto-wait. Do not branch or wait on something that synchronises
+   nothing.
 5. **`retries: 0`, one worker per shard.** Each shard owns one test account
    (`TEST_EMAIL_<WORKER_INDEX>`). Tests must not depend on order.
-6. **Never** `git add -A`, never `git stash`; do not commit. The repo is
-   public: no secrets, account ids or internal URLs in any file.
+6. **Public repo.** No secrets, account ids, internal URLs or deployment
+   slugs in any file, comment, log line or artifact. Never `git add -A`,
+   never `git stash` in a shared worktree.
 
-## Files, names, tags (results join 1:1 with Maestro's)
+## Rules every spec satisfies (R1-R4, R7, R7a, R9)
 
-| Maestro | Here |
-|---|---|
-| `.maestro/flows/<dir>/<flow>.yaml` | `tests/<dir>/<flow>.spec.ts`, exactly one `test()` |
-| `name: "..."` | the `test()` title, **verbatim**, copy-pasted (keep `${...}` literally) |
-| `tags: [smoke, set-selector]` | `{ tag: ["@smoke", "@set-selector"] }` |
-| a `util`-tagged flow | a plain async function in `support/`, never a spec |
+The numbers are stable: specs cite them in comments (`// R7a ...`).
 
-First line of every spec: `// Origin: .maestro/flows/<dir>/<flow>.yaml (Maestro suite retired in NEO-341; see git history)`.
-Import `test`/`expect` from `support/fixtures` (never `@playwright/test`).
+**R1 - Prove one clear product feature.** The `test()` title and a top
+comment state the single user-facing feature the spec proves. If it does not
+fit one sentence, split it.
+
+**R2 - Assert that, and only that; no silent fall-through.** The test must
+fail if the feature is broken. A branch (`if`, `.or()`) that wraps the core
+action needs a hard assertion of its precondition before it and a hard
+assertion of the result after it; a test that can go green without exercising
+its feature is a false positive. Every branch (paused or live marketplace,
+panel open or closed) ends in hard asserts. Do not pile on unrelated
+assertions either. A negative assert (`toBeHidden`, `toHaveCount(0)`) is
+paired with a positive one nearby, since a negative passes on a dead page.
+
+**R3 - Reuse shared logic; never duplicate another spec.** Drive navigation
+through the `support/` helpers (R9) and confirm no existing spec already
+proves the same thing. Deleting or merging a spec is propose-and-wait, never
+autonomous, and retiring a spec requires replacement coverage first: removing
+E2E coverage without a replacement is eliminating tests.
+
+**R4 - Authenticated specs enter through `signIn(...)`, once.**
+`signIn("/route")` opens `/testing/sign-in?redirect=<route>&worker=<n>`, the
+per-test Clerk handshake, then the spec gates on the destination (below).
+Banned is any in-test re-login, credential setup or re-seed: specs rely on
+the `bootstrap` project. Public `home/*` specs enter signed out with
+`page.goto("/")`.
+
+**Gate every sign-in on the destination.** After `signIn`, the first
+assertion is the destination's own marker with `{ timeout: LAUNCH_GATE }`
+(the first navigation pays the cold launch and the Clerk handshake). Every
+later assertion runs at 7 s.
+
+**R7 - No destructive data actions.** Never clear credentials without
+restoring them, never delete or overwrite shared data, never wipe. The global
+reset is not a test step: it is the scripted `./e2e-baseline.sh reset` the CI
+seed job (and `npm run test:e2e:seed`) runs before the `setup` project. A
+spec that leaves a worker's state degraded poisons every later spec that
+worker runs.
+
+**R7a - Sets that carry marketplace ids are read-only and sole-writer;
+writes go to a per-worker hand-made set.** `SET-REGISTRY.md` is the
+authority: it lists every real set the suite touches, who provisions it and
+which single spec may write to it. No other spec may add, edit or delete
+cards, players, teams or variants on a registered set. Shards run
+concurrently against one Convex preview, so a write to a shared set is
+visible to whatever else is running; `ATTEMPT_ID` protects against prior
+runs, not concurrent workers. To write, create a hand-made set (no
+marketplace ids, so it costs no sync) under real ancestors, suffixed
+`-${env.WORKER_INDEX}`, and register the prefix in `SET-REGISTRY.md` in the
+same commit. Never attach a marketplace to a hand-made row and never "Add as
+New" on a real set's children. Adding a new real set needs explicit owner
+approval every time: propose and wait. A constraint that seems to force a
+write to a real set is a finding to raise, not a licence.
+
+**R9 - All set-builder drilling goes through the drill helpers** in
+`support/set-builder.ts` (`drillToSet`, `drillToBaseVariant`,
+`drillToColdManufacturer`, `drillToCustom`, `drillToCustomSet`); never
+hand-roll a Sport, Year, Manufacturer, Set, Variant drill inline. A spec
+targeting a genuinely different set with unique picker asserts may diverge
+and must say why. The pinned "All Brands" view at the top of the
+Manufacturers column is selected through the cold-manufacturer helper, never
+typed into "+ Custom" (the form refuses the name) and never searched for.
+
+### Companion rules
+
+- **Fixtures come from the UI.** A spec creates the data it needs through the
+  product (New Team dialog, set builder, checklist). The scripted exceptions
+  are the global reset and baseline, and `/testing/seed-credentials` (see
+  "Worker-state seeding").
+- **Minted names are single tokens**, built from `env.ATTEMPT_TOKEN`, never
+  hyphenated and never rebuilt by hand. `teams.search` is a Convex SEARCH
+  index matching TOKENS split at non-alphanumerics, so `TLF-9351` tokenises to
+  ["TLF","9351"] and collides with every persisted team starting `TLF`. This
+  holds for EVERY minted name without exception. There is no delete-team
+  affordance in the app (the picker's `Remove team <name>` unlinks a team from
+  a card; the row survives), so nothing a spec creates is removed within the
+  run that created it, and shards share one preview: every minted team is
+  visible to every other spec for the whole run. `ATTEMPT_ID` is spelled
+  `pw<worker>-a1-<random>` and `ATTEMPT_TOKEN` is that with hyphens stripped;
+  anything that reconstructs a prefix from `WORKER_INDEX` by hand is wrong.
+- **Committing specs are sole writers and self-cleaning.** A spec that
+  commits data (wizard flows, set builds) owns what it commits, uses minted
+  names, and leaves nothing a later spec or the same worker's next run
+  trips on. Fresh-only specs are listed under Gotchas.
+- **Tags.** `{ tag: ["@smoke", "@<area>"] }`: `@smoke` (the fast subset) plus
+  one grouping tag such as `@set-selector` or `@profile`. There is no
+  `@regression` tag (it drifted into a set disjoint from smoke and was
+  deleted) and never a `wip` tag: fix the bug instead. Run a subset with
+  `--grep @smoke`.
+- **Run only what you changed, against the PR's Convex preview.** Never the
+  full suite locally unless the change is to the harness itself, and never
+  against shared dev (the seed resets its target).
+- **Timing is never the first diagnosis.** "Looks like timing or a flake"
+  means look harder, not raise a number. Get the failure screenshot and
+  `error-context.md` (an ARIA snapshot of the page at failure) before
+  theorising. An environment stall is not a spec bug: one timeboxed check,
+  then push and let CI validate; never change app or spec code to appease the
+  local machine.
+- **A green suite can mean the test stopped testing.** After restructuring a
+  shared helper or path, install a deliberate throw (or a wrong expectation)
+  in it and confirm the specs covering it go RED; restore it byte-exact.
+
+## Files, names, tags
+
+- `tests/<area>/<kebab-name>.spec.ts`, exactly one `test()`.
+- The `test()` title states the feature; keep titles unique and stable (CI
+  timings and the report join on them).
+- A helper used by several specs lives in `support/`, never as a spec. Name
+  helpers for what they do.
+- Import `test`/`expect` from `support/fixtures` (never `@playwright/test`
+  directly in a spec).
 
 ```ts
 import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet } from "../../support/set-builder";
 
-test("<flow name verbatim>", { tag: ["@set-selector"] }, async ({ page, signIn, env }) => {
+test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, signIn, env }) => {
   await signIn("/set-selector");
   await expect(page.getByText("Build set parameters using marketplace APIs")).toBeVisible({ timeout: LAUNCH_GATE });
   await drillToSet(page, env);
@@ -81,71 +208,51 @@ test("<flow name verbatim>", { tag: ["@set-selector"] }, async ({ page, signIn, 
 - `support/fixtures.ts`: `test` with `env` (`WORKER_INDEX`, `ATTEMPT_ID`,
   `ATTEMPT_TOKEN`, `TEST_USERNAME`, `PAUSED_PLATFORMS`, `SL_PAUSED`) and
   `signIn(redirect, { account? })`, which opens
-  `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` exactly as
-  the flow's `url:` spells it (nested `?` and `%26` included). `LAUNCH_GATE`
-  (45 s).
-- `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`
-  (`util-login-to-*`).
+  `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` (a nested
+  `?` stays literal and a nested `&` is written `%26`). `LAUNCH_GATE` (45 s).
+- `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
+  from here, do not re-derive.
+- `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
+  `LIVE_LOGIN`.
 - `support/set-builder.ts`: the cascade. `setBuilderReady`, `columnHeading`,
-  `columnSearch`, `columnOption`, `columnSelection`, `pick(page, column,
-  name)`, `addCustomManufacturer`, `syncChecklistButton`, and the drill utils
-  `drillToSet` (util-drill-to-2024-topps-chrome), `drillToBaseVariant`
-  (util-drill-to-base-variant), `drillToColdManufacturer`
-  (util-drill-to-cold-real-set). Env overrides become an options object:
-  `drillToSet(page, env, { set: "Topps Big League" })`.
+  `columnSearch`, `columnOption`, `columnSelection`, `pick`,
+  `addCustomEntry`, `addCustomManufacturer`, `selectOrCreate`,
+  `syncChecklistButton`, and the drills `drillToSet` (2024 Topps Chrome),
+  `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
+  `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
+  options object: `drillToSet(page, env, { set: "Topps Big League" })`.
+- `support/cards.ts`: hand-made card helpers for a worker's own subtree
+  (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
+  edit/delete button locators).
+- `support/cross-list.ts`: cross-release import (`openCrossListForm`,
+  `pickCrossListSource`, `crossListCards`).
+- `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
+  `emptyListAndPickSport`, `addPlayerByHand`).
+- `support/profile.ts`: `fillPublicProfile`.
+- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `reviewedLine`,
+  `fetchChecklistToWizard`, `cancelAndDiscard`, `discardResumedReviewBatch`,
+  `personSkip`, `walkToPlayerRow`).
+- `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
+  deployment-protection header; started by the config's `webServer` when
+  `PREVIEW_URL` is set. Never logs the secret.
 
-A util flow used by several specs gets ONE helper, written by whichever agent
-the coordinator assigns; others wait or inline temporarily. Read the util's
-YAML as its spec. Name helpers for what they do, not for the YAML file.
+A helper used by several specs gets ONE implementation in `support/`; read
+the existing ones before adding another.
 
-## Mapping Maestro concepts
+## Locators: names, substrings and scope
 
-| Maestro | Idiomatic Playwright |
+Playwright's string `name`/`text` matching is a case-insensitive SUBSTRING
+unless `exact: true`:
+
+| Intent | Locator |
 |---|---|
-| `url: .../testing/sign-in?redirect=/x&worker=...` + `launchApp` | `await signIn("/x")`, then the destination gate |
-| `...&account=admin-no-credentials&...` | `await signIn("/x", { account: "admin-no-credentials" })` |
-| signed-out `url: ${APP_URL}` / `launchApp: { clearState: true }` | `await page.goto("/")` (every test has a fresh context) |
-| `openLink: ${APP_URL}/path` | `await page.goto("/path")` |
-| post-launch `extendedWaitUntil` (45000) | `await expect(<destination marker>).toBeVisible({ timeout: LAUNCH_GATE })` |
-| `tapOn: X` | `await <locator>.click()` |
-| `tapOn` on a native `<select>` then its option | `await page.getByLabel("Sport").selectOption("Baseball")` |
-| `inputText` after a `tapOn` on a field | `await field.fill("text")` (one call; drop the preceding tap) |
-| `eraseText` then `inputText` | `await field.fill("new")` (fill replaces); `eraseText` alone → `await field.clear()` |
-| `pressKey: Enter` on a field | `await field.press("Enter")` |
-| `assertVisible: X` | `await expect(x).toBeVisible()` |
-| `assertNotVisible: X` | `await expect(x).toBeHidden()`, paired with a positive assert nearby (a negative passes on a dead page) |
-| `extendedWaitUntil: { visible/notVisible, timeout: T }` | the same assertion with `{ timeout: T }` |
-| `scrollUntilVisible` before a tap | nothing: `click()` scrolls into view itself |
-| `scrollUntilVisible` that is the assertion ("it is on the page") | `await expect(x).toBeVisible()`; only when the point is that the user can REACH it on screen (landing CTA), `await x.scrollIntoViewIfNeeded(); await expect(x).toBeInViewport()` |
-| `centerElement`, `visibilityPercentage`, `waitToSettleTimeoutMs`, `retryTapIfNoChange`, `swipe` used to move the page | drop (driver workarounds) |
-| `retry: { maxRetries: 1, commands: [tap, wait] }` (re-tap a dropped tap) | drop the retry: one `click()` then the assert |
-| `runFlow: { when: { true: "${output.SL_PAUSED}" } }` | `if (env.SL_PAUSED) { ... } else { ... }` (both branches end in hard asserts, R2) |
-| `runFlow: { when: { visible: X } }` that branches on **app state** | first wait until the app has settled into ONE of the states, then branch for free: `await expect(a.or(b)).toBeVisible(); if (await a.isVisible()) {...}` |
-| `runFlow: { when: { visible/notVisible: X } }` that only papers over timing | drop the branch: just assert the end state |
-| `runFlow: { file: util-x.yaml, optional: true }` | `await helper(page).catch((e) => console.warn(...))` |
-| `repeat: { times: N, while: ..., commands }` | a bounded `for` loop that waits for the next state with an `.or()` and `break`s on the exit state |
-| `copyTextFrom: X` then `maestro.copiedText` | `const text = await x.textContent()` (or `innerText()`), then plain TS |
-| `assertTrue: ${cond}` | `expect(value).toBe(...)`, or better a web-first assert on the element itself |
-| `evalScript: output.X = ...` | a `const` |
-| `${ATTEMPT_ID}` / `output.ATTEMPT_TOKEN` | `env.ATTEMPT_ID` / `env.ATTEMPT_TOKEN` (never rebuild a token by hand) |
-| `takeScreenshot` | drop (screenshot on failure is configured) |
-
-### Translating a Maestro selector
-
-Maestro patterns are **full-match, case-insensitive regexes**; `id:` is the
-accessible name (aria-label). Playwright's string `name`/`text` matching is a
-**case-insensitive SUBSTRING** unless `exact: true`. So:
-
-| Maestro | Playwright |
-|---|---|
-| `"Sign In"` on a button | `page.getByRole("button", { name: "Sign In" })` (add `exact: true` if another name contains it) |
-| `".*Saved Reprint.*"` | `page.getByText(/Saved Reprint/)` |
-| `"0 matches"` (exact text) | `page.getByText("0 matches", { exact: true })` |
-| `id: "Create player ${NAME}"` | `page.getByRole("button", { name: \`Create player ${name}\` })` |
-| `id: "BSC base candidate: .*"` | `dialog.getByRole("option", { name: /^BSC base candidate: / }).first()` |
-| `text: X, below: { id: "Search years" }` | scope instead of geometry: `page.getByRole("listbox", { name: "Years" }).getByRole("option")...` |
-| `text: X, above: / below: { text: Y }` | find the container both live in (dialog, region, list item, row) and scope to it |
-| `childOf` / `containsChild` | `parent.getBy...()` / `.filter({ has })` |
+| a button named "Sign In" | `page.getByRole("button", { name: "Sign In" })` (add `exact: true` if another name contains it) |
+| text containing "Saved Reprint" | `page.getByText(/Saved Reprint/)` |
+| exact text "0 matches" | `page.getByText("0 matches", { exact: true })` |
+| a named control with a minted name | `page.getByRole("button", { name: \`Create player ${name}\` })` |
+| a family of options | `dialog.getByRole("option", { name: /^BSC base candidate: / }).first()` |
+| "the option inside the Years list" | scope, not geometry: `page.getByRole("listbox", { name: "Years" }).getByRole("option")` |
+| "X above or below Y" | find the container both live in (dialog, region, list item, row) and scope to it |
 
 Watch the substring trap with names that prefix others: `"Select All-America
 Game Autos"` also matches `"Select All-America Game Autos Red Ink"`; use
@@ -154,19 +261,32 @@ Game Autos"` also matches `"Select All-America Game Autos Red Ink"`; use
 **Find the role and name before writing a locator.** Run the spec once and
 read `error-context.md` (an ARIA snapshot of the page) in the failure output,
 or call `await page.getByRole("main").ariaSnapshot()` in a scratch run. Do
-not guess from the YAML: the YAML says what Maestro could see, which is
-often less than (and sometimes different from) the accessible tree.
+not guess from the markup.
 
-Text Maestro saw that a user cannot: `hidden` content, `sr-only` text inside
-a name, collapsed `<details>`. Playwright's visibility is the user's, so the
-idiomatic test is often MORE correct than the flow:
+Playwright's visibility is the user's: `hidden` content, collapsed
+`<details>` and the like are not visible, while `sr-only` text counts as
+visible and as part of an accessible name. Examples:
 - `labels/scan-visibility`: the collapsed scan list is `hidden`, so
-  `toBeHidden()` passes where the first port's driver still "saw" the text.
+  `toBeHidden()` is the honest assertion.
 - `admin/player-live-wikidata-enrichment`: the link's name is
   `Wikidata Q123 (opens in new tab)` (sr-only suffix), so a full-match
-  regex never matched; `getByRole("link", { name: /^Wikidata Q\d+/ })` does.
+  regex never matches; `getByRole("link", { name: /^Wikidata Q\d+/ })` does.
 
-## Gotchas the pilots hit (read before your first spec)
+Idioms:
+- A native `<select>`: `selectOption`, not click-then-click.
+- `fill` replaces; `clear()` empties; `press("Enter")` on the field.
+- A page branches on APP STATE (a panel is open or not): first wait until the
+  app has settled into ONE of the states, then branch for free:
+  `await expect(a.or(b)).toBeVisible(); if (await a.isVisible()) {...}`.
+  A branch that only papers over timing is dropped: assert the end state.
+- A bounded `for` loop that waits for the next state with `.or()` and
+  `break`s on the exit state, never an open-ended poll.
+- Read a value with `await x.textContent()` / `innerText()`, then plain TS.
+- Reachability ("the user can get to the CTA"): `await x.scrollIntoViewIfNeeded();
+  await expect(x).toBeInViewport()`; otherwise `click()` scrolls by itself.
+- Screenshots on failure are configured; do not add `screenshot()` calls.
+
+## Gotchas (read before your first spec)
 
 - **`aria-disabled` buttons.** Much of the app disables with `aria-disabled`
   (the wizard's "Add as New Team" while a lookup is in flight, between rows).
@@ -201,45 +321,269 @@ idiomatic test is often MORE correct than the flow:
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. Re-seed.
 
-## Coverage checklist (per spec, before you hand it back)
+## Worker-state seeding
 
-- [ ] Title verbatim, path mirrors the YAML, tags kept, `// Origin:` header.
-- [ ] Every `assertVisible`, `assertNotVisible`, `extendedWaitUntil`,
-      `assertTrue` and every value read by `copyTextFrom` maps to an
-      `expect`. A `scrollUntilVisible` whose target is never tapped is an
-      assertion too.
-- [ ] Every branch the flow takes on `SL_PAUSED` exists here, both ending in
-      hard asserts. Every app-state branch exists, behind an `.or()` settle.
-- [ ] Every explicit long `timeout:` that waits on the app or a marketplace
-      is carried over, on that call only. Nothing else exceeds 7 s.
-- [ ] No sleeps, no CSS/XPath/test ids, no `maestro.ts`.
-- [ ] Minted names come from `env.ATTEMPT_TOKEN` / `env.ATTEMPT_ID` exactly
-      where the flow uses them, as single tokens.
-- [ ] `npm run test:e2e:typecheck` and `npx eslint playwright` pass;
-      `npm run test:e2e:list -- --project=e2e` lists the test once.
+The **seed** is `e2e-baseline.sh reset` (a scripted global wipe) followed by
+the `setup` project (`tests/setup.spec.ts`: credential save, drill to 2024
+Topps Chrome, Variant Types sync, the real sets in `SET-REGISTRY.md`). It
+runs once per run, deliberately, on worker 0, never as one thread among many.
+Neither step seeds a team or a player: those tables stay empty until a spec
+makes its own per-worker rows. Then the `bootstrap` project
+(`tests/profile/worker-bootstrap.spec.ts`) resets and seeds ITS shard's
+account (public profile, marketplace credentials), and `e2e` depends on it.
+Nothing schedules around the seed: run it first (`npm run test:e2e:seed`),
+then run whatever specs you want. To seed another worker's account locally,
+set `WORKER_INDEX` and run the `bootstrap` project for it.
+
+### Seeding a fixture that no UI can create (`/testing/seed-credentials`)
+
+Some states cannot be reached by driving the product in test time, because
+reaching them costs real money, real minutes or a real third party. A
+purchase row with USPS scans needs a label bought with live postage and then
+three days of USPS sorting; a `needsReauth` credential needs a session that
+genuinely exists and is dead. For those, `/testing/seed-credentials` is the
+generic "seed, then land" hop, and its `sites` query param selects what to
+seed:
+
+| `sites` value | What it seeds |
+| --- | --- |
+| *(omitted)* | BSC + SportLots credentials (+ the EasyPost key, when configured) |
+| `sportlots` / `buysportscards` | just that platform's credentials (credential-gate fixtures) |
+| `label-scans` | one `labelPurchases` row plus a four-scan tracker snapshot, for `labels/scan-visibility` |
+
+A fixture selector is handled before the credential loop, so asking for it
+alone performs no marketplace login. The handler (`convex/testing.ts`) writes
+only through the product's own internal writers, so the seeded row is
+sanitised and guarded as production data is. Every helper is caller-scoped,
+idempotent and fails closed in production. Nest the inner query string with
+`%26` for its `&`:
+
+```ts
+await signIn("/testing/seed-credentials?sites=label-scans%26redirect=/print/labels");
+```
+
+**Mind which account a fixture lands on.** The per-user reset clears three
+per-user tables and `labelPurchases` is not one of them, so a purchase seeded
+onto an account stays. `scan-visibility` seeds the worker's MAIN account while
+`label-history-empty-state` asserts the empty state on the isolated
+`new-profile` account: two accounts, two states, neither able to disturb the
+other.
+
+## Operator switches (`PAUSED_PLATFORMS`, NEO-287)
+
+One operator switch changes what the suite can prove: the Convex env var
+`NEONBINDER_PAUSED_PLATFORMS` (comma-separated credential site keys, today
+`sportlots`) stops all contact with that marketplace (no sign-ins, session
+checks, selector or checklist fetches on that side) while every link and
+stored session stays put. Specs are **never skipped** under it: every spec
+that needs the paused marketplace has a paused branch asserting the paused
+behaviour (copy in `lib/marketplace/pause-notice.ts`), and live coverage
+returns by itself when the variable is unset.
+
+**Today the switch is OFF.** SportLots was unpaused on 2026-09-21 (the
+automated-access handshake, NEO-288, replaced the reason), so every CI run
+passes `PAUSED_PLATFORMS` empty and every spec takes its LIVE branch. The
+paused branches stay: they are what the suite does the day an operator
+pauses a marketplace again, and both branches end in hard asserts (R2).
+Never write a comment, registry entry or memory saying the suite "is"
+paused; check the run you are reading:
+
+```bash
+gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "
+```
+
+An empty value after the colon means live. A failure diagnosed on the paused
+branch of a live run (or the reverse) is a misread, not a finding.
+
+**How a spec knows.** `env.SL_PAUSED` is derived from `PAUSED_PLATFORMS` in
+the process environment (`support/env.ts`, unset reads as not paused). CI
+(`e2e.yml`) exports the shell variable from the repository variable of the
+same name and writes the same value onto the PR's Convex preview before
+seeding, so flag and deployment agree by construction; locally set it by hand
+to match whatever deployment you point at. A spec branches on the flag, never
+on the notice: `if (env.SL_PAUSED) { ...paused asserts } else { ...live }`.
+A runner whose flag disagrees with its deployment fails on the first hard
+assert, by name.
+
+**What the pause changes on screen** (so you recognise it in a failure
+screenshot). Paused-specific UI exists at exactly three places: the Profile
+SportLots tab shows the amber "SportLots is on pause" card instead of the
+connected/re-auth card; `/admin/set-builder` opens for a BSC-only admin (a
+paused platform is not a required credential) with an amber "SportLots is on
+pause." strip above its heading; and the ROOT Sports column's "done" notice
+carries "SportLots is on pause: nothing from SportLots was asked for or
+changed." (stored per column, shown to every worker; never dismiss it from a
+shared helper). **Below the root, on a fresh deployment, the pause is
+indistinguishable from a BSC-only tree**: a side counts as paused only where
+it is served AND its ids are complete, and because the Sports sync never
+asked SportLots, `Baseball` is written with no SportLots id, so every level
+beneath skips SportLots for want of ids. Years reads "SportLots skipped: no
+SportLots ids on this path."; Manufacturers syncs to nothing with NO notice
+and its idle text ("No manufacturers available. Sync from marketplaces to
+populate."); the base picker's SportLots pane shows "SportLots returned no
+base set for <set>"; checklist fetches take the one-marketplace path ("Kept
+all N cards from BSC. Nothing to match, no other marketplace attached.").
+Paused branches below the root assert THAT state, never the paused sentence.
+Consequences for drills: the Manufacturers column holds only the pinned "All
+Brands" view entry on a fresh deployment (see `SET-REGISTRY.md` -> "When
+SportLots is paused"), a brand's Sets column ends "done" with "SportLots
+skipped: no SportLots ids on this path." (a notice, not an error; the seed's
+strict asserts key on failure copy), and a BSC-only Base still reads as
+unmapped, so its picker re-opens on every visit and read-only drills leave it
+with Cancel then Close.
+
+## SportLots never rejects a password in E2E (NEO-288)
+
+SportLots sign-in goes through an owner-issued automated-access handshake
+(`services/browser/src/adapters/sportlots-adapter.ts`), and the key is scoped
+to ONE SportLots account: the one the seed and the login probes use. For any
+other account, including a deliberately fake one, SportLots never evaluates
+the password: it answers with its refusal body, the browser service's login
+diagnostic classifies that as a challenge (`error_class: challenge`,
+`credentialRejected: false`), and Convex renders the per-site `siteMessage`
+("SportLots wouldn't let us in the door...", `SITE_SIDE_ERROR_CLASSES` in
+`convex/credentials.ts`) and stores nothing. So the bad-password copy ("Could
+not sign in to SportLots. Nothing was saved...") is **unreachable** for
+SportLots from a spec, and a step asserting it asserts a state the product
+cannot produce. Assert the site-side copy (a stable, platform-named
+substring such as `/SportLots wouldn't let us in the door/`) plus the
+"nothing stored" state, as `profile/credentials-lifecycle` does; the
+transient "Could not reach SportLots..." copy must not match, since that is
+the browser service not answering (R2). BSC is unaffected and still produces
+a genuine credential rejection.
+
+## Enrichment fixtures (NEO-289)
+
+The entity-review wizard enriches players, teams and leagues from Wikidata
+(and ESPN) as before, but on **dev and PR previews** the names the seed set
+surfaces (2024 Topps Chrome, Baseball) are answered from a committed
+recording (`convex/adapters/__fixtures__/enrichment-lookups.json`) instead of
+a live round trip. The switch is the Convex env var
+`NEONBINDER_ENRICHMENT_FIXTURES=1`, honoured only where
+`TESTING_RESET_SECRET` is also set; `e2e.yml` writes it onto the PR's preview
+before seeding, every run, and production has neither. A name not in the
+recording still goes live, so the fixture is a cache in front of the adapter,
+never a stub of it. What that changes:
+
+- **`setup.spec.ts` no longer proves the live lane.** Its wizard drain
+  ("Confirm & Save", 240 s) is now an upper bound over a fixture-backed hit:
+  seconds when the recording covers the seed, network time only for names it
+  does not. The 240 s stays (the seed's sanctioned cold-path ceiling, and the
+  miss path is still live), but a seed that needs it with the recording in
+  place is a coverage gap, not a slow Wikidata. CI prints the coverage report
+  to the seed job summary after the seed; read it before reading anything
+  into a slow drain.
+- **The live lane is proved by ONE spec:**
+  `tests/admin/player-live-wikidata-enrichment.spec.ts`. It adds a real Hall
+  of Famer by hand on `/admin/players` (a name absent from the recording and
+  from every checklist the suite commits) and waits for the `Wikidata Q...`
+  link in the detail header. It carries the suite's one in-spec wait above
+  7 s on an external round trip, recorded at the site with its arithmetic,
+  and it is **expected to go red during a genuine Wikidata outage**. A
+  transport failure (timeout, network error, 5xx, 429) is "unavailable", not
+  a miss: the attempt writes nothing and `wikidataPool` retries on its
+  backoff ladder (`WIKIDATA_POOL_RETRY`), while a real no-match is final. The
+  spec's ceiling outlasts the first three pool attempts, so a red means
+  Wikidata stayed unavailable through all of them. Confirm from the run's
+  `convex-logs-runner-0` artifact (the preview's Convex logs for the whole
+  run): each unavailable attempt logs `wikidata_lookup_unavailable` (kind,
+  row id, reason, never a name). Then rerun. A red with no such lines, or a
+  repeat with `query.wikidata.org` healthy, is a product finding.
+- **Do not add the live-proof name to the recording.** The capture reads the
+  deployment's `players` rows, so a capture taken after the suite has run
+  would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
+  a recording that contains it.
+- The wizard specs on the Cubs / Orioles / Brooklyn fixtures get partial hits
+  from the recording and stay live for the rest.
+
+Fresh-only: the live proof passes once per seed. A second local run against
+the same preview finds the row the first run created, the add form demotes
+`Create player ...` to `Open ...`, and the spec fails on that button by
+name. That is correct (an existing row is adopted, never re-enqueued, so a
+re-run on the same row would pass on the previous run's QID and prove
+nothing live). Re-seed before re-running.
 
 ## Running
 
-From `apps/web`. Never against shared dev; only a PR preview (the seed
-resets the target deployment).
+All commands run from `apps/web`.
+
+| Command | What |
+|---|---|
+| `npm run test:e2e` | `playwright test`: everything (CI's job; not for your laptop) |
+| `npm run test:e2e:list` | list tests; `-- --project=e2e` to check a new spec is listed once |
+| `npm run test:e2e:typecheck` | `tsc -p playwright/tsconfig.json` |
+| `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
+| `npx eslint playwright` | lint the suite |
+
+**Locally: only the specs covering your change, against the PR preview,
+never shared dev** (the seed resets its target). Run a second Vite on a spare
+port wired to the PR's Convex preview, and point Playwright at it:
 
 ```bash
 # shell 1: local Vite on a spare port, wired to the PR's Convex preview
 #   (TESTING_ENDPOINT_SECRET and the Clerk keys come from .env.local)
-VITE_CONVEX_URL=https://<preview>.convex.cloud VITE_DEV_DISABLE_HTTPS=1 \
+VITE_CONVEX_URL=<the PR's Convex preview URL> VITE_DEV_DISABLE_HTTPS=1 \
   npx vite --port 3002 --strictPort
-# shell 2: one spec, skipping the per-shard bootstrap after the first run
+# shell 2: seed once, then one spec at a time
+./e2e-baseline.sh reset --deployment <the preview's deployment name>
+APP_URL=http://localhost:3002 npx playwright test --project=setup
 APP_URL=http://localhost:3002 WORKER_INDEX=0 \
   npx playwright test --project=e2e --no-deps <path-substring>
 ```
 
-Drop `--no-deps` once per session so the `bootstrap` project seeds the
-account's marketplace credentials. Some specs are fresh-only (they mint a
-fixed name, e.g. the Wikidata live proof): they need a re-seed
-(`./e2e-baseline.sh reset --deployment <preview>` then `--project=setup`)
-before a second run.
+`TESTING_ENDPOINT_SECRET` must be exported into the Vite process itself (its
+dev-server middleware checks the `x-testing-auth` header the sign-in hop
+sends); use the worktree's existing value. `VITE_DEV_DISABLE_HTTPS=1` avoids
+the mkcert HTTPS plugin. Drop `--no-deps` once per session so the `bootstrap`
+project seeds the account's credentials. `PAUSED_PLATFORMS` must match the
+deployment (see the switch above). Fresh-only specs need a re-seed before a
+second run. A protected preview may need `VERCEL_AUTOMATION_BYPASS_SECRET` /
+`PREVIEW_URL` (the bypass proxy). If the local machine stalls, do one
+timeboxed check and then push; CI validates.
 
-CI: `.github/workflows/e2e-playwright-idiomatic.yml`, triggered by a
-`pwi-run-<n>` tag. Shards get files from `shard-plan.mjs` (longest-first over
-`timings.json`); refresh the timings from a run's merged report with
+**CI shape.** `pr-pipeline.yml` calls `.github/workflows/e2e.yml` on every
+PR: reset, then seed (the `setup` project, worker 0), then 8 shards. Each
+shard gets an explicit file list from `shard-plan.mjs` (longest-processing-
+time-first over `timings.json`, not `--shard`) and runs the `bootstrap`
+project for its own account first (workers 0-7 are used; accounts 0-11
+exist). The `e2e` gate fails on any failed spec or any missing result (a shard
+that died before reporting fails it too). A `report` job publishes the
+"Playwright E2E" check and a sticky PR comment. `e2e-repeat.yml` runs the
+suite N times (flake sampling); `refresh-flow-timings.yml` refreshes
+`timings.json` from CI. Refresh by hand from a run's merged results with
 `node playwright/shard-plan.mjs --from-results <results.json>`.
+
+**Reading a red run.**
+1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
+2. Download the artifacts BEFORE any rerun: `pw-report-shard-<n>` (the shard's
+   screenshots and report) and `pw-merged` (the merged report and results).
+   `gh run download <run-id> -n pw-merged` (and the shard).
+3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
+   snapshot of the page at failure). The role and name you expected is
+   usually visibly different from what is there.
+4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
+   `convex-logs-*` artifacts, before deciding which branch the spec took.
+5. Reproduce that one spec locally against the PR preview (above); fix; push
+   only once it passes. A full rerun (`gh run rerun`) is for suspected infra
+   problems; a real failure just fails again. A rerun cannot fix a broken
+   preview: only a new commit forces fresh ones.
+Artifacts are screenshots plus the merged report, **never traces**: a trace
+records network traffic including Clerk testing tokens, and artifacts on a
+public repo are public. Traces are only on locally (`retain-on-failure`).
+
+## Coverage checklist (per spec, before you hand it back)
+
+- [ ] Title states one feature (R1); path mirrors the area; tags set.
+- [ ] Every user-visible claim the feature makes is an `expect`; branches
+      (paused/live marketplace, app state) end in hard asserts (R2).
+- [ ] Every explicit long timeout that waits on the app or a marketplace is
+      justified at the site and on that call only. Nothing else exceeds 7 s.
+- [ ] No sleeps, no CSS/XPath/test ids; locators are role/label/text.
+- [ ] Minted names come from `env.ATTEMPT_TOKEN` / `env.ATTEMPT_ID` as single
+      tokens.
+- [ ] Writes go to a per-worker hand-made set, or the spec is the registered
+      sole writer (R7a); nothing destructive (R7).
+- [ ] If the spec drives a shared helper you changed, a deliberate throw in
+      the helper turns the covering specs red.
+- [ ] `npm run test:e2e:typecheck` and `npx eslint playwright` pass;
+      `npm run test:e2e:list -- --project=e2e` lists the test once.
