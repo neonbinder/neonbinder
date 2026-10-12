@@ -197,13 +197,10 @@ describe("the variation answer — 65 / 66 and what counts as an answer", () => 
     ).toEqual([0]);
   });
 
-  // The step measures the PRINTED length (untrimmed) for membership, but the
-  // operator can only answer with the trimmed text, and retyping the trimmed
-  // text is "no answer" (above). So a variation that is 65 characters once
-  // trimmed but printed with a stray space puts the card on the step with
-  // nothing the operator can do: the server stores the untrimmed 66 and the
-  // walker flags it again after save. Reported to the coordinator.
-  it.fails("a variation that fits once trimmed is not asked about", () => {
+  // A variation printed with a stray space but 65 characters once trimmed is
+  // measured trimmed, so the card is not put on the step (the insert stores
+  // it trimmed too, so the walker never flags it after save).
+  it("a variation that fits once trimmed is not asked about", () => {
     const padded = card("1", { cardVariation: `${"v".repeat(ASPECT_VALUE_MAX)} ` });
     expect(cardsNeedingTitleReview([padded], SHORT)).toEqual([]);
   });

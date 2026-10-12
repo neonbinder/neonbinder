@@ -36,6 +36,7 @@ import {
 import {
   listingInputsForCard,
   mergeCardFeatures,
+  storedCardVariation,
   type ListingSetContext,
 } from "./features/listingInputs";
 import { generateSku } from "./sku";
@@ -221,7 +222,9 @@ export function buildCardRowForInsert(
     printRun: card.printRun,
     // NEO-217: `autographType` is NOT written; `features.autographed` is the
     // one truth for "this card is an autograph".
-    cardVariation: card.cardVariation,
+    // NEO-335 — stored trimmed (blank is none), the value the pre-save
+    // "Card titles" step measured; see `listingInputs.storedCardVariation`.
+    cardVariation: storedCardVariation(card.cardVariation),
     platformData: card.platformData,
     ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
     listingTitle: operatorTitle || listingTitle.title,

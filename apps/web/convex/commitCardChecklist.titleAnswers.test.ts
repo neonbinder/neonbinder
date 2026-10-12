@@ -250,6 +250,15 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
     await settle(t);
   });
 
+  test("a printed variation that fits once trimmed is stored trimmed — the walker has nothing to flag", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t);
+    const fits = "v".repeat(ASPECT_VALUE_MAX);
+    await commit(t, ids, [card({ cardNumber: "1", cardVariation: `${fits} ` })]);
+    expect((await rowsByNumber(t, ids.leafId)).get("1")!.cardVariation).toBe(fits);
+    await settle(t);
+  });
+
   test("a card that re-syncs a stored row ignores the title answer", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);

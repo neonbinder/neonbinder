@@ -190,7 +190,11 @@ export function titleAttentionItems(row: TitleAttentionFields): TitleAttentionIt
   } else if (row.listingTitleTruncated) {
     items.push({ kind: "titleTruncated" });
   }
-  const variationLength = row.cardVariation?.length ?? 0;
+  // Measured TRIMMED (NEO-335 adversarial pass): a variation that fits once
+  // its stray whitespace is gone is not too long, and a new row stores it
+  // trimmed (`storedCardVariation`). Measuring the padding put a card on the
+  // pre-save step with nothing the operator could fix.
+  const variationLength = row.cardVariation?.trim().length ?? 0;
   if (variationLength > ASPECT_VALUE_MAX) {
     items.push({
       kind: "aspectValueOverLimit",
@@ -199,6 +203,16 @@ export function titleAttentionItems(row: TitleAttentionFields): TitleAttentionIt
     });
   }
   return items;
+}
+
+/**
+ * NEO-335 — the `cardVariation` a NEW row stores: the printed one, trimmed;
+ * blank is none. `buildCardRowForInsert` writes this, and the pre-save step
+ * measures the same value, so the two agree on who is over the aspect cap.
+ */
+export function storedCardVariation(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /**
@@ -213,7 +227,7 @@ export function titleAttentionFieldsAtInsert(
   return {
     listingTitle: assessment.title,
     ...(assessment.coreFits ? {} : { listingTitleTruncated: true }),
-    cardVariation,
+    cardVariation: storedCardVariation(cardVariation),
   };
 }
 

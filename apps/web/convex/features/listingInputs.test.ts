@@ -89,6 +89,13 @@ const CASES: Case[] = [
     teamNames: ["Seattle Mariners", "Cincinnati Reds"],
   },
   {
+    name: "a variation that fits once its stray space is trimmed",
+    set: SET,
+    card: { cardNumber: "44b", cardVariation: `${"v".repeat(ASPECT_VALUE_MAX)} ` },
+    playerNames: ["Paul Skenes"],
+    teamNames: [],
+  },
+  {
     name: "a brand NB has not identified",
     set: { ...LONG_SET, manufacturerBrandUnknown: true },
     card: { cardNumber: "7" },
@@ -142,6 +149,22 @@ describe("listingInputs — the pre-save step and the insert agree (parity)", ()
       ),
     );
     expect(kinds).toEqual(new Set(["titleTruncated", "aspectValueOverLimit"]));
+  });
+});
+
+describe("the stored variation is the trimmed one (NEO-335 adversarial pass)", () => {
+  test("a padded variation is stored trimmed, and neither side flags it", () => {
+    const padded = CASES.find((c) => c.card.cardNumber === "44b")!;
+    const built = buildCardRowForInsert(newCardRow(padded), padded.set, NOW);
+    expect(built.row.cardVariation).toBe("v".repeat(ASPECT_VALUE_MAX));
+    expect(
+      assessNewCardListing(padded.card, padded.set, { playerNames: padded.playerNames }).items,
+    ).toEqual([]);
+  });
+
+  test("a blank variation is stored as none", () => {
+    const c = { ...CASES[0], card: { ...CASES[0].card, cardVariation: "   " } };
+    expect(buildCardRowForInsert(newCardRow(c), c.set, NOW).row.cardVariation).toBeUndefined();
   });
 });
 
