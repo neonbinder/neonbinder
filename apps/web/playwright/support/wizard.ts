@@ -146,9 +146,11 @@ export async function answerStepAsNew(
   await expect(heading).toBeVisible();
   const step = ((await heading.textContent()) ?? "").trim();
   const isLeague = step.startsWith("New League: ");
+  // When the name already exists (another spec, or the batch itself, created
+  // it earlier in the run) the step leads with "Link to <name>" and offers
+  // "Add as New Team anyway"; the util taps "Add as New" either way.
   const primary = wizard.getByRole("button", {
-    name: isLeague ? "Add as New League" : "Add as New Team",
-    exact: true,
+    name: isLeague ? /^Add as New League( anyway)?$/ : /^Add as New Team( anyway)?$/,
   });
   if (isLeague) {
     const radio = wizard.getByRole("radio", { name: level, exact: true });
