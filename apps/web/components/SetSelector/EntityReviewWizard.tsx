@@ -54,8 +54,26 @@ import SameNamePlayerPanel, {
 } from "./SameNamePlayerPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
-// NEO-335: "K cards have no team yet", on the final step.
+// NEO-335: the cards that would save with no team, on their own step.
 import TeamsOnCardsSection from "./TeamsOnCardsSection";
+// NEO-335 Phase 2: the shared "Tidy up this set" header and the step model.
+import WizardChrome from "./WizardChrome";
+import {
+  cardsForTeamsStep,
+  nextPostReviewStep,
+  previousPostReviewStep,
+  resolvePostReviewStep,
+  reviewStepIndex,
+  reviewStepKind,
+  STEP_SUBTITLE,
+  stepNumber,
+  trackSteps,
+  upcomingReviewStepKind,
+  type PostReviewStep,
+  type StepPosition,
+  type StepTracker,
+  type WizardStepKind,
+} from "./entity-review-steps";
 import type {
   GroupChoice,
   PreviewCardForTeams,
@@ -357,6 +375,16 @@ const BULK_SKIP_LABEL = "Skip remaining names";
  */
 const NO_BATCH_ROWS: FunctionReturnType<typeof api.entityReviewQueue.getBatch> = [];
 
+/** NEO-335 Phase 2 — `titleReviewIndexes`' default: no titles step. */
+const NO_TITLE_REVIEW_INDEXES: readonly number[] = [];
+
+/**
+ * NEO-335 Phase 2 (C7) — how many cards make the teams step "long" enough to
+ * point at the set-level team instead. Below this, answering card by card is
+ * quicker than a trip to Set details.
+ */
+export const SET_TEAM_HINT_MIN_CARDS = 8;
+
 /** What the final step is about to write, as counted by the PARENT. */
 export type EntityReviewSummary = {
   /** Cards this fetch will save once committed. */
@@ -382,6 +410,8 @@ export default function EntityReviewWizard({
   onTeamAnswersChange,
   cardsWithSettledTeam,
   teamsOnly = false,
+  titleReviewIndexes = NO_TITLE_REVIEW_INDEXES,
+  hasSetTeam = false,
 }: {
   isOpen: boolean;
   selectorOptionId: Id<"selectorOptions">;
@@ -414,8 +444,8 @@ export default function EntityReviewWizard({
   onDismissCommitError?: () => void;
   /**
    * NEO-335 — the confirmed cards this review will save, in preview order.
-   * With `onTeamAnswersChange`, turns on the final step's "K cards have no
-   * team yet" section; without them the final step is exactly as before.
+   * With `onTeamAnswersChange`, turns on the teams step ("Cards with no
+   * team") before Save; without them there is no teams step.
    */
   previewCards?: readonly PreviewCardForTeams[];
   /**
@@ -435,13 +465,25 @@ export default function EntityReviewWizard({
   cardsWithSettledTeam?: readonly number[];
   /**
    * NEO-335 — there are no names to review, only cards that would save with
-   * no team. The wizard opens straight onto its final step ("All reviewed —
-   * save N cards?", the team section, Confirm & Save) and reads no batch:
+   * no team. The wizard opens straight onto its teams step ("Step 1 of 2",
+   * then "Save N cards?" and Confirm & Save) and reads no batch:
    * every name on the cards already resolved. `batchId` may be empty; when it
    * is not (a batch left open by "Back to matching"), Cancel still discards it.
    * Absent, the wizard is exactly what it was.
    */
   teamsOnly?: boolean;
+  /**
+   * NEO-335 Phase 2 — positions in `previewCards` whose listing title needs a
+   * look before the save. Non-empty turns on the "Card titles" step, between
+   * the teams step and Save. Absent or empty: no titles step.
+   */
+  titleReviewIndexes?: readonly number[];
+  /**
+   * NEO-335 Phase 2 (C7) — the node these cards save under already carries a
+   * set-level team (NEO-277). Without one, a long teams step hints at setting
+   * it in Set details instead of answering every card.
+   */
+  hasSetTeam?: boolean;
 }) {
   const batchRows = useQuery(
     api.entityReviewQueue.getBatch,
@@ -801,13 +843,27 @@ export default function EntityReviewWizard({
    */
   const [teamChoices, setTeamChoices] = useState<Record<string, GroupChoice>>({});
   /**
-   * NEO-335 (a11y) — the teams section's heading id, and whether the section
-   * is on screen. Confirm & Save is DESCRIBED by that heading while it is, so
-   * an operator who reaches the button (it is autofocused) hears "K cards have
-   * no team yet" without focus ever being moved to tell them.
+   * NEO-335 Phase 2 (a11y) — the teams step's intro line. The step's "Next"
+   * is autofocused and DESCRIBED by it, so an operator who lands on the button
+   * hears what the step asks without focus being moved to tell them.
    */
-  const teamsHeadingId = useId();
-  const [teamsSectionShown, setTeamsSectionShown] = useState(false);
+  const teamsIntroId = useId();
+  /** NEO-335 Phase 2 — the post-review steps' forward button ("Next (Enter)"). */
+  const nextStepButtonRef = useRef<HTMLButtonElement>(null);
+  /**
+   * NEO-335 Phase 2 — the post-review step the operator ASKED for, or null for
+   * "the first one there is". Resolved against what is live by
+   * `resolvePostReviewStep`, so a step with nothing in it is passed over.
+   */
+  const [requestedPostStep, setRequestedPostStep] = useState<PostReviewStep | null>(null);
+  /** NEO-335 Phase 2 — "Step x of y"'s memory for this sitting. */
+  const [stepTracker, setStepTracker] = useState<StepTracker | null>(null);
+  /** NEO-335 Phase 2 — the growth line, and the progress it was said at. */
+  const [growthNotice, setGrowthNotice] = useState<{
+    seq: number;
+    text: string;
+    progressKey: string;
+  } | null>(null);
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   /**
@@ -1639,12 +1695,9 @@ export default function EntityReviewWizard({
     // the operator onto the next name.
   }, [current?._id]);
 
-  // Focus the final Save button as soon as it appears so Enter immediately
-  // works, mirroring the old dialog's keyboard contract. This is the ONLY
-  // Enter-to-confirm path now — see the removed dialog-level handler.
-  useEffect(() => {
-    if (allDecided) confirmButtonRef.current?.focus();
-  }, [allDecided]);
+  // NEO-335 Phase 2: the "focus Confirm & Save when it appears" effect moved
+  // into the step model block below (it now follows the step on screen, and
+  // a teams or titles step focuses its Next instead).
 
   /*
    * NEO-332 — settle focus after a pick ↔ create-new switch.
@@ -2486,6 +2539,114 @@ export default function EntityReviewWizard({
     });
   }, [presentedRowId, hasSameNameCandidates, pickStep]);
 
+  /**
+   * NEO-221 (D13) — the batch is gone.
+   *
+   * `sweepAbandonedBatches` deletes a batch nobody has touched for a day, and a
+   * wizard left open on it would otherwise sit on an empty list forever, its
+   * Confirm & Save committing nothing. Guarded on `closingRef` and `saving` so
+   * the deliberate emptyings — cancel, and the commit that consumes the rows —
+   * do not flash this on the way out.
+   *
+   * (Above the early return since NEO-335 Phase 2: the step model reads it.)
+   */
+  const expired = hadRows && total === 0 && !closing && !saving;
+
+  // ------------------------------------------------------------------------
+  // NEO-335 Phase 2 — the step model: which screen is on, and "Step x of y".
+  // Pure rules in `entity-review-steps.ts`; this is the wiring.
+  // ------------------------------------------------------------------------
+
+  /** The teams step exists only when the host gave the wizard the cards. */
+  const teamsStepEnabled = previewCards !== undefined && onTeamAnswersChange !== undefined;
+  /**
+   * The cards the teams step would list — optimistic while names are still
+   * being decided (see `cardsForTeamsStep`), exact once they all are.
+   */
+  const teamsStepCards = useMemo(
+    () =>
+      teamsStepEnabled && previewCards && rows
+        ? cardsForTeamsStep(previewCards, rows, cardsWithSettledTeam)
+        : [],
+    [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam],
+  );
+  const postLive = {
+    teams: teamsStepCards.length > 0,
+    titles: titleReviewIndexes.length > 0,
+  };
+  /** Every name decided and none on screen: the teams / titles / save steps. */
+  const onPostReview = !expired && current === null && allDecided;
+  const postStep: PostReviewStep | null = onPostReview
+    ? resolvePostReviewStep(requestedPostStep, postLive)
+    : null;
+  // Back in the names (Back, Change, Back to review): the post-review steps
+  // are walked again from the first when the operator returns to them.
+  if (current !== null && requestedPostStep !== null) setRequestedPostStep(null);
+
+  /*
+   * The counter's memory, updated in render (React's "storing information
+   * from previous renders" pattern) so x, y and the growth line all describe
+   * THIS render. `trackSteps` returns the same object while nothing moved,
+   * so the update settles in one extra pass.
+   */
+  const trackedSteps: StepTracker | null =
+    isOpen && rows !== undefined && !expired
+      ? trackSteps(stepTracker, {
+          rows,
+          teamsStep: postLive.teams,
+          titlesStep: postLive.titles,
+          onSave: postStep === "save",
+        })
+      : isOpen
+        ? stepTracker
+        : null;
+  if (trackedSteps !== stepTracker) setStepTracker(trackedSteps);
+
+  const stepPosition: StepPosition = postStep
+    ? { kind: postStep }
+    : { kind: "review", index: reviewStepIndex(rows ?? [], current?._id ?? null) };
+  const stepX = trackedSteps ? stepNumber(trackedSteps.count, stepPosition) : 0;
+  const stepY = expired ? 0 : (trackedSteps?.count.total ?? 0);
+  const stepKind: WizardStepKind =
+    postStep ??
+    (current
+      ? reviewStepKind(current, {
+          pick: pickStep || (reviewingDecided && isAmbiguousPlayerRow(current)),
+        })
+      : (upcomingReviewStepKind(rows ?? []) ?? "player"));
+
+  /*
+   * The growth line stays until the operator next MOVES — a decision made or
+   * undone, or a post-review step asked for — and then clears. Keyed on that
+   * progress rather than on x: the render that grows y is often the one in
+   * which the walk is still moving itself (a skip that adds the teams step
+   * lands while the skipped row is still pinned), and keying on x would wipe
+   * the line before anyone could read it.
+   */
+  const progressKey = `${decided}:${requestedPostStep ?? ""}`;
+  const latestGrowth = trackedSteps?.growth ?? null;
+  if (trackedSteps === null && growthNotice !== null) {
+    setGrowthNotice(null);
+  } else if (latestGrowth && latestGrowth.seq !== growthNotice?.seq) {
+    setGrowthNotice({ ...latestGrowth, progressKey });
+  }
+  const growthText =
+    growthNotice && growthNotice.progressKey === progressKey ? growthNotice.text : "";
+
+  /**
+   * Focus follows the step. Save focuses Confirm & Save as soon as it appears,
+   * so Enter immediately works (the old dialog's keyboard contract, and the
+   * ONLY Enter-to-confirm path — see the removed dialog-level handler). The
+   * teams and titles steps focus their Next.
+   */
+  const screenKey = expired ? "expired" : (postStep ?? "review");
+  useEffect(() => {
+    if (screenKey === "save") confirmButtonRef.current?.focus();
+    else if (screenKey === "teams" || screenKey === "titles") {
+      nextStepButtonRef.current?.focus();
+    }
+  }, [screenKey]);
+
   if (!isOpen || rows === undefined) return null;
 
   const kindLabel = (kind: "player" | "team" | "league") =>
@@ -2943,6 +3104,29 @@ export default function EntityReviewWizard({
     return null;
   })();
 
+  /*
+   * NEO-335 Phase 2 — moving between the post-review steps. Forward walks
+   * teams → titles → save, passing over a step with nothing in it; Back goes
+   * to the step before, or out of them to the last name decided.
+   */
+  const previousStep = postStep ? previousPostReviewStep(postStep, postLive) : null;
+  const postStepBackAvailable = previousStep !== null || backTargetId !== null;
+  const goToNextStep = () => {
+    if (!postStep) return;
+    const next = nextPostReviewStep(postStep, postLive);
+    if (next) setRequestedPostStep(next);
+  };
+  const goToPreviousStep = () => {
+    if (saving) return;
+    if (previousStep) {
+      setRequestedPostStep(previousStep);
+      return;
+    }
+    if (backTargetId) presentDecided(backTargetId);
+  };
+  /** C7 — a long teams step under a node with no set-level team. */
+  const showSetTeamHint = !hasSetTeam && teamsStepCards.length >= SET_TEAM_HINT_MIN_CARDS;
+
   const linkedNameFor = (row: (typeof rows)[number]) => {
     const decision = row.decision;
     if (decision?.action !== "link") return null;
@@ -2997,16 +3181,7 @@ export default function EntityReviewWizard({
   const lookupHidden =
     pickStep || (reviewingDecided && current !== null && sameNameLinkFor(current) !== null);
 
-  /**
-   * NEO-221 (D13) — the batch is gone.
-   *
-   * `sweepAbandonedBatches` deletes a batch nobody has touched for a day, and a
-   * wizard left open on it would otherwise sit on an empty list forever, its
-   * Confirm & Save committing nothing. Guarded on `closingRef` and `saving` so
-   * the deliberate emptyings — cancel, and the commit that consumes the rows —
-   * do not flash this on the way out.
-   */
-  const expired = hadRows && total === 0 && !closing && !saving;
+  // NEO-221 (D13) `expired` is computed above the early return now — see there.
 
   /**
    * The footer's second row. Exactly one message, or none — see the JSX.
@@ -3324,24 +3499,20 @@ export default function EntityReviewWizard({
           40rem (640px) caps it on a tall desktop.
         */}
         <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl w-full max-w-2xl h-[min(40rem,100%)] flex flex-col">
-          {/* Header: progress counter (satisfies "show N remaining"). */}
-          <div className="px-6 py-4 border-b border-gray-700 shrink-0">
-            <h2
-              id="entity-review-wizard-title"
-              className="text-lg font-semibold text-gray-100"
-            >
-              Confirm New Players &amp; Teams
-            </h2>
-            <p className="text-xs text-gray-400 mt-0.5" role="status" aria-live="polite">
-              {/* NEO-335: no names in a teams-only review, so no count of them. */}
-              {teamsOnly ? null : (
-                <>
-                  {decided} of {total} reviewed
-                  {stillLookingUp > 0 ? ` · ${stillLookingUp} still being looked up` : ""}
-                </>
-              )}
-            </p>
-          </div>
+          {/*
+            NEO-335 Phase 2 — the shared header: "Tidy up this set", ONE
+            "Step x of y" over every screen to expect, the screen type below,
+            and the neon rail as the header's edge. It replaces "Confirm New
+            Players & Teams" and the "N of M reviewed · N still being looked
+            up" line (the footer still says what is being looked up).
+          */}
+          <WizardChrome
+            titleId="entity-review-wizard-title"
+            step={stepX}
+            total={stepY}
+            subtitle={expired ? "" : STEP_SUBTITLE[stepKind]}
+            announcement={growthText}
+          />
 
           {/*
             NEO-110 — THE BODY ABSORBS EVERY HEIGHT CHANGE. It is `flex-1
@@ -4465,14 +4636,35 @@ export default function EntityReviewWizard({
                   </>
                 )}
               </>
-            ) : allDecided ? (
+            ) : postStep === "teams" ? (
+              /*
+                NEO-335 Phase 2 — the teams step. Its own screen now, before
+                Save, with one line of intro and no count (the counter in the
+                header is the only number). The lines themselves are the
+                TeamsOnCardsSection mounted below, outside this switch, so it
+                stays mounted — and keeps reporting — on every post-review
+                step.
+              */
+              <p id={teamsIntroId} className="text-sm text-gray-200">
+                Pick a team for each card, or leave it for later.
+              </p>
+            ) : postStep === "titles" ? (
+              /*
+                NEO-335 Phase 2 — the "Card titles" step's slot.
+                TODO(A2): mount unit B's CardTitlesStep here, over
+                `titleReviewIndexes`.
+              */
+              <div data-wizard-step-slot="titles" />
+            ) : postStep === "save" ? (
               <div className="space-y-3">
-                {/* Heading text unchanged — "All reviewed" and the card count
-                    are both Maestro matchers. */}
-                <p className="text-sm text-gray-200">
-                  All reviewed — save {summary.cardCount}{" "}
-                  {summary.cardCount === 1 ? "card" : "cards"}?
-                </p>
+                {/* NEO-335 Phase 2 — "Save N cards?", the same heading in
+                    the full wizard and teams-only. Replaces "All reviewed —
+                    save N cards?". */}
+                <h3 className="text-sm font-semibold text-gray-200">
+                  {summary.cardCount === 1
+                    ? "Save 1 card?"
+                    : `Save ${summary.cardCount} cards?`}
+                </h3>
                 {/*
                   NEO-220 — what Confirm & Save is about to do, itemised.
                   The card count alone never mentioned the deletes, the field
@@ -4575,32 +4767,6 @@ export default function EntityReviewWizard({
                     </div>
                   </div>
                 )}
-                {/*
-                  NEO-335 — the cards this save will leave teamless, below
-                  everything above (whose strings E2E flows assert byte for
-                  byte). Never gates Confirm & Save: a line left for later
-                  saves teamless, as every card did before this existed.
-                  Mounted whenever the parent supplies the cards, even with
-                  nothing to show, so a stale answer is cleared — see the
-                  component's note.
-                */}
-                {previewCards && onTeamAnswersChange && rows && (
-                  <TeamsOnCardsSection
-                    selectorOptionId={selectorOptionId}
-                    cards={previewCards}
-                    rows={rows}
-                    linkedTeamNameById={linkedNameById}
-                    choices={teamChoices}
-                    onChoose={(groupKey, choice) =>
-                      setTeamChoices((prev) => ({ ...prev, [groupKey]: choice }))
-                    }
-                    onAnswersChange={onTeamAnswersChange}
-                    settledIndexes={cardsWithSettledTeam}
-                    disabled={saving}
-                    headingId={teamsHeadingId}
-                    onShownChange={setTeamsSectionShown}
-                  />
-                )}
               </div>
             ) : (
               <p className="text-sm text-gray-400 italic">
@@ -4609,12 +4775,53 @@ export default function EntityReviewWizard({
             )}
 
             {/*
+              NEO-335 — the cards this save would leave teamless. Shown on the
+              teams step only, but MOUNTED on every post-review step (hidden
+              elsewhere) whenever the parent supplies the cards, even with
+              nothing to show: it is what reports the answers up, so a stale
+              answer is cleared when a Names decision changes, and an answer
+              survives the trip to Save and back. Never gates Confirm & Save:
+              a line left for later saves teamless, as every card did before
+              this existed.
+            */}
+            {onPostReview && previewCards && onTeamAnswersChange && (
+              <div
+                hidden={postStep !== "teams"}
+                // TODO(A2): drop once `showSetTeamHint` reaches the section
+                // below; until then the decision is visible to tests here.
+                data-set-team-hint={showSetTeamHint ? "true" : undefined}
+              >
+                <TeamsOnCardsSection
+                  selectorOptionId={selectorOptionId}
+                  cards={previewCards}
+                  rows={rows}
+                  linkedTeamNameById={linkedNameById}
+                  choices={teamChoices}
+                  onChoose={(groupKey, choice) =>
+                    setTeamChoices((prev) => ({ ...prev, [groupKey]: choice }))
+                  }
+                  onAnswersChange={onTeamAnswersChange}
+                  settledIndexes={cardsWithSettledTeam}
+                  disabled={saving}
+                  // TODO(A2): unit C adds `showSetTeamHint` to
+                  // TeamsOnCardsSection; un-comment once it lands.
+                  // showSetTeamHint={showSetTeamHint}
+                />
+              </div>
+            )}
+
+            {/*
               NEO-221 — everything decided so far, and a way back into any of
               it. Below the current row rather than beside it: this is
               reference, not the task. Collapsed past five entries, because by
               then it is longer than the row it is meant to support.
             */}
-            {!expired && decidedRows.length > 0 && (
+            {/* NEO-335 Phase 2: on the names and on Save, not on the teams or
+                titles steps — those are about cards, and this list is names. */}
+            {!expired &&
+              decidedRows.length > 0 &&
+              postStep !== "teams" &&
+              postStep !== "titles" && (
               <details
                 open={decidedListExpanded}
                 /*
@@ -4750,6 +4957,24 @@ export default function EntityReviewWizard({
             */}
             <div className="flex min-w-0 flex-wrap items-center gap-3">
               {decisionControls}
+              {/* NEO-335 Phase 2 — the post-review steps' way back: to the
+                  step before, or to the last name decided. One Back per
+                  screen, in the slot the names' Back uses. */}
+              {/* Not while a failed commit is up: its alert carries "Back to
+                  review", and two ways back is how neither gets pressed.
+                  `aria-disabled` while saving, never native `disabled`
+                  (focus would fall out of the modal — see the footer). */}
+              {postStep && postStepBackAvailable && !commitError && (
+                <button
+                  type="button"
+                  onClick={goToPreviousStep}
+                  aria-label="Back to previous step"
+                  aria-disabled={saving || undefined}
+                  className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                >
+                  Back
+                </button>
+              )}
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
@@ -4788,7 +5013,37 @@ export default function EntityReviewWizard({
                   >
                     Cancel (Esc)
                   </NeonButton>
-                  {allDecided && !commitError && (
+                  {(postStep === "teams" || postStep === "titles") && (
+                    <NeonButton
+                      ref={nextStepButtonRef}
+                      // A unique marker class for the XPath re-find, for the
+                      // same reason Confirm & Save carries one — see
+                      // `footerFieldClass`.
+                      className={footerFieldClass("btn-next-step")}
+                      aria-describedby={postStep === "teams" ? teamsIntroId : undefined}
+                      aria-disabled={saving || undefined}
+                      onClick={() => {
+                        if (saving) return;
+                        goToNextStep();
+                      }}
+                      /*
+                       * Handles its own Enter, as Confirm & Save does and for
+                       * the same reason (a synthetic Enter has no default
+                       * action). An auto-repeated Enter is refused here AND on
+                       * Confirm & Save, so holding the key on Next cannot run
+                       * straight on into a commit once focus moves to it.
+                       */
+                      onKeyDown={(e) => {
+                        if (e.key !== "Enter") return;
+                        e.preventDefault();
+                        if (e.repeat || saving) return;
+                        goToNextStep();
+                      }}
+                    >
+                      Next (Enter)
+                    </NeonButton>
+                  )}
+                  {postStep === "save" && !commitError && (
                     <NeonButton
                       ref={confirmButtonRef}
                       /*
@@ -4806,9 +5061,6 @@ export default function EntityReviewWizard({
                        */
                       className={footerFieldClass("btn-confirm-save")}
                       aria-label={saving ? CONFIRM_SAVING_LABEL : CONFIRM_SAVE_LABEL}
-                      // NEO-335 — the name stays exactly as flows match it;
-                      // the teams section's heading is the description.
-                      aria-describedby={teamsSectionShown ? teamsHeadingId : undefined}
                       /*
                        * NEO-294 — `aria-disabled`, not native `disabled`.
                        *
@@ -4860,7 +5112,15 @@ export default function EntityReviewWizard({
                        * committing twice.
                        */
                       onKeyDown={(e) => {
-                        if (e.key !== "Enter" || saving) return;
+                        if (e.key !== "Enter") return;
+                        // NEO-335 Phase 2 — an auto-repeat is the tail of the
+                        // Enter that pressed "Next (Enter)" a step ago, never a
+                        // decision to commit. Refused without the native click.
+                        if (e.repeat) {
+                          e.preventDefault();
+                          return;
+                        }
+                        if (saving) return;
                         e.preventDefault();
                         onConfirm();
                       }}

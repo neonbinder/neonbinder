@@ -1,10 +1,12 @@
 /**
- * NEO-335 — "K cards have no team yet" on the wizard's final step.
+ * NEO-335 — the cards that would save with no team, on the wizard's teams
+ * step (Phase 2: its own step, before Save).
  *
  * Pins the contract the coordinator and the E2E flows rely on:
- *  - absent at K = 0 (and the parent still hears an all-empty answer list, so
- *    a stale answer cannot outlive the card it was given for);
- *  - present at K > 0, BELOW the unchanged "All reviewed — save N cards?";
+ *  - no teams step at K = 0 — the wizard goes straight to "Save N cards?" (and
+ *    the parent still hears an all-empty answer list, so a stale answer
+ *    cannot outlive the card it was given for);
+ *  - at K > 0, a "Cards with no team" step with its intro line, then Save;
  *  - Confirm & Save is never gated by it;
  *  - pre-fills are visible and checked, ties are not, and a pick reaches the
  *    parent as a positional answer;
@@ -70,6 +72,14 @@ vi.mock("./EntityLinkSearch", () => ({ default: () => null }));
 import EntityReviewWizard from "./EntityReviewWizard";
 
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
+const NEXT_NAME = "Next (Enter)";
+const TEAMS_INTRO = "Pick a team for each card, or leave it for later.";
+/** The header's one counter. */
+const counter = () =>
+  screen
+    .getAllByRole("status")
+    .map((el) => el.textContent ?? "")
+    .find((t) => /^Step \d+ of \d+$/.test(t));
 const CANCEL_NAME = "Cancel (Esc) — leave without committing";
 const REDS = "team_reds" as Id<"teams">;
 const YANKEES = "team_yankees" as Id<"teams">;
@@ -139,12 +149,16 @@ beforeEach(() => {
   ];
 });
 
-describe("TeamsOnCardsSection in the wizard's final step", () => {
-  it("is absent when every card will save with a team, and Confirm & Save is there", () => {
+describe("TeamsOnCardsSection on the wizard's teams step", () => {
+  it("is absent when every card will save with a team: no teams step, straight to Save", () => {
     const { onTeamAnswersChange } = renderWizard([
       { cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"], teams: ["Reds"] },
     ]);
-    expect(screen.getByText("All reviewed — save 1 card?")).toBeTruthy();
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
+    // Two names + Save — no teams step was ever counted.
+    expect(counter()).toBe("Step 3 of 3");
+    expect(screen.getByText("Ready to save")).toBeTruthy();
+    expect(screen.queryByText(TEAMS_INTRO)).toBeNull();
     expect(screen.queryByText(/no team yet/)).toBeNull();
     expect(screen.getByRole("button", { name: CONFIRM_SAVE_NAME })).toBeTruthy();
     // Nothing to ask, nothing to apply — and the parent is told so.
@@ -160,18 +174,36 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
     expect(suggestionCalls).toEqual([]);
   });
 
-  it("is present at K > 0, below the unchanged heading, and never gates Confirm & Save", () => {
+  it("is its own step at K > 0, before Save, and never gates Confirm & Save", () => {
     const { onConfirm } = renderWizard([
       { cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] },
       { cardNumber: "2", cardName: "Base", players: ["Johnny Bench"] },
       { cardNumber: "3", cardName: "Team", players: ["Pete Rose"], teams: ["Reds"] },
     ]);
-    const heading = screen.getByRole("heading", { name: "2 cards have no team yet" });
-    const allReviewed = screen.getByText("All reviewed — save 3 cards?");
-    // DOCUMENT_POSITION_FOLLOWING: the section comes after the existing line.
-    expect(allReviewed.compareDocumentPosition(heading) & 4).toBe(4);
+    // Two names, the teams step, Save.
+    expect(counter()).toBe("Step 3 of 4");
+    expect(screen.getByText("Cards with no team")).toBeTruthy();
+    const intro = screen.getByText(TEAMS_INTRO);
+    const group = screen.getByRole("radiogroup", { name: "Team for Rookie Guy" });
+    // DOCUMENT_POSITION_FOLLOWING: the lines come after the intro.
+    expect(intro.compareDocumentPosition(group) & 4).toBe(4);
+    // Not on Save yet: no Save heading, no Confirm. Next has the focus.
+    expect(screen.queryByText("Save 3 cards?")).toBeNull();
+    expect(screen.queryByRole("button", { name: CONFIRM_SAVE_NAME })).toBeNull();
+    const next = screen.getByRole("button", { name: NEXT_NAME });
+    expect(document.activeElement).toBe(next);
+
+    // Nothing answered — every line left for later — and Save is still one
+    // press away.
+    fireEvent.click(next);
+    expect(counter()).toBe("Step 4 of 4");
+    expect(screen.getByText("Save 3 cards?")).toBeTruthy();
+    expect(screen.getByText("Ready to save")).toBeTruthy();
+    // The lines are hidden on Save, not unmounted (they keep reporting).
+    expect(screen.queryByRole("radiogroup", { name: "Team for Rookie Guy" })).toBeNull();
 
     const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(document.activeElement).toBe(confirm);
     expect(confirm.getAttribute("aria-disabled")).toBeNull();
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(confirm);
@@ -313,12 +345,53 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
     expect(statuses).not.toContain("Teams suggested");
   });
 
-  it("Confirm & Save is described by the section heading, its name unchanged", () => {
+  it("Next is described by the step's intro; Confirm & Save keeps its name and no description", () => {
     renderWizard([{ cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] }]);
-    const heading = screen.getByRole("heading", { name: "1 card has no team yet" });
+    const intro = screen.getByText(TEAMS_INTRO);
+    const next = screen.getByRole("button", { name: NEXT_NAME });
+    expect(intro.id).not.toBe("");
+    expect(next.getAttribute("aria-describedby")).toBe(intro.id);
+
+    fireEvent.click(next);
     const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
-    expect(heading.id).not.toBe("");
-    expect(confirm.getAttribute("aria-describedby")).toBe(heading.id);
+    expect(confirm.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("keeps an answer through Save and Back", () => {
+    const { onTeamAnswersChange } = renderWizard([
+      { cardNumber: "1", cardName: "Checklist", players: [] },
+    ]);
+    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — #1 Checklist" }));
+    expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamNone: true }]);
+
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
+    // Back from Save is the teams step, answer intact.
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
+    expect(counter()).toBe("Step 3 of 4");
+    expect(
+      screen
+        .getByRole("radio", { name: "No team on this card — #1 Checklist" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamNone: true }]);
+
+    // Both names were decided before this sitting, so — as on the names'
+    // own steps — there is no "previous decision" for Back to return to.
+    expect(screen.queryByRole("button", { name: "Back to previous step" })).toBeNull();
+  });
+
+  it("Enter on Next steps to Save; an auto-repeated Enter on Confirm & Save does not commit", () => {
+    const { onConfirm } = renderWizard([
+      { cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] },
+    ]);
+    fireEvent.keyDown(screen.getByRole("button", { name: NEXT_NAME }), { key: "Enter" });
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(document.activeElement).toBe(confirm);
+    fireEvent.keyDown(confirm, { key: "Enter", repeat: true });
+    expect(onConfirm).not.toHaveBeenCalled();
+    fireEvent.keyDown(confirm, { key: "Enter" });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
   it("Confirm & Save carries no description when the section is not shown", () => {
@@ -352,7 +425,7 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
     expect(owner.getAttribute("title")).toBeNull();
   });
 
-  it("without preview cards the final step is exactly as before", () => {
+  it("without preview cards there is no teams step: the names, then Save", () => {
     render(
       <EntityReviewWizard
         isOpen
@@ -363,7 +436,8 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(screen.getByText("All reviewed — save 1 card?")).toBeTruthy();
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
+    expect(counter()).toBe("Step 3 of 3");
     expect(screen.queryByText(/no team yet/)).toBeNull();
     expect(screen.queryAllByRole("radiogroup")).toEqual([]);
   });
@@ -371,7 +445,8 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
 
 /**
  * NEO-335 — no names to review, but cards that would save with no team: the
- * wizard opens straight onto its final step and reads no batch.
+ * wizard opens straight onto its teams step ("Step 1 of 2", then Save) and
+ * reads no batch.
  */
 describe("EntityReviewWizard teams-only", () => {
   function renderTeamsOnly(previewCards: Card[], batchId = "") {
@@ -394,7 +469,7 @@ describe("EntityReviewWizard teams-only", () => {
     return { onConfirm, onCancel, onTeamAnswersChange };
   }
 
-  it("opens on the final step with the section, reads no batch, and says nothing about names", () => {
+  it("opens on the teams step as Step 1 of 2, reads no batch, and says nothing about names", () => {
     serverAnswer = () => ({
       playerId: "p",
       answer: { tier: "sameNode", teams: [{ teamId: REDS, name: "Cincinnati Reds" }] },
@@ -405,10 +480,24 @@ describe("EntityReviewWizard teams-only", () => {
       { cardNumber: "2", cardName: "Base", players: ["Pete Rose"], teams: ["Reds"] },
     ]);
     expect(batchReads).toBe(0);
-    expect(screen.getByText("All reviewed — save 2 cards?")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "1 card has no team yet" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Tidy up this set" })).toBeTruthy();
+    expect(counter()).toBe("Step 1 of 2");
+    expect(screen.getByText("Cards with no team")).toBeTruthy();
+    expect(screen.getByText(TEAMS_INTRO)).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Team for Johnny Bench" })).toBeTruthy();
     expect(screen.queryByText(/reviewed$/)).toBeNull();
     expect(screen.queryByText(/0 of 0/)).toBeNull();
+    expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamIds: [REDS] }, undefined]);
+    // No name was decided, so there is nowhere for Back to go.
+    expect(screen.queryByRole("button", { name: "Back to previous step" })).toBeNull();
+
+    const next = screen.getByRole("button", { name: NEXT_NAME });
+    expect(document.activeElement).toBe(next);
+    fireEvent.click(next);
+    expect(counter()).toBe("Step 2 of 2");
+    expect(screen.getByText("Save 2 cards?")).toBeTruthy();
+    expect(screen.getByText("Ready to save")).toBeTruthy();
+    // The answer outlives the move to Save.
     expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamIds: [REDS] }, undefined]);
 
     const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });

@@ -205,38 +205,23 @@ type PendingReview = {
 };
 
 /**
- * NEO-332 — the sync banner's count of names waiting in the review wizard.
+ * The sync banner's line while names wait in the review wizard.
  *
- * `ambiguousPlayers` is the subset of `unknownPlayers` that is not new at all:
- * two or more players are already on file under the name, so the operator's
- * job is to pick one, and calling them "new players" told them the opposite.
- * They are taken out of the "new" count and get their own tail.
- *
- * With nothing ambiguous the sentence is byte-for-byte what it has always been
- * — zeros included ("1 new players + 0 new teams need confirmation") — so
- * every matcher written against it still holds. With something ambiguous the
- * zero parts are left out, and a run whose only open names are ambiguous reads
- * as the tail alone ("1 to pick from the roster").
+ * NEO-335 Phase 2 (Jason, 2026-10-10): one count, no per-type counts. The
+ * wizard's header says "Step x of y" over every screen; the banner only has to
+ * say that names are holding the save, and how many. New players, new teams
+ * and NEO-332's same-name picks are all names that need a look, so they are
+ * one number: every unknown player (an ambiguous one included — it is in
+ * `unknownPlayers` too) plus every unknown team.
  */
 export const entityConfirmationMessage = (
   unknownPlayers: readonly string[],
   unknownTeams: readonly string[],
-  ambiguousPlayers: readonly string[] = [],
 ): string => {
-  const ambiguous = new Set(ambiguousPlayers);
-  const ambiguousCount = unknownPlayers.filter((n) => ambiguous.has(n)).length;
-  if (ambiguousCount === 0) {
-    return `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`;
-  }
-  const newPlayers = unknownPlayers.length - ambiguousCount;
-  const newParts = [
-    newPlayers > 0 ? `${newPlayers} new players` : null,
-    unknownTeams.length > 0 ? `${unknownTeams.length} new teams` : null,
-  ].filter((part): part is string => part !== null);
-  const tail = `${ambiguousCount} to pick from the roster`;
-  return newParts.length > 0
-    ? `${newParts.join(" + ")} need confirmation · ${tail}`
-    : tail;
+  const names = unknownPlayers.length + unknownTeams.length;
+  return names === 1
+    ? "1 name needs a look before this saves."
+    : `${names} names need a look before this saves.`;
 };
 
 /**
@@ -1239,7 +1224,7 @@ export default function CardChecklist({
         }
         const cards = candidatesToPairingCards(live.cards);
         setSoloFetch(null);
-        // Remembered so the wizard's "N new players … need confirmation"
+        // Remembered so the wizard's "N names need a look before this saves."
         // notice can keep this sentence in front of it: with no dialog, this
         // line is the only place the operator (and the E2E flow) learns how
         // many cards the fetch kept, and the wizard opens within a second.
@@ -1401,7 +1386,10 @@ export default function CardChecklist({
     const kept = cards
       .map((card, index) => ({ card, index }))
       .filter(({ index }) => !heldBack.has(index));
-    const { unknownPlayers, unknownTeams, ambiguousPlayers, batchId } =
+    // NEO-332's `ambiguousPlayers` is not read here any more: the banner
+    // counts every name as one (`entityConfirmationMessage`), and the wizard
+    // finds a same-name row's pick step from the row itself.
+    const { unknownPlayers, unknownTeams, batchId } =
       await resolveEntities({
         selectorOptionId: variantId,
         sportId,
@@ -1474,11 +1462,7 @@ export default function CardChecklist({
       setSyncMessage(
         [
           soloKeptRef.current,
-          entityConfirmationMessage(
-            unknownPlayers,
-            unknownTeams,
-            ambiguousPlayers,
-          ),
+          entityConfirmationMessage(unknownPlayers, unknownTeams),
         ]
           .filter(Boolean)
           .join(" "),
@@ -2942,6 +2926,9 @@ export default function CardChecklist({
           // cards that would save with no team.
           teamsOnly={pendingPreview.teamsOnly}
           cardsWithSettledTeam={pendingPreview.settledTeamIndexes}
+          // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
+          // teams step points at Set details instead.
+          hasSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}
           // NEO-221 (D6): the whole account of what Confirm is about to do,
           // not just the card count. See `wizardSummary`.
           summary={wizardSummary}
@@ -2952,7 +2939,7 @@ export default function CardChecklist({
           // and throwing the review away.
           commitError={commitError}
           onDismissCommitError={() => setCommitError(null)}
-          // NEO-335: "K cards have no team yet" on the final step.
+          // NEO-335: the teams step, for cards that would save with no team.
           previewCards={pendingPreview.cards}
           onTeamAnswersChange={handleTeamAnswers}
           /**
