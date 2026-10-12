@@ -288,6 +288,81 @@ export const SOLO_STREAM_TIMEOUT_MESSAGE =
 export const TEAMS_LATE_NOTICE =
   "Some teams didn't load in time — those cards go in without one. Any still missing a team will show under “need attention.”";
 
+/**
+ * NEO-333 — what the fetch says it published: how many candidates, in which
+ * batch, and the batch's `ready` count after its last team write. See
+ * `fetchCardChecklist`'s `readyAfterTeams`.
+ */
+export type StreamFence = {
+  count: number;
+  batchId?: string;
+  readyAfterTeams?: number;
+};
+
+type LiveBatch = {
+  batchId?: string;
+  total: number;
+  ready: number;
+  cards: unknown[];
+};
+
+/**
+ * NEO-333 — has every ROW this run's fetch wrote reached the subscription?
+ *
+ * The batch must be THIS run's: named by the fence when the server sent one,
+ * otherwise merely different from the one on screen before Sync (an abandoned
+ * run's rows, same count, must never pass for this one's). Every row must be
+ * there. A run whose rows never get here saves nothing
+ * (`SOLO_STREAM_TIMEOUT_MESSAGE`).
+ */
+export function streamRowsArrived(
+  live: LiveBatch,
+  fence: StreamFence,
+  previousBatchId: string | undefined,
+): boolean {
+  if (live.batchId === undefined) return false;
+  if (fence.batchId !== undefined) {
+    if (live.batchId !== fence.batchId) return false;
+  } else if (live.batchId === previousBatchId) {
+    return false;
+  }
+  return live.total === fence.count && live.cards.length === fence.count;
+}
+
+/**
+ * Have the TEAMS this run's fetch resolved reached the subscription?
+ *
+ * NEO-333: when the server sent a fence, `ready` must have reached its own
+ * post-lookup count (`readyAfterTeams`) — the count it SAW, never a target it
+ * may not reach. NEO-330: with no fence (a server older than this client, in
+ * the deploy window), every row must be `ready`; the server writes `status`
+ * per row (`initialCandidateStatus`), so a fully landed batch reaches it.
+ *
+ * Either way the wait is bounded by the caller (`awaitStreamedBatch`): teams
+ * that never land end the wait with `teamsLate`, never a hang.
+ */
+export function streamTeamsLanded(live: LiveBatch, fence: StreamFence): boolean {
+  if (fence.readyAfterTeams !== undefined) {
+    return live.ready >= fence.readyAfterTeams;
+  }
+  return live.ready >= fence.count;
+}
+
+/**
+ * NEO-333 — has the candidate subscription caught up with everything the fetch
+ * wrote, teams included?
+ */
+export function streamHasCaughtUp(
+  live: LiveBatch,
+  fence: StreamFence,
+  previousBatchId: string | undefined,
+): boolean {
+  return (
+    streamRowsArrived(live, fence, previousBatchId) &&
+    streamTeamsLanded(live, fence)
+  );
+}
+
 /** How often the auto-keep path re-reads the candidate subscription. */
 const SOLO_STREAM_POLL_MS = 50;
 /**
@@ -1019,7 +1094,7 @@ export default function CardChecklist({
    * card is promoted. Since NEO-294 `startCandidateBatch` clears and rewrites
    * in bounded PAGES, chained through the scheduler, so the subscription can
    * legitimately show a half-written batch for a moment; the loop polls until
-   * `live.total === expectedCount` inside a 30s budget. What it must never do
+   * `live.total === fence.count` inside a 30s budget. What it must never do
    * is treat a short count as final.
    *
    * The batch id must MOVE. Without that check a previous run's abandoned rows
@@ -1046,6 +1121,32 @@ export default function CardChecklist({
    * delayed retry (~1s) for a ref whose row the paged write had not reached
    * yet — that retry lands after the action has returned.
    *
+   * ## NEO-333 — but the TEAMS must have landed
+   *
+   * The count alone let this return before the teams did. The team lookup is
+   * the fetch's LAST step, ~70s after the rows were written, so the count has
+   * long matched by the time the action resolves — and Convex resolves an
+   * action's promise without waiting for subscriptions to catch up (unlike a
+   * mutation's). The snapshot taken here then carried no BSC teams: the wizard
+   * never asked about them and the commit saved team-less cards, which the
+   * background queue linked seconds later, unreviewed.
+   *
+   * So the action now returns a fence (`candidateBatchId`, `readyAfterTeams`):
+   * the batch it wrote and the `ready` count the server saw after its last
+   * team write. `ready` never falls within a batch, so `ready >= readyAfterTeams`
+   * on THAT batch means the subscription is at or past every team the fetch
+   * resolved. It is the server's own count, not `total`, so it can never name
+   * a target the batch does not reach. It costs one subscription round trip
+   * after the action returns — the fetch's own time, not the operator's. The
+   * dialog path waits on the same fence before it unlocks Confirm (see
+   * `handleSync`).
+   *
+   * When the fence is present it is the readiness signal; an absent fence (a
+   * server older than this client, in the deploy window) falls back to the
+   * NEO-330 per-row gate above, `ready === total` (`streamTeamsLanded`).
+   * Either way the NEO-330 bound below still holds: teams that never land end
+   * the wait with `teamsLate`, and rows that never land save nothing.
+   *
    * If the ROWS do not arrive inside the budget, nothing is committed and the
    * operator gets the honest timeout message (`undefined`).
    *
@@ -1059,7 +1160,7 @@ export default function CardChecklist({
    */
   const awaitStreamedBatch = useCallback(
     async (
-      expectedCount: number,
+      fence: StreamFence,
       previousBatchId: string | undefined,
       abandoned: () => boolean,
     ): Promise<
@@ -1069,13 +1170,11 @@ export default function CardChecklist({
       while (!abandoned()) {
         const live = liveCandidatesRef.current;
         const whole =
-          live &&
-          live.batchId !== undefined &&
-          live.batchId !== previousBatchId &&
-          live.total === expectedCount &&
-          live.cards.length === expectedCount;
-        // NEO-330 — every team this fetch will produce has landed.
-        if (whole && live.ready === expectedCount) {
+          live !== undefined &&
+          live !== null &&
+          streamRowsArrived(live, fence, previousBatchId);
+        // NEO-330 / NEO-333 — every team this fetch resolved has landed.
+        if (whole && streamTeamsLanded(live, fence)) {
           return { live, teamsLate: false };
         }
         if (Date.now() > deadline) {
@@ -1244,9 +1343,14 @@ export default function CardChecklist({
       const agreed =
         expectedSides.length === serverSides.length &&
         expectedSides.every((side, i) => side === serverSides[i]);
+      const fence: StreamFence = {
+        count: result.candidateCount,
+        batchId: result.candidateBatchId,
+        readyAfterTeams: result.readyAfterTeams,
+      };
       if (expectSolo && agreed && serverSides.length === 1) {
         const streamed = await awaitStreamedBatch(
-          result.candidateCount,
+          fence,
           previousBatchId,
           abandoned,
         );
@@ -1351,9 +1455,14 @@ export default function CardChecklist({
        * their pairing (Jason, 2026-10-11): Confirm unlocks when the wait ends,
        * the notice says what happened, and the commit goes ahead with the
        * cards whose teams never landed carrying none.
+       *
+       * NEO-333 — the wait is on the fetch's fence (`candidateBatchId`,
+       * `readyAfterTeams`) when the server sent one, so it is normally one
+       * subscription round trip; a server that sent none is held to the
+       * per-row `ready === total` gate instead (`streamTeamsLanded`).
        */
       const settled = await awaitStreamedBatch(
-        result.candidateCount,
+        fence,
         previousBatchId,
         abandoned,
       );

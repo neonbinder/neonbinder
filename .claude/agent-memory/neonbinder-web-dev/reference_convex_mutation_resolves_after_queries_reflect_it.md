@@ -1,6 +1,6 @@
 ---
 name: reference-convex-mutation-resolves-after-queries-reflect-it
-description: A successful useMutation promise resolves only after query subscriptions hold the writes but BEFORE React re-renders — rebuild from useQuery after `await`, but a `.then` must not rely on an effect having seen the new data; a FAILED one resolves at once
+description: A successful useMutation promise resolves only after query subscriptions hold the writes but BEFORE React re-renders (a `.then` must not rely on an effect having seen the new data); a FAILED one, and EVERY useAction, resolves at once — fence an action's writes on a server-read count
 metadata:
   type: reference
 ---
@@ -31,3 +31,17 @@ relying on effect order. To reproduce in a component test with module-state
 variable and THEN return `Promise.resolve(...)` — the next render (triggered
 by the `.then`'s own setState) reads the new rows, which is exactly the
 production order. Prove the test bites by neutralising the fix.
+
+**Actions are NOT ordered** (same file: `response.type === "ActionResponse"`
+resolves immediately, "intentionally decoupled from queries/mutations"). After
+`await someAction()`, `useQuery` may still predate the action's last
+`ctx.runMutation`. A row COUNT is no fence when the action's final write is a
+patch to rows written long before (NEO-333: checklist team lookup patched
+candidate rows ~70s after insert; the auto-keep path snapshotted team-less
+cards). Fix pattern: the action returns a monotonic fence it read inside its
+last mutation (batch id + that mutation's post-write count of a field that only
+grows), and the client polls the subscription until it reaches it. Never fence
+on a target the server may never reach (`ready === total`) — use the count the
+server SAW. Bound that poll anyway: a fence the subscription never
+reaches (lookup never landed) must time out to a fallback the operator
+resolves, never hang the client (NEO-330's teamsLate path).

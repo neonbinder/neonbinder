@@ -71,7 +71,10 @@ type SlCard = {
 const mockState = vi.hoisted(() => ({
   bscCards: [] as BscCard[],
   slCards: [] as SlCard[],
-  teamNamesResult: {} as Record<string, string>,
+  teamNamesResult: {} as Record<
+    string,
+    { rawTeamName: string; teamNames: string[] }
+  >,
   teamLookupCalls: [] as string[][],
   /**
    * NEO-330 — runs inside the mocked lookup, i.e. after the candidates are
@@ -111,8 +114,14 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
     }),
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(v.string(), v.string()),
-      handler: async (_ctx, args): Promise<Record<string, string>> => {
+      returns: v.record(
+        v.string(),
+        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      ),
+      handler: async (
+        _ctx,
+        args,
+      ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
         mockState.teamLookupCalls.push(args.bscCardIds);
         if (mockState.onLookup) await mockState.onLookup();
         if (mockState.lookupThrows) throw new Error("lookup chunk failed");
@@ -335,7 +344,12 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
         // no team/teams — parsePlayersField's bulk parse found nothing.
       },
     ];
-    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.teamNamesResult = {
+      "bsc-50": {
+        rawTeamName: "Cincinnati Reds",
+        teamNames: ["Cincinnati Reds"],
+      },
+    };
 
     const result = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -476,7 +490,9 @@ describe("candidate status is per row (NEO-330)", () => {
         platformRef: "sl-77",
       },
     ];
-    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.teamNamesResult = {
+      "bsc-50": { rawTeamName: "Cincinnati Reds", teamNames: ["Cincinnati Reds"] },
+    };
 
     // Read the table directly mid-lookup: the batch is published, no team has
     // been patched yet.
@@ -561,7 +577,9 @@ describe("a failed team lookup never fails the fetch (NEO-330)", () => {
       },
     ];
     // Would be the answer — the throw must stop it landing, never a guess.
-    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.teamNamesResult = {
+      "bsc-50": { rawTeamName: "Cincinnati Reds", teamNames: ["Cincinnati Reds"] },
+    };
     mockState.lookupThrows = true;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
