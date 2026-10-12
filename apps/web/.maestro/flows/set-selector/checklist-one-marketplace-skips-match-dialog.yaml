@@ -776,10 +776,22 @@ tags:
       text: "Cards with no team"
 
 # ── THE SHARED NO-PLAYERS LINE ──────────────────────────────────────────────
-# Every card but the created player's has no players (all 24 names were
-# skipped; one Roanoke card per player, SET-REGISTRY measurement 5), so ALL of
-# them are ONE line — an exact count, in the line's own accessible names.
-- evalScript: '${output.NO_PLAYERS = String(Number(output.FETCHED) - 1)}'
+# Every card whose name was SKIPPED has no players, and all of them are ONE
+# line — keyed on having no players, never on a card's name or number. How
+# many that is is no longer FETCHED - 1: with the reference catalogue loaded
+# (NEO-330) a Roanoke player the catalogue already holds is never a name step,
+# so his card keeps its player and gets a PLAYER line of its own. CI run
+# 38302511049 attempt 2: 25 cards, "24 names need a look" (23 players + the
+# listed team), Daniel Berthiaume and Matt DelGuidice known (their own lines,
+# career chips, "Leave for later"), Paul Croteau created → "Cards with no
+# players (22)". Which players the catalogue knows is the catalogue's
+# business, so the count is READ off the line's own heading (one text node)
+# and every later check is exact against it. Card 1 and card 2 below need two
+# cards in the line.
+- copyTextFrom:
+    text: "Cards with no players \\([0-9]+\\)"
+- evalScript: '${output.NO_PLAYERS = maestro.copiedText.match(/[0-9]+/)[0]}'
+- assertTrue: '${Number(output.NO_PLAYERS) >= 2 && Number(output.NO_PLAYERS) <= Number(output.FETCHED) - 1}'
 # "LEAVE FOR LATER" IS ITS DEFAULT — nothing is known about a card nobody is
 # on, so nothing is pre-filled.
 - assertVisible:
@@ -800,13 +812,39 @@ tags:
     visible:
       id: "Just this card. — #.*"
     timeout: 7000
+# PIN THE OPENED LIST INTO THE BODY'S SLICE. With the reference catalogue the
+# known players' lines sit ABOVE the shared line (Daniel Berthiaume, Paul
+# Croteau's pre-filled line), so the opened cards start at the body's bottom
+# edge: card 1's "Just this card…" at y=476-500 while the body shows ~96-475,
+# where Maestro still reports it and its tap lands under the footer on
+# nothing (local run on the PR preview, 2026-10-12: "Match the others" never
+# appeared). When the THIRD card's button is not above the footer's Next, the
+# list is that low, and the opened list makes the body taller than its slice
+# — the one case where a touch drag latches to the body (memory:
+# touch-swipe-scrolls-a-dialog-body). ONE drag of a quarter viewport (~156px,
+# the same gesture as the RXT pre-fill read below; x=18% is the dialog's left
+# gutter, never a control) lifts card 1 to ~320. The guard after it is the
+# hard check.
+- runFlow:
+    when:
+      notVisible:
+        id: "Just this card. — #.*"
+        index: 2
+        above:
+          text: "Next \\(Enter\\)"
+    commands:
+      - swipe:
+          start: "18%, 70%"
+          end: "18%, 45%"
 
 # ── CARD 1: "NO TEAM ON THIS CARD" ──────────────────────────────────────────
 # GUARD, then "Just this card…" gives card 1 its own answers, starting from
 # the line's ("Leave for later"); its button turns into "Match the others".
+# Card 1's button is clear of the slice's bottom when card 3's top is above
+# the footer's Next (`above:` compares top edges; ~24px rows).
 - assertVisible:
     id: "Just this card. — #.*"
-    index: 1
+    index: 2
     above:
       text: "Next \\(Enter\\)"
 - tapOn:
@@ -949,12 +987,17 @@ tags:
 # What the checklist must say once this saves: every card left for later is
 # flagged; the one answered "no team" is not, nor the pre-filled one, nor the
 # one given RXO — K - 3, in the pill's own words ("1 needs you" singular, "N
-# need you" otherwise). Exactly 3 because one Roanoke card per player (25
-# cards, 25 unknown player names, SET-REGISTRY measurement 5), so each answer
-# above covers one card. LEFT is the bare number the re-sync in STEP 10 finds
-# on its no-players line.
-- evalScript: '${output.LEFT = String(Number(output.FETCHED) - 3)}'
-- evalScript: '${output.NEED_YOU = output.LEFT === "1" ? "1 needs you" : output.LEFT + " need you"}'
+# need you" otherwise). Exactly 3 because one Roanoke card per player
+# (SET-REGISTRY measurement 5), so each answer above covers one card. The
+# catalogue-known players' cards (their own lines) are left for later too:
+# their careers hold several teams, none alone covering the 1994-95 window,
+# so nothing pre-fills them (measured in the run above; a catalogue refresh
+# that gave one of them a single covering team would pre-fill it and fail the
+# pill count by name). LEFT is the bare number the re-sync in STEP 10 finds
+# on its NO-PLAYERS line: that line less the two cards answered above.
+- evalScript: '${output.NEED_YOU_N = String(Number(output.FETCHED) - 3)}'
+- evalScript: '${output.NEED_YOU = output.NEED_YOU_N === "1" ? "1 needs you" : output.NEED_YOU_N + " need you"}'
+- evalScript: '${output.LEFT = String(Number(output.NO_PLAYERS) - 2)}'
 
 # ============================================================
 # STEP 6c — NEXT (ENTER) LEAVES THE TEAMS STEP FOR THE SAVE STEP
@@ -1379,9 +1422,11 @@ tags:
 # rows that carry a team (the pre-filled one, the RXO one) or an operator's
 # "no team" (the one STEP 6b answered) are settled (`settledTeamIndexes`),
 # and NB272 carries no marketplace id, so it is not in the fetch at all. The
-# LEFT cards are all playerless (their names were skipped for this set), so
-# they are ONE line, "Cards with no players (LEFT)" — an exact count of what
-# the step asks about, in the line's own accessible names.
+# skipped-name cards left for later are all playerless (their names were
+# skipped for this set), so they are ONE line, "Cards with no players
+# (LEFT)" — an exact count, in the line's own accessible names. The
+# catalogue-known players' cards (left for later too) come back as their own
+# player lines beside it; they are not this step's claim.
 # ============================================================
 
 # The Refresh button heads the checklist, ABOVE the rows the drawer walk

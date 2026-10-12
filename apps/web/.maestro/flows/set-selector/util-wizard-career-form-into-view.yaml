@@ -33,28 +33,63 @@ tags:
 # the page behind the fixed dialog (memory: touch-swipe-scrolls-a-dialog-body),
 # so ONE UP drag pins the body to its end and the same test must then hold.
 #
+# ── WHEN NOTHING IS DECIDED YET THERE IS NO DISCLOSURE ─────────────────────
+# The "Decided (N)" disclosure renders only once a row in the batch carries a
+# decision. With the reference catalogue loaded a shared fixture can stage a
+# single name (Topps Big League: one row, CI run 38302511049 attempt 2), so the
+# player row is the first step and the anchor above does not exist: the hard
+# assert failed on a form that sat at y≈237-310, well inside the slice. The
+# header counter says which case this is for free (on a name step x is the
+# decided count plus one, NEO-335 Phase 2): a script condition, no hierarchy
+# wait (R10). With nothing decided the form is the body's LAST block, so the
+# test falls back to the form's own `+ Add` (id "Add career team") sitting
+# above the footer's "Add as New Player" (top edges, y=496 at 1024×625). That
+# is the weaker bound — a `+ Add` whose top is at 470-495 would still pass
+# while clipped — and it is stated, not hidden: it catches a form pushed
+# under the footer, which is the failure that clicks a footer button. No
+# drag in that case: a body that is not taller than its slice chains a touch
+# drag to the page behind the dialog, and nothing has shown that one is.
+#
 # ── CONTRACT ────────────────────────────────────────────────────────────────
 #   ENTRY  a player row is presented, not read-only (its footer decision group
-#          is up), at least one name is decided (the disclosure exists — true
-#          after any walk that answered a team step).
-#   EXIT   the "Decided (N)" disclosure's top is above the footer's Cancel,
-#          so the form above it is in the body's visible slice. Hard.
+#          is up).
+#   EXIT   with a decision in the batch: the "Decided (N)" disclosure's top is
+#          above the footer's Cancel, so the form above it is in the body's
+#          visible slice. With none: the form's `+ Add` is above the footer's
+#          "Add as New Player". Hard either way.
 # ════════════════════════════════════════════════════════════════════════════
+
+- copyTextFrom:
+    text: "Step [0-9]+ of [0-9]+"
+- evalScript: '${output.FORM_HAS_HISTORY = Number(maestro.copiedText.split(" ")[1]) > 1}'
 
 - runFlow:
     when:
-      notVisible:
-        text: "Decided \\([0-9]+\\)"
-        above:
-          text: "Cancel \\(Esc\\)"
+      true: "${output.FORM_HAS_HISTORY}"
     commands:
-      # x=18%: the body's left padding (dialog content starts at x=194), never
-      # on a control or the backdrop; y=70% is inside the body.
-      - swipe:
-          start: "18%, 70%"
-          end: "18%, 20%"
-          duration: 600
-- assertVisible:
-    text: "Decided \\([0-9]+\\)"
-    above:
-      text: "Cancel \\(Esc\\)"
+      - runFlow:
+          when:
+            notVisible:
+              text: "Decided \\([0-9]+\\)"
+              above:
+                text: "Cancel \\(Esc\\)"
+          commands:
+            # x=18%: the body's left padding (dialog content starts at
+            # x=194), never on a control or the backdrop; y=70% is inside the
+            # body.
+            - swipe:
+                start: "18%, 70%"
+                end: "18%, 20%"
+                duration: 600
+      - assertVisible:
+          text: "Decided \\([0-9]+\\)"
+          above:
+            text: "Cancel \\(Esc\\)"
+- runFlow:
+    when:
+      true: "${!output.FORM_HAS_HISTORY}"
+    commands:
+      - assertVisible:
+          id: "Add career team"
+          above:
+            text: "Add as New Player"

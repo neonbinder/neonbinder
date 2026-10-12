@@ -27,3 +27,12 @@ fell below y=629 and `"Skipped" is visible` failed on a decision that had
 landed ("1 of 16 reviewed" in the header). Same README rule as "Asserting
 inside a dialog: header and footer only". Related:
 [[wizard-decided-list-and-batch-resume]].
+
+**When the decision was the LAST name** the wizard is already on its first
+post-name step, which has no Decided list and whose footer Back is
+`Back to previous step` (not `... decision`); from the first post step it
+presents the last name decided. `util-wizard-read-back-decision` taps either.
+The reference catalogue makes one-name batches common (Topps Big League
+stages one), and it also gives known players their own lines on the teams
+step, so read a line's count off its heading, never `FETCHED - 1`
+(NEO-335 merge, CI run 38302511049 attempt 2).

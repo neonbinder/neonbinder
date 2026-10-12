@@ -122,14 +122,17 @@ tags:
             READY_TO_CREATE: "true"
       - tapOn:
           id: "Add as New Player"
-      # The drain above answered every team step as a SKIP, so the create just made
-      # is the ONLY "Added as new" in the history — a sharper claim than a count,
-      # which the drain has moved off 1. `Decided (N)` proves the list is up at all.
-      - extendedWaitUntil:
-          visible:
-            text: "Added as new"
-      - assertVisible:
-          text: "Decided \\([0-9]+\\)"
+      # Read the create back off its own row (its "Already decided:" panel),
+      # never off the "Decided (N)" history. With the reference catalogue
+      # loaded Topps Big League stages ONE name, so this create is the last
+      # name and the wizard has already walked on to "Cards with no team",
+      # where the history is not rendered at all (CI run 38302511049 attempt
+      # 2). The util takes either footer Back. No RESUME: the panel's footer
+      # still carries "Back to Match Cards", which STEP 3 presses.
+      - runFlow:
+          file: util-wizard-read-back-decision.yaml
+          env:
+            DECISION: "Added as new"
 
       # ============================================================
       # STEP 3 — R2(c): THE FEATURE — leave review WITHOUT discarding it
@@ -169,8 +172,28 @@ tags:
       - extendedWaitUntil:
           visible: "Tidy up this set"
           timeout: 60000
-      # THE POINT OF THE FLOW: the create survived the round trip. Still the only
-      # "Added as new" among the drained skips, so this cannot pass by accident.
+      # THE POINT OF THE FLOW: the create survived the round trip. The resumed
+      # review opens either on a name step (names still undecided) or, when the
+      # create was the last name (Big League on the catalogue preview), past
+      # the names on the names-done footer. The "Decided (N)" history renders
+      # on name steps and on Save, never on the teams / titles steps (NEO-335
+      # Phase 2), so in the second shape the util walks to Save first, leaving
+      # every line on its default (nothing is saved: STEP 5 discards). The
+      # branch reads the gate's own node (memory: branch-on-copied-button-text).
+      # A Back that had cancelled the batch would reopen on a name step with
+      # nothing decided and no history, and fail the history asserts below.
+      # Still the only "Added as new" among the drained skips, so this cannot
+      # pass by accident.
+      - extendedWaitUntil:
+          visible:
+            text: "Skip . (not a (person|team)|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000
+      - copyTextFrom:
+          text: "Skip . (not a (person|team)|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
+      - runFlow:
+          when:
+            true: '${maestro.copiedText.indexOf("Skip") !== 0}'
+          file: util-wizard-advance-to-save.yaml
       - assertVisible:
           text: "Added as new"
       - assertVisible:

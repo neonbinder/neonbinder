@@ -39,16 +39,31 @@ tags:
 # `!reviewingDecided`). The body opens at its top on every row change
 # (`scrollScreenKey`), so this is what an operator sees after pressing Back.
 #
+# ── WHEN THAT DECISION WAS THE LAST NAME ────────────────────────────────────
+# With every name decided the wizard walks straight on to its first post-name
+# step ("Cards with no team" / "Card titles", NEO-335 Phase 2), whose footer
+# Back is a different control: accessible name "Back to previous step", which
+# from the FIRST post-name step presents the last name decided
+# (`goToPreviousStep` → `presentDecided(backTargetId)`). The reference
+# catalogue makes that common: a shared fixture like Topps Big League now
+# stages ONE name (CI run 38302511049 attempt 2, three flows red on
+# `Back to previous decision` / "Added as new" while the wizard sat on
+# "Cards with no team", Step 2 of 3). So the tap takes either Back, and the
+# RESUME exit accepts either a name step or the names-done footer.
+#
 # ── CONTRACT ────────────────────────────────────────────────────────────────
 #   ENTRY  a decision has just been made on a name step; the walk has moved
-#          on and the footer offers "Back".
+#          on to the next name step or, if that was the last name, to the
+#          first post-name step. Either footer offers "Back".
 #   ENV    DECISION — a full-match regex for the decision line ("Skipped",
 #                     "Added as new", "Linked to Shohei Ohtani").
 #          RESUME   — "true" to press the panel's "Next" afterwards, handing
 #                     the walk back its own rule (`resumeWalking`). Callers
 #                     that leave the wizard next (Cancel → Discard) omit it.
 #   EXIT   RESUME: the panel is gone and a name step is presented again
-#          (its footer skip control is up). Otherwise: the panel, still up.
+#          (its footer skip control is up), or, when every name is decided,
+#          the names-done footer ("Next (Enter)" / Confirm & Save). Otherwise:
+#          the panel, still up.
 #
 # ── NEXT CAN SIT UNDER THE FOOTER ───────────────────────────────────────────
 #   "Next" is the panel's last control, and the panel follows the row's career
@@ -65,7 +80,7 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:
-    id: "Back to previous decision"
+    id: "Back to previous (decision|step)"
 # Our own client state (`presentDecided`) and a name `useQuery` already holds:
 # the R5 bar.
 - extendedWaitUntil:
@@ -99,8 +114,11 @@ tags:
           notVisible: "Already decided:.*"
           timeout: 7000
       # The positive half (a negative alone passes on a dead page): a name
-      # step is presented again, by its footer skip control.
+      # step is presented again, by its footer skip control's visible text
+      # ("Skip — not a person|team", "Skip — no league"), or every name is
+      # decided and the names-done footer is up. One TEXT matcher, because
+      # "Next (Enter)" has no accessible name of its own.
       - extendedWaitUntil:
           visible:
-            id: "Skip .*(not a (person|team)|has no league)"
+            text: "Skip . (not a (person|team)|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 7000
