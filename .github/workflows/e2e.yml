@@ -99,11 +99,15 @@ permissions:
 # else changes. Accounts 0-11 exist, so up to 12 shards per pass; the longest
 # single spec bounds wall-clock at any N >= 7.
 #
-# Artifacts are screenshots + reports ONLY. Never traces: a trace records the
-# network traffic, including Clerk testing tokens, and these artifacts are public
-# (playwright.config.ts turns traces off in CI; do not turn them back on here).
-# Only png files are uploaded from results/ — the per-failure error-context
-# snapshots stay out until the security review clears them. Artifact names:
+# Artifacts are failure screenshots + the Playwright report. Never traces: a
+# trace records the network traffic, including Clerk testing tokens, and these
+# artifacts are public (playwright.config.ts turns traces off in CI; do not turn
+# them back on here). What IS published, knowingly (NEO-341 security review):
+# the blob report (and the merged HTML) embeds every path attachment, so it
+# carries each failure's error-context.md (an ARIA snapshot of the page, input
+# values in plaintext) and the screenshots, plus the sanitised axe JSON.
+# Accepted as the main red-run diagnostic: real marketplace passwords never
+# reach the browser. Artifact names:
 # pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
 # pw-report-mobile-<i>, pw-merged (+ convex-logs-* on the first shard of each
 # pass and each seed).
@@ -112,7 +116,8 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions: {}
+    permissions:
+      contents: read   # sparse checkout of e2e-baseline.sh (prod-name guard)
     outputs:
       url: ${{ steps.vercel-preview.outputs.url }}
       convex_name: ${{ steps.convex.outputs.convex_name }}
@@ -133,12 +138,18 @@ jobs:
             echo "::error::No preview_url supplied — the caller must build a preview first (pr-pipeline.yml's web-preview job)."
             exit 1
           fi
-          # The bypass secret is only ever sent to a *.vercel.app host.
-          host=$(printf '%s' "$URL" | sed -E 's#^https?://([^/]+).*#\1#')
-          case "$host" in
-            *.vercel.app) : ;;
-            *) echo "::error::Refusing non-Vercel preview host '$host'"; exit 1 ;;
-          esac
+          # The bypass secret is only ever sent to this team's own preview
+          # hosts. `*.vercel.app` is publicly registrable, so match the whole
+          # URL, anchored, on the exact shape `vercel deploy` prints for this
+          # project: https://neonbinder-<hash>-neon-binder.vercel.app
+          # (no branch alias is passed down). A bash regex on the full string
+          # (not a host split) so `?x=.vercel.app`, `#`, userinfo and
+          # newlines cannot smuggle a different host past it.
+          re='^https://neonbinder-[a-z0-9]+-neon-binder\.vercel\.app/?$'
+          if [[ "$URL" == *$'\n'* ]] || [[ ! "$URL" =~ $re ]]; then
+            echo "::error::Refusing preview URL that is not this team's Vercel deployment host"
+            exit 1
+          fi
           echo "Vercel preview URL: $URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
@@ -163,6 +174,13 @@ jobs:
           done
           echo "Preview never returned 200."
           exit 1
+
+      # Only e2e-baseline.sh, for PROD_DEPLOYMENT_NAME (the prod guard below).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: apps/web/e2e-baseline.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Resolve preview Convex deployment
         id: convex
@@ -193,6 +211,18 @@ jobs:
           name="${cloud#https://}"; name="${name%.convex.cloud}"
           if [ -z "$name" ] || [[ ! "$name" =~ ^[a-z-]+-[0-9]+$ ]]; then
             echo "::error::Could not derive a Convex preview deployment name from '$cloud'"
+            exit 1
+          fi
+          # The slug shape above also matches production's. Refuse it: the
+          # scripted reset and `convex env set` calls must never reach prod.
+          # Source of truth is apps/web/e2e-baseline.sh.
+          prod=$(sed -nE 's/^PROD_DEPLOYMENT_NAME="([^"]+)".*/\1/p' apps/web/e2e-baseline.sh | head -1)
+          if [ -z "$prod" ]; then
+            echo "::error::Could not read PROD_DEPLOYMENT_NAME from apps/web/e2e-baseline.sh"
+            exit 1
+          fi
+          if [ "$name" = "$prod" ]; then
+            echo "::error::Refusing: the preview resolves to the PRODUCTION Convex deployment"
             exit 1
           fi
           echo "Convex deployment: $name"
@@ -521,8 +551,8 @@ jobs:
           name: pw-report-seed
           # Not under a dot-directory: upload-artifact skips hidden paths by
           # default. report/ holds the blob, results.json and junit.xml;
-          # results/ holds failure screenshots. PNG ONLY — no traces, and no
-          # error-context snapshots until the security review clears them.
+          # results/ holds failure screenshots. The blob in report/ also embeds
+          # error-context ARIA snapshots (accepted, see the header). No traces.
           path: |
             apps/web/playwright/report/
             apps/web/playwright/results/**/*.png
@@ -674,7 +704,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pw-report-desktop-${{ matrix.shard }}
-          # Same paths and the same PNG-only rule as the seed report.
+          # Same paths and the same published-content rule as the seed report.
           path: |
             apps/web/playwright/report/
             apps/web/playwright/results/**/*.png
@@ -924,8 +954,8 @@ jobs:
           name: pw-report-seed-mobile
           # Not under a dot-directory: upload-artifact skips hidden paths by
           # default. report/ holds the blob, results.json and junit.xml;
-          # results/ holds failure screenshots. PNG ONLY — no traces, and no
-          # error-context snapshots until the security review clears them.
+          # results/ holds failure screenshots. The blob in report/ also embeds
+          # error-context ARIA snapshots (accepted, see the header). No traces.
           path: |
             apps/web/playwright/report/
             apps/web/playwright/results/**/*.png
@@ -1076,7 +1106,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pw-report-mobile-${{ matrix.shard }}
-          # Same paths and the same PNG-only rule as the seed report.
+          # Same paths and the same published-content rule as the seed report.
           path: |
             apps/web/playwright/report/
             apps/web/playwright/results/**/*.png

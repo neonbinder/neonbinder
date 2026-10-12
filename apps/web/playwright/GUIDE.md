@@ -75,6 +75,14 @@ Reference specs that show the patterns below:
 6. **Public repo.** No secrets, account ids, internal URLs or deployment
    slugs in any file, comment, log line or artifact. Never `git add -A`,
    never `git stash` in a shared worktree.
+7. **No real secret in a spec, and a revealed one-time secret never reaches
+   an artifact.** Never type a real secret (password, token, API key) into a
+   field. Any spec that reveals a live one-time secret (e.g. the Clerk API
+   key shown once) wraps every step from the reveal to its dismissal in
+   `try { ... } catch (e) { await page.goto("about:blank").catch(() => {}); throw e; }`
+   so a failure screenshot and the ARIA snapshot capture a blank page, and
+   sets `test.use({ screenshot: "off" })` for the file. Failure artifacts are
+   published.
 
 ## Rules every spec satisfies (R1-R4, R7, R7a, R9)
 
@@ -697,9 +705,12 @@ desktop-only file still plans both passes).
    only once it passes. A full rerun (`gh run rerun`) is for suspected infra
    problems; a real failure just fails again. A rerun cannot fix a broken
    preview: only a new commit forces fresh ones.
-Artifacts are screenshots plus the merged report, **never traces**: a trace
-records network traffic including Clerk testing tokens, and artifacts on a
-public repo are public. Traces are only on locally (`retain-on-failure`).
+Published artifacts are failure screenshots plus the blob/HTML report, which
+embeds each failure's `error-context.md` (an ARIA snapshot, input values in
+plaintext) and the sanitised axe JSON. That is accepted: real marketplace
+passwords never reach the browser. **Never traces**: a trace records network
+traffic including Clerk testing tokens, and artifacts on a public repo are
+public. Traces are only on locally (`retain-on-failure`).
 
 ## Coverage checklist (per spec, before you hand it back)
 

@@ -3,6 +3,7 @@
     "playwright-test": {
       "command": "npx",
       "args": [
+        "--no",
         "--prefix",
         "apps/web",
         "playwright",

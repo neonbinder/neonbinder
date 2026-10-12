@@ -37,6 +37,6 @@ const server = http.createServer((req, res) => {
   req.pipe(upstreamReq);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`Bypass proxy listening on http://localhost:${PORT} -> ${upstream.origin}`);
 });
