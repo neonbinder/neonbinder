@@ -247,8 +247,17 @@ describe("draftSet: proposals vs open decisions", () => {
       leagues: [],
     });
     expect(r.openDecisions.review.players.map((p) => [p.name, p.candidates.map((c) => c.id)])).toEqual([["Aaron Judge", ["pj1", "pj2"]]]);
-    // Ohtani is decided at the Base (apply creates him there), so Future Stars' review does not list him.
-    expect(insert.rows![0].checklist).toMatchObject({ review: { players: [{ name: "Bobby Witt Jr.", decision: "create" }] }, expectCards: 2 });
+    // Ohtani is on both checklists, so BOTH answer him (NEO-339 live: George
+    // Brett). Apply creates him at the Base; Future Stars' answer is then moot.
+    expect(insert.rows![0].checklist).toMatchObject({
+      review: {
+        players: [
+          { name: "Shohei Ohtani", decision: "create" },
+          { name: "Bobby Witt Jr.", decision: "create" },
+        ],
+      },
+      expectCards: 2,
+    });
     expect(step.base!.checklist!.expectCards).toBe(4);
 
     // Open → no phrase; the template carries every fill-in and nothing else is missing.

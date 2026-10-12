@@ -43,6 +43,35 @@ describe("checklist step idempotence", () => {
     expect(client.callsTo("selectorOptions:commitCardChecklist")).toEqual([]);
   });
 
+  test("answers for a review that did not open are moot: committed, with a note (NEO-339)", async () => {
+    let batch: string | undefined;
+    let cards = 0;
+    const client = fakeClient()
+      .on("selectorOptions:getSlotCardCounts", () => ({ bsc: {}, sportlots: {}, total: cards }))
+      .on("checklistCandidates:getReadyCandidates", () => ({ batchId: batch, total: batch ? 1 : 0, ready: 1, cards: batch ? [{ _id: "c1", cardNumber: "1", cardName: "A", platformData: { bsc: { ref: "b1" } }, bucket: "bscOnly", stem: "1", teamResolved: true }] : [] }))
+      .on("selectorOptions:fetchCardChecklist", () => {
+        batch = "cb";
+        return { success: true, message: "", candidateCount: 1, attachedSides: ["bsc"], pausedSides: [] };
+      })
+      .on("selectorOptions:diffChecklistAgainstExisting", { cards: [], removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 }, conflicts: [], collisionInsertCount: 0 })
+      // Mark McGwire is known by now: no review opens.
+      .on("selectorOptions:resolveChecklistEntities", { unknownPlayers: [], unknownTeams: [] })
+      .on("selectorOptions:commitCardChecklist", () => {
+        cards = 1;
+        return { count: 1, conflicts: [] };
+      })
+      .on("checklistCandidates:discardCandidates", null);
+    const r = await runChecklistStep(client, {
+      rowId: "i1" as never,
+      sportId: "sp" as never,
+      checklist: { ...CHECKLIST, expectCards: 1, review: { players: [{ name: "Mark McGwire", decision: "create" }], teams: [], leagues: [] } },
+      at: "a",
+      row: null,
+    });
+    expect(r).toMatchObject({ outcome: "committed", committed: 1 });
+    if (r.outcome === "committed") expect(r.notes).toContain("1 review answer had nothing to answer (the name is known or not staged)");
+  });
+
   test("a re-sync the review dialog would have to settle is refused", async () => {
     let batch: string | undefined;
     const client = fakeClient()

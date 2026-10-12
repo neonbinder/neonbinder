@@ -1,4 +1,118 @@
 {
-  "measured": false,
-  "note": "NEO-339 one-shot proof expectations (2024 Topps Chrome Black). Not measured yet: replace with { path, apply: { counts: { reconciled, grouped, committed, built } }, builtFromBaseType, after } measured on the PR preview (docs/operations/neo339-setbuild.md §2.4). Until then the setbuild-oneshot job fails with \"fixture not measured yet\"."
+  "measured": true,
+  "path": {
+    "sport": "Baseball",
+    "year": "2024",
+    "manufacturer": "Topps",
+    "set": "Topps Chrome Black"
+  },
+  "draft": {},
+  "apply": {
+    "counts": {
+      "reconciled": 21,
+      "grouped": 7,
+      "committed": 183,
+      "built": 1106
+    }
+  },
+  "builtFromBaseType": "Parallel",
+  "after": [
+    {
+      "path": {
+        "sport": "Baseball",
+        "year": "2024",
+        "manufacturer": "Topps",
+        "set": "Topps Chrome Black"
+      },
+      "base": {
+        "cards": 120,
+        "linked": {
+          "buysportscards": true,
+          "sportlots": true
+        }
+      },
+      "rows": [
+        {
+          "type": "Insert",
+          "name": "Super Futures Autographs",
+          "cards": 20
+        },
+        {
+          "type": "Insert",
+          "name": "Pitch Black Pairings Dual Autographs",
+          "cards": 6
+        },
+        {
+          "type": "Insert",
+          "name": "Ivory Autographs",
+          "cards": 17
+        },
+        {
+          "type": "Insert",
+          "name": "Depth of Darkness",
+          "cards": 20
+        },
+        {
+          "type": "Parallel",
+          "name": "Rose Gold Wave Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Red Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Purple Mini-Diamond Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Orange Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Magenta Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Green Wave Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Green Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Gold Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Gold Mini-Diamond Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Blue Refractors",
+          "cards": 100
+        }
+      ],
+      "rowCounts": [
+        {
+          "type": "Insert",
+          "count": 4
+        },
+        {
+          "type": "Parallel",
+          "count": 10
+        }
+      ]
+    }
+  ]
 }

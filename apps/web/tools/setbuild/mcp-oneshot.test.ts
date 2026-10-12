@@ -14,7 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { main, type CliIO } from "./cli";
 import { parseTarget } from "./client/target";
 import { registerTools } from "./mcp-tools";
-import { differingPaths, NOT_MEASURED, oneshotExpectSchema, runOneshotSequence, type OneshotExpect } from "./mcp-oneshot";
+import { compareDraft, differingPaths, NOT_MEASURED, oneshotExpectSchema, runOneshotSequence, type OneshotExpect } from "./mcp-oneshot";
 import { specConfirmPhrase, type InspectReport, type OpenDecisions, type SetBuildService } from "./service";
 import { parseSpec } from "./spec/schema";
 
@@ -144,6 +144,8 @@ describe("runOneshotSequence", () => {
       "tools/list",
       "nb_draft_set",
       "draft + answers",
+      "leave lists",
+      "review answers",
       "nb_plan",
       "nb_apply",
       "insert with a built parallel",
@@ -170,13 +172,74 @@ describe("runOneshotSequence", () => {
     const checks = await run(service);
     const draft = checks.find((c) => c.label === "nb_draft_set")!;
     expect(draft.ok).toBe(false);
-    expect(draft.detail).toContain("1 open decision(s) (Base sportlots at steps[0].base.map.sportlots), expected none");
+    expect(draft.detail).toContain("1 open decision(s), 0 of them card conflicts / review names for the committed spec to answer; 1 the draft should have settled (Base sportlots at steps[0].base.map.sportlots)");
     expect(service.write.apply).not.toHaveBeenCalled();
   });
 
   test("a count that differs fails the apply check", async () => {
     const checks = await run(fakeService({ counts: { reconciled: 2, grouped: 0, committed: 110, built: 110 } }));
     expect(checks.find((c) => c.label === "nb_apply")).toMatchObject({ ok: false, detail: "counts.grouped is 0, expected 1" });
+  });
+
+  test("card conflicts the committed spec answers are allowed; one it leaves unanswered fails", async () => {
+    const conflicted = { ...none(), conflicts: [{ at: "steps[0].base.checklist.pairing.conflicts", row: null, cardNumber: "21", detail: "name" }] };
+    const template = structuredClone(DRAFTED) as typeof DRAFTED & { steps: Array<Record<string, unknown>> };
+    (template.steps[0] as Record<string, unknown>).base = {
+      map: { bsc: "b", whenPaused: "bsc-only" },
+      checklist: { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep", conflicts: [{ field: "name", bsc: "r21", choose: '<"bsc" | "sportlots"> — #21' }] }, review: "none-expected" },
+    };
+    const answered = structuredClone(template) as typeof template;
+    ((answered.steps[0] as unknown as { base: { checklist: { pairing: { conflicts: Array<{ choose: string }> } } } }).base.checklist.pairing.conflicts[0].choose = "bsc");
+    const service = fakeService({ open: conflicted, spec: answered });
+    (service.read.draftSet as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "drafted", spec: answered, template, openDecisions: conflicted, proposals: [], marketplaceCalls: 1, durationMs: 1 });
+    const client = await connect(service);
+    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: answered, expect: EXPECT, confirm: PHRASE });
+    expect(ok.find((c) => c.label === "nb_draft_set")).toMatchObject({ ok: true });
+    expect(ok.find((c) => c.label === "draft + answers")).toMatchObject({ ok: true });
+    // The committed spec without the answer leaves a fill-in: fail.
+    const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: DRAFTED, expect: EXPECT, confirm: PHRASE });
+    expect(bad.find((c) => c.label === "draft + answers")).toMatchObject({ ok: false, detail: expect.stringContaining("leaves 1 fill-in") });
+  });
+
+  test("leaves: a draft that shows FEWER pending sets than the committed spec passes (another writer took some; moot at apply)", async () => {
+    const drafted = structuredClone(DRAFTED);
+    drafted.steps[0].variants[0].sync.pending = [];
+    const service = fakeService({ spec: drafted });
+    const checks = await run(service);
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    expect(checks.find((c) => c.label === "leave lists")!.detail).toBe("Insert drafted 0 / committed 1, 1 moot");
+    expect(service.write.apply).toHaveBeenCalledTimes(1);
+  });
+
+  test("leaves: a drafted leave the committed spec lacks is a NEW pending set: fails naming the type and id, applies nothing", async () => {
+    const drafted = structuredClone(DRAFTED);
+    drafted.steps[0].variants[0].sync.pending.push({ side: "sportlots", id: "sl-new", decision: "leave" });
+    const service = fakeService({ spec: drafted });
+    const checks = await run(service);
+    expect(checks.find((c) => c.label === "draft + answers")!.ok).toBe(true);
+    const leaves = checks.find((c) => c.label === "leave lists")!;
+    expect(leaves.ok).toBe(false);
+    expect(leaves.detail).toContain("Insert (steps[0].variants[0]) sportlots:sl-new");
+    expect(service.write.apply).not.toHaveBeenCalled();
+  });
+
+  test("leaves aside, any other difference still fails: an own-set where the committed spec leaves", async () => {
+    const drafted = structuredClone(DRAFTED);
+    (drafted.steps[0].variants[0].sync.pending[0] as { decision: string }).decision = "own-set";
+    const service = fakeService({ spec: drafted });
+    const checks = await run(service);
+    const rest = checks.find((c) => c.label === "draft + answers")!;
+    expect(rest.ok).toBe(false);
+    expect(rest.detail).toMatch(/steps\[0\]\.variants\[0\]\.sync\.pending\[0\]/);
+    expect(service.write.apply).not.toHaveBeenCalled();
+  });
+
+  test("compareDraft counts leaves per type and keys them by side and id", () => {
+    const committed = structuredClone(ANSWERS);
+    committed.steps[0].variants[0].sync.pending.push({ side: "bsc", id: "sl-x", decision: "leave" });
+    const r = compareDraft(ANSWERS, committed);
+    expect(r.restSame).toBe(true);
+    expect(r.types).toEqual([{ at: "steps[0].variants[0]", type: "Insert", drafted: 1, committed: 2, moot: 1, added: [] }]);
   });
 
   test("differingPaths names leaf paths", () => {
@@ -206,5 +269,68 @@ describe("setbuild oneshot-smoke (command)", () => {
     const b = io();
     expect(await main(["oneshot-smoke", "--answers", spec, "--expect", exp, "--confirm", PHRASE], b)).toBe(1);
     expect(b.err.join("\n")).toContain(NOT_MEASURED);
+  });
+});
+
+/** NEO-339 live: review answers drift the same way leaves do (names become known; lookups stage rows). */
+describe("compareDraft: review answers", () => {
+  const withReview = (players: Array<Record<string, unknown>>, teams: Array<Record<string, unknown>> = []) => {
+    const spec = structuredClone(ANSWERS) as typeof ANSWERS & { steps: Array<Record<string, unknown>> };
+    (spec.steps[0] as { variants: Array<Record<string, unknown>> }).variants[0].rows = [
+      {
+        name: "Future Stars",
+        checklist: {
+          pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep" },
+          review: players.length + teams.length ? { players, teams, leagues: [] } : "none-expected",
+          expectCards: 20,
+        },
+      },
+    ];
+    return spec;
+  };
+  const AT = "steps[0].variants[0].rows[0].checklist";
+
+  test("fewer drafted answers than committed pass: moot names and lookup-staged rows are committed-only", () => {
+    const drafted = withReview([{ name: "George Brett", decision: "create" }]);
+    const committed = withReview(
+      [{ name: "George Brett", decision: "create" }, { name: "Mark McGwire", decision: "create" }],
+      [{ name: "Tampa Tarpons", decision: "create", league: "Florida State League" }],
+    );
+    const r = compareDraft(drafted, committed);
+    expect(r.restSame).toBe(true);
+    expect(r.answers).toEqual({ drafted: 1, committed: 3, committedOnly: 2, problems: [] });
+    // Even a draft whose review opened nothing ("none-expected") against a committed answer list.
+    expect(compareDraft(withReview([]), committed).answers.problems).toEqual([]);
+  });
+
+  test("a drafted answer the committed spec lacks fails, naming the path", () => {
+    const r = compareDraft(withReview([{ name: "Rookie New", decision: "create" }]), withReview([{ name: "George Brett", decision: "create" }]));
+    expect(r.answers.problems).toEqual([`${AT}.review.players "Rookie New": drafted, not in the committed spec`]);
+  });
+
+  test("a drafted answer the committed spec answers differently fails", () => {
+    const r = compareDraft(withReview([{ name: "George Brett", decision: "create" }]), withReview([{ name: "George Brett", decision: "skip" }]));
+    expect(r.answers.problems).toEqual([`${AT}.review.players "George Brett": drafted {"decision":"create","name":"George Brett"}, committed {"decision":"skip","name":"George Brett"}`]);
+  });
+
+  test("answers aside, the rest is exact: an expectCards difference still fails the digest", () => {
+    const committed = withReview([{ name: "George Brett", decision: "create" }]);
+    ((committed.steps[0] as unknown as { variants: Array<{ rows: Array<{ checklist: { expectCards: number } }> }> }).variants[0].rows[0].checklist.expectCards = 21);
+    const r = compareDraft(withReview([{ name: "George Brett", decision: "create" }]), committed);
+    expect(r.restSame).toBe(false);
+    expect(r.restDiffers).toEqual([`${AT}.expectCards`]);
+  });
+
+  test("through the smoke: a moot-only difference passes, a new answer fails before any write", async () => {
+    const committed = withReview([{ name: "George Brett", decision: "create" }, { name: "Mark McGwire", decision: "create" }]);
+    const pass = fakeService({ spec: withReview([{ name: "George Brett", decision: "create" }]) });
+    const client = await connect(pass);
+    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE });
+    expect(ok.find((c) => c.label === "review answers")).toMatchObject({ ok: true, detail: "drafted 1 / committed 2, 1 committed-only (moot or lookup-staged)" });
+
+    const fail = fakeService({ spec: withReview([{ name: "Rookie New", decision: "create" }]) });
+    const bad = await runOneshotSequence(await connect(fail), { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE });
+    expect(bad.find((c) => c.label === "review answers")!.ok).toBe(false);
+    expect(fail.write.apply).not.toHaveBeenCalled();
   });
 });

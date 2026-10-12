@@ -259,3 +259,58 @@ describe("runReview", () => {
     if (out.status === "open") expect(out.open.players.map((p) => p.name)).toEqual(["Shohei Ohtani"]);
   });
 });
+
+/**
+ * NEO-339 live measurement: Mark McGwire, Derek Jeter and Sammy Sosa were
+ * drafted "create", and by the apply another writer on the shared preview had
+ * created them, so the review no longer asked about them. A spec run treats
+ * such an answer as moot (a reported no-op); `decide` keeps it strict.
+ */
+describe("moot review answers (NEO-339)", () => {
+  const answers = {
+    players: [
+      { name: "Shohei Ohtani", decision: "create" as const },
+      { name: "Mark McGwire", decision: "create" as const },
+    ],
+    teams: [{ name: "Fort Lauderdale Yankees", decision: { link: "Fort Lauderdale Yankees" } }],
+    leagues: [{ name: "Florida State League", decision: "skip" as const }],
+  };
+
+  test("matchReview: an entry no row is named like is moot with mootUnmatched, for every kind and decision", () => {
+    const rows = [row("player", "Shohei Ohtani")];
+    const m = matchReview(rows, answers, { ...CTX, mootUnmatched: true });
+    expect(m.open).toEqual({ players: [], teams: [], leagues: [] });
+    expect(m.moot).toEqual([
+      { at: `${CTX.at}.players[1]`, kind: "player", name: "Mark McGwire" },
+      { at: `${CTX.at}.teams[0]`, kind: "team", name: "Fort Lauderdale Yankees" },
+      { at: `${CTX.at}.leagues[0]`, kind: "league", name: "Florida State League" },
+    ]);
+    // Without it (the default), the same entries are open.
+    expect(matchReview(rows, answers, CTX).open.players).toMatchObject([{ reason: "unmatched", name: "Mark McGwire" }]);
+  });
+
+  test("runReview (spec run): the asked row is decided, the moot answers are reported and recorded nowhere", async () => {
+    const rows = [row("player", "Shohei Ohtani")];
+    const client = batchServer(rows);
+    const out = await runReview(client, CTX, answers);
+    expect(out.status).toBe("done");
+    expect(out.moot.map((m) => m.name)).toEqual(["Mark McGwire", "Fort Lauderdale Yankees", "Florida State League"]);
+    expect(decisions(client)).toEqual([{ reviewRowId: rows[0]._id, action: "create" }]);
+  });
+
+  test("still open: a row the review asks about with no answer, even beside moot answers", async () => {
+    const rows = [row("player", "Shohei Ohtani"), row("player", "George Brett")];
+    const client = batchServer(rows);
+    const out = await runReview(client, CTX, answers);
+    expect(out.status).toBe("open");
+    if (out.status === "open") expect(out.open.players).toMatchObject([{ name: "George Brett", reason: "unanswered" }]);
+    expect(decisions(client)).toEqual([]);
+  });
+
+  test("decide (partial) keeps an answer for a row that is not there strict", async () => {
+    const client = batchServer([row("player", "Shohei Ohtani")]);
+    const out = await runReview(client, CTX, { players: [{ name: "Mark McGwire", decision: "create" }], teams: [], leagues: [] }, { partial: true });
+    expect(out.status).toBe("open");
+    if (out.status === "open") expect(out.open.players).toMatchObject([{ name: "Mark McGwire", reason: "unmatched" }]);
+  });
+});

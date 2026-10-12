@@ -32,7 +32,6 @@ import {
   readReviewRows,
   reviewTemplate,
   runReview,
-  specNameKey,
   type ReviewApplied,
   type ReviewOpen,
 } from "./review";
@@ -169,6 +168,8 @@ export async function runChecklistStep(
     alreadyDecided: 0,
     staged: 0,
   };
+  /** Spec answers for names the review did not ask about: no-ops (see `matchReview`). */
+  let mootAnswers = 0;
   if (resolved.batchId) {
     const session: ReviewSession = { selectorOptionId: rowId, batchId: resolved.batchId, sportId, row, at: `${at}.review` };
     const outcome = await runReview(client, { selectorOptionId: rowId, batchId: resolved.batchId, at: `${at}.review`, row }, checklist.review);
@@ -183,29 +184,12 @@ export async function runChecklistStep(
       };
     }
     review = { ...outcome.applied, alreadyDecided: outcome.alreadyDecided, staged: outcome.staged };
+    mootAnswers = outcome.moot.length;
   } else if (checklist.review !== "none-expected") {
-    // No review opened, yet the spec answers names: each answer matches no row.
-    const open = emptyReviewOpen();
-    for (const k of ["players", "teams", "leagues"] as const) {
-      checklist.review[k].forEach((e, i) =>
-        open[k].push({
-          at: `${at}.review.${k}[${i}]`,
-          row,
-          name: e.name,
-          reason: "unmatched",
-          candidates: [],
-          detail: `no review opened for this checklist, so nothing is named "${specNameKey(e.name)}"`,
-        }),
-      );
-    }
-    if (open.players.length + open.teams.length + open.leagues.length > 0) {
-      return {
-        outcome: "open",
-        reason: "the spec answers a review that did not open",
-        open: { conflicts: [], review: open },
-        template: templateOf(checklist, { review: "none-expected" }),
-      };
-    }
+    // No review opened, yet the spec answers names: every name is known by
+    // now (an earlier checklist, or another writer, created it), so each
+    // answer is moot, a reported no-op (NEO-339; `matchReview`).
+    mootAnswers = checklist.review.players.length + checklist.review.teams.length + checklist.review.leagues.length;
   }
 
   const result = await client.action(api.selectorOptions.commitCardChecklist, {
@@ -225,6 +209,7 @@ export async function runChecklistStep(
   if (result.unmatchedExistingCount) notes.push(`${result.unmatchedExistingCount} no longer listed upstream (kept)`);
   if (result.unreviewedNameCount) notes.push(`${result.unreviewedNameCount} names were not reviewed`);
   if (result.staleDecisions) notes.push(`${result.staleDecisions} changed under review — not applied`);
+  if (mootAnswers) notes.push(`${mootAnswers} review answer${mootAnswers === 1 ? "" : "s"} had nothing to answer (the name is known or not staged)`);
 
   const after = await cardCount(client, rowId);
   if (checklist.expectCards !== undefined && after !== checklist.expectCards) {

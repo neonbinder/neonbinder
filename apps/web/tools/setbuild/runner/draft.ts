@@ -24,7 +24,7 @@
  * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave` for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed) | a title clash |
  * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types)  | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair |
- * | entity review           | `create` for a name with ZERO NB candidates           | a name with one or more candidates (never linked by name) |
+ * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name), on every checklist carrying it |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
  * | builds                  | Parallel rows from Base; an insert's grouped parallels from the insert | — |
  *
@@ -36,9 +36,11 @@
  * own; those checklists are open decisions.
  *
  * Names are classified with `previewChecklistEntities`, one-shot queries of at
- * most 200 names. A name is decided once, at the first checklist apply reaches
- * it in (Base, then each type's rows in order): a later checklist's review
- * will not list it, because by then the earlier commit created or linked it.
+ * most 200 names. Every checklist whose cards carry a name answers it, even
+ * when an earlier one does too: apply decides it at the first checklist that
+ * reaches it (Base, then each type's rows in order), and the later answers
+ * are moot there (a reported no-op), so an earlier checklist that stops open
+ * never strands a later one (NEO-339 live measurement: George Brett).
  *
  * ## Budgets and sessions (security audit)
  *
@@ -408,8 +410,6 @@ export async function draftSet(
   }
 
   // ── Name bookkeeping across checklists (apply order) ─────────────────────
-  /** Normalized names already decided (proposed, opened or known) by an earlier checklist. */
-  const decided = { player: new Set<string>(), team: new Set<string>() };
   /** The Base's card count as drafted; undefined when not previewed. */
   let baseCardsDrafted: number | undefined;
 
@@ -909,11 +909,14 @@ export async function draftSet(
       }
     }
 
-    // The review: names on the cards, decided once in apply order.
+    // The review: every name on this row's cards gets its answer HERE, even
+    // when an earlier checklist answers it too. Apply decides it at whichever
+    // checklist reaches it first; the later answer is then moot (a reported
+    // no-op), and an earlier checklist that stops open cannot strand it.
     const cards = [...preview.matched.map((m) => m.card), ...preview.bscOnly, ...preview.slOnly];
     const names = namesOnCards(cards);
-    const players = names.players.filter((n) => !decided.player.has(normalizeEntityName(n)));
-    const teams = names.teams.filter((n) => !decided.team.has(normalizeEntityName(n)));
+    const players = names.players;
+    const teams = names.teams;
     const creates = { players: [] as Array<Record<string, unknown>>, teams: [] as Array<Record<string, unknown>> };
     const opens = { players: [] as Array<Record<string, unknown>>, teams: [] as Array<Record<string, unknown>> };
     const sportId = set.sportId;
@@ -930,7 +933,6 @@ export async function draftSet(
         ...(cardTeamsOf.length ? { playerCardTeams: cardTeamsOf } : {}),
       });
       for (const p of verdict.players) {
-        decided.player.add(normalizeEntityName(p.name));
         if (p.status !== "unknown") continue;
         if (p.candidates.length === 0 && p.matchCount === 0) creates.players.push({ name: p.name, decision: "create" });
         else {
@@ -940,7 +942,6 @@ export async function draftSet(
         }
       }
       for (const tm of verdict.teams) {
-        decided.team.add(normalizeEntityName(tm.name));
         if (tm.status !== "unknown") continue;
         if (tm.candidates.length === 0) creates.teams.push({ name: tm.name, decision: "create" });
         else {

@@ -6,14 +6,28 @@
  * an agent builds a set for an operator:
  *
  *   1. tools/list has `nb_draft_set`;
- *   2. `nb_draft_set` on the fixture: drafted with NO open decision (the draft
- *      settles the whole set itself; a pending marketplace set is a `leave`
- *      proposal, never an open question);
+ *   2. `nb_draft_set` on the fixture: drafted, and every open decision is the
+ *      operator's own (a card conflict, a review name with NB candidates),
+ *      answered by a `<…>` fill-in the committed spec answers. Nothing else
+ *      may be open (a pending marketplace set is a `leave` proposal, never an
+ *      open question);
  *   3. the draft MERGED with the committed answers (`mergeDraftAnswers`: each
  *      `<…>` fill-in taken from the answers file, everything else from the
- *      draft) has the committed answers file's digest: marketplace or NB
- *      drift since the fixture was measured becomes a visible failure, never
- *      a silently different build;
+ *      draft) matches the committed spec (`compareDraft`):
+ *      - with every `leave` taken out of every `sync.pending` and every
+ *        review's answers taken out, the two have the same digest: drift
+ *        anywhere else is a visible failure;
+ *      - every drafted review answer is in the committed spec, at the same
+ *        checklist, with the same value. The committed spec may hold more
+ *        (an answer the draft no longer shows because the name became known,
+ *        a moot no-op at apply; or a lookup-staged career team or league the
+ *        draft cannot preview). A drafted answer missing or different fails;
+ *      - per variant type, the drafted `leave`s are a SUBSET of the
+ *        committed ones. Another writer on the shared preview (the 2024
+ *        Topps flagship's sole writer runs beside this job) can only take
+ *        sets out of Pending, and a committed `leave` the draft no longer
+ *        shows is a reported no-op at apply. A drafted `leave` the committed
+ *        spec lacks is a NEW pending set: drift, and the check names it;
  *   4. `nb_plan` on the answers file: no open decision, and its confirmPhrase
  *      is exactly `--confirm` (computed offline by `confirm-phrase`);
  *   5. `nb_apply` with that phrase and `stopAt: "end"`: no stop, and every
@@ -36,7 +50,7 @@ import { z } from "zod";
 import type { CommandSpec } from "./cli";
 import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
-import { contentDigest } from "./client/target";
+import { canonicalJson, contentDigest } from "./client/target";
 import { APPLY_TIMEOUT_MS, connectToSpawnedServer, inspectExpectSchema, inspectMismatches } from "./mcp-smoke";
 import { mergeDraftAnswers, placeholdersIn } from "./runner/draft";
 import { countOpenDecisions, type ApplyReport, type DraftReport, type InspectReport, type PlanReport, type SetPath } from "./service";
@@ -50,6 +64,8 @@ export const NOT_MEASURED = "fixture not measured yet";
 
 export const oneshotExpectSchema = z
   .object({
+    /** A measured file says so; `false` is the placeholder, refused before this schema. */
+    measured: z.literal(true).optional(),
     path: z
       .object({
         sport: z.string().min(1),
@@ -120,6 +136,156 @@ function openSummary(d: DraftedOpen): string {
 }
 type DraftedOpen = Extract<DraftReport, { status: "drafted" }>["openDecisions"];
 
+type AnyAnswer = { name: string; decision: unknown } & Record<string, unknown>;
+type AnyReview = "none-expected" | { players?: AnyAnswer[]; teams?: AnyAnswer[]; leagues?: AnyAnswer[] };
+type AnyChecklist = { review?: AnyReview } & Record<string, unknown>;
+type AnySpec = {
+  steps?: Array<{
+    base?: { checklist?: AnyChecklist };
+    variants?: Array<{
+      type?: string;
+      sync?: { pending?: Array<{ side: string; id: string; decision: string }> };
+      rows?: Array<{ name?: string; checklist?: AnyChecklist }>;
+    }>;
+  }>;
+};
+
+/** Every checklist in a spec, by its spec path. */
+function checklistsOf(spec: AnySpec): Array<{ at: string; checklist: AnyChecklist }> {
+  const out: Array<{ at: string; checklist: AnyChecklist }> = [];
+  (spec.steps ?? []).forEach((step, i) => {
+    if (step.base?.checklist) out.push({ at: `steps[${i}].base.checklist`, checklist: step.base.checklist });
+    (step.variants ?? []).forEach((v, j) =>
+      (v.rows ?? []).forEach((r, k) => {
+        if (r.checklist) out.push({ at: `steps[${i}].variants[${j}].rows[${k}].checklist`, checklist: r.checklist });
+      }),
+    );
+  });
+  return out;
+}
+
+/**
+ * The spec with what another writer can legitimately change taken out: every
+ * `leave` in every `sync.pending`, and every checklist's review answers
+ * (each review reads "none-expected"; the answers are compared on their own).
+ * Pure.
+ */
+export function withoutVolatile<T>(spec: T): T {
+  const copy = structuredClone(spec) as AnySpec;
+  for (const step of copy.steps ?? []) {
+    for (const v of step.variants ?? []) {
+      if (v.sync?.pending) v.sync.pending = v.sync.pending.filter((p) => p.decision !== "leave");
+    }
+  }
+  for (const { checklist } of checklistsOf(copy)) if (checklist.review !== undefined) checklist.review = "none-expected";
+  return copy as T;
+}
+
+export interface DraftComparison {
+  /** The digests of both specs with their leaves and review answers taken out are equal. */
+  restSame: boolean;
+  restDigests: { drafted: string; committed: string };
+  /** Where the rest differs (up to 10). */
+  restDiffers: string[];
+  /** Per variant type: drafted leaves must be a subset of the committed ones. */
+  types: Array<{
+    at: string;
+    type: string;
+    drafted: number;
+    committed: number;
+    /** Committed leaves the draft no longer shows (no-ops at apply). */
+    moot: number;
+    /** Drafted leaves the committed spec lacks (`side:id`): NEW pending sets. */
+    added: string[];
+  }>;
+  /** Review answers: every drafted one must be in the committed spec with the same value. */
+  answers: {
+    drafted: number;
+    committed: number;
+    /** Committed answers the draft does not show (moot, or lookup-staged rows the draft cannot see). */
+    committedOnly: number;
+    /** Drafted answers the committed spec lacks, or answers differently (path + why). */
+    problems: string[];
+  };
+}
+
+/** `players`/`teams`/`leagues` answers of a checklist, keyed `kind:name`. */
+function answersOf(c: AnyChecklist | undefined): Map<string, AnyAnswer> {
+  const out = new Map<string, AnyAnswer>();
+  const review = c?.review;
+  if (!review || review === "none-expected") return out;
+  for (const kind of ["players", "teams", "leagues"] as const) {
+    for (const a of review[kind] ?? []) out.set(`${kind}:${a.name.trim().replace(/\s+/g, " ")}`, a);
+  }
+  return out;
+}
+
+/**
+ * Compare a merged draft with the committed spec (see the file comment).
+ * Another writer on the shared preview can only take things away from what
+ * the draft sees: sets out of Pending, names out of a review. So the draft's
+ * leaves and review answers must each be a SUBSET of the committed spec's,
+ * and everything else must match exactly. Pure.
+ */
+export function compareDraft(merged: unknown, committed: unknown): DraftComparison {
+  const a = withoutVolatile(merged);
+  const b = withoutVolatile(committed);
+  const drafted = contentDigest(parseSpec(a));
+  const want = contentDigest(parseSpec(b));
+  const leavesOf = (spec: unknown, i: number, j: number) =>
+    new Set(
+      ((spec as AnySpec).steps?.[i]?.variants?.[j]?.sync?.pending ?? [])
+        .filter((p) => p.decision === "leave")
+        .map((p) => `${p.side}:${p.id}`),
+    );
+  const types: DraftComparison["types"] = [];
+  ((merged as AnySpec).steps ?? []).forEach((step, i) =>
+    (step.variants ?? []).forEach((v, j) => {
+      const d = leavesOf(merged, i, j);
+      const c = leavesOf(committed, i, j);
+      if (d.size === 0 && c.size === 0) return;
+      types.push({
+        at: `steps[${i}].variants[${j}]`,
+        type: v.type ?? "?",
+        drafted: d.size,
+        committed: c.size,
+        moot: [...c].filter((x) => !d.has(x)).length,
+        added: [...d].filter((x) => !c.has(x)),
+      });
+    }),
+  );
+
+  const committedByAt = new Map(checklistsOf(committed as AnySpec).map((x) => [x.at, x.checklist]));
+  const answers: DraftComparison["answers"] = { drafted: 0, committed: 0, committedOnly: 0, problems: [] };
+  for (const { checklist } of checklistsOf(committed as AnySpec)) answers.committed += answersOf(checklist).size;
+  const seen = new Set<string>();
+  for (const { at, checklist } of checklistsOf(merged as AnySpec)) {
+    const mine = answersOf(checklist);
+    const theirs = answersOf(committedByAt.get(at));
+    answers.drafted += mine.size;
+    for (const [key, ans] of mine) {
+      seen.add(`${at}|${key}`);
+      const other = theirs.get(key);
+      const [kind, name] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+      if (!other) answers.problems.push(`${at}.review.${kind} "${name}": drafted, not in the committed spec`);
+      else if (canonicalJson(other) !== canonicalJson(ans)) {
+        answers.problems.push(`${at}.review.${kind} "${name}": drafted ${canonicalJson(ans)}, committed ${canonicalJson(other)}`);
+      }
+    }
+  }
+  for (const { at, checklist } of checklistsOf(committed as AnySpec)) {
+    for (const key of answersOf(checklist).keys()) if (!seen.has(`${at}|${key}`)) answers.committedOnly++;
+  }
+
+  return {
+    restSame: drafted === want,
+    restDigests: { drafted, committed: want },
+    restDiffers: drafted === want ? [] : differingPaths(a, b),
+    types,
+    answers,
+  };
+}
+
 /** An insert row holding at least one parallel with cards. */
 export function insertWithBuiltParallel(report: InspectReport): string | undefined {
   for (const t of report.variantTypes ?? []) {
@@ -183,24 +349,53 @@ export async function runOneshotSequence(
     );
     if (draft.status !== "drafted") return record(false, "nb_draft_set", `the set did not resolve (${draft.kind})`);
     const open = countOpenDecisions(draft.openDecisions);
-    const okOpen = open === 0;
+    // The only open decisions a proof may carry are the operator's own: card
+    // conflicts and review names with NB candidates. Each comes back as a
+    // `<…>` fill-in the committed spec answers (checked just below). Anything
+    // else (a Base pick, a title clash, a checklist the draft could not see)
+    // means the draft did not settle the set: fail.
+    const operatorOnly = { ...draft.openDecisions, conflicts: [], review: { players: [], teams: [], leagues: [] } };
+    const unsettled = countOpenDecisions(operatorOnly);
+    const okOpen = unsettled === 0;
     record(
       okOpen,
       "nb_draft_set",
-      `${open} open decision(s)${okOpen ? "" : ` (${openSummary(draft.openDecisions)}), expected none`}; ${draft.proposals.length} proposals; ${draft.marketplaceCalls} marketplace requests in ${Math.round(draft.durationMs / 1000)}s`,
+      `${open} open decision(s), ${open - unsettled} of them card conflicts / review names for the committed spec to answer` +
+        `${okOpen ? "" : `; ${unsettled} the draft should have settled (${openSummary(operatorOnly)})`}; ${draft.proposals.length} proposals; ${draft.marketplaceCalls} marketplace requests in ${Math.round(draft.durationMs / 1000)}s`,
     );
     const merged = mergeDraftAnswers(draft.template ?? draft.spec, o.answers);
     const left = placeholdersIn(merged);
     if (left.length > 0) return record(false, "draft + answers", `the answers file leaves ${left.length} fill-in(s): ${left.slice(0, 5).join(", ")}`);
-    const want = contentDigest(parseSpec(o.answers));
-    const got = contentDigest(parseSpec(merged));
-    const same = want === got;
+    const cmp = compareDraft(merged, o.answers);
     record(
-      same,
+      cmp.restSame,
       "draft + answers",
-      same ? `digest ${got} = the committed spec's` : `digest ${got} ≠ the committed spec's ${want}; differs at ${differingPaths(merged, o.answers).join(", ")}`,
+      cmp.restSame
+        ? `digest ${cmp.restDigests.drafted} (leaves and review answers aside) = the committed spec's`
+        : `digest ${cmp.restDigests.drafted} (leaves and review answers aside) ≠ the committed spec's ${cmp.restDigests.committed}; differs at ${cmp.restDiffers.join(", ")}`,
     );
-    return okOpen && same;
+    const added = cmp.types.filter((t) => t.added.length > 0);
+    const leavesOk = added.length === 0;
+    const perType = cmp.types.map((t) => `${t.type} drafted ${t.drafted} / committed ${t.committed}, ${t.moot} moot`).join("; ") || "no leaves";
+    record(
+      leavesOk,
+      "leave lists",
+      leavesOk
+        ? perType
+        : `new pending set(s) the committed spec does not leave: ${added
+            .map((t) => `${t.type} (${t.at}) ${t.added.slice(0, 10).join(", ")}${t.added.length > 10 ? ` +${t.added.length - 10} more` : ""}`)
+            .join("; ")}; ${perType}`,
+    );
+    const answersOk = cmp.answers.problems.length === 0;
+    const answerLine = `drafted ${cmp.answers.drafted} / committed ${cmp.answers.committed}, ${cmp.answers.committedOnly} committed-only (moot or lookup-staged)`;
+    record(
+      answersOk,
+      "review answers",
+      answersOk
+        ? answerLine
+        : `${cmp.answers.problems.slice(0, 8).join("; ")}${cmp.answers.problems.length > 8 ? `; +${cmp.answers.problems.length - 8} more` : ""}; ${answerLine}`,
+    );
+    return okOpen && cmp.restSame && leavesOk && answersOk;
   });
   if (!drafted) return checks;
 

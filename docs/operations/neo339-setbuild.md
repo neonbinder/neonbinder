@@ -219,6 +219,22 @@ with the set's path; the draft comes back with:
   template. To make a pending set its own set instead, change its `leave` to
   `own-set` in the spec and raise that type's `expectRows` (and, for an
   Insert type with a `group`, `expectUngrouped`) by one;
+- between a draft and its apply the brand can change (another writer syncs
+  a sibling set, a marketplace drops a set). A `leave` whose set apply no
+  longer shows (now held by another NB row, or no longer listed) is a
+  reported no-op in the step's detail: the dialog would create no row for it
+  either way. An `own-set` for such a set, a `leave` for a set the spec also
+  pairs, and any NEW pending set the spec does not name stay open decisions.
+  The same holds for review answers: an answer for a name the review no
+  longer asks about (it is known by now, or was never staged) is a reported
+  no-op, for players, teams and leagues alike; a row the review asks about
+  with no answer stays open. The draft answers a name on every checklist that
+  carries it, so an earlier checklist that stops open cannot strand a later
+  one;
+  Variant types sync in spec order, and in a collecting apply a later type's
+  sync waits on an earlier open one in the same set, because which sets it
+  offers depends on what the earlier sync stored; the draft models the same
+  order;
 - `confirmPhrase`, only when nothing is open. It is not an approval: the
   operator reads the draft and the proposals and gives the phrase.
 
@@ -268,8 +284,26 @@ Topps Chrome Black (`.maestro/seed/oneshot.spec.json`, the committed spec;
 `oneshot.expect.json`, its expectations). `setbuild oneshot-smoke` drafts it,
 requires **no** open decision (the draft settles the whole fixture itself),
 merges the draft with the committed spec (any `<…>` from the committed file,
-everything else from the draft; `credentials` from the committed file) and
-requires the merge to have the committed spec's digest, then `nb_plan`,
+everything else from the draft; `credentials` from the committed file), and
+checks the merge three ways:
+- with every `leave` taken out of every `sync.pending`, and every checklist's
+  review answers taken out, the merge must have the committed spec's digest
+  (drift anywhere else fails, naming the paths);
+- every drafted review answer must be in the committed spec, at the same
+  checklist, with the same value. The committed spec may hold more: an answer
+  for a name the draft no longer shows (another writer created it; a moot
+  no-op at apply) or for a lookup-staged career team or league the draft
+  cannot preview. A drafted answer missing or different fails, naming it;
+- per variant type, the drafted `leave`s must be a subset of the committed
+  ones. The 2024 Topps flagship › Insert's sole writer
+  (`reconcile-sportlots-twins-save-each-to-its-own-set`) runs beside this job
+  and takes SportLots sets out of Chrome Black's Pending (they become held in
+  the brand); a committed `leave` the draft no longer shows is a moot no-op at
+  apply. A drafted `leave` the committed spec lacks is a NEW pending set:
+  drift, and the check names the type and ids.
+The job summary shows all three: the leave counts drafted vs committed per
+type with the moot count, and the review answers drafted vs committed with
+the committed-only count. Then it runs `nb_plan`,
 `nb_apply` (`stopAt: "end"`, no stop, the expected `reconciled`, `grouped`,
 `committed`, `built` counts) and `nb_inspect` (an insert holding a built
 parallel; every row of `builtFromBaseType` holding cards; any `after`
@@ -281,17 +315,30 @@ Measuring the fixture (once the server previews are on the PR preview):
 1. `npm run setbuild -- draft-set --path "Baseball/2024/Topps/Topps Chrome Black"
    --out oneshot.draft.json --report oneshot.report.json --auth testing
    --app-url <preview> --convex-url https://<slug>.convex.cloud --worker 8`.
-2. The report's `openCount` must be 0 (a fixture whose draft leaves a
-   decision open is the wrong fixture for this proof). Add the `credentials`
-   block the baseline spec uses to `oneshot.draft.json` and commit it as
-   `.maestro/seed/oneshot.spec.json`.
+2. The only open decisions may be the operator's own: card conflicts and
+   review names with NB candidates (anything else means the draft did not
+   settle the set, and the proof fails). Answer each `<…>` in
+   `oneshot.draft.json`, add answers for the lookup-staged rows the draft
+   cannot preview (career teams and New League steps, read off a collecting
+   apply: teams a bare `create` as the baseline answers them, a league
+   `create` with its `level`, never a `skip`), put them on every checklist
+   whose player stages them, add the `credentials` block the baseline spec
+   uses, and commit it as `.maestro/seed/oneshot.spec.json`.
 3. `plan` it against the same preview; then `apply --collect` on a throwaway
    preview run to read the counts, and commit `oneshot.expect.json`:
-   `{ "path", "apply": { "counts": { "reconciled", "grouped", "committed",
-   "built" } }, "builtFromBaseType": "Parallel", "after": [] }` (optionally
-   `"draft": { "teamLookupBudget": n }`).
-4. A red merge later is drift: the failing line names the paths that differ.
-   Re-measure in the same PR as the evidence.
+   `{ "measured": true, "path", "apply": { "counts": { "reconciled",
+   "grouped", "committed", "built" } }, "builtFromBaseType": "Parallel",
+   "after": [ … ] }` (optionally `"draft": { "teamLookupBudget": n }`).
+   `committed` and `built` are the totals of ONE pass on a fresh preview:
+   the sum of every checklist's `expectCards`, and of every build (each
+   parallel built from Base, each insert parallel built from its insert).
+4. A red merge later is drift: the failing line names the paths that differ
+   (or, for the leave lists, the new pending sets). Re-measure in the same PR
+   as the evidence. Measure on a preview where the flagship's twins flow has
+   NOT yet run, so the committed leave lists are the largest the draft can
+   show (a leave the flow later takes out of Pending is moot; one it never
+   took is still there). If you measure after it ran, a later run where the
+   flow has not run yet will show those sets as new.
 
 Until both files are measured they are placeholders (`"measured": false`) and
 the job fails with "fixture not measured yet". A rerun of the oneshot job alone

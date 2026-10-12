@@ -77,9 +77,19 @@ export interface ReviewApplied {
   leagues: number;
 }
 
+/**
+ * A spec answer for a name the review does not ask about (the name is known
+ * by now, or was never staged): a reported no-op, like a moot `leave`.
+ */
+export interface MootAnswer {
+  at: string;
+  kind: ReviewKind;
+  name: string;
+}
+
 export type ReviewOutcome =
-  | { status: "done"; applied: ReviewApplied; alreadyDecided: number; staged: number }
-  | { status: "open"; open: ReviewOpen; applied: ReviewApplied; alreadyDecided: number; staged: number };
+  | { status: "done"; applied: ReviewApplied; alreadyDecided: number; staged: number; moot: MootAnswer[] }
+  | { status: "open"; open: ReviewOpen; applied: ReviewApplied; alreadyDecided: number; staged: number; moot: MootAnswer[] };
 
 // ---------------------------------------------------------------------------
 // Pure: matching spec entries to rows
@@ -98,6 +108,8 @@ export interface ReviewMatch {
   /** Row id → its one spec entry. */
   answers: Map<string, AnyDecision>;
   open: ReviewOpen;
+  /** `mootUnmatched`: entries no row is named like (no-ops, not decisions). */
+  moot: MootAnswer[];
 }
 
 function emptyOpen(): ReviewOpen {
@@ -129,13 +141,22 @@ export function rowDetail(row: ReviewRow): string | undefined {
  *
  * `partial`: an undecided row with no entry is simply left (the `decide`
  * path answers only what it was given); an entry still needs exactly one row.
+ *
+ * `mootUnmatched` (a spec run, NEO-339): an entry NO row is named like is a
+ * moot answer, reported and not an open decision. The review does not ask
+ * about that name (it is known by now, e.g. an earlier checklist or another
+ * writer created it, or it was never staged), so the answer has nothing to
+ * decide and the outcome is the same as without it. Still open: a row the
+ * review asks about with no entry, an entry matching several rows, and (when
+ * recorded) a link whose target does not resolve exactly once.
  */
 export function matchReview(
   rows: readonly ReviewRow[],
   answers: ReviewAnswers,
-  ctx: { at: string; row: RowRef | null; partial?: boolean },
+  ctx: { at: string; row: RowRef | null; partial?: boolean; mootUnmatched?: boolean },
 ): ReviewMatch {
   const open = emptyOpen();
+  const moot: MootAnswer[] = [];
   const matched = new Map<string, AnyDecision>();
   for (const kind of ["player", "team", "league"] as const) {
     const listKey = KIND_KEY[kind];
@@ -160,6 +181,10 @@ export function matchReview(
     entries.forEach((e, i) => {
       const rowsNamed = ofKind.filter((r) => specNameKey(r.name) === specNameKey(e.name));
       if (rowsNamed.length === 1) return;
+      if (rowsNamed.length === 0 && ctx.mootUnmatched) {
+        moot.push({ at: `${ctx.at}.${listKey}[${i}]`, kind, name: e.name });
+        return;
+      }
       open[listKey].push({
         at: `${ctx.at}.${listKey}[${i}]`,
         row: ctx.row,
@@ -173,7 +198,7 @@ export function matchReview(
       });
     });
   }
-  return { answers: matched, open };
+  return { answers: matched, open, moot };
 }
 
 export function reviewOpenCount(open: ReviewOpen): number {
@@ -494,26 +519,28 @@ export async function runReview(
   opts: { partial?: boolean } = {},
 ): Promise<ReviewOutcome> {
   const applied: ReviewApplied = { players: 0, teams: 0, leagues: 0 };
+  // A spec run (not `decide`): answers for names the review does not ask about are moot.
+  const mctx = { ...ctx, partial: opts.partial, mootUnmatched: !opts.partial };
   const alreadyStaged = new Set<string>();
   let { rows, added: staged } = await stageAndSettle(client, ctx, alreadyStaged);
   const alreadyDecided = rows.filter((r) => r.decision).length;
 
   if (answers === "none-expected") {
     const undecided = rows.filter((r) => !r.decision);
-    if (undecided.length === 0) return { status: "done", applied, alreadyDecided, staged };
+    if (undecided.length === 0) return { status: "done", applied, alreadyDecided, staged, moot: [] };
     const open = matchReview(rows, { players: [], teams: [], leagues: [] }, ctx).open;
     for (const k of ["players", "teams", "leagues"] as const) {
       open[k] = open[k].map((o) => ({ ...o, detail: `${o.detail ? `${o.detail}; ` : ""}the spec says no review is expected` }));
     }
-    return { status: "open", open: await withCandidates(client, rows, open), applied, alreadyDecided, staged };
+    return { status: "open", open: await withCandidates(client, rows, open), applied, alreadyDecided, staged, moot: [] };
   }
 
   // In partial mode `open` holds only entries that matched zero or several
   // rows (an unanswered row is not a problem there); either way, nothing is
   // recorded while the answers themselves are in doubt.
-  let match = matchReview(rows, answers, { ...ctx, partial: opts.partial });
+  let match = matchReview(rows, answers, mctx);
   if (reviewOpenCount(match.open) > 0) {
-    return { status: "open", open: await withCandidates(client, rows, match.open), applied, alreadyDecided, staged };
+    return { status: "open", open: await withCandidates(client, rows, match.open), applied, alreadyDecided, staged, moot: match.moot };
   }
 
   for (let guard = 0; guard < 10_000; guard++) {
@@ -545,9 +572,9 @@ export async function runReview(
       const next = await stageAndSettle(client, ctx, alreadyStaged);
       rows = next.rows;
       staged += next.added;
-      match = matchReview(rows, answers, { ...ctx, partial: opts.partial });
+      match = matchReview(rows, answers, mctx);
       if (reviewOpenCount(match.open) > 0) {
-        return { status: "open", open: await withCandidates(client, rows, match.open), applied, alreadyDecided, staged };
+        return { status: "open", open: await withCandidates(client, rows, match.open), applied, alreadyDecided, staged, moot: match.moot };
       }
       continue;
     }
@@ -581,9 +608,9 @@ export async function runReview(
           // A New League step now stands ahead of this team; answer it first,
           // as the wizard walks it.
           rows = await waitSettled(client, ctx);
-          match = matchReview(rows, answers, { ...ctx, partial: opts.partial });
+          match = matchReview(rows, answers, mctx);
           if (reviewOpenCount(match.open) > 0) {
-            return { status: "open", open: await withCandidates(client, rows, match.open), applied, alreadyDecided, staged };
+            return { status: "open", open: await withCandidates(client, rows, match.open), applied, alreadyDecided, staged, moot: match.moot };
           }
           if (!rows.some((r) => r.kind === "league" && !r.decision && match.answers.has(r._id))) {
             // Partial mode with the league unanswered: the team waits for it.
@@ -607,9 +634,9 @@ export async function runReview(
 
   if (opts.partial) {
     const left = matchReview(rows, { players: [], teams: [], leagues: [] }, { ...ctx, partial: false }).open;
-    if (reviewOpenCount(left) > 0) return { status: "open", open: left, applied, alreadyDecided, staged };
+    if (reviewOpenCount(left) > 0) return { status: "open", open: left, applied, alreadyDecided, staged, moot: match.moot };
   }
-  return { status: "done", applied, alreadyDecided, staged };
+  return { status: "done", applied, alreadyDecided, staged, moot: match.moot };
 }
 
 /** The decision as the batch will report it, close enough for the walk's own bookkeeping. */

@@ -811,6 +811,11 @@ jobs:
             echo "- duration: \`${duration}s\`"
             echo "- spec digest: \`${phrase##* }\`"
             echo "- checks: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+            # Leaves drafted vs committed per type, and how many were moot
+            # (taken out of Pending by another writer before the draft).
+            echo "- draft vs committed (leaves and review answers aside): \`$(jq -r '[.checks[]? | select(.label == "draft + answers") | .detail] | first // "?"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+            echo "- leave lists: \`$(jq -r '[.checks[]? | select(.label == "leave lists") | .detail] | first // "?"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+            echo "- review answers: \`$(jq -r '[.checks[]? | select(.label == "review answers") | .detail] | first // "?"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 

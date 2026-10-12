@@ -38,7 +38,14 @@ null while anything is open, and is never an approval. The draft runs on
 `draftClient` (`DRAFT_READ_ACTIONS` = `fetchRawOptions` + the two preview
 actions; every mutation refused) and is bounded: a per-draft BSC team-lookup
 budget, no retries, and a refused marketplace session stops that side's later
-previews. Adapter error text never reaches the result. The engine's `draft`
+previews. Adapter error text never reaches the result. A `leave` whose set
+apply no longer shows (held by another row, or no longer listed) is a
+reported no-op (`splitMootLeaves`); an `own-set` for it stays open. Review answers work the same way in a spec
+run: an answer for a name the review no longer asks about is a reported
+no-op (`matchReview`'s `mootUnmatched`; `decide` stays strict), and the draft
+answers a name on every checklist that carries it. A later
+variant type's sync waits on an earlier open one in the same set (its held
+ids depend on what the earlier one stored). The engine's `draft`
 mode walks the drafted spec read-only (no action at all) for `steps`.
 
 `apply` stops at the first open decision; `apply --collect` (and `nb_apply`,
@@ -151,5 +158,7 @@ by the gate): `oneshot-smoke --answers .maestro/seed/oneshot.spec.json
 --expect .maestro/seed/oneshot.expect.json` drafts 2024 Topps Chrome Black,
 checks the draft merged with the committed answers has the committed spec's
 digest (`mergeDraftAnswers`), then plans, applies (`stopAt: "end"`) and
-inspects. The draft must have no open decision. Placeholder fixture files (`"measured": false`) fail it on purpose.
+inspects. The draft's only open decisions may be card conflicts and review
+names, answered by the committed spec; its leaves and review answers must be
+subsets of the committed spec's, and everything else must match exactly. Placeholder fixture files (`"measured": false`) fail it on purpose.
 Neither job prints the deployment: the host is masked and redacted.
