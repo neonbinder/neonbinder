@@ -245,6 +245,48 @@ describe("the post-review steps", () => {
     expect(screen.getByText("Card titles")).toBeTruthy();
   });
 
+  it("the one-step Back is an outlined secondary button beside the footer buttons", () => {
+    currentRows = decidedRows();
+    render(wizard({ onBack: vi.fn() }, teamless));
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    const back = screen.getByRole("button", { name: "Back to previous step" });
+    expect(back.textContent).toBe("Back");
+    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("h-8");
+    expect(back.className).not.toContain("underline");
+    // In the buttons' group, next to Cancel — not in the decision slot.
+    const cancel = screen.getByRole("button", { name: /^Cancel \(Esc\)/ });
+    expect(back.parentElement).toBe(cancel.parentElement);
+    // And "Back to Match Cards" sits before it at link weight.
+    const matchCards = screen.getByRole("button", { name: "Back to Match Cards" });
+    expect(matchCards.compareDocumentPosition(back) & 4).toBe(4);
+  });
+
+  it("a new screen starts at the top of the scrolling body", () => {
+    const rose = row({ name: "Pete Rose" });
+    currentRows = [rose, row({ name: "Johnny Bench" })];
+    const { rerender } = render(wizard({}, [teamless[0]]));
+    const body = document.querySelector<HTMLElement>(".overflow-y-auto")!;
+    body.scrollTop = 240;
+    expect(body.scrollTop).toBe(240);
+
+    // A new row on screen (the first was decided): back to the top.
+    currentRows = [{ ...rose, decision: { action: "create" } }, currentRows[1]];
+    rerender(wizard({}, [teamless[0]]));
+    expect(screen.getByRole("heading", { name: /Johnny Bench/ })).toBeTruthy();
+    expect(body.scrollTop).toBe(0);
+
+    // And into the post-name steps: the teams step opens at the top too.
+    body.scrollTop = 180;
+    currentRows = [
+      { ...rose, decision: { action: "create" } },
+      { ...(currentRows[1] as object), decision: { action: "create" } },
+    ];
+    rerender(wizard({}, [teamless[0]]));
+    expect(screen.getByText("Cards with no team")).toBeTruthy();
+    expect(body.scrollTop).toBe(0);
+  });
+
   it("has no titles step when no new card's title needs a look", () => {
     currentRows = decidedRows();
     render(wizard({ titleContext: SHORT_TITLES }, teamless));

@@ -485,7 +485,7 @@ export default function EntityReviewWizard({
    * then titles then Save, "Step 1 of 2" with one of them, "of 3" with both —
    * and reads no batch:
    * every name on the cards already resolved. `batchId` may be empty; when it
-   * is not (a batch left open by "Back to matching"), Cancel still discards it.
+   * is not (a batch left open by "Back to Match Cards"), Cancel still discards it.
    * Absent, the wizard is exactly what it was.
    */
   teamsOnly?: boolean;
@@ -918,6 +918,8 @@ export default function EntityReviewWizard({
   } | null>(null);
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  /** NEO-335 Phase 2 — the scrolling body, reset to the top on each new screen. */
+  const bodyRef = useRef<HTMLDivElement>(null);
   /**
    * NEO-260 — per-button marker classes for the footer's action row.
    *
@@ -2761,6 +2763,17 @@ export default function EntityReviewWizard({
    */
   const screenKey = expired ? "expired" : (postStep ?? "review");
   /*
+   * NEO-335 Phase 2 — a new screen starts at the top of the body. The body is
+   * one scroll box for the life of the dialog, so without this the teams step
+   * opened scrolled to wherever the last name's career-team form had been
+   * left. Keyed on the row on screen AND the post-name step: a new row is a
+   * new screen too.
+   */
+  const scrollScreenKey = `${screenKey}:${current?._id ?? ""}`;
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [scrollScreenKey]);
+  /*
    * a11y audit — keyed on the screen the focus was GIVEN for, not on the
    * screen key alone. An effect on `[screenKey]` fired once, and if the
    * button was not in the DOM at that moment (the dialog still closed, or the
@@ -3691,7 +3704,7 @@ export default function EntityReviewWizard({
             obligation — see the auto-add status line, which replaces the bulk
             buttons in place rather than stacking above them.
           */}
-          <div className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto">
+          <div ref={bodyRef} className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto">
             {bulkError && (
               <p role="alert" className="text-xs text-[#FF2EB3]">
                 {bulkError}
@@ -5060,7 +5073,7 @@ export default function EntityReviewWizard({
               ROW 1 — actions. The right group never yields (`shrink-0`); the
               left group is `min-w-0 overflow-hidden` so a genuine overflow
               clips rather than wraps. The widest pair CAN coexist —
-              "Back to matching" + "Cancel (Esc)" beside both bulk links — but
+              "Back to Match Cards" + "Cancel (Esc)" beside both bulk links — but
               "Confirm & Save" and the bulk links never do: the links render
               only while `!allDecided`, and the confirm only once `allDecided`.
             */}
@@ -5084,7 +5097,7 @@ export default function EntityReviewWizard({
                */
               /*
                * NEO-335 Phase 2 (visual pass) — below `sm` the row WRAPS: at
-               * 375px the right group ("Back to matching", "Cancel (Esc)",
+               * 375px the right group ("Back to Match Cards", "Cancel (Esc)",
                * "Confirm & Save (Enter)") is wider than the dialog and used to
                * clip the one button the step exists for. From `sm` up nothing
                * changes, so the 1024 CI viewport keeps its fixed geometry.
@@ -5109,24 +5122,6 @@ export default function EntityReviewWizard({
             */}
             <div className="flex min-w-0 flex-wrap items-center gap-3">
               {decisionControls}
-              {/* NEO-335 Phase 2 — the post-review steps' way back: to the
-                  step before, or to the last name decided. One Back per
-                  screen, in the slot the names' Back uses. */}
-              {/* Not while a failed commit is up: its alert carries "Back to
-                  review", and two ways back is how neither gets pressed.
-                  `aria-disabled` while saving, never native `disabled`
-                  (focus would fall out of the modal — see the footer). */}
-              {postStep && postStepBackAvailable && !commitError && (
-                <button
-                  type="button"
-                  onClick={goToPreviousStep}
-                  aria-label="Back to previous step"
-                  aria-disabled={saving || undefined}
-                  className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                >
-                  Back
-                </button>
-              )}
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
@@ -5142,16 +5137,46 @@ export default function EntityReviewWizard({
                   {/*
                     NEO-220 — leave review without discarding it. Present only
                     when there is a parked matching session to go back to.
+
+                    NEO-335 Phase 2 (Jason): "Back to Match Cards", the
+                    dialog's own name, at a QUIET link weight — it leaves the
+                    tidy-up entirely, so it must not out-shout the step's own
+                    Back beside it. `aria-disabled` (not native `disabled`)
+                    for the focus reason the rest of the footer follows.
                   */}
                   {onBack && (
-                    <NeonButton
-                      secondary
-                      style={{ color: "#000000" }}
-                      onClick={onBack}
-                      disabled={cancelling || saving}
+                    <button
+                      type="button"
+                      className={`${footerFieldClass("btn-back-to-match-cards")} p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
+                      aria-disabled={cancelling || saving || undefined}
+                      onClick={() => {
+                        if (cancelling || saving) return;
+                        onBack();
+                      }}
                     >
-                      Back to matching
-                    </NeonButton>
+                      Back to Match Cards
+                    </button>
+                  )}
+                  {/*
+                    NEO-335 Phase 2 — the post-review steps' way back: to the
+                    step before, or to the last name decided. Jason: the
+                    one-step Back takes the OUTLINED secondary-button slot,
+                    not a faint link. Accessible name unchanged ("Back to
+                    previous step"). Not while a failed commit is up: its
+                    alert carries "Back to review", and two ways back is how
+                    neither gets pressed. `aria-disabled` while saving, never
+                    native `disabled` (focus would fall out of the modal).
+                  */}
+                  {postStep && postStepBackAvailable && !commitError && (
+                    <button
+                      type="button"
+                      onClick={goToPreviousStep}
+                      aria-label="Back to previous step"
+                      aria-disabled={saving || undefined}
+                      className={`${footerFieldClass("btn-back-step")} inline-flex h-8 shrink-0 items-center rounded-md border border-[#00C2FF] px-3 text-sm font-medium text-[#00C2FF] hover:bg-[#00C2FF]/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
+                    >
+                      Back
+                    </button>
                   )}
                   <NeonButton
                     cancel

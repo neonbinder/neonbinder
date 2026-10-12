@@ -4518,21 +4518,36 @@ describe("EntityReviewWizard — expired session", () => {
 });
 
 // ---------------------------------------------------------------------------
-// NEO-220 — "Back to matching", the non-destructive way out
+// NEO-220 — "Back to Match Cards", the non-destructive way out
 // ---------------------------------------------------------------------------
 
 describe("EntityReviewWizard — back to matching", () => {
   it("offers it only when the parent has a matching session to return to", () => {
     currentRows = [makeRow({ status: "ready" })];
     const { unmount } = renderWizard();
-    expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to Match Cards" })).toBeNull();
     // …and Cancel is still the only way out on the custom-subtree path.
     expect(screen.getByRole("button", { name: CANCEL_REVIEW_NAME })).toBeTruthy();
     unmount();
 
     currentRows = [makeRow({ status: "ready" })];
     renderWizard({ onBack: vi.fn() });
-    expect(screen.getByRole("button", { name: "Back to matching" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to Match Cards" })).toBeTruthy();
+  });
+
+  it("is a quiet link, not a button-weight control (Jason, NEO-335 Phase 2)", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    const onBack = vi.fn();
+    renderWizard({ onBack, saving: true });
+    const link = screen.getByRole("button", { name: "Back to Match Cards" });
+    expect(link.className).toContain("underline");
+    expect(link.className).toContain("text-xs");
+    expect(link.className).not.toContain("rt-Button");
+    // Held while saving without leaving the tab order.
+    expect(link.getAttribute("aria-disabled")).toBe("true");
+    expect((link as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(link);
+    expect(onBack).not.toHaveBeenCalled();
   });
 
   it("goes back WITHOUT discarding the batch", async () => {
@@ -4546,7 +4561,7 @@ describe("EntityReviewWizard — back to matching", () => {
     const onBack = vi.fn();
     const { onCancel } = renderWizard({ onBack });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Match Cards" }));
 
     expect(onBack).toHaveBeenCalledTimes(1);
     await new Promise((r) => setTimeout(r, 0));
@@ -4814,7 +4829,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
 // up. The bulk button's label was "Add remaining players as new (433) — 229 still
 // looking up, wait or skip", which wrapped to two centred lines, dragged
 // "Skip remaining names (433)" onto a second line with it, and left both sitting
-// crookedly beside "Back to matching" and "Cancel (Esc)".
+// crookedly beside "Back to Match Cards" and "Cancel (Esc)".
 //
 // A label whose LENGTH tracks a COUNT THAT CHANGES is the NEO-110 reflow class
 // at a smaller scale: the control's height moves under the cursor between a
@@ -4923,7 +4938,7 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard({ onBack: vi.fn() });
 
     const { actions, status } = footerRows();
-    for (const name of ["Back to matching", CANCEL_REVIEW_NAME]) {
+    for (const name of ["Back to Match Cards", CANCEL_REVIEW_NAME]) {
       const button = screen.getByRole("button", { name });
       expect(actions.contains(button)).toBe(true);
       expect(status.contains(button)).toBe(false);

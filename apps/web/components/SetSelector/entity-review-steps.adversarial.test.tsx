@@ -123,14 +123,14 @@ describe("growth announcements", () => {
     expect(t1.growth?.text).toBe("1 more step: teams for Jim Thome");
   });
 
-  it("a staged career team whose player row is missing falls back to 'new names', never 'undefined'", () => {
+  it("a staged career team whose player row is missing falls back to 'more names', never 'undefined'", () => {
     const text = growthReasons({
       addedRows: [career("t1", "ghost")],
       allRows: [career("t1", "ghost")],
       teamsStepAdded: false,
       titlesStepAdded: false,
     });
-    expect(text).toEqual(["new names"]);
+    expect(text).toEqual(["more names"]);
   });
 
   it("a player with an empty name does not produce 'teams for '", () => {

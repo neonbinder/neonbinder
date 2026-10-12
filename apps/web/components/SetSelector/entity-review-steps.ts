@@ -304,7 +304,7 @@ function listJoin(names: readonly string[]): string {
  * - a league staged for a team   → "league for {team}"
  * - the teams step               → "cards with no team"
  * - the titles step              → "card titles"
- * - any other new row            → "new names"
+ * - any other new row            → "more names" (Jason)
  */
 export function growthReasons(input: {
   addedRows: readonly StepRow[];
@@ -333,7 +333,7 @@ export function growthReasons(input: {
   const reasons: string[] = [];
   if (players.length > 0) reasons.push(`teams for ${listJoin(players)}`);
   if (teams.length > 0) reasons.push(`league for ${listJoin(teams)}`);
-  if (other) reasons.push("new names");
+  if (other) reasons.push("more names");
   if (input.teamsStepAdded) reasons.push("cards with no team");
   if (input.titlesStepAdded) reasons.push("card titles");
   return reasons;
