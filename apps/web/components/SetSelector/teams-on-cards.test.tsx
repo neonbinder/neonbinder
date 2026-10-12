@@ -539,10 +539,12 @@ describe("adversarial — answers are positional, never by card number", () => {
 // ---------------------------------------------------------------------------
 
 describe("invariant 8 — a listing's team name holds the guess back", () => {
-  const skippedTeam = (name: string) => row({ kind: "team", name, decision: { action: "skip" } });
+  // A name the operator has NOT ruled on: still a claim. (A "not a team"
+  // skip is an answer, not a claim — see the next describe.)
+  const unruledTeam = (name: string) => row({ kind: "team", name, decision: null });
 
   test("a listed name blocks a server pre-fill; the line is left for later and says what was listed", () => {
-    const rows = [skippedTeam("Bulls")];
+    const rows = [unruledTeam("Bulls")];
     const cards = [card("1", ["Johnny Bench"], ["Bulls"])];
     const groups = build(cards, rows, {
       "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
@@ -556,7 +558,7 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   });
 
   test("a listed name blocks a batch pre-fill too", () => {
-    const rows = [skippedTeam("Bulls")];
+    const rows = [unruledTeam("Bulls")];
     const groups = build(
       [card("1", ["Johnny Bench"], ["Bulls"]), card("2", ["Johnny Bench"], ["Reds"])],
       rows,
@@ -567,7 +569,7 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
 
   test("a listed name blocks a created player's career pre-fill", () => {
     const rows = [
-      skippedTeam("Bulls"),
+      unruledTeam("Bulls"),
       row({
         kind: "player",
         name: "Rookie Guy",
@@ -580,7 +582,7 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   });
 
   test("the NB teams the listed name resolves to are offered FIRST, unselected", () => {
-    const rows = [skippedTeam("Durham Bulls")];
+    const rows = [unruledTeam("Durham Bulls")];
     const cards = [card("1", ["Johnny Bench"], ["Durham Bulls"])];
     expect(teamNameRequests(cards, rows)).toEqual([
       { key: "bulls durham", name: "Durham Bulls" },
@@ -598,7 +600,7 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   });
 
   test("the listed name's lookup still on its way → the line is loading", () => {
-    const rows = [skippedTeam("Bulls")];
+    const rows = [unruledTeam("Bulls")];
     const groups = build([card("1", [], ["Bulls"])], rows, {}, undefined, {
       teamNameEvidence: {},
     });
@@ -621,12 +623,76 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   });
 
   test("the listed string is never written: an answer only ever names a chip", () => {
-    const rows = [skippedTeam("Bulls")];
+    const rows = [unruledTeam("Bulls")];
     const groups = build([card("1", ["Johnny Bench"], ["Bulls"])], rows, {
       "name:bench johnny": unsure([REDS, "Cincinnati Reds"]),
     });
     const choice = toggleTeam(groups[0], defaultChoice(groups[0]), teamIdKey(REDS));
     expect(answerForChoice(groups[0], choice)).toEqual({ teamIds: [REDS] });
+  });
+});
+
+describe("invariant 8 — a name ruled \"not a team\" in this sitting is no longer a claim", () => {
+  const skippedTeam = (name: string) => row({ kind: "team", name, decision: { action: "skip" } });
+
+  test("a skipped name does not block the server pre-fill, is not shown, and is not looked up", () => {
+    const rows = [skippedTeam("Team Card")];
+    const cards = [card("1", ["Johnny Bench"], ["Team Card"])];
+    // Still in the section: the skipped string gives the card no team.
+    expect(teamlessCardIndexes(cards, rows)).toEqual([0]);
+    expect(teamNameRequests(cards, rows)).toEqual([]);
+    const groups = build(
+      cards,
+      rows,
+      { "name:bench johnny": answered([REDS, "Cincinnati Reds"]) },
+      undefined,
+      { teamNameEvidence: {} },
+    );
+    expect(groups[0].listedNames).toEqual([]);
+    expect(groups[0].loading).toBe(false);
+    expect(suggested(groups[0])).toEqual(["Cincinnati Reds"]);
+    expect(teamAnswersByCard(groups, {}, 1)).toEqual([{ teamIds: [REDS] }]);
+  });
+
+  test("a skipped name does not split the player's line or block a batch pre-fill", () => {
+    const rows = [skippedTeam("Team Card")];
+    const groups = build(
+      [
+        card("1", ["Johnny Bench"], ["Team Card"]),
+        card("2", ["Johnny Bench"]),
+        card("3", ["Johnny Bench"], ["Reds"]),
+      ],
+      rows,
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 1]);
+    expect(suggested(groups[0])).toEqual(["Reds"]);
+  });
+
+  test("the other direction: an unruled name beside a skipped one still blocks, and only it is shown", () => {
+    const rows = [skippedTeam("Team Card"), row({ kind: "team", name: "Bulls", decision: null })];
+    const cards = [card("1", ["Johnny Bench"], ["Team Card", "Bulls"])];
+    expect(teamNameRequests(cards, rows).map((r) => r.name)).toEqual(["Bulls"]);
+    const groups = build(cards, rows, {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    expect(groups[0].listedNames).toEqual(["Bulls"]);
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("the other direction: a failed lookup still blocks even when its printed name was skipped", () => {
+    const rows = [skippedTeam("Team Card")];
+    const cards: PreviewCardForTeams[] = [
+      { ...card("1", ["Johnny Bench"], ["Team Card"]), teamLookup: "failed" },
+    ];
+    const groups = build(cards, rows, {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    expect(groups[0].listedNames).toEqual([]);
+    expect(groups[0].lookupFailed).toBe(true);
+    expect(groups[0].suggestion).toBeNull();
+    expect(labels(groups[0])).toEqual(["Cincinnati Reds"]);
   });
 });
 

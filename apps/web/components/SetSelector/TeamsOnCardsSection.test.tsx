@@ -299,7 +299,7 @@ describe("invariant 8 — the listing's team claim", () => {
     render(
       <Harness
         cards={[card("1", ["Johnny Bench"], ["Durham Bulls"])]}
-        rows={[{ _id: "r1", kind: "team", name: "Durham Bulls", decision: { action: "skip" } }]}
+        rows={[{ _id: "r1", kind: "team", name: "Durham Bulls", decision: null }]}
       />,
     );
     expect(screen.getByText("Marketplace says:")).toBeTruthy();
@@ -315,5 +315,23 @@ describe("invariant 8 — the listing's team claim", () => {
       within(group).getByRole("radio", { name: "Leave for later — Johnny Bench" }).getAttribute("aria-checked"),
     ).toBe("true");
     expect(last()).toEqual([undefined]);
+  });
+
+  it("a name ruled \"not a team\" in this sitting neither shows nor blocks the pre-fill", () => {
+    playerAnswer = () => ({
+      answer: { tier: "oneTeamInWindow", teams: [{ teamId: REDS, name: "Cincinnati Reds" }] },
+      candidates: [],
+    });
+    render(
+      <Harness
+        cards={[card("1", ["Johnny Bench"], ["Team Card"])]}
+        rows={[{ _id: "r1", kind: "team", name: "Team Card", decision: { action: "skip" } }]}
+      />,
+    );
+    expect(screen.queryByText("Marketplace says:")).toBeNull();
+    expect(
+      screen.getByRole("radio", { name: "Cincinnati Reds — Johnny Bench" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(last()).toEqual([{ teamIds: [REDS] }]);
   });
 });

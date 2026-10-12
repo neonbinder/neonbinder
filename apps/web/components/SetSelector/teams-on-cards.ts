@@ -59,8 +59,8 @@ export { MAX_CARD_TEAMS };
  * ## A listing's team claim holds the guess back (invariant 8)
  *
  * "A data claim holds back a guess; it never makes one." A card in the
- * section whose listing printed a team name NB could not resolve (the name's
- * New Team step was skipped), or whose team lookup FAILED (the listing may
+ * section whose listing printed a team name NB could not resolve and the
+ * operator has NOT ruled on, or whose team lookup FAILED (the listing may
  * name a team we never heard), gets NO pre-fill from any rule — batch,
  * stored rows, career, preference. The line comes up on "Leave for later";
  * the listed name is SHOWN (`listedNames`), the existing NB teams it names
@@ -69,6 +69,11 @@ export { MAX_CARD_TEAMS };
  * written as NB data: a chip is always an existing team (by id), a team
  * staged in this wizard, or one the operator found or created with
  * "Other team…".
+ *
+ * A name the operator ruled "not a team" (its step skipped) in this sitting
+ * is no longer a claim (Jason, NEO-335 Phase 2): the operator has already
+ * answered it, so it neither blocks the pre-fill nor is shown, and the line
+ * falls back to the normal rules.
  *
  * Never a guess: a tie stays unselected, and a card number is never a key —
  * a card is identified by its POSITION in the preview, which is the only
@@ -195,7 +200,10 @@ export interface TeamsGroup {
   refs: TeamRef[];
   /** The pre-filled selection (ref keys), when evidence gave one and nothing held it back. */
   suggestion: string[] | null;
-  /** Invariant 8 — team names the listing printed that NB could not resolve. Shown, never written. */
+  /**
+   * Invariant 8 — team names the listing printed that NB could not resolve
+   * and the operator has not ruled "not a team". Shown, never written.
+   */
   listedNames: string[];
   /** Invariant 8 — the listing's team lookup failed for these cards. */
   lookupFailed: boolean;
@@ -271,6 +279,18 @@ function namesView(rows: readonly TeamsReviewRow[]): NamesView {
     if (target && !target.has(key)) target.set(key, row);
   }
   return { teamRowByKey, playerRowByKey };
+}
+
+/**
+ * Invariant 8 — the printed team strings on a section card that still claim
+ * a team: every one failed to resolve (that is how the card got here), minus
+ * the ones the operator ruled "not a team". A skip is an answer to the
+ * claim, so it no longer holds the guess back.
+ */
+function listedClaims(card: PreviewCardForTeams, view: NamesView): string[] {
+  return cardTeamStrings(card).filter(
+    (raw) => view.teamRowByKey.get(norm(raw))?.decision?.action !== "skip",
+  );
 }
 
 /** Will this printed team string resolve to a team at commit? */
@@ -392,7 +412,7 @@ export function teamNameRequests(
   };
   for (const index of teamlessCardIndexes(cards, rows, settled)) {
     const card = cards[index];
-    for (const listed of cardTeamStrings(card)) add(listed);
+    for (const listed of listedClaims(card, view)) add(listed);
     for (const player of cardPlayers(card, view)) {
       if (player.kind !== "created") continue;
       for (const stint of createdStints(player.row)) {
@@ -600,9 +620,10 @@ export function buildTeamsGroups(input: {
   for (const index of [...members].sort((a, b) => a - b)) {
     const card = cards[index];
     const players = cardPlayers(card, view);
-    // Every printed string on a member card failed to resolve — that is how
-    // it got here — so each one is a listing's team claim (invariant 8).
-    const listedNames = cardTeamStrings(card);
+    // A printed string on a member card failed to resolve — that is how it
+    // got here — so unless the operator ruled it "not a team", it is a
+    // listing's team claim (invariant 8).
+    const listedNames = listedClaims(card, view);
     const lookupFailed = card.teamLookup === "failed";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
