@@ -164,7 +164,7 @@ tags:
 # The card-number input is autofocused — type straight into it.
 - inputText: "701-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Attn Alpha ${ATTEMPT_ID}"
+- inputText: "AttnAlpha${output.ATTEMPT_TOKEN}"
 
 # Submit sits at the bottom of the add-card form; centerElement drives it to
 # mid-viewport so Maestro's own scroll-before-tap has content to scroll to
@@ -216,7 +216,7 @@ tags:
     timeout: 7000
 - inputText: "702-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Attn Bravo ${ATTEMPT_ID}"
+- inputText: "AttnBravo${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
       id: "Submit new card"
@@ -271,7 +271,7 @@ tags:
     timeout: 7000
 - inputText: "703-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Attn Charlie ${ATTEMPT_ID}"
+- inputText: "AttnCharlie${output.ATTEMPT_TOKEN}"
 
 # THE QUICK-ADD PLAYER PICKER (NEO-220). Its four container names are the
 # quick-add form's own (QUICK_ADD_PLAYER_LABELS, CardChecklist.tsx), reworded so

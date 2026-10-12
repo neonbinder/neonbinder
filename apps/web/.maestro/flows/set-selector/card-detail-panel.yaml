@@ -88,6 +88,10 @@ tags:
 # returns with the "Edit card 888-${ATTEMPT_ID}" button scrolled into view.
 # ============================================================
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -95,7 +99,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "888-${ATTEMPT_ID}"
-      PLAYER_NAME: "Detail Panel Test ${ATTEMPT_ID}"
+      PLAYER_NAME: "DetailPanelTest${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # OPEN THE DRAWER
@@ -141,7 +145,7 @@ tags:
 # character may remain after eraseText. Harmless here — the assertions below
 # match the typed prefix as a substring.
 - eraseText: 60
-- inputText: "Renamed Detail Player ${ATTEMPT_ID}"
+- inputText: "RenamedDetail${output.ATTEMPT_TOKEN}"
 - pressKey: Enter
 - extendedWaitUntil:
     visible: ".*Saved Card name.*"
@@ -348,14 +352,14 @@ tags:
       id: "Card name"
     timeout: 15000
 
-# The card name input should reflect the saved name (Renamed Detail Player ...).
+# The card name input should reflect the saved name (RenamedDetail<token>).
 # Use a ".*" suffix regex because Maestro web's eraseText leaves the last
 # character of the original value when the cursor is placed at the penultimate
 # position (known Maestro web cursor behavior). The prefix is unique enough to
 # verify the rename persisted — the full title and description are verified
 # below with exact full-string matches (those fields were appended to empty).
 - assertVisible:
-    text: ".*Renamed Detail Player ${ATTEMPT_ID}.*"
+    text: ".*RenamedDetail${output.ATTEMPT_TOKEN}.*"
 
 # Card title is at position 4 in the drawer body — near the top, above the
 # attribute chips. Assert it without scrolling (it's visible from mount). The
@@ -446,7 +450,7 @@ tags:
 # R6: this scroll IS the positive assertion; nothing repeats it.
 - scrollUntilVisible:
     element:
-      text: ".*Renamed Detail Player ${ATTEMPT_ID}.*"
+      text: ".*RenamedDetail${output.ATTEMPT_TOKEN}.*"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
@@ -470,4 +474,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 888-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Renamed Detail Player ${ATTEMPT_ID}"
+- assertNotVisible: "RenamedDetail${output.ATTEMPT_TOKEN}"

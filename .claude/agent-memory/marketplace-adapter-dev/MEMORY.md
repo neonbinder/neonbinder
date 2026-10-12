@@ -20,7 +20,7 @@
 - [Scheduled telemetry unmasks cross-test leaks](reference_scheduled_telemetry_unmasks_cross_test_leaks.md) — recordAdapterCall schedules since NEO-315; drain before asserting captures, scope by requestId, set POSTHOG_API_KEY in stubs
 - [use-node contract narrowers live in lib](reference_use_node_contract_narrowers_live_in_lib.md) — default-runtime settle can't import a "use node" adapter; types/validators/narrowers go in convex/lib, re-exported
 - [Check baseline reds in main/, not by stash](reference_check_baseline_reds_in_main_not_by_stash.md) — shared worktree: prove a stray red pre-existing by running that file in main/ at the same base
-- [Hook between action steps in convex-test](reference_convex_test_hook_between_action_steps.md) — vi.mock a helper the earlier mutation calls; one-shot hook with its ctx lands a change between runMutation steps
+- [Hook between action steps in convex-test](reference_convex_test_hook_between_action_steps.md) — vi.mock a helper the earlier mutation calls, or t.run inside the fetch stub when a fetch splits the steps
 - [paginate maximumBytesRead](reference_paginate_maximum_bytes_read.md) — a .take(N) can't be byte-bounded; page across queries with maximumBytesRead; size byte fixtures with literals, never from the cap
 - ["No token" can be our own limiter](reference_no_token_can_be_our_own_limiter.md) — browser-service 60/min rate limit (/health per IP), credential lock, NEO-278 backoff all read as no token
 - [Store unlink needs non-empty options](reference_store_unlink_needs_nonempty_options.md) — unlink pass is inside `options.length > 0`; a pre-store filter that empties the list skips unlinking
@@ -28,6 +28,7 @@
 - [Planner sees the first wire id only](reference_planner_sees_first_wire_id_only.md) — reconcile store plans ids[0] per side; extras need their own one-link-one-row check at the insert
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Action stubs pin old return shapes](reference_action_stubs_pin_old_return_shapes.md) — tests vi.mock adapter actions with their own returns validator; a return-shape change must update every stub
+- [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — `node` is the nvm default in agent Bash; prefix PATH with the .nvmrc version for every gate call
 - [Store working copies hide renames from db guards](reference_store_working_copies_hide_renames_from_db_guards.md) — stores patch in a final pass; a mid-loop ctx.db read misses same-call renames; suggestions apply patches in-loop
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)

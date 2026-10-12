@@ -1719,6 +1719,41 @@ function ConflictRadioGroup({
   );
 }
 
+/**
+ * NEO-195 / NEO-330 a11y — the visible streaming sentence. Static text, NOT a
+ * live region: it ticks "(7 of 20 done)" on every card, and a live region
+ * re-reading the whole sentence per tick drowns the operator. The coarse
+ * announcements below speak for it instead. Exported for the test.
+ */
+export function pairingStreamingSentence(progress?: { ready: number; total: number }): string {
+  const count =
+    progress && progress.total > 0 ? ` (${progress.ready} of ${progress.total} done)` : "";
+  return `Pair away — teams are still resolving in the background${count}. Confirm unlocks when the fetch finishes.`;
+}
+
+/** Said at each quarter of the way through: "Teams resolving — 10 of 20 done." */
+export function pairingStreamProgressAnnouncement(ready: number, total: number): string {
+  return `Teams resolving — ${ready} of ${total} done.`;
+}
+
+/** Said once when the stream ends with the dialog open, then cleared. */
+export const PAIRING_STREAM_DONE_ANNOUNCEMENT = "Teams are in. Confirm is ready.";
+
+/** Said instead of the done announcement when some teams missed the wait. */
+export function pairingStreamLateAnnouncement(teamsLateNotice: string): string {
+  return `Confirm is ready. ${teamsLateNotice}`;
+}
+
+/** How long the done announcement stays in the region before it is cleared. */
+export const PAIRING_STREAM_DONE_CLEAR_MS = 5000;
+
+/**
+ * Delay before the opening announcement, so the region (mounted with the
+ * dialog) is in the accessibility tree before its text changes — text present
+ * at insertion is not reliably announced.
+ */
+const PAIRING_STREAM_START_DELAY_MS = 150;
+
 export default function CardPairingModal({
   isOpen,
   onClose,
@@ -1727,6 +1762,7 @@ export default function CardPairingModal({
   initialData,
   isStreaming,
   streamProgress,
+  teamsLateNotice,
   restoreFocusRef,
 }: {
   isOpen: boolean;
@@ -1745,6 +1781,16 @@ export default function CardPairingModal({
   isStreaming?: boolean;
   /** Progress for the streaming banner: cards released / cards found so far. */
   streamProgress?: { ready: number; total: number };
+  /**
+   * NEO-330 — what to say when the stream has ENDED with some teams still
+   * out (`streamProgress.ready < total` once `isStreaming` is false: exactly
+   * the owner's "teams late" condition). The owner passes its
+   * `TEAMS_LATE_NOTICE`, so the sync banner behind this modal and the line in
+   * its footer say one sentence from one source. The line shows only while it
+   * is true — a team that lands afterwards takes it away, the same rule the
+   * owner's Confirm wrapper applies.
+   */
+  teamsLateNotice?: string;
   /**
    * a11y (NEO-221) — where to send keyboard focus when this dialog closes,
    * PREFERRED over this component's own `document.activeElement`-at-mount
@@ -2265,6 +2311,87 @@ export default function CardPairingModal({
     setDiscardOpen(true);
   }, [onClose, pendingEdits]);
 
+  /**
+   * NEO-330 a11y — the streaming announcements, written straight into an
+   * always-mounted `role="status"` region (it renders no React children, so
+   * nothing here fights reconciliation, and no announcement costs a render).
+   *
+   *   start     — the visible sentence, once, shortly after the stream is seen
+   *   progress  — at each quarter (25/50/75%) of `ready / total`, never again
+   *               for a quarter already said (a growing `total` can lower the
+   *               fraction; it does not re-announce)
+   *   done      — "Teams are in. Confirm is ready.", cleared after a few
+   *               seconds so a later re-read of the region is not stale
+   *
+   * The visible "(X of Y done)" keeps ticking in the static sentence.
+   */
+  const liveRegionRef = useRef<HTMLDivElement | null>(null);
+  const streamAnnounceRef = useRef<{ streaming: boolean; quarter: number }>({
+    streaming: false,
+    quarter: -1,
+  });
+  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamReady = streamProgress?.ready ?? 0;
+  const streamTotal = streamProgress?.total ?? 0;
+  /** The stream ended with teams still out — see `teamsLateNotice`. */
+  const teamsLate =
+    !!teamsLateNotice && !isStreaming && streamTotal > 0 && streamReady < streamTotal;
+  useEffect(() => {
+    const say = (text: string, delay = 0) => {
+      if (liveTimerRef.current !== null) clearTimeout(liveTimerRef.current);
+      liveTimerRef.current = null;
+      const write = () => {
+        if (liveRegionRef.current) liveRegionRef.current.textContent = text;
+      };
+      if (delay > 0) liveTimerRef.current = setTimeout(write, delay);
+      else write();
+    };
+    if (!isOpen) {
+      // Closed: the region is gone. Start over on the next open.
+      streamAnnounceRef.current = { streaming: false, quarter: -1 };
+      return;
+    }
+    const seen = streamAnnounceRef.current;
+    const quarter =
+      streamTotal > 0 ? Math.min(3, Math.floor((streamReady / streamTotal) * 4)) : 0;
+    if (isStreaming) {
+      if (!seen.streaming) {
+        streamAnnounceRef.current = { streaming: true, quarter };
+        say(
+          pairingStreamingSentence(
+            streamTotal > 0 ? { ready: streamReady, total: streamTotal } : undefined,
+          ),
+          PAIRING_STREAM_START_DELAY_MS,
+        );
+      } else if (streamTotal > 0 && quarter > seen.quarter) {
+        streamAnnounceRef.current = { streaming: true, quarter };
+        say(pairingStreamProgressAnnouncement(streamReady, streamTotal));
+      }
+      return;
+    }
+    if (seen.streaming) {
+      streamAnnounceRef.current = { streaming: false, quarter: -1 };
+      // "Teams are in" would be false when some missed the wait: say what
+      // happened instead, once, and leave the footer line to hold it.
+      const done = teamsLate
+        ? pairingStreamLateAnnouncement(teamsLateNotice ?? "")
+        : PAIRING_STREAM_DONE_ANNOUNCEMENT;
+      say(done);
+      liveTimerRef.current = setTimeout(() => {
+        liveTimerRef.current = null;
+        if (liveRegionRef.current?.textContent === done) {
+          liveRegionRef.current.textContent = "";
+        }
+      }, PAIRING_STREAM_DONE_CLEAR_MS);
+    }
+  }, [isOpen, isStreaming, streamReady, streamTotal, teamsLate, teamsLateNotice]);
+  useEffect(
+    () => () => {
+      if (liveTimerRef.current !== null) clearTimeout(liveTimerRef.current);
+    },
+    [],
+  );
+
   if (!isOpen) return null;
 
   const totalToSave =
@@ -2336,21 +2463,21 @@ export default function CardPairingModal({
             </p>
             {/* NEO-195: cards arrive as they become reviewable, so say so.
                 Without this the list silently grows under the operator and a
-                disabled Confirm looks broken rather than deliberate. */}
+                disabled Confirm looks broken rather than deliberate.
+                NEO-330 a11y: the sentence is static (Confirm's description
+                points at it); the coarse announcements go through the
+                always-mounted status region beside it. */}
             {isStreaming && (
-              <p
-                id="pairing-streaming-status"
-                className="text-xs text-[#00B7FF] mt-1"
-                role="status"
-                aria-live="polite"
-              >
-                Pair away — teams are still resolving in the background
-                {streamProgress && streamProgress.total > 0
-                  ? ` (${streamProgress.ready} of ${streamProgress.total} done)`
-                  : ""}
-                . Confirm unlocks when the fetch finishes.
+              <p id="pairing-streaming-status" className="text-xs text-[#00B7FF] mt-1">
+                {pairingStreamingSentence(streamProgress)}
               </p>
             )}
+            <div
+              ref={liveRegionRef}
+              id="pairing-streaming-announcer"
+              role="status"
+              className="sr-only"
+            />
           </header>
 
           {/* TWO deliberate details on this scroller, both in service of the
@@ -3262,10 +3389,22 @@ export default function CardPairingModal({
             )}
           </div>
 
-          <footer className="p-4 border-t border-gray-700 flex items-center justify-between">
-            <span className="text-xs text-gray-400">
-              {totalToSave} card{totalToSave === 1 ? "" : "s"} will be saved
-            </span>
+          <footer className="p-4 border-t border-gray-700 flex items-center justify-between gap-4">
+            <div className="min-w-0 space-y-0.5">
+              <span className="block text-xs text-gray-400">
+                {totalToSave} card{totalToSave === 1 ? "" : "s"} will be saved
+              </span>
+              {/* NEO-330 — teams that missed the wait. The streaming line is
+                  gone once Confirm unlocks, and the sync banner that says
+                  this is behind the modal, so it is said here too, beside the
+                  button it is about. Quiet and static (the status region
+                  announced it once); Confirm's description points at it. */}
+              {teamsLate && (
+                <p id="pairing-teams-late" className="text-xs text-gray-300">
+                  {teamsLateNotice}
+                </p>
+              )}
+            </div>
             <div className="flex gap-2">
               <NeonButton
                 secondary
@@ -3296,15 +3435,19 @@ export default function CardPairingModal({
                 aria-disabled={isStreaming || undefined}
                 // Ties the reason to the control itself so it's available the
                 // moment Confirm receives focus, rather than depending on the
-                // operator having caught the aria-live banner when it first
-                // appeared (or on every re-announcement as progress ticks).
+                // operator having caught the coarse status announcements
+                // (NEO-330: the sentence itself is no longer live).
                 aria-describedby={
-                  isStreaming ? "pairing-streaming-status" : undefined
+                  isStreaming
+                    ? "pairing-streaming-status"
+                    : teamsLate
+                      ? "pairing-teams-late"
+                      : undefined
                 }
                 aria-label="Confirm card matches"
                 title={
                   isStreaming
-                    ? "Still loading cards — confirming now would save only what has arrived"
+                    ? "Still loading teams…"
                     : undefined
                 }
               >

@@ -39,7 +39,12 @@ async function seedRow(t: ReturnType<typeof convexTest>) {
 function cand(
   cardNumber: string,
   bscRef: string,
-  extra: { isVariation?: boolean; cardVariation?: string } = {},
+  extra: {
+    isVariation?: boolean;
+    cardVariation?: string;
+    // NEO-330 — the per-row lookup flag; absent means "use the batch flag".
+    awaitsTeamLookup?: boolean;
+  } = {},
 ) {
   return {
     cardNumber,
@@ -284,6 +289,205 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
       selectorOptionId: id,
     });
     expect(res.ready).toBe(2);
+  });
+});
+
+/**
+ * NEO-330 — status is written per ROW.
+ *
+ * The one-marketplace auto-keep path commits with no operator and waits for
+ * `ready === total` before it does, because the fetch action resolves before
+ * the client's subscription shows the last team patch. That only terminates if
+ * a row nothing is going to look up is written `ready` — under the old
+ * batch-wide flag such a row stayed `pending` for the life of the batch.
+ */
+describe("candidate status is per row (NEO-330)", () => {
+  test("a row awaiting a lookup is pending and a row that is not is ready, in the same batch", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "b1", { awaitsTeamLookup: true }),
+      cand("2", "b2", { awaitsTeamLookup: false }),
+    ]);
+
+    const res = await readAs(t, ADMIN, id);
+    expect(res.total).toBe(2);
+    expect(res.ready).toBe(1);
+    expect(res.cards.find((c) => c.cardNumber === "1")!.teamResolved).toBe(
+      false,
+    );
+    expect(res.cards.find((c) => c.cardNumber === "2")!.teamResolved).toBe(
+      true,
+    );
+  });
+
+  test("once the looked-up rows resolve, ready reaches total", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "b1", { awaitsTeamLookup: true }),
+      cand("2", "b2", { awaitsTeamLookup: false }),
+    ]);
+
+    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
+      batchId: "batch-1",
+      resolved: [{ bscRef: "b1", rawTeamName: "Phillies", teamNames: ["Phillies"] }],
+    });
+
+    const res = await readAs(t, ADMIN, id);
+    expect(res.ready).toBe(res.total);
+  });
+
+  test("the per-row flag wins over the batch flag, in both directions", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    // readyImmediately: true, but this row says a lookup is coming.
+    await startBatch(
+      t,
+      id,
+      [cand("1", "b1", { awaitsTeamLookup: true }), cand("2", "b2")],
+      true,
+    );
+    let res = await readAs(t, ADMIN, id);
+    expect(res.cards.find((c) => c.cardNumber === "1")!.teamResolved).toBe(
+      false,
+    );
+    // No per-row flag — the batch flag still decides (compatibility).
+    expect(res.cards.find((c) => c.cardNumber === "2")!.teamResolved).toBe(
+      true,
+    );
+
+    // readyImmediately: false, but this row is not waiting on anything.
+    await startBatch(
+      t,
+      id,
+      [cand("1", "b1", { awaitsTeamLookup: false }), cand("2", "b2")],
+      false,
+      { batchId: "batch-2" },
+    );
+    res = await readAs(t, ADMIN, id);
+    expect(res.cards.find((c) => c.cardNumber === "1")!.teamResolved).toBe(
+      true,
+    );
+    expect(res.cards.find((c) => c.cardNumber === "2")!.teamResolved).toBe(
+      false,
+    );
+  });
+
+  test("the flag is never stored on the row", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1", { awaitsTeamLookup: true })]);
+    const rows = await t.run((ctx) =>
+      ctx.db.query("checklistCandidates").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect("awaitsTeamLookup" in rows[0]).toBe(false);
+  });
+
+  test("every row carrying a resolved ref is patched, not just one of them", async () => {
+    // A ref is BSC's card id and normally unique in a batch, but nothing
+    // guarantees it — and a second row left pending would hold the auto-keep
+    // wait until it times out.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "dup", { awaitsTeamLookup: true }),
+      cand("1a", "dup", { awaitsTeamLookup: true }),
+    ]);
+
+    const out = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      { batchId: "batch-1", resolved: [{ bscRef: "dup", rawTeamName: "Reds", teamNames: ["Reds"] }] },
+    );
+
+    expect(out.patched).toBe(2);
+    const res = await readAs(t, ADMIN, id);
+    expect(res.ready).toBe(2);
+    expect(res.cards.every((c) => c.teams?.[0] === "Reds")).toBe(true);
+  });
+
+  test("a ref repeated in the chunk patches each of its rows once, not once per entry", async () => {
+    // Security review: the caller sends one entry per looked-up card, so three
+    // rows sharing a ref arrive as three entries naming it. Patching every
+    // row for every entry made the write count k², driven by marketplace data.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "dup", { awaitsTeamLookup: true }),
+      cand("1a", "dup", { awaitsTeamLookup: true }),
+      cand("1b", "dup", { awaitsTeamLookup: true }),
+    ]);
+
+    const out = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      {
+        batchId: "batch-1",
+        resolved: [
+          { bscRef: "dup", rawTeamName: "Reds", teamNames: ["Reds"] },
+          { bscRef: "dup", rawTeamName: "Reds", teamNames: ["Reds"] },
+          { bscRef: "dup", rawTeamName: "Reds", teamNames: ["Reds"] },
+        ],
+      },
+    );
+
+    expect(out.patched).toBe(3);
+    const res = await readAs(t, ADMIN, id);
+    expect(res.ready).toBe(3);
+    expect(res.cards.every((c) => c.teams?.[0] === "Reds")).toBe(true);
+  });
+
+  test("two entries for one ref that disagree write neither team (invariant 8)", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "dup", { awaitsTeamLookup: true }),
+      cand("1a", "dup", { awaitsTeamLookup: true }),
+    ]);
+
+    const out = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      {
+        batchId: "batch-1",
+        resolved: [
+          { bscRef: "dup", rawTeamName: "Reds", teamNames: ["Reds"] },
+          { bscRef: "dup", rawTeamName: "Cubs", teamNames: ["Cubs"] },
+        ],
+      },
+    );
+
+    expect(out.patched).toBe(2);
+    const res = await readAs(t, ADMIN, id);
+    // Answered — nothing left pending — but no team was picked between them.
+    expect(res.ready).toBe(2);
+    expect(res.cards.every((c) => c.teams === undefined)).toBe(true);
+  });
+
+  test("the per-row status survives a batch that pages across transactions", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = Array.from(
+      { length: CHECKLIST_CANDIDATE_PAGE + 3 },
+      (_, i) => cand(`${i}`, `bsc-${i}`, { awaitsTeamLookup: i % 2 === 0 }),
+    );
+
+    await startBatch(t, id, candidates);
+    await t.finishAllScheduledFunctions(() => {});
+
+    const res = await readAs(t, ADMIN, id);
+    expect(res.total).toBe(candidates.length);
+    expect(res.ready).toBe(
+      candidates.filter((c) => c.awaitsTeamLookup === false).length,
+    );
+    // A row from the continuation page specifically.
+    const last = res.cards.find(
+      (c) => c.cardNumber === `${CHECKLIST_CANDIDATE_PAGE + 2}`,
+    )!;
+    expect(last.teamResolved).toBe(false);
+    const penultimate = res.cards.find(
+      (c) => c.cardNumber === `${CHECKLIST_CANDIDATE_PAGE + 1}`,
+    )!;
+    expect(penultimate.teamResolved).toBe(true);
   });
 });
 

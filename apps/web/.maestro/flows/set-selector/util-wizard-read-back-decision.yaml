@@ -25,7 +25,9 @@ tags:
 # team hands the walk back to the player it was staged for, so the walk lands
 # on e.g. Roberto Clemente, whose line is ~30 rows down: CI run 38198207277,
 # three flows red on a decision that HAD landed ("Step 35 of 124",
-# "Decided (34)").
+# "Decided (34)"). The merged nav (#314's `returnTo`, returning only to an
+# origin the operator edited) puts the walk back in batch order, but the list
+# is still batch-ordered and collapsed, so the rule stands.
 #
 # ── WHAT THIS DOES INSTEAD ──────────────────────────────────────────────────
 # The footer's "Back" (accessible name "Back to previous decision") presents

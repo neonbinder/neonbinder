@@ -194,6 +194,15 @@ export type AttentionCardRow = {
  * Note clause 3 does NOT read whether the queue SUCCEEDED. `teamCheckDoneAt`
  * means "asked, regardless of outcome", and a BSC card that came back with no
  * team on file is precisely the case a human has to settle.
+ *
+ * NEO-330 — clause 3 is only safe because the wait ENDS. A lookup that failed
+ * used to leave `teamCheckDoneAt` unset with nothing scheduled to ask again,
+ * so this clause hid the card forever. The queue now retries a failure a
+ * bounded number of times (`BSC_TEAM_CHECK_MAX_PASSES` in
+ * `adapters/buysportscards.ts`) and then stamps `teamCheckDoneAt` through
+ * `bscTeamCheck.markBscTeamCheckGivenUp`, writing no team — so the card lands
+ * here, badged, for the operator to pick. Jason, 2026-10-11: "If a team lookup
+ * never returns then the user must select a team."
  */
 export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];

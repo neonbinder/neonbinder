@@ -14,11 +14,17 @@ tags:
 # pair. Proved on live data, through the operator's own path (Sync card
 # checklist → the "Tidy up this set" wizard → Confirm & Save):
 #
-#   (a) STEP 5 — while the wizard is drained, no team step is ever about a
-#       comma-joined name: every `New Team:` / `New League:` step presented
-#       is checked BEFORE it is answered, on its pinned footer control (whose
-#       accessible name carries the row's name) and on its heading. Neither
-#       seeded half of PDA-WW's value may be a step either.
+#   (a) STEP 5 — the fetch stages no team named after a comma-joined value.
+#       On the reference catalogue every name on the set is known (see "WHICH
+#       PLAYERS AND TEAMS ARE NEW" below), so the correct fetch commits
+#       straight to `Saved N cards` with no wizard at all. An UNSPLIT value
+#       ("Detroit Tigers, Boston Red Sox") resolves to no team, so it is an
+#       unknown team, and an unknown team always opens the wizard
+#       (`resolveChecklistEntities` → `unknownTeams`). So whenever the wizard
+#       opens, every `New Team:` / `New League:` step it presents is checked
+#       BEFORE it is answered, on its pinned footer control (whose accessible
+#       name carries the row's name) and on its heading. Neither half of
+#       PDA-WW's value may be a step either.
 #   (b) STEP 6 — after the save, the dual card's row reads both clubs as
 #       resolved teams (`teamFullName` of each linked row, joined ", "), with
 #       no "(unconfirmed)" tail.
@@ -46,28 +52,35 @@ tags:
 #      and the checklist's react-virtuoso list opens at its END
 #      (`initialTopMostItemIndex`) and renders only its ~440px window — so
 #      the last row is the one row guaranteed to be in the DOM;
-#    * both clubs are current names the seed's 2024 Topps Chrome commit
-#      creates, so with the fix neither half raises a team step;
+#    * each club is ONE Baseball row in the reference catalogue (the README's
+#      "A reference catalogue is on every CI preview"), current and open-ended,
+#      with no alias; the only other "Detroit Tigers" is a Football row, and
+#      team resolution is per sport. So with the fix each half resolves on
+#      its own (`resolveTeamForSetYear`, set year 2025) and neither raises a
+#      team step;
 #    * no other card in the set carries either club, so the pair names the
 #      card on its own.
-#   ⚠️ NOT YET VERIFIED AGAINST BSC: the set name (`Bowman Draft`), the
-#   insert's variantName (`Prospect Dual Autographs`), and PDA-WW's BSC team
-#   value. They come from the published checklist; BSC's data needs a seller
-#   token or the private shop endpoints, which this flow's author could not
-#   use. The first run reads them, and fails by name at the step that
-#   disagrees.
+#   VERIFIED 2026-10-12 (NEO-330) against BSC's public catalog facets and
+#   the green #316 CI run: the set is `Bowman Draft`, the insert's
+#   variantName `Prospect Dual Autographs` (14 cards, PDA-AD … PDA-WW), and
+#   PDA-WW's BSC teams are Detroit Tigers + Boston Red Sox. SportLots paired
+#   no set with the insert in that run (Pending → Keep all), so the fetch took
+#   the one-marketplace path.
 #
 # ── WHICH PLAYERS AND TEAMS ARE NEW ON A FRESH PREVIEW ──────────────────────
-#   Players: every name on the set (~21 distinct draftees). The seed creates
-#   only 2024 Topps Chrome's roster, so all are unknown, all reach the
-#   wizard, and all are SKIPPED here (STEP 5) — this flow mints no player.
-#   Teams: the seed's commit creates every MLB club (SET-REGISTRY.md, the
-#   Rickwood note: "team sets of MLB clubs have 0 unknown teams"), so each
-#   half of a dual value resolves. A team step that does appear — a spelling
-#   the seed lacks (BSC's "Athletics" vs "Oakland Athletics" on PDA-DM), or a
-#   career team staged off a player's Wikidata history — is checked for a
-#   comma and SKIPPED. This flow mints no team, which is what lets (c) count
-#   to exactly one.
+#   NONE, measured 2026-10-12 against the catalogue (SET-REGISTRY.md has the
+#   detail). The catalogue is a prod snapshot and prod has built this set:
+#   all 21 draftees are single Baseball rows (`players.resolveNameForReview`
+#   answers each with one `playerId`), and every one of the 16 clubs BSC
+#   names resolves to exactly one row for 2025 (BSC's bare "Athletics" on
+#   PDA-DM included). So the correct fetch commits straight to `Saved N cards`
+#   and the wizard never opens. Before the catalogue all 21 draftees were
+#   unknown and staged a Wikidata career team ("Sydney Blue Sox"); that is
+#   why STEP 5 still drains the wizard when it does open. A catalogue refresh
+#   that drops a name, or a SportLots set pairing with the insert, can open it
+#   legitimately. Whatever it holds, each team or league step is checked for
+#   a comma and SKIPPED, and players are skipped in one press. This flow mints
+#   no player and no team, which is what lets (c) count to exactly one.
 #
 # ── WRITES (R7, R7a) ────────────────────────────────────────────────────────
 #   SOLE WRITER OF BASEBALL → 2025. No other flow opens the year. The cold
@@ -76,8 +89,9 @@ tags:
 #   review pill nobody saves); selecting `Bowman Draft` syncs its Variant
 #   Types; the Insert reconcile (STEP 2) saves every Ready set it holds,
 #   including the target insert. Then this insert's checklist is committed;
-#   the wizard's skips leave per-set `entityReviewSkips`. No player, team or
-#   league row is created; nothing is renamed, moved or deleted. Not
+#   if the wizard opened, its skips leave per-set `entityReviewSkips`. No
+#   player, team or league row is created; nothing is renamed, moved or
+#   deleted. Not
 #   self-cleaning: the scripted reset at the head of every run is its cleanup.
 #   FRESH-ONLY — a re-run on the same preview finds the Insert column already
 #   saved (no reconcile) and the checklist committed, and fails at STEP 2's
@@ -92,9 +106,9 @@ tags:
 #   7000 for every NB read and write. Longer only for live external
 #   round-trips, each named at its site: the cold drill's own ceilings
 #   (util-drill-to-cold-real-set), the set's cold Variant Types (60000), the
-#   cold Insert fetch (240000), the checklist fetch (120000), the wizard
-#   opening behind it (60000), and the wizard's Wikidata lookups settling
-#   (180000, util-wizard-walk-to-player-row's).
+#   cold Insert fetch (240000), the checklist fetch (120000), the wizard or
+#   the direct commit behind it (60000), and, only when the wizard opens, its
+#   Wikidata lookups settling (180000, util-wizard-walk-to-player-row's).
 #
 # ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
 #   columns    `Sets` (listbox), `Search sets`, `Variant Types`, `Insert`,
@@ -111,9 +125,12 @@ tags:
 #              looking up — wait or skip`, `Skip <name> — not a person|not a
 #              team`, `Skip <name> — this team has no league`, `New Team:
 #              <name>` / `New League: <name>` (h3), `Skip remaining names
-#              (N)`, `Next (Enter)`, `Ready to save`, `Confirm & Save`
-#   teams      `Filter teams`, `N of M teams` (TeamManagement.tsx; a
-#              case-insensitive SUBSTRING match on the full name and aliases)
+#              (N)`, `Next (Enter)` (visible text only, no accessible name of
+#              its own), `Ready to save`, `Confirm & Save` (accessible name
+#              `Confirm & Save (Enter) — commit this review`; rendered only
+#              on the Save step)
+#   teams      `Filter teams`, `N teams` browsing / `N match(es)` filtering
+#              (TeamManagement.tsx `teamCounterSentence`, NEO-330)
 #
 # ── R3 ──────────────────────────────────────────────────────────────────────
 #   No other flow proves a multi-team BSC value. `checklist-bsc-team-
@@ -366,15 +383,21 @@ tags:
 - tapOn:
     id: "Sync card checklist"
 
-# TWO LEGITIMATE SHAPES (the Bowman inserts flow's STEP 6): a SportLots set
+# LEGITIMATE SHAPES (the Bowman inserts flow's STEP 6): a SportLots set
 # paired with the insert opens "Match Cards"; one source takes the NEO-255
-# one-marketplace path ("Kept all N cards from BSC"). A fetch that lost the
-# BSC side matches neither and fails here. BSC's per-card team lookup
+# one-marketplace path ("Kept all N cards from BSC"). On that path with every
+# name known (the catalogue, header note) the run commits at once, and the
+# commit's `Saved N cards` REPLACES the Kept-all line: CardChecklist holds one
+# notice (`syncNotice`), and the line lives only through the entity check and
+# the commit's own round trip. So `Saved` is accepted here as the same
+# fetch's later state. The checklist was empty a step ago, so it can only be
+# this fetch's. A fetch that lost the BSC side would carry no BSC team
+# values, and STEP 6's row read fails it by name. BSC's per-card team lookup
 # (NEO-195, `fetchCardChecklist` step 4 — the code NEO-333 changed) runs
 # INSIDE this fetch. Live BSC (+ SportLots) round-trip: 120000 (R5).
 - extendedWaitUntil:
     visible:
-      text: "Match Cards.*|.*Kept all [0-9]+ cards? from BSC.*"
+      text: "Match Cards.*|.*Kept all [0-9]+ cards? from BSC.*|.*Saved [1-9][0-9]* cards?.*"
     timeout: 120000
 
 # NEO-287 — paused, nothing was asked of SportLots, so the pairing dialog is
@@ -408,148 +431,193 @@ tags:
           timeout: 7000
 
 # ============================================================
-# STEP 5 — CLAIM (a): DRAIN THE WIZARD; NO TEAM STEP IS A COMMA-JOINED NAME
+# STEP 5 — CLAIM (a): NO TEAM STEP IS A COMMA-JOINED NAME
 #
-# The wizard MUST open: every player on this set is unknown on a fresh
-# preview (header note). Required rather than either/or with "Saved N cards",
-# because a fetch that committed straight through would leave (a) unexercised
-# (R2). Gated on its title, "Tidy up this set" since NEO-335 (WizardChrome
-# `WIZARD_TITLE`). 60000: it opens behind the live lookups the batch queues
-# (R5, the Bowman inserts flow's STEP 7 ceiling).
+# TWO LEGITIMATE SHAPES, and the gate names both (R2):
+#  * `Saved N cards`: the fetch committed straight through. This is the
+#    EXPECTED shape on the catalogue, where every player and every club on the
+#    set is known (header note), so nothing was staged. It is also the proof
+#    of (a) on this path: an unsplit value resolves to no team, is reported
+#    as an unknown team, and would have opened the wizard instead.
+#  * the wizard (`Tidy up this set`, NEO-335): something was staged (a catalogue refresh dropped a name, a
+#    SportLots pairing brought its own spellings, or the split regressed). It
+#    is drained below, every team or league step checked before it is
+#    answered.
+# 60000: the wizard opens behind the batch the entity check starts, and the
+# direct commit behind the card write (R5; the Bowman inserts flow's STEP 7
+# gives the same two shapes the same gate and ceiling).
+# The branch reads the gate's own node rather than paying a second visibility
+# guard, which costs ~6.6s whenever it misses (memory: branch-on-copied-
+# button-text). Nothing else on the page matches the pattern, and no notice
+# reads `Saved` before a commit, so the copy is the node the gate just saw.
 # ============================================================
 
 - extendedWaitUntil:
-    visible: "Tidy up this set"
-    timeout: 60000
-
-# WAIT OUT THE LOOKUPS FIRST. Team rows go through the same Wikidata pool as
-# players (`startBatch` inserts them `status: "pending"`), and the wizard
-# presents a team only once it has SETTLED (entity-review-nav.ts
-# `nextUndecided`, teams before players). Draining before the batch settles
-# would let a still-pending combined row be skipped wholesale, unseen, by
-# the "Skip remaining names" below — and (a) would pass without looking.
-# "N still looking up — wait or skip" is the wizard's own footer status and
-# is absent exactly when no undecided row is pending; the title above renders
-# only once the rows have loaded (`rows === undefined` returns null), so this
-# negative cannot pass on a half-mounted wizard. R5 marketplace-class
-# exception, the ceiling util-wizard-walk-to-player-row gives it: a live
-# Wikidata round-trip per unknown name (~21 here, none in the committed
-# recording), five-wide over a pool every runner shares. It returns the
-# moment the queue drains.
-- extendedWaitUntil:
-    notVisible: ".*still looking up.*"
-    timeout: 180000
-
-# R2 PRECONDITION: the settled wizard is presenting a row — a team, a league
-# or a player — so the loop below cannot exit on a blank or wedged dialog.
-- extendedWaitUntil:
     visible:
-      id: "Skip .* — (not a person|not a team|this team has no league)"
-    timeout: 7000
-
-# THE DRAIN, util-wizard-walk-to-player-row's step 2 plus this flow's check.
-# Every settled undecided TEAM (and the LEAGUE step staged ahead of a team that
-# needs one) is presented before any player, so "a player is presented" is the
-# product saying the team queue is empty — the loop's exit.
-#
-# Each presented team or league step is CHECKED, then SKIPPED:
-#  * the check is POSITIVE, on the pinned footer control (README → "Asserting
-#    inside a dialog": header and footer only). Its accessible name is
-#    `Skip <row name> — not a team` (`— this team has no league` on a league
-#    step), the same `current.name` the heading prints, so `[^,]+` is the
-#    claim "this step's name has no comma". The alternation's player branch
-#    is there for the TOCTOU the util documents: the previous iteration's
-#    skip can land after this iteration's guard read, and the wizard is then
-#    already on the player. A comma-joined team step matches neither branch,
-#    and the wait fails naming the selector — that is the regression this
-#    flow exists to catch (before NEO-333 the wizard presented exactly
-#    `New Team: Cleveland Guardians, Washington Nationals`).
-#  * the same check refuses a step for either HALF of PDA-WW's value. Both
-#    clubs are seeded current teams, so the split parts must each resolve
-#    (`chooseCandidateTeams` → the review gate) and raise nothing. A step named
-#    `Boston Red Sox` or `Detroit Tigers` means the split happened but a part
-#    failed to resolve, and the card would then commit with that club missing.
-#    `(?!…)` is a lookahead in the driver's Java regex (the alias flow uses
-#    one too). A staged Wikidata stint at either club resolves to the seeded
-#    current row, so it raises no step either.
-#  * WHY THESE CHECKS NOW SEE BSC's VALUES (NEO-333 fence). Before the fence,
-#    the one-marketplace path snapshotted the candidates before the fetch's
-#    team lookup reached the client. The wizard then saw NO BSC team name, so
-#    (a) passed vacuously, and the commit saved cards with no team for the
-#    background BSC queue to link seconds later. CI run 38068514601 attempt 2
-#    caught that as (b) reading the row about 8s after `Saved`.
-#    `fetchCardChecklist` now returns a fence, and the client waits for it on
-#    both paths before the candidates go anywhere. So every BSC team value
-#    the gate cannot resolve is a step here, and only those.
-#  * the heading negative is the same claim read off the body's h3. It rides
-#    on the positive above, so it cannot pass on a dead page (memory:
-#    negative-asserts-pass-on-a-dead-page).
-#  * SKIP, never "Add as New Team": this flow mints no team, which is what
-#    lets STEP 7 count to exactly one. A skipped spelling the seed lacks (or a
-#    staged career team) only leaves THAT club off its card; the card (b)
-#    reads needs no team step at all, and fails there if it did.
-#  * `optional: true` on the tap is the util's documented TOCTOU tolerance
-#    (the control vanishing between guard and tap means the row was
-#    answered); R2 is held by the hard post-condition after the loop.
-- repeat:
-    times: 40
-    while:
-      notVisible:
-        id: "Skip .* — not a person"
+      text: "Tidy up this set|.*Saved [1-9][0-9]* cards?.*"
+    timeout: 60000
+- copyTextFrom:
+    text: "Tidy up this set|.*Saved [1-9][0-9]* cards?.*"
+- runFlow:
+    when:
+      true: '${maestro.copiedText === "Tidy up this set"}'
     commands:
+      # WAIT OUT THE LOOKUPS FIRST. Team rows go through the same Wikidata
+      # pool as players (`startBatch` inserts them `status: "pending"`), and
+      # the wizard presents a team only once it has SETTLED (entity-review-
+      # nav.ts `nextUndecided`, teams before players). Draining before the
+      # batch settles would let a still-pending combined row be skipped
+      # wholesale, unseen, by the "Skip remaining names" below, and (a) would
+      # pass without looking. "N still looking up — wait or skip" is the
+      # wizard's own footer status and is absent exactly when no undecided row
+      # is pending; the title the gate matched renders only once the rows have
+      # loaded (`rows === undefined` returns null), so this negative cannot
+      # pass on a half-mounted wizard. R5 marketplace-class exception, the
+      # ceiling util-wizard-walk-to-player-row gives it: a live Wikidata
+      # round-trip per staged name, five-wide over a pool every runner shares
+      # (measured 34.8s for the 21 draftees on the pre-catalogue seed, #316's
+      # green run). It returns the moment the queue drains.
+      - extendedWaitUntil:
+          notVisible: ".*still looking up.*"
+          timeout: 180000
+
+      # R2 PRECONDITION: the settled wizard is presenting a row (a team, a
+      # league or a player), so the loop below cannot exit on a blank or
+      # wedged dialog.
+      - extendedWaitUntil:
+          visible:
+            id: "Skip .* — (not a person|not a team|this team has no league)"
+          timeout: 7000
+
+      # THE DRAIN, util-wizard-walk-to-player-row's step 2 plus this flow's
+      # check. Every settled undecided TEAM (and the LEAGUE step staged ahead
+      # of a team that needs one) is presented before any player, so the team
+      # queue is empty once a player is presented, or once the names-done
+      # footer renders (every row decided: a batch that staged teams and no
+      # player). Either is the loop's exit. NEO-335 Phase 2: names-done is
+      # `Next (Enter)` (a teams / titles step) or `Confirm & Save` (Save), and
+      # `Next (Enter)` has no accessible name, so the exit predicate and the
+      # post-condition match on TEXT: the player's skip control reads
+      # `Skip — not a person` (`.` for the em dash), and a full match keeps
+      # `Skip remaining names (N)` and a team's `Skip — not a team` out.
+      #
+      # Each presented team or league step is CHECKED, then SKIPPED:
+      #  * the check is POSITIVE, on the pinned footer control (README →
+      #    "Asserting inside a dialog": header and footer only). Its
+      #    accessible name is `Skip <row name> — not a team` (`— this team has
+      #    no league` on a league step), the same `current.name` the heading
+      #    prints, so `[^,]+` is the claim "this step's name has no comma".
+      #    The alternation's player branch is there for the TOCTOU the util
+      #    documents: the previous iteration's skip can land after this
+      #    iteration's guard read, and the wizard is then already on the
+      #    player (or, with no player, onto Save's `Confirm & Save`; a late
+      #    landing onto a teams/titles step's `Next (Enter)` has no accessible
+      #    name to alternate on, so that one residual race fails this wait
+      #    by name rather than passing). A comma-joined team step matches
+      #    neither branch, and the
+      #    wait fails naming the selector. That is the regression this flow
+      #    exists to catch (before NEO-333 the wizard presented exactly
+      #    `New Team: Cleveland Guardians, Washington Nationals`).
+      #  * the same check refuses a step for either HALF of PDA-WW's value.
+      #    Both clubs are single catalogue rows, so the split parts must each
+      #    resolve (`chooseCandidateTeams` → the review gate) and raise
+      #    nothing. A step named `Boston Red Sox` or `Detroit Tigers` means
+      #    the split happened but a part failed to resolve, and the card would
+      #    then commit with that club missing. `(?!…)` is a lookahead in the
+      #    driver's Java regex (the alias flow uses one too). A staged
+      #    Wikidata stint at either club resolves to the same current row, so
+      #    it raises no step either.
+      #  * WHY THESE CHECKS SEE BSC's VALUES (NEO-333 fence). Before the
+      #    fence, the one-marketplace path snapshotted the candidates before
+      #    the fetch's team lookup reached the client. The wizard then saw NO
+      #    BSC team name, so (a) passed vacuously, and the commit saved cards
+      #    with no team for the background BSC queue to link seconds later.
+      #    CI run 38068514601 attempt 2 caught that as (b) reading the row
+      #    about 8s after `Saved`. `fetchCardChecklist` now returns a fence,
+      #    and the client waits for it on both paths before the candidates go
+      #    anywhere. So every BSC team value the gate cannot resolve is a step
+      #    here, and only those.
+      #  * the heading negative is the same claim read off the body's h3. It
+      #    rides on the positive above, so it cannot pass on a dead page
+      #    (memory: negative-asserts-pass-on-a-dead-page).
+      #  * SKIP, never "Add as New Team": this flow mints no team, which is
+      #    what lets STEP 7 count to exactly one. A skipped spelling the
+      #    catalogue lacks (or a staged career team) only leaves THAT club off
+      #    its card; the card (b) reads needs no team step at all, and fails
+      #    there if it did.
+      #  * `optional: true` on the tap is the util's documented TOCTOU
+      #    tolerance (the control vanishing between guard and tap means the
+      #    row was answered); R2 is held by the hard post-condition after the
+      #    loop.
+      - repeat:
+          times: 40
+          while:
+            notVisible:
+              text: "Skip . not a person|Next \\(Enter\\)|.*Confirm & Save.*"
+          commands:
+            - runFlow:
+                when:
+                  visible:
+                    id: "Skip .* — (not a team|this team has no league)"
+                commands:
+                  - extendedWaitUntil:
+                      visible:
+                        id: "Skip (?!Boston Red Sox —|Detroit Tigers —)[^,]+ — (not a team|this team has no league)|Skip .* — not a person|Confirm & Save.*"
+                      timeout: 7000
+                  - assertNotVisible:
+                      text: "New (Team|League): .*,.*|New Team: (Boston Red Sox|Detroit Tigers)"
+                  - tapOn:
+                      id: "Skip .* — (not a team|this team has no league)"
+                      optional: true
+      # POST-CONDITION (R2): a player is presented or every row is decided, so
+      # every team step was answered. A Convex-free re-render after the last
+      # skip's write: the 7000 bar.
+      - extendedWaitUntil:
+          visible:
+            text: "Skip . not a person|Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000
+
+      # THE PLAYERS ARE NOT WHAT THIS FLOW IS ABOUT: skip them all in one
+      # press (the Bowman inserts flow's STEP 7). The button renders only
+      # while a row is undecided, so it is absent when the loop ended on the
+      # names-done footer. Landing on the first player can stage its Wikidata
+      # career teams a few seconds later (memory: neo236-wizard-teams-first-
+      # walk); those are Wikidata labels, not BSC values, so they are skipped
+      # with the players rather than checked. That is why the press is
+      # retried once: a late staged row leaves one row undecided after the
+      # first press. Skip remaining is an NB write: 7000 (R5).
       - runFlow:
           when:
             visible:
-              id: "Skip .* — (not a team|this team has no league)"
+              text: ".*Skip remaining names \\([0-9]+\\).*"
           commands:
-            - extendedWaitUntil:
-                visible:
-                  id: "Skip (?!Boston Red Sox —|Detroit Tigers —)[^,]+ — (not a team|this team has no league)|Skip .* — not a person"
-                timeout: 7000
-            - assertNotVisible:
-                text: "New (Team|League): .*,.*|New Team: (Boston Red Sox|Detroit Tigers)"
-            - tapOn:
-                id: "Skip .* — (not a team|this team has no league)"
-                optional: true
-# POST-CONDITION (R2): a player is presented, so every team step was answered.
-# A Convex-free re-render after the last skip's write: the 7000 bar.
-- extendedWaitUntil:
-    visible:
-      id: "Skip .* — not a person"
-    timeout: 7000
-
-# THE PLAYERS ARE NOT WHAT THIS FLOW IS ABOUT — skip them all in one press
-# (the Bowman inserts flow's STEP 7). Landing on the first player can stage
-# its Wikidata career teams a few seconds later (memory: neo236-wizard-teams-
-# first-walk); those are Wikidata labels, not BSC values, so they are skipped
-# with the players rather than checked. That is why the press is retried
-# once: a late staged row leaves one row undecided after the first press.
-# Skip remaining is an NB write: 7000 (R5).
-#
-# NEO-335: deciding the last name no longer lands on Save. The wizard walks
-# up to two more screens first, "Cards with no team" (a skipped team spelling
-# leaves its card teamless) and "Card titles", each with "Next (Enter)" and no
-# Confirm & Save. So the press's terminal state is EITHER footer, and
-# `util-wizard-advance-to-save` presses Next on whatever comes up, leaving
-# every line on its default ("Leave for later" or a pre-filled team, every
-# title kept), until "Ready to save". PDA-WW is not on the teams step: both
-# its clubs resolve, so it never saves teamless. Teams and titles are not this
-# flow's claim; (b) below reads what the save stored.
-- retry:
-    maxRetries: 1
-    commands:
+            # NEO-335: deciding the last name no longer lands on Save. The
+            # wizard walks up to two more screens first, "Cards with no team"
+            # (a skipped team spelling leaves its card teamless) and "Card
+            # titles", each with "Next (Enter)" and no Confirm & Save. So the
+            # press's terminal state is EITHER footer, and
+            # `util-wizard-advance-to-save` (below, after this inner branch) presses
+            # Next on whatever comes up, leaving every line on its default
+            # ("Leave for later" or a pre-filled team, every title kept), until
+            # "Ready to save". PDA-WW is not on the teams step: both its clubs
+            # resolve, so it never saves teamless. Teams and titles are not
+            # this flow's claim; (b) below reads what the save stored.
+            - retry:
+                maxRetries: 1
+                commands:
+                  - tapOn:
+                      text: ".*Skip remaining names \\([0-9]+\\).*"
+                  - extendedWaitUntil:
+                      visible:
+                        text: "Next \\(Enter\\)|.*Confirm & Save.*"
+                      timeout: 7000
+      - runFlow: util-wizard-advance-to-save.yaml
       - tapOn:
-          text: ".*Skip remaining names \\([0-9]+\\).*"
-      - extendedWaitUntil:
-          visible:
-            text: "Next \\(Enter\\)|.*Confirm & Save.*"
-          timeout: 7000
-- runFlow: util-wizard-advance-to-save.yaml
-- tapOn:
-    text: ".*Confirm & Save.*"
+          text: ".*Confirm & Save.*"
 
-# The commit — an NB write, the 7000 bar (R5; measured 0.36s for a commit of
-# the same shape on 2026 Bowman's Anime insert).
+# BOTH SHAPES END HERE (R2's hard result). On the direct path the notice is
+# already up; after the wizard it is the commit, an NB write: the 7000 bar
+# (R5; measured 0.33s on this flow in #316's green run).
 - extendedWaitUntil:
     visible:
       text: ".*Saved [1-9][0-9]* cards?.*"
@@ -590,41 +658,52 @@ tags:
 # ============================================================
 # STEP 7 — CLAIM (c): NO COMBINED TEAM EXISTS
 #
-# Exactly one team on the deployment has "Boston Red Sox" in its full name or
-# an alias: the seed's club. A team minted from the joined value — by the
-# wizard, the commit or the background enrichment pass — would contain it
-# too, whichever half came first, and make this "2 of". TeamManagement's
-# filter is a client-side SUBSTRING match on the composed full name and the
-# aliases (TeamManagement.tsx `visible`), and the counter counts the rows it
-# keeps, so "1 of" is the positive and the negative in one read. Scoped to
-# this club rather than to a bare "," across every team: a global comma check
-# would fail on any other flow's comma-bearing team (career teams staged from
+# Exactly one team on the deployment answers to "Boston Red Sox": the
+# catalogue's club (measured 2026-10-12 on #314's preview after a full run:
+# one row in every sport, no alias carrying the name). A team minted from the
+# joined value — by the wizard, the commit or the background enrichment pass —
+# would answer too, whichever half came first, and make this "2 matches".
+# From two typed characters Team Management asks the server
+# (`teams.searchForManagement`, NEO-330) and keeps a row when EVERY typed word
+# starts a word of its composed full name or of an alias (`teamMatchesFilter`,
+# the same rule the screen's browser-side filter uses). "boston", "red" and
+# "sox" all start words of "Boston Red Sox, Detroit Tigers" in either order,
+# so "1 match" is the positive and the negative in one read. The counter is
+# `teamCounterSentence`: "N teams" browsing, "N match(es)" filtering, plus
+# " · K need attention" when any listed row needs it. Scoped to this club
+# rather than to a bare "," across every team: a global comma check would
+# fail on any other flow's comma-bearing team (career teams staged from
 # Wikidata, real names like "Korea, South"), which is not this flow's claim.
 #
 # A reload separates the database from the session, and lands on the screen
 # that owns teams. 30000 on the page gate: openLink is a full reload, the
 # in-app-return ceiling profile/credentials-lifecycle and
-# checklist-wizard-link-team-saves-alias give the same screen.
+# checklist-wizard-link-team-saves-alias give the same screen; the gate is
+# admin-teams-two-eras' browsing counter.
 # ============================================================
 
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - tapOn: "Filter teams"
 - inputText: "Boston Red Sox"
-# Client-side filter over an already-loaded list: the 7000 bar. Full match, so
-# "11 of …" cannot answer "1 of".
+# A Convex read on the search index: the 7000 bar. Full match, so "11
+# matches" cannot answer. The browser filters its capped window first and the
+# server's answer replaces that count; a combined team minted mid-run sits in
+# the window while the catalogue club may not, so the interim count can read
+# "1 match" with the WRONG row. The anchored assert below rules that out: the
+# combined row's short name is not "(Boston )?Red Sox", and once the server
+# answers the counter reads "2 matches" and the anchor is gone.
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 7000
 # And the one row is the club: the master list prints the SHORT name on its
 # first line, anchored under the counter so the filter box (whose VALUE is
-# the typed string) cannot answer. The seed's New Team step stores "Boston"
-# as the Location only when ESPN's location whole-word-prefixes the name
-# (memory: neo236-wizard-teams-first-walk), so the short name is "Red Sox"
-# or, with a blank Location, the whole "Boston Red Sox" — both accepted.
+# the typed string) cannot answer. The catalogue row stores Location "Boston"
+# and Name "Red Sox", so it prints "Red Sox"; "(Boston )?" keeps a row with a
+# blank Location (the whole name as its Name) acceptable too.
 - assertVisible:
     text: "(Boston )?Red Sox"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"

@@ -90,7 +90,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "777-${ATTEMPT_ID}"
-      PLAYER_NAME: "Player Picker Card ${ATTEMPT_ID}"
+      PLAYER_NAME: "PlayerPickerCard${output.ATTEMPT_TOKEN}"
 
 # Open the drawer via the Edit button.
 - assertVisible:
@@ -268,4 +268,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 777-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Player Picker Card ${ATTEMPT_ID}"
+- assertNotVisible: "PlayerPickerCard${output.ATTEMPT_TOKEN}"

@@ -15,14 +15,18 @@ tags:
 # R2 — HARD ASSERTIONS:
 #     (a) the row under test is a PLAYER row — only a player renders the
 #         career-team mini-form — asserted by its stable control before use;
-#     (b) a complete entry keeps its years across the New Team step it triggers
-#         — back on the player row the chip still reads "<name> (2001–2005)";
-#     (c) "Add as New Player" records a CREATE carrying that entry — the
-#         row, presented again by "Back", reads "Already decided: Added as
-#         new";
+#     (b) once the New Team step it triggers is answered, the walk comes BACK
+#         to the player the team was typed on (NEO-330), and the entry has kept
+#         its years across the hop — the chip reads "<name> (2001–2005)". The
+#         chip list is keyed by that player's review row, so the chip on screen
+#         is itself the proof the presented row is the same player;
+#     (c) "Add as New Player" records exactly ONE decision (the header's
+#         "Step x of y" moves x by one — NEO-335 Phase 2's counter), and the
+#         Save step's summary lists "New players and teams" — skips create
+#         nothing, so that line is this create (with the team step's);
 #     (d) the commit lands ("Saved N cards");
 #     (e) THE POINT: `/admin/teams` now holds a team by the staged name, and the
-#         list narrows to exactly "1 of N teams" for it. Since NEO-236 that row
+#         list narrows to exactly "1 match" for it. Since NEO-236 that row
 #         is written from the team's OWN New Team step rather than from the
 #         player's decision, so this also proves that step's answer survived the
 #         commit. Nothing else in this flow creates a team, and the name is
@@ -36,8 +40,18 @@ tags:
 #   the NAME. 71f23a4 stores the years on the staged step as
 #   `source.manualStint` and keys the chip list by player review-row id, so both
 #   survive — and carries them through to `players.teamYears` at commit.
-#   Navigation is unchanged: the hop is expected, and STEP 3 walks it
-#   deliberately rather than around it.
+#   The hop is expected, and STEP 3 walks it deliberately rather than around it.
+#
+# ── THE WALK COMES BACK TO THE SAME PLAYER (NEO-330) ────────────────────────
+#   Until NEO-330 the answered team step handed the walk to the first settled
+#   undecided player IN BATCH ORDER, which is not necessarily the player the
+#   team was typed on (the walk util stops on whichever row settled first; on
+#   Memphis RiverKings that was a different player, and this flow's chip
+#   assert failed on a row that never had a chip). Jason's decision
+#   2026-10-10: answering a step staged from player A's career-team entry
+#   returns to A (`returnTo` in `entity-review-nav.ts`; a nested league step
+#   is answered first, then the team, then A). This flow is that feature's
+#   E2E proof: the chip assert in STEP 3 can only pass on A.
 #
 #
 # ── DO NOT REACH FOR THE AUTO-ADD SWEEP HERE (c657a57) ──────────────────────
@@ -57,22 +71,30 @@ tags:
 #   itself stays with the entity-review unit files.
 #
 # ── THE FIXTURE ─────────────────────────────────────────────────────────────
-#   `Baseball → 2024 → Topps → Topps Baltimore Orioles → Base`.
-#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
-#   marketplaces → **8 unknown names, ALL PLAYERS, 0 teams**; wizard opens.
+#   `Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL
+#   → Base`, BSC only. Approved by Jason 2026-10-10 (NEO-330), replacing Topps
+#   Baltimore Orioles: the reference catalogue every CI preview now loads knows
+#   every Orioles player, so that fetch committed straight through with no
+#   wizard (CI run 38063558063). MEASURED on PR #314's preview, 2026-10-10: 18
+#   cards, "Kept all 18 cards from BSC" → **15 unknown names, ALL PLAYERS, 0
+#   teams**, and still 15 rows once every Wikidata lookup had settled — no
+#   career club was staged as a step of its own.
 #
-#   ALL-PLAYER ON PURPOSE, and that is why this flow needs NO KIND GUARD. It
-#   acts on controls only a player row renders, and this fixture cannot present
-#   a team row because it surfaces no unknown teams at all. The earlier design
-#   used a basketball set and carried a guard to survive a 20:1 player/team mix;
-#   an all-player fixture removes the branch instead of hedging it.
+#   ALL-PLAYER, and that is why this flow needs NO KIND GUARD. It acts on
+#   controls only a player row renders, and this fixture surfaces no unknown
+#   teams. A team or league step a lookup might stage on another day is
+#   answered by `util-wizard-walk-to-player-row` before this flow touches the
+#   player row, so the guard stays unnecessary either way.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
 #   so committing races nothing. CI cannot serialize two flows
 #   (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes live only
 #   in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the only
-#   isolation that holds. It drains its OWN fixture within a run — accepted,
-#   because CI reseeds the preview every run.
+#   isolation that holds. The columns above the set are shared with the other
+#   1995 hockey flows (SET-REGISTRY.md: concurrent first syncs double the
+#   round-trip, never the rows). It drains its OWN fixture within a run —
+#   accepted, because CI reseeds the preview every run; a local re-run fails at
+#   the util's "No cards in this checklist yet." precondition until re-seeded.
 #
 #   ⚠️ THIS FLOW CREATES ONE PLAYER AND ONE TEAM, deliberately, and they are
 #   global. The player is one of this set's own unknowns, which no other flow
@@ -126,14 +148,14 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# Mapped on both marketplaces, so every card auto-matches and the unmatched
-# columns are omitted entirely — nothing to keep before confirming.
+# BSC only: the util cancels the base picker, so the fetch keeps every card
+# ("Kept all N cards from BSC") and opens the review with nothing to pair.
 # ============================================================
 
 - runFlow:
-    file: util-fetch-real-set-checklist-to-wizard.yaml
+    file: util-fetch-one-marketplace-set-checklist-to-wizard.yaml
     env:
-      SET: "Topps Baltimore Orioles"
+      SET: "Memphis RiverKings CHL"
 
 - assertVisible:
     text: "Step 1 of [0-9]+"
@@ -144,9 +166,9 @@ tags:
 # comes back, so everything below reads an empty row without this. 30s: that is
 # a live external round-trip.
 #
-# NO KIND GUARD — this fixture surfaces 0 unknown teams (measured), so the
-# presented row is always a player and there is no branch to hedge. That also
-# removes the ~7s poll the guarded version spent doing nothing.
+# NO KIND GUARD — this fixture surfaces 0 unknown teams (measured), and the
+# walk below answers any staged step first, so the row it stops on is always a
+# player and there is no branch to hedge.
 # ============================================================
 
 # NEO-236 — the wizard does not open on a player row, and the first player it
@@ -232,10 +254,12 @@ tags:
 # itself to "Link to <name>" on an exact hierarchy match, and this name is
 # per-worker unique, so it can have none.
 - tapOn: "Add as New Team"
+# Back on a PLAYER row. 7000 (R5): one in-app decision write plus the walk's
+# return, no external round-trip.
 - extendedWaitUntil:
     visible:
       id: "Career team name"
-    timeout: 30000
+    timeout: 7000
 
 # THE REGRESSION FIXED IN 71f23a4, asserted where the operator would see it.
 # Before that commit this chip was gone and the typed years with it: the chip
@@ -244,23 +268,36 @@ tags:
 # ride on the staged step as `source.manualStint` and the chip list is keyed by
 # player review-row id, so both survive the hop. The en dash (U+2013) is matched
 # with "." to keep a literal non-ASCII character out of the matcher.
+# NEO-330: the chip renders only on the row it was typed on, so this is also
+# the assert that the walk RETURNED to that player rather than moving on to
+# the first undecided player in batch order.
 - assertVisible:
     text: ".*MintedTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
+# R2(c): one decision. Not "Added as new" from the Decided list: that list
+# sits in the scrolling body under this row and falls below the fold on a
+# tall row (memory: wizard-decisions-read-from-header-and-summary). The
+# header's "Step x of y" (NEO-335 Phase 2) is x = decided + 1 on a name step,
+# so read x before and require exactly x + 1 after. Pin x, not y: y grows as
+# staged steps arrive. "Step 5 of …" is a full match, so it cannot answer for
+# "Step 15 of …".
+- copyTextFrom:
+    text: "Step [0-9]+ of [0-9]+"
+- evalScript: '${output.STEP_BEFORE = Number(maestro.copiedText.match(/^Step ([0-9]+)/)[1])}'
 - tapOn: "Add as New Player"
-# Read back off the player's own "Already decided:" panel, not the "Decided (N)"
-# history (batch-ordered, collapsed past five: the util's header). RESUME hands
-# the walk back before the bulk skip.
-- runFlow:
-    file: util-wizard-read-back-decision.yaml
-    env:
-      DECISION: "Added as new"
-      RESUME: "true"
+- extendedWaitUntil:
+    visible:
+      text: "Step ${output.STEP_BEFORE + 1} of [0-9]+"
+    timeout: 7000
 
 # ============================================================
 # STEP 4 — R2(d): resolve the rest as skips, then COMMIT
 # Skips mint nothing, so exactly ONE player is created — the one carrying the
-# staged team. 120s for the bulk (live Wikidata queue), 60s for the commit.
+# staged team. 7000 for both (R5, our own server writes): the walk util has
+# already waited every lookup out, so the bulk is one mutation. MEASURED on
+# PR #314's preview, 2026-10-10: "Confirm & Save" 0.34s after the bulk tap,
+# "Saved N cards" 0.35s after the commit tap (before NEO-335's post-name
+# steps; Next on them is client-side, so the bar is unchanged).
 # ============================================================
 
 - tapOn:
@@ -268,17 +305,22 @@ tags:
 - extendedWaitUntil:
     visible:
       text: "Next \\(Enter\\)|.*Confirm & Save.*"
-    timeout: 120000
+    timeout: 7000
 # NEO-335 Phase 2 — past the names the wizard may ask about teamless cards and
 # card titles; this flow's feature is the staged team, so those stay on their
 # defaults and the util walks to the Save step.
 - runFlow: util-wizard-advance-to-save.yaml
+# The all-decided summary sits at the TOP of the Save step's short body and
+# omits a zero line, so this one is present only because the create in STEP 3
+# (and the team step's) landed; everything else was skipped.
+- assertVisible:
+    text: "New players and teams"
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:
     visible:
       text: ".*Saved [0-9]+ cards.*"
-    timeout: 60000
+    timeout: 7000
 
 # ============================================================
 # STEP 5 — R2(e): THE POINT — the staged team is a real row now
@@ -291,20 +333,21 @@ tags:
 # count assertion is what proves the keystrokes landed. Composed with the count
 # so it cannot pass against an unfiltered list that merely contains the name.
 #
-# The staged team is a BASEBALL team now (the fixture's sport), which changes
-# nothing here: `resolveTeamIdByName` get-or-creates by name and this one is
-# unique to the worker and attempt.
+# The staged team is a HOCKEY team (the fixture's sport), which changes nothing
+# here: `resolveTeamIdByName` get-or-creates by name and this one is unique to
+# the worker and attempt, and the Teams list is not narrowed by sport.
 # ============================================================
 
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
+# 7000 (R5): the debounced server search. Measured 0.35s on PR #314's preview.
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
-    timeout: 15000
+    visible: "1 match( . [0-9,]+ need attention)?"
+    timeout: 7000
 - assertVisible:
     text: "MintedTeam${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"

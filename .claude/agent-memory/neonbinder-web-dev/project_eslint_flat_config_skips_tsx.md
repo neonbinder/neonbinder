@@ -26,4 +26,10 @@ in `convex/*.test.ts` when codegen is stale, plus `vite.config.ts`; compare
 against those rather than expecting zero). Adding `.ts` to the globs is its own
 scoped task, not a drive-by.
 
+**`.mjs` scripts ARE linted, react-hooks included.** `scripts/**/*.mjs` falls
+under the react-hooks glob, so a plain Node helper that names a callback
+parameter `use` and calls `use(...)` fails `rules-of-hooks` ("React Hook "use"
+cannot be called in a try/catch block"). Name callbacks anything but `use` /
+`useX` in node scripts (seen NEO-330, reference-seed CLI).
+
 Related: [[vercel-build-runs-convex-typecheck]], [[convex-codegen-only-blocks-types]].

@@ -98,6 +98,16 @@ const BSC_TEAM_LOOKUP_TIMEOUT_MS = 10_000;
 // endpoint (see bscHeaders below). Much shorter than Wikidata's 3s gap
 // since there's no known limit to respect here — just don't hammer it.
 const BSC_TEAM_ENRICH_DELAY_MS = 300;
+// NEO-330 — the queue's bound on a card whose lookup keeps FAILING (network,
+// non-2xx, timeout; never "BSC has no team", which is an answer). Each pass
+// walks the whole queue; the cards that failed in it are walked again after
+// the delay for that pass, so a short BSC hiccup costs one card a minute's
+// wait and a sustained outage still ends. Three passes in all: the first, one
+// after 60s, one after a further 5 min. A card that fails all three is handed
+// to `bscTeamCheck.markBscTeamCheckGivenUp`, which flags it for the operator
+// ("no team on this card yet") and writes no team.
+export const BSC_TEAM_CHECK_MAX_PASSES = 3;
+export const BSC_TEAM_CHECK_RETRY_DELAYS_MS = [60_000, 300_000] as const;
 // Bounded fan-out for fetchBscCardTeamNames's synchronous per-card lookups
 // during fetchCardChecklist — matches the existing MAX_SL_FAN_OUT=10
 // precedent in selectorOptions.ts for capping concurrent external calls.
@@ -2005,25 +2015,39 @@ async function fetchBscCardTeamNameRaw(
  * from the throttled queue below (sets synced before NEO-90's synchronous
  * lookup existed, or a card whose synchronous lookup failed at fetch time).
  * A fresh sync resolves teams inline via `fetchBscCardTeamNames` instead
- * (see `fetchCardChecklist` in selectorOptions.ts). No-ops (leaves the row
- * untouched, so a future enqueue will retry) on any fetch/parse failure.
+ * (see `fetchCardChecklist` in selectorOptions.ts).
+ *
+ * NEO-330 — answers what happened, so the queue can retry a failure and, when
+ * its bound runs out, flag the card instead of leaving it unbadged forever:
+ *   - `"answered"`: BSC answered (a team or none) and the answer was applied.
+ *   - `"notNeeded"`: nothing to ask — the row is gone, has no BSC ref, or was
+ *     already answered.
+ *   - `"failed"`: the call itself failed. The row is left untouched; only a
+ *     successful call may mark it done.
  */
 export const resolveBscCardTeam = internalAction({
   args: { cardChecklistId: v.id("cardChecklist") },
-  returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
+  returns: v.union(
+    v.literal("answered"),
+    v.literal("notNeeded"),
+    v.literal("failed"),
+  ),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<"answered" | "notNeeded" | "failed"> => {
     const row: { bscCardId: string; needsCheck: boolean } | null =
       await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
         cardChecklistId: args.cardChecklistId,
       });
-    if (!row || !row.needsCheck) return null;
+    if (!row || !row.needsCheck) return "notNeeded";
 
     const { teamNames, rawTeamName, success } =
       await fetchBscCardTeamNameRaw(row.bscCardId);
-    // The fetch itself failed — leave the row untouched so a future
-    // enqueue retries it (do NOT distinguish "no team" from "couldn't
-    // check" here; only a successful call is allowed to mark this done).
-    if (!success) return null;
+    // The fetch itself failed — leave the row untouched (do NOT distinguish
+    // "no team" from "couldn't check" here; only a successful call is allowed
+    // to mark this done). The queue decides whether to ask again.
+    if (!success) return "failed";
 
     // NEO-333: both forms. The mutation tries the whole raw string first and
     // only then the split parts; the raw string is also the unmatched hint.
@@ -2033,7 +2057,7 @@ export const resolveBscCardTeam = internalAction({
       rawTeamName,
       teamNames,
     });
-    return null;
+    return "answered";
   },
 });
 
@@ -2134,32 +2158,107 @@ export const fetchBscCardTeamNames = internalAction({
  * reschedules itself with the tail after BSC_TEAM_ENRICH_DELAY_MS. Errors
  * on a single card are caught/logged — the queue moves on rather than
  * abandoning the rest of the set.
+ *
+ * NEO-330 — a card whose lookup fails (or throws) is carried in `failedIds`
+ * to the end of the pass. When the pass drains, those cards get another pass
+ * after `BSC_TEAM_CHECK_RETRY_DELAYS_MS[pass - 1]`, up to
+ * `BSC_TEAM_CHECK_MAX_PASSES`. A card that fails the last pass is flagged for
+ * the operator through `bscTeamCheck.markBscTeamCheckGivenUp` — never given a
+ * guessed team. Jason, 2026-10-11: "If a team lookup never returns then the
+ * user must select a team."
  */
 export const processBscTeamEnrichmentQueue = internalAction({
-  args: { cardChecklistIds: v.array(v.id("cardChecklist")) },
+  args: {
+    cardChecklistIds: v.array(v.id("cardChecklist")),
+    /** NEO-330 — cards that failed earlier in THIS pass. */
+    failedIds: v.optional(v.array(v.id("cardChecklist"))),
+    /** NEO-330 — 1-based pass number; absent on the first pass. */
+    pass: v.optional(v.number()),
+  },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    const pass = args.pass ?? 1;
+    const failedIds = [...(args.failedIds ?? [])];
     const [head, ...tail] = args.cardChecklistIds;
-    if (!head) {
-      console.log(`[bsc-team-enrichment-queue] queue drained.`);
-      return null;
-    }
 
-    try {
-      await ctx.runAction(internal.adapters.buysportscards.resolveBscCardTeam, {
-        cardChecklistId: head,
-      });
-    } catch (error) {
-      console.error(`[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed:`, error);
+    if (head) {
+      let outcome: "answered" | "notNeeded" | "failed" = "failed";
+      try {
+        outcome = await ctx.runAction(
+          internal.adapters.buysportscards.resolveBscCardTeam,
+          { cardChecklistId: head },
+        );
+      } catch (error) {
+        console.error(`[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed:`, error);
+      }
+      if (outcome === "failed") failedIds.push(head);
     }
 
     if (tail.length > 0) {
       await ctx.scheduler.runAfter(
         BSC_TEAM_ENRICH_DELAY_MS,
         internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
-        { cardChecklistIds: tail },
+        {
+          cardChecklistIds: tail,
+          ...(failedIds.length > 0 ? { failedIds } : {}),
+          ...(pass > 1 ? { pass } : {}),
+        },
       );
+      return null;
     }
+
+    // The pass has drained. (The "drained" line is kept to the empty call it
+    // always came from.)
+    if (failedIds.length === 0) {
+      if (!head) console.log(`[bsc-team-enrichment-queue] queue drained.`);
+      return null;
+    }
+    if (pass < BSC_TEAM_CHECK_MAX_PASSES) {
+      const delayMs = BSC_TEAM_CHECK_RETRY_DELAYS_MS[pass - 1];
+      // Counts and timing only — never a card name.
+      console.warn(
+        JSON.stringify({
+          msg: "bsc_team_check_retry_scheduled",
+          platform: "bsc",
+          operation: "resolveBscCardTeam",
+          failed: failedIds.length,
+          pass,
+          nextPass: pass + 1,
+          delayMs,
+        }),
+      );
+      await ctx.scheduler.runAfter(
+        delayMs,
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: failedIds, pass: pass + 1 },
+      );
+      return null;
+    }
+
+    let flagged = 0;
+    for (const id of failedIds) {
+      try {
+        if (
+          await ctx.runMutation(internal.bscTeamCheck.markBscTeamCheckGivenUp, {
+            cardChecklistId: id,
+          })
+        ) {
+          flagged++;
+        }
+      } catch (error) {
+        console.error(`[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed:`, error);
+      }
+    }
+    console.warn(
+      JSON.stringify({
+        msg: "bsc_team_check_gave_up",
+        platform: "bsc",
+        operation: "resolveBscCardTeam",
+        failed: failedIds.length,
+        flagged,
+        passes: pass,
+      }),
+    );
     return null;
   },
 });

@@ -74,7 +74,7 @@
 - [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed, body-bounded; focus returns use focusWithoutOpening; act() around el.focus() in tests
 - [Variant type title is its kind](project_base_role_and_row_are_one_thing.md) — NEO-334: Base/Insert(s)/Parallel(s) exact word via variantTypeKind; no flags; kind-changing rename refused with rows beneath
 - [SetRowActionButton quiet tone is dark-only](reference_setrowactionbutton_quiet_tone_is_dark_only.md) — on the white-in-light-OS checklist card use NeonButton + its contract
-- [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes; an ACTION's do not — fence on a server-read count
+- [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes but no render yet; an ACTION's do not — fence on a server-read count
 - [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's
 - [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery on bg-white dark:bg-gray-800 never passes both themes; two CSS vars, per-theme surfaces incl. hover + /20 tint
 - [DOM id shadows aria-label in maestro](dom-id-shadows-aria-label-in-maestro.md) — resource-id is `id || ariaLabel`; ids go on non-interactive wrappers
@@ -96,6 +96,9 @@
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
 - [Ref cleanup sees focus before removal](reference_ref_cleanup_sees_focus_before_removal.md) — park focus when a focused control unmounts: React 19 callback-ref cleanup, not a parent effect cleanup
+- [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
+- [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
+- [Panel-wide shortcut via capture phase](reference_panel_wide_shortcut_via_capture_phase.md) — Ctrl+Enter over a typeahead: onKeyDownCapture + stopPropagation, guard nested role=dialog; stub spy proves the typeahead never sees it
 - [Required-field flip breaks test fixtures](reference_required_field_flip_breaks_test_fixtures.md) — convex-test validates raw fixture inserts; grep insert("<table>") first; required args pre-empt auth-guard tests
 - [Source-slice tests key on export names](reference_source_slice_tests_key_on_export_names.md) — deleting/renaming an export breaks readFileSync slice tests (indexOf -1 = whole file); grep before deleting
 - [Search mock must honour query args](reference_search_mock_must_honour_query_args.md) — a useQuery mock ignoring args hides a client re-filter; emulate the server before trusting its rows
@@ -108,3 +111,4 @@
 - [No prettier config in apps/web](reference_no_prettier_config_in_apps_web.md) — prettier --write reformats whole hand-formatted files; never run it, eslint is the gate
 - [Candidate field reaches commit only through the client](reference_candidate_field_reaches_commit_only_through_the_client.md) — candidate row → commit hops via pairing-cards.ts, CardPairingModal merge, CardChecklist type; convex-only carry is dead
 - [No review row is not unanswered](reference_no_review_row_is_not_unanswered.md) — the gate drops stored skips before queuing; "no row ⇒ resolved/unreviewed" must read entityReviewSkips
+- [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)

@@ -29,9 +29,11 @@ import {
   isPresentable,
   nextUndecided,
   resolveNav,
+  returnStackFrom,
   summarizeDecisions,
   type NavDecision,
   type NavRow,
+  type NavState,
 } from "./entity-review-nav";
 
 function row(
@@ -847,9 +849,12 @@ describe("resolveNav — the walk stops revising once the operator has started",
       },
       { ...careerTeamOf("t-habs", "p1"), name: "Montreal Canadiens" },
     ];
+    // NEO-330 W6: and because the operator had started on it, the walk
+    // remembers to come back once that step is answered.
     expect(resolveNav(blocked, onPlayer, { pinnedRowHasEdits: true })).toEqual({
       rowId: "t-habs",
       explicit: false,
+      returnTo: ["p1"],
     });
   });
 
@@ -1102,6 +1107,243 @@ describe("resolveNav — an implicitly pinned player yields to a pending league"
   });
 });
 
+describe("resolveNav — NEO-330 W6: back to the row whose step it was", () => {
+  /*
+   * The E2E author's repro: on "Dan Brown" the operator typed "1995 Memphis
+   * RiverKings CHL". The wizard staged a New Team step for it and walked there
+   * — and once that step was answered it showed "Scott Brower", the first
+   * undecided row in batch order. Jason: return to Dan Brown.
+   */
+  const brower = (): NavRow => ({ ...player("brower"), name: "Scott Brower" });
+  const brown = (decision?: NavDecision): NavRow => ({
+    ...player("brown", "ready", decision),
+    name: "Dan Brown",
+  });
+  const riverKings = (
+    status: NavRow["status"] = "ready",
+    decision?: NavDecision,
+  ): NavRow => ({
+    ...careerTeamOf("rk", "brown", status, decision),
+    name: "1995 Memphis RiverKings CHL",
+  });
+  const leagueOf = (
+    id: string,
+    teamRowId: string,
+    decision?: NavDecision,
+  ): NavRow => ({
+    _id: id,
+    status: "ready",
+    decision,
+    kind: "league",
+    source: { kind: "leagueOf", teamRowId },
+  });
+  const edits = { pinnedRowHasEdits: true };
+  const onBrown = { rowId: "brown", explicit: false };
+
+  it("walks to the typed team's step, remembering the player", () => {
+    const rows = [brower(), riverKings(), brown()];
+    expect(resolveNav(rows, onBrown, edits)).toEqual({
+      rowId: "rk",
+      explicit: false,
+      returnTo: ["brown"],
+    });
+  });
+
+  it.each<[string, NavDecision]>([
+    ["created", { action: "create" }],
+    ["linked", { action: "link", linkedTeamId: "teams|1" }],
+    ["skipped", { action: "skip" }],
+  ])("comes back to the player once the team step is %s", (_how, decision) => {
+    const onTeam = resolveNav([brower(), riverKings(), brown()], onBrown, edits);
+    const answered = [brower(), riverKings("ready", decision), brown()];
+    // Without W6 this was "brower" — the first undecided row in batch order.
+    expect(resolveNav(answered, onTeam)).toEqual({
+      rowId: "brown",
+      explicit: false,
+      returned: true,
+    });
+  });
+
+  it("is a fixed point once it is back, and holds against the teams-first yield", () => {
+    // An unrelated settled team would pull an untouched, walked-to player away.
+    // The operator was mid-way through this one, so it stays.
+    const rows = [
+      brower(),
+      { _id: "other", status: "ready", kind: "team" } as NavRow,
+      riverKings("ready", { action: "create" }),
+      brown(),
+    ];
+    const back = { rowId: "brown", explicit: false, returned: true };
+    expect(resolveNav(rows, back)).toBe(back);
+    // The plain walk, for contrast: an untouched implicit player yields.
+    expect(resolveNav(rows, onBrown)).toEqual({ rowId: "other", explicit: false });
+  });
+
+  it("walks on as before once the returned-to player is decided", () => {
+    const rows = [brower(), riverKings("ready", { action: "create" }), brown({ action: "create" })];
+    expect(
+      resolveNav(rows, { rowId: "brown", explicit: false, returned: true }),
+    ).toEqual({ rowId: "brower", explicit: false });
+  });
+
+  it("falls back to today's walk when the player was decided meanwhile", () => {
+    // e.g. a bulk "Add remaining players as new" while the team step was open.
+    const onTeam = { rowId: "rk", explicit: false, returnTo: ["brown"] };
+    const rows = [
+      brower(),
+      riverKings("ready", { action: "create" }),
+      brown({ action: "create" }),
+    ];
+    expect(resolveNav(rows, onTeam)).toEqual({ rowId: "brower", explicit: false });
+  });
+
+  it("falls back to today's walk when the player is gone from the batch", () => {
+    const onTeam = { rowId: "rk", explicit: false, returnTo: ["brown"] };
+    const rows = [brower(), riverKings("ready", { action: "create" })];
+    expect(resolveNav(rows, onTeam)).toEqual({ rowId: "brower", explicit: false });
+  });
+
+  it("does not remember a player the operator never started on", () => {
+    // Its own lookup staged the step: the plain walk, unchanged (CI run 5).
+    expect(resolveNav([brower(), riverKings(), brown()], onBrown)).toEqual({
+      rowId: "rk",
+      explicit: false,
+    });
+  });
+
+  it("keeps the return while the staged step is still being looked up", () => {
+    // The walk carries on meanwhile — a staged row can queue behind a long
+    // pool — but it does not forget where to come back to.
+    const typed = resolveNav([brower(), riverKings("pending"), brown()], onBrown, edits);
+    expect(typed).toEqual({ rowId: "brower", explicit: false, returnTo: ["brown"] });
+
+    // The step settles: the untouched player the walk landed on yields to it.
+    const settled = [brower(), riverKings(), brown()];
+    const onTeam = resolveNav(settled, typed);
+    expect(onTeam).toEqual({ rowId: "rk", explicit: false, returnTo: ["brown"] });
+
+    // And the answer brings the operator back.
+    expect(
+      resolveNav([brower(), riverKings("ready", { action: "create" }), brown()], onTeam),
+    ).toEqual({ rowId: "brown", explicit: false, returned: true });
+  });
+
+  it("finishes a row the operator started on meanwhile, then the step, then the player", () => {
+    const meanwhile = { rowId: "brower", explicit: false, returnTo: ["brown"] };
+    const settled = [brower(), riverKings(), brown()];
+    // Edits on Scott Brower: the walk does not change its mind under them.
+    expect(resolveNav(settled, meanwhile, edits)).toBe(meanwhile);
+    const browerDone = [
+      { ...brower(), decision: { action: "create" } as NavDecision },
+      riverKings(),
+      brown(),
+    ];
+    expect(resolveNav(browerDone, meanwhile)).toEqual({
+      rowId: "rk",
+      explicit: false,
+      returnTo: ["brown"],
+    });
+  });
+
+  it("walks every typed team before coming back", () => {
+    const second: NavRow = { ...careerTeamOf("rk2", "brown"), name: "Second Club" };
+    const onTeam = { rowId: "rk", explicit: false, returnTo: ["brown"] };
+    const rows = [brower(), riverKings("ready", { action: "create" }), second, brown()];
+    expect(resolveNav(rows, onTeam)).toEqual({
+      rowId: "rk2",
+      explicit: false,
+      returnTo: ["brown"],
+    });
+  });
+
+  it("chains back through a New League the team step staged: league → team → player", () => {
+    // On the team step the operator types a league that does not exist yet.
+    const onTeam = { rowId: "rk", explicit: false, returnTo: ["brown"] };
+    const withLeague = [brower(), leagueOf("chl", "rk"), riverKings(), brown()];
+    const onLeague = resolveNav(withLeague, onTeam, edits);
+    expect(onLeague).toEqual({
+      rowId: "chl",
+      explicit: false,
+      returnTo: ["brown", "rk"],
+    });
+
+    const leagueDone = [
+      brower(),
+      leagueOf("chl", "rk", { action: "create" }),
+      riverKings(),
+      brown(),
+    ];
+    const backOnTeam = resolveNav(leagueDone, onLeague);
+    expect(backOnTeam).toEqual({
+      rowId: "rk",
+      explicit: false,
+      returnTo: ["brown"],
+      returned: true,
+    });
+
+    const teamDone = [
+      brower(),
+      leagueOf("chl", "rk", { action: "create" }),
+      riverKings("ready", { action: "create" }),
+      brown(),
+    ];
+    expect(resolveNav(teamDone, backOnTeam)).toEqual({
+      rowId: "brown",
+      explicit: false,
+      returned: true,
+    });
+  });
+
+  it("takes an auto-staged league of the player's own team first, then the team", () => {
+    // No edits on the team: only the player is remembered, and the walk still
+    // answers the league its team needs before that team.
+    const onTeam = { rowId: "rk", explicit: false, returnTo: ["brown"] };
+    const rows = [
+      brower(),
+      { _id: "unrelated", status: "ready", kind: "league" } as NavRow,
+      leagueOf("chl", "rk"),
+      riverKings(),
+      brown(),
+    ];
+    expect(resolveNav(rows, onTeam)).toEqual({
+      rowId: "chl",
+      explicit: false,
+      returnTo: ["brown"],
+    });
+  });
+
+  it("returns after a step reached by \"Decide team\" (an explicit pin)", () => {
+    // The wizard pins the step explicitly with the player on the stack…
+    const pinned = {
+      rowId: "rk",
+      explicit: true,
+      returnTo: returnStackFrom(onBrown),
+    };
+    const answered = [brower(), riverKings("ready", { action: "create" }), brown()];
+    // …an explicit row holds even once decided (the read-only panel)…
+    expect(resolveNav(answered, pinned)).toBe(pinned);
+    // …and `decide` hands the walk back with the stack kept (resumeWalking).
+    expect(
+      resolveNav(answered, { rowId: null, explicit: false, returnTo: pinned.returnTo }),
+    ).toEqual({ rowId: "brown", explicit: false, returned: true });
+  });
+});
+
+describe("returnStackFrom", () => {
+  it("appends the presented row", () => {
+    expect(returnStackFrom({ rowId: "a", explicit: false })).toEqual(["a"]);
+    expect(
+      returnStackFrom({ rowId: "b", explicit: true, returnTo: ["a"] }),
+    ).toEqual(["a", "b"]);
+  });
+
+  it("does not append the innermost entry twice, nor a null row", () => {
+    const nav = { rowId: "a", explicit: false, returnTo: ["a"] };
+    expect(returnStackFrom(nav)).toEqual(["a"]);
+    expect(returnStackFrom({ rowId: null, explicit: false })).toEqual([]);
+  });
+});
+
 describe("NEO-332: isAmbiguousPlayerRow", () => {
   const two = [{ playerId: "a" }, { playerId: "b" }];
 
@@ -1198,6 +1440,12 @@ describe("NEO-332: describeDecision names WHICH same-name player a link went to"
 // staged T. Once T was answered, the walk went to B, the first settled player
 // in batch order, and J and his new chip vanished ("Step 2 of 28" on someone
 // else). `walkOrder` promises the TEAM, then the PLAYER who needs it.
+//
+// Since the NEO-330 merge this rides NEO-330 W6's return stack: each walk
+// starts on J with the operator's edit, which is what records J to come back
+// to. An origin the operator never touched continues in batch order, and a
+// returned-to row holds over other waiting teams and leagues (`returned`) —
+// see the W6 describe above.
 // ---------------------------------------------------------------------------
 
 describe("resolveNav — back to the row a staged step was staged for", () => {
@@ -1217,6 +1465,14 @@ describe("resolveNav — back to the row a staged step was staged for", () => {
     };
   }
   const create: NavDecision = { action: "create" };
+  /** Where the walk is, without NEO-330's bookkeeping fields. */
+  const at = (nav: NavState) => ({ rowId: nav.rowId, explicit: nav.explicit });
+  /**
+   * The operator on J, having typed a career team: the walk steps to the
+   * staged step and remembers J (NEO-330 W6's `returnTo`).
+   */
+  const leaveJFor = (rows: NavRow[]) =>
+    resolveNav(rows, { rowId: "J", explicit: false }, { pinnedRowHasEdits: true });
 
   it("replays the CI sequence and lands back on J, not B", () => {
     // 1. J settles first, so the walk pins J.
@@ -1230,68 +1486,75 @@ describe("resolveNav — back to the row a staged step was staged for", () => {
     const nav2 = resolveNav([player("B"), player("J")], nav1);
     expect(nav2).toBe(nav1);
 
-    // 3. "Add career team" on J stages T. It is inserted `pending`, and
-    //    `walkOrder` places it ahead of J. J now waits on T and steps aside.
-    //    While T looks up, the existing step-over-stragglers rule shows B.
-    //    This replay records that hop; it is not what this test is about.
+    // 3. "Add career team" on J stages T, inserted `pending` ahead of J. J now
+    //    waits on T and steps aside; while T looks up the walk shows B.
     const nav3 = resolveNav(
       [player("B"), careerTeamOf("T", "J", "pending"), player("J")],
       nav2,
       { pinnedRowHasEdits: true },
     );
-    expect(nav3).toEqual({ rowId: "B", explicit: false });
+    expect(at(nav3)).toEqual({ rowId: "B", explicit: false });
 
     // 4. T settles. Teams come first, so the untouched B yields to T.
     const nav4 = resolveNav(
       [player("B"), careerTeamOf("T", "J"), player("J")],
       nav3,
     );
-    expect(nav4).toEqual({ rowId: "T", explicit: false });
+    expect(at(nav4)).toEqual({ rowId: "T", explicit: false });
 
     // 5. "Add as New Team". The walk goes back to J, not on to B.
     const nav5 = resolveNav(
       [player("B"), careerTeamOf("T", "J", "ready", create), player("J")],
       nav4,
     );
-    expect(nav5).toEqual({ rowId: "J", explicit: false });
+    expect(at(nav5)).toEqual({ rowId: "J", explicit: false });
   });
 
   it("returns to J when T settled before the walk ever left him", () => {
     // A fast (fixture-recorded) lookup: T is ready by the next resolve.
-    const onJ = { rowId: "J", explicit: false };
-    const onT = resolveNav(
-      [player("B"), careerTeamOf("T", "J"), player("J")],
-      onJ,
-      { pinnedRowHasEdits: true },
-    );
-    expect(onT).toEqual({ rowId: "T", explicit: false });
+    const onT = leaveJFor([player("B"), careerTeamOf("T", "J"), player("J")]);
+    expect(at(onT)).toEqual({ rowId: "T", explicit: false });
     expect(
-      resolveNav(
-        [player("B"), careerTeamOf("T", "J", "ready", create), player("J")],
-        onT,
+      at(
+        resolveNav(
+          [player("B"), careerTeamOf("T", "J", "ready", create), player("J")],
+          onT,
+        ),
       ),
     ).toEqual({ rowId: "J", explicit: false });
   });
 
   it("returns to J after a skip too", () => {
     // Skip means "that is not a team". J's step is where that gets dealt with.
+    const onT = leaveJFor([player("B"), careerTeamOf("T", "J"), player("J")]);
     expect(
-      resolveNav(
-        [player("B"), careerTeamOf("T", "J", "ready", { action: "skip" }), player("J")],
-        { rowId: "T", explicit: false },
+      at(
+        resolveNav(
+          [player("B"), careerTeamOf("T", "J", "ready", { action: "skip" }), player("J")],
+          onT,
+        ),
       ),
     ).toEqual({ rowId: "J", explicit: false });
   });
 
   it("goes to J's next open staged team before J himself", () => {
-    const rows = [
+    const onT = leaveJFor([
       player("B"),
-      careerTeamOf("T", "J", "ready", create),
+      careerTeamOf("T", "J"),
       careerTeamOf("T2", "J"),
       player("J"),
-    ];
-    const onT2 = resolveNav(rows, { rowId: "T", explicit: false });
-    expect(onT2).toEqual({ rowId: "T2", explicit: false });
+    ]);
+    expect(at(onT)).toEqual({ rowId: "T", explicit: false });
+    const onT2 = resolveNav(
+      [
+        player("B"),
+        careerTeamOf("T", "J", "ready", create),
+        careerTeamOf("T2", "J"),
+        player("J"),
+      ],
+      onT,
+    );
+    expect(at(onT2)).toEqual({ rowId: "T2", explicit: false });
 
     const done = [
       player("B"),
@@ -1299,12 +1562,18 @@ describe("resolveNav — back to the row a staged step was staged for", () => {
       careerTeamOf("T2", "J", "ready", create),
       player("J"),
     ];
-    expect(resolveNav(done, onT2)).toEqual({ rowId: "J", explicit: false });
+    expect(at(resolveNav(done, onT2))).toEqual({ rowId: "J", explicit: false });
   });
 
   it("does not hand back a J who is still waiting on a step that is looking up", () => {
     // J would show "needs a team decision" with nowhere to answer it, so the
-    // walk falls through to `nextUndecided` as before.
+    // walk falls through to `nextUndecided` (and keeps J to come back to).
+    const onT = leaveJFor([
+      player("B"),
+      careerTeamOf("T", "J"),
+      careerTeamOf("T2", "J", "pending"),
+      player("J"),
+    ]);
     const next = resolveNav(
       [
         player("B"),
@@ -1312,32 +1581,20 @@ describe("resolveNav — back to the row a staged step was staged for", () => {
         careerTeamOf("T2", "J", "pending"),
         player("J"),
       ],
-      { rowId: "T", explicit: false },
+      onT,
     );
-    expect(next).toEqual({ rowId: "B", explicit: false });
-  });
-
-  it("keeps teams first: another waiting team goes ahead of J", () => {
-    const next = resolveNav(
-      [
-        { _id: "X", status: "ready", kind: "team" },
-        player("B"),
-        careerTeamOf("T", "J", "ready", create),
-        player("J"),
-      ],
-      { rowId: "T", explicit: false },
-    );
-    expect(next).toEqual({ rowId: "X", explicit: false });
+    expect(next).toEqual({ rowId: "B", explicit: false, returnTo: ["J"] });
   });
 
   it("does not hand back a parent that is already decided", () => {
+    const onT = leaveJFor([player("B"), careerTeamOf("T", "J"), player("J")]);
     const next = resolveNav(
       [
         player("B"),
         careerTeamOf("T", "J", "ready", create),
         player("J", "ready", { action: "skip" }),
       ],
-      { rowId: "T", explicit: false },
+      onT,
     );
     expect(next).toEqual({ rowId: "B", explicit: false });
   });
@@ -1353,16 +1610,18 @@ describe("resolveNav — back to the row a staged step was staged for", () => {
   });
 
   it("walks the whole chain: league, then its team, then that team's player", () => {
-    // On T (staged for J), the operator's New Team step stages league L.
-    // T waits on L, so the walk goes to L.
+    const onT = leaveJFor([player("B"), careerTeamOf("T", "J"), player("J")]);
+    // On T, the operator's New Team step stages league L. T waits on L, so the
+    // walk goes to L.
     const onL = resolveNav(
       [player("B"), leagueOf("L", "T"), careerTeamOf("T", "J"), player("J")],
-      { rowId: "T", explicit: false },
+      onT,
+      { pinnedRowHasEdits: true },
     );
-    expect(onL).toEqual({ rowId: "L", explicit: false });
+    expect(at(onL)).toEqual({ rowId: "L", explicit: false });
 
     // "Add as New League" goes back to T.
-    const onT = resolveNav(
+    const backOnT = resolveNav(
       [
         player("B"),
         leagueOf("L", "T", "ready", create),
@@ -1371,44 +1630,34 @@ describe("resolveNav — back to the row a staged step was staged for", () => {
       ],
       onL,
     );
-    expect(onT).toEqual({ rowId: "T", explicit: false });
+    expect(at(backOnT)).toEqual({ rowId: "T", explicit: false });
 
     // "Add as New Team" goes back to J.
     expect(
-      resolveNav(
-        [
-          player("B"),
-          leagueOf("L", "T", "ready", create),
-          careerTeamOf("T", "J", "ready", create),
-          player("J"),
-        ],
-        onT,
+      at(
+        resolveNav(
+          [
+            player("B"),
+            leagueOf("L", "T", "ready", create),
+            careerTeamOf("T", "J", "ready", create),
+            player("J"),
+          ],
+          backOnT,
+        ),
       ),
     ).toEqual({ rowId: "J", explicit: false });
   });
 
   it("returns a league to its own team over a team earlier in the batch", () => {
-    const next = resolveNav(
-      [
-        { _id: "X", status: "ready", kind: "team" },
-        leagueOf("L", "T", "ready", create),
-        { _id: "T", status: "ready", kind: "team" },
-      ],
-      { rowId: "L", explicit: false },
+    const team = (id: string): NavRow => ({ _id: id, status: "ready", kind: "team" });
+    const onL = resolveNav(
+      [team("X"), leagueOf("L", "T"), team("T")],
+      { rowId: "T", explicit: false },
+      { pinnedRowHasEdits: true },
     );
-    expect(next).toEqual({ rowId: "T", explicit: false });
-  });
-
-  it("keeps leagues first: another open league goes ahead of the team", () => {
-    const next = resolveNav(
-      [
-        leagueOf("L2", "Y", "pending"),
-        leagueOf("L", "T", "ready", create),
-        { _id: "T", status: "ready", kind: "team" },
-        { _id: "Y", status: "ready", kind: "team" },
-      ],
-      { rowId: "L", explicit: false },
-    );
-    expect(next).toEqual({ rowId: "L2", explicit: false });
+    expect(at(onL)).toEqual({ rowId: "L", explicit: false });
+    expect(
+      at(resolveNav([team("X"), leagueOf("L", "T", "ready", create), team("T")], onL)),
+    ).toEqual({ rowId: "T", explicit: false });
   });
 });

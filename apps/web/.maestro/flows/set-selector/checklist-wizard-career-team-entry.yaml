@@ -76,8 +76,13 @@ tags:
 #   the presented-row effect wiped, and `stageCareerTeamRows` was only ever sent
 #   the NAME. 71f23a4 stores the years on the staged step as
 #   `source.manualStint` and keys the chip list by player review-row id, so both
-#   survive. Navigation is unchanged — the hop is expected, and these steps walk
-#   it deliberately rather than around it.
+#   survive. The hop is expected, and these steps walk it deliberately rather
+#   than around it. Since NEO-330 the walk comes BACK to this player once the
+#   staged step (and a league staged ahead of it) is answered, rather than to
+#   the first undecided player in batch order — so the chip reads below are on
+#   the row the clubs were typed on by construction, not by the luck of batch
+#   order (the commit-side proof of the return is
+#   checklist-wizard-career-team-commits).
 #
 #
 # ── DO NOT REACH FOR THE AUTO-ADD SWEEP HERE (c657a57) ──────────────────────
@@ -403,10 +408,12 @@ tags:
 # "Link to <name>" on an exact hierarchy match, and this name is per-worker
 # unique, so it can have none.
 - tapOn: "Add as New Team"
+# Back on the player. 7000 (R5): one in-app decision plus the walk's return
+# (NEO-330); measured 0.41s on PR #314's preview, 2026-10-10.
 - extendedWaitUntil:
     visible:
       id: "Career team name"
-    timeout: 30000
+    timeout: 7000
 
 # THE REGRESSION FIXED IN 71f23a4, asserted where the operator would see it.
 # Before that commit this chip was gone and the typed years with it: the chip
@@ -534,10 +541,12 @@ tags:
     end: "18%, 95%"
     duration: 800
 - tapOn: "Add as New Team"
+# Back on the player. 7000 (R5): one in-app decision plus the walk's return
+# (NEO-330); measured 0.41s on PR #314's preview, 2026-10-10.
 - extendedWaitUntil:
     visible:
       id: "Career team name"
-    timeout: 30000
+    timeout: 7000
 - assertVisible:
     text: ".*TempTeam${output.ATTEMPT_TOKEN} \\(2010.present\\).*"
 - tapOn:

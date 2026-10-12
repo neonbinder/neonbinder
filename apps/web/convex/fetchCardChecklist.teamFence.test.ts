@@ -15,11 +15,13 @@
  *
  *  - the fence names the batch `getReadyCandidates` shows, and its `ready`
  *    equals the subscription's `ready` once every team write has landed;
- *  - it is NOT `total`. A card that arrived with its team already parsed is
- *    never looked up and its row stays `pending` (see `startCandidateBatch`),
- *    so a fence of `total` would hang the one-marketplace path forever — the
- *    reason NEO-255 refused to gate on readiness at all;
+ *  - it is the count the server SAW, never a target. Since NEO-330 a row's
+ *    status is per row (`initialCandidateStatus`): a card that arrived with
+ *    its team already parsed is never looked up and is written `ready`, so
+ *    on a healthy run the fence equals `total`;
  *  - a run with no lookup to do reports 0, and the count is the whole fence;
+ *  - a lookup that THROWS is answered "no team" (NEO-330): the run still
+ *    succeeds and the fence still advances, so the client's wait ends;
  *  - a FAILED run reports no fence (the client discards its batch anyway).
  *
  * Adapter mocking follows `fetchCardChecklist.attachedSides.test.ts`: both
@@ -48,6 +50,11 @@ const mockState = vi.hoisted(() => ({
   lookedUp: [] as string[],
   /** When set, BSC's per-card team lookup throws — after the batch is written. */
   lookupThrows: false,
+  /**
+   * When set, writing the lookup's answers onto the candidate rows throws —
+   * after the batch is written — and the run fails.
+   */
+  resolveThrows: false,
 }));
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
@@ -94,6 +101,26 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
           teamNames: mockState.teamsByRef[bscCardId]?.teamNames ?? [],
           success: true,
         }));
+      },
+    }),
+  };
+});
+
+// NEO-330 answers a THROWN lookup "no team", so the failed-run case fails the
+// write that follows the lookup instead — still after the batch exists.
+vi.mock("./checklistCandidates", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./checklistCandidates")>();
+  const { internalMutation } = await import("./_generated/server");
+  const { v } = await import("convex/values");
+  return {
+    ...actual,
+    resolveCandidateTeams: internalMutation({
+      args: { batchId: v.string(), resolved: v.array(v.any()), retry: v.optional(v.boolean()) },
+      returns: v.any(),
+      handler: async (ctx, args) => {
+        if (mockState.resolveThrows) throw new Error("write failed");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (actual.resolveCandidateTeams as any)._handler(ctx, args);
       },
     }),
   };
@@ -191,6 +218,7 @@ beforeEach(() => {
   mockState.teamsByRef = {};
   mockState.lookedUp = [];
   mockState.lookupThrows = false;
+  mockState.resolveThrows = false;
 });
 
 describe("fetchCardChecklist — the team fence (NEO-333)", () => {
@@ -202,8 +230,8 @@ describe("fetchCardChecklist — the team fence (NEO-333)", () => {
       bscCard("1"),
       // Looked up: BSC has no team for it. Still an answer — the row is ready.
       bscCard("2"),
-      // Arrived with its team parsed: never looked up, so its row stays
-      // `pending` for good.
+      // Arrived with its team parsed: never looked up, so (NEO-330) its row
+      // is written `ready` from the start.
       bscCard("3", ["San Diego Padres"]),
     ];
     mockState.teamsByRef = {
@@ -230,8 +258,8 @@ describe("fetchCardChecklist — the team fence (NEO-333)", () => {
     // …and its ready count is the subscription's at (or after) the last team
     // write. A client waiting for `ready >= readyAfterTeams` on this batch is
     // therefore holding the teams below.
-    expect(result.readyAfterTeams).toBe(2);
-    expect(live.ready).toBe(2);
+    expect(result.readyAfterTeams).toBe(3);
+    expect(live.ready).toBe(3);
     const byNumber = new Map(live.cards.map((c) => [c.cardNumber, c]));
     expect(byNumber.get("1")?.teams).toEqual([
       "Cleveland Guardians",
@@ -239,11 +267,11 @@ describe("fetchCardChecklist — the team fence (NEO-333)", () => {
     ]);
     expect(byNumber.get("3")?.teams).toEqual(["San Diego Padres"]);
 
-    // NOT total. The pre-parsed card's row never becomes ready, so a fence of
-    // `total` could never be met — the hang NEO-255 refused to gate on
-    // readiness to avoid. The fence is what the server SAW, so it is met.
+    // The fence is what the server SAW, never a target it might not reach.
+    // With per-row status (NEO-330) the pre-parsed row is `ready` from the
+    // start, so here it happens to equal `total`.
     expect(live.total).toBe(3);
-    expect(live.ready).toBeLessThan(live.total);
+    expect(live.ready).toBe(live.total);
   });
 
   test("a run with nothing to look up reports 0, and every row is already ready with its team", async () => {
@@ -269,13 +297,37 @@ describe("fetchCardChecklist — the team fence (NEO-333)", () => {
     expect(live.cards.every((c) => (c.teams?.length ?? 0) > 0)).toBe(true);
   });
 
+  test("a lookup that throws is answered no team, and the fence still advances (NEO-330)", async () => {
+    const t = convexTest(schema, modules);
+    const rowId = await seedBscOnlySet(t);
+    // The throw lands AFTER `startCandidateBatch` wrote the rows. Jason,
+    // 2026-10-11: a lookup that never returns means the operator picks — the
+    // fetch neither fails nor guesses.
+    mockState.bscCards = [bscCard("1")];
+    mockState.lookupThrows = true;
+
+    const admin = t.withIdentity(ADMIN);
+    const result = await admin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: rowId,
+    });
+    expect(result.success).toBe(true);
+    expect(result.candidateCount).toBe(1);
+    expect(result.readyAfterTeams).toBe(1);
+    const live = await admin.query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: rowId,
+    });
+    expect(live.batchId).toBe(result.candidateBatchId);
+    expect(live.ready).toBe(1);
+    expect(live.cards[0].teams).toBeUndefined();
+  });
+
   test("a failed run carries no fence", async () => {
     const t = convexTest(schema, modules);
     const rowId = await seedBscOnlySet(t);
     // The throw lands AFTER `startCandidateBatch` wrote the rows, so a batch
     // exists — and the failed run still names none of it.
     mockState.bscCards = [bscCard("1")];
-    mockState.lookupThrows = true;
+    mockState.resolveThrows = true;
 
     const result = await t
       .withIdentity(ADMIN)

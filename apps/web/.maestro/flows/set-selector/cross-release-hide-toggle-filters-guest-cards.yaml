@@ -49,6 +49,10 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 # ============================================================
 # Step 2 — GIVE THE HOME SET A CARD TO LEND
 # ============================================================
@@ -59,7 +63,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "955-${ATTEMPT_ID}"
-      PLAYER_NAME: "Cross Filter ${ATTEMPT_ID}"
+      PLAYER_NAME: "CrossFilter${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # Step 3 — OPEN THE GUEST CHECKLIST (empty, and stays that way apart from the

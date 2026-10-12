@@ -239,12 +239,13 @@ tags:
 # Skipping a staged career-team step says "that is not a team", and the player
 # it was staged for then holds its create: the chip reads "needs a team
 # decision" and the footer "<team> still needs a team decision, or untick it."
-# (`createBlocked`; `Add as New Player` goes aria-disabled). That was always
-# true when the batch-order walk reached such a player; since 10fbd26 it is the
-# NORM, because a decided staged step hands the walk back to the player it was
-# staged for (`resolveNav`) — the very player whose chip this util just
-# skipped. CI run 38198207277: `Anthony Santander` on Topps Baltimore Orioles,
-# "2 career teams still need a team decision, or untick them."
+# (`createBlocked`; `Add as New Player` goes aria-disabled). The batch-order
+# walk can reach such a player at any time. (NEO-335's 10fbd26 briefly made it
+# the norm by handing the walk back to the staging player; the merged nav is
+# #314's `returnTo` stack, which returns to an origin only when the operator
+# EDITED it, so a Wikidata-staged step this util skips is followed by batch
+# order again.) CI run 38198207277: `Anthony Santander` on Topps Baltimore
+# Orioles, "2 career teams still need a team decision, or untick them."
 #
 # A caller that must CREATE the player (the career-team flows) therefore walks
 # past held players the way it walked past team steps: as SKIPS, which create

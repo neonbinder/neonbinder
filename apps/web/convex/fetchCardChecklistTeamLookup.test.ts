@@ -81,6 +81,13 @@ const mockState = vi.hoisted(() => ({
   // NEO-335 — ids the stub leaves out of its answer entirely.
   omittedIds: [] as string[],
   teamLookupCalls: [] as string[][],
+  /**
+   * NEO-330 — runs inside the mocked lookup, i.e. after the candidates are
+   * published and before any team is patched onto them.
+   */
+  onLookup: null as null | (() => Promise<void>),
+  /** NEO-330 — the lookup action itself throws (not a per-card miss). */
+  lookupThrows: false,
 }));
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
@@ -125,6 +132,8 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       ),
       handler: async (_ctx, args) => {
         mockState.teamLookupCalls.push(args.bscCardIds);
+        if (mockState.onLookup) await mockState.onLookup();
+        if (mockState.lookupThrows) throw new Error("lookup chunk failed");
         return args.bscCardIds
           .filter((bscCardId) => !mockState.omittedIds.includes(bscCardId))
           .map((bscCardId) =>
@@ -312,6 +321,8 @@ beforeEach(() => {
   mockState.failedIds = [];
   mockState.omittedIds = [];
   mockState.teamLookupCalls = [];
+  mockState.onLookup = null;
+  mockState.lookupThrows = false;
 });
 
 describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () => {
@@ -558,5 +569,175 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
     });
     expect(byNumber.get("71")!.teams).toBeUndefined();
     expect(byNumber.get("71")!.teamLookup).toBe("failed");
+  });
+});
+
+/**
+ * NEO-330 — `status` is per ROW, so `ready === total` means the teams are in.
+ *
+ * The one-marketplace auto-keep path commits with no operator, and the fetch
+ * action resolves before the client's subscription shows its last team patch.
+ * The client therefore waits for `ready === total`, which only works if a row
+ * nothing is going to look up is written `ready`. Before this, every row went
+ * in `pending` whenever ANY row needed a lookup, and the lookup only flipped
+ * the rows it covered — so this exact batch finished at 1 of 3, forever.
+ */
+describe("candidate status is per row (NEO-330)", () => {
+  test("only the row awaiting a lookup is pending while it runs, and every row is ready when the fetch returns", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+
+    mockState.bscCards = [
+      // Needs the lookup.
+      {
+        cardNumber: "50",
+        cardName: "Elly De La Cruz",
+        players: ["Elly De La Cruz"],
+        platformRef: "bsc-50",
+      },
+      // Team already parsed — nothing will ever look it up.
+      {
+        cardNumber: "1",
+        cardName: "Kansas City Royals",
+        teams: ["Kansas City Royals"],
+        players: ["Kansas City Royals"],
+        platformRef: "bsc-1",
+      },
+    ];
+    // No BSC ref at all — nothing CAN look it up.
+    mockState.slCards = [
+      {
+        cardNumber: "77",
+        cardName: "Some SL-only Card",
+        players: ["Some Player"],
+        platformRef: "sl-77",
+      },
+    ];
+    mockState.teamNamesResult = {
+      "bsc-50": { rawTeamName: "Cincinnati Reds", teamNames: ["Cincinnati Reds"] },
+    };
+
+    // Read the table directly mid-lookup: the batch is published, no team has
+    // been patched yet.
+    const duringLookup: Array<{ cardNumber: string; status: string }> = [];
+    mockState.onLookup = async () => {
+      const rows = await t.run((ctx) =>
+        ctx.db.query("checklistCandidates").collect(),
+      );
+      for (const r of rows) {
+        duringLookup.push({ cardNumber: r.cardNumber, status: r.status });
+      }
+    };
+
+    const result = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(result.success).toBe(true);
+    expect(mockState.teamLookupCalls).toEqual([["bsc-50"]]);
+
+    expect(
+      duringLookup.sort((a, b) => a.cardNumber.localeCompare(b.cardNumber)),
+    ).toEqual([
+      { cardNumber: "1", status: "ready" },
+      { cardNumber: "50", status: "pending" },
+      { cardNumber: "77", status: "ready" },
+    ]);
+
+    const live = await asAdmin.query(
+      api.checklistCandidates.getReadyCandidates,
+      { selectorOptionId: variantTypeId },
+    );
+    expect(live.total).toBe(3);
+    expect(live.ready).toBe(3);
+    expect(result.candidateCount).toBe(live.total);
+    expect(live.cards.find((c) => c.cardNumber === "50")?.teams).toEqual([
+      "Cincinnati Reds",
+    ]);
+  });
+
+  test("the per-row flag is not stored on the candidate", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+    mockState.bscCards = [
+      {
+        cardNumber: "50",
+        cardName: "Elly De La Cruz",
+        players: ["Elly De La Cruz"],
+        platformRef: "bsc-50",
+      },
+    ];
+
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+
+    const rows = await t.run((ctx) =>
+      ctx.db.query("checklistCandidates").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect("awaitsTeamLookup" in rows[0]).toBe(false);
+  });
+});
+
+/**
+ * NEO-330 — Jason, 2026-10-11: "If a team lookup never returns then the user
+ * must select a team." A lookup chunk that THROWS no longer fails the fetch:
+ * its rows are answered with no team, so the client's wait is not left to run
+ * out on them, and the operator's pairing session survives.
+ */
+describe("a failed team lookup never fails the fetch (NEO-330)", () => {
+  test("the fetch succeeds, every row is ready, and the card carries no team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+    mockState.bscCards = [
+      {
+        cardNumber: "50",
+        cardName: "Elly De La Cruz",
+        players: ["Elly De La Cruz"],
+        platformRef: "bsc-50",
+      },
+    ];
+    // Would be the answer — the throw must stop it landing, never a guess.
+    mockState.teamNamesResult = {
+      "bsc-50": { rawTeamName: "Cincinnati Reds", teamNames: ["Cincinnati Reds"] },
+    };
+    mockState.lookupThrows = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = await asAdmin.action(
+        api.selectorOptions.fetchCardChecklist,
+        { selectorOptionId: variantTypeId },
+      );
+      expect(result.success).toBe(true);
+      expect(mockState.teamLookupCalls).toEqual([["bsc-50"]]);
+
+      const live = await asAdmin.query(
+        api.checklistCandidates.getReadyCandidates,
+        { selectorOptionId: variantTypeId },
+      );
+      expect(live.total).toBe(1);
+      expect(live.ready).toBe(1);
+      expect(live.cards[0].teams).toBeUndefined();
+
+      // Platform, operation and timing on the log line; never a card name.
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes("checklist_team_lookup_chunk_failed"));
+      expect(line).toBeDefined();
+      const parsed = JSON.parse(line!);
+      expect(parsed).toMatchObject({
+        platform: "bsc",
+        operation: "fetchBscCardTeamNames",
+        cards: 1,
+      });
+      expect(typeof parsed.elapsedMs).toBe("number");
+      expect(line).not.toContain("Elly");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

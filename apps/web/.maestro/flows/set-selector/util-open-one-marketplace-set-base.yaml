@@ -1,0 +1,169 @@
+appId: com.neonbinder.web
+name: "Util — open a BSC-only real set's Base with SportLots declined (no fetch)"
+tags:
+  - util
+---
+# ============================================================================
+# WHAT THIS UTIL IS FOR (NEO-330)
+#
+# It drills to a REAL set that carries ONE marketplace (BuySportsCards),
+# selects it, taps `Base`, and CANCELS the base picker, so exactly one side
+# stays attached. It stops there: the checklist section is on the page and
+# nothing has been fetched by this util.
+#
+# Two callers:
+#   * `util-fetch-one-marketplace-set-checklist-to-wizard` — the FIRST visit,
+#     which then syncs the checklist and lands in the entity-review wizard;
+#   * a flow that has already COMMITTED the set and needs a fresh load of its
+#     checklist (`checklist-wizard-link-team-saves-alias`, R2(h)): a fresh
+#     mount opens the virtualized list at its LAST row
+#     (`initialTopMostItemIndex`), which the commit's own render does not
+#     guarantee (it mounts on the first streamed batch).
+#
+# Extracted from the fetch util in NEO-330 so the two share one copy (R3).
+# The base picker re-opens on a committed set too: `baseHasMapping` counts the
+# SportLots slot only, and cancelling never writes one.
+#
+# ── INPUTS ──────────────────────────────────────────────────────────────────
+#   SET             required — the set's NB name, as the Sets column lists it.
+#                   `text:` is a full-node REGEX: a name carrying regex
+#                   metacharacters must arrive escaped.
+#   SPORT / YEAR / MANUFACTURER
+#                   the ancestors, passed straight to `util-drill-to-cold-real-set`.
+#                   Default Hockey / 1995 / "All Brands" (the pinned VIEW,
+#                   NEO-237 — the util taps it; nothing is created).
+#
+# ── RETURN CONTRACT ─────────────────────────────────────────────────────────
+#   The set and its `Base` are selected, the picker was cancelled (nothing
+#   written to the base mapping; "Map Base Set" is on screen) and the
+#   checklist section is below it. Whether the checklist is empty is the
+#   caller's business.
+#
+# R5 — 7000 in-app. The longer waits are the live marketplace round-trips,
+#   each named at its step: the cold variant-type sync and the base picker's
+#   own fetch. The cold Sport/Year/Manufacturer/Sets waits live in the drill
+#   util.
+# ============================================================================
+
+# ── DRILL (R9) ──────────────────────────────────────────────────────────────
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: ${SPORT || "Hockey"}
+      YEAR: ${YEAR || "1995"}
+      MANUFACTURER: ${MANUFACTURER || "All Brands"}
+
+# ── PICK THE SET (the drill util stops one level short, on purpose) ─────────
+# Same shape as `checklist-one-marketplace-skips-match-dialog` STEP 2. The gate
+# is the column's LISTBOX (accessible name `Sets`), which renders only once
+# the column holds a row; the search box renders from the first frame and
+# proves nothing (NEO-224). 15000, the R5 marketplace exception: the drill
+# util's own `"Syncing Sets"` gate can report done while the year-wide BSC
+# phase is still storing (memory: syncing-panel-leaves-viewport), so the rows
+# this waits for can still be one marketplace round-trip away.
+- extendedWaitUntil:
+    visible:
+      id: "Sets"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${SET}
+# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the row
+# tap ONCE iff the next column never appears. `below: {id: "Search sets"}`
+# rather than `index:` (NEO-46). 20000 is the drill utils' next-column
+# contract: selecting the set fires its cold variant-type sync, whose column
+# header renders on the sync's first write.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${SET}
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 20000
+
+# Selecting the set fires its variant-type sync — BSC-only and cold on a fresh
+# preview. Measured ~15s on Roanoke Express ECHL; 60s matches the drill utils'
+# own variant-type contract (R5 marketplace exception).
+- extendedWaitUntil:
+    visible: "Base"
+    timeout: 60000
+
+# ── BASE: read the precondition, then CANCEL the picker ─────────────────────
+# `baseHasMapping` counts the SportLots slot only, so an unmapped Base
+# auto-opens BaseSetPicker. Result-keyed retry: the still-settling Variant
+# Types column can reflow under the captured bounds. 7000 keys on the picker
+# OPENING, which is synchronous — not the round-trip.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
+
+# The confirm reads "Loading…" until the picker's live SportLots + BSC
+# round-trip lands. 60s, R5 marketplace exception (measured ~8s).
+- extendedWaitUntil:
+    visible: "Confirm Base Set"
+    timeout: 60000
+# R2 precondition: BSC really answers for this set, so the fetch below is a real
+# one-marketplace fetch and not the empty `candidateCount === 0` path.
+- assertVisible:
+    id: "BSC base candidate: .*"
+# NEO-287 — the SportLots pane, by mode (`-e PAUSED_PLATFORMS`, decided by
+# util-paused-platforms). Live, the year's SportLots catalogue is OFFERED
+# (offering is not attaching) and declined; paused, the pane offers nothing.
+# Both branches are hard (R2).
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          id: "SportLots base candidate: .*"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots returned no base set for .*"
+      - assertNotVisible:
+          id: "SportLots base candidate: .*"
+# The picker is a fixed full-viewport portal: nothing overlays it and it cannot
+# scroll, so a direct tap is correct (R8 case 2). Cancelling writes nothing (R7)
+# and is what keeps exactly one marketplace attached.
+- tapOn: "Cancel"
+- assertVisible:
+    text: ".*Base mapping cancelled.*"
+# CENTRE before the tap (R8). The notice's Close sits at the bottom of the
+# Base-mapping block, which can straddle the fold: on CI's Linux Chrome the
+# columns' 15px horizontal scrollbar put it at [133,618][195,650] on the 629px
+# viewport, centre OFF screen, and the tap died with `null cannot be cast to
+# non-null type kotlin.Int` (CI run 35134145689 / runner 6, in the flow this
+# path was extracted from). One "Close" exists on this page
+# (`BaseMappingForm`), and the page has scroll headroom below the block.
+- scrollUntilVisible:
+    element:
+      text: "Close"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Close"
+- extendedWaitUntil:
+    notVisible:
+      text: ".*Base mapping cancelled.*"
+    timeout: 7000
+# The positive proof that Cancel left the row UNMAPPED: a Base that had picked
+# up a SportLots mapping would offer "Re-map Base" instead.
+- assertVisible: "Map Base Set"

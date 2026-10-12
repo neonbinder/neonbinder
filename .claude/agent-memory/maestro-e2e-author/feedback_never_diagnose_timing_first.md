@@ -1,6 +1,6 @@
 ---
 name: feedback-never-diagnose-timing-first
-description: HARD RULE — never diagnose a red step as timing or flake, and never raise a timeout to make it pass; get the failure screenshot and hierarchy dump first, because "looks like timing" almost always means something underlying is broken
+description: HARD RULE — never diagnose a red step as timing or flake, and never raise a timeout to make it pass; get the failure screenshot and hierarchy dump first. Only scroll TRAVEL may get >7s, by asking Jason with measured swipes + pixels (2026-10-10), never auto-granted
 metadata:
   type: feedback
 ---
@@ -41,6 +41,22 @@ were the same instinct in slow motion — a number chosen because it passed.
 3. **Never raise a timeout to make a step pass.** The bar is R5's 7s and a
    longer value needs Jason's sign-off recorded at the site. A slow step is a
    product finding to file.
+3a. **Scroll TRAVEL is the one thing you may ASK about — never grant it.**
+   Jason, 2026-10-10 (NEO-330): *"we can give 10s here for budget, but going
+   forward I want to continue to make every decision intentionally around
+   extra time … extra budget can be asked for but not automatically
+   granted."* A `scrollUntilVisible` pays ~1.2s first look + ~2s per 312px
+   swipe + ~1.4s finding pass in driver overhead
+   ([[scroll-pass-cost-is-driver-overhead]]), so ~900px is the most 7s can
+   travel. Order: shorten the distance in the product first; else put a
+   request in your REPORT with the `Swiping` count (before the first
+   `Scrolling try count: 0`) and the pixels; apply nothing above 7000 until
+   the coordinator relays Jason's yes; then record date + approval +
+   arithmetic at the site. A same-shaped step elsewhere is a new request,
+   not a precedent. Waits, asserts, taps, server writes and centring
+   give-up stay at 7000 with no ask path. README R5 "Why scroll travel is
+   slow" is the written rule; the `Cards for <name>` scrolls on
+   /admin/players (10000) are the first approvals.
 4. **"Flaky" is a claim that needs evidence.** Re-running until green is not a
    diagnosis. If you cannot name the mechanism, say so in the report rather than
    picking a number that makes it go away.

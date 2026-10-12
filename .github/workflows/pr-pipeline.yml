@@ -34,7 +34,9 @@ concurrency:
 # can't exceed the caller's): checks:write + pull-requests:write for the E2E
 # "Maestro E2E" check + sticky comment. The wire-* jobs add id-token:write at the
 # job level (for WIF), and web-preview adds deployments:write (for the preview's
-# Deployment record), without granting either to the E2E jobs.
+# Deployment record). The `e2e:` caller job also gets id-token:write (NEO-330:
+# e2e.yml's seed job reads the private reference-seed bundle over WIF) but still
+# no deployments:write.
 #
 # NEO-162 dropped the workflow-level deployments:read that used to be here: with
 # previews built rather than discovered, nothing reads the Deployments API any
@@ -957,6 +959,14 @@ jobs:
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
       && (needs.wire-preprocess-capacity.result == 'success' || needs.wire-preprocess-capacity.result == 'skipped')
+    # NEO-330: a called workflow's token cannot exceed the caller's, and e2e.yml's
+    # seed job needs id-token:write for WIF. Job-level replaces the workflow-level
+    # block, so the existing grants are repeated.
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      id-token: write
     uses: ./.github/workflows/e2e.yml
     with:
       preview_url: ${{ needs.web-preview.outputs.url }}

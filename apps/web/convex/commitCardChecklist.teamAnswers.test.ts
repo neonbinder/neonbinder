@@ -25,6 +25,8 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Doc, Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { commitTeamHint } from "./selectorOptions";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -270,7 +272,9 @@ describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)",
     expect((await settle(t)).has(row._id)).toBe(true);
   });
 
-  test("ANSWERED but unmatched (operator skipped BSC's string): stamped, BSC's string kept as the hint", async () => {
+  // NEO-330 × NEO-335 — the operator ruled the name "not a team", so it is
+  // never kept as the hint the fixer reads back as "The listing names …".
+  test("ANSWERED but unmatched (operator skipped BSC's string): stamped, no hint, not queued", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     await skipTeamName(t, {
@@ -296,7 +300,7 @@ describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)",
 
     const row = (await rowsByNumber(t, leafId)).get("1")!;
     expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
-    expect(row.bscTeamName).toBe("Gotham Knights");
+    expect(row.bscTeamName).toBeUndefined();
     expect(row.teamOnCardIds).toBeUndefined();
     expect(row.pendingTeamNames).toBeUndefined();
     expect((await settle(t)).has(row._id)).toBe(false);
@@ -362,7 +366,8 @@ describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)",
 /**
  * NEO-335 x NEO-333 — the commit's "Listed as:" hint for an ANSWERED card that
  * ends teamless is the same string `applyBscTeamResolution` keeps for it: BSC's
- * raw, unsplit value. Never the first part of a split.
+ * raw, unsplit value. Never the first part of a split, and (NEO-330) never a
+ * name the operator ruled "not a team" for the set.
  */
 describe("commitCardChecklist — the hint is BSC's raw value, as the background path keeps it (NEO-335)", () => {
   const CLE = "Cleveland Guardians";
@@ -379,7 +384,9 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
     }
   }
 
-  test("a split card whose parts were all skipped keeps the RAW value, not its first part", async () => {
+  // NEO-330 × NEO-335 — every part ruled "not a team": the raw value would
+  // carry those names back, so nothing is kept (as `applyBscTeamResolution`).
+  test("a split card whose parts were all skipped keeps no hint — neither the raw value nor a part", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     await skipBoth(t, sportId, leafId);
@@ -400,7 +407,7 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
     });
 
     const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.bscTeamName).toBe(RAW);
+    expect(row.bscTeamName).toBeUndefined();
     expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
     expect(row.teamOnCardIds).toBeUndefined();
     expect(row.pendingTeamNames).toBeUndefined();
@@ -408,19 +415,18 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
   });
 
   test("the raw value is kept verbatim, spacing included — the hint is what BSC said, not our reading of it", async () => {
+    // No skips (a ruled-out name keeps no hint at all) and no split on the
+    // card — the shape a split refused over the cap arrives in.
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
-    await skipBoth(t, sportId, leafId);
 
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: leafId,
       sportId,
-      batchId: "batch-1",
       cards: [
         card({
           cardNumber: "1",
           bscRef: "B1",
-          teams: [CLE, WSH],
           rawTeamName: `${CLE},${WSH}`,
           teamLookup: "answered",
         }),
@@ -431,7 +437,7 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
     await settle(t);
   });
 
-  test("an older client that sends no raw value: the parts JOINED, as the background path joins them", async () => {
+  test("an older client that sends no raw value, every part skipped: no hint either", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     await skipBoth(t, sportId, leafId);
@@ -445,8 +451,43 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
       ],
     });
 
-    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBe(RAW);
+    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBeUndefined();
     await settle(t);
+  });
+
+  test("a name an EARLIER save skipped (stored skip, no decision now) keeps no hint", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewSkips", {
+        selectorOptionId: leafId,
+        kind: "team",
+        nameNormalized: normalizeEntityName("Gotham Knights"),
+        name: "Gotham Knights",
+        skippedAt: 1,
+        skippedByUserId: ADMIN_IDENTITY.subject,
+      }),
+    );
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({
+          cardNumber: "1",
+          bscRef: "B1",
+          teams: ["Gotham Knights"],
+          rawTeamName: "Gotham Knights",
+          teamLookup: "answered",
+        }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.bscTeamName).toBeUndefined();
+    expect(row.pendingTeamNames).toBeUndefined();
+    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+    expect((await settle(t)).has(row._id)).toBe(false);
   });
 
   test("a split refused over the cap (no teams on the card) still keeps the raw value as the hint", async () => {
@@ -532,6 +573,42 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
   });
 
   test("parity: the commit stores the same bscTeamName applyBscTeamResolution keeps for the same BSC answer", async () => {
+    // A split refused over the cap: neither path has parts to resolve, and
+    // nothing was ruled out, so both keep BSC's raw value.
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const raw = Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) => `T${i}`).join(", ");
+
+    const backgroundId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: leafId,
+        cardNumber: "BG",
+        cardName: "Card BG",
+        platformData: { bsc: { ref: "B-BG", src: "b0" } },
+        sortOrder: 99,
+        lastUpdated: 1,
+      }),
+    );
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: backgroundId,
+      rawTeamName: raw,
+      teamNames: [],
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", rawTeamName: raw, teamLookup: "answered" })],
+    });
+
+    const background = await t.run(async (ctx) => ctx.db.get(backgroundId));
+    const committed = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(background!.bscTeamName).toBe(raw);
+    expect(committed.bscTeamName).toBe(background!.bscTeamName);
+    await settle(t);
+  });
+
+  test("parity: with every part ruled out, neither path keeps a hint", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     await skipBoth(t, sportId, leafId);
@@ -547,13 +624,8 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
         lastUpdated: 1,
       }),
     );
-    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
-      cardChecklistId: backgroundId,
-      rawTeamName: RAW,
-      teamNames: [CLE, WSH],
-    });
-
-    // The commit path, for a card whose lookup answered before save.
+    // The commit path, for a card whose lookup answered before save. It
+    // records the two skips for the set.
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: leafId,
       sportId,
@@ -569,10 +641,17 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
       ],
     });
 
+    // The background path, after the ruling is on record.
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: backgroundId,
+      rawTeamName: RAW,
+      teamNames: [CLE, WSH],
+    });
+
     const background = await t.run(async (ctx) => ctx.db.get(backgroundId));
     const committed = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(background!.bscTeamName).toBe(RAW);
-    expect(committed.bscTeamName).toBe(background!.bscTeamName);
+    expect(background!.bscTeamName).toBeUndefined();
+    expect(committed.bscTeamName).toBeUndefined();
     await settle(t);
   });
 });
@@ -1422,5 +1501,36 @@ describe("commitCardChecklist — a pick is never the one the per-card cap cuts 
     expect(ids).toHaveLength(MAX_CARD_TEAMS);
     expect(ids[0]).toBe(pick);
     await settle(t);
+  });
+});
+
+/**
+ * NEO-330 × NEO-335 — `commitTeamHint`, the rule the commit's hint follows,
+ * on the branches a commit fixture cannot reach cheaply (a part left standing
+ * after another part was ruled out needs a name that is neither resolved nor
+ * pending).
+ */
+describe("commitTeamHint (NEO-330 × NEO-335)", () => {
+  const CLE = "Cleveland Guardians";
+  const WSH = "Washington Nationals";
+  const keys = (...names: string[]) => new Set(names.map((n) => normalizeEntityName(n)));
+
+  test("nothing ruled out: BSC's raw value, else the parts joined", () => {
+    expect(commitTeamHint(`${CLE}, ${WSH}`, [CLE, WSH], keys())).toBe(`${CLE}, ${WSH}`);
+    expect(commitTeamHint(undefined, [CLE, WSH], keys())).toBe(`${CLE}, ${WSH}`);
+    expect(commitTeamHint("  ", [], keys())).toBeUndefined();
+  });
+
+  test("the raw value ruled out: no hint, whatever the parts say", () => {
+    expect(commitTeamHint("Gotham Knights", ["Gotham Knights"], keys("gotham knights"))).toBeUndefined();
+    expect(commitTeamHint("Gotham Knights", [], keys("Gotham Knights"))).toBeUndefined();
+  });
+
+  test("one part ruled out: only the parts still standing, never the raw value", () => {
+    expect(commitTeamHint(`${CLE}, ${WSH}`, [CLE, WSH], keys(CLE))).toBe(WSH);
+  });
+
+  test("every part ruled out: no hint", () => {
+    expect(commitTeamHint(`${CLE}, ${WSH}`, [CLE, WSH], keys(CLE, WSH))).toBeUndefined();
   });
 });

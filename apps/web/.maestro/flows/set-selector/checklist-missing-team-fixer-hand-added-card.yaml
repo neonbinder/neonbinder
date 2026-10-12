@@ -1,0 +1,373 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Missing-team fixer — a hand-added card offers its player's whole career with nothing picked, and the team the operator picks lands on the card"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE (NEO-330, MissingTeamFixer): a card the operator adds by
+# hand, linked to a real player and given no team, has no automatic team
+# source, so it is badged "no team on this card yet" straight away
+# (`convex/features/cardAttention.ts`, the missingTeam rule: a card with no
+# BSC ref has nothing to wait for). In the walker's fixer the player's career
+# is OFFERED and NOT PICKED when no stint covers the set's year — the
+# whole-career fallback is a list to choose from, never an answer (before
+# NEO-330 it arrived preselected with focus on Save, and one Enter wrote a
+# whole career onto a one-team card). The operator picks the team through the
+# fixer's own TeamPicker and saves; the card's row then prints that team and
+# its badge is gone.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#   (a) the hand-added card's row carries the badge
+#       "Card 851-<attempt>, … needs attention: no team on this card yet"
+#       (CardChecklistItem's attention mark) and the header's amber pill
+#       reads "1 needs you" (NEO-335; it was "1 need attention") — the badge
+#       came at once, with no sync;
+#   (b) the walker opens on THAT card (its Skip control names the number),
+#       wearing the wizard chrome since NEO-335 Phase 2 ("Tidy up this set",
+#       subtitle "Cards with no team", "Step 1 of 1"), and the fixer shows
+#       the linked player, "Players: George Brett"
+#       (MissingTeamFixer.tsx:498);
+#   (c) the career fallback is OFFERED: the heading "No 2024 team on file —
+#       here’s the whole career. Pick the one on the card."
+#       (MissingTeamFixer.tsx:128, careerHeading) over the chip named
+#       "Kansas City Royals · George Brett played here" (:546);
+#   (d) NOTHING IS PRESELECTED: with that heading on screen (so the
+#       suggestion query has resolved and the preselect effect has run), the
+#       hint still reads "Pick at least one team, or record that this card has
+#       none." (:654), which renders only while zero teams are chosen; the
+#       chosen-teams wording "Saves N team(s) on this card…" (:655) is absent.
+#       A regression that preselects the fallback flips this hint;
+#   (e) the operator picks Kansas City Royals in the fixer's TeamPicker (the
+#       era-labelled option "Add Kansas City Royals · 1969–present",
+#       TeamPicker.tsx:748); the chip "Remove team Kansas City Royals"
+#       (TeamPicker.tsx:559) lands and the hint becomes "Saves 1 team on this
+#       card. Ctrl+Enter saves from anywhere." (Cmd+Enter on a Mac);
+#   (f) "Save & Next (Enter)" (:627) saves: the walker reports "All clear"
+#       (its counter holds "Step 1 of 1": y never shrinks and there is no
+#       "fixed" count since NEO-335; what the save WROTE is (g));
+#   (g) back on the checklist, the row's sub-line — a query-rendered read of
+#       the stored `teamOnCardIds`, not a draft echo — reads exactly
+#       "Kansas City Royals" (CardChecklistItem.tsx:179, full names joined),
+#       and the badge is gone while the row is on screen.
+#
+# THE KEYBOARD SAVE IS NOT DRIVEN, AND WHY. #314 made Ctrl/Cmd+Enter save from
+#   anywhere in the fixer (MissingTeamFixer.tsx:448-463). maestro-web cannot
+#   send it: `CdpWebDriver.mapToSeleniumKey` maps ENTER and BACKSPACE only and
+#   has no modifier, so `pressKey` has no Ctrl+Enter. Plain Enter is no
+#   substitute either: after the pick, focus is in the picker's INPUT (whose
+#   own Enter takes the highlighted team), and the fixer's plain-Enter save
+#   skips INPUT and BUTTON targets by design (:476-477). So the save is the
+#   "Save & Next" button, which calls the SAME `save()` the shortcut calls,
+#   and the shortcut's promise to the operator is asserted as copy in (e).
+#   The key handling itself is unit-tested (MissingTeamFixer.test.tsx, the
+#   ctrlKey/metaKey cases).
+#
+# NOT REACHED HERE: the listing's era chips ("The listing names …"). They need
+#   a BSC team hint on the card, which only the background BSC lookup writes on
+#   a marketplace-linked card; a hand-added card has none. Unit-tested.
+#
+# R3 — DEDUP: `checklist-attention-walker-missing-team.yaml` owns the walker's
+#   three answers (Skip / a team / "No team on this card") on cards with NO
+#   linked player, so its fixer shows "No players on this card." and no chips,
+#   and it mints its team through the New Team dialog. This flow owns what a
+#   LINKED player adds: the career fallback offered unpicked, and a pick of an
+#   existing catalogue team. `set-fill-teams-from-teammate-card.yaml` owns the
+#   header's Fill teams button, which this flow never touches.
+#
+# THE FIXTURE — the reference catalogue (README, "A reference catalogue is on
+#   every CI preview"). Checked read-only on PR #314's preview, 2026-10-12:
+#   exactly one `players` row "George Brett" (`brett george`, Baseball) with
+#   ONE stint, Kansas City Royals 1973–1993; exactly one Baseball team named
+#   "Kansas City Royals" (yearsActive 1969–present), so the career chip's
+#   label is the bare name and the picker's option carries its era. No flow
+#   names either, and George Brett is on no checklist the suite commits.
+#   Neither row is written: the quick-add and the fixer write the CARD only
+#   (`addCustomCard` inserts a cardChecklist row; `updateCard` patches it). A
+#   local run needs the catalogue loaded (README, Companion rules 4); without
+#   it "Add George Brett" never appears.
+#
+# R4 — the entry URL is the whole setup; no in-body login.
+#
+# R5 — every wait states 7000, except the post-launchApp heading gate (45000,
+#   the sanctioned auth exception). Nothing else here exceeds 7000.
+#
+# R7/R7a — WRITES go to a per-worker, per-ATTEMPT hand-made set,
+#   `mtf-<worker>-<attempt>` under the REAL Baseball › 2024 › Topps
+#   (SET-REGISTRY.md, prefix `mtf-`). The real sport is load-bearing: the
+#   quick-add PlayerPicker and the fixer's TeamPicker search the set's sport,
+#   which is where the catalogue's Baseball rows live, and the real 2024 year
+#   is what makes "No 2024 team on file" the fallback. Per-attempt because the
+#   header count and the walker queue are exact. The card is DELETED at the
+#   end; the set and its `Insert` › `Base` rows stand (no delete affordance
+#   for a row that held cards is used). No marketplace id is attached to any
+#   row and nothing is "Add as New".
+#
+# R6/R8 — every scroll that precedes a tap is centred and not followed by an
+#   assert of the same element. The walker is a fixed z-50 portal, so its
+#   controls are tapped directly with no scroll.
+#
+# R9 — the six-level drill is util-drill-to-custom.yaml.
+#
+# R10 — no guard: every step below is unconditional on a per-attempt set.
+#
+# MINTED NAMES are single tokens built from ATTEMPT_ID (README, Companion
+#   rules): the card name `TeamFixer<token>`, the card number
+#   `851-<attempt>`, the set `mtf-<worker>-<attempt>`. Nothing searchable is
+#   minted: the player and the team are the catalogue's.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# One alphanumeric token per attempt, hyphens stripped. `${ATTEMPT_ID}` is the
+# runner's binding; `output.ATTEMPT_ID` is never set.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — DRILL TO THE HAND-MADE SET's Insert › Base checklist (R9).
+# Returns with the checklist idle and "Open add card form" in the viewport.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "mtf-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# STEP 2 — ADD THE CARD BY HAND: the catalogue's George Brett, NO team.
+# ============================================================
+
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+# Card number is autofocused; the name box's placeholder is "Player name" (it
+# is the CARD name, free text that never reaches a search).
+- inputText: "851-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "TeamFixer${output.ATTEMPT_TOKEN}"
+
+# THE QUICK-ADD PLAYER PICKER (QUICK_ADD_PLAYER_LABELS, CardChecklist.tsx:455).
+# Centred first (R8): the form opens with its Players row near the fold, and
+# the popover opens BELOW the trigger (the set-fill-teams flow's measurement).
+- scrollUntilVisible:
+    element:
+      id: "Add a player to the new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add a player to the new card"
+- assertVisible:
+    id: "Find a player for the new card"
+- tapOn:
+    id: "Find a player for the new card"
+- inputText: "George Brett"
+# The catalogue row, picked: "Add <name>" (PlayerPicker.tsx:739). Full match,
+# so another player whose name merely contains "Brett" cannot answer.
+- extendedWaitUntil:
+    visible:
+      id: "Add George Brett"
+    timeout: 7000
+- tapOn:
+    id: "Add George Brett"
+- extendedWaitUntil:
+    visible:
+      id: "Remove player George Brett"
+    timeout: 7000
+# Close the player popover before reaching for Submit: a pointerdown outside
+# the picker root closes it, and the Card name input is outside it (focusing a
+# field commits nothing).
+- tapOn:
+    id: "Card name"
+- extendedWaitUntil:
+    notVisible:
+      id: "Find a player for the new card"
+    timeout: 7000
+
+# The Team row is left EMPTY: that is the card this flow is about.
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+# The form closes only after addCustomCard succeeds (R2 gate on the outcome).
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Edit card 851-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# R2(a) — badged at once: no BSC ref, so no automatic source to wait for. The
+# badge's meaning is its accessible name (the NEO-272 tail covers the name).
+- extendedWaitUntil:
+    visible:
+      id: "Card 851-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
+    timeout: 7000
+
+# ============================================================
+# STEP 3 — OPEN THE WALKER on this card (R2a, b).
+# The attention row is part of the checklist header, ABOVE the card list the
+# page is centred on: UP, centred (R5 direction rule, R8).
+# ============================================================
+
+# NEO-335: the walker's one door is the header's amber "N need you" pill
+# ("1 needs you" for one card); the "Fix them one at a time" link and the
+# count chip are gone. The pill's visible text is its accessible name, and the
+# count is a full match, so "2 need you" fails here.
+- scrollUntilVisible:
+    element:
+      text: "1 needs you"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn: "1 needs you"
+- extendedWaitUntil:
+    visible: "Tidy up this set"
+    timeout: 7000
+# The walker is on THIS card — its Skip control is the one card-specific
+# handle in the dialog (CardAttentionWalker.tsx, "Skip for now, card <n>"
+# since NEO-335) — and its counter agrees with the pill: one card, on screen.
+# The subtitle names the question. Header text, pinned.
+- assertVisible:
+    id: "Skip for now, card 851-${ATTEMPT_ID}"
+- assertVisible: "Step 1 of 1"
+- assertVisible: "Cards with no team"
+- assertVisible: "Players: George Brett"
+
+# ============================================================
+# STEP 4 — THE CAREER IS OFFERED, NOTHING IS PICKED (R2c, d).
+# ============================================================
+
+# The heading renders only once the suggestion query has answered (it sits
+# over the career chips), so it is the gate for the "nothing picked" read.
+# "’" is a curly apostrophe in the copy, matched as "."; "." and "?" escaped.
+- extendedWaitUntil:
+    visible: "No 2024 team on file — here.s the whole career\\. Pick the one on the card\\."
+    timeout: 7000
+- assertVisible:
+    id: "Kansas City Royals . George Brett played here"
+# THE CLAIM. This hint renders only while zero teams are chosen; a preselected
+# fallback chip would read "Saves 1 team on this card. …" instead.
+- assertVisible: "Pick at least one team, or record that this card has none\\."
+- assertNotVisible:
+    text: "Saves [0-9]+ teams? on this card.*"
+
+# ============================================================
+# STEP 5 — THE OPERATOR PICKS THE TEAM IN THE FIXER's PICKER, AND SAVES (R2e, f).
+# ============================================================
+
+# The fixer's TeamPicker keeps the default labels ("Add team" / "Search
+# teams"); it is the only default-labelled picker on screen (the quick-add
+# form is closed). Full-match ids, so the set row's "Add set team" cannot
+# answer.
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "Kansas City Royals"
+# The picker's option names the row with its era (teamOptionLabel); "." covers
+# the middot and the en dash.
+- extendedWaitUntil:
+    visible:
+      id: "Add Kansas City Royals . 1969.present"
+    timeout: 7000
+- tapOn:
+    id: "Add Kansas City Royals . 1969.present"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Kansas City Royals"
+    timeout: 7000
+# One team chosen, and the shortcut the operator is told about (Ctrl on
+# Linux CI, Cmd on a Mac — saveShortcutLabel).
+- assertVisible: "Saves 1 team on this card\\. (Ctrl|Cmd)\\+Enter saves from anywhere\\."
+
+# Close the picker's popover before reading Save's coordinates: picking leaves
+# it open (multi-team cards), and it is portalled `fixed` under its trigger,
+# over the Save row. A pointerdown outside the picker root closes it; the
+# walker's own heading is outside the scrolling body, so it cannot move.
+# Matched by its visible text, never its DOM id: "Tidy up this set" since
+# NEO-335 Phase 2 (the only node with that text while the walker is open; the
+# wizard that shares it is never open at the same time).
+- tapOn: "Tidy up this set"
+- extendedWaitUntil:
+    notVisible:
+      id: "Search teams"
+    timeout: 7000
+- tapOn:
+    text: ".*Save & Next.*"
+
+- extendedWaitUntil:
+    visible: "All clear — nothing on this checklist needs attention."
+    timeout: 7000
+# The counter holds y of y (y never shrinks); the write is proved in STEP 6.
+- assertVisible: "Step 1 of 1"
+- tapOn: "Done (Esc)"
+- extendedWaitUntil:
+    notVisible: "Tidy up this set"
+    timeout: 7000
+
+# ============================================================
+# STEP 6 — THE ROW SHOWS THE TEAM, THE BADGE IS GONE (R2g).
+# The row is BELOW the header the page is centred on: DOWN, centred.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 851-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+# The sub-line is ONE text node, the row's facts joined with " · "; this
+# card's only fact is its team, so the full match is the team's full name.
+- extendedWaitUntil:
+    visible:
+      text: "Kansas City Royals"
+    timeout: 7000
+- assertNotVisible:
+    id: "Card 851-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
+- assertNotVisible: "[0-9]+ needs? you"
+# A positive after the negatives (a dead page passes every notVisible).
+- assertVisible:
+    id: "Edit card 851-${ATTEMPT_ID}(, .*)?"
+
+# ============================================================
+# CLEANUP — delete this attempt's card (R7). The set and its rows are
+# per-attempt and stand (SET-REGISTRY.md); the catalogue rows were only read.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 851-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Delete card 851-${ATTEMPT_ID}(, .*)?"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 851-${ATTEMPT_ID}(, .*)?"
+- extendedWaitUntil:
+    visible: "No cards in this checklist yet."
+    timeout: 7000
+- assertNotVisible: "TeamFixer${output.ATTEMPT_TOKEN}"

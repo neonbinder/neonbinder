@@ -49,6 +49,7 @@ Non-markdown helpers: `tools/` (ParseFlow.java: offline parse of every flow)
 - [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML PNG; full rerun
 - [Credential seeding](patterns_credential_seeding.md) — fake creds for forms, seed-credentials for real auth
 - [URL redirect chains](patterns_url_redirect_chains.md) — nested `?redirect=` sign-in chains
+- [Merged flows miss a branch copy sweep](patterns_merged_flows_miss_a_branch_copy_sweep.md) — after merging main, re-grep the old copy; main-added flows keep it
 
 ## Scrolling, viewport and the hierarchy
 - [centerElement is one-sided](patterns_center_element_is_one_sided.md) — UP > 0.3H, DOWN < 0.7H; scroll to each row
@@ -71,6 +72,8 @@ Non-markdown helpers: `tools/` (ParseFlow.java: offline parse of every flow)
 - [Search box is not a content signal](patterns_search_box_is_not_a_content_signal.md) — gate on the listbox
 - [Syncing panel leaves the viewport](patterns_syncing_panel_leaves_viewport_under_a_growing_list.md) — false "done"
 - [Cross-document back is bfcache](reference_cross_document_back_is_bfcache.md) — remount via NavLink + back
+- [Scroll pass cost is driver overhead](patterns_scroll_pass_cost_is_driver_overhead.md) — ~2s per 312px pass on ANY page; slow = distance
+- [Committed checklist opens mid-list](patterns_committed_checklist_opens_mid_list.md) — read cards back after re-entering the set
 
 ## Assertions and forensics
 - [Negative asserts pass on a dead page](patterns_negative_asserts_pass_on_a_dead_page.md) — pair with a positive
@@ -93,6 +96,8 @@ Non-markdown helpers: `tools/` (ParseFlow.java: offline parse of every flow)
 - [Connection lost = socket reconnect](reference_convex_connection_lost_is_a_socket_reconnect.md) — client rejects in-flight actions
 - [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search reads, one query
 - [Placeholder pair-count forensics](reference_placeholder_pair_count_forensics.md) — count too high = two inserters
+- [Wizard decisions: counter delta + Save summary](patterns_wizard_decisions_read_from_header_and_summary.md) — Decided list is off-screen; read `Step x` and the summary
+- [Late lookup reopens a bulk-skipped review](reference_late_lookup_reopens_a_bulk_skipped_review.md) — `Needed by:` step after Skip remaining; product bug
 
 ## Fixtures and data
 - [Pick a fixture-owned name by name](patterns_pick_a_fixture_owned_name_by_name.md) — never "the first row"
@@ -105,8 +110,13 @@ Non-markdown helpers: `tools/` (ParseFlow.java: offline parse of every flow)
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~0.7 rows/s live
 - [NEO-214: no seeded fixture](reference_neo214_no_seeded_fixture.md) — Admin Tools panel gone
 - [NEO-248 SL-set wizard fixture (disproven)](reference_neo248_wizard_fixture_via_attached_sl_set.md) — SL-only fetch never reaches the wizard
-- [NEO-284 team-alias fixture](reference_neo284_team_alias_fixture.md) — Rickwood set, Homestead Grays
+- [NEO-284 team-alias fixture](reference_neo284_team_alias_fixture.md) — 1996 Venezuelan WL; Navegantes by name; skip tap names its row
 - [PlayerIds only on real cards](reference_playerids_only_real_cards_and_drawer_scroll.md) — plus drawer scroll gotchas
+- [Reference catalogue on CI previews](patterns_reference_catalogue_on_ci_previews.md) — NEO-330 prod catalogue; check names against the bundle
+- [Catalogue-seeded wizard staging](reference_catalogue_seeded_wizard_staging.md) — which names still reach the wizard with the catalogue
+- [Record a fixture set's lookups](patterns_record_a_fixture_sets_lookups.md) — add a set to the NEO-289 recording; prove 100% hit
+- [Insert fixture needs its column writer](patterns_insert_fixture_needs_its_column_writer.md) — insert rows exist only after a reconcile Save
+- [Past-era team fixture (3X MVP)](reference_past_era_team_fixture.md) — era options in a 192px inner list; pin, tap the era line
 
 ## Set builder selectors
 - [util-drill-to-custom](patterns_util_drill_to_custom.md) — one search path per level; Level 4 guard
@@ -151,6 +161,9 @@ Non-markdown helpers: `tools/` (ParseFlow.java: offline parse of every flow)
 - [NEO-255 one-marketplace surfaces](reference_neo255_one_marketplace_surfaces.md) — no Match Cards
 - [NEO-90 BSC team enrichment](reference_neo90_bsc_team_enrichment_e2e.md) — queue unreachable from E2E
 - [NEO-91 SL badge + virtuoso wall](reference_neo91_sl_badge_and_virtuoso_bottom_open_wall.md) — bottom-open list
+- [Same-name pick step](reference_same_name_player_panel.md) — `Which .* is this\?`, READY at open; 2nd dated fork refused
+- [Wizard returns to the staging player](reference_wizard_returns_to_batch_order_player_after_staged_team.md) — NEO-330 W6: league → team → A
+- [Reaching the missing-team fixer](reference_reaching_the_missing_team_fixer.md) — hand-added card + catalogue player, no team
 
 ## Other pages
 - [/admin/teams reachability](reference_admin_teams_selects_are_unreachable.md) — `team-league` untappable

@@ -1,21 +1,27 @@
 ---
 name: neo284-team-alias-fixture
-description: NEO-284 team-alias E2E — the one-sided Rickwood fixture (4 BSC cards, Negro League clubs, SportLots picker CANCELLED), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
+description: NEO-284 team-alias E2E — since NEO-330 the one-sided 1996 Line Up Venezuelan Winter League fixture (300 cards, 8 unknown clubs, one club acted on BY NAME), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
 metadata:
   type: reference
 ---
 
 # NEO-284 — `checklist-wizard-link-team-saves-alias` facts (2026-09-16)
 
-**Fixture:** Baseball → 2024 → Topps → *Topps MLB at Rickwood Field Negro
-Leagues Collection* → Base. BSC: 4 cards (Paige, Gibson, Robinson, Mays) on
-Negro League clubs; 8 unknown names = 4 players + clubs + ONE staged league
-("Negro league baseball", presented FIRST — skip it with `Skip .* has no
-league`, then the first team row follows). It is the smallest 2024 Topps set
-whose wizard opens on a TEAM row (team sets of MLB clubs have 0 unknown teams
-because the Chrome seed commit creates all 30).
+**Fixture (NEO-330):** Baseball → 1996 → All Brands → *Line Up Venezuelan
+Winter League* → Base, BSC only, via
+`util-fetch-one-marketplace-set-checklist-to-wizard`. 200 players + 8 clubs
+unknown; 211 rows settle (a staged league + 2 staged career teams) after
+~144 s of LIVE lookups; all 211 are now in the NEO-289 recording, so the
+settle time must be re-measured from CI (see
+[[record-a-fixture-sets-lookups]]). The walk reads every team/league heading and acts on
+one checklist club BY NAME (Navegantes → alias link), skipping the rest —
+`runFlow when: true: ${heading === …}` branches are free. The past-era claims
+(Tigres → the catalogue's single `Pittsburgh Crawfords`) moved out in NEO-330
+to `checklist-wizard-past-era-team-link-commits`, see [[past-era-team-fixture]]. The alias-clash holder (`Pca`) now
+lives on the minted `Loc Ali` team. Until NEO-330 it was the 4-card Rickwood
+Field set, whose clubs the reference catalogue now holds.
 
-**It is ONE-SIDED — cancel the base picker.** SportLots does not carry the
+**It is ONE-SIDED — cancel the base picker.** (Rickwood history:) SportLots did not carry the
 set; the picker's SL column is the year's whole catalogue with "Base Set"
 flagged "likely match" (= 2024 Topps flagship, 352 cards). Taking the
 first-candidate path (`util-drill-to-base-variant`) attaches that wrong set
@@ -38,13 +44,16 @@ Read it back by tapping `id: "Back to previous decision"` after the link
 (the wizard walks on immediately) → `id: "Decision for <row name>"` group →
 the text; then `Next` (anchored `below: "Already decided:.*"`) resumes.
 
-**The linked row is "Homestead Grays", by name (2026-10-12).** It used to be
-"whichever club comes first", read off the heading; that linked "Montreal
-Royals", a career team the Big League flows also stage, and the live alias
-changed their walks (see [[pick-a-fixture-owned-name-by-name]]). The Grays
-are staged only off Josh Gibson. Card clubs (BSC `teamName`): Kansas City
-Monarchs RW-1/RW-3, Birmingham Black Barons RW-4, Pittsburgh Crawfords RW-2;
-the first two reach the wizard only after NEO-333.
+**The linked row is named, and the skip tap names the row it read.** The
+alias is live deployment-wide between commit and cleanup, so the linked
+string must be one no other flow can look up: "whichever club comes first"
+once linked "Montreal Royals", a career team the Big League flows also stage,
+and changed their walks (see [[pick-a-fixture-owned-name-by-name]]). On the
+Venezuelan set that is Navegantes, a BSC card club no other flow's set
+carries. The walk's skip tap is built from the heading it just copied
+(`Skip <escaped name> . (not a team|this team has no league)`, optional): a
+bare `Skip .*` tap issued while the previous skip lands can hit the NEXT row,
+which may be the row under test (NEO-335; [[guard-then-tap-toctou]]).
 
 **The Base-mapping notice's Close straddles the fold** after the warm drill
 (local y=603-635 on 625; CI's 15px horizontal scrollbar → 618-650 on 629 →
@@ -63,9 +72,9 @@ has its own (`id: "Cancel linking"`), and `tapOn: text: "Cancel (Esc)"` hits
 it first, closing only the panel. Exit through the footer once the panel is
 closed, or target `id`.
 
-**The wizard's counter counts EVERY decision** — after a league skip + a team
-link it reads "2 of N", so never wait for "1 of N" after the link; wait for
-the row's heading to go (`notVisible: "New Team: <row>"`) instead.
+**The wizard's counter counts EVERY decision** — "Step x of y" since
+NEO-335, x = decided + 1 on a name step — so never pin x after the link;
+wait for the row's heading to go (`notVisible: "New Team: <row>"`) instead.
 
 **Team Management after the commit:** filter by the single token, open the
 row by its printed short name `below:` the counter, then `scrollUntilVisible

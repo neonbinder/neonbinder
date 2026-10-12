@@ -1,0 +1,283 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a checklist club held in several past eras is linked to the era on the card, and the commit puts it on that club's cards"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-307, re-fixtured in NEO-330): a retro card can show a
+# team's PAST. On a 2025 set, a club the reference catalogue holds ONCE, in an
+# era that ended long ago, links on its own; a club it holds in SEVERAL past
+# eras, none covering 2025, comes to the operator as one team step that offers
+# every era by its label, and the era the operator picks is the team the
+# commit writes onto that club's cards. Jason, 2026-10-10: the operator's
+# past-era link belongs where the catalogue holds several same-name clubs and
+# none covers the set's year; a club held once links by itself. This flow
+# carries both halves. It replaced R2(h) of
+# `checklist-wizard-link-team-saves-alias`, whose 1996 Venezuelan clubs are
+# absent from the catalogue and so have neither shape.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#     (a) the fetch stages exactly ONE name: the one-marketplace notice reads
+#         "1 name needs a look before this saves." (NEO-335 Phase 2's one
+#         count; it was "0 new players + 1 new teams need confirmation"), and
+#         (b) shows that one name is a team. Every player is a
+#         catalogue row, and Brooklyn Dodgers (one dated row, 1911–1957 in the
+#         catalogue) never reached the review, which is the AUTOMATIC half;
+#     (b) that one step is "New Team: Philadelphia Athletics", a TEAM step by
+#         its own skip control;
+#     (c) its "Search all teams" combobox, opened empty, offers the club's
+#         FOUR catalogue eras, each by its era label ("same name · <league> ·
+#         <years>": 1871–1875, 1876–1876, 1882–1890, 1901–1954) — none covers
+#         2025, so nothing was picked for the operator;
+#     (d) the operator picks the 1901–1954 era BY ITS LABEL (never by
+#         position: NEO-331 ranks a typed search by the set's context and the
+#         default list is the server's order), with the remember-box UNTICKED
+#         first: the Save step's summary then reads "Linked to existing" and
+#         the decision is exactly "Linked to Philadelphia Athletics" — no
+#         "· remembered as" tail, so no alias lands on a shared catalogue row;
+#     (e) the commit lands ("Saved N cards.");
+#     (f) on a fresh load of the set, cards #34 and #35 (Jimmie Foxx, the
+#         listing's Philadelphia Athletics) print "Philadelphia Athletics" in
+#         their sub-line — the linked row's full name, never "… (unconfirmed)"
+#         — card #36 (Foxx, Boston Red Sox) prints "Boston Red Sox", and card
+#         #27 (Roy Campanella) prints "Brooklyn Dodgers".
+#
+#   No card surface prints a team's ERA: the sub-line, the drawer's team chip
+#   and Player Management's card list all print the full name only. So (f)
+#   proves the operator's link reached the cards, and (c)/(d) prove which era
+#   was offered and chosen. The commit writes the id the decision carries; that
+#   it is the picked era's id is the commit's unit tests' claim.
+#
+# ── THE FIXTURE ─────────────────────────────────────────────────────────────
+#   `Baseball → 2025 → Topps → Topps Welcome to the Club: 3X MVP → Base`, 36
+#   cards, BSC only, through `util-fetch-one-marketplace-set-checklist-to-wizard`.
+#   Approved by Jason 2026-10-11 (SET-REGISTRY.md has the row and the
+#   measurement). A SMALL star set with no same-name legend (unlike every retro
+#   Base checked: Archives, Tribute, Gilded…), so the review is the one team
+#   step and nothing else. Its clubs, per BSC's facets: Philadelphia Athletics
+#   on #34 and #35 (Foxx), Boston Red Sox on #36 (Foxx), Brooklyn Dodgers on
+#   #25–#27 (Campanella), current MLB clubs on the rest.
+#
+#   MEASURED on PR #314's preview, 2026-10-11, reference catalogue loaded:
+#   "Kept all 36 cards from BSC … 0 new players + 1 new teams need
+#   confirmation", "0 of 1 reviewed · 1 still being looked up" at open, the
+#   lookup settled in ~8s LIVE (it is now in the enrichment recording), and the
+#   combobox's empty list held the four eras plus one close match (`ACL
+#   Athletics`). The catalogue's Foxx row carries a 1925–1935 stint at the
+#   1901–1954 row — the era a collector means by "Foxx, Philadelphia A's".
+#
+#   THIS FLOW IS THE SOLE WRITER OF BASEBALL → 2025 (R7a). It commits — the
+#   link reaches a card only at commit, so a read-only version could pass with
+#   the feature broken. No other flow drills Baseball → 2025. A committed set's
+#   names are known and a re-sync raises no review, so the fixture drains
+#   within a run; CI reseeds the preview every run. A LOCAL re-run needs a
+#   fresh seed and fails on "No cards in this checklist yet." until then.
+#
+# R4 — the entry URL is the whole setup; no in-body login, no credential step.
+#
+# R5 — every wait states its ceiling. 7000 in-app. The longer ones, each named
+#   at its step: the post-launchApp gate (45s), the fetch util's live BSC and
+#   wizard-open waits, and the batch's one lookup (20s, Jason-approved
+#   2026-10-12 as a stopgap until NEO-341; the arithmetic is at the step).
+#
+# R6/R8 — every centred scroll precedes a read or a tap and is not followed by
+#   an assert of the same element. Inside the wizard (a fixed dialog whose
+#   option list is its own small scroller) and inside the checklist's
+#   virtualized list, nothing `scrollUntilVisible` does can move the content,
+#   so those positions are set by touch-drag `swipe`s, reasoned at the step.
+#
+# R9 — the drill and the re-entry are the shared utils.
+#
+# R10 — no guard: every step below is unconditional.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# PART 1 — FETCH THE SET ONE-SIDED (R9, R3)
+# ============================================================
+- runFlow:
+    file: util-fetch-one-marketplace-set-checklist-to-wizard.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2025"
+      MANUFACTURER: "Topps"
+      SET: "Topps Welcome to the Club: 3X MVP"
+
+# R2(a) — the notice counts what reached the review: ONE name (PART 2 reads
+# that it is a team). The set's other clubs, Brooklyn Dodgers included, were
+# settled before it. NEO-335 Phase 2: one count, no per-type split
+# (`entityConfirmationMessage`).
+- assertVisible:
+    text: ".*Kept all [0-9]+ cards from BSC.* 1 name needs a look before this saves\\..*"
+# NEO-335 Phase 2's counter: on a name step x is the decided count plus one,
+# so nothing decided is "Step 1 of N".
+- assertVisible:
+    text: "Step 1 of [0-9]+"
+
+# The batch's one lookup (the team's Wikidata/ESPN enrichment). R5 exception
+# above 7000, approved by Jason 2026-10-12 at 20000 as a STOPGAP until the
+# Playwright rewrite (NEO-341). The lookup itself is a recorded fixture hit
+# (NEO-289 recording, `team|Q5369|philadelphia athletics`), so it costs no
+# network. MEASURED in CI run 38209599290: 11.0s, and all of it was QUEUE
+# time — this lookup waited behind another runner's ~45 Venezuelan player
+# lookups in the deployment-wide lookup pool, which every runner's wizard
+# flows share FIFO. So the 11s is the pool's depth, not this step's work.
+# Raising this further is a new decision for Jason, not a tuning knob; the
+# Playwright rewrite retires it.
+# NEO-335 Phase 2 dropped the header's "· N still being looked up" tail; the
+# pending count lives in the footer status now ("N still looking up — wait or
+# skip"), so that is the string this negative waits out. The positive that
+# pairs with it is the step heading straight after.
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 20000
+
+# ============================================================
+# PART 2 — THE OPERATOR'S PAST-ERA LINK (R2b, c, d)
+# ============================================================
+- assertVisible: "New Team: Philadelphia Athletics"
+- assertVisible:
+    id: "Skip .* not a team"
+
+# UNTICK the remember-box FIRST, while the combobox is closed: the option list
+# opens over the area above the field, and the box sits directly under it. The
+# label wraps the checkbox, so a tap on its text toggles it. Proven by R2(d)'s
+# decision line, which a ticked box would extend with "· remembered as …".
+- tapOn:
+    text: "Remember “Philadelphia Athletics” as a name for this team"
+
+# Empty and focused, the combobox lists the step's near matches (NEO-326):
+# the catalogue's rows of this exact name first, then close ones. Each option
+# is two nodes, the full name and a "same name · <league> · <years>" line; the
+# era is in the second, so that is what each assertion reads (en dash matched
+# with "."). Four rows of one name, none covering 2025 — R2(c).
+- tapOn:
+    id: "Search all teams"
+- extendedWaitUntil:
+    visible: "same name . [A-Z]+ . 1871.1875"
+    timeout: 7000
+- assertVisible: "same name . [A-Z]+ . 1876.1876"
+- assertVisible: "same name . [A-Z]+ . 1882.1890"
+- assertVisible: "same name . [A-Z]+ . 1901.1954"
+
+# PIN THE LIST TO ITS END before the tap. The list is its own scroller
+# (`max-h-48`, 192px) opening ABOVE the field, and five options do not fit:
+# the last exact row's era line sat under the list's bottom edge, where maestro
+# still reports it (it sees the viewport, never the list's clip) and a tap on
+# it lands on the field instead (MEASURED, probe 2026-10-11). One UP touch drag
+# inside the list (x=30%, y 42%→20%: it spans y≈104–288 at 1024×629) is more
+# than its overflow, so the list rests at its end with every option's era line
+# inside it. A touch drag latches to the list and never chains to the body.
+- swipe:
+    start: "30%, 42%"
+    end: "30%, 20%"
+    duration: 600
+# R2(d) — the era the card shows, picked by its label. The full-match regex is
+# the option's era line alone: a sentence elsewhere in the step lists all four
+# eras in one node and must not answer for it.
+- tapOn:
+    text: "same name . [A-Z]+ . 1901.1954"
+
+# The decision landing is what moves the wizard off the step: with one row in
+# the batch, every name is decided at once. NEO-335 Phase 2: the wizard then
+# walks its post-name steps (a teams step only for a card that would save
+# teamless, a titles step only for a title that needs a look; each "Next
+# (Enter)", no Confirm & Save) before the Save step, so the names-done footer
+# is either button and the util walks to Save on the defaults. The batch's ONE
+# row reaching names-done is the "exactly one decision" claim. The Save step's
+# summary is short (one Decided row; the Decided list renders on the names and
+# on Save, never on teams/titles), so its lines are on screen: "Linked to
+# existing" is the count line, and the Decided row's decision text is a full
+# match — the link, and no "· remembered as" tail.
+- extendedWaitUntil:
+    visible:
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
+    timeout: 7000
+- runFlow: util-wizard-advance-to-save.yaml
+- assertVisible:
+    text: "Save [0-9]+ cards?\\?"
+- assertVisible: "Linked to existing"
+- assertVisible: "Linked to Philadelphia Athletics"
+
+# ============================================================
+# PART 3 — COMMIT (R2e)
+# ============================================================
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 7000
+
+# ============================================================
+# PART 4 — THE CARDS CARRY THEIR CLUBS (R2f)
+# ============================================================
+# Read on a FRESH load of the set (memory: committed-checklist-opens-mid-list):
+# the page the commit leaves mounted its virtualized list on the commit's first
+# streamed batch, while a fresh mount opens at the LAST row. Card numbers sort
+# in order, so #34–#36 are the bottom three rows. The re-entry is the same util
+# the fetch used (R3); it cancels the base picker again (it reopens on every
+# visit while SportLots is unmapped) and changes nothing.
+- runFlow:
+    file: util-open-one-marketplace-set-base.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2025"
+      MANUFACTURER: "Topps"
+      SET: "Topps Welcome to the Club: 3X MVP"
+
+# A row is "#<n>" beside the name, with the sub-line under the name: one text
+# node (`subParts.join`), the resolved teams by full name first, an unresolved
+# one as "<name> (unconfirmed)". `below`/`above` compare TOP edges, and the
+# sub-line's top sits below its own row's number and above the next row's, so
+# the pair pins each assertion to one row. "( . .*)?" admits the sub-line's
+# later parts and never " (unconfirmed)". Centring the last row moves the whole
+# list (the window scrolls; the list's own scroller stays at its end) and
+# depends on NEO-260's 208px spacer (`src/layouts/binder-layout.tsx`).
+- scrollUntilVisible:
+    element:
+      text: "Boston Red Sox( . .*)?"
+      below:
+        text: "#36"
+    centerElement: true
+    timeout: 7000
+- assertVisible:
+    text: "Philadelphia Athletics( . .*)?"
+    below:
+      text: "#34"
+    above:
+      text: "#35"
+- assertVisible:
+    text: "Philadelphia Athletics( . .*)?"
+    below:
+      text: "#35"
+    above:
+      text: "#36"
+
+# The automatic past-era link: Campanella's cards (#25–#27) sit ~9 rows above
+# the list's end, outside its viewport. Rows above it are still rendered
+# (virtuoso's overscan) and maestro calls them visible though they are clipped
+# (memory: virtualized-list-phantom-rows), so asserting before moving the list
+# would read a row nobody can see. One DOWN touch drag that starts on a row
+# near the list's bottom (y=45%, where the centred last rows sit) scrolls the
+# list's own scroller back ~360px, about six rows, which paints #26–#31 inside
+# the list's visible part. Then the same row-pinned read.
+- swipe:
+    start: "30%, 45%"
+    end: "30%, 98%"
+    duration: 800
+- scrollUntilVisible:
+    element:
+      text: "Brooklyn Dodgers( . .*)?"
+      below:
+        text: "#27"
+      above:
+        text: "#28"
+    centerElement: true
+    timeout: 7000
