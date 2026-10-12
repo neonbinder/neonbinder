@@ -273,7 +273,8 @@ describe("resolveBscCardTeam", () => {
     // Pre-mark as already checked.
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: "",
+      rawTeamName: "",
+      teamNames: [],
     });
 
     let fetchCalled = false;
