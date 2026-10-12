@@ -428,7 +428,7 @@ describe("previewTeamFill", () => {
       { teamId: reds, fromYear: 1967, toYear: 1983 },
     ]);
 
-    // Tatis's base card under the (isBase) variantType; candidates under
+    // Tatis's base card under the Base-titled variantType; candidates under
     // MORE inserts than the node cap, one card each — a big baseSet group.
     await insertCard(t, variantTypeId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
     const insertNames: string[] = [];
@@ -893,13 +893,12 @@ describe("readTeamFillNodes", () => {
     expect(base).toMatchObject({ level: "variantType", isBase: false });
   });
 
-  test("a type titled Bases is the base, and a stray isBase flag under another title is not", async () => {
+  test("a type titled Bases is the base, and one under another title is not", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId } = await seedTree(t, { variantTitle: "Bases" });
-    const { variantTypeId: flaggedId } = await seedTree(t, { variantTitle: "Gold" });
-    await t.run(async (ctx) => ctx.db.patch(flaggedId, { metadata: { isBase: true } }));
+    const { variantTypeId: goldId } = await seedTree(t, { variantTitle: "Gold" });
     const rows = await t.query(internal.teamFill.readTeamFillNodes, {
-      nodeIds: [variantTypeId, flaggedId],
+      nodeIds: [variantTypeId, goldId],
     });
     expect(rows.map((row) => row.isBase)).toEqual([true, false]);
   });

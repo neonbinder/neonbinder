@@ -32,6 +32,7 @@ import {
   VARIANT_TYPE_RENAME_MESSAGES,
   VARIANT_TYPE_RENAME_REFUSED,
   sameWordSiblingMessage,
+  variantTypeKind,
 } from "./variantRole";
 
 const modules = (
@@ -781,7 +782,7 @@ describe("addCustomSelectorOption — one word, one Base (NEO-334)", () => {
     expect(data.reason).toBe(sameWordSiblingMessage("Base"));
   });
 
-  test("a different word is added, and the kind is the title: no flag is written", async () => {
+  test("a different word is added, and the kind is the title", async () => {
     const t = convexTest(schema, modules);
     const setId = await seedSet(t);
     await variantType(t, setId, "Promo");
@@ -790,8 +791,7 @@ describe("addCustomSelectorOption — one word, one Base (NEO-334)", () => {
 
     const row = await getRow(t, id);
     expect(row?.value).toBe("Base");
-    expect(row?.metadata?.isBase).toBeUndefined();
-    expect(row?.metadata?.variantRole).toBeUndefined();
+    expect(variantTypeKind(row)).toBe("base");
   });
 
   test("the insert level keeps the exact-name rule: 'Gold Refractors' beside 'Gold Refractor' is added", async () => {

@@ -8,9 +8,9 @@
  * "Inserts" is an Insert type, and one called "Parallel" or "Parallels" is a
  * Parallel type. Every other title ("Promo", "Insert Set", "Base Parallels")
  * has no kind. No flag mirrors the title, and nothing keeps a flag in sync
- * with it, because there is no flag: `metadata.isBase` (NEO-239) and
- * `metadata.variantRole` (NEO-306) are no longer read or written, and
- * `backfillVariantTypeRole.stripRoleFlags` removes them from stored rows.
+ * with it, because there is no flag: the retired `metadata.isBase` (NEO-239)
+ * and `metadata.variantRole` (NEO-306) were stripped from stored rows and
+ * dropped from the schema in NEO-334.
  *
  * Why the title, when product invariant 4 says NB behaviour is never keyed on
  * a marketplace value or name:
