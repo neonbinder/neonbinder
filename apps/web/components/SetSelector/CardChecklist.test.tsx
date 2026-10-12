@@ -341,7 +341,22 @@ vi.mock("convex/react", () => ({
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import CardChecklist, { SOLO_STREAM_TIMEOUT_MESSAGE } from "./CardChecklist";
+import CardChecklist, {
+  SOLO_STREAM_TIMEOUT_MESSAGE,
+  TEAMS_LATE_NOTICE,
+} from "./CardChecklist";
+
+/**
+ * Every live-region line on the page, hidden ones included: the sync banner
+ * sits behind the pairing dialog, which may hide the page from AT queries.
+ */
+function liveRegionText(): string {
+  return Array.from(
+    document.querySelectorAll('[role="status"], [role="alert"]'),
+  )
+    .map((el) => el.textContent ?? "")
+    .join(" | ");
+}
 
 /**
  * The fetch's own words when it published nothing because neither marketplace
@@ -742,7 +757,11 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       }
     });
 
-    it("gives up after the budget with the honest timeout message, closes the dialog and saves nothing", async () => {
+    /**
+     * Jason, 2026-10-11: "If a team lookup never returns then the user must
+     * select a team." The wait ends; the operator's pairing survives it.
+     */
+    it("when a team misses the wait, unlocks Confirm with the notice and commits that card with no team", async () => {
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, halfResolved);
@@ -760,6 +779,93 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
         vi.useRealTimers();
       }
 
+      // Confirm unlocks; the dialog — and the pairing in it — is still there.
+      await waitFor(() =>
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Confirm",
+        ),
+      );
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
+      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      const cards = mockResolveEntities.mock.calls[0][0].cards;
+      expect(cards).toHaveLength(2);
+      expect(cards.find((c: { cardNumber: string }) => c.cardNumber === "1").teams).toEqual([
+        "Cincinnati Reds",
+      ]);
+      // Never a guess: the card whose lookup never landed carries no team.
+      expect(
+        cards.find((c: { cardNumber: string }) => c.cardNumber === "2").teams,
+      ).toBeUndefined();
+      // Said again on the line the cards land with.
+      await waitFor(() =>
+        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
+      );
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+    });
+
+    it("drops the notice if the late teams all land before Confirm", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch(fetchDone);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      await waitFor(() =>
+        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+          "Confirm",
+        ),
+      );
+
+      // The straggler lands while the operator is still pairing.
+      await streamCandidates(rerender, allResolved);
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+      await waitFor(() =>
+        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
+      );
+      expect(liveRegionText()).not.toContain(TEAMS_LATE_NOTICE);
+      for (const card of mockResolveEntities.mock.calls[0][0].cards) {
+        expect(card.teams).toEqual(["Cincinnati Reds"]);
+      }
+    });
+
+    it("still saves nothing when the ROWS never arrive", async () => {
+      // A short batch is a partial checklist, not a late team.
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch({ ...fetchDone, candidateCount: 3 });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
       await waitFor(() =>
         expect(screen.getByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeTruthy(),
       );
@@ -769,6 +875,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       });
       expect(mockResolveEntities).not.toHaveBeenCalled();
       expect(mockCommitChecklist).not.toHaveBeenCalled();
+      expect(liveRegionText()).not.toContain(TEAMS_LATE_NOTICE);
     });
 
     it("cancelling while it waits ends the run with the cancel message, not the timeout", async () => {
@@ -866,6 +973,22 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
+  });
+
+  it("a11y: the same notice set twice is a NEW live region, so it is said again", async () => {
+    // A live region announces a change. Keyed by tone alone, the second
+    // identical refusal changed nothing and a screen-reader user heard silence.
+    state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    const first = await screen.findByText(/no sport ancestor/);
+
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await waitFor(() =>
+      expect(screen.getByText(/no sport ancestor/)).not.toBe(first),
+    );
+    expect(screen.getAllByText(/no sport ancestor/)).toHaveLength(1);
+    expect(first.isConnected).toBe(false);
   });
 });
 
@@ -1615,7 +1738,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       }
     });
 
-    it("gives up after the budget with the honest timeout message, and commits nothing without the teams", async () => {
+    it("when the teams miss the wait, commits anyway with no team on those cards, and says so", async () => {
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, prePatch);
@@ -1634,12 +1757,45 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         vi.useRealTimers();
       }
 
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
+      // Never a guess: what arrived is what commits.
+      for (const card of mockResolveEntities.mock.calls[0][0].cards) {
+        expect(card.teams).toBeUndefined();
+      }
+      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+        expect(card.teams).toBeUndefined();
+      }
+      await waitFor(() =>
+        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
+      );
+      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+      expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
+    });
+
+    it("still saves nothing when the ROWS never arrive", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, patched);
+
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch({ ...fetchDone, candidateCount: 3 });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
       await waitFor(() =>
         expect(screen.getByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeTruthy(),
       );
       expect(mockResolveEntities).not.toHaveBeenCalled();
       expect(mockCommitChecklist).not.toHaveBeenCalled();
-      // The session is binned exactly as a short batch's is.
+      // The session is binned exactly as a short batch's always was.
       expect(mockDiscardCandidates).toHaveBeenCalledWith({
         selectorOptionId: VARIANT_ID,
       });

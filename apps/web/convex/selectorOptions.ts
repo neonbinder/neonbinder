@@ -14016,10 +14016,36 @@ export const fetchCardChecklist = action({
         const TEAM_LOOKUP_CHUNK = 50;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
-          const teamNames: Record<string, string> = await ctx.runAction(
-            internal.adapters.buysportscards.fetchBscCardTeamNames,
-            { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
-          );
+          // NEO-330 — a chunk whose lookup THROWS is answered "no team" rather
+          // than failing the fetch. Jason, 2026-10-11: "If a team lookup never
+          // returns then the user must select a team." A per-card failure is
+          // already absent from `teamNames` and lands the same way; this makes
+          // a whole-chunk failure match it instead of discarding a fetch the
+          // operator may already be pairing. The rows still go `ready` (the
+          // client's wait is not left to run out on them), the cards commit
+          // with no team, and the post-commit queue
+          // (`processBscTeamEnrichmentQueue`) asks BSC again for each one —
+          // never a guess.
+          let teamNames: Record<string, string> = {};
+          const lookupStartedAt = Date.now();
+          try {
+            teamNames = await ctx.runAction(
+              internal.adapters.buysportscards.fetchBscCardTeamNames,
+              { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
+            );
+          } catch (error) {
+            // Platform, operation, counts and timing — never a card name.
+            console.warn(
+              JSON.stringify({
+                msg: "checklist_team_lookup_chunk_failed",
+                platform: "bsc",
+                operation: "fetchBscCardTeamNames",
+                cards: chunk.length,
+                elapsedMs: Date.now() - lookupStartedAt,
+                error: error instanceof Error ? error.name : "unknown",
+              }),
+            );
+          }
           for (const c of chunk) {
             const name = teamNames[c.platformData.bsc!.ref];
             if (name) c.teams = [name];

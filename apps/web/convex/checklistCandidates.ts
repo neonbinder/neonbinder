@@ -570,11 +570,28 @@ export const resolveCandidateTeams = internalMutation({
       else byBscRef.set(ref, [r]);
     }
 
+    // NEO-330 (security review) — one answer per ref BEFORE the patch loop.
+    // Every row sharing a ref is patched for each entry naming it, so k rows
+    // and k entries for one ref used to cost k² writes, with k set by
+    // marketplace data. The caller sends one entry per looked-up CARD, which
+    // repeats a ref exactly when the rows share it. Entries for one ref come
+    // from one lookup and agree; if two ever disagree, neither is written —
+    // the row goes `ready` with no team and the operator picks (root
+    // CLAUDE.md, invariant 8: a guess is never made between two claims).
+    const answerByRef = new Map<string, string | undefined>();
+    for (const { bscRef, teamName } of args.resolved) {
+      if (!answerByRef.has(bscRef)) {
+        answerByRef.set(bscRef, teamName);
+      } else if (answerByRef.get(bscRef) !== teamName) {
+        answerByRef.set(bscRef, undefined);
+      }
+    }
+
     const touchedStems = new Set<string>();
     /** NEO-294 — refs with no row yet; see the retry note above. */
     const missed: Array<{ bscRef: string; teamName?: string }> = [];
     let patched = 0;
-    for (const { bscRef, teamName } of args.resolved) {
+    for (const [bscRef, teamName] of answerByRef) {
       const matching = byBscRef.get(bscRef);
       if (!matching) {
         missed.push(teamName === undefined ? { bscRef } : { bscRef, teamName });

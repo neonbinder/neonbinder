@@ -270,6 +270,62 @@ describe("candidate status is per row (NEO-330)", () => {
     expect(res.cards.every((c) => c.teams?.[0] === "Reds")).toBe(true);
   });
 
+  test("a ref repeated in the chunk patches each of its rows once, not once per entry", async () => {
+    // Security review: the caller sends one entry per looked-up card, so three
+    // rows sharing a ref arrive as three entries naming it. Patching every
+    // row for every entry made the write count k², driven by marketplace data.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "dup", { awaitsTeamLookup: true }),
+      cand("1a", "dup", { awaitsTeamLookup: true }),
+      cand("1b", "dup", { awaitsTeamLookup: true }),
+    ]);
+
+    const out = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      {
+        batchId: "batch-1",
+        resolved: [
+          { bscRef: "dup", teamName: "Reds" },
+          { bscRef: "dup", teamName: "Reds" },
+          { bscRef: "dup", teamName: "Reds" },
+        ],
+      },
+    );
+
+    expect(out.patched).toBe(3);
+    const res = await readAs(t, ADMIN, id);
+    expect(res.ready).toBe(3);
+    expect(res.cards.every((c) => c.teams?.[0] === "Reds")).toBe(true);
+  });
+
+  test("two entries for one ref that disagree write neither team (invariant 8)", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [
+      cand("1", "dup", { awaitsTeamLookup: true }),
+      cand("1a", "dup", { awaitsTeamLookup: true }),
+    ]);
+
+    const out = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      {
+        batchId: "batch-1",
+        resolved: [
+          { bscRef: "dup", teamName: "Reds" },
+          { bscRef: "dup", teamName: "Cubs" },
+        ],
+      },
+    );
+
+    expect(out.patched).toBe(2);
+    const res = await readAs(t, ADMIN, id);
+    // Answered — nothing left pending — but no team was picked between them.
+    expect(res.ready).toBe(2);
+    expect(res.cards.every((c) => c.teams === undefined)).toBe(true);
+  });
+
   test("the per-row status survives a batch that pages across transactions", async () => {
     const t = convexTest(schema, modules);
     const id = await seedRow(t);

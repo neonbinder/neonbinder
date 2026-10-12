@@ -78,6 +78,8 @@ const mockState = vi.hoisted(() => ({
    * published and before any team is patched onto them.
    */
   onLookup: null as null | (() => Promise<void>),
+  /** NEO-330 — the lookup action itself throws (not a per-card miss). */
+  lookupThrows: false,
 }));
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
@@ -113,6 +115,7 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       handler: async (_ctx, args): Promise<Record<string, string>> => {
         mockState.teamLookupCalls.push(args.bscCardIds);
         if (mockState.onLookup) await mockState.onLookup();
+        if (mockState.lookupThrows) throw new Error("lookup chunk failed");
         return mockState.teamNamesResult;
       },
     }),
@@ -287,6 +290,7 @@ beforeEach(() => {
   mockState.teamNamesResult = {};
   mockState.teamLookupCalls = [];
   mockState.onLookup = null;
+  mockState.lookupThrows = false;
 });
 
 describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () => {
@@ -534,5 +538,64 @@ describe("candidate status is per row (NEO-330)", () => {
     );
     expect(rows).toHaveLength(1);
     expect("awaitsTeamLookup" in rows[0]).toBe(false);
+  });
+});
+
+/**
+ * NEO-330 — Jason, 2026-10-11: "If a team lookup never returns then the user
+ * must select a team." A lookup chunk that THROWS no longer fails the fetch:
+ * its rows are answered with no team, so the client's wait is not left to run
+ * out on them, and the operator's pairing session survives.
+ */
+describe("a failed team lookup never fails the fetch (NEO-330)", () => {
+  test("the fetch succeeds, every row is ready, and the card carries no team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+    mockState.bscCards = [
+      {
+        cardNumber: "50",
+        cardName: "Elly De La Cruz",
+        players: ["Elly De La Cruz"],
+        platformRef: "bsc-50",
+      },
+    ];
+    // Would be the answer — the throw must stop it landing, never a guess.
+    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.lookupThrows = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = await asAdmin.action(
+        api.selectorOptions.fetchCardChecklist,
+        { selectorOptionId: variantTypeId },
+      );
+      expect(result.success).toBe(true);
+      expect(mockState.teamLookupCalls).toEqual([["bsc-50"]]);
+
+      const live = await asAdmin.query(
+        api.checklistCandidates.getReadyCandidates,
+        { selectorOptionId: variantTypeId },
+      );
+      expect(live.total).toBe(1);
+      expect(live.ready).toBe(1);
+      expect(live.cards[0].teams).toBeUndefined();
+
+      // Platform, operation and timing on the log line; never a card name.
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes("checklist_team_lookup_chunk_failed"));
+      expect(line).toBeDefined();
+      const parsed = JSON.parse(line!);
+      expect(parsed).toMatchObject({
+        platform: "bsc",
+        operation: "fetchBscCardTeamNames",
+        cards: 1,
+      });
+      expect(typeof parsed.elapsedMs).toBe("number");
+      expect(line).not.toContain("Elly");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
