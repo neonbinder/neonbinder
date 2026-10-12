@@ -52,9 +52,10 @@ export { MAX_CARD_TEAMS };
  *
  * The career window (NEO-335 Phase 2, C2): exactly one team covering
  * `[setYear - 1, setYear]`, or in a tie the one team the set's league
- * prefers (C2b). No year-blind "one-team career" shortcut: a legend gets his
- * career unselected, longest stint first. Choices are ordered by that
- * preference rank, which never hides a team and never forces a pick.
+ * prefers (C2b). With nothing in the window, a legend's ONE-team career
+ * pre-fills only when that team is in the set's own league; any other legend
+ * gets his career unselected, longest stint first. Choices are ordered by
+ * that preference rank, which never hides a team and never forces a pick.
  *
  * ## A listing's team claim holds the guess back (invariant 8)
  *

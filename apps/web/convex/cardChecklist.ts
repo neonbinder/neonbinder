@@ -807,6 +807,7 @@ const teamSuggestionTierValidator = v.union(
   v.literal("baseSet"),
   v.literal("oneTeamInWindow"),
   v.literal("preferredInWindow"),
+  v.literal("oneTeamCareerInLeague"),
 );
 
 const suggestedTeamValidator = v.object({
@@ -853,7 +854,9 @@ type PlayerSuggestionResult = {
  *  - stored rows — the player's own cards under the node being synced, the
  *    node it copies (a parallel), and the set's base checklist;
  *  - the player row — exactly one team in the window `[setYear - 1, setYear]`,
- *    or, in a tie, the one team the set's league prefers (C2, C2b).
+ *    or, in a tie, the one team the set's league prefers (C2, C2b); with
+ *    nothing in the window, a one-team career whose team is in the set's own
+ *    league (legends).
  *
  * The tiers, and why an ambiguous stored tier stops the search, are
  * `lib/teamFill.ts`'s. Batch evidence (another card in the same preview) and

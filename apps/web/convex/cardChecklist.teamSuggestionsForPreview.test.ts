@@ -696,6 +696,90 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
   });
 });
 
+describe("teamSuggestionsForPreview — legends: a one-team career in the set's league", () => {
+  const benchCareer = (s: { rays: Id<"teams"> }) => [{ teamId: s.rays, fromYear: 1960, toYear: 1975 }];
+
+  test("a one-team legend whose team is in the set's league (MLB) is pre-filled", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const bench = await player(t, s.sportId, "Legend Guy", benchCareer(s));
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: bench }],
+      })
+    ).players;
+    expect(result.answer).toEqual({
+      tier: "oneTeamCareerInLeague",
+      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0 }],
+    });
+  });
+
+  test("the same legend on a college-league set is not pre-filled", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const setId = await t.run(async (ctx) => (await ctx.db.get(s.baseId))!.parentId!);
+    await t.run((ctx) => ctx.db.patch(setId, { features: { league: "NCAA Division I" } }));
+    const bench = await player(t, s.sportId, "Legend Guy", benchCareer(s));
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: bench }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+    expect(result.candidates.map((c) => c.teamId)).toEqual([s.rays]);
+  });
+
+  test("the same legend on a set with no league is not pre-filled", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const bench = await player(t, s.sportId, "Legend Guy", [
+      { teamId: s.reds, fromYear: 1960, toYear: 1975 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: bench }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+  });
+
+  test("a multi-team legend stays unselected", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const legend = await player(t, s.sportId, "Journeyman Legend", [
+      { teamId: s.rays, fromYear: 1960, toYear: 1965 },
+      { teamId: s.bulls, fromYear: 1966, toYear: 1975 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: legend }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+    expect(result.candidates.map((c) => c.teamId)).toEqual([s.rays, s.bulls]);
+  });
+
+  test("an other-sport stint does not stop a one-team legend counting as one team", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const legend = await player(t, s.sportId, "Two Sport Legend", [
+      { teamId: s.rays, fromYear: 1960, toYear: 1975 },
+      { teamId: s.jets, fromYear: 1960, toYear: 1965 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: legend }],
+      })
+    ).players;
+    expect(result.answer?.tier).toBe("oneTeamCareerInLeague");
+  });
+});
+
 describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () => {
   test("a name resolves to every row it names in this sport, the era covering the set year first", async () => {
     const t = convexTest(schema, modules);

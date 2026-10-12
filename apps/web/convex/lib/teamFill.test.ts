@@ -200,7 +200,7 @@ describe("suggestTeamsForPlayer — career window", () => {
     expect(result.candidates).toEqual([T2, T1, T3]);
   });
 
-  test("a legend with ONE career team still gets no pre-fill (the year-blind shortcut is gone)", () => {
+  test("a legend with ONE career team and no set league gets no pre-fill", () => {
     const result = suggest({ year: 2026, player: career([T1, 1962, 1975], [T1, 1977, 1980]) });
     expect(result).toEqual({ answer: null, candidates: [T1] });
   });
@@ -361,6 +361,54 @@ describe("suggestTeamsForPlayer — league preference (C2b) only breaks a window
       rankOf: ranked({ [T1]: 0 }),
     });
     expect(result.answer).toBeNull();
+  });
+});
+
+// Jason, NEO-335 Phase 2: a legend's one-team career pre-fills only when that
+// team is in the set's own league (rank 0). The window still comes first.
+describe("suggestTeamsForPlayer — legends (oneTeamCareerInLeague)", () => {
+  const bench = career([T1, 1967, 1983]);
+
+  test("Bench and the Reds on a set in the Reds' league → pre-filled", () => {
+    const result = suggest({ year: 2026, player: bench, rankOf: ranked({ [T1]: 0 }) });
+    expect(result).toEqual({
+      answer: { tier: "oneTeamCareerInLeague", teamIds: [T1] },
+      candidates: [],
+    });
+  });
+
+  test("the same on a set with no year (no window at all) → pre-filled", () => {
+    const result = suggest({ player: bench, rankOf: ranked({ [T1]: 0 }) });
+    expect(result.answer?.tier).toBe("oneTeamCareerInLeague");
+  });
+
+  test("a set at the same level but another league (rank 1), e.g. a college set (rank 2) → no pre-fill", () => {
+    expect(suggest({ year: 2026, player: bench, rankOf: ranked({ [T1]: 1 }) }).answer).toBeNull();
+    expect(suggest({ year: 2026, player: bench, rankOf: ranked({ [T1]: 2 }) }).answer).toBeNull();
+  });
+
+  test("no set league (nothing ranked) → no pre-fill", () => {
+    expect(suggest({ year: 2026, player: bench }).answer).toBeNull();
+  });
+
+  test("a multi-team legend stays unselected, even when one team is in the set's league", () => {
+    const result = suggest({
+      year: 2026,
+      player: career([T1, 1914, 1919], [T2, 1920, 1934]),
+      rankOf: ranked({ [T1]: 0, [T2]: 0 }),
+    });
+    expect(result.answer).toBeNull();
+    expect(result.candidates).toEqual([T2, T1]);
+  });
+
+  test("a window hit takes precedence over the legend rule", () => {
+    // The in-league team is outside the window; the window's team answers.
+    const result = suggest({
+      year: 1990,
+      player: career([T1, 1980, 1985], [T2, 1989, 1990]),
+      rankOf: ranked({ [T1]: 0 }),
+    });
+    expect(result.answer).toEqual({ tier: "oneTeamInWindow", teamIds: [T2] });
   });
 });
 

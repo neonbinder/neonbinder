@@ -87,7 +87,7 @@ import {
  *  - A grouped line's "N cards" expander lets one card take its own answer
  *    (C3) with the same controls, and hand it back with "Match the others".
  *  - A card whose listing named a team NB could not resolve shows that name
- *    ("Marketplace says: …") and is never pre-filled (invariant 8).
+ *    ("Listed as: …") and is never pre-filled (invariant 8).
  *  - `showSetTeamHint` (C7) points at the set-level team when the host
  *    judges the step long and the set has none.
  *
@@ -133,10 +133,10 @@ const SET_TEAM_HINT =
 const NONE_LABEL = "No team on this card";
 const LATER_LABEL = "Leave for later";
 const OTHER_LABEL = "Other team…";
-const OWN_TEAM_LABEL = "Different team…";
+const OWN_TEAM_LABEL = "Just this card…";
 const MATCH_LINE_LABEL = "Match the others";
-/** The walker's existing wording (MissingTeamFixer) for a listing's team string. */
-const LISTED_PREFIX = "Marketplace says:";
+/** A listing's team string, shown as plain text (Jason, NEO-335 Phase 2). */
+const LISTED_PREFIX = "Listed as:";
 const CHECKING_LABEL = "Checking teams…";
 const SUGGESTED_LABEL = "Teams suggested";
 const CAP_NOTE = `That is the limit of ${MAX_CARD_TEAMS} teams on one card. Remove one to add another.`;

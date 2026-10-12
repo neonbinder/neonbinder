@@ -760,6 +760,39 @@ describe("created players — the window and the set's league (C2, C2b, C8)", ()
     expect(labels(groups[0])).toEqual(["Yankees", "Red Sox"]);
   });
 
+  test("a created legend's one-team career pre-fills only when the team is in the set's league", () => {
+    const REDS_ID = "team_reds_existing" as Id<"teams">;
+    const rows = [created("Legend Guy", [{ name: "Cincinnati Reds", fromYear: 1967, toYear: 1983 }])];
+    const cards = [card("1", ["Legend Guy"])];
+    const inLeague = build(cards, rows, {}, 2026, {
+      teamNameEvidence: { "cincinnati reds": [{ teamId: REDS_ID, name: "Cincinnati Reds", rank: 0 }] },
+    });
+    expect(suggested(inLeague[0])).toEqual(["Cincinnati Reds"]);
+    const otherLeague = build(cards, rows, {}, 2026, {
+      teamNameEvidence: { "cincinnati reds": [{ teamId: REDS_ID, name: "Cincinnati Reds", rank: 2 }] },
+    });
+    expect(otherLeague[0].suggestion).toBeNull();
+    const noLeague = build(cards, rows, {}, 2026, {
+      teamNameEvidence: { "cincinnati reds": [{ teamId: REDS_ID, name: "Cincinnati Reds" }] },
+    });
+    expect(noLeague[0].suggestion).toBeNull();
+  });
+
+  test("invariant 8 beats the legend rule: a listing-named or failed-lookup card is not pre-filled", () => {
+    const evidence = { "name:bench johnny": {
+      answer: { tier: "oneTeamCareerInLeague", teams: [serverTeam(REDS, "Cincinnati Reds")] },
+      candidates: [],
+    } };
+    const named = build(
+      [card("1", ["Johnny Bench"], ["Bulls"])],
+      [row({ kind: "team", name: "Bulls", decision: null })],
+      evidence,
+    );
+    expect(named[0].suggestion).toBeNull();
+    const failed = build([{ ...card("1", ["Johnny Bench"]), teamLookup: "failed" }], [], evidence);
+    expect(failed[0].suggestion).toBeNull();
+  });
+
   test("C8: a prospect's major-league org (existing team, ranked by the server) beats his affiliates", () => {
     const RAYS = "team_rays" as Id<"teams">;
     const rows = [

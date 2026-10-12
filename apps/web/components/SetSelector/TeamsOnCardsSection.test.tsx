@@ -349,10 +349,10 @@ describe("C3 — a card's own team inside a grouped line", () => {
     // The line says which cards it covers, and opens on them.
     const cards = screen.getByRole("button", { name: /^#1 · #2 · #3 · 3 cards/ });
     expect(cards.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("button", { name: "Different team… — #2 Card 2" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Just this card… — #2 Card 2" })).toBeNull();
     fireEvent.click(cards);
     expect(cards.getAttribute("aria-expanded")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Different team… — #2 Card 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Just this card… — #2 Card 2" }));
     const own = screen.getByRole("radiogroup", { name: "Team for #2 Card 2" });
     // Starts from the line's answer, focused, ready to change.
     expect(document.activeElement).toBe(
@@ -450,7 +450,7 @@ describe("invariant 8 — the listing's team claim", () => {
         rows={[{ _id: "r1", kind: "team", name: "Durham Bulls", decision: null }]}
       />,
     );
-    expect(screen.getByText("Marketplace says:")).toBeTruthy();
+    expect(screen.getByText("Listed as:")).toBeTruthy();
     const group = screen.getByRole("radiogroup", { name: "Team for Johnny Bench" });
     const radios = within(group).getAllByRole("radio");
     expect(radios.map((r) => r.getAttribute("aria-label"))).toEqual([
@@ -476,7 +476,7 @@ describe("invariant 8 — the listing's team claim", () => {
         rows={[{ _id: "r1", kind: "team", name: "Team Card", decision: { action: "skip" } }]}
       />,
     );
-    expect(screen.queryByText("Marketplace says:")).toBeNull();
+    expect(screen.queryByText("Listed as:")).toBeNull();
     expect(
       screen.getByRole("radio", { name: "Cincinnati Reds — Johnny Bench" }).getAttribute("aria-checked"),
     ).toBe("true");
@@ -500,7 +500,7 @@ describe("collector review — playerless cards and the livery", () => {
       within(group).getByRole("radio", { name: `Leave for later — ${owner}` }).getAttribute("aria-checked"),
     ).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: /^#1 · #99 · 2 cards/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Different team… — #99 League Leaders" }));
+    fireEvent.click(screen.getByRole("button", { name: "Just this card… — #99 League Leaders" }));
     fireEvent.click(
       screen.getByRole("radio", { name: "No team on this card — #99 League Leaders" }),
     );

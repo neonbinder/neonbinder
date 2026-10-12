@@ -48,11 +48,16 @@
  *  year from its start. A stint that starts AFTER the set year never covers
  *  it: a card can show a team's past, never its future.
  *
- *  There is no year-blind "one-team career" shortcut any more. Enrichment
- *  routinely lacks a college stint, so a draft-product card in a college
- *  uniform would pre-fill the pro team. A retired legend on a modern insert
- *  therefore gets NO pre-fill: his whole career comes back unselected,
- *  longest stint first (C8).
+ *  **oneTeamCareerInLeague** (legends). With NOTHING in the window — a
+ *  retired player on a modern insert, or no set year at all — a career of
+ *  exactly one team pre-fills only when that team is in the set's own league
+ *  (rank 0). The Phase 1 year-blind shortcut pre-filled any one-team career,
+ *  and enrichment routinely lacks a college stint, so a draft-product card in
+ *  a college uniform got the pro team; tying it to the set's league keeps the
+ *  legends case (a Reds-only Johnny Bench on an MLB insert) without that
+ *  trap. No set league, or a team at rank 1 or 2, is no pre-fill. A legend
+ *  with several teams comes back unselected, longest stint first (C8). A
+ *  window hit always comes first.
  *
  *  **preferredInWindow.** Two or more teams in the window, and the set's own
  *  league breaks the tie (C2b): exactly one of them ranks best, and best is
@@ -104,7 +109,8 @@ export type TeamSuggestionTier =
   | "parallelOf"
   | "baseSet"
   | "oneTeamInWindow"
-  | "preferredInWindow";
+  | "preferredInWindow"
+  | "oneTeamCareerInLeague";
 
 /**
  * How well a career team fits the set being saved: 0 = the set's own league,
@@ -152,7 +158,7 @@ export function stintCoversWindow(
 
 /** What one player's career says, keyed like its stints. */
 export type CareerVerdict<K extends string> = {
-  answer: { tier: "oneTeamInWindow" | "preferredInWindow"; key: K } | null;
+  answer: { tier: "oneTeamInWindow" | "preferredInWindow" | "oneTeamCareerInLeague"; key: K } | null;
   /**
    * With an answer: the OTHER teams in the window, so a tie-break never
    * hides the teams it ranked below (empty for a one-team window). Without:
@@ -216,6 +222,13 @@ export function careerTeamVerdict<K extends string>(input: {
       };
     }
     return { answer: null, candidates: sorted };
+  }
+  // Nothing in the window (a legend on a modern insert, or no set year): a
+  // ONE-team career pre-fills only when that team is in the set's own league
+  // (Jason, NEO-335 Phase 2). A Yankees-only legend on an MLB insert is a
+  // Yankee; the same name on a college or minor-league set is not evidence.
+  if (order.length === 1 && ranks.get(order[0]) === 0) {
+    return { answer: { tier: "oneTeamCareerInLeague", key: order[0] }, candidates: [] };
   }
   return { answer: null, candidates: ordered(order) };
 }
