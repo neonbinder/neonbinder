@@ -57,10 +57,20 @@ import {
  *    that: the batch's own pending team names are offered FIRST, tagged so the
  *    operator can tell a not-yet-saved name from a saved one.
  * 2. **It could not see past 500 rows, and matched only on substring.** Now
- *    `teams.search` (the search index, debounced like `PlayerAutocomplete`)
- *    supplies the saved half, and `rankTeamCandidates` adds the softer
- *    "did you mean?" prompt underneath — the one that catches "NY Yankees" vs
- *    "New York Yankees", which no substring filter ever will.
+ *    the search index (debounced like `PlayerAutocomplete`) supplies the saved
+ *    half, and `rankTeamCandidates` adds the softer "did you mean?" prompt
+ *    underneath — the one that catches "NY Yankees" vs "New York Yankees",
+ *    which no substring filter ever will.
+ *
+ * ## NEO-331 — the saved half is ranked by the set
+ *
+ * The saved half comes from `teams.pickerCandidates`, the query `TeamPicker`
+ * types against, given the set under review (`contextOptionId`). On a 2022
+ * Donruss set whose League is MLB, "pad" lists San Diego Padres above Arizona
+ * League Padres: the set's league active in the set's year first, then minor
+ * leagues active that year, then the set's league in other eras, then the
+ * rest. The rows arrive in that order and are NOT re-sorted here — an
+ * alphabet over them would undo the tiers. Staged names still lead.
  *
  * Client-side year bounds mirror the server validation in
  * entityReviewQueue.recordDecision so bad input is caught before the
@@ -96,6 +106,7 @@ type Suggestion = { key: string; name: string; staged: boolean };
 
 export default function CareerTeamEntry({
   sportId,
+  contextOptionId,
   stagedNames,
   onAdd,
   onDirtyChange,
@@ -103,8 +114,14 @@ export default function CareerTeamEntry({
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
   /**
+   * NEO-331 — the set under review (its `selectorOptions` row), which
+   * `teams.pickerCandidates` ranks the saved suggestions by. Absent, the
+   * server falls back to name order.
+   */
+  contextOptionId?: Id<"selectorOptions">;
+  /**
    * Team names this review batch is already going to create or link, from
-   * `deriveStagedTeamNames`. Not yet in `teams`, so `teams.search` cannot
+   * `deriveStagedTeamNames`. Not yet in `teams`, so the team search cannot
    * return them — suggesting them is the whole point.
    */
   stagedNames: string[];
@@ -178,20 +195,28 @@ export default function CareerTeamEntry({
    *  staged for: the whole typed name. */
   const composedName = trimmedName;
 
-  const searched = useQuery(
-    api.teams.search,
-    // Blank skips: `teams.search` returns [] for an empty term anyway, and a
-    // typeahead that suggests before you type is noise.
-    debouncedTrimmed ? { query: debouncedTrimmed, sportId } : "skip",
+  // Blank skips: a typeahead that suggests before you type is noise, and
+  // `pickerCandidates` would BROWSE on an empty term. Every key written out,
+  // never spread (see TeamPicker): `undefined` is dropped on the wire.
+  const ranked = useQuery(
+    api.teams.pickerCandidates,
+    debouncedTrimmed
+      ? { query: debouncedTrimmed, sportId, contextOptionId }
+      : "skip",
   );
+  /** The saved teams, in the server's final (tiered) order. */
+  const searched = useMemo(() => ranked?.map((r) => r.team), [ranked]);
 
   /**
    * Staged first, then saved teams the staged list does not already cover.
    *
    * Staged names go first because they are the ones the operator cannot
    * discover any other way — a saved team is still findable by typing its full
-   * name, a pending one is not. Both halves are filtered by the typed text and
-   * prefix-ranked, so the list stays a typeahead rather than a batch dump.
+   * name, a pending one is not. The staged half is filtered by the typed text
+   * and prefix-ranked here; the saved half is already the server's match, in
+   * the server's order (NEO-331: tier, then prefix, then A–Z), and is kept in
+   * that order — re-sorting it would put Arizona League Padres back above
+   * San Diego Padres on an MLB set.
    */
   const suggestions = useMemo<Suggestion[]>(() => {
     // NEO-253: folded, so an accented staged chip is reachable by typing the
@@ -222,7 +247,6 @@ export default function CareerTeamEntry({
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
-      .sort((a, b) => rank(a.name, b.name))
       .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false }));
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
@@ -239,7 +263,7 @@ export default function CareerTeamEntry({
     if (!composedName) return null;
     const pool = [
       ...stagedNames,
-      // NEO-236: `teams.search` returns whole rows, so the full name is
+      // NEO-236: the search returns whole rows, so the full name is
       // composed here rather than read off `name` — a split row's `name` is
       // just "Padres" and ranking "San Diego Padres" against it would report a
       // near match where there is an exact one.

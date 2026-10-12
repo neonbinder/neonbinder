@@ -107,6 +107,16 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
   (`containedSpecPath`).
 - **No wildcards, no inference.** A decision is either in the spec or an open
   decision. Ties are never given to the first candidate.
+- **Review answers mirror the wizard's steps.** A player, team or league is
+  `"create"`, `"skip"` or `{ "link": "<existing NB name>" }`. A team may add
+  `location` and `league` (the New Team step's fields). A league `"create"`
+  must carry `level`, one of the schema's `leagues.level` values (`major`,
+  `minor`, `college`, `international`, `independent`, `other`): NEO-331 made
+  the level required and the New League step pre-picks none, so the spec says
+  it (`LeagueDecisionSchema`; a `level` on a link or skip is refused). The
+  template leaves an unanswered league's `level` as a `<…>` fill-in, and a
+  team's `league` only ever LINKS a league (an existing one, or a New League
+  step the batch answers first), never creates one by name.
 - **Idempotent and resumable.** Every step checks state before it writes.
 - **No marketplace name is ever a key.** Rows are addressed by NB path or by a
   marketplace id from a slot (a `group` ref may be `{ "bsc": id }` or

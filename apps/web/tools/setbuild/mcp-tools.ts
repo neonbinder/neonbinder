@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { NamedDecisionSchema, SlDecisionSchema, TeamDecisionSchema } from "./spec/schema";
+import { LeagueDecisionSchema, NamedDecisionSchema, SlDecisionSchema, TeamDecisionSchema } from "./spec/schema";
 import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
 import { assertPhrase, ConfirmMismatch, type Target } from "./client/target";
@@ -207,6 +207,7 @@ const confirm = z
 // spec's review section are validated by one definition.
 const namedDecision = NamedDecisionSchema;
 const teamDecision = TeamDecisionSchema;
+const leagueDecision = LeagueDecisionSchema;
 const slDecision = SlDecisionSchema;
 
 // ---------------------------------------------------------------------------
@@ -451,7 +452,8 @@ export function registerWriteTools(
       description:
         "WRITES. Answers the entity review a checklist is waiting on (see nb_review_items): for each player, " +
         'team or league by its exact name, "create", "skip", or {"link": "<existing NB name>"}. Teams may carry ' +
-        "location and league. row names the checklist (variant type + row name); omit it for the Base row. Only " +
+        "location and league; a league \"create\" must carry its level (major, minor, college, international, " +
+        "independent or other). row names the checklist (variant type + row name); omit it for the Base row. Only " +
         "answers the operator gave; an unanswered item stays open. confirm is BUILD <convex host> " +
         "<sport>/<year>/<manufacturer>/<set> <digest>, the digest binding it to these exact answers; a call " +
         "without it returns the exact phrase to show the operator with the answers.",
@@ -464,7 +466,7 @@ export function registerWriteTools(
           .describe("The checklist's variant type title and row name. Omit for Base."),
         players: z.array(namedDecision).optional(),
         teams: z.array(teamDecision).optional(),
-        leagues: z.array(namedDecision).optional(),
+        leagues: z.array(leagueDecision).optional(),
         confirm,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

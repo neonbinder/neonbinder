@@ -135,5 +135,9 @@ Non-markdown helpers: `tools/`
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [Pairing dialog columns need Matched collapsed](patterns_pairing_dialog_columns_need_matched_collapsed.md) — Matched opens expanded if the first stream had no unmatched; collapse before Keep all; prove by footer arithmetic
 - [One 7s scroll reaches ~900px](patterns_one_7s_scroll_reaches_about_900px.md) — reads at try 0 + after 2 swipes only; 3 swipes + 3 not-founds = travel, not late arrival; CDP-measure, add an anchor
+- [Branch on copied button text](patterns_branch_on_copied_button_text.md) — vary a drain by step kind: copyTextFrom the guarded button + `when: true:` script; never a 2nd visibility guard
+- [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write proof; level pills required; no sport default, pick MLB (seed-owned row); held rows never say "No matches."
+- [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search_name reads, same text, in one query: other-filter inserts never invalidate; prove via HTTP API + ws frames
+- [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML failure PNG, x=8 nodes, modal in flow at page bottom; `Search sports...` bounds fingerprint; full rerun
 - [takeScreenshot paths + nested runFlow env](patterns_screenshots_and_nested_env.md) — absolute paths refused; env is inherited, so pass SET to the discard util
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~0.7 rows/s live; walk util covers ~125 names; teams settle last; READY rows present at once

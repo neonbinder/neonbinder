@@ -39,6 +39,7 @@ import NewTeamForm, {
   draftFullName,
   type NewTeamDraft,
 } from "./NewTeamForm";
+import { focusLevelChoice } from "../admin/AddLeagueForm";
 import NewLeagueForm, {
   leagueDraftError,
   newLeaguePrefill,
@@ -2591,6 +2592,35 @@ export default function EntityReviewWizard({
   const blockingStep = createBlocked ? firstBlockingStep() : null;
 
   /**
+   * NEO-331 — whether the create controls are held, which is `createBlocked`
+   * plus one silent case: a league step with no level pressed yet.
+   *
+   * Silent on purpose. Level is required and never pre-picked, but the house
+   * convention marks only optional fields — a required one is signalled by the
+   * primary staying disabled until it is answered (Jason, 2026-10-10: "we
+   * don't need more words"). So it holds the buttons without adding a line to
+   * the footer, which is why it is not folded into `createBlocked`.
+   */
+  const levelOnlyHold =
+    createBlocked === null &&
+    current?.kind === "league" &&
+    leagueCreate.level === null;
+  const createHeld = createBlocked !== null || levelOnlyHold;
+
+  /**
+   * NEO-331 — what a press on a held create does. With a footer line
+   * (`createBlocked`), nothing: the line is already the explanation. Held only
+   * for the silent level, it puts focus on the level group — the checked
+   * radio, or the first — so the press lands the operator on the one answer
+   * missing instead of doing nothing at all. No alert, no live text.
+   */
+  const pressHeldCreate = () => {
+    if (levelOnlyHold) {
+      focusLevelChoice(document.getElementById(LEAGUE_LEVEL_FIELD_ID));
+    }
+  };
+
+  /**
    * The create decision this row would record, built once for both the primary
    * button and the demoted "…anyway" link.
    *
@@ -2614,11 +2644,16 @@ export default function EntityReviewWizard({
       const aliases = parseAliases(leagueCreate.aliases);
       const abbreviation = leagueCreate.abbreviation.trim();
       const wikidataId = leagueCreate.wikidataId.trim();
+      // NEO-331: always sent. `createHeld` holds both create controls
+      // until a level is pressed, so this early return is unreachable — it
+      // is here to narrow the type, never to send a create without one.
+      const level = leagueCreate.level;
+      if (level === null) return {};
       return {
         createLeague: {
           name: leagueCreate.name.trim(),
+          level,
           ...(abbreviation ? { abbreviation } : {}),
-          ...(leagueCreate.level ? { level: leagueCreate.level } : {}),
           ...(from
             ? {
                 yearsActive: {
@@ -2985,8 +3020,7 @@ export default function EntityReviewWizard({
               : undefined
           }
           aria-disabled={
-            busy ||
-            (!pickStep && createBlocked !== null && !(showExactHierarchy && exactMatch))
+            busy || (!pickStep && createHeld && !(showExactHierarchy && exactMatch))
               ? true
               : undefined
           }
@@ -3013,7 +3047,6 @@ export default function EntityReviewWizard({
               );
               return;
             }
-            if (createBlocked) return;
             // NEO-332 — the second half of a double-click on "Create new"
             // lands on this same element, relabelled "Add as New Player".
             // Moving focus to the heading stops a second Enter, not a second
@@ -3023,6 +3056,10 @@ export default function EntityReviewWizard({
               e.timeStamp - (createNewPressedAtRef.current[current._id] ?? -Infinity) <
                 CREATE_NEW_DOUBLE_CLICK_MS
             ) {
+              return;
+            }
+            if (createHeld) {
+              pressHeldCreate();
               return;
             }
             void handleCreate(current._id, buildCreatePayload());
@@ -3050,11 +3087,14 @@ export default function EntityReviewWizard({
         {showExactHierarchy && (
           <button
             type="button"
-            aria-disabled={busy || createBlocked !== null ? true : undefined}
+            aria-disabled={busy || createHeld ? true : undefined}
             aria-describedby={createBlocked ? createBlockedId : undefined}
             onClick={() => {
               if (busy) return;
-              if (createBlocked) return;
+              if (createHeld) {
+                pressHeldCreate();
+                return;
+              }
               void handleCreate(current._id, buildCreatePayload());
             }}
             className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
@@ -3903,6 +3943,8 @@ export default function EntityReviewWizard({
                       <TeamMatchSearch
                         key={current._id}
                         sportId={current.sportId}
+                        // NEO-331: ranks the typed search by this set.
+                        contextOptionId={selectorOptionId}
                         defaultMatches={panelMatches}
                         onPick={(id) => {
                           if (busy) return;
@@ -4065,6 +4107,8 @@ export default function EntityReviewWizard({
                       <EntityLinkSearch
                         kind={current.kind}
                         sportId={current.sportId}
+                        // NEO-331: ranks a team search by this set.
+                        contextOptionId={selectorOptionId}
                         onSelect={(id) => {
                           void handleLink(current._id, current.kind, id, linkOptions);
                         }}
@@ -4269,6 +4313,8 @@ export default function EntityReviewWizard({
                             )}
                             <CareerTeamEntry
                               sportId={current.sportId}
+                              // NEO-331: ranks the saved suggestions by this set.
+                              contextOptionId={selectorOptionId}
                               stagedNames={stagedTeamNames}
                               onDirtyChange={setCareerEntryDirty}
                               onAdd={(entry) => {

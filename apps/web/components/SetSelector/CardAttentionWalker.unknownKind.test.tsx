@@ -32,7 +32,7 @@ vi.mock("../../convex/_generated/api", () => ({
     },
     selectorOptions: { updateCard: "selectorOptions.updateCard" },
     players: { getManyByIds: "players.getManyByIds" },
-    teams: { getManyByIds: "teams.getManyByIds", list: "teams.list" },
+    teams: { getManyByIds: "teams.getManyByIds", pickerCandidates: "teams.pickerCandidates" },
   },
 }));
 

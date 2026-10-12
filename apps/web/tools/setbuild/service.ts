@@ -180,8 +180,8 @@ export interface RowRef {
 
 // The answer shapes are the spec's own (spec/schema.ts), so a `decide` call and
 // a spec's review section cannot drift apart.
-export type { NamedDecision, TeamDecision, SlDecision } from "./spec/schema";
-import type { NamedDecision, TeamDecision, SlDecision } from "./spec/schema";
+export type { NamedDecision, TeamDecision, LeagueDecision, SlDecision } from "./spec/schema";
+import type { NamedDecision, TeamDecision, LeagueDecision, SlDecision } from "./spec/schema";
 
 /** What `decide` takes: answers to one checklist's entity review (an apply stop). */
 export interface ReviewDecisions {
@@ -189,7 +189,8 @@ export interface ReviewDecisions {
   row?: RowRef;
   players?: NamedDecision[];
   teams?: TeamDecision[];
-  leagues?: NamedDecision[];
+  /** NEO-331: a league "create" carries its `level`. */
+  leagues?: LeagueDecision[];
 }
 
 /** A spec name that resolved to zero or several NB rows (or, from a draft, something it could not settle). */

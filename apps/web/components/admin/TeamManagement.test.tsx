@@ -319,6 +319,15 @@ beforeEach(() => {
  * inside the detail panel, after the Save button — because "it renders" was
  * always true and is not the property that broke.
  */
+/** NEO-331: a level is required, so every create taps one first. */
+function pressLevel(label: string) {
+  fireEvent.click(
+    within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+      name: label,
+    }),
+  );
+}
+
 describe("TeamManagement — saving a team confirms in the panel", () => {
   const panel = () =>
     screen.getByRole("button", { name: "Save" }).closest("div.rounded-lg")!;
@@ -1126,6 +1135,7 @@ describe("TeamManagement — adding a league from the League select", () => {
     fireEvent.change(screen.getByLabelText("Abbreviation"), {
       target: { value: " NPB " },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -1134,6 +1144,7 @@ describe("TeamManagement — adding a league from the League select", () => {
       expect(mockCreateByAdmin).toHaveBeenCalledWith({
         name: "Nippon Professional Baseball",
         abbreviation: "NPB",
+        level: "major",
         sportId: "sport-baseball",
       }),
     );
@@ -1156,6 +1167,7 @@ describe("TeamManagement — adding a league from the League select", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );

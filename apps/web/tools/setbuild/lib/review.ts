@@ -20,8 +20,11 @@
  *    then teams, then players, each held back while what it needs is open).
  *  - A team "create" with no `location`/`league` is exactly "Add as New Team"
  *    on the untouched step: `teamCreatePrefill`, league unanswered (the server
- *    falls back to the lookup's league). A league "create" is "Add as New
- *    League" on its untouched step (`newLeaguePrefill`). A player "create" is
+ *    falls back to the lookup's league, else leaves the team league-less —
+ *    NEO-331). A league "create" is "Add as New League" on its untouched step
+ *    (`newLeaguePrefill`) with the spec's `level` pressed: NEO-331 made level
+ *    required and the step pre-picks none, so the spec must name it. A player
+ *    "create" is
  *    the bare create the bulk button records. A team link keeps the row's name
  *    as an alias, the checkbox's default.
  *
@@ -48,7 +51,8 @@ import { splitTeamName } from "../../../lib/teams/team-name";
 import { nextUndecided } from "../../../components/SetSelector/entity-review-nav";
 import type { NbClient } from "../client/convex-client";
 import { ResolveError, type OpenDecisions, type OpenReviewItem, type ResolveCandidate, type RowRef } from "../service";
-import type { NamedDecision, ReviewAnswers, TeamDecision } from "../spec/schema";
+import { LEAGUE_LEVEL_VALUES, type LeagueDecision, type NamedDecision, type ReviewAnswers, type TeamDecision } from "../spec/schema";
+import type { LeagueLevel } from "../../../convex/leagues";
 import { ChecklistStepError } from "./fetch-checklist";
 
 export type ReviewRow = FunctionReturnType<typeof api.entityReviewQueue.getBatch>[number];
@@ -88,7 +92,7 @@ export function specNameKey(name: string): string {
 
 const KIND_KEY = { player: "players", team: "teams", league: "leagues" } as const;
 
-type AnyDecision = NamedDecision | TeamDecision;
+type AnyDecision = NamedDecision | TeamDecision | LeagueDecision;
 
 export interface ReviewMatch {
   /** Row id → its one spec entry. */
@@ -180,6 +184,14 @@ export function reviewOpenCount(open: ReviewOpen): number {
 export const DECISION_PLACEHOLDER = '<"create" | "skip" | {"link": "<existing NB name>"}>';
 
 /**
+ * NEO-331 — the fill-in a template carries for a league's `level`. A league
+ * "create" cannot go without one, and nothing in a review row says where the
+ * league sits in the pyramid, so the template never guesses: the operator
+ * picks, or removes the key when the answer is a link or skip.
+ */
+export const LEVEL_PLACEHOLDER = `<${LEAGUE_LEVEL_VALUES.map((l) => `"${l}"`).join(" | ")}> — only for "create"; remove it otherwise`;
+
+/**
  * The review in spec format: every row of the batch, with the spec's answer
  * where it has one and a fill-in placeholder where it does not. Already-decided
  * rows are omitted (they need no answer). Pure.
@@ -203,7 +215,11 @@ export function reviewTemplate(
     // The hint rides inside the placeholder (the spec is strict, so a separate
     // hint key would have to be deleted by hand after filling).
     const hint = rowDetail(r);
-    out[listKey].push({ name: r.name, decision: hint ? `${DECISION_PLACEHOLDER} — ${hint}` : DECISION_PLACEHOLDER });
+    out[listKey].push({
+      name: r.name,
+      decision: hint ? `${DECISION_PLACEHOLDER} — ${hint}` : DECISION_PLACEHOLDER,
+      ...(r.kind === "league" ? { level: LEVEL_PLACEHOLDER } : {}),
+    });
   }
   return out;
 }
@@ -215,18 +231,26 @@ export function reviewTemplate(
 /**
  * Keep in step with `newLeaguePrefill` + `parseAliases` (NewLeagueForm.tsx)
  * and the wizard's league branch of `buildCreatePayload`: an untouched New
- * League step, as "Add as New League" sends it. Copied because the Node tool
- * cannot load that component module.
+ * League step with one level pressed, as "Add as New League" sends it.
+ * Copied because the Node tool cannot load that component module.
+ *
+ * NEO-331: `level` is required. The step opens with no level pressed and holds
+ * its primary until one is, so the only untouched-but-answerable step is one
+ * with a level pressed — the spec's.
  */
-export function untouchedLeagueCreate(row: {
-  name: string;
-  enrichment?: { abbreviation?: string; wikidataId?: string; yearsActive?: { from: number; to?: number } } | null;
-}): NonNullable<CreateDecisionPayload["createLeague"]> {
+export function untouchedLeagueCreate(
+  row: {
+    name: string;
+    enrichment?: { abbreviation?: string; wikidataId?: string; yearsActive?: { from: number; to?: number } } | null;
+  },
+  level: LeagueLevel,
+): NonNullable<CreateDecisionPayload["createLeague"]> {
   const e = row.enrichment;
   const abbreviation = (e?.abbreviation ?? "").trim();
   const wikidataId = (e?.wikidataId ?? "").trim();
   return {
     name: row.name.trim(),
+    level,
     ...(abbreviation ? { abbreviation } : {}),
     ...(e?.yearsActive?.from !== undefined
       ? {
@@ -539,7 +563,15 @@ export async function runReview(
     } else if (row.kind === "player") {
       decision = buildCreateDecision(row._id, {});
     } else if (row.kind === "league") {
-      decision = buildCreateDecision(row._id, { createLeague: untouchedLeagueCreate(row) });
+      // NEO-331: the spec schema refuses a league "create" without a level;
+      // this is the same refusal for a caller that skipped the schema.
+      const level = (entry as LeagueDecision).level;
+      if (!level) {
+        throw new ChecklistStepError(
+          `${at}: the league "${row.name}" is answered "create" with no level; give one of ${LEAGUE_LEVEL_VALUES.join(", ")}.`,
+        );
+      }
+      decision = buildCreateDecision(row._id, { createLeague: untouchedLeagueCreate(row, level) });
     } else {
       const team = entry as TeamDecision;
       const create: NonNullable<CreateDecisionPayload["create"]> = teamLocationAndName(row, team.location, at);

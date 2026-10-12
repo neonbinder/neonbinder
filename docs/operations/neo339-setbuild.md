@@ -355,7 +355,12 @@ the candidate rows with their marketplace ids, and the JSON fragment to add.
    read-only. Once clean, push; CI runs the whole thing.
 5. If the stop is in the wizard (a new player, team or league the spec has not
    named), the template lists the row and the New Team / New League fields the
-   UI would ask for. Add each, exactly as the UI would have created it.
+   UI would ask for. Add each, exactly as the UI would have created it. A
+   league answered `"create"` needs a `level` (`major`, `minor`, `college`,
+   `international`, `independent` or `other`), the button the operator would
+   press on the New League step; the template leaves it as a fill-in because
+   nothing on the row says where the league sits. The baseline's own league
+   answers use `"other"`, the level the retired seed flow pressed.
 
 Other reds and their cause:
 
@@ -396,7 +401,8 @@ two small edits:
    procedure, arming and disarming of `ALLOW_ENRICHMENT_FIXTURE_CAPTURE` and the
    review rules are in `docs/operations/neo289-enrichment-fixtures.md` §4. Run
    it from the stop point, i.e. after the failed seed has staged the rows.
-2. **Name the team or league** in the spec exactly as the template says.
+2. **Name the team or league** in the spec exactly as the template says
+   (a league `"create"` with its `level`, see §4 step 5).
 
 `seed` already prints the coverage report (`covered` / `missing`) to the job
 summary; a non-empty `missing` after a green seed means the recording is

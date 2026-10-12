@@ -336,3 +336,71 @@ describe("teams.applyEnrichmentInternal — the location split (NEO-236)", () =>
     expect(team!.location).toBeUndefined();
   });
 });
+
+describe("teams.applyEnrichmentInternal — league is LINK-ONLY (NEO-331)", () => {
+  const leagues = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ctx.db.query("leagues").collect());
+
+  test("a league name nobody holds leaves the team with NO league and creates none", async () => {
+    // A league row requires a level and a source (ESPN, Wikidata) cannot supply
+    // one, so a miss is a blank, never a level-less row and never the sport default.
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedTeam(t);
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      league: "Imaginary Baseball Circuit",
+    });
+
+    expect((await getTeam(t, teamId))!.leagueId).toBeUndefined();
+    expect(await leagues(t)).toHaveLength(0);
+  });
+
+  test("a league held under that name OR an alias is attached, still without creating one", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId, sportId } = await seedTeam(t);
+    const mlb = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major",
+        aliases: ["MLB"],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, { id: teamId, league: "MLB" });
+
+    expect((await getTeam(t, teamId))!.leagueId).toBe(mlb);
+    expect(await leagues(t)).toHaveLength(1);
+  });
+
+  test("a league held only in ANOTHER sport is a miss", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedTeam(t);
+    await t.run(async (ctx) => {
+      const football = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      await ctx.db.insert("leagues", {
+        name: "National Football League",
+        nameNormalized: "national football league",
+        sportId: football,
+        level: "major",
+        lastUpdated: 1_700_000_000_000,
+      });
+    });
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      league: "National Football League",
+    });
+
+    expect((await getTeam(t, teamId))!.leagueId).toBeUndefined();
+  });
+});

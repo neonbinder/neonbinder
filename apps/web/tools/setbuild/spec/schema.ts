@@ -18,6 +18,7 @@
 
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import type { LeagueLevel } from "../../../convex/leagues";
 
 // ---------------------------------------------------------------------------
 // Leaves
@@ -80,11 +81,76 @@ export const TeamDecisionSchema = NamedDecisionSchema.extend({
   league: text.optional(),
 }).strict();
 
+/**
+ * NEO-331 — where a league sits in the pyramid: `leagues.level`, a REQUIRED
+ * column since NEO-331. The values are the schema's own union (the stored
+ * lowercase values, not the buttons' labels), and the type check below fails
+ * the build if the two lists ever drift. A value, not an import of
+ * `LEAGUE_LEVELS`: that module is server code a Node tool cannot load.
+ */
+export const LEAGUE_LEVEL_VALUES = [
+  "major",
+  "minor",
+  "college",
+  "international",
+  "independent",
+  "other",
+] as const;
+type SameLevels<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const levelsMatchSchema: SameLevels<(typeof LEAGUE_LEVEL_VALUES)[number], LeagueLevel> = true;
+void levelsMatchSchema;
+
+/**
+ * A `z.custom` refinement rather than `z.enum`, deliberately: the review block
+ * is a union (`"none-expected"` | the answers), and zod reports a failed enum
+ * inside a union as a bare "Invalid input" on the union's own path. A
+ * non-fatal refinement failure is reported where it happened, with this
+ * message.
+ */
+export const LeagueLevelSchema = z.custom<LeagueLevel>(
+  (v) => typeof v === "string" && (LEAGUE_LEVEL_VALUES as readonly string[]).includes(v),
+  {
+    message: `level must be one of ${LEAGUE_LEVEL_VALUES.join(", ")} (the stored values, lowercase).`,
+    // Non-fatal: a fatal issue aborts the branch, which is what turns it into
+    // the union's bare "Invalid input".
+    fatal: false,
+  },
+);
+
+/**
+ * A league row's answer. NEO-331: a `create` must carry a `level` — the New
+ * League step holds "Add as New League" until one is pressed, and never
+ * pre-picks one, so the spec has to say it. A `level` on a link or skip is
+ * refused rather than ignored: it would be an answer nobody reads.
+ */
+export const LeagueDecisionSchema = NamedDecisionSchema.extend({
+  level: LeagueLevelSchema.optional().describe(
+    `The new league's level (${LEAGUE_LEVEL_VALUES.join(", ")}). Required when decision is "create"; only read then.`,
+  ),
+})
+  .strict()
+  .superRefine((d, ctx) => {
+    if (d.decision === "create" && d.level === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["level"],
+        message: `A league "create" needs a level: one of ${LEAGUE_LEVEL_VALUES.join(", ")}.`,
+      });
+    }
+    if (d.decision !== "create" && d.level !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["level"],
+        message: 'level is only read on a "create"; remove it from a link or skip.',
+      });
+    }
+  });
+
 export const ReviewAnswersSchema = z
   .object({
     players: z.array(NamedDecisionSchema).default([]),
     teams: z.array(TeamDecisionSchema).default([]),
-    leagues: z.array(NamedDecisionSchema).default([]),
+    leagues: z.array(LeagueDecisionSchema).default([]),
   })
   .strict();
 
@@ -431,6 +497,7 @@ export type CardConflict = z.infer<typeof CardConflictSchema>;
 export type ReviewAnswers = z.infer<typeof ReviewAnswersSchema>;
 export type NamedDecision = z.infer<typeof NamedDecisionSchema>;
 export type TeamDecision = z.infer<typeof TeamDecisionSchema>;
+export type LeagueDecision = z.infer<typeof LeagueDecisionSchema>;
 
 // ---------------------------------------------------------------------------
 // Parsing

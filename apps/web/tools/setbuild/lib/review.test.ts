@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { ResolveError } from "../service";
 import { fakeClient } from "../runner/fake-client";
-import { DECISION_PLACEHOLDER, matchReview, reviewTemplate, runReview, type ReviewRow } from "./review";
+import { DECISION_PLACEHOLDER, LEVEL_PLACEHOLDER, matchReview, reviewTemplate, runReview, type ReviewRow } from "./review";
 
 const SPORT = "sport1" as ReviewRow["sportId"];
 const SET = "set1" as ReviewRow["selectorOptionId"];
@@ -186,11 +186,12 @@ describe("runReview", () => {
     await runReview(client, CTX, {
       players: [{ name: "Ronald Acuna Jr.", decision: "create" }],
       teams: [{ name: "Atlanta Braves", decision: "create", location: "Atlanta" }],
-      leagues: [{ name: "National League", decision: "create" }],
+      leagues: [{ name: "National League", decision: "create", level: "major" }],
     });
     expect(decisions(client).map((d) => d.reviewRowId)).toEqual([rows[2]._id, rows[1]._id, rows[0]._id]);
+    // NEO-331: the step's prefill plus the level the spec pressed.
     expect(decisions(client)[0]).toMatchObject({
-      createLeague: { name: "National League", abbreviation: "NL", yearsActive: { from: 1876 }, wikidataId: "Q1" },
+      createLeague: { name: "National League", level: "major", abbreviation: "NL", yearsActive: { from: 1876 }, wikidataId: "Q1" },
     });
     expect(decisions(client)[1]).toMatchObject({ create: { location: "Atlanta", name: "Braves" } });
   });
@@ -214,6 +215,31 @@ describe("runReview", () => {
       runReview(client, CTX, { players: [{ name: "Will Smith", decision: { link: "Will Smith" } }], teams: [], leagues: [] }),
     ).rejects.toBeInstanceOf(ResolveError);
     expect(decisions(client)).toEqual([]);
+  });
+
+  test("NEO-331: a league create with no level is refused before anything is recorded for it", async () => {
+    const rows = [row("league", "Northwest League")];
+    const client = batchServer(rows);
+    // A caller that bypassed the spec schema (which refuses this shape itself).
+    const answers = { players: [], teams: [], leagues: [{ name: "Northwest League", decision: "create" as const }] };
+    await expect(runReview(client, CTX, answers)).rejects.toThrow(/answered "create" with no level/);
+    expect(decisions(client)).toEqual([]);
+  });
+
+  test("NEO-331: an unanswered league's template leaves its level as a fill-in", () => {
+    const rows = [row("league", "Northwest League"), row("team", "Eugene Emeralds")];
+    const t = reviewTemplate(rows, { players: [], teams: [], leagues: [] });
+    expect(t.leagues).toEqual([{ name: "Northwest League", decision: DECISION_PLACEHOLDER, level: LEVEL_PLACEHOLDER }]);
+    expect(LEVEL_PLACEHOLDER).toContain('"minor"');
+    // A team's template never carries a level.
+    expect(t.teams[0]).not.toHaveProperty("level");
+    // An answered league is copied as given.
+    const answered = reviewTemplate(rows, {
+      players: [],
+      teams: [],
+      leagues: [{ name: "Northwest League", decision: "create", level: "minor" }],
+    });
+    expect(answered.leagues).toEqual([{ name: "Northwest League", decision: "create", level: "minor" }]);
   });
 
   test("a team's league resolves to the one existing league", async () => {

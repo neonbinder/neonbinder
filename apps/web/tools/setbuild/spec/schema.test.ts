@@ -115,6 +115,44 @@ describe("SetBuildSpec", () => {
     expect(() => parseSpec(half)).toThrow(SpecError);
   });
 
+  test("NEO-331: a league create carries a level from the schema's union; a link or skip carries none", () => {
+    const withLeagues = (leagues: unknown[]) => {
+      const spec = structuredClone(minimal) as unknown as {
+        steps: Array<{ base?: { checklist: { review: { leagues: unknown[] } } } }>;
+      };
+      spec.steps[1].base!.checklist.review.leagues = leagues;
+      return spec;
+    };
+    const ok = parseSpec(withLeagues([{ name: "Northwest League", decision: "create", level: "minor" }]));
+    const set = ok.steps[1];
+    if (set.kind !== "set" || !set.base?.checklist || set.base.checklist.review === "none-expected") {
+      throw new Error("expected review answers");
+    }
+    expect(set.base.checklist.review.leagues).toEqual([{ name: "Northwest League", decision: "create", level: "minor" }]);
+
+    const issues = (leagues: unknown[]) => {
+      try {
+        parseSpec(withLeagues(leagues));
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpecError);
+        return (err as SpecError).issues;
+      }
+      throw new Error("expected SpecError");
+    };
+    expect(issues([{ name: "Northwest League", decision: "create" }])).toEqual([
+      expect.objectContaining({ path: "steps[1].base.checklist.review.leagues[0].level", message: expect.stringMatching(/needs a level/) }),
+    ]);
+    // The stored value, not the button's label.
+    expect(issues([{ name: "Northwest League", decision: "create", level: "Minor" }])[0].path).toBe(
+      "steps[1].base.checklist.review.leagues[0].level",
+    );
+    expect(issues([{ name: "Northwest League", decision: "create", level: "triple-a" }])[0].path).toBe(
+      "steps[1].base.checklist.review.leagues[0].level",
+    );
+    expect(issues([{ name: "MLB", decision: { link: "MLB" }, level: "major" }])[0].message).toMatch(/only read on a "create"/);
+    expect(issues([{ name: "MLB", decision: "skip", level: "major" }])[0].message).toMatch(/only read on a "create"/);
+  });
+
   test("version, scope and step kind are required", () => {
     expect(() => parseSpec({ ...minimal, version: 2 })).toThrow(SpecError);
     expect(() => parseSpec({ ...minimal, scope: "  " })).toThrow(SpecError);
@@ -184,5 +222,7 @@ describe("SetBuildSpec", () => {
     const schema = specJsonSchema();
     expect(JSON.stringify(schema)).toContain("whenPaused");
     expect(JSON.stringify(schema)).toContain("expectUngrouped");
+    // NEO-331: the league level's union reaches the JSON Schema too.
+    expect(JSON.stringify(schema)).toContain("independent");
   });
 });
