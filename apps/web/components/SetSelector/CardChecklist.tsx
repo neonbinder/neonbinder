@@ -12,7 +12,11 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
 // NEO-335 Phase 2: the "Card titles" step's answers, put on the cards at commit.
-import { withTitleAnswer, type TitleCommitFields } from "./card-titles";
+import {
+  cardsNeedingTitleReview,
+  withTitleAnswer,
+  type TitleCommitFields,
+} from "./card-titles";
 import type { TitleContext } from "../../convex/features/listingInputs";
 // NEO-335: the teams step's answers, put on the cards at commit.
 import {
@@ -186,8 +190,9 @@ type FetchPreview = {
    */
   teamAnswers?: Array<TeamAnswer | undefined>;
   /**
-   * NEO-335 — no names to review, but some cards would save with no team, so
-   * the wizard opens straight onto its final step for them (`teamsOnly`).
+   * NEO-335 — no names to review, but some cards would save with no team or
+   * (Phase 2 D7) some new cards' titles need a look, so the wizard opens past
+   * the names, on its teams or titles step (`teamsOnly`, the "no names" entry).
    */
   teamsOnly?: boolean;
   /**
@@ -1467,7 +1472,19 @@ export default function CardChecklist({
     const askTeams =
       noNames &&
       teamlessCardIndexes(preview.cards, [], new Set(settledTeamIndexes)).length > 0;
-    if (noNames && !askTeams) {
+    // NEO-335 Phase 2 (D7) — and the same for titles: a NEW card that would be
+    // born with a title the walker flags gets the wizard's "Card titles" step
+    // before the save (Jason: everything pre-save; the walker is only a safety
+    // net). Judged exactly as the step judges it, with no review rows (every
+    // name resolved) and no team answers yet — the wizard recomputes once the
+    // teams step answers. With teamless cards as well, the same entry carries
+    // both steps (teams, titles, save).
+    const askTitles =
+      noNames &&
+      !!titleContext &&
+      cardsNeedingTitleReview(preview.cards, titleContext, undefined, { existingIndexes })
+        .length > 0;
+    if (noNames && !askTeams && !askTitles) {
       // No wizard on this path — nothing to hold the preview for, and nothing
       // to render `commitError`. `runCommit` has already put the failure in the
       // sync banner (`Commit failed: …`), which is the only place an operator
@@ -1476,10 +1493,11 @@ export default function CardChecklist({
         setPairingPhase("closed");
         setCommitError(null);
       }
-    } else if (askTeams) {
-      // Stash preview; the wizard opens on its final step. The banner keeps
-      // whatever the run already said ("Kept all N cards from …") — the
-      // dialog itself says what is being asked.
+    } else if (noNames) {
+      // Stash preview; the wizard opens past the names, on its teams step or
+      // (D7) its titles step. The banner keeps whatever the run already said
+      // ("Kept all N cards from …") — the dialog itself says what is being
+      // asked.
       setPendingPreview({ ...preview, teamsOnly: true });
     } else {
       // Stash preview; the review wizard handles the rest.

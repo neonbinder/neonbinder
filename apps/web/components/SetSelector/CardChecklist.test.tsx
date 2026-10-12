@@ -1161,6 +1161,96 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     });
   });
 
+  /**
+   * NEO-335 Phase 2 (D7) — no names and no teamless cards, but a NEW card
+   * whose title the walker would flag: the wizard opens on its titles step
+   * instead of committing (everything pre-save; the walker is a safety net).
+   */
+  describe("NEO-335 Phase 2: titles to look at with no names to review", () => {
+    /** A set name long enough that every new card's title is trimmed. */
+    const longTitles = {
+      sportValue: "Baseball",
+      setNameValue:
+        "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box Hobby Exclusive",
+      inheritedFeatures: { manufacturer: "Topps", season: "2026" },
+      setTeamNames: [],
+      players: [],
+      teams: [],
+    };
+
+    async function syncTeamed(rerender: Parameters<typeof streamCandidates>[0]) {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, arrivedBatch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+        });
+      });
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    }
+
+    it("opens the wizard (the no-names entry) when a new card's title needs a look", async () => {
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+        titleContext: longTitles,
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamed(rerender);
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(screen.getByText("Title context: yes")).toBeTruthy();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+    });
+
+    it("commits straight through when no title needs a look", async () => {
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+        titleContext: { ...longTitles, setNameValue: "Chrome" },
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamed(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+
+    it("commits straight through when every long-titled card re-syncs a stored row (it keeps its title)", async () => {
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+        titleContext: longTitles,
+      });
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1" }),
+        settledCard({ _id: "row-2", cardNumber: "2" }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamed(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+
+    it("commits straight through with no title context at all (an older server answer)", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamed(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+  });
+
   it("says what it kept and why, in place of the matching step", async () => {
     // The operator knows this dialog exists. A step that silently does not
     // happen reads as a step that failed, so the banner has to account for it.

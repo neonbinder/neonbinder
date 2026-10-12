@@ -478,9 +478,12 @@ export default function EntityReviewWizard({
    */
   cardsWithSettledTeam?: readonly number[];
   /**
-   * NEO-335 — there are no names to review, only cards that would save with
-   * no team. The wizard opens straight onto its teams step ("Step 1 of 2",
-   * then "Save N cards?" and Confirm & Save) and reads no batch:
+   * NEO-335 — there are no names to review (the name is historical: it is
+   * the "no names" entry). The wizard opens past the names, on whichever of
+   * its teams step (cards that would save with no team) and, since Phase 2
+   * D7, its titles step (new cards whose title needs a look) applies — teams
+   * then titles then Save, "Step 1 of 2" with one of them, "of 3" with both —
+   * and reads no batch:
    * every name on the cards already resolved. `batchId` may be empty; when it
    * is not (a batch left open by "Back to matching"), Cancel still discards it.
    * Absent, the wizard is exactly what it was.

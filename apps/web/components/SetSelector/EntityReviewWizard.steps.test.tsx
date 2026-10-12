@@ -288,6 +288,33 @@ describe("the post-review steps", () => {
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
   });
 
+  it("D7: with no names and every card teamed, opens on Card titles as Step 1 of 2", () => {
+    const onTitleAnswersChange = vi.fn();
+    render(
+      wizard({ teamsOnly: true, batchId: "", titleContext: LONG_TITLES, onTitleAnswersChange }, [
+        { cardNumber: "1", cardName: "Base", players: ["Pete Rose"], teams: ["Reds"] },
+      ]),
+    );
+    expect(counter()).toBe("Step 1 of 2");
+    expect(screen.getByText("Card titles")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: TITLES_LEAD })).toBeTruthy();
+    expect(screen.queryByText("Cards with no team")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: NEXT_NAME }));
+    // Shown, so the commit hears "kept" for the card.
+    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
+      { listingTitleKept: expect.stringMatching(/#1$/) },
+    ]);
+    // Nothing decided in this sitting: no Back out of the first step.
+    expect(screen.queryByRole("button", { name: "Back to previous step" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(counter()).toBe("Step 2 of 2");
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
+    // Back from Save returns to the titles step.
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
+    expect(screen.getByText("Card titles")).toBeTruthy();
+  });
+
   it("reports title answers only once the step has shown the cards, defaulting to kept", () => {
     currentRows = decidedRows();
     const onTitleAnswersChange = vi.fn();
