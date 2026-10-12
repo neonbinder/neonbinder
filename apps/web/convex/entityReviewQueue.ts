@@ -49,7 +49,6 @@ import { isWikidataQid } from "../lib/players/wikidata-id";
 import type { LeagueLevel } from "./leagues";
 import {
   findLeagueByName,
-  findOrCreateLeague,
   leagueLevelValidator,
   MAX_LEAGUE_NAME_LENGTH,
   normalizeAliasList,
@@ -189,6 +188,13 @@ const kindValidator = v.union(
  * Mirrors `convex/schema.ts`. Every field but `name` is optional and means
  * "not answered" when absent — `findOrCreateLeague` gap-fills, so an absent
  * field never clears an existing row's value.
+ *
+ * NEO-331: `level` stays OPTIONAL here even though `leagues.level` is now
+ * required. This validator is shared with `decisionValidator`, which validates
+ * drafts read back from stored queue rows, and rows recorded before the flip
+ * carry no level — tightening it would make reading them throw. The
+ * requirement is enforced where a NEW answer arrives instead: the
+ * `recordDecision` handler, through `requireLeagueCreate`.
  */
 const leagueCreateValidator = v.object({
   name: v.string(),
@@ -211,12 +217,16 @@ const teamCreateValidator = v.object({
    * `leagueId` is a UNION with null on purpose: an id is "this league", null is
    * "no league, deliberately", and ABSENT is "not answered" — which is the only
    * one of the three that lets the prelude fall back to the enrichment's P118
-   * label and then to the sport default. Without the null case an operator
-   * could not say that a team belongs to no league at all, and the sport
-   * default would silently reassert itself.
+   * label (the suggestion the field showed as its answer). Without the null
+   * case an operator could not decline that suggestion. NEO-331 (Jason,
+   * 2026-10-10): with no suggestion, "not answered" lands exactly where "no
+   * league" does — blank. The sport default is never applied to a team the
+   * operator did not put in it.
    *
-   * `leagueName` names a league we hold no row for, which the prelude creates
-   * through `findOrCreateLeague`. See schema.ts for the long version.
+   * `leagueName` names a league by name. NEO-331: the prelude only LINKS it
+   * (staged New League step first, then an existing row by name or alias); a
+   * miss leaves the team with no league rather than minting a level-less row.
+   * See schema.ts for the long version.
    */
   leagueId: v.optional(v.union(v.id("leagues"), v.null())),
   leagueName: v.optional(v.string()),
@@ -536,7 +546,9 @@ function requireTeamEra(era: { from: number; to?: number }): {
  *
  * `leagueId` passes through untouched INCLUDING null, because null is an
  * answer ("no league") and dropping it would be read as "not answered", which
- * is the one state that lets the sport default back in.
+ * is the one state that lets the enrichment's suggested league back in.
+ * (Before NEO-331 it also let the sport default in; Jason, 2026-10-10: "An
+ * unanswered League stays blank, same as No league" — so it no longer does.)
  *
  * `leagueName` is only meaningful when no id was given — the two are answers to
  * the same question, and an id is the more specific one. It is trimmed, and an
@@ -1694,7 +1706,8 @@ async function stageLeagueRowsImpl(
     // Same reasoning as the team staging: a Wikidata label is text nobody on
     // our side vetted, and it reaches both `name` and the INDEX. Skipped
     // rather than thrown on — one absurd label must not cost the team its
-    // step, and the team still resolves if we already hold the league.
+    // step, and the team still links if we already hold the league (NEO-331:
+    // otherwise it commits with no league — names never create one).
     if (name.length > MAX_LEAGUE_NAME_LENGTH) continue;
 
     const alreadyInBatch = await ctx.db
@@ -2290,6 +2303,15 @@ export const stageCareerTeamRows = mutation({
  * Idempotent by construction (see `stageLeagueRowsImpl`), so the client may
  * call it as often as it likes; it returns how many rows THIS call added.
  *
+ * NEO-331 — when staging FAILS (the client calls this fire-and-forget), the
+ * commit does not rescue the name by creating a league: `create.leagueName`
+ * is link-only in the prelude. It resolves to an existing league by name or
+ * alias, or the team commits with NO league — and never throws. (Nothing in
+ * the prelude falls back to the sport default any more, answered or not:
+ * NEO-331, Jason 2026-10-10.) Only the interactive
+ * `teams.findOrCreate` refuses an unknown name, because an operator is there
+ * to add it.
+ *
  * Admin-gated and ownership-checked exactly as `recordDecision` is: same
  * table, same batch, and staging into someone else's review session would put
  * steps in front of them they never asked for.
@@ -2606,12 +2628,20 @@ function requireLeagueCreate(input: {
 }): {
   name: string;
   abbreviation?: string;
-  level?: LeagueLevel;
+  level: LeagueLevel;
   yearsActive?: { from: number; to?: number };
   aliases?: string[];
   wikidataId?: string;
 } {
   const name = requireValidLeagueName(input.name);
+  // NEO-331: a league row requires a level, and the New League step is the
+  // only place one can come from on this path — so an answer without one is
+  // refused while the operator is still at the step, rather than recorded and
+  // then dropped at commit. The validator cannot say this itself; see the
+  // note on `leagueCreateValidator`.
+  if (!input.level) {
+    throw new ConvexError("Pick a level for this league before saving it.");
+  }
   const abbreviation = requireValidLeagueAbbreviation(input.abbreviation);
   if (input.yearsActive) validateLeagueYears(input.yearsActive);
   // `normalizeAliasList` drops an alias equal to the row's own name, dedupes
@@ -2629,7 +2659,7 @@ function requireLeagueCreate(input: {
   return {
     name,
     ...(abbreviation ? { abbreviation } : {}),
-    ...(input.level ? { level: input.level } : {}),
+    level: input.level,
     ...(input.yearsActive ? { yearsActive: input.yearsActive } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(wikidataId ? { wikidataId } : {}),

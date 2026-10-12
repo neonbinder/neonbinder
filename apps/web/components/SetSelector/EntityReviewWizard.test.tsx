@@ -132,13 +132,14 @@ vi.mock("../../convex/_generated/api", () => ({
       // NEO-221: resolves a linked player's canonical name for the decided list.
       getManyByIds: "players.getManyByIds",
     },
-    // `teams.search` is CareerTeamEntry's typeahead (rendered for player rows);
+    // `teams.pickerCandidates` is CareerTeamEntry's typeahead (rendered for
+    // player rows, NEO-331);
     // `getManyByIds` resolves linked teams for the staging list; `resolveNames`
     // backs the "will create N new teams" summary. Each returns undefined from
     // the mock unless a test sets it.
     teams: {
       nearMatches: "teams.nearMatches",
-      search: "teams.search",
+      pickerCandidates: "teams.pickerCandidates",
       getManyByIds: "teams.getManyByIds",
       resolveNames: "teams.resolveNames",
       // NEO-307: which other team already answers to the step's name as an alias.
@@ -233,18 +234,24 @@ vi.mock("convex/react", () => ({
   },
 }));
 
-let lastLinkSearchProps: { kind: string; sportId: string } | null = null;
+let lastLinkSearchProps: {
+  kind: string;
+  sportId: string;
+  contextOptionId?: string;
+} | null = null;
 vi.mock("./EntityLinkSearch", () => ({
   default: ({
     kind,
     sportId,
+    contextOptionId,
     onSelect,
   }: {
     kind: "player" | "team" | "league";
     sportId: string;
+    contextOptionId?: string;
     onSelect: (id: string) => void;
   }) => {
-    lastLinkSearchProps = { kind, sportId };
+    lastLinkSearchProps = { kind, sportId, contextOptionId };
     return (
       <div aria-label="Entity link search (stub)">
         <button onClick={() => onSelect("linked-id-123")}>Stub link select</button>
@@ -701,9 +708,11 @@ describe("EntityReviewWizard — decision actions", () => {
 
     expect(screen.getByLabelText("Entity link search (stub)")).toBeTruthy();
     // NEO-96: the wizard hands the search a sport ROW ID, not a label.
+    // NEO-331: and the set under review, which a TEAM search ranks by.
     expect(lastLinkSearchProps).toEqual({
       kind: "player",
       sportId: "selopt-sport-2",
+      contextOptionId: "selopt-1",
     });
   });
 
@@ -1373,6 +1382,34 @@ describe("EntityReviewWizard — cancel", () => {
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+  });
+
+  it("NEO-331: the career-team search is ranked by the set under review", () => {
+    vi.useFakeTimers();
+    try {
+      currentRows = [
+        makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+      ];
+      renderWizard();
+
+      fireEvent.change(screen.getByLabelText("Career team name"), {
+        target: { value: "pad" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+
+      const call = queryCalls
+        .filter((c) => c.ref === "teams.pickerCandidates" && c.args !== "skip")
+        .pop();
+      expect(call?.args).toEqual({
+        query: "pad",
+        sportId: expect.any(String),
+        contextOptionId: "selopt-1",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Escape from inside a text field never reaches the dialog", async () => {
@@ -7442,6 +7479,15 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     expect(scrollBox!.contains(primary)).toBe(false);
   });
 
+  /** NEO-331: the level pills, by group label and text (role-agnostic). */
+  function pressWizardLevel(label: string) {
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+        name: label,
+      }),
+    );
+  }
+
   function seedLookingUpLeague(status: "pending" | "ready") {
     const team = makeRow({
       _id: "row-team" as unknown as Id<"entityReviewQueue">,
@@ -7484,18 +7530,28 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     expect(screen.queryByText("No Wikidata match found.")).toBeNull();
     // The batch really is still looking things up — this league included…
     expect(footerStatusText()).toBe("3 still looking up — wait or skip");
-    // …and the step does not care.
+    // …and the lookup does not hold the step. What holds it is the level
+    // (NEO-331): required, never pre-picked, and silent about it — the footer
+    // line above is unchanged, no extra sentence appears.
     const primary = screen.getByRole("button", { name: "Add as New League" });
-    expect(primary.getAttribute("aria-disabled")).toBeNull();
-    expect((primary as HTMLButtonElement).disabled).toBe(false);
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+    expect(footerStatusText()).toBe("3 still looking up — wait or skip");
+    // The held press points at the one thing missing: focus is on the level.
+    expect(document.activeElement).toBe(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getAllByRole("radio")[0],
+    );
 
+    pressWizardLevel("Major");
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(primary);
     await waitFor(() => {
       expect(mockRecordDecision).toHaveBeenCalledWith(
         expect.objectContaining({
           reviewRowId: league._id,
           action: "create",
-          createLeague: { name: "National Hockey League" },
+          createLeague: { name: "National Hockey League", level: "major" },
         }),
       );
     });
@@ -7508,6 +7564,8 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
 
     expect(footerStatusText()).toBe("2 still looking up — wait or skip");
     const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    pressWizardLevel("Minor");
     expect(primary.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(primary);
     await waitFor(() => {
@@ -7515,7 +7573,7 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
         expect.objectContaining({
           reviewRowId: league._id,
           action: "create",
-          createLeague: { name: "National Hockey League" },
+          createLeague: { name: "National Hockey League", level: "minor" },
         }),
       );
     });

@@ -161,7 +161,7 @@ async function insertLeague(
       nameNormalized: normalizeLeagueName(opts.name),
       sportId,
       ...(opts.abbreviation ? { abbreviation: opts.abbreviation } : {}),
-      ...(opts.level ? { level: opts.level } : {}),
+      level: opts.level ?? "other",
       ...(opts.yearsActive ? { yearsActive: opts.yearsActive } : {}),
       ...(opts.wikidataId ? { externalIds: { wikidataId: opts.wikidataId } } : {}),
       lastUpdated: 1_700_000_000_000,

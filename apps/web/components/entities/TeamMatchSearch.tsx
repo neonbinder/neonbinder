@@ -36,11 +36,16 @@ import type { NearMatch } from "./NearMatchPanel";
  * the operator types (`hideWhenEmpty`): "No teams by that name" under a query
  * nobody typed would answer a question nobody asked.
  *
- * Typing anything hands the finding to `teams.search`, the server-backed,
- * sport-scoped, alias-aware index `CareerTeamEntry`, `TeamPicker` and
- * `EntityLinkSearch` already type against. Never a fetch-all-and-filter: a
- * sport can hold thousands of teams. Clearing the field goes back to the near
- * matches.
+ * Typing anything hands the finding to `teams.pickerCandidates`, the
+ * server-backed, sport-scoped, alias-aware search `TeamPicker`,
+ * `CareerTeamEntry` and `EntityLinkSearch` type against. Never a
+ * fetch-all-and-filter: a sport can hold thousands of teams. Clearing the
+ * field goes back to the near matches.
+ *
+ * NEO-331: given the set under review (`contextOptionId`), the server ranks
+ * what it finds — the set's league active in the set's year first, then minor
+ * leagues active that year, then the set's league in other eras, then the
+ * rest — and the rows are listed in exactly that order, never re-sorted here.
  *
  * ## Why the second line is league and years
  * "Dodgers" is five teams. The full name tells Brooklyn from Los Angeles, and
@@ -60,7 +65,10 @@ import type { NearMatch } from "./NearMatchPanel";
 /** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
 const SEARCH_DEBOUNCE_MS = 200;
 
-/** `teams.search`'s own ceiling. Five Dodgers and their neighbours fit. */
+/**
+ * `teams.pickerCandidates`' search ceiling (anything above it is clamped to
+ * it). Five Dodgers and their neighbours fit.
+ */
 const SEARCH_LIMIT = 25;
 
 /** The combobox's accessible name. An E2E contract: flows tap it by this. */
@@ -83,6 +91,11 @@ export interface TeamMatchSearchProps {
   /** NEO-96: the sport-level selectorOptions row id. Scopes every search. */
   sportId: Id<"selectorOptions">;
   /**
+   * NEO-331 — the set under review (its `selectorOptions` row), which the
+   * typed search ranks by. Absent, the server falls back to name order.
+   */
+  contextOptionId?: Id<"selectorOptions">;
+  /**
    * The near matches to offer while the field is empty. `undefined` while the
    * query is in flight, which renders exactly as "none" does.
    */
@@ -94,6 +107,7 @@ export interface TeamMatchSearchProps {
 
 export function TeamMatchSearch({
   sportId,
+  contextOptionId,
   defaultMatches,
   onPick,
   children,
@@ -118,9 +132,17 @@ export function TeamMatchSearch({
    */
   const showingDefaults = query.trim() === "";
   const term = debouncedQuery.trim();
-  const searchArgs =
-    !showingDefaults && term ? { query: term, sportId, limit: SEARCH_LIMIT } : "skip";
-  const searched = useQuery(api.teams.search, searchArgs);
+  // Every key written out, never spread (see TeamPicker): `undefined` is
+  // dropped on the wire. Blank skips — `pickerCandidates` would BROWSE on an
+  // empty term, and the near matches are the empty field's answer.
+  const ranked = useQuery(
+    api.teams.pickerCandidates,
+    !showingDefaults && term
+      ? { query: term, sportId, contextOptionId, limit: SEARCH_LIMIT }
+      : "skip",
+  );
+  /** The typed search's teams, in the server's final (tiered) order. */
+  const searched = useMemo(() => ranked?.map((r) => r.team), [ranked]);
 
   /**
    * League names for the second line. A sport's leagues are a couple of dozen

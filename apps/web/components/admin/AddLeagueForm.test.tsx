@@ -22,7 +22,7 @@
  *     outside the form knows not to.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -75,6 +75,15 @@ function renderForm(overrides: Overrides = {}) {
   );
 }
 
+/** NEO-331: a level is required, so every create taps one first. */
+function pressLevel(label: string) {
+  fireEvent.click(
+    within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+      name: label,
+    }),
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   nearMatches = undefined;
@@ -108,6 +117,7 @@ describe("AddLeagueForm — a sport the surface has already decided", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -115,6 +125,7 @@ describe("AddLeagueForm — a sport the surface has already decided", () => {
     await waitFor(() =>
       expect(mockCreateByAdmin).toHaveBeenCalledWith({
         name: "Nippon Professional Baseball",
+        level: "major",
         sportId: "sport-baseball",
       }),
     );
@@ -156,6 +167,7 @@ describe("AddLeagueForm — what it reports back", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "  Nippon Professional Baseball  " },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -179,6 +191,7 @@ describe("AddLeagueForm — what it reports back", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -213,17 +226,13 @@ describe("AddLeagueForm — what it reports back", () => {
     expect(mockCreateByAdmin).not.toHaveBeenCalled();
   });
 
-  it("opens on the level the host asked for, and sends it", async () => {
-    renderForm({ lockSport: true, sportLabel: "Baseball", defaultLevel: "minor" });
-
-    const group = screen.getByRole("group", { name: "Level" });
-    expect(
-      group.querySelector('[aria-pressed="true"]')?.textContent,
-    ).toBe("Minor");
+  it("sends the level the operator pressed", async () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
 
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "International League" },
     });
+    pressLevel("Minor");
     fireEvent.click(screen.getByLabelText("Create league International League"));
 
     await waitFor(() =>
@@ -233,6 +242,49 @@ describe("AddLeagueForm — what it reports back", () => {
         sportId: "sport-baseball",
       }),
     );
+  });
+});
+
+describe("AddLeagueForm — a level is required (NEO-331)", () => {
+  const pressed = () =>
+    screen
+      .getByRole("radiogroup", { name: "Level" })
+      .querySelector('[role="radio"][aria-checked="true"]');
+
+  it("opens with no level pressed", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    expect(pressed()).toBeNull();
+  });
+
+  it("keeps Create disabled until a level is pressed, however complete the rest is", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "International League" },
+    });
+
+    const create = screen.getByLabelText(
+      "Create league International League",
+    ) as HTMLButtonElement;
+    // Held by `aria-disabled`, not native `disabled`: the button keeps its Tab
+    // stop so a press can say why (it focuses the level group).
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    expect(create.disabled).toBe(false);
+    fireEvent.click(create);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+
+    pressLevel("Minor");
+    expect(create.disabled).toBe(false);
+  });
+
+  it("moves the selection to another level, and a pressed level cannot be cleared", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+
+    pressLevel("Minor");
+    expect(pressed()?.textContent).toBe("Minor");
+    pressLevel("Minor");
+    expect(pressed()?.textContent).toBe("Minor");
+    pressLevel("College");
+    expect(pressed()?.textContent).toBe("College");
   });
 });
 
@@ -254,6 +306,7 @@ describe("AddLeagueForm — telling the host it is busy", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -262,5 +315,177 @@ describe("AddLeagueForm — telling the host it is busy", () => {
 
     release?.();
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+  });
+});
+
+describe("AddLeagueForm — the level group as a radiogroup (NEO-331)", () => {
+  const group = () => screen.getByRole("radiogroup", { name: "Level" });
+  const radios = () => within(group()).getAllByRole("radio");
+  const checked = () =>
+    radios()
+      .filter((r) => r.getAttribute("aria-checked") === "true")
+      .map((r) => r.textContent);
+  const tabStops = () =>
+    radios()
+      .filter((r) => r.getAttribute("tabindex") === "0")
+      .map((r) => r.textContent);
+  /** The group moves focus on the next animation frame. */
+  const flushFrame = () => act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); });
+
+  it("is required, and offers all six levels as radios", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    expect(group().getAttribute("aria-required")).toBe("true");
+    expect(radios().map((r) => r.textContent)).toEqual([
+      "Major",
+      "Minor",
+      "College",
+      "International",
+      "Independent",
+      "Other",
+    ]);
+  });
+
+  it("with nothing chosen the FIRST radio is the only Tab stop", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    expect(checked()).toEqual([]);
+    expect(tabStops()).toEqual(["Major"]);
+  });
+
+  it("with a choice made the CHECKED radio is the only Tab stop", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    pressLevel("College");
+    expect(checked()).toEqual(["College"]);
+    expect(tabStops()).toEqual(["College"]);
+  });
+
+  it("ArrowRight / ArrowDown select and focus the next level", async () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    pressLevel("Major");
+    radios()[0].focus();
+
+    fireEvent.keyDown(radios()[0], { key: "ArrowRight" });
+    await flushFrame();
+    expect(checked()).toEqual(["Minor"]);
+    expect(document.activeElement).toBe(radios()[1]);
+
+    fireEvent.keyDown(radios()[1], { key: "ArrowDown" });
+    await flushFrame();
+    expect(checked()).toEqual(["College"]);
+    expect(document.activeElement).toBe(radios()[2]);
+  });
+
+  it("ArrowLeft / ArrowUp go back, and the ends wrap", async () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    pressLevel("Major");
+    radios()[0].focus();
+
+    fireEvent.keyDown(radios()[0], { key: "ArrowLeft" });
+    await flushFrame();
+    expect(checked()).toEqual(["Other"]);
+    expect(document.activeElement).toBe(radios()[5]);
+
+    fireEvent.keyDown(radios()[5], { key: "ArrowRight" });
+    await flushFrame();
+    expect(checked()).toEqual(["Major"]);
+    expect(document.activeElement).toBe(radios()[0]);
+
+    fireEvent.keyDown(radios()[0], { key: "ArrowUp" });
+    await flushFrame();
+    expect(checked()).toEqual(["Other"]);
+  });
+
+  it("an arrow with nothing chosen yet selects from the first stop", async () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    radios()[0].focus();
+
+    fireEvent.keyDown(radios()[0], { key: "ArrowRight" });
+    await flushFrame();
+
+    expect(checked()).toEqual(["Minor"]);
+  });
+
+  it("other keys do nothing", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    radios()[0].focus();
+    fireEvent.keyDown(radios()[0], { key: "a" });
+    expect(checked()).toEqual([]);
+  });
+});
+
+describe("AddLeagueForm — a held press (NEO-331)", () => {
+  const create = () =>
+    screen.getByLabelText("Create league International League") as HTMLButtonElement;
+
+  it("with only the level missing, focuses the level group and creates nothing", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "International League" },
+    });
+
+    fireEvent.click(create());
+
+    const firstStop = within(
+      screen.getByRole("radiogroup", { name: "Level" }),
+    ).getAllByRole("radio")[0];
+    expect(document.activeElement).toBe(firstStop);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("with only the NAME missing, does not pull focus into the level group", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    pressLevel("College");
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.click(screen.getByLabelText("Create league"));
+
+    // Name is the missing piece, not the level: focus is NOT stolen.
+    expect(document.activeElement).not.toBe(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+        name: "College",
+      }),
+    );
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("pressing Create league with an empty name is a no-op", () => {
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    pressLevel("Major");
+
+    const button = screen.getByLabelText("Create league");
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(button);
+
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(onStatus).not.toHaveBeenCalled();
+  });
+
+  it("holds 'Create anyway' the same way, focusing the level group", () => {
+    nearMatches = [
+      { _id: "lg-il", name: "International League", confidence: "exact" },
+    ];
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "International League" },
+    });
+
+    return screen.findByLabelText("Create league International League anyway").then((anyway) => {
+      expect(anyway.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(anyway);
+      expect(mockCreateByAdmin).not.toHaveBeenCalled();
+      expect(document.activeElement?.getAttribute("role")).toBe("radio");
+    });
+  });
+
+  it("native disabled is kept for the busy state only", async () => {
+    mockCreateByAdmin.mockReturnValue(new Promise(() => {}));
+    renderForm({ lockSport: true, sportLabel: "Baseball" });
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "International League" },
+    });
+    pressLevel("Minor");
+    fireEvent.click(create());
+
+    const busy = await screen.findByLabelText("Adding league");
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
   });
 });

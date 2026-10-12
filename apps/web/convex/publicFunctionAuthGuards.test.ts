@@ -639,7 +639,7 @@ describe("NEO-240 — a refused write to a league persists nothing", () => {
     await expect(
       t
         .withIdentity(MEMBER)
-        .mutation(api.leagues.createByAdmin, { name: "Ghost League", sportId }),
+        .mutation(api.leagues.createByAdmin, { name: "Ghost League", level: "other" as const, sportId }),
     ).rejects.toThrow(/admin access required/i);
 
     expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);

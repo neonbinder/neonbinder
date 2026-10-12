@@ -274,11 +274,11 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     expect(team1!.name).toBe("Los Angeles Angels of Anaheim");
     expect(team2!.name).toBe("Los Angeles Angels");
     // Still deliberately minimal on ENRICHMENT — an incidental career team is
-    // not looked up at commit time. NEO-156 changed one thing about that: the
-    // league is not enrichment, it is a structural fact every team gets at
-    // creation from its sport's config, so this row carries one.
+    // not looked up at commit time. NEO-156 used to give every created team
+    // its sport's default league; NEO-331 (Jason, 2026-10-10) stopped that —
+    // nobody answered this team's League, so it has none.
     expect(team1!.league).toBeUndefined(); // the deprecated free-text field
-    expect(team1!.leagueId).toBeDefined();
+    expect(team1!.leagueId).toBeUndefined();
     expect(team1!.externalIds).toBeUndefined();
     expect(team2!.externalIds).toBeUndefined();
 
@@ -461,6 +461,17 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    // NEO-331: the enrichment's league NAME links an existing league; it no
+    // longer creates one (a league requires a level). Seed it.
+    await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
