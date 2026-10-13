@@ -1202,8 +1202,8 @@ function baseReducer(state: State, action: Action): State {
      *  2. On a CONFLICTED row where the typed name is exactly one of the two
      *     marketplace names: this is indistinguishable from having clicked
      *     that pill, so it IS that — same `chosen`, same result. Anything else
-     *     would leave the radiogroup showing "Custom: <BSC's name>" checked
-     *     alongside an unchecked, identical "BSC: <BSC's name>", which is a
+     *     would leave the radiogroup showing the operator's copy of BSC's name
+     *     checked alongside an unchecked, identical BSC pill, which is a
      *     control asking the operator to choose between two spellings of the
      *     same decision. Matched on the exact trimmed string rather than
      *     `nameKey`, deliberately: `nameKey` folds accents and punctuation, so
@@ -1674,7 +1674,7 @@ function ConflictRadioGroup({
             tabIndex={chosen === option.side ? 0 : -1}
             // The accessible name STARTS WITH the visible label so it
             // satisfies WCAG 2.5.3 Label in Name — a speech-input user saying
-            // "click BSC: <value>" has to match what is actually announced.
+            // "click <value>" has to match what is actually announced.
             aria-label={option.ariaLabel}
             onClick={() => onChoose(option.side, false)}
             className={`text-xs rounded px-2 py-1.5 ${
@@ -2829,14 +2829,26 @@ export default function CardPairingModal({
                       {/* NEO-189: the marketplaces name this card differently.
                           Show BOTH, say which one is currently winning, and
                           let the operator switch — the ambiguity is reported,
-                          never resolved by heuristic. */}
+                          never resolved by heuristic.
+
+                          NEO-344 (Jason, 2026-10-13): the pills, their
+                          accessible names and the warning say only WHAT each
+                          value is, never which marketplace it came from. "The
+                          name in NB should come from the user when there is a
+                          conflict and I don't want the user swayed by what
+                          marketplace the data comes from." The `side` keys,
+                          the BSC default and the reducer are unchanged; this
+                          is display only. Each option still has a distinct
+                          name because the values differ as strings by construction:
+                          `conflictingNames` only reports differing names, and
+                          `custom` exists only when it matches neither. */}
                       {m.nameConflict && (
                         <ConflictRadioGroup
                           handleAttr="data-name-conflict"
                           handleKey={domKey(m.card)}
                           groupLabel={`Name conflict on ${scope}`}
                           warningId={`name-conflict-warning-${domKey(m.card)}`}
-                          warning="These marketplaces name this card differently — pick the right one before it is listed."
+                          warning="Potential names for this card — pick the right one before it is listed."
                           radioGroupLabel={`Name for ${scope}`}
                           chosen={m.nameConflict.chosen}
                           // NEO-272 — each pill's "which card is this
@@ -2858,13 +2870,13 @@ export default function CardPairingModal({
                           options={[
                             {
                               side: "bsc",
-                              label: `BSC: ${m.nameConflict.bsc}`,
-                              ariaLabel: `BSC: ${m.nameConflict.bsc} — use this name for ${scope}`,
+                              label: m.nameConflict.bsc,
+                              ariaLabel: `${m.nameConflict.bsc} — use this name for ${scope}`,
                             },
                             {
                               side: "sportlots",
-                              label: `SportLots: ${m.nameConflict.sportlots}`,
-                              ariaLabel: `SportLots: ${m.nameConflict.sportlots} — use this name for ${scope}`,
+                              label: m.nameConflict.sportlots,
+                              ariaLabel: `${m.nameConflict.sportlots} — use this name for ${scope}`,
                             },
                             // The operator's own name, once they have typed one
                             // that is neither marketplace's. Present on the SAME
@@ -2877,8 +2889,8 @@ export default function CardPairingModal({
                               ? [
                                   {
                                     side: "custom" as const,
-                                    label: `Custom: ${m.nameConflict.custom}`,
-                                    ariaLabel: `Custom: ${m.nameConflict.custom} — use this name for ${scope}`,
+                                    label: m.nameConflict.custom,
+                                    ariaLabel: `${m.nameConflict.custom} — use this name for ${scope}`,
                                   },
                                 ]
                               : []),
@@ -2906,7 +2918,7 @@ export default function CardPairingModal({
                           handleKey={domKey(m.card)}
                           groupLabel={`Players conflict on ${scope}`}
                           warningId={`players-conflict-warning-${domKey(m.card)}`}
-                          warning="These marketplaces list different players on this card — pick the right ones before it is listed."
+                          warning="Potential players for this card — pick the right ones before it is listed."
                           radioGroupLabel={`Players for ${scope}`}
                           chosen={m.playersConflict.chosen}
                           // Scoped exactly like the name pills above,
@@ -2918,20 +2930,20 @@ export default function CardPairingModal({
                           options={[
                             {
                               side: "bsc",
-                              label: `BSC: ${joinPlayers(m.playersConflict.bsc)}`,
-                              ariaLabel: `BSC: ${joinPlayers(m.playersConflict.bsc)} — use these players for ${scope}`,
+                              label: joinPlayers(m.playersConflict.bsc),
+                              ariaLabel: `${joinPlayers(m.playersConflict.bsc)} — use these players for ${scope}`,
                             },
                             {
                               side: "sportlots",
-                              label: `SportLots: ${joinPlayers(m.playersConflict.sportlots)}`,
-                              ariaLabel: `SportLots: ${joinPlayers(m.playersConflict.sportlots)} — use these players for ${scope}`,
+                              label: joinPlayers(m.playersConflict.sportlots),
+                              ariaLabel: `${joinPlayers(m.playersConflict.sportlots)} — use these players for ${scope}`,
                             },
                             ...(m.playersConflict.custom !== undefined
                               ? [
                                   {
                                     side: "custom" as const,
-                                    label: `Custom: ${joinPlayers(m.playersConflict.custom)}`,
-                                    ariaLabel: `Custom: ${joinPlayers(m.playersConflict.custom)} — use these players for ${scope}`,
+                                    label: joinPlayers(m.playersConflict.custom),
+                                    ariaLabel: `${joinPlayers(m.playersConflict.custom)} — use these players for ${scope}`,
                                   },
                                 ]
                               : []),
