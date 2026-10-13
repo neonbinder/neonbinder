@@ -80,6 +80,13 @@ test(
     // ── STEP 4: a FORCED year-wide Sync Sets leaves it where the operator put it.
     await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: "All Brands" });
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 15_000 });
+    // STEP 1's year-wide sync can still be running (its first rows list before
+    // the SportLots side finishes), and a reload mid-sync shows the "Syncing
+    // Sets" panel INSTEAD of the Sync Sets button; the drill's "Syncing Sets
+    // hidden" check can pass before the status subscription answers. Wait for
+    // that first sync to finish (a cold-sync ceiling: marketplace round trips)
+    // so the click below starts a second, forced sync, after the move.
+    await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible({ timeout: COLD_SYNC });
     await page.getByRole("button", { name: "Sync Sets" }).click();
     await expect(page.getByRole("heading", { name: "Syncing Sets" })).toBeVisible();
     // The whole year again from BSC (the flow's 150 s).
