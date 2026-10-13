@@ -37,6 +37,7 @@ import { deriveCardObservedFeatures } from "./deriveCardFeatures";
 import {
   assessListingTitle,
   isFillerToken,
+  rookieAsRc,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./generateListing";
@@ -180,6 +181,10 @@ export function listingInputsForCard(
       ? mergedFeatures.parallelName
       : set.parallelLeafValue?.trim() || undefined;
   const setShortName = set.listingShortName?.trim() || undefined;
+  // NEO-335 — the leaf's parallel ROLE earns the parallel its "Parallel"
+  // label. `parallelLeafValue` is set by `titleChainFacts` only on that role
+  // (`derivedVariantFlags`), so its presence is the role, never its wording.
+  const parallelIsRole = !!set.parallelLeafValue?.trim();
   return {
     cardNumber: card.cardNumber,
     playerNames: names.playerNames,
@@ -190,6 +195,7 @@ export function listingInputsForCard(
     ...(insertName ? { insertName } : {}),
     ...(setShortName ? { setShortName } : {}),
     parallelName,
+    ...(parallelIsRole ? { parallelIsRole: true } : {}),
     isRookie: card.isRookie,
     isRelic: card.isRelic,
     autographed: mergedFeatures.autographed,
@@ -307,7 +313,8 @@ function wordsOf(text: string): string[] {
 
 /**
  * NEO-335 — is this dropped token one of the generator's FILLER words: the
- * sport, or "Rookie" (the second spelling, appended only beside "RC")?
+ * sport, "Rookie" (the second spelling, appended only beside "RC"), or the
+ * "Insert" / "Parallel" labels?
  * Lives in generateListing.ts now (the short-name rule reads it there);
  * re-exported so existing importers keep working.
  */
@@ -328,8 +335,9 @@ export { isFillerToken };
  * in his son's name beside it. The maker is skipped when NB does not know the
  * brand (NEO-272): the generator never put it in.
  *
- * FILLER is not listed (collector review, NEO-335): the sport word and the
- * second spelling of rookie ("Rookie" beside "RC") are the generator's
+ * FILLER is not listed (collector review, NEO-335): the sport word, the
+ * second spelling of rookie ("Rookie" beside "RC") and the "Insert" /
+ * "Parallel" labels are the generator's
  * deliberate fill tail — they exist to spend characters that would otherwise
  * go unused — so they are not a loss an operator should be shown, let alone
  * first. Only the dropped TOKENS are filtered; a set or player word that
@@ -348,9 +356,15 @@ export function leftOutOfTitle(
     // reported like the set's. A title built with the short name reads the
     // short name in their place: the full names were left out on purpose.
     const maker = inputs.manufacturerBrandUnknown ? undefined : inputs.manufacturer;
+    // A title that shortened "Rookie" to "RC" in the insert's name reads
+    // the shortened name: "Rookie" was not lost, it was abbreviated.
+    const insertName =
+      assessment.rookieAsRcUsed && inputs.insertName
+        ? rookieAsRc(inputs.insertName)
+        : inputs.insertName;
     const segments = assessment.shortNameUsed
       ? [inputs.year, maker, inputs.setShortName]
-      : [inputs.year, maker, inputs.setName, inputs.insertName];
+      : [inputs.year, maker, inputs.setName, insertName];
     for (const segment of segments) {
       const words = (segment ?? "").split(/\s+/).filter(Boolean);
       const missing = words.filter((w) => w !== "&" && !present.has(w.toLowerCase()));

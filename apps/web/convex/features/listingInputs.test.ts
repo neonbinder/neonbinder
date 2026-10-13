@@ -105,6 +105,27 @@ const CASES: Case[] = [
     playerNames: ["Bobby Witt Jr."],
     teamNames: [],
   },
+  {
+    // NEO-335 — both labels, from the chain's ROLES.
+    name: "a parallel of an insert, labelled",
+    set: {
+      ...SET,
+      insertNameValue: "Dugout Collection",
+      insertIsRole: true,
+      parallelLeafValue: "Gold",
+    },
+    card: { cardNumber: "DC-5" },
+    playerNames: ["Ken Griffey Jr."],
+    teamNames: ["Seattle Mariners"],
+  },
+  {
+    // NEO-335 — "Rookie" → "RC" in the insert's name, because it is needed.
+    name: "a rookie insert that only fits as RC",
+    set: { ...SET, insertNameValue: "Rookie Debut Patch Autographs", insertIsRole: true },
+    card: { cardNumber: "RD-12", isRookie: true, isRelic: true, autographType: "On-Card", printRun: 99 },
+    playerNames: ["Elly De La Cruz"],
+    teamNames: [],
+  },
 ];
 
 function newCardRow(c: Case): NewCardRow {
@@ -426,6 +447,49 @@ describe("filler is never listed as a loss (collector review)", () => {
     expect(isFillerToken("RC", { ...base, isRookie: true })).toBe(false);
     expect(isFillerToken("Los Angeles Dodgers", base)).toBe(false);
   });
+
+  test("isFillerToken: the Insert / Parallel labels, only on their roles", () => {
+    const base = { cardNumber: "1", sport: "Baseball" };
+    expect(isFillerToken("Insert", { ...base, insertName: "Dugout Collection" })).toBe(true);
+    expect(isFillerToken("Insert", base)).toBe(false);
+    expect(isFillerToken("Parallel", { ...base, parallelIsRole: true })).toBe(true);
+    expect(isFillerToken("Parallel", base)).toBe(false);
+  });
+
+  test("the dropped labels are never listed as left out (NEO-335)", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "5" },
+      {
+        ...SET,
+        insertNameValue: "Dugout Collection",
+        insertIsRole: true,
+        parallelLeafValue: "Gold",
+      },
+      { playerNames: ["Ken Griffey Jr."], teamNames: ["Seattle Mariners"] },
+    );
+    const a = assessListingTitle(inputs);
+    expect(a.title).toBe("2026 Topps Chrome Dugout Collection Ken Griffey Jr. #5 Gold Seattle Mariners");
+    expect(a.dropped).toEqual(["Baseball", "Parallel", "Insert"]);
+    expect(leftOutOfTitle(inputs, a)).toEqual([]);
+  });
+
+  test("a core cut on an RC-shortened insert does not report \"Rookie\" as lost", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "RD-12", isRookie: true },
+      {
+        ...SET,
+        insertNameValue: "Rookie Debut Patch Autographs Sapphire Platinum Anniversary Edition",
+        insertIsRole: true,
+      },
+      { playerNames: ["Elly De La Cruz"] },
+    );
+    const a = assessListingTitle(inputs);
+    expect(a.coreFits).toBe(false);
+    expect(a.rookieAsRcUsed).toBe(true);
+    const left = leftOutOfTitle(inputs, a);
+    expect(left.some((entry) => /\bRookie\b/.test(entry))).toBe(false);
+    expect(left).toContain("Elly De La Cruz");
+  });
 });
 
 describe("NEO-335 — the insert name, the parallel leaf and the short name reach the inputs", () => {
@@ -437,7 +501,7 @@ describe("NEO-335 — the insert name, the parallel leaf and the short name reac
     );
     expect(withRole.insertName).toBe("Dugout Collection");
     expect(assessListingTitle(withRole).title).toBe(
-      "2026 Topps Chrome Dugout Collection Ken Griffey Jr. #5 Baseball",
+      "2026 Topps Chrome Dugout Collection Insert Ken Griffey Jr. #5 Baseball",
     );
     // An insert-level row without the role (a parallels-type child) is not an insert.
     for (const insertIsRole of [undefined, false]) {
@@ -450,6 +514,19 @@ describe("NEO-335 — the insert name, the parallel leaf and the short name reac
     }
   });
 
+  test("no role, no labels: a set with neither inputs exactly what it did", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "5", cardVariation: "Image Variation" },
+      SET,
+      { playerNames: ["Ken Griffey Jr."] },
+    );
+    expect(inputs).not.toHaveProperty("parallelIsRole");
+    expect(inputs).not.toHaveProperty("insertName");
+    expect(assessListingTitle(inputs).title).toBe(
+      "2026 Topps Chrome Ken Griffey Jr. #5 Image Variation Baseball",
+    );
+  });
+
   test("a parallel leaf's own value is the parallel token when the features name none", () => {
     const inputs = listingInputsForCard(
       { cardNumber: "5" },
@@ -457,7 +534,10 @@ describe("NEO-335 — the insert name, the parallel leaf and the short name reac
       { playerNames: ["A"] },
     );
     expect(inputs.parallelName).toBe("Gold Refractor");
-    expect(assessListingTitle(inputs).title).toBe("2026 Topps Chrome A #5 Gold Refractor Baseball");
+    expect(inputs.parallelIsRole).toBe(true);
+    expect(assessListingTitle(inputs).title).toBe(
+      "2026 Topps Chrome A #5 Gold Refractor Parallel Baseball",
+    );
   });
 
   test("a parallel the features already name wins over the leaf's value", () => {

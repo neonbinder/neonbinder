@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
-import type { TitleContext } from "../../convex/features/listingInputs";
+import { assessNewCardListing, type TitleContext } from "../../convex/features/listingInputs";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import {
   buildTitleGroups,
@@ -402,5 +402,50 @@ describe("NEO-335 — an operator's own title is never dropped by the short name
       listingShortName: SHORT_NAME,
     });
     expect(neverTrimmed.titleGroups).toEqual([]);
+  });
+});
+
+describe("NEO-335 — the Insert / Parallel labels on the step", () => {
+  const labelled = context({
+    setNameValue: "Chrome",
+    insertNameValue: "Dugout Collection",
+    insertIsRole: true,
+    parallelLeafValue: "Gold",
+  });
+
+  test("a card that loses only the labels is not on the step", () => {
+    // Fits without the labels; the team leaves no room for either word.
+    const c = card("5", { teams: ["LA Dodgers"] });
+    const { assessment } = assessNewCardListing(
+      { cardNumber: "5" },
+      labelled,
+      { playerNames: ["Shohei Ohtani"], teamNames: ["Los Angeles Dodgers"] },
+    );
+    expect(assessment.title).toBe(
+      "2026 Topps Chrome Dugout Collection Shohei Ohtani #5 Gold Los Angeles Dodgers",
+    );
+    expect(assessment.dropped).toEqual(["Baseball", "Parallel", "Insert"]);
+    expect(cardsNeedingTitleReview([c], labelled)).toEqual([]);
+  });
+
+  test("the shown title carries them; the left-out list never names them", () => {
+    const fits = card("5");
+    const cut = card("6", {
+      players: ["Shohei Ohtani", "Doc Gooden"],
+      cardVariation: "Wearing a throwback uniform",
+    });
+    const roomy = context({
+      setNameValue: "Chrome",
+      insertNameValue: "Dugout Collection Sapphire Platinum Anniversary",
+      insertIsRole: true,
+      parallelLeafValue: "Gold",
+    });
+    expect(cardsNeedingTitleReview([fits], labelled)).toEqual([]);
+    const { titleGroups } = buildTitleGroups([cut], roomy);
+    const shown = titleGroups.flatMap((g) => g.cards);
+    expect(shown).toHaveLength(1);
+    expect(shown[0].coreFits).toBe(false);
+    expect(shown[0].leftOut).not.toContain("Insert");
+    expect(shown[0].leftOut).not.toContain("Parallel");
   });
 });

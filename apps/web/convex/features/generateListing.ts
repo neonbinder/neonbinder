@@ -19,6 +19,11 @@
  *   then, while each still fits, in this order:
  *              AUTO, RELIC, <parallel>, /<printRun>, <cardVariation>,
  *              RC, SP|SSP, <each team name>, "Rookie", <sport>
+ *   then, last (NEO-335, the old title builder's labels), each placed right
+ *   after the name it labels:
+ *              "Parallel" after the parallel, "Insert" after the insert
+ *   and, only when the title does not fit otherwise, "Rookie" → "RC" inside
+ *   the insert's name, before the set's short name is tried.
  *
  * A listing title is the only text eBay's search actually matches on, so an
  * unused character is a search term thrown away. Jason's research
@@ -83,6 +88,15 @@ export type ListingCardInputs = {
   setShortName?: string;
   /** features.parallelName — "Base" for a plain base card, a real name otherwise. */
   parallelName?: string;
+  /**
+   * NEO-335 — the card's leaf is a parallel by NB ROLE (a sub-variant, or an
+   * insert-level row under a Parallel type: `derivedVariantFlags`, NEO-334),
+   * set by `listingInputsForCard` from the chain's `parallelLeafValue`. It is
+   * what earns the parallel token its "Parallel" label (`labelTokens`); never
+   * read off the parallel's name. The insert's label needs no such flag:
+   * `insertName` is itself present only on the insert role.
+   */
+  parallelIsRole?: boolean;
   isRookie?: boolean;
   isRelic?: boolean;
   /** features.autographed — "None" / "On Card" / "Sticker/Label". */
@@ -150,6 +164,12 @@ export type ListingTitleAssessment = {
    * otherwise, so an assessment without a short name is unchanged.
    */
   shortNameUsed?: true;
+  /**
+   * NEO-335 — present (and true) only when the title was built with "Rookie"
+   * shortened to "RC" in the insert's name (`rookieAsRc`), because the title
+   * did not fit otherwise. Absent otherwise.
+   */
+  rookieAsRcUsed?: true;
 };
 
 /**
@@ -266,20 +286,87 @@ function setIdentityTokens(inputs: ListingCardInputs, useShortName: boolean): st
 }
 
 /**
+ * NEO-335 — the label words the old title builder (`getTitles`) put after an
+ * insert's and a parallel's names: "1996 Score Dugout Collection Insert …",
+ * "… Gold Parallel". Jason, 2026-10-13: "yes include them and they are the
+ * first to drop if too long".
+ */
+export const INSERT_LABEL = "Insert";
+export const PARALLEL_LABEL = "Parallel";
+
+/**
+ * Does `name` already end with `label` as a word, singular or plural ("Gold
+ * Insert", "Prizm Parallels")? Then the label would only repeat it. The old
+ * builder appended regardless ("Gold Insert Insert"); this does not.
+ */
+function endsWithLabel(name: string, label: string): boolean {
+  const words = name.trim().toLowerCase().split(/\s+/);
+  const last = words[words.length - 1] ?? "";
+  const word = label.toLowerCase();
+  return last === word || last === `${word}s`;
+}
+
+/**
+ * NEO-335 — "Rookie" shortened to "RC" in an insert's name ("Rookie Debut" →
+ * "RC Debut"), applied only when the title does not fit otherwise. Exactly the
+ * old builder's replacement (`card.insert.replace('Rookie', 'RC')`): the FIRST
+ * occurrence, case-sensitive, no word boundary — so "Rookies" reads "RCs" and
+ * a lowercase "rookie" is left alone.
+ */
+export function rookieAsRc(name: string): string {
+  return name.replace("Rookie", "RC");
+}
+
+/**
  * NEO-335 — is this dropped optional token one of the generator's FILLER
- * words: the sport, or "Rookie" (the second spelling, appended only beside
- * "RC")? A filler drop is not a loss: those words exist to spend characters
- * that would otherwise go unused.
+ * words: the sport, "Rookie" (the second spelling, appended only beside
+ * "RC"), or the "Insert" / "Parallel" labels (appended only on those roles)?
+ * A filler drop is not a loss: those words exist to spend characters that
+ * would otherwise go unused, so none of them alone switches a title to the
+ * short name (rule A) or is listed as left out.
  */
 export function isFillerToken(token: string, inputs: ListingCardInputs): boolean {
   const sport = inputs.sport?.trim();
   if (sport && token === sport) return true;
+  if (token === INSERT_LABEL && !!inputs.insertName?.trim()) return true;
+  if (token === PARALLEL_LABEL && inputs.parallelIsRole === true) return true;
   return inputs.isRookie === true && token === "Rookie";
 }
 
 function isRealParallel(inputs: ListingCardInputs): boolean {
   const name = inputs.parallelName?.trim();
   return !!name && name.toLowerCase() !== "base";
+}
+
+/** The parallel's title token, when there is a real one. */
+function parallelToken(inputs: ListingCardInputs): string | undefined {
+  return isRealParallel(inputs) ? inputs.parallelName!.trim() : undefined;
+}
+
+/**
+ * NEO-335 — should the parallel token carry the "Parallel" label? Only on the
+ * parallel ROLE, only when the token does not already end with the word, and
+ * not when the token is the card's own variation text: NEO-189 copies
+ * `cardVariation` into `features.parallelName`, so on a parallel card with a
+ * variation the "parallel" token is really "Image Variation", and labelling it
+ * a parallel would say something untrue. (Same comparison the description
+ * makes before stating the variation a second time.)
+ */
+function parallelWantsLabel(inputs: ListingCardInputs): boolean {
+  const token = parallelToken(inputs);
+  if (!token || inputs.parallelIsRole !== true) return false;
+  if (endsWithLabel(token, PARALLEL_LABEL)) return false;
+  return token.toLowerCase() !== inputs.cardVariation?.trim().toLowerCase();
+}
+
+/**
+ * NEO-335 — should the insert's name carry the "Insert" label? Whenever the
+ * name is in the core (its presence IS the insert role, `listingInputsForCard`)
+ * and does not already end with the word.
+ */
+function insertWantsLabel(inputs: ListingCardInputs): boolean {
+  const insert = inputs.insertName?.trim();
+  return !!insert && !endsWithLabel(insert, INSERT_LABEL);
 }
 
 /**
@@ -307,7 +394,7 @@ function optionalTokens(inputs: ListingCardInputs): string[] {
   const tokens: string[] = [];
   if (inputs.autographed && inputs.autographed !== "None") tokens.push("AUTO");
   if (inputs.isRelic) tokens.push("RELIC");
-  if (isRealParallel(inputs)) tokens.push(inputs.parallelName!.trim());
+  if (isRealParallel(inputs)) tokens.push(parallelToken(inputs)!);
   if (inputs.printRun) tokens.push(`/${inputs.printRun}`);
   const variation = inputs.cardVariation?.trim();
   if (variation) tokens.push(variation);
@@ -491,15 +578,37 @@ export function assessListingTitle(
   inputs: ListingCardInputs,
   options: { shortNameRule?: ShortNameRule } = {},
 ): ListingTitleAssessment {
-  const full = buildTitle(inputs, false);
-  if (!inputs.setShortName?.trim()) return full;
+  // "Does not fit" means the core was cut or a token that is not filler was
+  // dropped. Losing only filler (the sport, the second "Rookie", the "Insert"
+  // and "Parallel" labels) is the generator spending spare room, not a loss.
+  const lost = (a: ListingTitleAssessment) =>
+    a.dropped.filter((token) => !isFillerToken(token, inputs)).length;
+  const fitsWhole = (a: ListingTitleAssessment) => a.coreFits && lost(a) === 0;
+
+  let best = buildTitle(inputs, false);
+  // NEO-335 — "Rookie" → "RC" in the insert's name, only when the title does
+  // not fit otherwise (Jason, 2026-10-13: "Rookie->RC should shorten only when
+  // needed"). The old builder's position: after the optional words are lost,
+  // BEFORE any shorter set or insert name is tried.
+  //
+  // "Needed" is held to its word: the shortened name is taken when the core
+  // was cut (four characters back for the card's own identity), or when it
+  // keeps a real token the full name lost. When it buys nothing — the same
+  // tokens are lost either way — the insert keeps its printed name. (The old
+  // builder kept it regardless, but it never re-tried a lost token after.)
+  const insert = inputs.insertName?.trim();
+  if (!fitsWhole(best) && insert && rookieAsRc(insert) !== insert) {
+    const rc = buildTitle({ ...inputs, insertName: rookieAsRc(insert) }, false);
+    if (!best.coreFits || lost(rc) < lost(best)) {
+      best = { ...rc, rookieAsRcUsed: true };
+    }
+  }
+  if (!inputs.setShortName?.trim()) return best;
   // NEO-335 — the short name, behind one rule (see `SHORT_NAME_RULE`).
   const rule = options.shortNameRule ?? SHORT_NAME_RULE;
   const useShortName =
-    rule === "C" ||
-    !full.coreFits ||
-    (rule === "A" && full.dropped.some((token) => !isFillerToken(token, inputs)));
-  if (!useShortName) return full;
+    rule === "C" || !best.coreFits || (rule === "A" && !fitsWhole(best));
+  if (!useShortName) return best;
   return { ...buildTitle(inputs, true), shortNameUsed: true };
 }
 
@@ -549,6 +658,10 @@ function buildTitle(
   // than that slack is — the operator is being asked to rewrite this title
   // anyway, via `coreFits: false`.
   const dropped: string[] = [];
+  const parallel = parallelToken(inputs);
+  // Where the parallel token ends in the title, once it is in. Later tokens
+  // only ever append, so the index stays true.
+  let parallelEnd: number | undefined;
   for (const token of optionalTokens(inputs)) {
     // A token the buyer has already read is not reported as dropped — it IS
     // in the title, just not a second time.
@@ -556,6 +669,32 @@ function buildTitle(
     const candidate = `${title} ${token}`;
     if (candidate.length > LISTING_TITLE_MAX) {
       dropped.push(token);
+      continue;
+    }
+    title = candidate;
+    if (token === parallel && parallelEnd === undefined) parallelEnd = title.length;
+  }
+
+  // NEO-335 — the "Parallel" and "Insert" labels, tried LAST so they are the
+  // first words lost when room runs out ("Insert" first, then "Parallel", the
+  // old builder's order), but each placed right after the name it labels.
+  // Skip, don't stop, as above.
+  //
+  // "Parallel" only when the parallel token itself made it in. "Insert" only
+  // on a full-name build whose core was not cut: with the short name the
+  // insert's name is not in the title to label, and a cut core is already
+  // short of its own identity words.
+  const labels: Array<{ word: string; at: number }> = [];
+  if (parallelEnd !== undefined && parallelWantsLabel(inputs)) {
+    labels.push({ word: PARALLEL_LABEL, at: parallelEnd });
+  }
+  if (!useShortName && coreFits && insertWantsLabel(inputs)) {
+    labels.push({ word: INSERT_LABEL, at: identity.length });
+  }
+  for (const { word, at } of labels) {
+    const candidate = `${title.slice(0, at)} ${word}${title.slice(at)}`;
+    if (candidate.length > LISTING_TITLE_MAX) {
+      dropped.push(word);
       continue;
     }
     title = candidate;

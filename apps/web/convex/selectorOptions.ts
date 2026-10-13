@@ -5985,6 +5985,9 @@ export const previewListingTitle = query({
       insertName: v.optional(v.string()),
       setShortName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
+      // NEO-335 — the leaf's parallel ROLE, which earns the parallel its
+      // "Parallel" label; the client re-assesses these inputs (shortNameUsed).
+      parallelIsRole: v.optional(v.boolean()),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
       autographed: v.optional(v.string()),
