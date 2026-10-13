@@ -2857,6 +2857,116 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
   });
 
   /**
+   * NEO-344 — the pills are bare names now, so a typed name that differs from
+   * a marketplace's only in what nobody can see or hear (a doubled space, an
+   * NBSP, NFD vs NFC) would be a third pill identical to that marketplace's.
+   * Those differences are folded; case and accents, which ARE visible
+   * corrections, are not.
+   */
+  describe("invisible differences select the matching side (NEO-344)", () => {
+    // Spelled with escapes so the source file cannot silently re-normalise them.
+    const JOSE_NFC = "José Ramírez";
+    const JOSE_NFD = "José Ramírez";
+
+    test("a doubled space selects BSC and commits BSC's own spelling", async () => {
+      const { onConfirm } = renderModal({ autoMatched: [conflicted()] });
+
+      fireEvent.click(screen.getByRole("radio", { name: /^Carl Yastrzemski — / }));
+      rename("#227c Carl Yastrzemski", "Mike  Yastrzemski");
+
+      expect(radios()).toHaveLength(2);
+      expect(checkedNames()).toEqual([
+        "Mike Yastrzemski — use this name for #227c",
+      ]);
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike Yastrzemski");
+    });
+
+    test("an interior NBSP selects SportLots", () => {
+      renderModal({ autoMatched: [conflicted()] });
+
+      rename("#227c Mike Yastrzemski", "Carl Yastrzemski");
+
+      expect(radios()).toHaveLength(2);
+      expect(checkedNames()).toEqual([
+        "Carl Yastrzemski — use this name for #227c",
+      ]);
+    });
+
+    test("an NFD-typed name selects the NFC side and keeps its NFC spelling", async () => {
+      const { onConfirm } = renderModal({
+        autoMatched: [autoConflict("30", "Andres Gimenez", JOSE_NFC)],
+      });
+
+      fireEvent.click(screen.getByLabelText("Edit name for #30 Andres Gimenez"));
+      const field = screen.getByLabelText("Edit name for #30");
+      fireEvent.change(field, { target: { value: JOSE_NFD } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      expect(radios()).toHaveLength(2);
+      expect(checkedNames()).toEqual([`${JOSE_NFC} — use this name for #30`]);
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(JOSE_NFC);
+    });
+
+    test("dropping the accents is still a correction, not a pick", () => {
+      renderModal({
+        autoMatched: [autoConflict("30", JOSE_NFC, "Andres Gimenez")],
+      });
+
+      fireEvent.click(screen.getByLabelText(`Edit name for #30 ${JOSE_NFC}`));
+      const field = screen.getByLabelText("Edit name for #30");
+      fireEvent.change(field, { target: { value: "Jose Ramirez" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      expect(radios()).toHaveLength(3);
+      expect(checkedNames()).toEqual(["Jose Ramirez — use this name for #30"]);
+    });
+
+    test("a case difference is still a correction, not a pick", () => {
+      renderModal({ autoMatched: [conflicted()] });
+
+      rename("#227c Mike Yastrzemski", "mike yastrzemski");
+
+      expect(radios()).toHaveLength(3);
+      expect(checkedNames()).toEqual([
+        "mike yastrzemski — use this name for #227c",
+      ]);
+    });
+
+    test("a typed custom name is stored canonically, so re-typing it is no new option", () => {
+      const { onConfirm } = renderModal({ autoMatched: [conflicted()] });
+
+      rename("#227c Mike Yastrzemski", "  Carl  Y.  ");
+      expect(screen.getByLabelText("Unlink #227c Carl Y.")).toBeTruthy();
+      rename("#227c Carl Y.", "Carl  Y.");
+
+      expect(radios()).toHaveLength(3);
+      expect(checkedNames()).toEqual(["Carl Y. — use this name for #227c"]);
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      return waitFor(() =>
+        expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Carl Y."),
+      );
+    });
+
+    test("on a row with no conflict, committing an untouched spaced name is a no-op", async () => {
+      const { onConfirm } = renderModal({
+        autoMatched: [{ card: pairedCard("12", "Mike  Yastrzemski"), confidence: 1 }],
+      });
+
+      // Testing Library collapses whitespace in the accessible name it matches.
+      fireEvent.click(screen.getByLabelText("Edit name for #12 Mike Yastrzemski"));
+      fireEvent.keyDown(screen.getByLabelText("Edit name for #12"), { key: "Enter" });
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike  Yastrzemski");
+    });
+  });
+
+  /**
    * Unlink splits the pair back into its two halves, each with its OWN
    * marketplace name. A typed name belongs to the MERGED card and to neither
    * half, so stamping it onto both would destroy the disagreement the operator

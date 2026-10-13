@@ -32,3 +32,4 @@
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)
 - [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
+- [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
