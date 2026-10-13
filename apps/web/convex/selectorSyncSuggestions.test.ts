@@ -710,9 +710,7 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
     const after = await t.run(async (ctx) => ctx.db.get(synced));
     expect(after?.value).toBe("Base Cards");
     // The name moved and the LINKAGE did not. The Base was empty, so
-    // retitling it (and so changing its kind) is allowed (NEO-334), and no
-    // flag is written either way.
-    expect(after?.metadata?.isBase).toBeUndefined();
+    // retitling it (and so changing its kind) is allowed (NEO-334).
     expect(after?.platformFacets?.bsc).toEqual({ b0: "variant" });
   });
 
@@ -752,7 +750,6 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
     const after = await t.run(async (ctx) => ctx.db.get(synced));
     expect(after?.value).toBe("Base Cards");
     expect(after?.platformData.bsc).toEqual({ b0: "base-slug" });
-    expect(after?.metadata?.isBase).toBeUndefined();
   });
 
   test("a tier-0 item whose value is UNCHANGED never attempts the rename, so a protected row is not refused", async () => {

@@ -1562,8 +1562,8 @@ describe("VariantForm — the Base match check is for the parallel variant type 
     twinIds: { bsc: ["team-canada"], sportlots: [] },
   });
 
-  async function openDialogFor(value: string, metadata?: Record<string, unknown>) {
-    variantTypeRow = { _id: "vt1", level: "variantType", value, metadata };
+  async function openDialogFor(value: string) {
+    variantTypeRow = { _id: "vt1", level: "variantType", value };
     mockFetchRawOptions.mockResolvedValue(opensDialog());
     await renderForm();
     expect(
@@ -1603,8 +1603,8 @@ describe("VariantForm — the Base match check is for the parallel variant type 
     expect(mockConvexQuery).not.toHaveBeenCalled();
   });
 
-  it("a type titled Gold that still carries variantRole parallel gets no check: the title decides, never a flag", async () => {
-    await openDialogFor("Gold", { variantRole: "parallel" });
+  it("a type titled Gold gets no check: the title decides", async () => {
+    await openDialogFor("Gold");
     expect(mockUseConvex).not.toHaveBeenCalled();
     expect(mockConvexQuery).not.toHaveBeenCalled();
   });

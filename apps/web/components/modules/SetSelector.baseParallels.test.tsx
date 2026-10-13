@@ -5,8 +5,7 @@
  * The gate is the selected variant type's TITLE (NEO-334: "Parallel" or
  * "Parallels", read through `variantTypeKind`), never a flag. The fixtures
  * below lean on that: a type titled "Parallel Set" gets no section, a type
- * titled "Gold" that still carries a stray `variantRole: "parallel"` gets
- * none either, and the plural title gets one.
+ * titled "Gold" gets none either, and the plural title gets one.
  *
  * Mocking mirrors SetSelector.baseMapping.test.tsx: every column child is a
  * stub, `useQuery` is routed by reference string. Unlike that file, the real
@@ -55,11 +54,9 @@ const PARALLEL_SET_TYPE = {
   platformData: {},
 };
 
-/** A stray retired flag changes nothing: the title is Gold. */
-const FLAGGED_GOLD_TYPE = {
-  _id: "vt-flagged",
+const GOLD_TYPE = {
+  _id: "vt-gold",
   value: "Gold",
-  metadata: { variantRole: "parallel" },
   platformData: {},
 };
 
@@ -70,7 +67,7 @@ const ROWS: Record<string, unknown> = Object.fromEntries(
     PARALLEL_TYPE_PLURAL,
     INSERT_TYPE,
     PARALLEL_SET_TYPE,
-    FLAGGED_GOLD_TYPE,
+    GOLD_TYPE,
   ].map((r) => [r._id, r]),
 );
 
@@ -275,9 +272,9 @@ describe("SetSelector — Parallels of Base section visibility (NEO-321)", () =>
     expect(sectionHeading()).toBeNull();
   });
 
-  it("does not show for a type titled Gold that still carries variantRole parallel: the title decides, never a flag", () => {
+  it("does not show for a type titled Gold: the title decides", () => {
     render(<SetSelector />, { wrapper: DrilledToASet });
-    selectType("vt-flagged");
+    selectType("vt-gold");
     expect(sectionHeading()).toBeNull();
   });
 

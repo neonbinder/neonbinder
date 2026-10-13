@@ -117,7 +117,6 @@ async function seedTree(
     basePrefix?: string;
     baseTitle?: string;
     parallelTitle?: string;
-    parallelMeta?: Record<string, unknown>;
     parallelSlots?: boolean;
   } = {},
 ) {
@@ -149,7 +148,6 @@ async function seedTree(
       level: "variantType",
       value: opts.parallelTitle ?? "Parallel",
       parentId: set,
-      ...(opts.parallelMeta ? { metadata: opts.parallelMeta } : {}),
       ...(opts.parallelSlots === false
         ? {}
         : {
@@ -242,7 +240,7 @@ describe("getBaseSignatureForVariantType: not a parallel type", () => {
     expect(await sig(t, set)).toEqual({ status: "notParallelType" });
   });
 
-  test.each(["Inserts", "Promo", "Parallel Set"])(
+  test.each(["Inserts", "Promo", "Parallel Set", "Gold"])(
     "a variant type titled %j answers notParallelType",
     async (title) => {
       const t = convexTest(schema, modules);
@@ -251,16 +249,6 @@ describe("getBaseSignatureForVariantType: not a parallel type", () => {
       expect(await sig(t, parallel)).toEqual({ status: "notParallelType" });
     },
   );
-
-  test("a stray variantRole parallel flag on another title answers notParallelType", async () => {
-    const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t, {
-      parallelTitle: "Gold",
-      parallelMeta: { variantRole: "parallel" },
-    });
-
-    expect(await sig(t, parallel)).toEqual({ status: "notParallelType" });
-  });
 
   test("a type titled Parallels is a parallel type", async () => {
     const t = convexTest(schema, modules);
@@ -294,10 +282,9 @@ describe("getBaseSignatureForVariantType: which Base", () => {
     expect(await sig(t, orphan)).toEqual({ status: "noBase" });
   });
 
-  test("a set with no variant type titled Base answers noBase, whatever flag a row carries", async () => {
+  test("a set with no variant type titled Base answers noBase", async () => {
     const t = convexTest(schema, modules);
-    const { base, parallel } = await seedTree(t, { baseTitle: "Flagship" });
-    await t.run(async (ctx) => ctx.db.patch(base, { metadata: { isBase: true } }));
+    const { parallel } = await seedTree(t, { baseTitle: "Flagship" });
 
     expect(await sig(t, parallel)).toEqual({ status: "noBase" });
   });

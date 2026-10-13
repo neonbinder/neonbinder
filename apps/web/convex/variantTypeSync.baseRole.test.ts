@@ -209,9 +209,6 @@ describe("Sync Variant Types — the title is the kind, the slot gets the tag (N
     // the BSC side of every checklist under the row is unresolvable.
     for (const row of rows) {
       expect(row.platformFacets?.bsc).toEqual({ b0: "variant" });
-      // NEO-334: the title is the kind, so nothing is stored beside it.
-      expect(row.metadata?.isBase).toBeUndefined();
-      expect(row.metadata?.variantRole).toBeUndefined();
     }
     // …and the kinds come from the titles, exactly one Base.
     expect(rows.map((r) => [r.value, variantTypeKind(r)]).sort()).toEqual([

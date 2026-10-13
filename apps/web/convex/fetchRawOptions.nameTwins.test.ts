@@ -274,12 +274,10 @@ describe("fetchRawOptions at insert — the Base's SportLots set is dropped BY I
     expect(ids((await fetchInsert(t, insertTypeId)).slOptions)).toEqual(["100", "102"]);
   });
 
-  test("a stray isBase flag on a type with another title drops nothing", async () => {
+  test("a former Base retitled to another word drops nothing", async () => {
     const t = convexTest(schema, modules);
     const { insertTypeId, baseId } = await seed(t, { base: { sl: ["100"] } });
-    await t.run((ctx) =>
-      ctx.db.patch(baseId!, { value: "Zebra", metadata: { isBase: true } }),
-    );
+    await t.run((ctx) => ctx.db.patch(baseId!, { value: "Zebra" }));
     stubMarketplaces({ sl: [["100", "Anime"], ["102", "Anime Gold"]] });
 
     const res = await fetchInsert(t, insertTypeId);

@@ -161,10 +161,6 @@ export const selectorOptionLevelValidator = v.union(
  * (deliberately a hand-narrowed validator, so a client cannot send a role),
  * and each remaining key has its own owner —
  *   cardNumberPrefix  `setSelectorOptionCardNumberPrefix` (operator-typed)
- *   isInsert/isParallel  derived from the row's level and its variant-type
- *                     parent's role, at creation and on a level move
- *                     (convex/variantRole.ts); never client-sent
- *   isBase            BSC's base id at sync, or `setBaseVariantType`
  *   isBrandUnknown    `ensureBrandUnknownRow` (minted or adopted by the
  *                     manufacturer and set syncs) / `backfillBrandUnknownRole`
  *   setNamePrefix     the manufacturer row's value at creation
@@ -177,51 +173,6 @@ export const selectorOptionLevelValidator = v.union(
  */
 export const selectorOptionMetadataFields = {
   cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
-  /**
-   * NEO-291 — "the cards under this row are inserts" / "are parallels", as
-   * NB ROLES on an `insert`- or `parallel`-level row. Every parallel-level
-   * row is a parallel; an insert-level row is whatever its variant-type
-   * parent says (that parent's role comes from `isBase` or from the id in
-   * its `variant`-tagged BSC slot — never from its name). Derived ONCE at
-   * creation and replaced on a level move; absent means false, exactly as
-   * `isBase` below. Rows written before this ticket keep whatever the old
-   * checkboxes set; a sync that re-links one lacking BOTH flags adds the
-   * derived pair, and never flips a flag that is there.
-   */
-  isInsert: v.optional(v.boolean()),
-  isParallel: v.optional(v.boolean()),
-  /**
-   * NEO-239 — "this variantType row is the set's BASE", as an NB ROLE.
-   *
-   * Was detected by comparing the display value to the literal `"base"`,
-   * which made an NB behaviour depend on a name that came from a
-   * marketplace, and broke the moment an operator renamed the row. The role
-   * is decided ONCE — when the variantType row is created from BSC's `base`
-   * variant slot — and read from here afterwards, so a rename is free.
-   *
-   * Absent means "not the base", including on rows written before this
-   * field; `backfillVariantFacetAndBaseRole` sets it on the existing ones.
-   */
-  isBase: v.optional(v.boolean()),
-  /**
-   * NEO-306 — "the rows under this variantType row are inserts" / "are
-   * parallels", as an NB ROLE on a `variantType` row.
-   *
-   * Until NEO-306 this was re-read at RUNTIME from the id in the row's
-   * `variant`-tagged BSC slot, every time a child was created or a door asked
-   * what a type was — an NB behaviour keyed on a marketplace value (product
-   * invariant 4). It is now derived ONCE, when a sync writes the row (the
-   * adds-only conferral in `storeSelectorOptions` / `storeReconciledOptions`,
-   * `bscVariantEvidence` in variantRole.ts) or by the armed
-   * `backfillVariantTypeRole`, and read from here afterwards. The BSC slot
-   * itself is untouched: listing needs it.
-   *
-   * Never written on a row whose `isBase` is true (the reader checks `isBase`
-   * first, so un-marking the Base brings this back), never flipped or cleared
-   * by a sync or the backfill. Absent means "no known role": the rows beneath
-   * get no insert/parallel flag and read by level alone.
-   */
-  variantRole: v.optional(v.union(v.literal("insert"), v.literal("parallel"))),
   /**
    * NEO-272 — "NB has not identified the brand of this row's sets", as an NB
    * ROLE on a `manufacturer` row.
@@ -244,12 +195,11 @@ export const selectorOptionMetadataFields = {
    * routinely the difference between a title that fits and one the Cards
    * Needing Attention walker flags as cut short.
    *
-   * A FIELD, never a name comparison, exactly as `isBase` above is not keyed on
-   * the literal "Base". The name here is a MARKETPLACE FILTER LABEL that NB
-   * does not own, so keying NB behaviour on it is precisely the forward
-   * dependency product invariant 4 in CLAUDE.md forbids ("NB behaviour is never
-   * keyed on a marketplace value or name"); and an operator may rename the row
-   * besides. The field is `isBrandUnknown` rather than anything spelled
+   * A FIELD, never a name comparison. The name here is a MARKETPLACE FILTER
+   * LABEL that NB does not own, so keying NB behaviour on it is precisely the
+   * forward dependency product invariant 4 in CLAUDE.md forbids ("NB
+   * behaviour is never keyed on a marketplace value or name"); and an
+   * operator may rename the row besides. The field is `isBrandUnknown` rather than anything spelled
    * "placeholder" because this repo already spends that word on the unrelated
    * placeholder-CARD upload pipeline (`placeholderJobs`, `placeholderImages`,
    * `convex/placeholderPipeline.ts`).
@@ -291,7 +241,7 @@ export const selectorOptionMetadataFields = {
    * so keying either behaviour on it would be the forward dependency product
    * invariant 4 forbids. It is DEFAULTED from the value ONCE, at creation
    * (`storeSelectorOptions`' manufacturer insert, `addCustomSelectorOption`),
-   * exactly as `isBase` is decided once — and edited afterwards through
+   * and edited afterwards through
    * `setSelectorOptionSetNamePrefix` only. ABSENT means "buckets nothing":
    * a row lacking it (written before this field; the one-shot
    * `backfillBrandPrefixAndUnknownName` fills those) neither claims BSC sets
@@ -455,8 +405,8 @@ export const selectorOptionFields = {
    * hung off that one bit: whether marketplaces were queried, whether the
    * attach panel rendered, whether the row could be renamed, whether its cards
    * survived a re-sync, and a "Custom" badge. Every one of those is now
-   * expressed as what the row actually CARRIES — marketplace ids per side, an
-   * `isBase` role, a card's `platformData.<side>.ref`. There is no custom kind
+   * expressed as what the row actually CARRIES — marketplace ids per side, a
+   * variant type's title (its kind), a card's `platformData.<side>.ref`. There is no custom kind
    * of row.
    *
    * Kept optional and unread rather than dropped: removing a field from the
@@ -526,8 +476,7 @@ export const selectorOptionFields = {
    * NEO-277 — the TEAM this row's cards carry by default, picked once at set
    * level and carried down to every card beneath it.
    *
-   * A TYPED field, not a `features` key, for the same reason `isBase` above is
-   * a flag and not a name: a team is an ENTITY NB acts on by id — livery on the
+   * A TYPED field, not a `features` key: a team is an ENTITY NB acts on by id — livery on the
    * row, hall-of-fame and stint lookups, the picker, the missing-team
    * attention lane — and a string in the feature map is none of those things.
    * `features` holds attributes that are only ever displayed and compared as

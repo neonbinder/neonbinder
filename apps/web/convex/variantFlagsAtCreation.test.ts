@@ -2,8 +2,9 @@
  * NEO-291 / NEO-334 — the kind of a row at creation and re-sync.
  *
  * A variant type's TITLE is its kind (NEO-334), so a row created beneath one
- * is born with the `features.cardType` that title implies and NO
- * `metadata.isInsert` / `isParallel` flag. `writeOnceFeatureSnapshots.test.ts`
+ * is born with the `features.cardType` that title implies and no role flag
+ * in `metadata` (the retired `isInsert` / `isParallel` left the schema in
+ * NEO-334). `writeOnceFeatureSnapshots.test.ts`
  * pins the fresh-insert derivation through `storeReconciledOptions`. This file
  * covers the ground that is unique to the doors:
  *
@@ -14,7 +15,7 @@
  *   - a client that still sends `metadata.isInsert` to
  *     `storeReconciledOptions` is rejected at the validator, not merged.
  *   - a MATCHED row (one that already existed) is given no flag by a later
- *     sync, and a stray one it still carries is left exactly as found, in
+ *     sync, and the metadata it already carries is left exactly as found, in
  *     both `storeSelectorOptions` and `storeReconciledOptions`.
  */
 
@@ -226,12 +227,12 @@ describe("storeSelectorOptions — matched row, no flag written (NEO-334)", () =
     expect(row?.metadata).toBeUndefined();
   });
 
-  test("a matched row that still carries a stray isInsert is left as found, whatever the parent's title says", async () => {
+  test("a matched row's own metadata is left as found, whatever the parent's title says", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
-    // The parent's title says Parallels — contradicting the stray flag the
-    // row still carries. A re-sync neither reads nor "corrects" it.
+    // The parent's title says Parallels. A re-sync adds no role beside the
+    // prefix the row already carries.
     const variantTypeId = await insertVariantType(t, setNameId, "parallel");
     const insertId = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
@@ -239,7 +240,7 @@ describe("storeSelectorOptions — matched row, no flag written (NEO-334)", () =
         value: "Chrome Update",
         parentId: variantTypeId,
         children: [],
-        metadata: { isInsert: true },
+        metadata: { cardNumberPrefix: "CU-" },
         platformData: { bsc: { b0: "bsc-insert-1" } },
         platformSlotSeq: { bsc: 1 },
         lastUpdated: SENTINEL,
@@ -253,7 +254,7 @@ describe("storeSelectorOptions — matched row, no flag written (NEO-334)", () =
     });
 
     const row = await getRow(t, insertId);
-    expect(row?.metadata).toEqual({ isInsert: true });
+    expect(row?.metadata).toEqual({ cardNumberPrefix: "CU-" });
   });
 });
 
@@ -287,7 +288,7 @@ describe("storeReconciledOptions — matched row, no flag written (NEO-334)", ()
     expect(row?.metadata).toBeUndefined();
   });
 
-  test("a matched row that still carries a stray isParallel is left as found, whatever the parent's title says", async () => {
+  test("a matched row's own metadata is left as found, whatever the parent's title says", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -298,7 +299,7 @@ describe("storeReconciledOptions — matched row, no flag written (NEO-334)", ()
         value: "Gold Refractor",
         parentId: variantTypeId,
         children: [],
-        metadata: { isParallel: true },
+        metadata: { cardNumberPrefix: "GR-" },
         platformData: { bsc: { b0: "bsc-parallel-1" } },
         platformSlotSeq: { bsc: 1 },
         lastUpdated: SENTINEL,
@@ -314,7 +315,7 @@ describe("storeReconciledOptions — matched row, no flag written (NEO-334)", ()
     });
 
     const row = await getRow(t, insertId);
-    expect(row?.metadata).toEqual({ isParallel: true });
+    expect(row?.metadata).toEqual({ cardNumberPrefix: "GR-" });
   });
 });
 
