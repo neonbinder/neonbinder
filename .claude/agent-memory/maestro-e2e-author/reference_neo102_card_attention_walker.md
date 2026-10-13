@@ -1,6 +1,6 @@
 ---
 name: reference_neo102_card_attention_walker
-description: "NEO-102 needs-attention badge / header chip+filter / CardAttentionWalker + MissingTeamFixer — exact selectors, why a per-ATTEMPT_ID custom set is required for the exact-count assert, the TeamPicker-popover occlusion trap on the fixer's Save button, and the hard local-dev wall (new Convex functions absent on shared dev ⇒ whole-SPA error boundary)"
+description: "NEO-102 needs-attention badge / header pill (NEO-335: one amber `N need you`, chip+filter+Fix-them link retired) / CardAttentionWalker + MissingTeamFixer — exact selectors, why a per-ATTEMPT_ID custom set is required for the exact-count assert, the TeamPicker-popover occlusion trap on the fixer's Save button, and the hard local-dev wall (new Convex functions absent on shared dev ⇒ whole-SPA error boundary)"
 metadata:
   type: reference
 ---
@@ -10,14 +10,14 @@ metadata:
 > produce an unknown name. The wizard mechanics here are still accurate; the flow
 > names are history. See [[reference-neo220-wizard-only-from-real-fetch]].
 
-# NEO-102 — "needs attention" badge, chip + filter, and the attention walker
+# NEO-102 — "needs attention" badge, the header pill, and the attention walker
 
 Two flows, both `set-selector` + `regression`, both on a per-worker **and
 per-attempt** custom set under REAL `Baseball / 2024 / Topps`:
 
 | flow | set prefix | what it proves | provable locally? |
 |---|---|---|---|
-| `checklist-attention-badge-and-filter.yaml` | `cna-` | row badge, exact header count, filter toggle | **YES — green in 3m34s** |
+| `checklist-attention-badge-and-filter.yaml` | `cna-` | row badge, exact pill count, the walker's queue = the flagged rows (filter retired by NEO-335) | was green locally pre-NEO-335 |
 | `checklist-attention-walker-missing-team.yaml` | `cnw-` | walker: Skip / pick-a-team / "No team on this card" + reload persistence | **NO — needs a PR Convex preview** |
 
 ## Selectors (all verified against the components; the badge/chip set verified live)
@@ -26,21 +26,31 @@ per-attempt** custom set under REAL `Baseball / 2024 / Topps`:
   `aria-label` (→ Maestro `id:`):
   `id: "Card <cardNumber> needs attention: no team on this card yet"`.
   A colon in a MATCHER is fine (only flow `name:` fields are character-restricted).
-- **Header chip** — `text: "<N> need attention"` (the count is the label, so the
-  text IS the assertion) and `id: "Show only cards needing attention"`; when the
-  filter is ON the accessible name becomes `… (on)`, so the off-tap and the
-  on-tap target **different** ids — which is itself the proof the toggle toggled.
-- **Walker link** — `text: "Fix them one at a time"` (its aria-label carries the
-  count, `Fix cards needing attention one at a time (2)`, so match on the text
-  to stay count-agnostic).
-- **Walker** — `"Cards Needing Attention"` (h2); progress `<p role="status">`
-  renders `2 cards need attention · 0 fixed` — match it as
-  `".*2 cards need attention . 0 fixed.*"` (the `.` covers the middot without
-  typing U+00B7); footer `id: "Skip card <cardNumber> for now"` — **the only
-  card-specific handle in the dialog, so it is how you prove the walker is on
-  the card you expect**; close button text flips `"Close (Esc)"` →
+- **Header pill (NEO-335)** — ONE amber control, `text: "<N> need you"` /
+  `"1 needs you"` (SetRowActionButton: the visible text IS the accessible
+  name, no aria-label; its DOM id `checklist-needs-you` is never a handle).
+  The count is the label, so a full-match `text:` IS the exact-count assert,
+  and tapping it opens the walker. It replaced the `"<N> need attention"`
+  chip, the `Show only cards needing attention` filter, the `Fix them one at a
+  time` link and the post-save banner CTA — none of those strings exist any
+  more. A sibling sr-only `role=status` reads `N cards need you on this
+  checklist`; it never full-matches the pill's pattern. "Which rows are
+  flagged" (the old filter's job) is now proved by opening the walker: it
+  opens on the lowest-numbered flagged card and its counter is the queue
+  length. Walk order (NEO-335): missing team → unlinked names → titles, then
+  card number.
+- **Walker** — NEO-335 Phase 2: wears the wizard chrome — h2 `Tidy up this
+  set`, subtitle (`Cards with no team` / `Names not yet linked` / `Card
+  titles`), one `Step x of y` (y = cards seen this sitting, never shrinks; a
+  Skip or an answer advances x; NO "fixed" count — prove writes by the row
+  badge/pill after close). Footer `id: "Skip for now, card <cardNumber>"` —
+  **the only card-specific handle in the dialog, so it is how you prove the
+  walker is on the card you expect** (and how to tell it from the wizard,
+  which shares its title). Never tap the h2 by its DOM id; tap its text; close button text flips `"Close (Esc)"` →
   `"Done (Esc)"` when nothing is left; all-clear step
-  `"All clear — nothing on this checklist needs attention."`
+  `"All clear — nothing on this checklist needs attention."`, or (NEO-335)
+  `"All clear for now. Still looking up teams for K cards."` (`1 card`) when BSC-linked cards still await their lookup — never on a
+  hand-made card (no BSC ref)
 - **MissingTeamFixer** — `"No players on this card."` (a custom card carries
   pending player NAMES, never linked player rows, so this is the deterministic
   state); hint `"Pick at least one team, or record that this card has none."`;
@@ -58,8 +68,8 @@ a two-card flow (skip the first, answer the second) assertable.
 
 ## Why these flows need a per-ATTEMPT set, not just per-worker
 
-They assert an **EXACT** attention count (`"2 need attention"` →
-`"1 need attention"`). An exact count is only knowable on a checklist the
+They assert an **EXACT** attention count (`"2 need you"` →
+`"1 needs you"`). An exact count is only knowable on a checklist the
 attempt built from empty, so `SET_NAME: "cna-${WORKER_INDEX || 0}-${ATTEMPT_ID}"`.
 Bonus: the drill util's `when: notVisible: ${SET_NAME}` guard is FAST-true for a
 name that has never existed, where a reused name burns the full ~7s optional

@@ -44,9 +44,16 @@ Read it back by tapping `id: "Back to previous decision"` after the link
 (the wizard walks on immediately) → `id: "Decision for <row name>"` group →
 the text; then `Next` (anchored `below: "Already decided:.*"`) resumes.
 
-**The row's raw name is read off its heading** with `copyTextFrom: text:
-"New Team: .*"` + `evalScript` strip — the alias claim is "the checklist's
-spelling, exactly", so no club name is hard-coded.
+**The linked row is named, and the skip tap names the row it read.** The
+alias is live deployment-wide between commit and cleanup, so the linked
+string must be one no other flow can look up: "whichever club comes first"
+once linked "Montreal Royals", a career team the Big League flows also stage,
+and changed their walks (see [[pick-a-fixture-owned-name-by-name]]). On the
+Venezuelan set that is Navegantes, a BSC card club no other flow's set
+carries. The walk's skip tap is built from the heading it just copied
+(`Skip <escaped name> . (not a team|this team has no league)`, optional): a
+bare `Skip .*` tap issued while the previous skip lands can hit the NEXT row,
+which may be the row under test (NEO-335; [[guard-then-tap-toctou]]).
 
 **The Base-mapping notice's Close straddles the fold** after the warm drill
 (local y=603-635 on 625; CI's 15px horizontal scrollbar → 618-650 on 629 →
@@ -65,9 +72,9 @@ has its own (`id: "Cancel linking"`), and `tapOn: text: "Cancel (Esc)"` hits
 it first, closing only the panel. Exit through the footer once the panel is
 closed, or target `id`.
 
-**The wizard's counter counts EVERY decision** — after a league skip + a team
-link it reads "2 of N", so never wait for "1 of N" after the link; wait for
-the row's heading to go (`notVisible: "New Team: <row>"`) instead.
+**The wizard's counter counts EVERY decision** — "Step x of y" since
+NEO-335, x = decided + 1 on a name step — so never pin x after the link;
+wait for the row's heading to go (`notVisible: "New Team: <row>"`) instead.
 
 **Team Management after the commit:** filter by the single token, open the
 row by its printed short name `below:` the counter, then `scrollUntilVisible

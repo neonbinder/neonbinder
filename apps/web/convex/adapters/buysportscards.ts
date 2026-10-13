@@ -1935,8 +1935,9 @@ export const probeBscChecklistBatch = internalAction({
  * error) — distinct from `success: true, teamNames: []`, which means BSC
  * answered but genuinely has no team on file (an insert/subset card).
  * Callers that need retry semantics (resolveBscCardTeam) care about this
- * distinction; `fetchBscCardTeamNames` (the synchronous batch path) treats
- * both the same — it just won't populate a team either way. Shared by both.
+ * distinction, and since NEO-335 so does `fetchBscCardTeamNames` (the
+ * synchronous batch path): it hands the flag back per card, so the commit can
+ * tell an answered blank from a failed call. Shared by both.
  *
  * NEO-333: BSC answers a multi-team card with ONE comma-separated string
  * ("Cleveland Guardians, Washington Nationals"), which used to reach the
@@ -1955,7 +1956,7 @@ export const probeBscChecklistBatch = internalAction({
  * resolve to exactly one team (Jason, 2026-10-10). This adapter has no
  * database, so it hands both forms on and never decides between them.
  */
-export type BscCardTeamLookup = {
+export type BscCardTeamValue = {
   teamNames: string[];
   rawTeamName: string;
   success: boolean;
@@ -1963,8 +1964,8 @@ export type BscCardTeamLookup = {
 
 async function fetchBscCardTeamNameRaw(
   bscCardId: string,
-): Promise<BscCardTeamLookup> {
-  const failed: BscCardTeamLookup = {
+): Promise<BscCardTeamValue> {
+  const failed: BscCardTeamValue = {
     teamNames: [],
     rawTeamName: "",
     success: false,
@@ -2070,6 +2071,30 @@ export const resolveBscCardTeam = internalAction({
 });
 
 /**
+ * NEO-335 — one card's answer from the batch lookup below.
+ *
+ * `success` is `fetchBscCardTeamNameRaw`'s own flag, carried through rather
+ * than collapsed: `success: true` with an empty `rawTeamName` and no
+ * `teamNames` means BSC ANSWERED and has no team on file (an insert, a
+ * checklist card), while `success: false` means the call itself failed and
+ * nothing is known. The commit treats the two differently — an answered card
+ * is done (its `teamCheckDoneAt` is stamped at save), a failed one is queued
+ * for the background retry — so folding them together is what used to re-ask
+ * BSC about every blank card after save.
+ *
+ * NEO-333: the card's team value in BOTH forms, raw and comma split — see
+ * `fetchBscCardTeamNameRaw`. A failed lookup carries neither.
+ */
+export type BscCardTeamLookup = BscCardTeamValue & { bscCardId: string };
+
+const bscCardTeamLookupValidator = v.object({
+  bscCardId: v.string(),
+  rawTeamName: v.string(),
+  teamNames: v.array(v.string()),
+  success: v.boolean(),
+});
+
+/**
  * NEO-90: resolve teams for a batch of BSC card ids concurrently, with a
  * bounded fan-out — called synchronously from `fetchCardChecklist` so team
  * names surface in the SAME confirm dialog as new players, instead of
@@ -2077,43 +2102,58 @@ export const resolveBscCardTeam = internalAction({
  * `BSC_TEAM_LOOKUP_CONCURRENCY` and awaits each chunk before starting the
  * next (matches the existing `MAX_SL_FAN_OUT` bounded-fan-out precedent in
  * selectorOptions.ts — no concurrency-limiting utility exists elsewhere in
- * this codebase to reuse). Returns only the ids BSC answered with a usable
- * team value (a raw string or at least one part); a card whose lookup failed or had no team on file
- * (e.g. an insert/subset card) is simply absent from the result — the
- * caller treats that the same as "no team" either way.
+ * this codebase to reuse).
  *
- * NEO-333: each value carries BOTH forms of the card's team value: the raw,
+ * NEO-335: returns ONE entry per requested id, in request order, each with
+ * the lookup's `success` flag — see `BscCardTeamLookup`. It used to return
+ * only the ids that resolved to a non-empty name, which made "BSC has no team
+ * for this card" indistinguishable from "we could not reach BSC".
+ *
+ * NEO-333: each entry carries BOTH forms of the card's team value: the raw,
  * unsplit string and its comma split (see `fetchBscCardTeamNameRaw`).
  * `checklistCandidates.resolveCandidateTeams` tries the whole string against
  * existing teams first and falls back to the split. `teamNames` may be empty
  * while `rawTeamName` is not (a value naming more teams than a card carries);
- * the raw string is still worth a whole-name match.
+ * the raw string is still worth a whole-name match. An answered value that
+ * neither form can represent (over-length raw, unusable parts) arrives as an
+ * answered entry with both forms empty.
  */
 export const fetchBscCardTeamNames = internalAction({
   args: { bscCardIds: v.array(v.string()) },
-  returns: v.record(
-    v.string(),
-    v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
-  ),
-  handler: async (
-    _ctx,
-    args,
-  ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
-    const result: Record<string, { rawTeamName: string; teamNames: string[] }> =
-      {};
+  returns: v.array(bscCardTeamLookupValidator),
+  handler: async (_ctx, args): Promise<BscCardTeamLookup[]> => {
+    const result: BscCardTeamLookup[] = [];
+    const startedAt = Date.now();
     for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
       const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
       const results = await Promise.all(
         chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
       );
       chunk.forEach((bscCardId, idx) => {
-        const { rawTeamName, teamNames } = results[idx];
-        // Either form is enough: `rawTeamName` is "" when BSC's value was
-        // over the length cap (N1) while its comma parts may still stand.
-        if (rawTeamName || teamNames.length > 0) {
-          result[bscCardId] = { rawTeamName, teamNames };
-        }
+        const { rawTeamName, teamNames, success } = results[idx];
+        // A failed call never carries a value (`fetchBscCardTeamNameRaw`
+        // returns both forms empty), so nothing downstream can attach a team
+        // the call did not return.
+        result.push(
+          success
+            ? { bscCardId, rawTeamName, teamNames, success }
+            : { bscCardId, rawTeamName: "", teamNames: [], success },
+        );
       });
+    }
+    const failed = result.filter((r) => !r.success).length;
+    if (failed > 0) {
+      // Platform, operation, counts and timing only — never a card's text.
+      console.warn(
+        JSON.stringify({
+          msg: "bsc_card_team_lookup_failures",
+          platform: "bsc",
+          operation: "fetchBscCardTeamNames",
+          requested: args.bscCardIds.length,
+          failed,
+          ms: Date.now() - startedAt,
+        }),
+      );
     }
     return result;
   },

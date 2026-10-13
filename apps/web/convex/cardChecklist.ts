@@ -38,11 +38,28 @@ import { requireAdmin } from "./auth";
 import { findTeamsByFullName, resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
-import { teamOptionLabel } from "../lib/teams/team-era";
-import { MAX_CARD_TEAMS } from "./features/cardAttention";
-// NEO-330: the key `entityReviewSkips.nameNormalized` is written with (the
-// commit prelude's `norm`). A skip lookup keyed any other way would miss.
+// NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
+import { ConvexError } from "convex/values";
+import { sameNamePlayers } from "./players";
+// Called inside the handler only; `cardPlayerLinks.ts` imports this module
+// back (for `findSportForSelectorOption`), which is safe for the same reason.
+import { recentCardIdsForPlayer } from "./cardPlayerLinks";
+// NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
+// (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+import {
+  suggestTeamsForPlayer,
+  teamPreferenceRank,
+  UNRANKED,
+  type SuggestionCard,
+  type TeamPreferenceRank,
+  type TeamSuggestionTier,
+} from "./lib/teamFill";
+// NEO-335 Phase 2: the set's league (C2b) and a listing's team name as choices.
+import { findLeagueByName } from "./leagues";
+import { pickTeamForYear, teamOptionLabel } from "../lib/teams/team-era";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
+import { variantTypeKind } from "./variantRole";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -310,8 +327,11 @@ export const getForBscTeamCheck = internalQuery({
  * was long helps nobody. Duplicated rather than imported to keep this module
  * off `teams.ts`'s import graph, which is what let the NEO-236 rewrite take
  * the team lookup out of here cleanly.
+ *
+ * NEO-335: exported so the commit, which now stamps the same hint for a card
+ * whose fetch-time lookup answered, caps it at the same length.
  */
-const MAX_BSC_TEAM_NAME_LENGTH = 120;
+export const MAX_BSC_TEAM_NAME_LENGTH = 120;
 
 /**
  * NEO-330 — which of these team names has an operator ruled "not a team" for
@@ -857,11 +877,13 @@ export const confirmCardNoTeam = mutation({
  * covering the set year, and the filtered list came back empty, so the fixer
  * showed zero chips for a card whose answer was one lookup away. The career
  * is then offered whole, one suggestion per player per team. Still
- * suggestions: a chip the operator judges, never a fill. The set-level "Fill
- * teams" (`convex/teamFill.ts`) is where a one-team career becomes a write,
- * and only after a preview. Each fallback suggestion carries the year it
- * looked for (`uncoveredSetYear`), so the fixer can say "No 2025 team on file
- * — here's the whole career".
+ * suggestions: a chip the operator judges, never a fill. Each fallback
+ * suggestion carries the year it looked for (`uncoveredSetYear`), so the
+ * fixer can say "No 2025 team on file — here's the whole career". NEO-335:
+ * before save, the entity review wizard's "K cards have no team yet" section
+ * (`teamSuggestionsForPreview`) is where a one-team career becomes a
+ * PRE-FILLED answer — still the operator's, written only by their Confirm &
+ * Save.
  *
  * ## One per (player, team)
  *
@@ -1019,5 +1041,485 @@ export const suggestedTeamsForCard = query({
     // go" above). Offer the career rather than an empty fixer — as choices,
     // never as an answer (`inSetYear: false`).
     return collect(wholeCareer, false, year);
+  },
+});
+
+// ===========================================================================
+// NEO-335 — team suggestions for the cards a sync is ABOUT to save
+// ===========================================================================
+
+/**
+ * The most players one `teamSuggestionsForPreview` call answers for.
+ *
+ * Over-length is REFUSED, not truncated — a short answer would read as "no
+ * evidence" for the players it dropped. The wizard asks in slices of this size
+ * (one subscription per slice), so it never trips this; a direct call that
+ * does gets a count, never the names.
+ */
+export const TEAM_SUGGESTION_MAX_PLAYERS = 32;
+
+/**
+ * How many of one player's card links a call reads, newest first.
+ *
+ * The stored tiers want the player's cards under at most three nodes of ONE
+ * set, but `cardPlayerLinks` can only be asked "this player's cards in this
+ * sport", which for a star is every set he appears in. Newest first, because
+ * the set being synced — and its base, synced just before it — are the
+ * player's most recent cards far more often than not. A player whose evidence
+ * sits past this window simply falls through to the career tiers: the bound
+ * can cost a suggestion, never produce a wrong one.
+ *
+ * Per call: 32 players × (24 links + 24 cards + the player + the name lookup)
+ * is ~1,700 reads, plus each player's career teams (NEO-335 Phase 2 reads
+ * them to rank and sport-check the window; capped at 24 per player, cached
+ * across players, so a set's shared clubs are read once) and their leagues.
+ * Team-name lookups (`teamNames`) arrive in their own calls from the browser,
+ * never stacked on a full player slice.
+ */
+export const TEAM_SUGGESTION_LINKS_PER_PLAYER = 24;
+
+/** How many unselected candidates one player may offer. */
+export const TEAM_SUGGESTION_MAX_CANDIDATES = 6;
+
+/** A name past this is not a player name; it is not looked up at all. */
+const TEAM_SUGGESTION_MAX_NAME_LENGTH = 200;
+
+/** How many of the set's children are read to find its base checklist. */
+const TEAM_SUGGESTION_SET_CHILD_SCAN = 64;
+
+/**
+ * NEO-335 Phase 2 — how many team NAMES one call resolves (`teamNames`).
+ * Refused past it, like the players: the browser slices at this size, and its
+ * own constant is pinned to this one by the convex test.
+ */
+export const TEAM_SUGGESTION_MAX_TEAM_NAMES = 32;
+
+/**
+ * How many distinct career teams of one player are read to rank and
+ * sport-check them. A stint whose team is past this is kept unverified (rank
+ * "other"): dropping it could turn a two-team window into a false single
+ * answer, keeping it can only cost one.
+ */
+const TEAM_SUGGESTION_CAREER_TEAMS_READ = 24;
+
+const teamSuggestionTierValidator = v.union(
+  v.literal("sameNode"),
+  v.literal("parallelOf"),
+  v.literal("baseSet"),
+  v.literal("oneTeamInWindow"),
+  v.literal("preferredInWindow"),
+  v.literal("oneTeamCareerInLeague"),
+);
+
+const suggestedTeamValidator = v.object({
+  teamId: v.id("teams"),
+  /** NEO-236: the FULL name — "Padres" does not say which Padres. */
+  name: v.string(),
+  /** The team's livery, for the chip. Absent for teams ESPN does not carry. */
+  colors: v.optional(
+    v.object({
+      primary: v.optional(v.string()),
+      secondary: v.optional(v.string()),
+    }),
+  ),
+  /**
+   * NEO-335 Phase 2 (C2b) — the team's fit to the set: 0 the set's league, 1
+   * the set's level, 2 anything else. Present only when the set HAS a league;
+   * absent means "nothing to prefer", which the browser ranks as 2.
+   */
+  rank: v.optional(v.number()),
+});
+
+type SuggestedTeam = {
+  teamId: Id<"teams">;
+  name: string;
+  colors?: { primary?: string; secondary?: string };
+  rank?: number;
+};
+
+type PlayerSuggestionResult = {
+  playerId: Id<"players"> | null;
+  answer: { tier: TeamSuggestionTier; teams: Array<SuggestedTeam> } | null;
+  candidates: Array<SuggestedTeam>;
+};
+
+/**
+ * NEO-335 — per-player team evidence for the entity review wizard's Teams
+ * step, BEFORE the cards are saved.
+ *
+ * The wizard holds the confirmed cards in client state; some will save with
+ * no team (SportLots never emits one, a BSC blank, a name skipped as "not a
+ * team"). For the players on those cards, this answers "is there exactly one
+ * team?" from what NB already holds:
+ *
+ *  - stored rows — the player's own cards under the node being synced, the
+ *    node it copies (a parallel), and the set's base checklist;
+ *  - the player row — exactly one team in the window `[setYear - 1, setYear]`,
+ *    or, in a tie, the one team the set's league prefers (C2, C2b); with
+ *    nothing in the window, a one-team career whose team is in the set's own
+ *    league (legends).
+ *
+ * The tiers, and why an ambiguous stored tier stops the search, are
+ * `lib/teamFill.ts`'s. Batch evidence (another card in the same preview) and
+ * players CREATED in this wizard are answered in the browser — neither has a
+ * row to read yet.
+ *
+ * Each entry names a player by `playerId` (linked in the wizard) or by `name`
+ * (a checklist name that resolved without review). A name is resolved the
+ * commit's way for an exactly-one match — `sameNamePlayers` in the set's
+ * sport — and anything else is no evidence, never a guess at which of two
+ * same-name players is meant. Results come back in input order.
+ *
+ * ## The set's league (C2b)
+ *
+ * The set's `features.league` — NB's own field, derived from the sport when
+ * the node is created and operator-editable — read from the nearest node on
+ * the walk up that carries one, resolved with `findLeagueByName` in the
+ * set's sport. Its id and `level` rank each career team (0 same league, 1
+ * same level, 2 other) to break a window tie and to order candidates. No
+ * league row → nothing is ranked and nothing is tie-broken.
+ *
+ * ## `teamNames` — names resolved to existing NB teams, as CHOICES
+ *
+ * Optional, aligned with the input. Each name is looked up the identity way
+ * (`findTeamsByFullName`: the name and alias legs, every era) in the set's
+ * sport, and every row it finds comes back ranked, the one whose era covers
+ * the set year first. Two callers in the browser: a listing's printed team
+ * name that NB could not resolve (invariant 8 — shown as choices, never
+ * pre-filled), and a wizard-created player's career team that names an
+ * existing team (so it can be ranked). Nothing is created and nothing is
+ * picked here.
+ *
+ * Suggestions only: nothing here writes, and nothing reads a marketplace
+ * value or name — every key is an NB id, or the Base variant type read from
+ * its title (`variantTypeKind`, NEO-334: a variant type's title is its kind).
+ * Whether a suggestion may PRE-FILL a card is the browser's call per card
+ * (`teams-on-cards.ts`), because only it can see what the card's listing said.
+ */
+export const teamSuggestionsForPreview = query({
+  args: {
+    /** The node the incoming cards will be saved under. */
+    selectorOptionId: v.id("selectorOptions"),
+    players: v.array(
+      v.object({
+        playerId: v.optional(v.id("players")),
+        name: v.optional(v.string()),
+      }),
+    ),
+    /** Team names to resolve to existing NB teams. See "teamNames" above. */
+    teamNames: v.optional(v.array(v.string())),
+  },
+  returns: v.object({
+    /** The year the career tiers compared against, so the browser's own
+     *  career answer (players created in the wizard) uses the same one. */
+    setYear: v.union(v.number(), v.null()),
+    /** The set's sport — the browser's team search and New Team dialog file
+     *  under it, and the commit refuses any other. */
+    sportId: v.union(v.id("selectorOptions"), v.null()),
+    /** The league the set prefers (C2b), when it has one we hold. */
+    setLeagueId: v.union(v.id("leagues"), v.null()),
+    players: v.array(
+      v.object({
+        playerId: v.union(v.id("players"), v.null()),
+        answer: v.union(
+          v.null(),
+          v.object({
+            tier: teamSuggestionTierValidator,
+            teams: v.array(suggestedTeamValidator),
+          }),
+        ),
+        candidates: v.array(suggestedTeamValidator),
+      }),
+    ),
+    /** One entry per `teamNames` input, in order; empty when none were asked. */
+    teamNames: v.array(v.object({ teams: v.array(suggestedTeamValidator) })),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    if (args.players.length > TEAM_SUGGESTION_MAX_PLAYERS) {
+      throw new ConvexError(
+        `Too many players to suggest teams for at once (${args.players.length}; max ${TEAM_SUGGESTION_MAX_PLAYERS}).`,
+      );
+    }
+    const teamNameArgs = args.teamNames ?? [];
+    if (teamNameArgs.length > TEAM_SUGGESTION_MAX_TEAM_NAMES) {
+      throw new ConvexError(
+        `Too many team names to look up at once (${teamNameArgs.length}; max ${TEAM_SUGGESTION_MAX_TEAM_NAMES}).`,
+      );
+    }
+    // NEO-335 security audit — the read budget. Each cap above is sized for a
+    // call that does ONE of the two jobs; a full player slice plus a full name
+    // slice in one transaction stacks both budgets. The browser already sends
+    // them as separate calls (TeamsOnCardsSection's `p…` and `n…` queries),
+    // so a call carrying both is refused rather than served.
+    if (args.players.length > 0 && teamNameArgs.length > 0) {
+      throw new ConvexError(
+        "Ask for players or team names in one call, not both.",
+      );
+    }
+
+    const empty = (): PlayerSuggestionResult => ({
+      playerId: null,
+      answer: null,
+      candidates: [],
+    });
+    const noTeams = () => ({ teams: [] as Array<SuggestedTeam> });
+
+    const node = await ctx.db.get(args.selectorOptionId);
+    if (!node) {
+      return {
+        setYear: null,
+        sportId: null,
+        setLeagueId: null,
+        players: args.players.map(empty),
+        teamNames: teamNameArgs.map(noTeams),
+      };
+    }
+
+    // One walk up the chain for the facts it holds: the sport (the card
+    // links are filed under the CARD's sport), the setName row whose
+    // children hold the base checklist, and the nearest `features.league`.
+    let sportId: Id<"selectorOptions"> | undefined;
+    let setNameNode: Doc<"selectorOptions"> | null = null;
+    let leagueName: string | undefined;
+    {
+      let cursor: Doc<"selectorOptions"> | null = node;
+      let depth = 0;
+      while (cursor && depth < 16) {
+        if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
+        const ownLeague = cursor.features?.league?.trim();
+        if (ownLeague && leagueName === undefined) leagueName = ownLeague;
+        if (cursor.level === "sport") {
+          sportId = cursor._id;
+          break;
+        }
+        cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
+        depth += 1;
+      }
+    }
+    const setYear = await findSetYearForSelectorOption(ctx, node._id);
+
+    // C2b — the set's league, by NB's own field and NB's own row.
+    const setLeague =
+      sportId && leagueName ? await findLeagueByName(ctx, { name: leagueName, sportId }) : null;
+    const setPreference = setLeague
+      ? { leagueId: setLeague._id as string, level: setLeague.level ?? null }
+      : null;
+
+    const parallelOfNodeId =
+      node.level === "parallel" && node.parentId ? node.parentId : null;
+
+    // The base checklist: the variantType whose title is the word "Base"
+    // (`variantTypeKind`, NEO-334 — the title is the kind, there is no flag).
+    // Exactly one, or the tier is skipped.
+    let baseNodeId: Id<"selectorOptions"> | null = null;
+    if (setNameNode) {
+      const bases: Array<Id<"selectorOptions">> = [];
+      for (const childId of (setNameNode.children ?? []).slice(
+        0,
+        TEAM_SUGGESTION_SET_CHILD_SCAN,
+      )) {
+        const child = await ctx.db.get(childId);
+        if (child?.level === "variantType" && variantTypeKind(child) === "base") {
+          bases.push(child._id);
+        }
+      }
+      if (bases.length === 1) baseNodeId = bases[0];
+    }
+
+    const relevantNodes = new Set<string>(
+      [node._id, parallelOfNodeId, baseNodeId].filter(
+        (id): id is Id<"selectorOptions"> => id !== null,
+      ),
+    );
+    const currentYear = new Date().getFullYear();
+
+    const leagueLevelCache = new Map<string, string | null>();
+    const leagueLevel = async (leagueId: Id<"leagues">): Promise<string | null> => {
+      if (!leagueLevelCache.has(leagueId)) {
+        const league = await ctx.db.get(leagueId);
+        leagueLevelCache.set(leagueId, league?.level ?? null);
+      }
+      return leagueLevelCache.get(leagueId) ?? null;
+    };
+
+    // Team reads, cached. `null` = cannot be offered: deleted, or another
+    // sport's team (the commit refuses a whole save that names one —
+    // `validateOperatorTeamIds` — so it is never something to offer).
+    const teamCache = new Map<string, { team: SuggestedTeam; rank: TeamPreferenceRank } | null>();
+    const readTeamRow = async (
+      team: Doc<"teams"> | null,
+      teamId: Id<"teams">,
+    ): Promise<{ team: SuggestedTeam; rank: TeamPreferenceRank } | null> => {
+      if (!teamCache.has(teamId)) {
+        if (!team || team.sportId !== sportId) {
+          teamCache.set(teamId, null);
+        } else {
+          const rank = setPreference
+            ? teamPreferenceRank(
+                {
+                  leagueId: team.leagueId ?? null,
+                  leagueLevel: team.leagueId ? await leagueLevel(team.leagueId) : null,
+                },
+                setPreference,
+              )
+            : UNRANKED;
+          teamCache.set(teamId, {
+            team: {
+              teamId,
+              name: teamFullName(team),
+              ...(team.colors ? { colors: team.colors } : {}),
+              // Only when there is a league to prefer: an unranked answer
+              // stays byte-identical to what it was before C2b.
+              ...(setPreference ? { rank } : {}),
+            },
+            rank,
+          });
+        }
+      }
+      return teamCache.get(teamId) ?? null;
+    };
+    const readTeam = async (teamId: Id<"teams">) =>
+      teamCache.has(teamId)
+        ? (teamCache.get(teamId) ?? null)
+        : readTeamRow(await ctx.db.get(teamId), teamId);
+
+    const byPlayerId = new Map<string, PlayerSuggestionResult>();
+    const answerFor = async (
+      playerId: Id<"players">,
+      preloaded?: Doc<"players">,
+    ): Promise<PlayerSuggestionResult> => {
+      const cached = byPlayerId.get(playerId);
+      if (cached) return cached;
+
+      const player = preloaded ?? (await ctx.db.get(playerId)) ?? undefined;
+      const cards: Array<SuggestionCard> = [];
+      if (sportId) {
+        const cardIds = await recentCardIdsForPlayer(
+          ctx,
+          playerId,
+          sportId,
+          TEAM_SUGGESTION_LINKS_PER_PLAYER,
+        );
+        for (const cardId of cardIds) {
+          const card = await ctx.db.get(cardId);
+          if (card && relevantNodes.has(card.selectorOptionId)) cards.push(card);
+        }
+      }
+
+      // The career, sport-checked and ranked BEFORE the window is counted: a
+      // two-sport athlete's football stint must not make his baseball window
+      // a tie, and a deleted team is not a team.
+      const careerIds = [...new Set((player?.teamYears ?? []).map((entry) => entry.teamId))];
+      const known = new Map<string, TeamPreferenceRank | null>();
+      for (const teamId of careerIds.slice(0, TEAM_SUGGESTION_CAREER_TEAMS_READ)) {
+        const read = await readTeam(teamId);
+        known.set(teamId, read ? read.rank : null);
+      }
+      const usablePlayer = player
+        ? {
+            teamYears: (player.teamYears ?? []).filter((entry) => known.get(entry.teamId) !== null),
+          }
+        : undefined;
+
+      const suggestion = suggestTeamsForPlayer({
+        playerId,
+        player: usablePlayer,
+        cards,
+        nodeId: node._id,
+        parallelOfNodeId,
+        baseNodeId,
+        year: setYear,
+        currentYear,
+        maxCandidates: TEAM_SUGGESTION_MAX_CANDIDATES,
+        rankOf: (teamId) => known.get(teamId) ?? UNRANKED,
+      });
+
+      let answer: PlayerSuggestionResult["answer"] = null;
+      const candidates: Array<SuggestedTeam> = [];
+      if (suggestion.answer) {
+        const teams: Array<SuggestedTeam> = [];
+        for (const teamId of suggestion.answer.teamIds) {
+          const read = await readTeam(teamId);
+          if (read) teams.push(read.team);
+        }
+        // A dangling team in the answer makes it no longer the whole answer;
+        // offer what is left to pick from instead of a partial pre-fill.
+        if (teams.length === suggestion.answer.teamIds.length) {
+          answer = { tier: suggestion.answer.tier, teams };
+        } else {
+          candidates.push(...teams);
+        }
+      }
+      for (const teamId of suggestion.candidates) {
+        const read = await readTeam(teamId);
+        if (read) candidates.push(read.team);
+      }
+      const result: PlayerSuggestionResult = { playerId, answer, candidates };
+      byPlayerId.set(playerId, result);
+      return result;
+    };
+
+    const players: Array<PlayerSuggestionResult> = [];
+    for (const entry of args.players) {
+      if (entry.playerId) {
+        players.push(await answerFor(entry.playerId));
+        continue;
+      }
+      const trimmed = entry.name?.trim() ?? "";
+      if (!sportId || !trimmed || trimmed.length > TEAM_SUGGESTION_MAX_NAME_LENGTH) {
+        players.push(empty());
+        continue;
+      }
+      const normalized = normalizeEntityName(trimmed);
+      const matches = normalized ? await sameNamePlayers(ctx, normalized, sportId) : [];
+      // Exactly one, or no evidence: two same-name players is a question for
+      // the operator, and this query does not get to answer it.
+      players.push(
+        matches.length === 1 ? await answerFor(matches[0]._id, matches[0]) : empty(),
+      );
+    }
+
+    // Names → existing NB teams, every era, as choices. Never a pick: the
+    // order is only "the era covering the set year first, then the set's
+    // league first".
+    const teamNames: Array<{ teams: Array<SuggestedTeam> }> = [];
+    const byName = new Map<string, Array<SuggestedTeam>>();
+    for (const raw of teamNameArgs) {
+      const trimmed = raw.trim();
+      if (!sportId || !trimmed || trimmed.length > TEAM_SUGGESTION_MAX_NAME_LENGTH) {
+        teamNames.push(noTeams());
+        continue;
+      }
+      const key = normalizeEntityName(trimmed);
+      const cached = byName.get(key);
+      if (cached) {
+        teamNames.push({ teams: cached });
+        continue;
+      }
+      const rows = await findTeamsByFullName(ctx, sportId, trimmed);
+      const coveringId = pickTeamForYear(rows, setYear, { allowPastEra: true })?.row._id;
+      const resolved: Array<{ team: SuggestedTeam; rank: TeamPreferenceRank; covers: boolean }> =
+        [];
+      for (const row of rows) {
+        const read = await readTeamRow(row, row._id);
+        if (read) resolved.push({ ...read, covers: row._id === coveringId });
+      }
+      const teams = resolved
+        .map((entry, i) => ({ ...entry, i }))
+        .sort((a, b) => Number(b.covers) - Number(a.covers) || a.rank - b.rank || a.i - b.i)
+        .slice(0, TEAM_SUGGESTION_MAX_CANDIDATES)
+        .map((entry) => entry.team);
+      byName.set(key, teams);
+      teamNames.push({ teams });
+    }
+
+    return {
+      setYear: setYear ?? null,
+      sportId: sportId ?? null,
+      setLeagueId: setLeague?._id ?? null,
+      players,
+      teamNames,
+    };
   },
 });

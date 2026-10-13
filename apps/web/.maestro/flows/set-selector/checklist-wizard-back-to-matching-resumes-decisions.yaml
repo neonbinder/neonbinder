@@ -1,10 +1,10 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — Back to matching leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it"
+name: "Entity review — Back to Match Cards leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it"
 tags:
   - set-selector
 ---
-# R1 — ONE FEATURE (NEO-221, D9): "Back to matching". Before it, the only way
+# R1 — ONE FEATURE (NEO-221, D9): "Back to Match Cards". Before it, the only way
 # out of the entity-review wizard was Cancel, which threw the whole review
 # away. Back PARKS the review instead: the operator returns to the card-pairing
 # dialog, and confirming it again lands on the SAME batch with every decision
@@ -22,19 +22,20 @@ tags:
 #
 # R2 — HARD ASSERTIONS, no branch that can green this flow without exercising
 #   the feature:
-#     (a) the wizard opens with NOTHING decided — "0 of N reviewed";
+#     (a) the wizard opens with NOTHING decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) one CREATE is taken and shows up in the history as "Added as new" —
 #         the state Back must preserve. Read as a name, not as a count: getting
 #         to a player row means answering every team step first (see
 #         util-wizard-walk-to-player-row), and those are answered as SKIPS, so
 #         "Added as new" can only be this flow's decision while "Decided (N)"
 #         is the whole batch's;
-#     (c) "Back to matching" closes the wizard AND the parked pairing dialog is
+#     (c) "Back to Match Cards" closes the wizard AND the parked pairing dialog is
 #         what replaced it, asserted POSITIVELY by its Confirm control (a bare
 #         notVisible would also pass on a dead error-boundary page);
 #     (d) re-confirming reopens the wizard on the SAME batch, with that same
 #         "Added as new" still in the history. A Back that cancelled the batch
-#         would reopen at "0 of N" with no Decided list at all; a Back that lost
+#         would reopen at "Step 1 of N" with no Decided list at all; a Back that lost
 #         the parked session would fail at (c).
 #
 #   The counts are regexes, not literals. How many unknown names the fixture
@@ -78,7 +79,7 @@ tags:
 
 # NEO-287 — the parked pairing session exists only when TWO marketplaces were
 # fetched. LIVE: STEPS 1-5, verbatim. PAUSED (`-e PAUSED_PLATFORMS`, decided
-# by util-paused-platforms): "Back to matching" is NOT offered — see the
+# by util-paused-platforms): "Back to Match Cards" is NOT offered — see the
 # util's return contract — and the wizard is left without a decision.
 - runFlow:
     file: ../util/util-paused-platforms.yaml
@@ -89,7 +90,7 @@ tags:
       # ============================================================
       # STEP 1 — R2(a): the review starts with nothing decided
       # Asserting it HERE is what makes STEP 4's read meaningful: without it,
-      # "1 of N" after the round trip could just be where we started.
+      # "Added as new" after the round trip could just be where we started.
       # ============================================================
 
       # A sibling read-only flow that went red left its batch on this shared set, and
@@ -99,7 +100,7 @@ tags:
           file: util-discard-resumed-review-batch.yaml
 
       - assertVisible:
-          text: "0 of [0-9]+ reviewed.*"
+          text: "Step 1 of [0-9]+"
 
       # ============================================================
       # STEP 2 — R2(b): take exactly ONE decision
@@ -111,28 +112,37 @@ tags:
       # shows can move out from under you while its career teams are staged. The util
       # walks to a settled player row the operator's way (see its header for the two
       # behaviours and the evidence). Every row it answers is a SKIP, so this flow's
-      # own decision is the only non-skip in the Decided list.
-      - runFlow: util-wizard-walk-to-player-row.yaml
+      # own decision is the only non-skip in the Decided list. READY_TO_CREATE:
+      # the create below needs a player whose create is not held by a career
+      # team the walk skipped (the util's step 5; CI run 38198207277 handed
+      # its siblings such players).
+      - runFlow:
+          file: util-wizard-walk-to-player-row.yaml
+          env:
+            READY_TO_CREATE: "true"
       - tapOn:
           id: "Add as New Player"
-      # The drain above answered every team step as a SKIP, so the create just made
-      # is the ONLY "Added as new" in the history — a sharper claim than a count,
-      # which the drain has moved off 1. `Decided (N)` proves the list is up at all.
-      - extendedWaitUntil:
-          visible:
-            text: "Added as new"
-      - assertVisible:
-          text: "Decided \\([0-9]+\\)"
+      # Read the create back off its own row (its "Already decided:" panel),
+      # never off the "Decided (N)" history. With the reference catalogue
+      # loaded Topps Big League stages ONE name, so this create is the last
+      # name and the wizard has already walked on to "Cards with no team",
+      # where the history is not rendered at all (CI run 38302511049 attempt
+      # 2). The util takes either footer Back. No RESUME: the panel's footer
+      # still carries "Back to Match Cards", which STEP 3 presses.
+      - runFlow:
+          file: util-wizard-read-back-decision.yaml
+          env:
+            DECISION: "Added as new"
 
       # ============================================================
       # STEP 3 — R2(c): THE FEATURE — leave review WITHOUT discarding it
-      # "Back to matching" drops the preview and re-opens the parked pairing
+      # "Back to Match Cards" drops the preview and re-opens the parked pairing
       # session. It deliberately does NOT cancel the batch.
       # ============================================================
 
-      - tapOn: "Back to matching"
+      - tapOn: "Back to Match Cards"
       - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
+          notVisible: "Tidy up this set"
       - assertVisible:
           id: "Confirm card matches"
 
@@ -145,16 +155,45 @@ tags:
       # re-looks-up, so a healthy run resolves this well inside the ceiling.
       #
       # THESE TWO ASSERTIONS ARE THE POINT OF THE FLOW. A Back that had cancelled the
-      # batch would reopen at "0 of N reviewed" with no Decided list at all.
+      # batch would reopen at "Step 1 of N" with no Decided list at all.
       # ============================================================
 
+      # Confirm's settled text before the re-confirm (NEO-195 sync point,
+      # enforced by scripts/maestro-pairing-sync.test.mjs now that this flow
+      # names "Back to Match Cards"). The session is PARKED, not re-fetched —
+      # the util already waited this text out before the first confirm — so it
+      # is on screen at once: an in-app 7000, not the 120000 a live fetch gets.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 7000
       - tapOn:
           id: "Confirm card matches"
       - extendedWaitUntil:
-          visible: "Confirm New Players & Teams"
+          visible: "Tidy up this set"
           timeout: 60000
-      # THE POINT OF THE FLOW: the create survived the round trip. Still the only
-      # "Added as new" among the drained skips, so this cannot pass by accident.
+      # THE POINT OF THE FLOW: the create survived the round trip. The resumed
+      # review opens either on a name step (names still undecided) or, when the
+      # create was the last name (Big League on the catalogue preview), past
+      # the names on the names-done footer. The "Decided (N)" history renders
+      # on name steps and on Save, never on the teams / titles steps (NEO-335
+      # Phase 2), so in the second shape the util walks to Save first, leaving
+      # every line on its default (nothing is saved: STEP 5 discards). The
+      # branch reads the gate's own node (memory: branch-on-copied-button-text).
+      # A Back that had cancelled the batch would reopen on a name step with
+      # nothing decided and no history, and fail the history asserts below.
+      # Still the only "Added as new" among the drained skips, so this cannot
+      # pass by accident.
+      - extendedWaitUntil:
+          visible:
+            text: "Skip . (not a (person|team)|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000
+      - copyTextFrom:
+          text: "Skip . (not a (person|team)|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
+      - runFlow:
+          when:
+            true: '${maestro.copiedText.indexOf("Skip") !== 0}'
+          file: util-wizard-advance-to-save.yaml
       - assertVisible:
           text: "Added as new"
       - assertVisible:
@@ -206,10 +245,10 @@ tags:
       - runFlow:
           file: util-discard-resumed-review-batch.yaml
       - assertVisible:
-          text: "0 of [0-9]+ reviewed.*"
+          text: "Step 1 of [0-9]+"
       - assertVisible:
           text: "Cancel (Esc)"
-      - assertNotVisible: "Back to matching"
+      - assertNotVisible: "Back to Match Cards"
       - tapOn:
           text: "Cancel (Esc)"
           retryTapIfNoChange: true

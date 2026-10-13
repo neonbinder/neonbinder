@@ -20,10 +20,13 @@ tags:
 # R2 — HARD ASSERTIONS, none satisfiable by an inert page:
 #   (a) the hand-added card's row carries the badge
 #       "Card 851-<attempt>, … needs attention: no team on this card yet"
-#       (CardChecklistItem's attention mark) and the header reads
-#       "1 need attention" — the badge came at once, with no sync;
-#   (b) the walker opens on THAT card (its Skip control names the number) and
-#       the fixer shows the linked player, "Players: George Brett"
+#       (CardChecklistItem's attention mark) and the header's amber pill
+#       reads "1 needs you" (NEO-335; it was "1 need attention") — the badge
+#       came at once, with no sync;
+#   (b) the walker opens on THAT card (its Skip control names the number),
+#       wearing the wizard chrome since NEO-335 Phase 2 ("Tidy up this set",
+#       subtitle "Cards with no team", "Step 1 of 1"), and the fixer shows
+#       the linked player, "Players: George Brett"
 #       (MissingTeamFixer.tsx:498);
 #   (c) the career fallback is OFFERED: the heading "No 2024 team on file —
 #       here’s the whole career. Pick the one on the card."
@@ -41,7 +44,8 @@ tags:
 #       (TeamPicker.tsx:559) lands and the hint becomes "Saves 1 team on this
 #       card. Ctrl+Enter saves from anywhere." (Cmd+Enter on a Mac);
 #   (f) "Save & Next (Enter)" (:627) saves: the walker reports "All clear"
-#       and "0 cards need attention · 1 fixed";
+#       (its counter holds "Step 1 of 1": y never shrinks and there is no
+#       "fixed" count since NEO-335; what the save WROTE is (g));
 #   (g) back on the checklist, the row's sub-line — a query-rendered read of
 #       the stored `teamOnCardIds`, not a draft echo — reads exactly
 #       "Kansas City Royals" (CardChecklistItem.tsx:179, full names joined),
@@ -224,23 +228,28 @@ tags:
 # page is centred on: UP, centred (R5 direction rule, R8).
 # ============================================================
 
+# NEO-335: the walker's one door is the header's amber "N need you" pill
+# ("1 needs you" for one card); the "Fix them one at a time" link and the
+# count chip are gone. The pill's visible text is its accessible name, and the
+# count is a full match, so "2 need you" fails here.
 - scrollUntilVisible:
     element:
-      text: "1 need attention"
+      text: "1 needs you"
     direction: UP
     centerElement: true
     timeout: 7000
-- tapOn: "Fix them one at a time"
+- tapOn: "1 needs you"
 - extendedWaitUntil:
-    visible: "Cards Needing Attention"
+    visible: "Tidy up this set"
     timeout: 7000
 # The walker is on THIS card — its Skip control is the one card-specific
-# handle in the dialog (CardAttentionWalker.tsx:451) — and its own counter
-# agrees with the header. "." matches the middot.
+# handle in the dialog (CardAttentionWalker.tsx, "Skip for now, card <n>"
+# since NEO-335) — and its counter agrees with the pill: one card, on screen.
+# The subtitle names the question. Header text, pinned.
 - assertVisible:
-    id: "Skip card 851-${ATTEMPT_ID} for now"
-- assertVisible:
-    text: ".*1 card needs attention . 0 fixed.*"
+    id: "Skip for now, card 851-${ATTEMPT_ID}"
+- assertVisible: "Step 1 of 1"
+- assertVisible: "Cards with no team"
 - assertVisible: "Players: George Brett"
 
 # ============================================================
@@ -296,8 +305,10 @@ tags:
 # it open (multi-team cards), and it is portalled `fixed` under its trigger,
 # over the Save row. A pointerdown outside the picker root closes it; the
 # walker's own heading is outside the scrolling body, so it cannot move.
-# Matched by its visible text, never its DOM id.
-- tapOn: "Cards Needing Attention"
+# Matched by its visible text, never its DOM id: "Tidy up this set" since
+# NEO-335 Phase 2 (the only node with that text while the walker is open; the
+# wizard that shares it is never open at the same time).
+- tapOn: "Tidy up this set"
 - extendedWaitUntil:
     notVisible:
       id: "Search teams"
@@ -308,11 +319,11 @@ tags:
 - extendedWaitUntil:
     visible: "All clear — nothing on this checklist needs attention."
     timeout: 7000
-- assertVisible:
-    text: ".*0 cards need attention . 1 fixed.*"
+# The counter holds y of y (y never shrinks); the write is proved in STEP 6.
+- assertVisible: "Step 1 of 1"
 - tapOn: "Done (Esc)"
 - extendedWaitUntil:
-    notVisible: "Cards Needing Attention"
+    notVisible: "Tidy up this set"
     timeout: 7000
 
 # ============================================================
@@ -335,7 +346,7 @@ tags:
     timeout: 7000
 - assertNotVisible:
     id: "Card 851-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
-- assertNotVisible: "Fix them one at a time"
+- assertNotVisible: "[0-9]+ needs? you"
 # A positive after the negatives (a dead page passes every notVisible).
 - assertVisible:
     id: "Edit card 851-${ATTEMPT_ID}(, .*)?"

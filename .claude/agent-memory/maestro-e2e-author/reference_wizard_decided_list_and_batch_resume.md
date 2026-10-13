@@ -1,6 +1,6 @@
 ---
 name: wizard-decided-list-and-batch-resume
-description: "Entity-review wizard counter/batch traps: never pin the header TOTAL (it grows as lookups stage career teams); and two proved by CI run 34072730449: the `Decided (N)` list falls out of Maestro's hierarchy on a tall step (assert the header count instead), and a review batch outlives its flow so a red flow cascades onto every sibling sharing the set."
+description: "Entity-review wizard counter/batch traps: read a decision back off its ROW via Back (the Decided list is collapsed, batch-ordered); READY_TO_CREATE for held players; never pin the header TOTAL (it grows as lookups stage career teams); and two proved by CI run 34072730449: the `Decided (N)` list falls out of Maestro's hierarchy on a tall step (assert the header count instead), and a review batch outlives its flow so a red flow cascades onto every sibling sharing the set."
 metadata:
   type: reference
 ---
@@ -43,9 +43,25 @@ each answer is a decision the wizard counts. Same run: confirm read
 flow's one create. Any literal `Discard 1 decision` / `Decided (1)` in a flow
 that walks to a player row is now wrong.
 
-Prove the flow's OWN decision by NAME, not by count: the skip-variant util
-leaves every drained row reading `Skipped`, so `Added as new` is unique; the
-create-variant leaves them `Added as new`, so `Skipped` is unique.
+Prove the flow's OWN decision by NAME, not by count — and read it off the
+ROW, never the list. Past five entries the list is COLLAPSED (an operator sees
+none of it) and in BATCH order, and Maestro still reports its first ~5 rows
+inside the viewport, so a `"Skipped"`/`"Linked to X"` assert on it passes only
+while the flow's row is early in the batch. NEO-335's `resolveNav` (a decided
+staged career team hands the walk back to the player it was staged for) moved
+the walk to deep rows (Roberto Clemente, ~30 down) and three flows went red on
+decisions that had landed (CI 38198207277). Use
+`util-wizard-read-back-decision.yaml`: footer `Back` (`Back to previous
+decision`) presents the last decision read-only, `text: <decision>` childOf
+`id: "Decision for .*"` (the footer group of that name is absent while
+reviewing), `RESUME: "true"` taps the panel's `Next` (re-tapped after a body
+pin only if the panel is still up).
+
+The same walk change lands on players whose CREATE is held ("needs a team
+decision" — the walk skipped their staged career team). Callers that must
+`Add as New Player` pass `READY_TO_CREATE: "true"` to the walk util, which
+skips held players (never unticks a chip). Those players are also tall: a
+career-form tap can hit the footer — `util-wizard-career-form-into-view.yaml`.
 
 # A review batch outlives its flow — one red flow cascades
 

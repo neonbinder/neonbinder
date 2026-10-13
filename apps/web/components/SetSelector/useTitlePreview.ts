@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+// Pure and browser-safe: the same generator the server titled the card with.
+import { assessListingTitle } from "../../convex/features/generateListing";
 
 /**
  * NEO-101 — "Regenerate", and the source fields behind a generated title.
@@ -64,6 +66,12 @@ type PreviewResult = {
      */
     manufacturerBrandUnknown?: boolean;
     setName?: string;
+    /**
+     * NEO-335 — the insert's name (gated on its NB role server-side) and the
+     * set's short name for titles. Optional: an older deploy predates them.
+     */
+    insertName?: string;
+    setShortName?: string;
     parallelName?: string;
     isRookie?: boolean;
     isRelic?: boolean;
@@ -133,7 +141,17 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
   //
   // Keyed on the flag, never on the manufacturer's name.
   if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
-  push("Set", inputs.setName);
+  // NEO-335 — the set and insert names, or the short name that stood in for
+  // both. Which one the title used is the generator's answer for these same
+  // inputs (`shortNameUsed`), never a guess from the title text.
+  const shortNameUsed =
+    !!inputs.setShortName?.trim() && assessListingTitle(inputs).shortNameUsed === true;
+  if (shortNameUsed) {
+    push("Short name", inputs.setShortName);
+  } else {
+    push("Set", inputs.setName);
+    push("Insert", inputs.insertName);
+  }
   // One chip per player, not a joined string: on a multi-player card the names
   // are what an operator weighs against each other when shortening.
   for (const name of inputs.playerNames ?? []) {
