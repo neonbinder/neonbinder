@@ -103,6 +103,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 | Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED (on the catalogue every name is known, so the fetch commits with no wizard; any name the wizard does stage is SKIPPED) — no player, team or league minted (NOT pre-synced) | `flows/set-selector/checklist-dual-team-card-links-both-teams.yaml` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
+| Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `flows/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.yaml` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ⏳ **PROPOSED for NEO-343/NEO-344, AWAITING OWNER APPROVAL** — see "Football → 2014 — the NEO-343 team-leader fixture" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -544,6 +545,52 @@ variantName is `Prospect Dual Autographs` (14 cards, PDA-AD … PDA-WW), and
 PDA-WW's BSC teams are Detroit Tigers and Boston Red Sox. In that run
 SportLots paired no set with the insert (Pending → Keep all), so the fetch
 took the one-marketplace path.
+
+### Football → 2014 — the NEO-343 team-leader fixture (Topps › Base) ⏳ PROPOSED, AWAITING OWNER APPROVAL
+
+Proposed 2026-10-13 for NEO-343 (BSC's "<Team> TL" team-leader cards) and
+NEO-344 (bare conflict values, and the picked value is the one saved). Not a
+fixture until Jason approves it; until then the flow must not merge.
+
+**Why this set.** BSC writes a team-leader card as `<Team> TL` only on Topps'
+flagship football bases (2013, 2014, 2015) and their 2013 Mini / 2015
+Oversized reprints, every one 440–500 cards; no small set carries one (BSC's
+public catalog facets, 2026-10-13; a `<Team> TL` search across baseball,
+basketball and hockey finds only 1990 SkyBox and 1974 O-Pee-Chee, both ~400).
+2014 is the one whose SportLots rows name the card `<Team>` (`#110 Buffalo
+Bills`): 2013's read `<Team> Team`, so 2013 keeps a name conflict after the
+fix and cannot prove it.
+
+**What the catalogues say (read 2026-10-13, public endpoints, NOT measured in
+the app).**
+
+| | |
+| -- | -- |
+| BSC base items | 554: 440 cards plus SP photo variations `1b`–`69b`, `365b`, and `442` (Jordan Lynch, SP, which SportLots does not list) |
+| team-leader cards | 32: `#6a`, `38a`, `39a`, `68a`, `73`, `94`, `99`, `101`, `105`, `108`, `110`, `116`, `130`, `146`, `158`, `166`, `182`, `191`, `193`, `204`, `212`, `213`, `221`, `226`, `236`, `251`, `268`, `271`, `298`, `299`, `314`, `327` |
+| SportLots `2014 Topps Base Set` | 447 public rows: #1–#440 plus variations `#9 [Running]`, `#25 [Red jersey]`, `#431 [Leaning left]` and `[Retail Factory Set]` on #356, #367, #374, #429, #434 |
+| pre-fix header (prod, 2026-10-13) | 40 name conflicts, 38 player conflicts |
+| expected natural conflicts after the fix | a handful (#72 Perry Riley / Riley Jr., #247 Robert Griffin III / Robert Griffin, #257 Super Bowl XLVIII / Seattle Seahawks Sb Champions, #405 George Atkinson III / George Atkinson, by name comparison) |
+
+**What the flow relies on, to pin on its first run:** the dialog's matched
+list opens on `#1a … #6a` with #6a (New England Patriots) the sixth row and
+matched; `#442` is BSC-only; at least one SportLots-only card heads the
+SportLots column; both counts land under 32; the picker's first-ranked
+candidate on each side is this set's Base (`2014 Topps Base Set` on
+SportLots); what the review wizard stages (up to 32 team names reported as
+players under the TC rule, plus non-person rows). Record the measured counts
+and the wall-clock here.
+
+**Cost (estimate, unmeasured).** Cold drill to the year ~30 s, Sets ~20 s,
+Variant Types ~15 s, Base picker ~10 s (`checklist-one-marketplace-…`'s
+measured cold path), a 554 + 447 card two-sided fetch ~60–90 s (Topps Big
+League's 310 cards took ~40 s), the dialog steps ~40 s, the commit with a
+skipped wizard ~20–60 s, the re-entry and read-back ~30 s: **~4–5 minutes**,
+inside the 600 s kill but among the suite's longest flows.
+
+**Sole writer of Football → 2014.** No other flow opens the year. The flow
+commits a deliberately mis-paired card (#442), so nothing else may read this
+set's cards.
 
 ### The one sanctioned read-only visitor
 

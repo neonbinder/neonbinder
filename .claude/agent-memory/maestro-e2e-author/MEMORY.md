@@ -157,3 +157,4 @@ Non-markdown helpers: `tools/`
 - [Past-era team fixture (3X MVP)](reference_past_era_team_fixture.md) — era options are a 192px inner list (pin, tap the era line); no card shows an era; fixer/Fill paths cannot share the one commit; Fill rows need fillable>0
 - [Late lookup reopens a bulk-skipped review](reference_late_lookup_reopens_a_bulk_skipped_review.md) — `Needed by: <skipped name>` step after Skip remaining; staging ignores the skip; product bug, never re-tap
 - [Reaching the missing-team fixer](reference_reaching_the_missing_team_fixer.md) — hand-added card + catalogue player, no team = badge at once + career chips unpicked; wizard Skip is not a route
+- [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: read each side off the unmatched columns before linking; select pills by value; big-set reach

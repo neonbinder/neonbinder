@@ -26,6 +26,10 @@ tags:
 #     name-conflict choice on the merged row, opens the Matched section to show
 #     it, defaults to BSC, changes the name the row will be saved with when the
 #     operator picks SportLots, and does NOT block Confirm.
+#   - NEO-344: that choice never names a marketplace. The warning reads
+#     "Potential names for this card — …" and every pill, visible text and
+#     accessible name alike, is the bare value (`<value> — use this name for
+#     #FS-1`); the operator's typed name is bare too. BSC stays preselected.
 #   - NEO-189 follow-up: when NEITHER marketplace has the name right, clicking
 #     the row's title opens a field, and the typed name becomes a third checked
 #     option in the same group — the name the row would be saved with.
@@ -367,6 +371,36 @@ tags:
       - assertVisible:
           text: ".*BSC only [(]2[)].*"
 
+      # ── READ BOTH NAMES OFF THE COLUMNS, BEFORE THE LINK ────────────────────────
+      # NEO-344 (Jason, 2026-10-13): the conflict pills no longer say which
+      # marketplace a value came from, so the flow can no longer tell the two
+      # names apart by a `BSC: ` / `SportLots: ` prefix on the pill. It reads
+      # them where the screen still says which side a card is on: the two
+      # UNMATCHED COLUMNS, whose rows are what the operator links. Each row's
+      # button is ONE text node, `label()` = `#<number> <name>` (Future Stars has
+      # no variation suffix), so stripping the `#FS-n ` prefix leaves the name the
+      # pill will show. No live value is hardcoded.
+      #
+      # Read BEFORE `Select BSC card …` is tapped: selecting renames that row's
+      # accessible name to `#FS-1 …, selected. Press to deselect.`.
+      #
+      # Each name goes back into `id:` as a FULL-match regex, so it is escaped
+      # once here (memory: runtime-names-need-regex-escaping); the raw value is
+      # kept for the equality check below.
+      - copyTextFrom:
+          id: "Select BSC card #FS-1 .*"
+      - evalScript: '${output.bscName = maestro.copiedText.trim().replace(/^#FS-1 /, "")}'
+      - copyTextFrom:
+          id: "Link selected BSC card to #FS-2 .*"
+      - evalScript: '${output.slName = maestro.copiedText.trim().replace(/^#FS-2 /, "")}'
+      - evalScript: '${output.bscNameRe = output.bscName.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
+      - evalScript: '${output.slNameRe = output.slName.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
+      # States the flow's one data precondition out loud: #FS-1 and #FS-2 have to be
+      # different players for there to be a disagreement at all. If a future printing
+      # ever put the same player on both, this fails HERE, naming the reason, rather
+      # than looking like the feature stopped working.
+      - assertTrue: ${output.slName !== output.bscName}
+
       # ── CROSS-LINK: BSC's #FS-1 to SportLots' #FS-2 ─────────────────────────────
       # The SportLots row is not clickable until a BSC row is selected, so the
       # selected-state label is the settle signal before the link.
@@ -403,49 +437,59 @@ tags:
 
       # The row itself: the warning region, the sentence explaining WHY there is a
       # choice, and the two names as a single-select group.
+      #
+      # NEO-344: the sentence no longer blames "these marketplaces", and each pill
+      # is the BARE value, visible and announced. Each pill is asserted on BOTH
+      # halves of one node — its accessible name (`<value> — use this name for
+      # <scope>`) AND its visible text (`<value>` exactly: the pill's direct text
+      # node is the label; the checked pill's `✓ ` is a separate aria-hidden span)
+      # — so a prefix returning to either fails here.
       - assertVisible:
           id: "Name conflict on #FS-1"
       - assertVisible:
-          text: ".*These marketplaces name this card differently.*"
+          text: ".*Potential names for this card — pick the right one before it is listed\\..*"
       - assertVisible:
           id: "Name for #FS-1"
       - assertVisible:
-          id: "BSC: .* — use this name for #FS-1"
+          id: "${output.bscNameRe} — use this name for #FS-1"
+          text: "${output.bscNameRe}"
       - assertVisible:
-          id: "SportLots: .* — use this name for #FS-1"
-
-      # ── BOTH NAMES ARE READ OFF THE SCREEN, SO NO LIVE VALUE IS HARDCODED ───────
-      - copyTextFrom:
-          id: "BSC: .* — use this name for #FS-1"
-      - evalScript: '${output.bscName = maestro.copiedText.replace("BSC: ", "").trim()}'
-      - copyTextFrom:
-          id: "SportLots: .* — use this name for #FS-1"
-      - evalScript: '${output.slName = maestro.copiedText.replace("SportLots: ", "").trim()}'
-      # States the flow's one data precondition out loud: #FS-1 and #FS-2 have to be
-      # different players for there to be a disagreement at all. If a future printing
-      # ever put the same player on both, this fails HERE, naming the reason, rather
-      # than looking like the feature stopped working.
-      - assertTrue: ${output.slName !== output.bscName}
+          id: "${output.slNameRe} — use this name for #FS-1"
+          text: "${output.slNameRe}"
+      # And no marketplace is named anywhere in the conflict UI: not the old
+      # sentence, not a prefixed pill name, not a prefixed pill text (players
+      # pills included — the cross-link also makes the roster disagree). These
+      # negatives ride on the positives just above, so they cannot pass on a
+      # dead page (memory: negative-asserts-pass-on-a-dead-page).
+      - assertNotVisible:
+          text: ".*These marketplaces .*"
+      - assertNotVisible:
+          id: "(BSC|SportLots|Custom): .* — use (this name|these players) for #FS-1"
+      - assertNotVisible:
+          text: "(BSC|SportLots|Custom): .*"
+          id: ".* — use (this name|these players) for #FS-1"
 
       # ── BSC IS THE DEFAULT — asserted on the NAME THE ROW WILL BE SAVED WITH,
       #    not on the pill's styling ────────────────────────────────────────────────
       # The merged row's own label (and so its Unlink control) carries whichever name
       # is currently chosen. It reading BSC's name is what "BSC is checked by
-      # default" actually MEANS to an operator.
+      # default" actually MEANS to an operator (Jason, 2026-10-13: the BSC
+      # preselection stays; only its visible and announced source goes).
       - assertVisible:
-          id: "Unlink #FS-1 ${output.bscName}"
+          id: "Unlink #FS-1 ${output.bscNameRe}"
 
-      # ── CHOOSING SPORTLOTS CHANGES THE NAME THE CARD WOULD BE SAVED WITH ────────
+      # ── CHOOSING THE OTHER VALUE CHANGES THE NAME THE CARD WOULD BE SAVED WITH ──
+      # Tapped by the value it shows, which is how an operator picks it.
       - tapOn:
-          id: "SportLots: .* — use this name for #FS-1"
+          id: "${output.slNameRe} — use this name for #FS-1"
       - extendedWaitUntil:
           visible:
-            id: "Unlink #FS-1 ${output.slName}"
+            id: "Unlink #FS-1 ${output.slNameRe}"
           timeout: 7000
       # And BSC's name is gone from the row — the choice replaced it rather than
       # adding to it.
       - assertNotVisible:
-          id: "Unlink #FS-1 ${output.bscName}"
+          id: "Unlink #FS-1 ${output.bscNameRe}"
 
       # ── NEITHER MARKETPLACE IS RIGHT: THE OPERATOR TYPES THE NAME ───────────────
       # The conflict control only ever offered a choice BETWEEN two transcriptions,
@@ -515,10 +559,14 @@ tags:
       # original value behind. "NB Operator Name" is unique enough to prove the
       # rename landed; a residual character is harmless to what is being tested and
       # is not worth a brittle exact match.
+      # NEO-344: the typed name is a bare pill too — no "Custom: " prefix
+      # (Jason, 2026-10-13: "keep it bare").
       - extendedWaitUntil:
           visible:
-            id: "Custom: NB Operator Name.* — use this name for #FS-1"
+            id: "NB Operator Name.* — use this name for #FS-1"
           timeout: 7000
+      - assertNotVisible:
+          id: "Custom: .* — use this name for #FS-1"
       # …and it is the CHECKED one. Asserted the way this flow asserts every other
       # choice: on the name the row will actually be saved with, not on the pill's
       # styling. The SportLots name is gone from the row, so the typed name replaced
@@ -526,13 +574,13 @@ tags:
       - assertVisible:
           id: "Unlink #FS-1 NB Operator Name.*"
       - assertNotVisible:
-          id: "Unlink #FS-1 ${output.slName}"
+          id: "Unlink #FS-1 ${output.slNameRe}"
       # Both marketplace names stay on offer, so the rename is as reversible as the
       # original two-way choice was.
       - assertVisible:
-          id: "BSC: .* — use this name for #FS-1"
+          id: "${output.bscNameRe} — use this name for #FS-1"
       - assertVisible:
-          id: "SportLots: .* — use this name for #FS-1"
+          id: "${output.slNameRe} — use this name for #FS-1"
 
       # ── A CONFLICT DOES NOT BLOCK CONFIRM ───────────────────────────────────────
       # Deliberately not a gate: blocking would let one flagged row hold a streamed
