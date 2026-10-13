@@ -1092,16 +1092,10 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
     },
   );
 
-  it.each([
-    ["Insert", undefined],
-    ["Base Set", undefined],
-    ["Promo", undefined],
-    // A stray retired flag changes nothing: the title decides.
-    ["Gold", { isBase: true }],
-  ] as const)(
+  it.each(["Insert", "Base Set", "Promo", "Gold"])(
     "shows no 'Base set' tag and offers no way to mark %j as the base",
-    (title, metadata) => {
-      currentRow = makeRow({ level: "variantType", value: title, metadata });
+    (title) => {
+      currentRow = makeRow({ level: "variantType", value: title });
       currentChain = makeChain("Baseball");
 
       renderPanel();
@@ -1303,11 +1297,10 @@ describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
     expect(screen.queryByLabelText("Set feature Card prefix")).toBeNull();
   });
 
-  it("is absent at a variantType carrying a stray isBase flag under another title: the title decides", () => {
+  it("is absent at a variantType under another title: the title decides", () => {
     currentRow = makeRow({
       level: "variantType",
       value: "Gold",
-      metadata: { isBase: true },
     });
     currentChain = makeChain("Baseball");
     renderPanel();

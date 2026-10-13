@@ -160,11 +160,9 @@ const levelValidator = v.union(
  * free): the insert/parallel flags are now DERIVED from where a row sits
  * (convex/variantRole.ts), a variant type's kind is its title (NEO-334), and
  * a client-sent value for any of them must be refused at the validator, not
- * merged. A
- * bundle deployed before this ticket that still sends `isInsert` /
- * `isParallel` / `isBase` gets an argument-validation error rather than a
- * silent write, which is the right failure for a role a client no longer
- * owns.
+ * merged: any key but `cardNumberPrefix` is an argument-validation error
+ * rather than a silent write, which is the right failure for a role a client
+ * does not own.
  */
 const metadataValidator = v.optional(
   v.object({ cardNumberPrefix: v.optional(v.string()) }),

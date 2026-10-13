@@ -221,12 +221,9 @@ describe("pickBaseVariantType — the title is the kind", () => {
       blockedReason: BLOCKED_MANY_BASES,
     });
   });
-  test("a title that only contains Base is no Base, and a stray isBase flag makes none", () => {
+  test("a title that only contains Base is no Base", () => {
     expect(
-      pickBaseVariantType([
-        { value: "Base Set" },
-        { value: "Gold", metadata: { isBase: true } },
-      ]),
+      pickBaseVariantType([{ value: "Base Set" }, { value: "Gold" }]),
     ).toEqual({ blockedReason: BLOCKED_NO_BASE });
   });
 });
@@ -304,10 +301,10 @@ describe("getParallelsForBuild — standing on the Parallel variant type", () =>
     expect(result.source?.value).toBe("Bases");
   });
 
-  test("a Base retitled away from the word is no Base: no source, and a stray isBase flag does not help", async () => {
+  test("a Base retitled away from the word is no Base: no source", async () => {
     const t = convexTest(schema, modules);
     const { parallelType } = await seedSet(t, {
-      base: { value: "Flagship", metadata: { isBase: true } },
+      base: { value: "Flagship" },
     });
     const result = await t
       .withIdentity(ADMIN)

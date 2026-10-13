@@ -52,6 +52,13 @@ whether they do or don't."
    built from an NB display value; adapters read ids from slots. A plan
    that says "derive X from the name" or "protect the name because the
    adapter reads it" is the smell — fix the adapter to read the slot.
+   **Exception, variant types (NEO-334):** a variantType row's title is NB's
+   own data and IS its kind. "Base", "Insert(s)" and "Parallel(s)" (exact
+   word, case-folded) are read from the title through one helper
+   (`apps/web/convex/variantRole.ts`); no flag mirrors it. Exactly one Base
+   per set; a rename that would change a type's kind is refused while rows
+   sit beneath it; singular and plural are one word, so no Promo + Promos
+   siblings. Sub-variants live only under Insert types.
 5. **Linkage is maintained, not optional.** Every attached marketplace id
    stays attached unless the operator detaches it, or that side was fetched
    successfully, no longer returns it, and the operator is told. Losing a
