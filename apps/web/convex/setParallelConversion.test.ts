@@ -429,12 +429,9 @@ describe("convertSetToParallel — guards", () => {
       conversionRefusal.moreThanBase("Bowman Aqua"),
     );
     // The one child is not titled Base: the title is the kind, so it is not
-    // the Base (and a stray isBase flag would not make it one).
+    // the Base.
     await t.run(async (ctx) => {
-      await ctx.db.patch(sl["Bowman Black"].baseId, {
-        value: "Starter",
-        metadata: { isBase: true },
-      });
+      await ctx.db.patch(sl["Bowman Black"].baseId, { value: "Starter" });
     });
     await expectRefusal(
       t,
@@ -511,18 +508,17 @@ describe("convertSetToParallel — guards", () => {
         }),
       conversionRefusal.notParallelType("Insert", "Bowman"),
     );
-    // A title that only contains the word is no Parallel type, and a stray
-    // retired flag on another title does not make one.
+    // A title that only contains the word is no Parallel type, and nor is
+    // another title.
     const named = await insertRow(t, {
       level: "variantType",
       value: "Parallel Set",
       parentId: ids.chromeId,
     });
-    const flagged = await insertRow(t, {
+    const gold = await insertRow(t, {
       level: "variantType",
       value: "Gold",
       parentId: ids.chromeId,
-      metadata: { variantRole: "parallel" },
     });
     await expectRefusal(
       t,
@@ -538,7 +534,7 @@ describe("convertSetToParallel — guards", () => {
       () =>
         as.mutation(api.setParallelConversion.convertSetToParallel, {
           setId: sl["Bowman Red"].setId,
-          targetParallelTypeId: flagged,
+          targetParallelTypeId: gold,
         }),
       conversionRefusal.notParallelType("Gold", "Bowman Chrome"),
     );
@@ -1043,7 +1039,6 @@ describe("promoteParallelToSet — the move", () => {
       platformData: { sportlots: { s0: "SL-PRISTINE" } },
       platformLabels: { sportlots: { s0: "Pristine" } },
       platformSlotSeq: { sportlots: 1 },
-      metadata: { isParallel: true },
     });
     const [c1, c2] = await addCards(t, pristine, [
       { n: "5", sl: { ref: "#5", src: "s0" } },
@@ -1149,7 +1144,6 @@ describe("promoteParallelToSet — the move", () => {
       platformData: { sportlots: { s0: "SL-STARS" } },
       platformLabels: { sportlots: { s0: "Stars" } },
       platformSlotSeq: { sportlots: 1 },
-      metadata: { isInsert: true },
     });
     const [c1] = await addCards(t, stars, [{ n: "S-1", sl: { ref: "#S-1", src: "s0" } }]);
     const eligibility = await t
@@ -1179,7 +1173,6 @@ describe("promoteParallelToSet — the move", () => {
       parentId: ids.insertTypeId,
       platformData: { bsc: { b0: "autos" } },
       platformSlotSeq: { bsc: 1 },
-      metadata: { isInsert: true },
     });
     const redInk = await insertRow(t, {
       level: "parallel",
@@ -1188,7 +1181,6 @@ describe("promoteParallelToSet — the move", () => {
       platformData: { sportlots: { s0: "SL-RED-INK" } },
       platformLabels: { sportlots: { s0: "Autos Red Ink" } },
       platformSlotSeq: { sportlots: 1 },
-      metadata: { isParallel: true },
     });
     const gold = await insertRow(t, {
       level: "parallel",
@@ -1196,7 +1188,6 @@ describe("promoteParallelToSet — the move", () => {
       parentId: autos,
       platformData: { bsc: { b0: "autos-gold" } },
       platformSlotSeq: { bsc: 1 },
-      metadata: { isParallel: true },
     });
     const [c1, c2] = await addCards(t, redInk, [
       { n: "A-1", sl: { ref: "#A-1", src: "s0" } },
@@ -1224,7 +1215,6 @@ describe("promoteParallelToSet — the move", () => {
       level: "insert",
       value: "Autos",
       parentId: ids.insertTypeId,
-      metadata: { isInsert: true },
     });
     const redInk = await insertRow(t, {
       level: "parallel",
@@ -1234,7 +1224,6 @@ describe("promoteParallelToSet — the move", () => {
       platformLabels: { sportlots: { s0: "Autos Red Ink" } },
       platformFacets: { bsc: { b0: "variantName" } },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
-      metadata: { isParallel: true },
     });
     await addCards(t, redInk, [{ n: "1", bsc: { ref: "b1", src: "b0" } }]);
     const result = await t

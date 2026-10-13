@@ -6,9 +6,8 @@
  *
  * The gate is the variant type's TITLE (NEO-334: "Insert" or "Inserts",
  * read through `variantTypeKind`), never a flag: a type titled "Insert Set"
- * gets no column, and neither does a type titled "Gold" that still carries a
- * stray `variantRole: "insert"`. "Group Parallels" lands rows as
- * sub-variants, so it follows the same gate.
+ * gets no column, and neither does a type titled "Gold". "Group Parallels"
+ * lands rows as sub-variants, so it follows the same gate.
  *
  * A `parallel` id left in the drill under a type that is not an Insert type
  * (a stale link) must not leave the page half-built: the checklist falls back
@@ -51,16 +50,14 @@ const INSERT_SET_TYPE = {
   value: "Insert Set",
   platformData: {},
 };
-/** A stray retired flag changes nothing: the title is Gold. */
-const FLAGGED_GOLD = {
-  _id: "vt-flagged",
+const GOLD_TYPE = {
+  _id: "vt-gold",
   value: "Gold",
-  metadata: { variantRole: "insert" },
   platformData: {},
 };
 
 const ROWS: Record<string, unknown> = Object.fromEntries(
-  [INSERT_TYPE, INSERTS_TYPE, PARALLEL_TYPE, PROMO_TYPE, INSERT_SET_TYPE, FLAGGED_GOLD].map(
+  [INSERT_TYPE, INSERTS_TYPE, PARALLEL_TYPE, PROMO_TYPE, INSERT_SET_TYPE, GOLD_TYPE].map(
     (r) => [r._id, r],
   ),
 );
@@ -232,7 +229,7 @@ describe("SetSelector — the Sub-Variants column only under an Insert type (NEO
     ["a Parallel type", "vt-parallel"],
     ["a type with no kind", "vt-promo"],
     ["a type titled \"Insert Set\" (the exact word decides)", "vt-insert-set"],
-    ["a type titled Gold that still carries variantRole insert (the title decides, never a flag)", "vt-flagged"],
+    ["a type titled Gold (the title decides)", "vt-gold"],
   ] as const) {
     it(`does not open under ${label}: the insert is the end of the cascade`, () => {
       renderAt(DRILLED_TO_A_SET);

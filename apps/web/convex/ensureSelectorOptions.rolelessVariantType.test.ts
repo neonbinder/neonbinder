@@ -23,7 +23,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Id } from "./_generated/dataModel";
 
 const modules = (
   import.meta as unknown as {
@@ -85,8 +85,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-type Metadata = Doc<"selectorOptions">["metadata"];
-
 /**
  * sport → year → brand → set → variant type, linked the way an SL-first
  * build is: sport/year/brand carry SportLots scope, the set row carries
@@ -96,7 +94,7 @@ type Metadata = Doc<"selectorOptions">["metadata"];
  */
 async function seedChain(
   t: ReturnType<typeof convexTest>,
-  opts: { title?: string; metadata?: Metadata; bsc?: { variantId: string } },
+  opts: { title?: string; bsc?: { variantId: string } },
 ): Promise<Id<"selectorOptions">> {
   const bsc = (id: string) => (opts.bsc ? { bsc: { b0: id } } : {});
   return t.run(async (ctx) => {
@@ -139,7 +137,6 @@ async function seedChain(
         sportlots: { s0: "884412" },
       },
       ...(opts.bsc ? { platformFacets: { bsc: { b0: "variant" as const } } } : {}),
-      ...(opts.metadata ? { metadata: opts.metadata } : {}),
       parentId: set,
       children: [],
       lastUpdated: SENTINEL,
@@ -172,21 +169,11 @@ const insertRowsUnder = (
   );
 
 describe("ensureSelectorOptions at insert — a variant type with no kind", () => {
-  test.each([
-    ["Promo", undefined],
-    ["Insert Set", undefined],
-    ["Base Parallels", undefined],
-    // A stray retired flag does not give a kind; the title decides.
-    ["Gold", { variantRole: "insert" }],
-    ["Gold", { isBase: true }],
-  ] as const)(
-    "titled %j (metadata %j), SportLots-only: the drill does NOT sync, and no marketplace is asked",
-    async (title, metadata) => {
+  test.each(["Promo", "Insert Set", "Base Parallels", "Gold"])(
+    "titled %j, SportLots-only: the drill does NOT sync, and no marketplace is asked",
+    async (title) => {
       const t = convexTest(schema, modules);
-      const typeId = await seedChain(t, {
-        title,
-        metadata: metadata as Metadata,
-      });
+      const typeId = await seedChain(t, { title });
 
       const res = await drill(t, typeId);
 
