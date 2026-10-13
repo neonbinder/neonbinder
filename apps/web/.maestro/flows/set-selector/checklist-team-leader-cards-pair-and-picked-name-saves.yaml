@@ -32,7 +32,7 @@ tags:
 #   checklist-pairing-dialog-cancel gives for carrying NEO-189 on its fetch.
 #
 # ── THE FIXTURE (SET-REGISTRY.md → "Football → 2014 — the NEO-343 team-leader
-#    fixture") ⏳ PROPOSED, AWAITING OWNER APPROVAL ─────────────────────────────
+#    fixture") ✅ APPROVED by Jason 2026-10-13 ─────────────────────────────────
 #   Football → 2014 → Topps › Topps › Base. BSC: 554 base items (440 cards plus
 #   their SP "b" photo variations), every team-leader card "<Team> TL", 32 of
 #   them (#6a, 38a, 39a, 68a, 73, 94, 99, 101, 105, 108, 110, 116, 130, 146,
@@ -42,9 +42,11 @@ tags:
 #   catalogues 2026-10-13; the in-app numbers below are NOT YET MEASURED.
 #   Why this set and not a smaller one: "TL" lives only on Topps' flagship
 #   football bases (2013–2015, plus the 2013 Mini and 2015 Oversized
-#   reprints, all 440–500 cards). 2014 is the only one where SportLots names
-#   the card "<Team>": 2013's SportLots rows read "<Team> Team", so 2013 keeps a
-#   name conflict after the fix and would not prove it.
+#   reprints, all 440–500 cards). 2014 is the one where SportLots names the
+#   card "<Team>", so the pair rests on the BSC "TL" parse alone. 2013's
+#   SportLots rows read "<Team> Team"; that parse (the SportLots adapter's
+#   team-card rule, same PR) is proved by the adapters' unit tests, not here —
+#   a 2013 fetch would be a second real year and another ~4-minute flow.
 #
 # ── WHY THE CARDS ASSERTED ARE THE ONES THEY ARE ─────────────────────────────
 #   The dialog's body and the checklist are both inner scrollers Maestro cannot
@@ -77,7 +79,8 @@ tags:
 #   syncs its Variant Types; the Base picker CONFIRMS a mapping on both sides;
 #   the checklist is COMMITTED, including the deliberately mis-paired #442. If
 #   the review wizard opens, every name is skipped (per-set
-#   `entityReviewSkips`); no player, team or league row is created. Not
+#   `entityReviewSkips`) and its teams / titles steps are left on their
+#   defaults; no player, team or league row is created. Not
 #   self-cleaning: the scripted reset at the head of every run is its cleanup.
 #   FRESH-ONLY — a re-run on the same preview finds the checklist committed
 #   and fails at STEP 3's empty-checklist assert, by name. Re-seed first.
@@ -111,8 +114,10 @@ tags:
 #              <label>`, `<label>, selected. Press to deselect.`, `Link selected
 #              BSC card to <label>`; `<label>` is `#<number> <name>[ ·
 #              <variation>]`
-#   wizard     `Confirm New Players & Teams`, `Skip remaining names (N)`,
-#              `Confirm & Save`
+#   wizard     `Tidy up this set` (NEO-335 title), `Skip remaining names
+#              (N)`, `Next (Enter)` (visible text only), `Confirm & Save`
+#              (Save step only); the post-name walk is
+#              util-wizard-advance-to-save's
 #   checklist  `Sync card checklist`, `No cards in this checklist yet.`,
 #              `Saved N cards`, `Edit card <number>, <name>`
 #
@@ -121,7 +126,8 @@ tags:
 #   conflict and then CANCELS (its set is read-only); this is the only flow
 #   that saves through a name decision and reads the answer back, and the only
 #   one that fetches a team-leader card. The drill is the shared utils' (R9);
-#   the wizard drain is checklist-one-marketplace-skips-match-dialog's.
+#   the bulk skip is checklist-one-marketplace-skips-match-dialog's, and the
+#   post-name walk to Save is util-wizard-advance-to-save (NEO-335).
 # ════════════════════════════════════════════════════════════════════════════
 
 - runFlow:
@@ -403,38 +409,66 @@ tags:
           notVisible: "Match Cards.*"
           timeout: 7000
 
-      # TWO LEGITIMATE SHAPES, named by the gate (R2): the review wizard (names
-      # the catalogue does not know — a team-leader card's team name is also
-      # reported as a PLAYER, the TC rule, so up to 32 of those) or the direct
-      # commit. 60000: the wizard opens behind the batch the entity check
-      # starts (R5; the dual-team flow's gate and ceiling). The branch reads
-      # the gate's own node (memory: branch-on-copied-button-text).
+      # TWO LEGITIMATE SHAPES, named by the gate (R2): the review wizard,
+      # "Tidy up this set" (NEO-335 WIZARD_TITLE) — names the catalogue does
+      # not know (a team-leader card's team name is also reported as a PLAYER,
+      # the TC rule, so up to 32 of those), or only its post-name steps (a
+      # teamless card, a title that needs a look) — or the direct commit.
+      # 60000: the wizard opens behind the batch the entity check starts (R5;
+      # the dual-team flow's gate and ceiling). The branch reads the gate's own
+      # node (memory: branch-on-copied-button-text); no notice reads `Saved`
+      # before a commit, so the copy is the node the gate just saw.
       - extendedWaitUntil:
           visible:
-            text: "Confirm New Players & Teams|.*Saved [1-9][0-9]* cards?.*"
+            text: "Tidy up this set|.*Saved [1-9][0-9]* cards?.*"
           timeout: 60000
       - copyTextFrom:
-          text: "Confirm New Players & Teams|.*Saved [1-9][0-9]* cards?.*"
+          text: "Tidy up this set|.*Saved [1-9][0-9]* cards?.*"
       - runFlow:
           when:
-            true: '${maestro.copiedText === "Confirm New Players & Teams"}'
+            true: '${maestro.copiedText === "Tidy up this set"}'
           commands:
-            # The names are not this flow's claim: skip every one in a single
-            # press, lookups and team steps included, creating nothing. The
-            # retry is checklist-one-marketplace-skips-match-dialog's: the
-            # batch can still grow after the wizard opens (a Wikidata career
-            # history stages teams), leaving one row undecided after the first
-            # press. Result-keyed, bounded; 60000 is that flow's ceiling for
-            # the same growing batch.
-            - retry:
-                maxRetries: 1
+            # WHICH ENTRY. The title renders only once the rows have loaded, so
+            # the footer is up with it: `Skip remaining names (N)` while any
+            # name is undecided, else the names-done footer — `Next (Enter)`
+            # (teams / titles step; NEO-335's no-names entry) or `Confirm &
+            # Save` (Save). Read once and branched on (memory: branch-on-
+            # copied-button-text), never a `when: visible` guard that costs
+            # ~6.6s whenever it misses (R10). One TEXT matcher: `Next (Enter)`
+            # has no accessible name.
+            - extendedWaitUntil:
+                visible:
+                  text: ".*Skip remaining names \\([0-9]+\\).*|Next \\(Enter\\)|.*Confirm & Save.*"
+                timeout: 7000
+            - copyTextFrom:
+                text: ".*Skip remaining names \\([0-9]+\\).*|Next \\(Enter\\)|.*Confirm & Save.*"
+            - runFlow:
+                when:
+                  true: '${maestro.copiedText.indexOf("Skip remaining names") >= 0}'
                 commands:
-                  - tapOn:
-                      text: ".*Skip remaining names \\([0-9]+\\).*"
-                  - extendedWaitUntil:
-                      visible:
-                        text: ".*Confirm & Save.*"
-                      timeout: 60000
+                  # The names are not this flow's claim: skip every one in a
+                  # single press, lookups and team steps included, creating
+                  # nothing. The retry is checklist-one-marketplace-skips-
+                  # match-dialog's: the batch can still grow after the wizard
+                  # opens (a Wikidata career history stages teams), leaving one
+                  # row undecided after the first press. Result-keyed, bounded;
+                  # 60000 is that flow's ceiling for the same growing batch.
+                  # Its terminal state is EITHER names-done footer (NEO-335:
+                  # the last decision walks on to "Cards with no team" / "Card
+                  # titles" when either applies, else straight to Save).
+                  - retry:
+                      maxRetries: 1
+                      commands:
+                        - tapOn:
+                            text: ".*Skip remaining names \\([0-9]+\\).*"
+                        - extendedWaitUntil:
+                            visible:
+                              text: "Next \\(Enter\\)|.*Confirm & Save.*"
+                            timeout: 60000
+            # Teams and titles are not this flow's claim either: the shared
+            # util (R3) presses Next on each, every line on its default, and
+            # stops on "Ready to save", proving each press moved the wizard.
+            - runFlow: util-wizard-advance-to-save.yaml
             - tapOn:
                 text: ".*Confirm & Save.*"
       # BOTH SHAPES END HERE (R2's hard result). The commit is an NB write:
