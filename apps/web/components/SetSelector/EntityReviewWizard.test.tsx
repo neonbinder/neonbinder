@@ -20,7 +20,7 @@
  *   5. "Link to Existing…" expands the (stubbed) EntityLinkSearch; selecting
  *      a row calls recordDecision({action:"link", linkedPlayerId/
  *      linkedTeamId}) with the right kind-specific field populated.
- *   6. The final "All reviewed — save N cards?" step appears ONLY once every
+ *   6. The final "Save N cards?" step appears ONLY once every
  *      row has a decision, and its Confirm button calls the onConfirm prop.
  *   7. Cancel calls cancelBatch then the onCancel prop — from ANY point in
  *      the flow, not just before any decisions are made.
@@ -467,9 +467,13 @@ function discardButton(): HTMLElement {
  * VoiceOver announces the result reliably. So the role now matches more than
  * one node and the progress line has to be picked out of them.
  */
+/** NEO-335 Phase 2 — the Save step's heading, "Save N cards?" / "Save 1 card?". */
+const SAVE_HEADING = /^Save \d+ cards?\?$/;
+
 function progressText(): string {
+  // NEO-335 Phase 2 — the header's one counter, "Step x of y".
   const texts = screen.getAllByRole("status").map((el) => el.textContent ?? "");
-  return texts.find((t) => t.includes("reviewed")) ?? "";
+  return texts.find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
 }
 
 /**
@@ -558,8 +562,10 @@ describe("EntityReviewWizard — current-item selection", () => {
     renderWizard();
 
     expect(screen.getByText(/Looking up 2 more names/)).toBeTruthy();
-    expect(progressText()).toContain("0 of 2 reviewed");
-    expect(progressText()).toContain("2 still being looked up");
+    // NEO-335 Phase 2: two names + Save, the first still to come. What is
+    // being looked up is the footer's to say, not the header's.
+    expect(progressText()).toBe("Step 1 of 3");
+    expect(footerStatusText()).toBe("2 still looking up — wait or skip");
   });
 
   it("skips a still-pending row and presents the next non-pending, undecided row instead", () => {
@@ -653,18 +659,22 @@ describe("EntityReviewWizard — progress counters", () => {
     ];
     renderWizard();
 
-    const status = progressText();
-    expect(status).toContain("1 of 3 reviewed");
-    expect(status).toContain("1 still being looked up");
+    // NEO-335 Phase 2: ONE counter over every screen — three names + Save,
+    // one decided, so the row on screen is step 2. The still-pending row is
+    // counted as a step to come, and the footer (not the header) says it is
+    // being looked up.
+    expect(progressText()).toBe("Step 2 of 4");
+    expect(footerStatusText()).toBe("1 still looking up — wait or skip");
   });
 
-  it("omits the 'still being looked up' clause once nothing is pending", () => {
+  it("says nothing about lookups in the header, and nothing in the footer once nothing is pending", () => {
     currentRows = [makeRow({ status: "ready" })];
     renderWizard();
 
-    const status = progressText();
-    expect(status).toContain("0 of 1 reviewed");
-    expect(status).not.toContain("still being looked up");
+    expect(progressText()).toBe("Step 1 of 2");
+    expect(screen.queryByText(/still being looked up/)).toBeNull();
+    expect(screen.queryByText(/of \d+ reviewed/)).toBeNull();
+    expect(footerStatusText()).toBe("");
   });
 });
 
@@ -1189,24 +1199,24 @@ describe("EntityReviewWizard — final confirm step", () => {
     ];
     renderWizard();
 
-    expect(screen.queryByText(/All reviewed/)).toBeNull();
+    expect(screen.queryByText(SAVE_HEADING)).toBeNull();
   });
 
-  it("shows 'All reviewed — save N cards?' once every row has a decision, pluralized correctly", () => {
+  it("shows 'Save N cards?' once every row has a decision, pluralized correctly", () => {
     currentRows = [
       makeRow({ decision: { action: "create" } }),
       makeRow({ decision: { action: "link", linkedPlayerId: "p1" } }),
     ];
     renderWizard({ summary: { ...SUMMARY, cardCount: 5 } });
 
-    expect(screen.getByText("All reviewed — save 5 cards?")).toBeTruthy();
+    expect(screen.getByText("Save 5 cards?")).toBeTruthy();
   });
 
   it("uses singular 'card' when cardCount is 1", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard({ summary: { ...SUMMARY, cardCount: 1 } });
 
-    expect(screen.getByText("All reviewed — save 1 card?")).toBeTruthy();
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
   });
 
   it("clicking Confirm & Save calls the onConfirm prop", () => {
@@ -1284,7 +1294,7 @@ describe("EntityReviewWizard — cancel", () => {
     expect(screen.queryByText(/Discard 1 decision/)).toBeNull();
     expect(mockCancelBatch).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
-    expect(screen.getByText("Confirm New Players & Teams")).toBeTruthy();
+    expect(screen.getByText("Tidy up this set")).toBeTruthy();
   });
 
   it("pluralizes the confirm title", () => {
@@ -1317,7 +1327,7 @@ describe("EntityReviewWizard — cancel", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     const { onCancel } = renderWizard();
 
-    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(screen.getByText(SAVE_HEADING)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     fireEvent.click(discardButton());
 
@@ -1445,7 +1455,7 @@ describe("EntityReviewWizard — cancel", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(mockCancelBatch).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
-    expect(screen.getByText("Confirm New Players & Teams")).toBeTruthy();
+    expect(screen.getByText("Tidy up this set")).toBeTruthy();
   });
 
   it("Escape while the link search is open closes the search, not the review", async () => {
@@ -1742,7 +1752,7 @@ describe("EntityReviewWizard — bulk 'Add remaining players as new'", () => {
     renderWizard();
 
     expect(screen.queryByText(/Add remaining players as new/)).toBeNull();
-    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(screen.getByText(SAVE_HEADING)).toBeTruthy();
   });
 
   it("surfaces a rejected bulk decide instead of swallowing it (NEO-110)", async () => {
@@ -1875,7 +1885,8 @@ describe("EntityReviewWizard — bulk walks the batch a page at a time", () => {
       makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
     ];
     const { rerender } = renderWizard();
-    expect(screen.getByText("0 of 2 reviewed")).toBeTruthy();
+    // NEO-335 Phase 2 — "Step x of y" (two names + Save) is the counter now.
+    expect(screen.getByText("Step 1 of 3")).toBeTruthy();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Add remaining players as new (2)" }),
@@ -1896,7 +1907,7 @@ describe("EntityReviewWizard — bulk walks the batch a page at a time", () => {
       makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
     ];
     rerenderWizard(rerender);
-    expect(screen.getByText("1 of 2 reviewed")).toBeTruthy();
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
 
     await act(async () => {
       secondPage.resolve(LAST_PAGE);
@@ -2312,7 +2323,7 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
     currentRows = [makeRow({ status: "ready", decision: { action: "create" } })];
     renderWizard();
 
-    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(screen.getByText(SAVE_HEADING)).toBeTruthy();
     expect(panelRegions().panel.className).toContain(DIALOG_HEIGHT_CLASS);
   });
 
@@ -2478,7 +2489,7 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
     renderWizard();
 
     expect(screen.queryByText(/Skip remaining names/)).toBeNull();
-    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(screen.getByText(SAVE_HEADING)).toBeTruthy();
   });
 
   it("surfaces a rejected bulk skip through the same alert as the bulk create (NEO-110)", async () => {
@@ -2541,8 +2552,14 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
       await screen.findByRole("button", { name: /Confirm & Save/ }),
     ).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /New Team: Kia Tigers/ })).toBeNull();
-    expect(progressText()).toContain("12 of 12 reviewed");
-    expect(progressText()).not.toContain("still being looked up");
+    // NEO-335 Phase 2: twelve rows + Save, and the walk is ON Save — every
+    // row, the skipped Kia Tigers step included, counted as done.
+    expect(progressText()).toBe("Step 13 of 13");
+    // The ten skipped rows still `pending` are not lookups anyone waits on:
+    // the footer's lookup line is gone, and so is the body's.
+    expect(footerStatusText()).toBe("");
+    expect(screen.queryByText(/still looking up/)).toBeNull();
+    expect(screen.queryByText(/Looking up \d+ more/)).toBeNull();
   });
 
   it("still presents a staged team that a player who is NOT skipped needs", () => {
@@ -2564,9 +2581,13 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
 
     expect(screen.getByRole("heading", { name: /New Team: Kia Tigers/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Confirm & Save/ })).toBeNull();
+    // NEO-335 Phase 2: three rows + Save, the skipped player already done, so
+    // the staged team on screen is step 2 — it is counted, not dropped with
+    // the skipped player.
+    expect(progressText()).toBe("Step 2 of 4");
     // The skipped row's lookup is not something the operator waits on.
-    expect(progressText()).toContain("1 of 3 reviewed");
-    expect(progressText()).not.toContain("still being looked up");
+    expect(footerStatusText()).toBe("");
+    expect(screen.queryByText(/still looking up/)).toBeNull();
   });
 });
 
@@ -4213,6 +4234,31 @@ describe("EntityReviewWizard — back and re-decide", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
   });
 
+  it("Back is the outlined secondary button the post-review steps use (Jason, 2026-10-13)", async () => {
+    currentRows = [alpha(), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    rerender(wizardEl());
+
+    const back = screen.getByRole("button", { name: "Back to previous decision" });
+    expect(back.textContent).toBe("Back");
+    expect(back.className).toContain("border-[#00C2FF]");
+    // 32px tall, the primary NeonButton's height; laid out as 16px (-my-2) so
+    // a wrapped row keeps the footer at the height the text link gave it.
+    expect(back.className).toContain("h-8");
+    expect(back.className).toContain("-my-2");
+    expect(back.className).not.toContain("underline");
+    expect(back.className).not.toContain("text-xs");
+    // Its own XPath marker, distinct from every other footer control's.
+    expect(markerClassOf(back)).toMatch(/-btn-back-decision$/);
+    // Still in the decision row, beside Skip.
+    const skip = screen.getByRole("button", { name: "Skip Bravo — not a person" });
+    expect(back.parentElement).toBe(skip.parentElement);
+  });
+
   it("the presented decided row does NOT auto-advance when the batch updates", async () => {
     // The `explicit` half of the nav rule. Without it the read-only panel would
     // be swept away by the next reactive update, because the row it shows is
@@ -4419,8 +4465,8 @@ describe("EntityReviewWizard — final-step summary", () => {
       summary: { cardCount: 12, deleteCount: 2, reviewDecisionCount: 3 },
     });
 
-    // Heading unchanged — "All reviewed" and the card count are E2E matchers.
-    expect(screen.getByText("All reviewed — save 12 cards?")).toBeTruthy();
+    // NEO-335 Phase 2 — "Save N cards?" replaced "All reviewed — save N cards?".
+    expect(screen.getByText("Save 12 cards?")).toBeTruthy();
 
     const pairs = Array.from(document.querySelectorAll("dt")).map((dt) => [
       dt.textContent,
@@ -4450,7 +4496,7 @@ describe("EntityReviewWizard — final-step summary", () => {
     currentRows = [makeRow({ decision: { action: "skip" } })];
     renderWizard({ summary: { cardCount: 0, deleteCount: 5, reviewDecisionCount: 0 } });
 
-    expect(screen.getByText("All reviewed — save 0 cards?")).toBeTruthy();
+    expect(screen.getByText("Save 0 cards?")).toBeTruthy();
     const terms = Array.from(document.querySelectorAll("dt")).map((dt) => dt.textContent);
     expect(terms).toEqual(["Cards to save", "Cards to delete", "Skipped as not a name"]);
   });
@@ -4503,7 +4549,12 @@ describe("EntityReviewWizard — commit failure", () => {
     const onDismissCommitError = vi.fn();
     renderWizard({ commitError: "Commit failed: timeout", onDismissCommitError });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to review" }));
+    const back = screen.getByRole("button", { name: "Back to review" });
+    // The wizard's one Back style: the outlined button, never a text link.
+    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("-btn-back-to-review");
+    expect(back.className).not.toContain("underline");
+    fireEvent.click(back);
 
     expect(onDismissCommitError).toHaveBeenCalledTimes(1);
   });
@@ -4603,21 +4654,36 @@ describe("EntityReviewWizard — expired session", () => {
 });
 
 // ---------------------------------------------------------------------------
-// NEO-220 — "Back to matching", the non-destructive way out
+// NEO-220 — "Back to Match Cards", the non-destructive way out
 // ---------------------------------------------------------------------------
 
 describe("EntityReviewWizard — back to matching", () => {
   it("offers it only when the parent has a matching session to return to", () => {
     currentRows = [makeRow({ status: "ready" })];
     const { unmount } = renderWizard();
-    expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to Match Cards" })).toBeNull();
     // …and Cancel is still the only way out on the custom-subtree path.
     expect(screen.getByRole("button", { name: CANCEL_REVIEW_NAME })).toBeTruthy();
     unmount();
 
     currentRows = [makeRow({ status: "ready" })];
     renderWizard({ onBack: vi.fn() });
-    expect(screen.getByRole("button", { name: "Back to matching" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to Match Cards" })).toBeTruthy();
+  });
+
+  it("is a quiet link, not a button-weight control (Jason, NEO-335 Phase 2)", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    const onBack = vi.fn();
+    renderWizard({ onBack, saving: true });
+    const link = screen.getByRole("button", { name: "Back to Match Cards" });
+    expect(link.className).toContain("underline");
+    expect(link.className).toContain("text-xs");
+    expect(link.className).not.toContain("rt-Button");
+    // Held while saving without leaving the tab order.
+    expect(link.getAttribute("aria-disabled")).toBe("true");
+    expect((link as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(link);
+    expect(onBack).not.toHaveBeenCalled();
   });
 
   it("goes back WITHOUT discarding the batch", async () => {
@@ -4631,7 +4697,7 @@ describe("EntityReviewWizard — back to matching", () => {
     const onBack = vi.fn();
     const { onCancel } = renderWizard({ onBack });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Match Cards" }));
 
     expect(onBack).toHaveBeenCalledTimes(1);
     await new Promise((r) => setTimeout(r, 0));
@@ -4717,7 +4783,7 @@ describe("EntityReviewWizard — re-deciding releases the pin", () => {
     currentRows = [alpha({ decision: { action: "create" } })];
     rerender(wizardEl());
 
-    expect(screen.getByText("All reviewed — save 3 cards?")).toBeTruthy();
+    expect(screen.getByText("Save 3 cards?")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Confirm & Save/ })).toBeTruthy();
     expect(screen.queryByRole("group", { name: "Decision for Alpha" })).toBeNull();
   });
@@ -4899,7 +4965,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
 // up. The bulk button's label was "Add remaining players as new (433) — 229 still
 // looking up, wait or skip", which wrapped to two centred lines, dragged
 // "Skip remaining names (433)" onto a second line with it, and left both sitting
-// crookedly beside "Back to matching" and "Cancel (Esc)".
+// crookedly beside "Back to Match Cards" and "Cancel (Esc)".
 //
 // A label whose LENGTH tracks a COUNT THAT CHANGES is the NEO-110 reflow class
 // at a smaller scale: the control's height moves under the cursor between a
@@ -5008,7 +5074,7 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard({ onBack: vi.fn() });
 
     const { actions, status } = footerRows();
-    for (const name of ["Back to matching", CANCEL_REVIEW_NAME]) {
+    for (const name of ["Back to Match Cards", CANCEL_REVIEW_NAME]) {
       const button = screen.getByRole("button", { name });
       expect(actions.contains(button)).toBe(true);
       expect(status.contains(button)).toBe(false);
@@ -6382,7 +6448,7 @@ describe("EntityReviewWizard — the bulk create is about players", () => {
     currentRows = [makeCareerTeamRow(player._id, "Sydney Blue Sox"), player];
     renderWizard();
 
-    expect(screen.queryByText(/All reviewed/)).toBeNull();
+    expect(screen.queryByText(SAVE_HEADING)).toBeNull();
     expect(screen.queryByRole("button", { name: CONFIRM_SAVE_NAME })).toBeNull();
     // And the step the operator still owes an answer to is what is on screen.
     expect(
@@ -6406,7 +6472,7 @@ describe("EntityReviewWizard — the bulk create is about players", () => {
     ];
     renderWizard();
 
-    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(screen.getByText(SAVE_HEADING)).toBeTruthy();
     expect(screen.getByRole("button", { name: CONFIRM_SAVE_NAME })).toBeTruthy();
   });
 
@@ -6581,7 +6647,7 @@ describe("EntityReviewWizard — the decision lives in the fixed footer", () => 
     // Portalled into the wizard's OWN dialog: outside the scrolling body that
     // clipped it, inside the subtree `inertBackground` leaves live.
     const wizardDialog = screen.getByRole("dialog", {
-      name: "Confirm New Players & Teams",
+      name: "Tidy up this set",
     });
     expect(list.parentElement).toBe(wizardDialog);
     expect(list.closest("[inert]")).toBeNull();
@@ -7566,7 +7632,8 @@ describe("EntityReviewWizard — the decided count and the scroll box", () => {
     expect(
       screen.getByRole("heading", { name: /New Team: Southern Illinois/ }),
     ).toBeTruthy();
-    expect(screen.getByText("1 of 2 reviewed")).toBeTruthy();
+    // NEO-335 Phase 2: one decided of two names, plus Save.
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
     expect(screen.getByText("Decided (1)")).toBeTruthy();
   });
 
@@ -7581,7 +7648,7 @@ describe("EntityReviewWizard — the decided count and the scroll box", () => {
     const scrollBox = document.querySelector(".overflow-y-auto");
     expect(scrollBox).toBeTruthy();
 
-    const header = screen.getByText("1 of 2 reviewed");
+    const header = screen.getByText("Step 2 of 3");
     expect(scrollBox!.contains(header)).toBe(false);
 
     const disclosure = screen.getByText("Decided (1)");
@@ -8057,7 +8124,7 @@ describe("EntityReviewWizard — modal isolation", () => {
   const live = (el: Element) => el.closest("[inert]") === null;
   const wizardPortal = () => {
     let el: Element | null = screen.getByRole("dialog", {
-      name: "Confirm New Players & Teams",
+      name: "Tidy up this set",
     });
     while (el && el.parentElement !== document.body) el = el.parentElement;
     return el as HTMLElement;
@@ -8484,9 +8551,16 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     ).toBeNull();
     expect(screen.queryByText(/on file under that name/)).toBeNull();
     expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Back to the list" })).toBeTruthy();
+    const backToList = screen.getByRole("button", { name: "Back to the list" });
     // One Back per screen: the previous-decision Back gives way to it.
     expect(screen.queryByLabelText("Back to previous decision")).toBeNull();
+    // …and it looks like every other Back in the wizard: the outlined button,
+    // not a dotted link (Jason, 2026-10-13: "yes stay consistent").
+    expect(backToList.className).toContain("border-[#00C2FF]");
+    expect(backToList.className).toContain("h-8");
+    expect(backToList.className).toContain("-my-2");
+    expect(backToList.className).not.toContain("underline");
+    expect(markerClassOf(backToList)).toMatch(/-btn-back-to-list$/);
   });
 
   it("Create new moves focus to the step's heading", async () => {

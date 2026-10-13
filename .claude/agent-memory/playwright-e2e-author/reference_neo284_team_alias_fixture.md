@@ -44,9 +44,15 @@ team link. Read it back with the `Back to previous decision` control after the l
 (the wizard walks on immediately), then the `Decision for <row name>` group's text; then
 `Next` resumes.
 
-**The row's raw name is read off its heading** (`New Team: <name>`) with `textContent()`
-and a string strip: the alias claim is "the checklist's spelling, exactly", so no club
-name is hard-coded.
+**The linked row is named, and the skip click names the row it read.** The alias is
+live deployment-wide between commit and cleanup, so the linked string must be one no
+other spec can look up: "whichever club comes first" once linked "Montreal Royals", a
+career team the Big League specs also stage, and changed their walks (see
+[[pick-a-fixture-owned-name-by-name]]). On the Venezuelan set that is Navegantes, a BSC
+card club no other spec's set carries. The walk's skip click is built from the heading
+it just read (`Skip <escaped name> . (not a team|this team has no league)`): a bare
+`Skip .*` click issued while the previous skip lands can hit the NEXT row, which may be
+the row under test (NEO-335).
 
 **A hand-staged career team's "New Team:" step waits on the deployment-wide Wikidata
 pool** (`maxParallelism: 5`, FIFO across every shard): with two Big League batches (88
@@ -59,8 +65,8 @@ external-exception timeout (GUIDE hard rule 3, commented at the site) between th
 own (`Cancel linking`), and a bare `getByRole("button", { name: "Cancel (Esc)" })` can
 resolve both (strict-mode error). Close the panel first, or scope to the footer.
 
-**The wizard's counter counts EVERY decision:** after a league skip plus a team link it
-reads "2 of N", so never wait for "1 of N" after the link; wait for the row's heading to
+**The wizard's counter counts EVERY decision:** "Step x of y" since NEO-335, x = decided
++ 1 on a name step, so never pin x after the link; wait for the row's heading to
 go (`New Team: <row>` hidden) instead.
 
 **Team Management after the commit:** filter by the single token, open the row by its

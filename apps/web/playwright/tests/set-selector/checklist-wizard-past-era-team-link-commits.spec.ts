@@ -14,7 +14,7 @@
 // and the measurement). Its clubs, per BSC's facets: Philadelphia Athletics on
 // #34 and #35 (Foxx), Boston Red Sox on #36 (Foxx), Brooklyn Dodgers on
 // #25-#27 (Campanella), current MLB clubs on the rest. MEASURED on PR #314's
-// preview: "0 new players + 1 new teams need confirmation"; the combobox's
+// preview: "0 new players + 1 new teams need confirmation" (NEO-335 now words it "1 name needs a look before this saves."); the combobox's
 // empty list held the four Athletics eras plus one close match.
 //
 // Sole writer of Baseball > 2025 (R7a): it commits, because the link reaches a
@@ -30,9 +30,10 @@ import { setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import {
   fetchOneMarketplaceSetChecklistToWizard,
+  advanceToSave,
   openOneMarketplaceSetBase,
-  reviewedLine,
   reviewWizard,
+  stepCounter,
 } from "../../support/wizard";
 
 const TARGET = { sport: "Baseball", year: "2025", manufacturer: "Topps", set: "Topps Welcome to the Club: 3X MVP" };
@@ -49,12 +50,14 @@ test(
     await fetchOneMarketplaceSetChecklistToWizard(page, env, TARGET);
     const wizard = reviewWizard(page);
 
-    // R2(a): the notice names what reached the review: no player, one team. The
-    // set's other clubs, Brooklyn Dodgers included, were settled before it.
+    // R2(a): the notice counts what reached the review: ONE name (PART 2 shows
+    // it is a team). The set's other clubs, Brooklyn Dodgers included, were
+    // settled before it. NEO-335: one count, no per-type split.
     await expect(
-      page.getByText(/Kept all [0-9]+ cards from BSC.* 0 new players \+ 1 new teams? need confirmation/),
+      page.getByText(/Kept all [0-9]+ cards from BSC.* 1 name needs a look before this saves\./),
     ).toBeVisible();
-    await expect(reviewedLine(page)).toHaveText(/^0 of [0-9]+ reviewed/);
+    // Nothing decided: on a name step x is the decided count plus one.
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
     // ── PART 2: the operator's past-era link ──
     // The batch's one lookup (the team's enrichment) settles before the step is
@@ -95,11 +98,16 @@ test(
     await era(/1901.1954/).click();
 
     // The decision landing moves the wizard off the step: with one row in the
-    // batch it goes straight to the all-decided summary. "Linked to existing" is
-    // the count line, and the Decided row's text is a FULL match - the link, and
-    // no "· remembered as" tail.
-    await expect(wizard.getByText(/^All reviewed . save [0-9]+ cards\?/)).toBeVisible();
-    await expect(reviewedLine(page)).toHaveText(/^1 of [0-9]+ reviewed/);
+    // batch every name is decided at once. NEO-335: the wizard then walks its
+    // post-name steps (a teams step only for a card that would save teamless, a
+    // titles step only for a title that needs a look; each "Next (Enter)", no
+    // Confirm & Save) before the Save step, so the util walks to Save on the
+    // defaults. The batch's ONE row reaching names-done is the "exactly one
+    // decision" claim. The Save step's summary is short (one Decided row), so
+    // "Linked to existing" is the count line and the Decided row's text is a
+    // FULL match - the link, and no "· remembered as" tail.
+    await advanceToSave(page);
+    await expect(wizard.getByText(/^Save [0-9]+ cards?\?$/)).toBeVisible();
     await expect(wizard.getByText("Linked to existing", { exact: true })).toBeVisible();
     await expect(wizard.getByText(`Linked to ${CLUB}`, { exact: true })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });

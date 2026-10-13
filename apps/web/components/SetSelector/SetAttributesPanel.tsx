@@ -153,6 +153,19 @@ function showsCardPrefix(level: Level, value: string): boolean {
 }
 
 /**
+ * NEO-335 — where "Short name for titles" is edited: the set row, and the
+ * levels cards hang from (`showsCardPrefix`). The title reads the nearest
+ * self-or-ancestor short name up to the set, so a set-wide name lives on the
+ * set and an insert can carry its own.
+ */
+function showsShortNameRow(level: Level, value: string): boolean {
+  return level === "setName" || showsCardPrefix(level, value);
+}
+
+/** Set-side levels, root to leaf: which ancestor is nearest. */
+const SET_SIDE_ORDER: readonly string[] = ["setName", "variantType", "insert", "parallel"];
+
+/**
  * NEO-277 — where the Team row is editable. Sport, year and manufacturer are
  * containers for many teams' sets; a team only makes sense from the set down.
  */
@@ -231,6 +244,9 @@ export default function SetAttributesPanel({
   const setSelectorOptionCardNumberPrefix = useMutation(
     api.selectorOptions.setSelectorOptionCardNumberPrefix,
   );
+  const setSelectorOptionListingShortName = useMutation(
+    api.selectorOptions.setSelectorOptionListingShortName,
+  );
   const setSelectorOptionSetNamePrefix = useMutation(
     api.brandView.setSelectorOptionSetNamePrefix,
   );
@@ -289,6 +305,18 @@ export default function SetAttributesPanel({
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
   const showCardPrefixRow = showsCardPrefix(leafLevel, row.value);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
+  // NEO-335 — this row's own short name, and the one it inherits (the
+  // nearest ancestor's, up to the set) for the field's placeholder.
+  const showShortNameRow = showsShortNameRow(leafLevel, row.value);
+  const listingShortName = row.metadata?.listingShortName;
+  const leafDepth = SET_SIDE_ORDER.indexOf(leafLevel);
+  const inheritedShortName = chain
+    .filter((c) => {
+      const depth = SET_SIDE_ORDER.indexOf(c.level);
+      return depth >= 0 && depth < leafDepth && !!c.metadata?.listingShortName?.trim();
+    })
+    .sort((a, b) => SET_SIDE_ORDER.indexOf(b.level) - SET_SIDE_ORDER.indexOf(a.level))[0]
+    ?.metadata?.listingShortName?.trim();
   // NEO-237: manufacturer rows only, and never the year's Unknown row — that
   // row holds the sets whose brand is NOT known, so a prefix on it is a
   // contradiction, and the server refuses one.
@@ -411,6 +439,31 @@ export default function SetAttributesPanel({
       await setSelectorOptionCardNumberPrefix({
         id: selectorOptionId,
         cardNumberPrefix: trimmed,
+      });
+    } catch (e) {
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+    }
+  };
+
+  /**
+   * NEO-335 — the "Short name for titles" row's save. The card prefix's
+   * shape: no-op on an unchanged value, optimistic toast, the server's own
+   * sentence on a refusal. The server trims, refuses control/invisible
+   * characters and anything past 60, and treats `""` as "remove the key".
+   * Existing titles are not rewritten; Regenerate reads the new name.
+   */
+  const handleSaveListingShortName = async (value: string) => {
+    const label = SHORT_NAME_FEATURE.label;
+    const trimmed = value.trim();
+    const clearing = trimmed.length === 0;
+    if (clearing ? listingShortName === undefined : listingShortName === trimmed) {
+      return;
+    }
+    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    try {
+      await setSelectorOptionListingShortName({
+        id: selectorOptionId,
+        listingShortName: trimmed,
       });
     } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
@@ -780,6 +833,16 @@ export default function SetAttributesPanel({
                 onSave={handleSaveCardNumberPrefix}
               />
             )}
+            {/* NEO-335: beside the prefix, at the set and the levels cards
+                hang from — the other fact here that changes what a new
+                card's title says. */}
+            {showShortNameRow && (
+              <ShortNameRow
+                value={listingShortName}
+                inherited={inheritedShortName}
+                onSave={handleSaveListingShortName}
+              />
+            )}
             {otherFeatures.map((feat) => (
               <SetFeatureRow
                 key={feat.key}
@@ -792,6 +855,71 @@ export default function SetAttributesPanel({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * NEO-335 — the set's shorter name for listing titles, as a row in the
+ * Attributes panel. `metadata.listingShortName`, its own mutation, and
+ * `CardPrefixRow`'s shape exactly (hydration, clear on empty, the hint in
+ * the DOM as the input's description). Maestro targets the input as
+ * `Value for Short name for titles`; the wrapper is
+ * `Set feature Short name for titles`.
+ *
+ * A row with no name of its own shows the one it inherits as the
+ * placeholder: that is the name its new cards' titles use.
+ */
+const SHORT_NAME_FEATURE: ExpectedFeature = {
+  key: "listingShortName",
+  label: "Short name for titles",
+  inputType: "text",
+  hint: "Used in card titles when the full name won't fit. New cards only.",
+};
+
+function ShortNameRow({
+  value,
+  inherited,
+  onSave,
+}: {
+  /** The row's stored `metadata.listingShortName`; `undefined` when absent. */
+  value: string | undefined;
+  /** The nearest ancestor's short name, up to the set, if any. */
+  inherited: string | undefined;
+  /** `""` clears. Trimming and validation are the server's. */
+  onSave: (value: string) => Promise<unknown>;
+}) {
+  const label = SHORT_NAME_FEATURE.label;
+  const fieldClass = useFieldTestClass();
+  const hintId = useId();
+
+  return (
+    <label
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      aria-label={`Set feature ${label}`}
+    >
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+        <span
+          title={SHORT_NAME_FEATURE.hint}
+          className="cursor-help underline decoration-dotted decoration-gray-500"
+        >
+          {label}
+        </span>
+      </span>
+      <span id={hintId} className="sr-only">
+        {SHORT_NAME_FEATURE.hint}
+      </span>
+      <FeatureValueControl
+        feat={SHORT_NAME_FEATURE}
+        value={value ?? ""}
+        onSave={onSave}
+        onEmptyCommit={() => onSave("")}
+        ariaLabel={`Value for ${label}`}
+        ariaDescribedBy={hintId}
+        placeholder={inherited ?? "e.g. Upper Deck Hologram"}
+        dataFeatKey={SHORT_NAME_FEATURE.key}
+        className={`${fieldClass("short-name")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+      />
+    </label>
   );
 }
 

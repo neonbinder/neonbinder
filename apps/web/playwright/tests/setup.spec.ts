@@ -37,7 +37,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { addAsNewStep, answerStepAsNew } from "../support/wizard";
+import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
@@ -58,7 +58,7 @@ async function fetchChecklist(
   { open, settle }: { open: number; settle: number },
 ) {
   const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
-  const wizard = page.getByRole("dialog", { name: "Confirm New Players & Teams" });
+  const wizard = reviewWizard(page);
   const saved = page.getByText(/Saved [0-9]+/);
 
   await syncChecklistButton(page).click();
@@ -234,7 +234,9 @@ test(
     }
 
     // First run: confirm every new player/team/league the checklist names.
-    const wizard = page.getByRole("dialog", { name: "Confirm New Players & Teams" });
+    // NEO-335: the wizard's dialog name is "Tidy up this set"; "Confirm New
+    // Players & Teams" is gone.
+    const wizard = reviewWizard(page);
     if (await wizard.isVisible()) {
       await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
       // Enabled only: the button is aria-disabled while the row's enrichment
@@ -242,7 +244,11 @@ test(
       // Any state: a league step's primary is held until a level is pressed
       // (NEO-331), and answerStepAsNew presses "Other" first.
       const addAsNew = addAsNewStep(page);
-      const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
+      // NEO-335: "names done" is two footer states. With every name decided the
+      // wizard walks on to "Cards with no team" / "Card titles" (footer "Next
+      // (Enter)", no Confirm & Save), then "Ready to save" (the only step with
+      // Confirm & Save). Neither button is on screen while a name is undecided.
+      const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
       // NEO-330: with the reference catalogue loaded the Base batch is a
       // handful of names, and some are same-name players the bulk leaves for
       // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
@@ -259,8 +265,8 @@ test(
       // flow's 240 s per step and 250 steps at most). The wait wakes on every
       // answerable outcome: a team/league step, a pick step, or the end.
       for (let i = 0; i < 250; i++) {
-        await expect(addAsNew.or(pickStep).or(confirmSave).first()).toBeVisible({ timeout: 240_000 });
-        if (await confirmSave.isVisible()) break;
+        await expect(addAsNew.or(pickStep).or(namesDone).first()).toBeVisible({ timeout: 240_000 });
+        if (await namesDone.isVisible()) break;
         if (await pickStep.isVisible()) {
           const step = ((await pickStep.textContent()) ?? "").trim();
           await firstCandidate.click();
@@ -273,7 +279,11 @@ test(
           await answerStepAsNew(page);
         }
       }
-      await confirmSave.click();
+      // The teams / titles steps, each left on its defaults by Next (the answers
+      // the old final step's Confirm & Save saved), then the Save step. The seed
+      // is a data-loading track; it proves none of those steps.
+      await advanceToSave(page);
+      await confirmSaveButton(page).click();
     }
     await expect(page.getByText(/Saved 335 cards/)).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
@@ -288,8 +298,23 @@ test(
       timeout: 30_000,
     });
     await fetchChecklist(page, env.SL_PAUSED, { open: 90_000, settle: 90_000 });
-    // Every Future Stars player is already known from Base: no review.
-    await expect(page.getByRole("dialog", { name: "Confirm New Players & Teams" })).toBeHidden();
+    // Every Future Stars player is already known from Base: no NAMES review.
+    // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
+    // steps only: a card that would save with no team (a SportLots-only card
+    // never carries one) or a new card whose title gets trimmed opens the
+    // review straight onto "Cards with no team" / "Card titles" (Step 1 of ...).
+    // fetchChecklist waited for the wizard or the "Saved" banner, so which one
+    // is up is settled and read once. The seed answers nothing on those steps.
+    if (await wizard.isVisible()) {
+      // A names review fails here, by name: nothing is undecided.
+      await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
+      await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();
+      await expect(wizard.getByText(/^Step 1 of [0-9]+$/)).toBeVisible();
+      await advanceToSave(page);
+      // The Save step, for all 20; the strict count below then pins the save.
+      await expect(wizard.getByRole("heading", { name: "Save 20 cards?" })).toBeVisible();
+      await confirmSaveButton(page).click();
+    }
     await expect(page.getByText(/Saved 20 cards/)).toBeVisible({ timeout: 120_000 });
 
     // ── Parallel: reconcile, Gold Wave Refractors built from Base ──────────
@@ -312,7 +337,7 @@ test(
       page.getByText(/^Gold Wave Refractors — Built 300 cards(, [^.]+)?\./),
     ).toBeVisible({ timeout: 120_000 });
     await expect(page.getByRole("dialog", { name: /^Match Cards/ })).toBeHidden();
-    await expect(page.getByRole("dialog", { name: "Confirm New Players & Teams" })).toBeHidden();
+    await expect(reviewWizard(page)).toBeHidden();
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible({ timeout: 15_000 });
     if (!env.SL_PAUSED) {
       await expect(page.getByText("SL", { exact: true }).first()).toBeVisible();

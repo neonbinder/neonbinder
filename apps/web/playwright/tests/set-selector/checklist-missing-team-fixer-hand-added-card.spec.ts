@@ -23,7 +23,9 @@
 // R3: checklist-attention-walker-missing-team owns the walker's three answers
 // on cards with NO linked player; this spec owns what a LINKED player adds: the
 // career fallback offered unpicked, and a pick of an existing catalogue team.
-// set-fill-teams-from-teammate-card owns the header's Fill teams button.
+// (NEO-335 retired the header's Fill teams button and its flow, set-fill-teams-
+// from-teammate-card; the walker, opened from the header's "N need you" pill, is
+// now the one door.)
 //
 // FIXTURE: the reference catalogue (GUIDE; apps/web/scripts/reference-seed).
 // Checked read-only on PR #314's preview, 2026-10-12: exactly one `players` row
@@ -59,7 +61,10 @@ test(
     const badge = page.getByRole("img", {
       name: new RegExp(`^Card ${num}(, .*)? needs attention: no team on this card yet$`),
     });
-    const fixThem = page.getByRole("button", { name: /^Fix cards needing attention one at a time/ });
+    // The header pill: its visible text is its accessible name, so the exact
+    // name IS the exact count ("1 needs you"; a "2 need you" fails).
+    const pill = page.getByRole("button", { name: "1 needs you", exact: true });
+    const anyPill = page.getByRole("button", { name: /^[0-9]+ needs? you$/ });
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -98,19 +103,21 @@ test(
     await expect(editCardButton(page, num)).toBeVisible();
 
     // R2(a): badged at once (no BSC ref, so no automatic source to wait for), and
-    // the header counts it.
+    // the header pill counts it.
     await expect(badge).toBeVisible();
-    await expect(page.getByText("1 need attention")).toBeVisible();
+    await expect(pill).toBeVisible();
     await expectAccessible(page, { label: "Checklist with a hand-added card needing a team" });
 
     // ── STEP 3: open the walker on this card (R2b) ──
-    await fixThem.click();
-    const walker = page.getByRole("dialog", { name: "Cards Needing Attention" });
+    await pill.click();
+    const walker = page.getByRole("dialog", { name: "Tidy up this set" });
     await expect(walker).toBeVisible();
-    // The walker is on THIS card (its Skip control names the number), its own
-    // counter agrees with the header, and the fixer shows the linked player.
-    await expect(walker.getByRole("button", { name: `Skip card ${num} for now` })).toBeVisible();
-    await expect(walker.getByText(/1 card needs attention . 0 fixed/)).toBeVisible();
+    // The walker is on THIS card (its Skip control names the number; the wizard
+    // shares the title), its counter agrees with the pill (one card), the
+    // subtitle names the question, and the fixer shows the linked player.
+    await expect(walker.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
+    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(walker.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expect(walker.getByText("Players: George Brett")).toBeVisible();
 
     // ── STEP 4: the career is OFFERED, NOTHING is picked (R2c, d) ──
@@ -139,12 +146,13 @@ test(
     await expectAccessible(page, { within: walker, label: "Missing-team fixer, team picked" });
 
     // Close the picker's popover (a click outside it), then Save & Next.
-    await walker.getByRole("heading").first().click();
+    await walker.getByRole("heading", { name: "Tidy up this set" }).click();
     await expect(search).toBeHidden();
     await walker.getByRole("button", { name: /Save & Next/ }).click();
 
     await expect(walker.getByText("All clear — nothing on this checklist needs attention.")).toBeVisible();
-    await expect(walker.getByText(/0 cards need attention . 1 fixed/)).toBeVisible();
+    // y never shrinks and there is no "fixed" count; the write is proved on the row below.
+    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
     await walker.getByRole("button", { name: "Done (Esc)" }).click();
     await expect(walker).toBeHidden();
 
@@ -153,7 +161,7 @@ test(
     // echo; this card's only fact is its team, so the full match is the team's name.
     await expect(page.getByText("Kansas City Royals", { exact: true })).toBeVisible();
     await expect(badge).toBeHidden();
-    await expect(fixThem).toBeHidden();
+    await expect(anyPill).toBeHidden();
     // A positive after the negatives (a dead page passes every hidden check).
     await expect(editCardButton(page, num)).toBeVisible();
 

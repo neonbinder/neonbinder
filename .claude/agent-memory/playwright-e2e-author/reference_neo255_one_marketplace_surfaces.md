@@ -21,7 +21,7 @@ Surfaces to key on (`CardChecklist.tsx`):
 | inline progress, sentence | `Fetching from <BSC\|SportLots>... <ready> of <total> cards ready.` |
 | the result, and the FETCH COUNT | `Kept all <n> cards from <marketplace>. Nothing to match, no other marketplace attached.` (appears only once the action RESOLVED, so it is the solo path's equivalent of waiting on the Confirm button) |
 | stream never arrived | `The fetched cards did not arrive — nothing was saved. Run the sync again.` (30 s cap; commits nothing) |
-| wizard | opens as normal, but **no "Back to matching"** (`onBack` is gated on `streamedPairing`) |
+| wizard | opens as normal, but **no "Back to Match Cards"** (`onBack` is gated on `streamedPairing`) |
 | the kept card's badge | `BSC only` (token `unmatched-sl`) / `SL only` (token `unmatched-bsc`): the mapping in `CardChecklistItem.badgeLabel` reads inverted at a glance |
 
 **The inline progress line is too short-lived to assert** (measured on PR #242's

@@ -33,6 +33,23 @@ spec's OWN decision by NAME, not by count: the skip variant leaves every drained
 reading `Skipped`, so `Added as new` is unique; the create variant leaves them `Added
 as new`, so `Skipped` is unique.
 
+## Read a decision off its ROW via Back, never the list
+
+Past five entries the Decided list is COLLAPSED (an operator sees none of it) and in
+BATCH order, so a `Skipped`/`Linked to X` assertion on it passes only while the spec's
+row is early in the batch. NEO-335's `resolveNav` (a decided staged career team hands
+the walk back to the player it was staged for) moved the walk to deep rows (about 30
+down) and three specs went red on decisions that had landed. Use the read-back helper:
+footer `Back` (`Back to previous decision`) presents the last decision read-only, and
+the text sits inside the `Decision for <name>` group (the footer group of that name is
+absent while reviewing); then tap the panel's `Next` to resume.
+
+The same walk change lands on players whose CREATE is held ("needs a team decision":
+the walk skipped their staged career team). A caller that must `Add as New Player`
+asks the walk helper for ready-to-create players only, which skips held players (never
+unticks a chip). Those players are also tall: a career-form click can hit the footer,
+so scroll the form into view first.
+
 # A review batch outlives its spec: one red spec cascades
 
 `commitCardChecklist`'s batch is per (selectorOption, user) and persists. A spec that

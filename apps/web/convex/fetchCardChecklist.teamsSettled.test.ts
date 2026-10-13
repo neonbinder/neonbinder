@@ -35,8 +35,12 @@ type Card = {
 const mockState = vi.hoisted(() => ({
   bscCards: [] as Card[],
   slCards: [] as Card[],
-  /** Team per BSC ref; a ref absent here resolves to "no team". */
+  /** Team per BSC ref; a ref absent here is BSC ANSWERING "no team". */
   teamByRef: {} as Record<string, string>,
+  /** Refs whose lookup call itself fails (NEO-335 `success: false`). */
+  failedRefs: [] as string[],
+  /** When set, the whole chunk's lookup throws. */
+  lookupThrows: false,
   /** Called at the start of every team-lookup chunk, with that chunk's refs. */
   onLookup: undefined as undefined | ((refs: string[]) => Promise<void>),
 }));
@@ -66,24 +70,33 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
     }),
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      // NEO-333's wire shape: BSC's raw value and its comma split. Every team
-      // in this file is one comma-free name, so the two are the same.
-      returns: v.record(
-        v.string(),
-        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      // NEO-335's wire shape: one entry per requested id, in order, with the
+      // lookup's own `success` flag, carrying NEO-333's two forms (BSC's raw
+      // value and its comma split). Every team in this file is one comma-free
+      // name, so the two forms are the same.
+      returns: v.array(
+        v.object({
+          bscCardId: v.string(),
+          rawTeamName: v.string(),
+          teamNames: v.array(v.string()),
+          success: v.boolean(),
+        }),
       ),
-      handler: async (
-        _ctx,
-        args,
-      ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
+      handler: async (_ctx, args) => {
         await mockState.onLookup?.(args.bscCardIds);
-        const out: Record<string, { rawTeamName: string; teamNames: string[] }> =
-          {};
-        for (const ref of args.bscCardIds) {
-          const team = mockState.teamByRef[ref];
-          if (team) out[ref] = { rawTeamName: team, teamNames: [team] };
-        }
-        return out;
+        if (mockState.lookupThrows) throw new Error("lookup chunk failed");
+        return args.bscCardIds.map((bscCardId) => {
+          if (mockState.failedRefs.includes(bscCardId)) {
+            return { bscCardId, rawTeamName: "", teamNames: [], success: false };
+          }
+          const team = mockState.teamByRef[bscCardId];
+          return {
+            bscCardId,
+            rawTeamName: team ?? "",
+            teamNames: team ? [team] : [],
+            success: true,
+          };
+        });
       },
     }),
   };
@@ -211,6 +224,8 @@ beforeEach(() => {
   mockState.bscCards = [];
   mockState.slCards = [];
   mockState.teamByRef = {};
+  mockState.failedRefs = [];
+  mockState.lookupThrows = false;
   mockState.onLookup = undefined;
 });
 
@@ -284,7 +299,59 @@ describe("fetchCardChecklist — ready === total is the end of the team lookups 
 
     const after = await view(t, rowId);
     expect(after).toMatchObject({ total: 2, ready: 2 });
-    expect(after.cards.find((c) => c.cardNumber === "2")?.teams).toBeUndefined();
+    const blank = after.cards.find((c) => c.cardNumber === "2");
+    expect(blank?.teams).toBeUndefined();
+    // NEO-335: BSC's blank is an ANSWER, recorded as one.
+    expect(blank?.teamLookup).toBe("answered");
+  });
+
+  test("a lookup that FAILS still settles its row, with no team and the failure recorded", async () => {
+    // NEO-335 / product invariant 8: a lookup that never returned is missing
+    // data, so the card carries no team (the operator picks one) — but its row
+    // must still settle, or Confirm would never unlock.
+    const t = convexTest(schema, modules);
+    const rowId = await seedTree(t, { bscSet: true, slSet: false });
+    mockState.bscCards = [bscCard("1"), bscCard("2")];
+    mockState.teamByRef = { "bsc-1": "Reds", "bsc-2": "Cubs" };
+    mockState.failedRefs = ["bsc-2"];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(result.success).toBe(true);
+    const after = await view(t, rowId);
+    expect(after).toMatchObject({ total: 2, ready: 2 });
+    expect(result.readyAfterTeams).toBe(2);
+    const failed = after.cards.find((c) => c.cardNumber === "2");
+    // Never the value a failed call happened to carry, never a guess.
+    expect(failed?.teams).toBeUndefined();
+    expect(failed?.teamLookup).toBe("failed");
+    expect(failed?.teamResolved).toBe(true);
+  });
+
+  test("a chunk whose lookup THROWS settles every row in it rather than holding Confirm shut", async () => {
+    const t = convexTest(schema, modules);
+    const rowId = await seedTree(t, { bscSet: true, slSet: false });
+    mockState.bscCards = [bscCard("1"), bscCard("2")];
+    mockState.lookupThrows = true;
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(result.success).toBe(true);
+    const after = await view(t, rowId);
+    expect(after).toMatchObject({ total: 2, ready: 2 });
+    expect(result.readyAfterTeams).toBe(2);
+    for (const card of after.cards) {
+      expect(card.teams).toBeUndefined();
+      expect(card.teamLookup).toBe("failed");
+    }
   });
 
   test("a set where every team came from the parse is settled the moment it is written", async () => {

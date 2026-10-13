@@ -35,7 +35,9 @@ All three are runtime Proxies that build function-path strings on property acces
   module is exactly two lines in it, both alphabetical: `import type * as x from
   "../x.js";` in the import block and `x: typeof x;` in `fullApi`. That is what
   codegen would emit, so `npm run typecheck` goes green without touching any
-  deployment (verified NEO-279). A same-file action calling `internal.x.*` also
+  deployment (verified NEO-279). Deleting a module is the same two lines in
+  reverse (verified NEO-335): leave them and tsc fails on the missing `../x.js`;
+  also drop the module's entries from `publicFunctionAuth.test.ts`. A same-file action calling `internal.x.*` also
   needs its `runQuery` results annotated (`const r: T = await ctx.runQuery(...)`)
   or TS chases the module type into itself.
 - Component constructors (e.g. `@convex-dev/workpool`'s `Workpool`) just assign

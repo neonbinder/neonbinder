@@ -39,7 +39,11 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
  * ## Name, state and activation
  *
  * The visible text IS the accessible name: there is no `aria-label` prop, so
- * SC 2.5.3 holds by construction and a flow's `text:` and `id:` finds agree.
+ * SC 2.5.3 holds by construction. A flow's `text:` find matches it; an `id:`
+ * find matches it too ONLY when no `id` is passed — maestro-web's resource-id
+ * is `node.id || ariaLabel`, so a DOM id shadows the name. Pass `id` only when
+ * something in the app needs the element (a label's `htmlFor`, a focus
+ * return), never for a flow.
  * The icon is `aria-hidden`.
  *
  * `disabled` and `busy` are `aria-disabled` (and `aria-busy`), never native

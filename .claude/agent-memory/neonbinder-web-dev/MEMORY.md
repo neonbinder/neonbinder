@@ -82,8 +82,8 @@
 - [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition
 - [New string locator collision sweep](reference_new_string_locator_collision_sweep.md) — Playwright name/text matching is a substring; grep the specs for the new copy and check the page each hit runs on
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
-- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe (window-size clamps ~500px)
-- [Live validation without keystroke renders](reference_live_validation_without_keystroke_renders.md) — drafts in a ref + snapshot state swapped on answer change; ref.current in useMemo fails react-hooks/refs; blocked button gets title + aria-disabled
+- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe; measure heights per case matrix
+- [Live validation without keystroke renders](reference_live_validation_without_keystroke_renders.md) — drafts in a ref + snapshot state swapped on answer change; ref.current in useMemo fails react-hooks/refs; blocked button gets title for Maestro
 - [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
 - [Action blind insert is invisible to OCC](reference_action_blind_insert_is_invisible_to_occ.md) — re-check status + read the range inside the write; repro the interleave by driving the action steps by hand
@@ -91,6 +91,7 @@
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
+- [Ref cleanup sees focus before removal](reference_ref_cleanup_sees_focus_before_removal.md) — park focus when a focused control unmounts: React 19 callback-ref cleanup, not a parent effect cleanup
 - [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
 - [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
 - [Panel-wide shortcut via capture phase](reference_panel_wide_shortcut_via_capture_phase.md) — Ctrl+Enter over a typeahead: onKeyDownCapture + stopPropagation, guard nested role=dialog; stub spy proves the typeahead never sees it
@@ -110,6 +111,12 @@
 - [Review walk holds for open controls](reference_review_walk_holds_for_open_controls.md) — pinnedRowHasEdits gates only teams-first; open popovers/forms report onOpenChange (row-id keyed) into rowInteractionOpen
 - [Gate on the subscription, not the action promise](reference_gate_on_the_subscription_not_the_action_promise.md) — action promise beats its runMutation writes; data-as-marker + latch the flag inside ABSORB (NEO-341)
 - [Bulk walk gap strands late-staged steps](reference_bulk_walk_gap_strands_late_staged_steps.md) — lookup landing between listBulkCandidates and decideRowsByIds stages an unseen step; sweep by_source_* in the write
+- [Render-phase state for previous-render values](reference_render_phase_state_for_previous_render_values.md) — conditional setState in render passes lint; reducer returns same object; key transient lines on progress, not x; focus effects key on "focused for", not [screenKey]
+- [Wizard step local drafts settle pattern](reference_wizard_step_local_drafts_settle_pattern.md) — many-field step: local drafts, report on blur/Enter/timer/unmount; Escape undo = focus-time; long title = wrapping Textarea
+- [vi.mock stub component needs a name](reference_vi_mock_stub_component_needs_a_name.md) — stateful stub in a vi.mock factory must be `function StubX` or lint fails rules-of-hooks
+- [No prettier config in apps/web](reference_no_prettier_config_in_apps_web.md) — prettier --write reformats whole hand-formatted files; never run it, eslint is the gate
+- [Candidate field reaches commit only through the client](reference_candidate_field_reaches_commit_only_through_the_client.md) — candidate row → commit hops via pairing-cards.ts, CardPairingModal merge, CardChecklist type; convex-only carry is dead
+- [No review row is not unanswered](reference_no_review_row_is_not_unanswered.md) — the gate drops stored skips before queuing; "no row ⇒ resolved/unreviewed" must read entityReviewSkips
 - [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel

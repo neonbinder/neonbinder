@@ -2,8 +2,8 @@
 //
 // NEO-333: a BSC team value that names two clubs ("Boston Red Sox, Detroit
 // Tigers") becomes TWO team links, never one combined team. Proved on live
-// data through the operator's own path (Sync card checklist -> Confirm New
-// Players & Teams -> Confirm & Save):
+// data through the operator's own path (Sync card checklist -> the "Tidy up
+// this set" wizard -> Confirm & Save):
 //   (a) the fetch stages no team named after a comma-joined value. On the
 //       reference catalogue (NEO-330) every name on the set is known, so the
 //       correct fetch commits straight to "Saved N cards" with no wizard (an
@@ -38,7 +38,7 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
+import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
@@ -167,7 +167,7 @@ test(
     // behind the card write (the flow's 60 s, a live round trip).
     await expect(wizard.or(saved).first()).toBeVisible({ timeout: WIZARD_OPENS });
     if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Confirm New Players & Teams wizard" });
+      await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
 
       // Wait out the lookups first: team rows go through the same Wikidata pool
       // as players and are presented only once settled, so draining earlier
@@ -176,15 +176,20 @@ test(
       await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
 
       const person = personSkip(page);
-      const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
+      const confirmSave = confirmSaveButton(page);
+      // The names-done footer (NEO-335): "Next (Enter)" on a teams / titles step,
+      // else Confirm & Save on the Save step. Neither renders while a name is
+      // undecided. The wizard may also have opened for its post-name steps only
+      // (no name was unknown: a teamless card, a title that needs a look).
+      const namesDone = wizard.getByRole("button", { name: "Next (Enter)", exact: true }).or(confirmSave);
       const stepSkip = wizard.getByRole("button", {
         name: /^Skip .* — (not a team|this team has no league)$/,
         disabled: false,
       });
       // The settled wizard is presenting a row (a team, a league or a player),
-      // or every row is decided (a batch that staged teams and no player), so
-      // the loop cannot exit on a blank or wedged dialog.
-      await expect(person.or(confirmSave).or(stepSkip)).toBeVisible();
+      // or every name is decided (a batch that staged teams and no player, or
+      // none unknown), so the loop cannot exit on a blank or wedged dialog.
+      await expect(person.or(namesDone).or(stepSkip)).toBeVisible();
 
       // Every settled undecided team (and the league step staged ahead of a team
       // that needs one) is presented before any player, so "a player is
@@ -204,8 +209,8 @@ test(
       for (let pass = 0; pass < 2; pass++) {
         await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
         for (let i = 0; i < 40; i++) {
-          await expect(person.or(confirmSave).or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
-          if ((await person.isVisible()) || (await confirmSave.isVisible())) break;
+          await expect(person.or(namesDone).or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
+          if ((await person.isVisible()) || (await namesDone.isVisible())) break;
           const name = (await stepSkip.first().getAttribute("aria-label")) ?? "";
           expect(name, "a team/league step must not be a comma-joined name or a half of PDA-WW's value").toMatch(stepName);
           await expect(newStepHeading(page).filter({ hasText: commaOrHalf })).toHaveCount(0);
@@ -213,19 +218,26 @@ test(
           // The step's own skip names it, so its going away means the step moved on.
           await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
         }
-        await expect(person.or(confirmSave)).toBeVisible();
+        await expect(person.or(namesDone)).toBeVisible();
       }
 
       // The players are not what this spec is about: skip them all in one press.
       // Landing on the first player can stage its Wikidata career teams a few
       // seconds later; those are Wikidata labels, not BSC values, so they are
       // skipped with the players. That is why the press is repeated until the
-      // commit is offered: a late staged row leaves one row undecided.
+      // names-done footer is offered: a late staged row leaves one row undecided.
       const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
       await expect(async () => {
         if (await skipRemaining.isVisible()) await skipRemaining.click();
-        await expect(confirmSave).toBeVisible({ timeout: 1_500 });
+        await expect(namesDone).toBeVisible({ timeout: 1_500 });
       }).toPass({ timeout: 7_000 });
+      // NEO-335: deciding the last name no longer lands on Save. The wizard walks
+      // up to two more screens first ("Cards with no team" for a skipped team
+      // spelling's teamless card, "Card titles"), each with "Next (Enter)" and no
+      // Confirm & Save. Teams and titles are not this spec's claim (STEP 6 reads
+      // what the save stored), so they stay on their defaults. PDA-WW is not on
+      // the teams step: both its clubs resolve, so it never saves teamless.
+      await advanceToSave(page);
       await confirmSave.click();
     }
 

@@ -1,9 +1,27 @@
 /**
  * Entity-review wizard helpers the checklist-wizard specs share. Origins:
  * .maestro/flows/set-selector/util-fetch-real-set-checklist-to-wizard.yaml,
- * util-discard-resumed-review-batch.yaml, util-wizard-walk-to-player-row.yaml
- * and util-wizard-walk-to-player-row-creating-teams.yaml (Maestro suite
+ * util-discard-resumed-review-batch.yaml, util-wizard-walk-to-player-row.yaml,
+ * util-wizard-walk-to-player-row-creating-teams.yaml and (NEO-335) util-wizard-
+ * advance-to-save.yaml, util-wizard-read-back-decision.yaml (Maestro suite
  * retired in NEO-341; see git history).
+ *
+ * The wizard since NEO-335 ("Tidy up this set"): names -> teams -> titles ->
+ * save, ONE "Step x of y" counter (WizardChrome). On a NAME step x is the
+ * decided count plus one, so "Step 1 of N" is a batch with nothing decided;
+ * y grows as staged steps arrive, so pin x, never y. Past the names come a
+ * "Cards with no team" step and a "Card titles" step (each only when needed,
+ * each with a footer "Next (Enter)" and NO Confirm & Save), then "Ready to
+ * save", the only step with Confirm & Save. The post-save attention walker
+ * wears the same title; tell them apart by the walker's "Skip for now, card
+ * <number>" or by this wizard's footer.
+ *
+ * `util-wizard-career-form-into-view.yaml` (NEO-335) has NO Playwright
+ * counterpart on purpose: it only dragged the body so Maestro's tap would not
+ * land on the footer over a clipped form. Playwright's click scrolls the
+ * target into view and refuses to click through an overlapping control (it
+ * waits, then fails by name), so the clipped-form failure cannot pass
+ * silently here and a spec simply clicks the field.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
@@ -23,13 +41,55 @@ import {
 const FETCH = 120_000;
 const LOOKUPS = 180_000;
 
+/**
+ * The open pre-save wizard, by its dialog name (WizardChrome `WIZARD_TITLE`;
+ * it was "Confirm New Players & Teams" before NEO-335). Contract: a locator,
+ * nothing waited for. The post-save attention walker shares this name.
+ */
 export function reviewWizard(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Confirm New Players & Teams" });
+  return page.getByRole("dialog", { name: "Tidy up this set" });
 }
 
-/** "<n> of <m> reviewed" progress line of the open wizard. */
-export function reviewedLine(page: Page): Locator {
-  return reviewWizard(page).getByText(/^[0-9]+ of [0-9]+ reviewed/);
+/**
+ * The header's one counter ("Step 3 of 12", a `role="status"` node, so one
+ * element). Replaces the "N of M reviewed" line. Contract: a locator; on a
+ * name step x is the decided count plus one, y grows, so match on x only.
+ */
+export function stepCounter(page: Page): Locator {
+  return reviewWizard(page).getByText(/^Step [0-9]+ of [0-9]+$/);
+}
+
+/**
+ * `{ x, y }` read off `stepCounter`. Contract: waits (7 s) for the counter to
+ * be visible, then returns the numbers it shows at that instant.
+ */
+export async function readStep(page: Page): Promise<{ x: number; y: number }> {
+  const counter = stepCounter(page);
+  await expect(counter).toBeVisible();
+  const match = ((await counter.textContent()) ?? "").match(/^Step ([0-9]+) of ([0-9]+)$/);
+  expect(match, "the wizard header shows a Step x of y counter").toBeTruthy();
+  return { x: Number(match![1]), y: Number(match![2]) };
+}
+
+/**
+ * Wait until the counter has left step `x` (a decision or a Next landed).
+ * Anchored "Step x of" so "Step 5" cannot answer for "Step 15". Contract: a
+ * 7 s web-first assert; pair it with a positive assert on where you expect to be.
+ */
+export async function expectStepLeft(page: Page, x: number): Promise<void> {
+  await expect(stepCounter(page), `the wizard is still on Step ${x}`).not.toHaveText(
+    new RegExp(`^Step ${x} of `),
+  );
+}
+
+/** The footer's forward button on the teams / titles steps. */
+function nextStepButton(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: "Next (Enter)", exact: true });
+}
+
+/** The Save step's commit button. */
+export function confirmSaveButton(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: /Confirm & Save/ });
 }
 
 /**
@@ -37,6 +97,12 @@ export function reviewedLine(page: Page): Locator {
  * checklist (Topps Big League by default), fetch it from the marketplaces,
  * confirm the card pairing when both marketplaces answered, and land in the
  * entity-review wizard.
+ *
+ * Contract: EXIT the "Tidy up this set" dialog is open and axe-clean, every
+ * row undecided ("Step 1 of N"; callers assert that themselves). Live, the
+ * pairing session is PARKED behind it ("Back to Match Cards" is offered);
+ * with SportLots paused it is the one-marketplace solo path and there is no
+ * parked session.
  */
 export async function fetchChecklistToWizard(
   page: Page,
@@ -134,10 +200,17 @@ export async function openOneMarketplaceSetBase(
  * util-fetch-one-marketplace-set-checklist-to-wizard.yaml (NEO-330): the
  * one-marketplace twin of `fetchChecklistToWizard`. Opens the set's Base
  * (`openOneMarketplaceSetBase`), syncs the never-fetched checklist and lands
- * in the entity-review wizard with nothing decided. There is no parked
- * pairing session behind it ("Back to matching" is not offered). The caller
- * owns the exit: Cancel -> Discard for a reader, Confirm & Save for the set's
- * sole writer (SET-REGISTRY.md).
+ * in the entity-review wizard with nothing decided ("Step 1 of N"). There is
+ * no parked pairing session behind it ("Back to Match Cards" is not offered).
+ * The caller owns the exit: Cancel -> Discard for a reader, Confirm & Save
+ * (after `advanceToSave`) for the set's sole writer (SET-REGISTRY.md).
+ *
+ * Contract: ENTRY the set is registered one-marketplace and never fetched.
+ * EXIT the "Tidy up this set" dialog is open and axe-clean. NEO-335: a
+ * one-sided fetch with unknown names (every current caller) opens on a name
+ * step; one whose only open question is teams or titles opens the same dialog
+ * straight onto "Cards with no team" / "Card titles", so the title gate holds
+ * for both shapes.
  */
 export async function fetchOneMarketplaceSetChecklistToWizard(
   page: Page,
@@ -158,7 +231,8 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   await expect(page.getByText(/Kept all [0-9]+ cards? from BSC/)).toBeVisible({ timeout: 60_000 });
 
   // Every fetched name the deployment does not hold is queued, each behind a
-  // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s).
+  // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s). Gated
+  // on the wizard's title, "Tidy up this set" since NEO-335.
   await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
@@ -173,22 +247,27 @@ export async function cancelAndDiscard(page: Page): Promise<void> {
 
 /**
  * util-discard-resumed-review-batch.yaml: a batch an earlier flow left behind
- * opens with decisions already on it; throw it away and fetch again so this
- * flow starts at "0 reviewed".
+ * opens with decisions already on it ("Step k+1 of M", k names decided);
+ * throw it away and fetch again so this flow starts at "Step 1 of N".
+ *
+ * Contract: ENTRY the wizard is open. EXIT a batch is on screen with nothing
+ * expired; a resumed one has been discarded and re-fetched (via
+ * `fetchChecklistToWizard`, default set). Not a licence to ignore a dirty
+ * batch: the caller still asserts `Step 1 of N` itself right after.
  */
 export async function discardResumedReviewBatch(page: Page, env: FlowEnv): Promise<void> {
-  await expect(reviewedLine(page)).toBeVisible();
-  if (!/^0 of [0-9]+ reviewed/.test((await reviewedLine(page).textContent()) ?? "")) {
+  await expect(stepCounter(page)).toBeVisible();
+  if (!/^Step 1 of /.test((await stepCounter(page).textContent()) ?? "")) {
     await page.getByRole("button", { name: "Cancel (Esc)" }).click();
     await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
     await page.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
     await fetchChecklistToWizard(page, env);
   }
-  // A fresh batch opens at "0 of N", but its own lookups start settling rows
-  // at once, so by the time this is read the count may already have moved:
-  // what must hold is that a batch is on screen with nothing expired.
-  await expect(reviewedLine(page)).toHaveText(/^[0-9]+ of [1-9][0-9]* reviewed/);
+  // A fresh batch opens at "Step 1 of N", but its own lookups start settling
+  // rows at once, so by the time this is read x may already have moved: what
+  // must hold is that a batch is on screen with nothing expired.
+  await expect(stepCounter(page)).toHaveText(/^Step [0-9]+ of [1-9][0-9]*$/);
 }
 
 /**
@@ -280,10 +359,23 @@ export async function answerStepAsNew(
  * every team/league step to the first player row. `creatingTeams: false`
  * skips each team/league step (a skip creates nothing); `true` adds each as
  * new instead.
+ *
+ * `readyToCreate: true` (READY_TO_CREATE, NEO-335) is for a caller that must
+ * CREATE the player it lands on. A skipped staged career-team step says "that
+ * is not a team", so the player it was staged for then holds its create (the
+ * footer reads "<team> still needs a team decision, or untick it." and
+ * `Add as New Player` is aria-disabled); the batch-order walk can reach such
+ * a player at any time. This walks past each held player as a SKIP (creates
+ * nothing; never by unticking the chip) until it stands on a player whose
+ * create is live. Link/skip callers leave it off.
+ *
+ * Contract: ENTRY the wizard is open on a name step. EXIT a player row is
+ * presented (its "Skip ... - not a person" is up), lookups drained, and with
+ * `readyToCreate` its create is not held.
  */
 export async function walkToPlayerRow(
   page: Page,
-  { creatingTeams = false }: { creatingTeams?: boolean } = {},
+  { creatingTeams = false, readyToCreate = false }: { creatingTeams?: boolean; readyToCreate?: boolean } = {},
 ): Promise<void> {
   const wizard = reviewWizard(page);
   const person = personSkip(page);
@@ -312,4 +404,114 @@ export async function walkToPlayerRow(
     }
     await expect(person).toBeVisible({ timeout: 30_000 });
   }
+
+  if (readyToCreate) {
+    // The footer line that explains a held create (one node; the chip's own
+    // "needs a team decision" lives in the body and is not matched).
+    const held = wizard.getByText(/team decisions?, or untick (it|them)\./);
+    // `times` is a runaway guard: a batch whose every remaining player is held
+    // runs out of players and fails the visibility assert below.
+    for (let i = 0; i < 20; i++) {
+      await expect(person).toBeVisible();
+      if (!(await held.isVisible())) break;
+      // Wait for THIS skip to land before looking again: until the decision
+      // round-trips the held row is still up, and a second pass would skip the
+      // player after it too. On a name step x moving is the decision landing.
+      const { x } = await readStep(page);
+      await person.click();
+      await expectStepLeft(page, x);
+    }
+    await expect(person).toBeVisible();
+    await expect(held, "the player the walk stopped on still holds its create").toBeHidden();
+  }
+}
+
+/**
+ * util-wizard-advance-to-save.yaml (NEO-335): from "every name decided" walk
+ * the teams / titles steps to the Save step, and answer nothing on them.
+ *
+ * Contract:
+ * - ENTRY the wizard is open and every name is decided: its footer shows
+ *   "Next (Enter)" or "Confirm & Save". (Waited for here, 7 s.)
+ * - Presses Next until the Save step is up; each press is proved to have MOVED
+ *   the wizard (the "Step x of y" x it left is gone), so a Next that does
+ *   nothing fails by name. Next leaves every line on its default (a pre-filled
+ *   team, else "Leave for later"; every title kept) - the same answers the old
+ *   final step's Confirm & Save saved. A spec whose FEATURE is the teams or
+ *   titles step drives that step itself and does not call this.
+ * - EXIT the Save step: subtitle "Ready to save" and Confirm & Save on screen,
+ *   nothing pressed. The caller asserts its own "Save N cards?" and owns the
+ *   commit.
+ *
+ * All 7 s: Next is a client-side step change. The loop is a runaway guard of 3
+ * (at most two screens sit between the names and Save).
+ */
+export async function advanceToSave(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  const next = nextStepButton(page);
+  const save = confirmSaveButton(page);
+  for (let i = 0; i < 3; i++) {
+    await expect(next.or(save)).toBeVisible();
+    if (await save.isVisible()) break;
+    const { x } = await readStep(page);
+    await next.click();
+    await expectStepLeft(page, x);
+  }
+  await expect(save).toBeVisible();
+  // The subtitle is pinned in the header with the footer, not body content.
+  await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
+}
+
+/**
+ * util-wizard-read-back-decision.yaml (NEO-335): read the decision just made
+ * back off its own row, then (optionally) walk on.
+ *
+ * Why not the "Decided (N)" list: it is in batch order, collapsed past five
+ * entries, and a row decided a moment ago may not be in view. The footer's
+ * Back presents the MOST RECENT decision read-only, in a group named
+ * "Decision for <name>" reading "Already decided: <decision>" - the only such
+ * group on screen while it is up.
+ *
+ * Contract:
+ * - ENTRY a decision was just made on a name step; the walk has moved to the
+ *   next name step or, if that was the last name, to the first post-name step.
+ *   Either footer offers a Back, so this takes "Back to previous decision" or
+ *   "Back to previous step".
+ * - `decision` the decision line, matched exactly when a string ("Skipped",
+ *   "Added as new", "Linked to Shohei Ohtani") or by the regex given.
+ * - `resume: true` presses the panel's "Next", handing the walk back its own
+ *   rule: EXIT the panel is gone and a name step is presented again (its skip
+ *   control is up) or, when every name is decided, the names-done footer
+ *   ("Next (Enter)" / Confirm & Save). Callers that leave the wizard next
+ *   (Cancel -> Discard) omit it; EXIT is then the panel, still up.
+ * - The Maestro util's conditional drag to bring Next above the footer has no
+ *   Playwright counterpart: click() scrolls the body itself.
+ */
+export async function readBackDecision(
+  page: Page,
+  decision: string | RegExp,
+  { resume = false }: { resume?: boolean } = {},
+): Promise<Locator> {
+  const wizard = reviewWizard(page);
+  await wizard.getByRole("button", { name: /^Back to previous (decision|step)$/ }).click();
+  const panel = wizard.getByRole("group", { name: /^Decision for / });
+  await expect(
+    panel.getByText(decision, typeof decision === "string" ? { exact: true } : undefined),
+  ).toBeVisible();
+
+  if (resume) {
+    await panel.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(wizard.getByText(/^Already decided:/)).toHaveCount(0);
+    // The positive half (a negative alone passes on a dead page): a name step
+    // is presented again, or every name is decided and the names-done footer
+    // is up.
+    await expect(
+      wizard
+        .getByRole("button", { name: /^Skip .* — (not a person|not a team|this team has no league)$/ })
+        .or(nextStepButton(page))
+        .or(confirmSaveButton(page))
+        .first(),
+    ).toBeVisible();
+  }
+  return panel;
 }

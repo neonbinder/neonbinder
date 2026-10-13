@@ -89,15 +89,21 @@ test(
 
     // The row carries an attention badge, and the checklist counts it.
     await expect(attentionBadge).toBeVisible();
-    await expect(page.getByText("1 need attention")).toBeVisible();
+    // The header's amber pill (NEO-335): singular for one card, and its visible
+    // text is its accessible name, so the exact name is the exact count.
+    const pill = page.getByRole("button", { name: "1 needs you", exact: true });
+    await expect(pill).toBeVisible();
     await expectAccessible(page, { label: "Checklist with an attention badge for an over-long variation" });
 
-    // ── Walk it to a fix ──
-    await page.getByRole("button", { name: /^Fix cards needing attention one at a time/ }).click();
-    const fixer = page.getByRole("dialog", { name: "Cards Needing Attention" });
+    // ── Walk it to a fix: opened by hand from the pill (the walker never opens itself) ──
+    await pill.click();
+    const fixer = page.getByRole("dialog", { name: "Tidy up this set" });
     await expect(fixer).toBeVisible();
-    await expect(fixer.getByRole("button", { name: `Skip card ${num} for now` })).toBeVisible();
-    await expect(fixer.getByText(/1 card needs attention .{1,3} 0 fixed/)).toBeVisible();
+    // The walker and the wizard share title and counter; its own Skip control
+    // says which this is, and the subtitle names the question.
+    await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
+    await expect(fixer.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(fixer.getByText("Card titles", { exact: true })).toBeVisible();
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
     await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
     await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
@@ -108,13 +114,15 @@ test(
     await fixer.getByRole("button", { name: /Save \(Enter\)/ }).click();
 
     await expect(fixer.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();
-    await expect(fixer.getByText(/0 cards need attention .{1,3} 1 fixed/)).toBeVisible();
+    // No "fixed" count any more (NEO-335 Phase 2): the counter holds y of y, and
+    // that the save WROTE is proved on the grid below, where the badge is gone.
+    await expect(fixer.getByText("Step 1 of 1", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: fixer, label: "Attention walker, all clear" });
     await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
     await expect(fixer).toBeHidden();
 
     await expect(attentionBadge).toBeHidden();
-    await expect(page.getByRole("button", { name: /^Fix cards needing attention one at a time/ })).toBeHidden();
+    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toBeHidden();
     await expect(page.getByText(`#${num}`, { exact: true })).toBeVisible();
   },
 );

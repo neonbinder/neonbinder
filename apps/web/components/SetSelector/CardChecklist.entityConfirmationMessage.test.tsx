@@ -1,55 +1,40 @@
 /**
- * NEO-332 — the sync banner's count of names waiting in the review wizard.
+ * The sync banner's line while names wait in the review wizard.
  *
- * `entityConfirmationMessage` is pure. With nothing ambiguous it must stay
- * byte-for-byte what it has always been (zeros included), because Maestro
- * flows and CardChecklist.test.tsx match that sentence. With something
- * ambiguous the zero parts drop out and the ambiguous names get their own tail.
+ * NEO-335 Phase 2 (Jason, 2026-10-10): one count, no per-type counts. It
+ * replaced NEO-332's "N new players + N new teams need confirmation · N to
+ * pick from the roster": new players, new teams and same-name picks are all
+ * names that need a look, so they are one number. `entityConfirmationMessage`
+ * is pure.
  */
 
 import { describe, expect, it } from "vitest";
 import { entityConfirmationMessage } from "./CardChecklist";
 
 describe("entityConfirmationMessage", () => {
-  it("keeps the old template byte-exact when nothing is ambiguous", () => {
-    expect(entityConfirmationMessage(["A"], [])).toBe(
-      "1 new players + 0 new teams need confirmation",
+  it("counts players and teams as one number of names", () => {
+    expect(entityConfirmationMessage(["A", "B"], ["T"])).toBe(
+      "3 names need a look before this saves.",
     );
-    expect(entityConfirmationMessage(["A", "B"], ["T"], [])).toBe(
-      "2 new players + 1 new teams need confirmation",
-    );
-    expect(entityConfirmationMessage([], [])).toBe(
-      "0 new players + 0 new teams need confirmation",
+    expect(entityConfirmationMessage([], ["T", "U"])).toBe(
+      "2 names need a look before this saves.",
     );
   });
 
-  it("ignores an ambiguous name that is not among the unknown players", () => {
-    expect(entityConfirmationMessage(["A"], [], ["Z"])).toBe(
-      "1 new players + 0 new teams need confirmation",
-    );
+  it("is singular for one name, player or team", () => {
+    expect(entityConfirmationMessage(["A"], [])).toBe("1 name needs a look before this saves.");
+    expect(entityConfirmationMessage([], ["T"])).toBe("1 name needs a look before this saves.");
   });
 
-  it("splits new players, new teams and the pick tail when all are present", () => {
-    expect(entityConfirmationMessage(["A", "B", "C"], ["T"], ["C"])).toBe(
-      "2 new players + 1 new teams need confirmation · 1 to pick from the roster",
-    );
+  it("counts a same-name pick (NEO-332) as a name like any other — no tail of its own", () => {
+    // An ambiguous player is in `unknownPlayers` too; it is not counted twice
+    // and it gets no separate "to pick from the roster" clause.
+    const line = entityConfirmationMessage(["Bob Allen", "New Guy"], ["T"]);
+    expect(line).toBe("3 names need a look before this saves.");
+    expect(line).not.toMatch(/roster|new players|new teams|confirmation/);
   });
 
-  it("leaves out the teams part when there are none", () => {
-    expect(entityConfirmationMessage(["A", "B"], [], ["B"])).toBe(
-      "1 new players need confirmation · 1 to pick from the roster",
-    );
-  });
-
-  it("leaves out the players part when every player is a pick", () => {
-    expect(entityConfirmationMessage(["A", "B"], ["T"], ["A", "B"])).toBe(
-      "1 new teams need confirmation · 2 to pick from the roster",
-    );
-  });
-
-  it("reads as the tail alone when the only open names are ambiguous", () => {
-    expect(entityConfirmationMessage(["A"], [], ["A"])).toBe(
-      "1 to pick from the roster",
-    );
+  it("says zero plainly rather than in per-type zeros", () => {
+    expect(entityConfirmationMessage([], [])).toBe("0 names need a look before this saves.");
   });
 });

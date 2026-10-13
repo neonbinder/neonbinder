@@ -18,8 +18,10 @@ import UnreviewedNameFixer from "./UnreviewedNameFixer";
  *     `deriveCardAttention` when it applies),
  *  2. add a component here and one entry to `attentionFixers`.
  *
- * `CardAttentionWalker` needs no change for either. It owns the queue, the
- * dialog chrome, the progress line, Skip and Close; a fixer owns one card's
+ * `CardAttentionWalker` needs no change for either beyond the kind's place in
+ * `WALK_RANK` and `WALK_SUBTITLE` below, which are `Record`s so the compiler
+ * asks. It owns the queue, the dialog chrome ("Tidy up this set", "Step x of
+ * y"), Skip and Close; a fixer owns one card's
  * question, its own writes, and its own primary action. NEO-101 landed
  * `{ kind: "titleOverLimit"; length: number }`, `{ kind: "titleTruncated" }`
  * and `{ kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }`
@@ -214,6 +216,94 @@ export function pickAttentionFixer(items: AttentionItem[]): {
     if (Fixer) return { item, Fixer };
   }
   return { item: items[0], Fixer: undefined };
+}
+
+/**
+ * NEO-335 — the order the walker asks its questions in: every card missing a
+ * team first, then names not yet linked, then titles. Within a group, by card
+ * number.
+ *
+ * A card is ranked by the question the walker will actually PUT to it — the
+ * item `pickAttentionFixer` chose — not by the earliest kind it happens to
+ * carry. Ranking on anything else would file a card under one heading and
+ * then show it under another. (A card with an over-long title AND an unlinked
+ * name presents its title, because `deriveCardAttention` lists the name last,
+ * so it walks with the titles.)
+ *
+ * A `Record` over every kind, so adding a kind to `AttentionItem` without
+ * deciding where it walks is a type error rather than a silent "last".
+ * The three title kinds share a rank: they are one fixer and one question.
+ */
+const WALK_RANK: Record<AttentionItem["kind"], number> = {
+  missingTeam: 0,
+  unreviewedName: 1,
+  titleOverLimit: 2,
+  titleTruncated: 2,
+  aspectValueOverLimit: 2,
+};
+
+/** After every ranked kind: a card whose kinds this bundle has no fixer for. */
+const UNRANKED = 3;
+
+/** Where a card with these attention items falls in the walk. Lower walks first. */
+export function attentionWalkRank(items: AttentionItem[]): number {
+  const { item, Fixer } = pickAttentionFixer(items);
+  if (!item || !Fixer) return UNRANKED;
+  return WALK_RANK[item.kind as AttentionItem["kind"]] ?? UNRANKED;
+}
+
+/**
+ * NEO-335 Phase 2 — the walker's subtitle: the screen type under "Tidy up this
+ * set", one per QUESTION rather than one per kind, so the three title kinds
+ * share "Card titles" the way they share a fixer and a rank. The same words as
+ * the entity review wizard's screens of the same type.
+ *
+ * A `Record` over every kind for the same reason as `WALK_RANK`: a new kind
+ * must decide what its screen is called.
+ */
+const WALK_SUBTITLE: Record<AttentionItem["kind"], string> = {
+  missingTeam: "Cards with no team",
+  unreviewedName: "Names not yet linked",
+  titleOverLimit: "Card titles",
+  titleTruncated: "Card titles",
+  aspectValueOverLimit: "Card titles",
+};
+
+/** A card flagged only for kinds this bundle has no fixer for. */
+export const UNFIXABLE_WALK_SUBTITLE = "Needs a look";
+
+/**
+ * The subtitle for the card on screen, read off the item the walker will
+ * actually ask about (`pickAttentionFixer`) — the same item `attentionWalkRank`
+ * files the card under, so a card is never walked with one group and labelled
+ * as another.
+ */
+export function attentionWalkSubtitle(items: AttentionItem[]): string {
+  const { item, Fixer } = pickAttentionFixer(items);
+  if (!item || !Fixer) return UNFIXABLE_WALK_SUBTITLE;
+  return WALK_SUBTITLE[item.kind as AttentionItem["kind"]] ?? UNFIXABLE_WALK_SUBTITLE;
+}
+
+/**
+ * NEO-335 — a card still waiting on the automatic BSC team lookup: linked to
+ * BSC, no team on it, nobody has said it has none, and the lookup has not
+ * stamped `teamCheckDoneAt` (it failed at fetch and is queued for a retry).
+ *
+ * These are exactly the cards `deriveCardAttention` holds back from
+ * `missingTeam` while they wait (its clause 3), so they are not in the walk.
+ * The walker counts them only to say, once the walk is done, that more may
+ * yet arrive. Never a reason to badge or ask: the lookup answers most of them.
+ *
+ * Reads only the presence of the BSC ref, the same as the rule it mirrors.
+ */
+export function isAwaitingTeamLookup(row: CardChecklistRow): boolean {
+  return (
+    !!row.platformData?.bsc?.ref &&
+    !row.teamCheckDoneAt &&
+    !row.teamNoneConfirmedAt &&
+    (row.teamOnCardIds?.length ?? 0) === 0 &&
+    (row.pendingTeamNames?.length ?? 0) === 0
+  );
 }
 
 /** Reason text for a card whose kinds this bundle has no fixer for. */

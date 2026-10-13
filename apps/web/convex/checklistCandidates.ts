@@ -72,6 +72,15 @@ const bucketValidator = v.union(
 );
 
 /**
+ * NEO-335 — how a card's fetch-time BSC team lookup ended. See the field's
+ * note on `checklistCandidates` in schema.ts.
+ */
+const teamLookupValidator = v.union(
+  v.literal("answered"),
+  v.literal("failed"),
+);
+
+/**
  * NEO-251 — both marketplaces' player lists for one card, plus an optional
  * hint.
  *
@@ -596,6 +605,32 @@ async function chooseCandidateTeams(
 }
 
 /**
+ * NEO-335 — the raw value a candidate row keeps beside `teams`, or
+ * `undefined` when there is nothing to keep.
+ *
+ * Kept only when `teams` does not already say it: a split card carries the
+ * parts and a refused (over-cap) split carries nothing, and in both the commit
+ * would otherwise hint with something other than what BSC listed. When the
+ * card carries exactly the raw string (no comma, or a whole-name match) the
+ * row stays as it was, so ~every card in a set pays no extra wire.
+ *
+ * Bounded by the cap the adapter applies (`MAX_PLAYER_NAME_LENGTH`, security
+ * review N1 on NEO-333): dropped above it, never truncated — a truncated
+ * string is a listing nobody wrote. The adapter already drops it; this is the
+ * writer not trusting its internal caller, because the row is handed to the
+ * client and comes back on a public commit arg.
+ */
+function candidateRawTeamHint(
+  rawTeamName: string | undefined,
+  teams: string[] | undefined,
+): string | undefined {
+  const raw = rawTeamName?.trim() ?? "";
+  if (!raw || raw.length > MAX_PLAYER_NAME_LENGTH) return undefined;
+  if (teams?.length === 1 && teams[0] === raw) return undefined;
+  return raw;
+}
+
+/**
  * Attach resolved team names to the cards a lookup chunk covered, then release
  * every stem group that is now complete.
  *
@@ -629,13 +664,20 @@ export const resolveCandidateTeams = internalMutation({
     batchId: v.string(),
     // bsc ref → the card's team value. NEO-333: BOTH forms — BSC's raw,
     // unsplit string and the adapter's comma split. The raw string wins when
-    // it names exactly one existing team (see `chooseCandidateTeams`). A ref
-    // present with neither resolved to "no team".
+    // it names an existing team (see `chooseCandidateTeams`). A ref present
+    // with neither resolved to "no team".
+    //
+    // NEO-335 — `teamLookup` says whether that "no team" was BSC's ANSWER or a
+    // call that failed, and is recorded on the row so it can ride to the commit
+    // (see the schema note). Optional so a caller that predates it is
+    // unchanged: absent records nothing, and the commit then queues the card
+    // for the background lookup exactly as it always did.
     resolved: v.array(
       v.object({
         bscRef: v.string(),
         rawTeamName: v.optional(v.string()),
         teamNames: v.optional(v.array(v.string())),
+        teamLookup: v.optional(teamLookupValidator),
       }),
     ),
     // NEO-294 — set on the one retry, so a miss cannot reschedule forever.
@@ -685,8 +727,10 @@ export const resolveCandidateTeams = internalMutation({
     // NEO-333 — an answer is BOTH forms (raw string + split); two entries
     // agree only when both forms do. `undefined` marks a disagreement.
     type ResolvedEntry = (typeof args.resolved)[number];
+    // NEO-335 — and `teamLookup`: an "answered: no team" and a "failed" for
+    // one ref are not the same claim, so neither is written.
     const answerKey = (e: ResolvedEntry) =>
-      JSON.stringify([e.rawTeamName ?? null, e.teamNames ?? null]);
+      JSON.stringify([e.rawTeamName ?? null, e.teamNames ?? null, e.teamLookup ?? null]);
     const answerByRef = new Map<string, ResolvedEntry | undefined>();
     for (const entry of args.resolved) {
       if (!answerByRef.has(entry.bscRef)) {
@@ -712,9 +756,11 @@ export const resolveCandidateTeams = internalMutation({
     for (const [bscRef, entry] of answerByRef) {
       const matching = byBscRef.get(bscRef);
       if (!matching) {
-        // Forwarded as received, raw string included, so the retry decides
-        // exactly what this pass would have. A disagreement travels as the
-        // bare ref: no team, never one side of it.
+        // Forwarded as received — raw string and `teamLookup` included — so
+        // the retry decides exactly what this pass would have. A disagreement
+        // travels as the bare ref: no team, never one side of it, and no
+        // `teamLookup`, so the commit queues the card for the background
+        // lookup exactly as an older caller's would be.
         missed.push(entry ?? { bscRef });
         continue;
       }
@@ -743,13 +789,24 @@ export const resolveCandidateTeams = internalMutation({
             },
           )
         : undefined;
+      const rawTeamName = entry
+        ? candidateRawTeamHint(entry.rawTeamName, teams)
+        : undefined;
       for (const row of matching) {
         await ctx.db.patch(row._id, {
           // An empty result is an answer, not a failure — see the note above.
           // So is a refused split or a disagreement (`undefined`): the row is
           // settled with no team, and the operator picks one in review —
           // never a guess here.
+          // A FAILED lookup never carries a value (the adapter blanks both
+          // forms), so this cannot attach a team the call did not return.
           ...(teams ? { teams } : {}),
+          // NEO-335 — BSC's unsplit value, for the commit's "Listed as:" hint.
+          // See `candidateRawTeamHint`.
+          ...(rawTeamName ? { rawTeamName } : {}),
+          // NEO-335 — the row is `ready` either way (a failed lookup must not
+          // strand its stem), so `teamLookup` is what keeps the two apart.
+          ...(entry?.teamLookup ? { teamLookup: entry.teamLookup } : {}),
           status: "ready",
           lastUpdated: Date.now(),
         });
@@ -869,6 +926,14 @@ export const getReadyCandidates = query({
         confidence: v.optional(v.number()),
         stem: v.string(),
         teamResolved: v.boolean(),
+        // NEO-335 — see the schema note. Carried onto the preview card by
+        // `candidateToPairingCard`, so the commit can tell an answered blank
+        // from a failed lookup.
+        teamLookup: v.optional(teamLookupValidator),
+        // NEO-335 — BSC's unsplit team value where `teams` does not say it
+        // (see the schema note). Meant to ride back on the preview card as
+        // `rawTeamName`, the commit's "Listed as:" hint.
+        rawTeamName: v.optional(v.string()),
       }),
     ),
   }),
@@ -920,6 +985,8 @@ export const getReadyCandidates = query({
         // Lets the row show "resolving team…" rather than an empty cell that
         // looks like "this card has no team".
         teamResolved: r.status === "ready",
+        teamLookup: r.teamLookup,
+        rawTeamName: r.rawTeamName,
       }));
 
     return {

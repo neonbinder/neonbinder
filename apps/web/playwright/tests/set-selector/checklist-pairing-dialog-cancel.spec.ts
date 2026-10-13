@@ -161,7 +161,7 @@ test(
 
     // The set is untouched: Sync is available for a retry and no entity-review
     // wizard opened.
-    await expect(page.getByText("Confirm New Players & Teams")).toBeHidden();
+    await expect(page.getByText("Tidy up this set")).toBeHidden();
     await expect(syncChecklistButton(page)).toBeVisible();
     await expectAccessible(page, { label: "Future Stars checklist after the sync was cancelled" });
   },

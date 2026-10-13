@@ -141,3 +141,41 @@ describe("titleSourceChips — the Maker chip (NEO-272)", () => {
     expect(chips.length).toBe(FULL_ORDER.length - 1);
   });
 });
+
+describe("titleSourceChips — the insert and the short name (NEO-335)", () => {
+  it("an insert's name gets its own chip, right after the set", () => {
+    expect(labels(fullInputs({ insertName: "Hologram" })).slice(0, 4)).toEqual([
+      "Year",
+      "Maker",
+      "Set",
+      "Insert",
+    ]);
+  });
+
+  it("a short name the title USED replaces the Set and Insert chips", () => {
+    const inputs = fullInputs({
+      manufacturer: "Upper Deck",
+      setName: "Collector's Choice Extraordinarily Photographic Sapphire",
+      insertName: "Hologram Heroes",
+      setShortName: "Upper Deck Hologram",
+    });
+    const chips = pairs(inputs);
+    expect(chips).toContain("Short name:Upper Deck Hologram");
+    expect(labels(inputs)).not.toContain("Set");
+    expect(labels(inputs)).not.toContain("Insert");
+  });
+
+  it("a short name the title did not need gets no chip; the full names keep theirs", () => {
+    const inputs = fullInputs({
+      playerNames: ["A"],
+      setShortName: "Topps C",
+      // A short title: everything fits whole, so rule A never reaches for it.
+      cardVariation: undefined,
+      teamNames: [],
+      parallelName: undefined,
+      printRun: undefined,
+    });
+    expect(labels(inputs)).toContain("Set");
+    expect(labels(inputs)).not.toContain("Short name");
+  });
+});

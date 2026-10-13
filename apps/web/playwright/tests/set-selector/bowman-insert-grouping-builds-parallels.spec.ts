@@ -10,6 +10,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
+import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const BOWMAN = { sport: "Baseball", year: "2026", manufacturer: "Bowman", set: "Bowman" };
@@ -156,16 +157,31 @@ test(
       await expect(page.getByText(/Match Cards/)).toBeHidden();
     }
 
-    // Either new names need review, or the cards save straight away.
-    const wizard = page.getByRole("dialog", { name: "Confirm New Players & Teams" });
+    // Either new names need review, or the cards save straight away. Since
+    // NEO-335 the wizard ("Tidy up this set") has THREE shapes: names to decide
+    // (footer "Skip remaining names (N)"), or every name known and the open
+    // question is a teamless card or a trimmed title (it opens on that step with
+    // "Next (Enter)"). Same branch below: past the names, advanceToSave leaves
+    // the teams / titles steps on their defaults and stops on the Save step.
+    const wizard = reviewWizard(page);
     const saved = page.getByText(/Saved [0-9]+ cards/);
     await expect(wizard.or(saved)).toBeVisible({ timeout: 60_000 });
     if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Confirm New Players & Teams wizard" });
-      await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
-      const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
-      await expect(confirmSave).toBeVisible({ timeout: 60_000 });
-      await confirmSave.click();
+      await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
+      // The footer's first action says which shape opened (it paints with the batch).
+      const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
+      await expect(
+        skipRemaining.or(wizard.getByRole("button", { name: "Next (Enter)", exact: true })).or(confirmSaveButton(page)),
+      ).toBeVisible();
+      if (await skipRemaining.isVisible()) {
+        await skipRemaining.click();
+        // The lookups behind the batch settle here (the flow's 60 s, unchanged).
+        await expect(
+          wizard.getByRole("button", { name: "Next (Enter)", exact: true }).or(confirmSaveButton(page)),
+        ).toBeVisible({ timeout: 60_000 });
+      }
+      await advanceToSave(page);
+      await confirmSaveButton(page).click();
     }
     await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
 

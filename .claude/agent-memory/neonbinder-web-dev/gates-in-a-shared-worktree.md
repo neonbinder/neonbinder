@@ -97,6 +97,16 @@ Things that look like failures during the apps/web fast gates but are not.
    convex/`, ~25s for all of convex). Also: `--project convex-lib` is not
    needed for a path filter (NEO-331).
 
+9. **To run a PROPOSED test without putting a file in the shared tree**
+   (a sibling's `test:unit` would collect it), write it in the scratchpad
+   with absolute-path imports of the source, plus a one-line config
+   `export default { test: { include: ["**/x.test.ts"], environment: "node" } }`,
+   and run `npx vitest run --config <scratch>/vitest.config.mjs --root <scratch>`
+   from apps/web (it resolves vitest from there). Works for pure modules;
+   anything needing the app's aliases or happy-dom needs those in the config.
+   For a quick behaviour replay of a pure module, `npx tsx <scratch>/x.ts`
+   with absolute imports is faster still (NEO-335 merge).
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

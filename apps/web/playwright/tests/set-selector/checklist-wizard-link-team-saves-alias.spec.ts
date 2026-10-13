@@ -25,7 +25,7 @@
 // Magallanes" and skips every other step (a skip creates nothing, R7).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { fetchOneMarketplaceSetChecklistToWizard } from "../../support/wizard";
+import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readStep, reviewWizard, stepCounter } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SET = "Line Up Venezuelan Winter League";
@@ -86,11 +86,12 @@ test(
 
     // ── PART 2: the set; decline SportLots (it does not carry this set), fetch BSC only ──
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { sport: "Baseball", year: "1996", set: SET });
-    const wizard = page.getByRole("dialog", { name: "Confirm New Players & Teams" });
+    const wizard = reviewWizard(page);
 
     // ── PART 3: walk the team and league steps, acting on one club by name ──
-    const reviewed = wizard.getByText(/^[0-9]+ of [0-9]+ reviewed/);
-    await expect(reviewed).toHaveText(/^0 of [0-9]+ reviewed/);
+    // NEO-335's counter: on a name step x is the decided count plus one, so
+    // nothing decided is "Step 1 of N" (a full match: not "Step 11 of ...").
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
     // Wait the batch's lookups out so every step the walk reads is settled and
     // nothing that settles later out-ranks the row under test (leagues before
     // teams before players). Marketplace-class wait: one lookup per unknown
@@ -113,8 +114,20 @@ test(
       const heading = ((await stepHeading.textContent()) ?? "").trim();
       if (heading !== `New Team: ${ROW}`) {
         // Another club, a league or a staged career team: skip (creates nothing).
-        const skipName = (await anyStepSkip.getAttribute("aria-label")) ?? "";
-        await anyStepSkip.click();
+        // THE SKIP NAMES THE ROW IT READ (NEO-335): the heading and the click are
+        // separate reads, so a click aimed at "whatever skip is up" could land on
+        // the NEXT row after the previous skip finished landing, and that could be
+        // the row under test, skipped unseen. The control is built from the heading
+        // just read; if the row moved on in between it matches nothing, and the
+        // loop comes round and reads the new heading. A league's control ends
+        // "— this team has no league", a team's "— not a team".
+        const stepName = heading.replace(/^New (Team|League): /, "");
+        const skipThis = wizard.getByRole("button", {
+          name: new RegExp(`^Skip ${stepName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} . (not a team|this team has no league)$`),
+        });
+        if ((await skipThis.count()) === 0) continue;
+        const skipName = (await skipThis.getAttribute("aria-label")) ?? "";
+        await skipThis.click();
         await expect(wizard.getByRole("button", { name: skipName, exact: true })).toBeHidden();
         continue;
       }
@@ -147,7 +160,7 @@ test(
           .first(),
       ).toBeVisible();
       await expect(wizard.getByRole("button", { name: `Link to ${FIXTURE_TEAM}` })).toBeVisible();
-      const countBefore = await reviewed.textContent();
+      const { x: stepBefore } = await readStep(page);
       await expect(wizard.getByRole("button", { name: "Add as New Team" })).toBeDisabled();
       await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeVisible();
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, new team name refused as an alias" });
@@ -156,7 +169,7 @@ test(
       await searchAll.fill(`Ali${T}`);
       await expect(searchAll).toHaveValue(`Ali${T}`);
       // Still undecided: the refused create recorded nothing.
-      await expect(reviewed).toHaveText(countBefore ?? "");
+      await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore} of [0-9]+$`));
       await page.getByRole("option", { name: new RegExp(`^${FIXTURE_TEAM}`) }).click();
       await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeHidden();
 
@@ -174,6 +187,9 @@ test(
     expect(aliasDone, `the "${ROW}" team step must be presented`).toBe(true);
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
+    // The teams / titles steps (a skipped club leaves its cards teamless) stay on
+    // their defaults; this spec's feature is the alias.
+    await advanceToSave(page);
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     await expect(confirmSave).toBeVisible();
     await confirmSave.click();

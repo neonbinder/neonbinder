@@ -64,3 +64,7 @@
 - [Reaching the missing-team fixer](reference_reaching_the_missing_team_fixer.md) — the honest route is a hand-added card linked to a catalogue player with no team; the wizard Skip path is not a route
 - [Same-name player pick step](reference_same_name_player_panel.md) — NEO-332 "Which <name> is this?" step: locators, click the top candidate, untouched pick step yields to a settled team, dated-fork refusal
 - [Wizard returns to batch-order player after staged team](reference_wizard_returns_to_batch_order_player_after_staged_team.md) — an answered team step staged by player A returns the walk to A; Back/Change clear the return
+- [Diff optional branches green vs red](patterns_diff_optional_branches_green_vs_red.md) — a conditional branch that ran only in the red run proves the fixture's data changed, before any product theory
+- [Pick a fixture-owned name by name](patterns_pick_a_fixture_owned_name_by_name.md) — a committing spec chooses its row by a name only its fixture raises, never "the first row"; an alias is deployment-wide
+- [NEO-335 Tidy up this set](reference_neo335_teams_on_cards_section.md) — wizard chrome, post-name steps, teams-line handles, the `N need you` pill and walker
+- [Quick-add PlayerPicker](reference_quick_add_player_picker.md) — create/pick handles; drawer chip is the only persistence proof

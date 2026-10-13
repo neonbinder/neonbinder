@@ -15,7 +15,13 @@
 // player is minted. Re-seed before re-running.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { fetchOneMarketplaceSetChecklistToWizard } from "../../support/wizard";
+import {
+  advanceToSave,
+  confirmSaveButton,
+  fetchOneMarketplaceSetChecklistToWizard,
+  reviewWizard,
+  stepCounter,
+} from "../../support/wizard";
 
 test(
   "Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back",
@@ -26,14 +32,23 @@ test(
 
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "Tulsa Oilers CHL" });
 
-    const wizard = page.getByRole("dialog", { name: "Confirm New Players & Teams" });
-    await expect(wizard.getByText(/^0 of [0-9]+ reviewed/)).toBeVisible();
+    const wizard = reviewWizard(page);
+    // Nothing decided: "Step 1 of N" (on a name step x is the decided count plus one).
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
-    // Skip every remaining name; the wizard reaches its summary.
+    // Skip every remaining name; the wizard leaves its name steps (the footer
+    // shows "Next (Enter)" on a teams / titles step, else "Confirm & Save").
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
-    const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
-    await expect(confirmSave).toBeVisible({ timeout: 120_000 });
-    await expect(wizard.getByText(/All reviewed . save [0-9]+ cards\?/)).toBeVisible();
+    const confirmSave = confirmSaveButton(page);
+    await expect(
+      wizard.getByRole("button", { name: "Next (Enter)", exact: true }).or(confirmSave),
+    ).toBeVisible({ timeout: 120_000 });
+    // NEO-335: past the names the wizard may ask about teamless cards and card
+    // titles before it saves; this spec's feature is the skips, so those stay
+    // on their defaults and the walk goes on to the Save step.
+    await advanceToSave(page);
+    // Only the Save step is reachable once every row is decided, and its heading lives only there.
+    await expect(wizard.getByText(/Save [0-9]+ cards?\?/)).toBeVisible();
     // The summary counts the names skipped as not-a-name, and nothing was added.
     // The summary lists only non-zero outcomes: "Skipped as not a name" present
     // with "New players and teams" and "Linked to existing" absent means no row

@@ -282,6 +282,26 @@ export const selectorOptionMetadataFields = {
    * the operator writes it, and re-stamping on each move keeps it true.
    */
   brandSetByOperator: v.optional(v.boolean()),
+  /**
+   * NEO-335 — a SHORTER NAME FOR LISTING TITLES, operator-typed, on a
+   * `setName`, `variantType`, `insert` or `parallel` row. "Upper Deck
+   * Hologram" in place of "Upper Deck Collector's Choice Hologram Holograms".
+   *
+   * Read by the listing title generator only: the nearest row up the chain
+   * (self first, stopping at the `setName` row) that carries one supplies it,
+   * and when the title would otherwise be cut or drop a token the short name
+   * REPLACES the set-name + insert-name words in the title's core. Nothing
+   * else reads it — not a features key, so it never reaches a card's
+   * aspects; never derived from a marketplace value.
+   *
+   * Writers: `setSelectorOptionListingShortName` (the set attributes panel)
+   * and the card-checklist commit (the wizard's Card titles step, patched on
+   * the LEAF row before any chunk titles a card). Both trim, drop the key on
+   * `""`, refuse control characters and cap at
+   * `MAX_LISTING_SHORT_NAME_LENGTH`. Absent means "use the full names".
+   * Existing titles are never rewritten when it changes (write-once titles).
+   */
+  listingShortName: v.optional(v.string()),
 };
 
 export const selectorOptionFields = {
@@ -967,14 +987,20 @@ export default defineSchema({
     // alone cannot distinguish "no team on this card" from "nobody has looked
     // yet", and these two fields are exactly the missing bits.
     //
-    // Set ONLY by an operator action (`cardChecklist.confirmCardNoTeam`), and
-    // server-stamped — no client-supplied argument anywhere on this path
-    // carries a timestamp, because a forgeable one is operator-review
-    // suppression the client can mint for itself. CLEARED the moment a
-    // non-empty `teamOnCardIds` is actually written in the same transaction
-    // (`updateCard`, or the commit's reviewed content patch), so it can never
-    // contradict the teams on the row. Never touched by a linkage-only
-    // re-sync, and never set or cleared by a sync that carries no teams.
+    // Set ONLY by an operator action: `cardChecklist.confirmCardNoTeam`, or
+    // (NEO-335) the operator answering "No team on this card" in the wizard
+    // before save, which `commitCardChecklist` writes for a card that ends the
+    // commit with no team. Always server-stamped — the time is the server's
+    // and the user id is `requireAdmin`'s; no client-supplied argument
+    // anywhere on either path carries a timestamp, because a forgeable one is
+    // operator-review suppression the client can mint for itself. CLEARED the
+    // moment a non-empty `teamOnCardIds` is actually written in the same
+    // transaction (`updateCard`, or the commit's reviewed content patch), so
+    // it can never contradict the teams on the row. A team the operator picked
+    // in the wizard before save does NOT clear it: the commit never fills a
+    // row an operator already ruled teamless. Never touched by a linkage-only
+    // re-sync, and never set by marketplace data alone — only by that
+    // explicit operator answer, and never over an existing confirmation.
     teamNoneConfirmedAt: v.optional(v.number()),
     // The Clerk subject of the operator who confirmed it — same shape and
     // purpose as `players.createdByUserId` and
@@ -2577,6 +2603,28 @@ export default defineSchema({
     // appears underneath it afterwards.
     stem: v.string(),
     status: v.union(v.literal("pending"), v.literal("ready")),
+    // NEO-335 — how this card's fetch-time BSC team lookup ended, written by
+    // `resolveCandidateTeams` beside `status: "ready"`. "answered": BSC
+    // replied (with a team, or with none on file). "failed": the call itself
+    // failed. Absent: no lookup ran (the team came from the bulk parse, or the
+    // card has no BSC ref). Rides to the client on the preview card so the
+    // commit can stamp an answered card's `teamCheckDoneAt` instead of
+    // re-asking BSC after save. Optional and additive; the table is drained at
+    // commit, so no backfill.
+    teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+    // NEO-335 — BSC's team value for this card exactly as the lookup returned
+    // it (trimmed, UNSPLIT; NEO-333's `rawTeamName`), written by
+    // `resolveCandidateTeams` only when `teams` does not already say it — a
+    // split card ("Cleveland Guardians, Washington Nationals" carried as two
+    // parts) or one whose split was refused over the cap. Rides to the commit
+    // on the preview card, where an answered card that ends teamless stores it
+    // as `bscTeamName`: the same raw hint `applyBscTeamResolution` keeps, so
+    // the missing-team fixer's "Listed as:" reads the same whichever path
+    // settled the card. A listing claim, never NB team data. At most
+    // `MAX_PLAYER_NAME_LENGTH` (dropped above it, never truncated — the
+    // adapter's N1 rule). Optional and additive; drained at commit, no
+    // backfill.
+    rawTeamName: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_batch", ["batchId"])

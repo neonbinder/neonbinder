@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe("fetchBscCardTeamNames", () => {
-  test("all cards resolve — returns a bscCardId -> { rawTeamName, teamNames } map with only non-empty entries", async () => {
+  test("all cards resolve — one answered entry per id, in request order, raw and split", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
       "fetch",
@@ -80,13 +80,23 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1", "bsc-2"] },
     );
 
-    expect(result).toEqual({
-      "bsc-1": { rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
-      "bsc-2": { rawTeamName: "Boston Red Sox", teamNames: ["Boston Red Sox"] },
-    });
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "New York Yankees",
+        teamNames: ["New York Yankees"],
+        success: true,
+      },
+      {
+        bscCardId: "bsc-2",
+        rawTeamName: "Boston Red Sox",
+        teamNames: ["Boston Red Sox"],
+        success: true,
+      },
+    ]);
   });
 
-  test("cards with a genuinely-empty teamName are simply absent from the result map", async () => {
+  test("NEO-335: a genuinely-empty teamName is an ANSWER — success true, empty name", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
       "fetch",
@@ -101,13 +111,18 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1", "bsc-2"] },
     );
 
-    expect(result).toEqual({
-      "bsc-1": { rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
-    });
-    expect(result["bsc-2"]).toBeUndefined();
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "New York Yankees",
+        teamNames: ["New York Yankees"],
+        success: true,
+      },
+      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: true },
+    ]);
   });
 
-  test("cards whose fetch fails (non-2xx or thrown error) are absent from the result map — no exception propagates", async () => {
+  test("NEO-335: a fetch that fails (non-2xx or thrown error) is reported success false — distinct from an empty answer, and no exception propagates", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
       "fetch",
@@ -125,12 +140,19 @@ describe("fetchBscCardTeamNames", () => {
       t.action(internal.adapters.buysportscards.fetchBscCardTeamNames, {
         bscCardIds: ["bsc-1", "bsc-2", "bsc-3"],
       }),
-    ).resolves.toEqual({
-      "bsc-1": { rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
-    });
+    ).resolves.toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "New York Yankees",
+        teamNames: ["New York Yankees"],
+        success: true,
+      },
+      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: false },
+      { bscCardId: "bsc-3", rawTeamName: "", teamNames: [], success: false },
+    ]);
   });
 
-  test("empty input array — returns an empty map and makes no fetch calls", async () => {
+  test("empty input array — returns an empty list and makes no fetch calls", async () => {
     const t = convexTest(schema, modules);
     let fetchCalled = false;
     vi.stubGlobal(
@@ -146,7 +168,7 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: [] },
     );
 
-    expect(result).toEqual({});
+    expect(result).toEqual([]);
     expect(fetchCalled).toBe(false);
   });
 
@@ -185,7 +207,9 @@ describe("fetchBscCardTeamNames", () => {
     // off-by-one in the chunking loop (e.g. slicing 11 instead of 10)
     // would push this past 10.
     expect(maxInFlight).toBe(10);
-    expect(Object.keys(result)).toHaveLength(25);
+    expect(result).toHaveLength(25);
+    expect(result.map((r) => r.bscCardId)).toEqual(ids);
+    expect(result.every((r) => r.success)).toBe(true);
   });
 
   test("NEO-333: a comma-separated value comes back raw AND split, in BSC's order", async () => {
@@ -203,12 +227,14 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1"] },
     );
 
-    expect(result).toEqual({
-      "bsc-1": {
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
         rawTeamName: "Cleveland Guardians, Washington Nationals",
         teamNames: ["Cleveland Guardians", "Washington Nationals"],
+        success: true,
       },
-    });
+    ]);
   });
 
   test("NEO-333: a slash is not a team separator on the wire either", async () => {
@@ -223,7 +249,14 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1"] },
     );
 
-    expect(result["bsc-1"]).toEqual({ rawTeamName: "Bodø/Glimt", teamNames: ["Bodø/Glimt"] });
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "Bodø/Glimt",
+        teamNames: ["Bodø/Glimt"],
+        success: true,
+      },
+    ]);
   });
 
   test("NEO-333: more teams than a card carries keeps the raw string and refuses the split", async () => {
@@ -237,7 +270,9 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1"] },
     );
 
-    expect(result["bsc-1"]).toEqual({ rawTeamName: raw, teamNames: [] });
+    expect(result).toEqual([
+      { bscCardId: "bsc-1", rawTeamName: raw, teamNames: [], success: true },
+    ]);
     // Flagged, with the card id only: never the marketplace text.
     const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(logged).toContain("bsc-1");
@@ -261,12 +296,14 @@ describe("fetchBscCardTeamNames", () => {
     );
 
     // Dropped, never truncated.
-    expect(result["bsc-1"]).toEqual({ rawTeamName: "", teamNames: [a, b] });
+    expect(result).toEqual([
+      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [a, b], success: true },
+    ]);
     expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain(a);
     warn.mockRestore();
   });
 
-  test("NEO-333 (security N1): an over-length value whose parts are ALSO unusable is absent", async () => {
+  test("NEO-333 (security N1): an over-length value whose parts are ALSO unusable is an answer with neither form", async () => {
     const t = convexTest(schema, modules);
     const raw = "X".repeat(200);
     vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": raw }, calls: [] }));
@@ -277,7 +314,10 @@ describe("fetchBscCardTeamNames", () => {
       { bscCardIds: ["bsc-1"] },
     );
 
-    // One 200-char part is over-length and dropped; raw is dropped: nothing.
-    expect(result).toEqual({});
+    // One 200-char part is over-length and dropped; raw is dropped: nothing
+    // to carry. BSC still ANSWERED (NEO-335), so the entry is not a failure.
+    expect(result).toEqual([
+      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [], success: true },
+    ]);
   });
 });

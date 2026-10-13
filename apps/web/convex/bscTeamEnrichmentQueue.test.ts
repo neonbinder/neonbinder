@@ -34,14 +34,14 @@ import { Id } from "./_generated/dataModel";
 // so a seeded row is one the lookup could really have found.
 import { teamRowFields } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
-// NEO-330 — the bound the queue retries a failed lookup within, and the two
-// readers a given-up card must reach: the attention badge and Fill.
+// NEO-330 — the bound the queue retries a failed lookup within, and the
+// reader a given-up card must reach: the attention badge. (Set-wide Fill
+// teams, its other reader on NEO-330, was retired by NEO-335.)
 import {
   BSC_TEAM_CHECK_MAX_PASSES,
   BSC_TEAM_CHECK_RETRY_DELAYS_MS,
 } from "./adapters/buysportscards";
 import { deriveCardAttention } from "./features/cardAttention";
-import { isTeamFillCandidate } from "./lib/teamFill";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -422,8 +422,8 @@ describe("processBscTeamEnrichmentQueue", () => {
  * Jason, 2026-10-11: "If a team lookup never returns then the user must
  * select a team." A failed lookup used to leave `teamCheckDoneAt` unset with
  * nothing scheduled to ask again — and an unset `teamCheckDoneAt` on a
- * BSC-linked card is what both the attention badge and Fill read as "still
- * waiting", so the card was never shown to anyone.
+ * BSC-linked card is what the attention badge reads as "still waiting", so
+ * the card was never shown to anyone.
  */
 describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NEO-330)", () => {
   // The queue reports retries and give-ups on console.warn/error. Captured so
@@ -490,13 +490,6 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     expect(card.teamCheckDoneAt).toBeTypeOf("number");
     expect(card.bscTeamName).toBe("New York Yankees");
     expect(deriveCardAttention(card)).toContainEqual({ kind: "missingTeam" });
-    // Fill no longer skips it as "still waiting on BSC".
-    expect(
-      isTeamFillCandidate({
-        ...card,
-        playerIds: ["player-1" as Id<"players">],
-      }),
-    ).toBe(true);
 
     expect(warnLines.filter((l) => l.includes("bsc_team_check_retry_scheduled"))).toHaveLength(
       BSC_TEAM_CHECK_MAX_PASSES - 1,
@@ -513,7 +506,7 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     expect(gaveUp).not.toContain("Yankees");
   });
 
-  test("before the give-up, a failed card is neither badged nor offered to Fill (the wait is real)", async () => {
+  test("before the give-up, a failed card is not badged (the wait is real)", async () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");

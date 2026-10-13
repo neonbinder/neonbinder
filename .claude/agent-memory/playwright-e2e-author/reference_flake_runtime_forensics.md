@@ -74,3 +74,14 @@ out asserting a row inside a disclosure that renders in a dialog's non-scrolling
 header; and a 156-set reconcile Save measured 1.0 s, which is the measurement a
 sanctioned longer wait needs recorded at the site (GUIDE hard rule 3), not an
 inherited large number.
+
+## A sync-failed panel: prove the marketplace stalled, not the code
+A red step whose screenshot shows a column's `Sync failed: could not load variants.
+BuySportsCards failed, nothing was changed.` (with Retry/Cancel) is read from the
+seed's convex logs: the matching `fetchBscSelectorOptions` `adapter_sync_call` line
+carries `error_class: "timeout"`, `attempt: 3` and `filters_call_ms` of about 30000,
+beside `BSC API request timed out after 10s (attempt n/3)` lines. Then prove the
+request did not change: the same call (same level and parents) in the last green
+seed, and `git diff <green sha> <red sha>` over the adapter, its caller and the spec
+step. Identical code that answered in about 60 ms on green is a marketplace-side
+stall: a full rerun, not a spec edit. Never add a Retry click to absorb it.

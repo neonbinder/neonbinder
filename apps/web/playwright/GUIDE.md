@@ -243,9 +243,12 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
-- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `reviewedLine`,
-  `fetchChecklistToWizard`, `cancelAndDiscard`, `discardResumedReviewBatch`,
-  `personSkip`, `walkToPlayerRow`).
+- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
+  `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
+  `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
+  `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
+  `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
+  contract is in its doc comment; see "The entity-review wizard" under Gotchas.
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
   deployment-protection header; started by the config's `webServer` when
   `PREVIEW_URL` is set. Never logs the secret.
@@ -328,6 +331,33 @@ Idioms:
   control to go (`getByRole("button", { name: skipName, exact: true })`
   `.toBeHidden()`) before looking for step N+1, or the next iteration can
   act on the same step twice.
+- **The entity-review wizard ("Tidy up this set", NEO-335).** The dialog is
+  named `Tidy up this set` (it was "Confirm New Players & Teams"); the old
+  "N of M reviewed" line and its "N still being looked up" tail are gone (the
+  footer still says "N still looking up"). Header facts a spec may assert:
+  the subtitle (`New league`, `New team`, `New player`, `Which player is
+  this?`, `Cards with no team`, `Card titles`, `Ready to save`) and the ONE
+  `Step x of y` counter (`stepCounter`, `readStep`). On a NAME step x is the
+  decided count plus one, so `Step 1 of N` is a batch with nothing decided and
+  one decision reads `Step 2 of N`; y grows as staged steps arrive, so pin x,
+  never y. "Every name is decided" is the footer state `Next (Enter)` or
+  `Confirm & Save`: past the names come `Cards with no team` and `Card titles`
+  (each only when needed, each with `Next (Enter)` and NO Confirm & Save),
+  then `Ready to save` (heading `Save N cards?`), always `Step y of y` and the
+  only step with Confirm & Save. A spec whose feature is a name decision calls
+  `advanceToSave` to reach Save (Next leaves every line on its default); a
+  spec whose feature is the teams or titles step drives that step itself. A
+  sync with no unknown names opens the wizard only when a post-name step is
+  needed, straight onto it (`Step 1 of 2`). The wizard only opens for names
+  the reference catalogue does not know, so a wizard spec needs a registered
+  fixture set (SET-REGISTRY.md). The post-save attention walker wears the same
+  title, subtitles and counter: tell them apart by the walker's `Skip for now,
+  card <number>`. To prove WHAT a decision was, read it back with
+  `readBackDecision` (the footer Back opens the most recent decision read-only
+  in the group `Decision for <name>`); the "Decided (N)" list is batch-ordered
+  and collapses past five entries, so it is no read-back. A Maestro-era scroll
+  or drag to bring a form above the footer has no Playwright counterpart:
+  click() scrolls and refuses to click through an overlapping control.
 - **Option names include their badges.** A set-builder row reads
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
@@ -584,7 +614,7 @@ recording still goes live, so the fixture is a cache in front of the adapter,
 never a stub of it. What that changes:
 
 - **`setup.spec.ts` no longer proves the live lane.** Its wizard drain
-  ("Confirm & Save", 240 s) is now an upper bound over a fixture-backed hit:
+  (the names-done footer, 240 s) is now an upper bound over a fixture-backed hit:
   seconds when the recording covers the seed, network time only for names it
   does not. The 240 s stays (the seed's sanctioned cold-path ceiling, and the
   miss path is still live), but a seed that needs it with the recording in

@@ -4276,3 +4276,100 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     ]);
   });
 });
+
+/**
+ * NEO-335 x NEO-333 — BSC's raw, unsplit team value reaches the commit card on
+ * both ways a card leaves this dialog, so the commit's "Listed as:" hint is
+ * what BSC listed rather than the first part of its split.
+ */
+describe("CardPairingModal — BSC's raw team value rides to the commit (NEO-335)", () => {
+  const RAW = "Cleveland Guardians, Washington Nationals";
+  const PARTS = ["Cleveland Guardians", "Washington Nationals"];
+
+  test("an auto-paired card keeps it", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [
+        {
+          card: {
+            ...pairedCard("1", "Jose Ramirez"),
+            teams: PARTS,
+            teamLookup: "answered",
+            rawTeamName: RAW,
+          },
+          confidence: 1,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const [card] = onConfirm.mock.calls[0][0].cards as PairingCard[];
+    expect(card.rawTeamName).toBe(RAW);
+    expect(card.teams).toEqual(PARTS);
+  });
+
+  test("an auto-paired card whose names disagree keeps it too — the conflict lift copies the card", async () => {
+    const conflicted = autoConflict("2", "Carl Yastrzemski", "Mike Yastrzemski");
+    const { onConfirm } = renderModal({
+      autoMatched: [
+        {
+          ...conflicted,
+          card: { ...conflicted.card, teamLookup: "answered", rawTeamName: RAW },
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const [card] = onConfirm.mock.calls[0][0].cards as PairingCard[];
+    expect(card.rawTeamName).toBe(RAW);
+    expect(card.nameConflict).toBeUndefined();
+  });
+
+  test("a hand-linked pair takes it from the BSC card", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [
+        {
+          ...bscCard("1", "Ken Griffey Jr."),
+          teams: PARTS,
+          teamLookup: "answered",
+          rawTeamName: RAW,
+        },
+      ],
+      unmatchedSl: [slCard("A1", "Ken Griffey Jr.")],
+    });
+
+    fireEvent.click(screen.getByLabelText("Select BSC card #1 Ken Griffey Jr."));
+    fireEvent.click(
+      screen.getByLabelText("Link selected BSC card to #A1 Ken Griffey Jr."),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards as PairingCard[];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].rawTeamName).toBe(RAW);
+    expect(cards[0].teamLookup).toBe("answered");
+  });
+
+  test("a hand-linked pair never takes one from the SportLots side", async () => {
+    // Only BSC runs the lookup. A value on the SL half is not BSC's listing,
+    // so the pair does not adopt it.
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [bscCard("1", "Ken Griffey Jr.")],
+      unmatchedSl: [{ ...slCard("A1", "Ken Griffey Jr."), rawTeamName: RAW }],
+    });
+
+    fireEvent.click(screen.getByLabelText("Select BSC card #1 Ken Griffey Jr."));
+    fireEvent.click(
+      screen.getByLabelText("Link selected BSC card to #A1 Ken Griffey Jr."),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const [card] = onConfirm.mock.calls[0][0].cards as PairingCard[];
+    expect("rawTeamName" in card).toBe(false);
+  });
+});

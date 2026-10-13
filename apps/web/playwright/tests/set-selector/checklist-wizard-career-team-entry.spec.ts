@@ -2,7 +2,7 @@
 // Cancels out at the end and discards, so nothing is committed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { discardResumedReviewBatch, fetchChecklistToWizard, openDecidedList, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
+import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, readBackDecision, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision",
@@ -18,7 +18,9 @@ test(
     await fetchChecklistToWizard(page, env);
     await discardResumedReviewBatch(page, env);
     const wizard = reviewWizard(page);
-    await walkToPlayerRow(page);
+    // readyToCreate: this spec ends on "Add as New Player", so the walk also
+    // passes any player whose create is held by a career team it skipped.
+    await walkToPlayerRow(page, { readyToCreate: true });
 
     const careerName = wizard.getByRole("combobox", { name: "Career team name" });
     const fromYear = wizard.getByRole("spinbutton", { name: "From year" });
@@ -72,7 +74,9 @@ test(
 
     // Enter commits a staged entry from the keyboard; a second team opens ended "present".
     await careerName.fill(temp);
-    const before = ((await reviewedLine(page).textContent()) ?? "").match(/^[0-9]+/)?.[0] ?? "";
+    // The step number now (x is the decided count plus one on a name step). The
+    // total grows by the staged team row, so only x is pinned.
+    const { x: stepBefore } = await readStep(page);
     await careerName.press("Enter");
     await expect(careerName).toHaveValue(temp);
     await fromYear.fill("2010");
@@ -82,7 +86,9 @@ test(
     await expect(tempStep.or(lookingUp).first()).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(tempStep).toBeVisible();
-    await expect(reviewedLine(page)).toHaveText(new RegExp(`^${before} of [0-9]+ reviewed`));
+    // Nothing was decided since the capture (the staged team step the walk hopped
+    // to is undecided like the player was), so x has not moved.
+    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore} of [0-9]+$`));
 
     await wizard.getByRole("combobox", { name: "League" }).fill(token);
     await wizard.getByRole("option", { name: `${league} (new)` }).click();
@@ -101,17 +107,19 @@ test(
     // Add as New Player carries the staged history into the decision.
     const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
     await wizard.getByRole("button", { name: "Add as New Player" }).click();
-    // The history collapses past five decided names, so open it first.
-    const decidedNames = await openDecidedList(page);
-    await expect(
-      decidedNames.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Added as new" }),
-    ).toBeVisible();
+    // The chip is gone: the wizard advanced past the player row. (A negative
+    // passes on a dead page too; the read-back below is its positive.)
     await expect(wizard.getByText(new RegExp(`${probe} \\(2001.2005\\)`))).toBeHidden();
+    // The decision was a CREATE, read back off the player's own "Already decided:"
+    // panel, not off the "Decided (N)" history (batch-ordered, collapsed past five).
+    // After the chip check on purpose: Back presents this player again.
+    const decision = await readBackDecision(page, "Added as new");
+    // ...and it is THIS player's row.
+    await expect(decision).toHaveAccessibleName(
+      new RegExp(`^Decision for .*${playerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
 
     // Leave without committing anything.
-    await wizard.getByRole("button", { name: "Cancel (Esc)" }).click();
-    await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
-    await page.getByRole("button", { name: "Discard", exact: true }).click();
-    await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
+    await cancelAndDiscard(page);
   },
 );

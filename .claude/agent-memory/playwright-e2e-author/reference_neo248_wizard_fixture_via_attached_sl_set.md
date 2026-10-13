@@ -34,7 +34,7 @@ the query is built per-FACET.
 BSC-listed set `Baseball > 2024 > Topps > Topps Big League > Base`. It syncs through
 the real hierarchy (Base/Insert/Parallel, no reconcile), pairs 310 cards, and opens the
 wizard on **88 unknown names (87 players + 1 team)**, first row a player with the
-career-team form and "Back to matching" present. The seed provisions its structure and
+career-team form and "Back to Match Cards" present. The seed provisions its structure and
 Base mapping and must NEVER fetch its checklist: committing would make those 87
 players known and destroy the fixture.
 

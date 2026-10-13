@@ -1,7 +1,16 @@
 // Origin: .maestro/flows/set-selector/checklist-attention-badge-and-filter.yaml (Maestro suite retired in NEO-341; see git history)
+// NEO-102 / NEO-335: a stored card with NO team is badged on its row and counted
+// by the checklist header's amber "N need you" pill ("1 needs you" for one). The
+// pill replaced the filter chip, the "Fix them one at a time" link and Fill
+// teams; what the filter proved (WHICH rows are flagged) is now proved by the
+// walker the pill opens: it opens on the lowest-numbered flagged card and its
+// counter is the queue's length. Card 3 is born linked to a team AND a player
+// (quick-add pickers) and is neither badged nor counted; the player is read back
+// from its drawer, the quick-add create path's only E2E proof since NEO-335
+// retired set-fill-teams-from-teammate-card.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
-import { addCardViaForm } from "../../support/cards";
+import { addCardViaForm, editCardButton } from "../../support/cards";
 import type { Page } from "@playwright/test";
 
 /** Raise a brand-new team through the card form's team picker. */
@@ -26,7 +35,7 @@ async function addNewTeam(page: Page, name: string) {
 }
 
 test(
-  "Checklist attention — a card with no team is badged, counted, and filterable",
+  "Checklist attention — a card with no team is badged and counted in the header's need-you pill; a card born linked is neither",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const id = env.ATTEMPT_ID;
@@ -35,6 +44,10 @@ test(
       page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: no team on this card yet$`) });
     const teamB = `CNAB${token}`;
     const teamA = `CNAA${token}`;
+    const player = `CNAP${token}`;
+    // The header pill: its visible text is its accessible name, so the exact
+    // name IS the exact count.
+    const pill = (name: string) => page.getByRole("button", { name, exact: true });
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -55,6 +68,19 @@ test(
       playerName: `AttnCharlie${token}`,
       beforeSubmit: async () => {
         await expectAccessible(page, { label: "Add card form" });
+        // The quick-add player picker (NEO-220). Its results popover opens below the
+        // field and is fixed to the viewport, so a user lifts the form first (same
+        // fold trap as card-player-picker-cross-sport).
+        await page.getByRole("heading", { name: "Add Card" }).hover();
+        await page.mouse.wheel(0, 250);
+        await page.getByRole("button", { name: "Add a player to the new card" }).click();
+        await page.getByRole("textbox", { name: "Find a player for the new card" }).fill(player);
+        // The attempt's single token names no player yet, so Create is the one answer.
+        await page.getByRole("option", { name: `Create player ${player}` }).click();
+        await expect(page.getByRole("button", { name: `Remove player ${player}` })).toBeVisible();
+        // The popover hangs over the Team picker: leave the picker to close it.
+        await page.getByRole("textbox", { name: "Card name", exact: true }).click();
+        await expect(page.getByRole("textbox", { name: "Find a player for the new card" })).toBeHidden();
         await addNewTeam(page, teamB);
         // Leaving the picker closes its search.
         await page.getByRole("textbox", { name: "Card name", exact: true }).click();
@@ -67,9 +93,17 @@ test(
     await expect(badge("703")).toBeHidden();
     await expect(badge("701")).toBeVisible();
     await expect(badge("702")).toBeVisible();
-    await expect(page.getByText("2 need attention")).toBeVisible();
-    await expect(page.getByText("Fix them one at a time")).toBeVisible();
+    await expect(pill("2 need you")).toBeVisible();
     await expectAccessible(page, { label: "Checklist with attention badges and count" });
+
+    // The player was STORED, read where only the stored row can put it: the row
+    // prints no player and an unbadged card says nothing either way, so the
+    // drawer's picker chip (off the live query) is the read-back.
+    await editCardButton(page, `703-${id}`).click();
+    const born = page.getByRole("dialog", { name: /^Card #/ });
+    await expect(born.getByRole("button", { name: `Remove player ${player}` })).toBeVisible();
+    await born.getByRole("button", { name: "Done editing card" }).click();
+    await expect(born.getByRole("button", { name: `Remove player ${player}` })).toBeHidden();
 
     // Give card 702 a team through its drawer: its badge goes, the count drops.
     await page.getByRole("button", { name: new RegExp(`^Edit card 702-${id}(, .*)?$`) }).click();
@@ -82,16 +116,24 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(badge("702")).toBeHidden();
     await expect(badge("701")).toBeVisible();
-    await expect(page.getByText("1 need attention")).toBeVisible();
+    await expect(pill("1 needs you")).toBeVisible();
     await expect(page.getByText(teamA).first()).toBeVisible();
 
-    // The filter keeps only cards that still need attention, and restores the rest.
-    await page.getByRole("button", { name: "Show only cards needing attention", exact: true }).click();
-    await expect(page.getByText(`AttnBravo${token}`)).toBeHidden();
-    await expect(page.getByText(`AttnAlpha${token}`)).toBeVisible();
-    await expect(page.getByText(`AttnCharlie${token}`)).toBeHidden();
-    await expectAccessible(page, { label: "Checklist filtered to cards needing attention" });
-    await page.getByRole("button", { name: "Show only cards needing attention (on)" }).click();
-    await expect(page.getByText(`AttnBravo${token}`)).toBeVisible();
+    // WHICH card: the pill opens the walker on the flagged set and only that. It
+    // opens on the lowest-numbered flagged card, #701, and the counter's y is the
+    // queue's length, so a walker that also held #702 (answered) or #703 (born
+    // linked) reads "Step 1 of 2" / "of 3". The Skip button is the walker's one
+    // card-specific handle (the wizard shares its title). Nothing is answered.
+    await pill("1 needs you").click();
+    const walker = page.getByRole("dialog", { name: "Tidy up this set" });
+    await expect(walker).toBeVisible();
+    await expect(walker.getByRole("button", { name: `Skip for now, card 701-${id}` })).toBeVisible();
+    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expectAccessible(page, { within: walker, label: "Attention walker opened from the need-you pill" });
+    await walker.getByRole("button", { name: "Close (Esc)" }).click();
+    await expect(walker).toBeHidden();
+    // Closing deferred: #701 is still the one flagged card.
+    await expect(pill("1 needs you")).toBeVisible();
+    await expect(badge("701")).toBeVisible();
   },
 );

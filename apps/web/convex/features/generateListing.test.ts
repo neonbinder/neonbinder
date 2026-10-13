@@ -3,6 +3,9 @@ import {
   assessListingTitle,
   generateListingTitle,
   generateListingDescription,
+  rookieAsRc,
+  SHORT_NAME_RULE,
+  type ListingCardInputs,
 } from "./generateListing";
 import { LISTING_TITLE_MAX } from "./listingLimits";
 
@@ -564,9 +567,17 @@ describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
                 words(1 + Math.floor(rand() * 4)),
               ),
         sport: rand() < 0.3 ? undefined : pick(WORDS),
+        // NEO-335: long insert names in the core, and a short name standing
+        // in for the set and insert words (every rule must keep the guarantees).
+        insertName: rand() < 0.5 ? undefined : words(1 + Math.floor(rand() * 6)),
+        setShortName: rand() < 0.5 ? undefined : words(1 + Math.floor(rand() * 4)).slice(0, 60),
+        // NEO-335: the "Parallel" label rides on the parallel role.
+        parallelIsRole: rand() < 0.5,
       };
 
-      const { title, coreFits, dropped } = assessListingTitle(inputs);
+      const { title, coreFits, dropped } = assessListingTitle(inputs, {
+        shortNameRule: pick(["A", "B", "C"] as const),
+      });
       const context = JSON.stringify(inputs);
 
       expect(title.length, context).toBeLessThanOrEqual(LISTING_TITLE_MAX);
@@ -925,5 +936,418 @@ describe("a set whose brand NB has not identified (NEO-272)", () => {
     });
     expect(title).toBe("1995 Chris Grassie #3");
     expect(title).not.toMatch(/\s{2}/);
+  });
+});
+
+describe("NEO-335 — the insert's name is set identity", () => {
+  const score: ListingCardInputs = {
+    cardNumber: "5",
+    year: "1996",
+    manufacturer: "Score",
+    setName: "Score",
+    playerNames: ["Ken Griffey Jr."],
+  };
+
+  test("joins the core after the set name and before the players", () => {
+    expect(generateListingTitle({ ...score, insertName: "Dugout Collection" })).toBe(
+      "1996 Score Dugout Collection Insert Ken Griffey Jr. #5",
+    );
+  });
+
+  test("no insert name: the title is exactly what it was", () => {
+    expect(generateListingTitle(score)).toBe("1996 Score Ken Griffey Jr. #5");
+  });
+
+  test("an insert named after its set collapses into it, like a set named after its maker", () => {
+    expect(
+      generateListingTitle({
+        ...score,
+        manufacturer: "Topps",
+        setName: "Topps Chrome",
+        insertName: "Topps Chrome Refractor",
+      }),
+    ).toBe("1996 Topps Chrome Refractor Insert Ken Griffey Jr. #5");
+    expect(
+      generateListingTitle({
+        ...score,
+        manufacturer: "Upper Deck",
+        setName: "Collector's Choice",
+        insertName: "Collector's Choice Silver Signature",
+      }),
+    ).toBe("1996 Upper Deck Collector's Choice Silver Signature Insert Ken Griffey Jr. #5");
+  });
+
+  test("an insert whose every word the set already says adds nothing", () => {
+    expect(
+      generateListingTitle({ ...score, manufacturer: "Topps", setName: "Topps Chrome", insertName: "Chrome" }),
+    ).toBe("1996 Topps Chrome Insert Ken Griffey Jr. #5");
+  });
+
+  test("never dropped: a long insert cuts the core (flagged) rather than leaving the title", () => {
+    const a = assessListingTitle({
+      ...score,
+      insertName: "Extraordinarily Photographic Superfractor Heritage Refractor Update",
+      playerNames: ["Fitzwilliam-Harrington Rodriguez"],
+    });
+    expect(a.title).toContain("Extraordinarily");
+    expect(a.coreFits).toBe(false);
+    expect(a.title.endsWith("#5") || a.title.includes("#5 ")).toBe(true);
+  });
+
+  test("the description names the insert too, in full", () => {
+    expect(
+      generateListingDescription({ ...score, insertName: "Dugout Collection", setShortName: "Score DC" }),
+    ).toMatch(/^1996 Score Dugout Collection card of Ken Griffey Jr\., #5\./);
+  });
+});
+
+describe("NEO-335 — the short name replaces the set and insert words", () => {
+  // 1990 Upper Deck Collector's Choice, Hologram insert, a card whose
+  // full-name title cannot hold its own identity.
+  const long: ListingCardInputs = {
+    cardNumber: "H12",
+    year: "1990",
+    manufacturer: "Upper Deck",
+    setName: "Upper Deck Collector's Choice",
+    insertName: "Hologram Heroes Extraordinarily Photographic",
+    playerNames: ["Fitzwilliam-Harrington Rodriguez"],
+    setShortName: "Upper Deck Hologram",
+  };
+  // Fits whole, but a real optional token (RC) is dropped.
+  const dropsRc: ListingCardInputs = {
+    cardNumber: "1",
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Topps Chrome Sapphire",
+    // No "Rookie" in the name: "Rookie" → "RC" (tried before the short name)
+    // would otherwise let the RC token fold into it. Covered on its own below.
+    insertName: "Debut Patch Autographs",
+    playerNames: ["Elly De La Cruz"],
+    autographed: "On Card",
+    isRelic: true,
+    isRookie: true,
+    printRun: 99,
+    cardVariation: "Image Variation",
+    setShortName: "Topps Debut",
+  };
+  // Fits whole and drops only filler (the sport).
+  const dropsFiller: ListingCardInputs = {
+    cardNumber: "1",
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Topps Chrome Sapphire",
+    insertName: "Rookie Debut Patch Autographs",
+    playerNames: ["Elly De La Cruz"],
+    sport: "Baseball",
+    setShortName: "Topps Debut",
+  };
+
+  test("the fixtures are what they claim", () => {
+    const noShort = (i: ListingCardInputs) => assessListingTitle({ ...i, setShortName: undefined });
+    expect(noShort(long).coreFits).toBe(false);
+    expect(noShort(dropsRc).coreFits).toBe(true);
+    expect(noShort(dropsRc).dropped).toContain("RC");
+    expect(noShort(dropsFiller).coreFits).toBe(true);
+    // The "Insert" label is filler too: only filler is lost.
+    expect(noShort(dropsFiller).dropped).toEqual(["Baseball", "Insert"]);
+  });
+
+  test("the shipped rule is A", () => {
+    expect(SHORT_NAME_RULE).toBe("A");
+  });
+
+  test("rule A: a cut core uses the short name; the maker is not repeated", () => {
+    const a = assessListingTitle(long, { shortNameRule: "A" });
+    expect(a).toEqual({
+      title: "1990 Upper Deck Hologram Fitzwilliam-Harrington Rodriguez #H12",
+      coreFits: true,
+      dropped: [],
+      shortNameUsed: true,
+    });
+  });
+
+  test("rule A: a dropped real token uses the short name", () => {
+    const a = assessListingTitle(dropsRc, { shortNameRule: "A" });
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.title).toContain("Topps Debut");
+    expect(a.title).not.toContain("Sapphire");
+    expect(a.title).toContain("RC");
+  });
+
+  test("rule A: only filler dropped keeps the full names", () => {
+    const a = assessListingTitle(dropsFiller, { shortNameRule: "A" });
+    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.title).toContain("Rookie Debut Patch Autographs");
+  });
+
+  test("rule B: only a cut core uses it", () => {
+    expect(assessListingTitle(long, { shortNameRule: "B" }).shortNameUsed).toBe(true);
+    expect(assessListingTitle(dropsRc, { shortNameRule: "B" }).shortNameUsed).toBeUndefined();
+    expect(assessListingTitle(dropsFiller, { shortNameRule: "B" }).shortNameUsed).toBeUndefined();
+  });
+
+  test("rule C: always, whenever there is one", () => {
+    expect(assessListingTitle(long, { shortNameRule: "C" }).shortNameUsed).toBe(true);
+    expect(assessListingTitle(dropsRc, { shortNameRule: "C" }).shortNameUsed).toBe(true);
+    const c = assessListingTitle(dropsFiller, { shortNameRule: "C" });
+    expect(c.shortNameUsed).toBe(true);
+    expect(c.title).toBe("2024 Topps Debut Elly De La Cruz #1 Baseball");
+    // A short title that fits whole: no rule changes anything.
+    const short = { cardNumber: "1", year: "2024", setName: "Topps", setShortName: "T" };
+    expect(assessListingTitle(short, { shortNameRule: "A" }).shortNameUsed).toBeUndefined();
+  });
+
+  test("a short name that does not start with the maker keeps the maker", () => {
+    const a = assessListingTitle({ ...long, setShortName: "CC Hologram" }, { shortNameRule: "C" });
+    expect(a.title.startsWith("1990 Upper Deck CC Hologram ")).toBe(true);
+  });
+
+  test("a brand NB has not identified is never put back by the short name", () => {
+    const a = assessListingTitle(
+      { ...long, manufacturer: "All Brands", manufacturerBrandUnknown: true, setShortName: "CC Hologram" },
+      { shortNameRule: "C" },
+    );
+    expect(a.title.startsWith("1990 CC Hologram ")).toBe(true);
+  });
+
+  test("a blank short name is no short name", () => {
+    expect(assessListingTitle({ ...long, setShortName: "   " })).toEqual(
+      assessListingTitle({ ...long, setShortName: undefined }),
+    );
+  });
+});
+
+describe("NEO-335 — the \"Insert\" and \"Parallel\" labels (the old builder's, first to drop)", () => {
+  const score: ListingCardInputs = {
+    cardNumber: "5",
+    year: "1996",
+    manufacturer: "Score",
+    setName: "Score",
+    playerNames: ["Ken Griffey Jr."],
+  };
+  const both: ListingCardInputs = {
+    ...score,
+    insertName: "Dugout Collection",
+    parallelName: "Gold",
+    parallelIsRole: true,
+  };
+
+  test("each label follows the name it labels", () => {
+    expect(assessListingTitle(both)).toEqual({
+      title: "1996 Score Dugout Collection Insert Ken Griffey Jr. #5 Gold Parallel",
+      coreFits: true,
+      dropped: [],
+    });
+    expect(generateListingTitle({ ...score, insertName: "Dugout Collection" })).toBe(
+      "1996 Score Dugout Collection Insert Ken Griffey Jr. #5",
+    );
+    expect(generateListingTitle({ ...score, parallelName: "Gold", parallelIsRole: true })).toBe(
+      "1996 Score Ken Griffey Jr. #5 Gold Parallel",
+    );
+  });
+
+  test("\"Parallel\" only on the parallel ROLE, never on a parallel name alone", () => {
+    // A base card whose features name a parallel (or a copied variation)
+    // carries no role: the title is what it always was.
+    expect(generateListingTitle({ ...score, parallelName: "Gold" })).toBe(
+      "1996 Score Ken Griffey Jr. #5 Gold",
+    );
+    expect(
+      generateListingTitle({ ...score, parallelName: "Gold", parallelIsRole: false }),
+    ).toBe("1996 Score Ken Griffey Jr. #5 Gold");
+    // A "Base" parallel name is no parallel token, so nothing to label.
+    expect(generateListingTitle({ ...score, parallelName: "Base", parallelIsRole: true })).toBe(
+      "1996 Score Ken Griffey Jr. #5",
+    );
+  });
+
+  test("a name that already ends with the word is not labelled twice", () => {
+    expect(generateListingTitle({ ...score, insertName: "Gold Insert" })).toBe(
+      "1996 Score Gold Insert Ken Griffey Jr. #5",
+    );
+    expect(generateListingTitle({ ...score, insertName: "Hot Inserts" })).toBe(
+      "1996 Score Hot Inserts Ken Griffey Jr. #5",
+    );
+    expect(
+      generateListingTitle({ ...score, parallelName: "Prizm Parallel", parallelIsRole: true }),
+    ).toBe("1996 Score Ken Griffey Jr. #5 Prizm Parallel");
+    // A word that merely ends in the letters is not the word.
+    expect(generateListingTitle({ ...score, insertName: "Reinsert" })).toBe(
+      "1996 Score Reinsert Insert Ken Griffey Jr. #5",
+    );
+  });
+
+  test("a parallel token that is really the card's variation is not called a parallel", () => {
+    expect(
+      generateListingTitle({
+        ...score,
+        parallelName: "Image Variation",
+        cardVariation: "Image Variation",
+        parallelIsRole: true,
+      }),
+    ).toBe("1996 Score Ken Griffey Jr. #5 Image Variation");
+  });
+
+  test("\"Insert\" is the first word lost: the team and the parallel label keep their room", () => {
+    const a = assessListingTitle({ ...both, teamNames: ["Seattle Mariners"] });
+    expect(a.title).toBe(
+      "1996 Score Dugout Collection Ken Griffey Jr. #5 Gold Parallel Seattle Mariners",
+    );
+    expect(a.dropped).toEqual(["Insert"]);
+  });
+
+  test("\"Parallel\" is the second: both labels go before a team does", () => {
+    const a = assessListingTitle({ ...both, teamNames: ["Seattle Mariners Club"] });
+    expect(a.title).toBe("1996 Score Dugout Collection Ken Griffey Jr. #5 Gold Seattle Mariners Club");
+    expect(a.dropped).toEqual(["Parallel", "Insert"]);
+  });
+
+  test("the labels lose to even the filler words that come before them (the sport)", () => {
+    const a = assessListingTitle({ ...both, teamNames: ["Seattle Mariners"], sport: "Baseball" });
+    expect(a.title).toContain("Seattle Mariners");
+    expect(a.title).not.toContain(" Insert ");
+    expect(a.dropped).toContain("Insert");
+  });
+
+  test("no \"Insert\" label on a cut core: the insert's own words come first", () => {
+    const a = assessListingTitle({
+      ...score,
+      insertName: "Extraordinarily Photographic Superfractor Heritage Refractor Update",
+      playerNames: ["Fitzwilliam-Harrington Rodriguez"],
+    });
+    expect(a.coreFits).toBe(false);
+    expect(a.title).not.toMatch(/\bInsert\b/);
+  });
+
+  test("no \"Insert\" label beside the short name: the insert's name is not there to label", () => {
+    const a = assessListingTitle(
+      { ...both, setShortName: "Score DC" },
+      { shortNameRule: "C" },
+    );
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.title).toBe("1996 Score DC Ken Griffey Jr. #5 Gold Parallel");
+  });
+
+  test("rule A: losing only the labels never switches to the short name", () => {
+    const inputs: ListingCardInputs = {
+      ...both,
+      teamNames: ["Seattle Mariners Club"],
+      setShortName: "Score DC",
+    };
+    const a = assessListingTitle(inputs, { shortNameRule: "A" });
+    expect(a.dropped).toEqual(["Parallel", "Insert"]);
+    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.title).toContain("Dugout Collection");
+  });
+
+  test("the description is unchanged: no labels there", () => {
+    expect(generateListingDescription(both)).toMatch(
+      /^1996 Score Dugout Collection Gold card of Ken Griffey Jr\., #5\./,
+    );
+  });
+
+  test("a base card's title is byte-identical: no role, no label", () => {
+    expect(
+      generateListingTitle({
+        cardNumber: "50",
+        playerNames: ["Elly De La Cruz"],
+        year: "2024",
+        manufacturer: "Topps",
+        setName: "Chrome",
+        parallelName: "Base",
+        isRookie: true,
+        teamNames: ["Cincinnati Reds"],
+        sport: "Baseball",
+      }),
+    ).toBe("2024 Topps Chrome Elly De La Cruz #50 RC Cincinnati Reds Rookie Baseball");
+  });
+});
+
+describe("NEO-335 — \"Rookie\" → \"RC\" in an insert's name, only when needed", () => {
+  const debut: ListingCardInputs = {
+    cardNumber: "RD-12",
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Topps Chrome",
+    insertName: "Rookie Debut Patch Autographs",
+    playerNames: ["Elly De La Cruz"],
+    autographed: "On Card",
+    isRookie: true,
+  };
+
+  test("the old builder's exact replacement: first occurrence, case-sensitive, no word boundary", () => {
+    expect(rookieAsRc("Rookie Debut")).toBe("RC Debut");
+    expect(rookieAsRc("Rookie Rookie")).toBe("RC Rookie");
+    expect(rookieAsRc("Rookies Club")).toBe("RCs Club");
+    expect(rookieAsRc("rookie debut")).toBe("rookie debut");
+    expect(rookieAsRc("Future Stars")).toBe("Future Stars");
+  });
+
+  test("a title that fits keeps the printed name", () => {
+    const a = assessListingTitle(debut);
+    expect(a.title).toBe(
+      "2024 Topps Chrome Rookie Debut Patch Autographs Elly De La Cruz #RD-12 AUTO RC",
+    );
+    // Only the "Insert" label (filler) was lost: not a reason to shorten.
+    expect(a.dropped).toEqual(["Insert"]);
+    expect(a.rookieAsRcUsed).toBeUndefined();
+  });
+
+  test("shortened when it keeps a real token the printed name lost", () => {
+    const a = assessListingTitle({ ...debut, isRelic: true, printRun: 99 });
+    expect(a.rookieAsRcUsed).toBe(true);
+    expect(a.title).toBe(
+      "2024 Topps Chrome RC Debut Patch Autographs Elly De La Cruz #RD-12 AUTO RELIC",
+    );
+    // RC is said by the shortened name, so it is not lost.
+    expect(a.dropped).not.toContain("RC");
+    expect(assessListingTitle({ ...debut, insertName: "Freshman Debut Patch Autographs", isRelic: true, printRun: 99 }).dropped).toContain("RELIC");
+  });
+
+  test("not shortened when it buys nothing: the same tokens are lost either way", () => {
+    const a = assessListingTitle({ ...debut, teamNames: ["Cincinnati Reds"] });
+    expect(a.rookieAsRcUsed).toBeUndefined();
+    expect(a.title).toContain("Rookie Debut");
+    expect(a.dropped).toContain("Cincinnati Reds");
+  });
+
+  test("shortened on a cut core: four characters back for the card's identity", () => {
+    const a = assessListingTitle({
+      ...debut,
+      insertName: "Rookie Debut Patch Autographs Sapphire Platinum Anniversary Edition",
+    });
+    expect(a.coreFits).toBe(false);
+    expect(a.rookieAsRcUsed).toBe(true);
+    expect(a.title.startsWith("2024 Topps Chrome RC Debut ")).toBe(true);
+  });
+
+  test("tried BEFORE the short name: when it is enough, the short name is not used", () => {
+    const a = assessListingTitle(
+      { ...debut, isRelic: true, setShortName: "Topps RDPA" },
+      { shortNameRule: "A" },
+    );
+    expect(a.rookieAsRcUsed).toBe(true);
+    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.title).toContain("RC Debut Patch Autographs");
+  });
+
+  test("when it is not enough, the short name still takes over (rule A)", () => {
+    const a = assessListingTitle(
+      { ...debut, isRelic: true, printRun: 99, cardVariation: "Gold Glove", setShortName: "Topps RDPA" },
+      { shortNameRule: "A" },
+    );
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.rookieAsRcUsed).toBeUndefined();
+    expect(a.title).toBe("2024 Topps RDPA Elly De La Cruz #RD-12 AUTO RELIC /99 Gold Glove RC Rookie");
+  });
+
+  test("never touches a name without \"Rookie\", nor the description", () => {
+    expect(
+      assessListingTitle({ ...debut, insertName: "Debut Patch Autographs", isRelic: true, printRun: 99 })
+        .rookieAsRcUsed,
+    ).toBeUndefined();
+    expect(generateListingDescription({ ...debut, isRelic: true, printRun: 99 })).toContain(
+      "Rookie Debut Patch Autographs",
+    );
   });
 });

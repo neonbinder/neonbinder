@@ -15,7 +15,7 @@
 // search).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
-import { fetchOneMarketplaceSetChecklistToWizard, openDecidedList, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
+import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readBackDecision, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — Link to Existing decisions, including one to a player of another sport, are carried through Confirm & Save into the committed checklist",
@@ -30,7 +30,8 @@ test(
 
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "San Antonio Iguanas CHL" });
     const wizard = reviewWizard(page);
-    await expect(reviewedLine(page)).toHaveText(/^0 of [0-9]+ reviewed/);
+    // Nothing decided: on a name step x is the decided count plus one (NEO-335).
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
     // Row 1: link to an existing player by search.
     await walkToPlayerRow(page);
@@ -40,14 +41,10 @@ test(
     await expect(linkGretzky).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, link search results" });
     await linkGretzky.click();
-    // The history collapses past five decided names, so open it first. The
-    // auto-add of settled rows can push the count past five a moment later and
-    // fold an open list shut again (only the operator's own toggle latches it
-    // open), so re-open and re-check together until the line is on screen.
-    await expect(async () => {
-      const decidedNames = await openDecidedList(page);
-      await expect(decidedNames.getByText("Linked to Wayne Gretzky")).toBeVisible({ timeout: 1_500 });
-    }).toPass({ timeout: 7_000 });
+    // Read back off the row the link was made on (its "Already decided:" panel),
+    // never off the "Decided (N)" history: batch-ordered and collapsed past five.
+    // `resume` hands the walk back its own rule before the next walk.
+    await readBackDecision(page, "Linked to Wayne Gretzky", { resume: true });
 
     // Row 2: change the sport this name belongs to, Hockey -> Football.
     await walkToPlayerRow(page);
@@ -58,7 +55,13 @@ test(
     await expect(chooser).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, sport chooser open" });
     await chooser.getByRole("option", { name: "Football" }).click();
-    await expect(wizard.getByRole("button", { name: "Sport for this name: Football" })).toBeVisible();
+    // The pick closes the sport list. NOT "Sport for this name: Football" yet:
+    // the switch re-queues the row's lookup, and a lookup that stages career
+    // teams makes the row wait on them, so the walk can leave it for its own
+    // steps within a second or two and bring it back afterwards (the row carries
+    // an edit, so the walk returns to it). The label is asserted after the walk
+    // below, where it also proves the typeahead and the pick.
+    await expect(chooser).toBeHidden();
 
     // Row 2 again (still undecided, now Football): link it to the Football player we made.
     await walkToPlayerRow(page);
@@ -71,6 +74,10 @@ test(
     await expect(wizard.getByRole("button", { name: "Sport for this name: Hockey" })).toBeVisible();
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
+    // Past the names the wizard may ask about teamless cards and card titles
+    // (NEO-335); this spec's feature is the link, so those stay on their
+    // defaults and the walk goes to the Save step.
+    await advanceToSave(page);
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     await expect(confirmSave).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
