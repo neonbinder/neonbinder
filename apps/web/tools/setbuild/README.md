@@ -115,7 +115,14 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
 - **No wildcards, no inference.** A decision is either in the spec or an open
   decision. Ties are never given to the first candidate.
 - **Review answers mirror the wizard's steps.** A player, team or league is
-  `"create"`, `"skip"` or `{ "link": "<existing NB name>" }`. A team may add
+  `"create"`, `"skip"` or `{ "link": "<existing NB name>" }`. A player link
+  may add `birthYear` (`{ "link": "Jose Rodriguez", "birthYear": 2001 }`)
+  when several NB players share the name: it links the one same-name player
+  born that year, and stops with a `ResolveError` listing every same-name
+  player's birth year when none or several match. Without `birthYear`, a link
+  by a shared name stops the same way. A draft (and an apply template) offers
+  that form for a same-name player and lists each candidate's birth year. A
+  team may add
   `location` and `league` (the New Team step's fields). A league `"create"`
   must carry `level`, one of the schema's `leagues.level` values (`major`,
   `minor`, `college`, `international`, `independent`, `other`): NEO-331 made

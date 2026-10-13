@@ -10,6 +10,8 @@ tags:
 # players we hold, each told apart by what is on file (here, a birth year).
 # "Create new" opens the New Player step, "Back to the list" returns without
 # deciding anything, and taking a candidate records a link to THAT player.
+# Untouched, the step HOLDS its place while the rest of the batch settles
+# (NEO-339).
 #
 # R2 — HARD ASSERTIONS, every one unhedged:
 #     (a) the review starts with nothing decided — "0 of N reviewed";
@@ -24,6 +26,13 @@ tags:
 #     (c) Create new shows the New Player step and NOT the list: `Add as New
 #         Player`, `Back to the list`, the heading's sr-only "New Player: "
 #         prefix, and neither the question nor either candidate on screen;
+#     (b2) NEO-339 — the untouched pick step HOLDS: once every other name's
+#         lookup has landed (and the career teams and league they stage have
+#         settled), the question is still on screen under a header that reads
+#         exactly "0 of N reviewed". Before NEO-339 the first settled team or
+#         league took the step away. The claim bites only on a batch that
+#         stages one; this one did (5 career teams and a league, 2026-10-11),
+#         and it lives on live Wikidata data the flow does not own;
 #     (d) Back to the list returns to the same list with nothing decided: the
 #         question and both candidates are back, the footer says "Back at the
 #         list. 2 on file.", and the decided count has not moved;
@@ -105,20 +114,27 @@ tags:
 #   the resumed-batch guard before it is a single copyTextFrom rather than
 #   util-discard-resumed-review-batch's 7s `notVisible` dwell.
 #
-# ── WHY THE FLOW WALKS AFTER STEP 1 ─────────────────────────────────────────
-#   An UNTOUCHED pick step is the walk's own choice, and it yields to the
-#   first settled team or league (`resolveNav`, teams first, NEO-236). "Create
-#   new" pins it (an edit); "Back to the list" unpins it. The career teams
-#   above settle ~14-25s after the batch starts, which is inside the window
-#   STEPS 2-4 need, so asserting them straight after STEP 1 would be a race.
-#   util-wizard-walk-to-player-row removes it: it waits the batch out (its
-#   sanctioned live-Wikidata wait), answers every team and league step as a
-#   SKIP, and stops on the first player row, which is Shuya Yamada's pick
-#   step because rows are inserted in card order and he is card #1. After
-#   that nothing is left to look up that could stage a team: his own lookup,
-#   started by Create new, finds no career team on Wikidata (2026-10-11).
-#   The walk's skips are K decisions, so every count after it is read
-#   relative to K.
+# ── WHY THE FLOW WAITS THE BATCH OUT AFTER STEP 1, AND WALKS NOTHING ────────
+#   Since NEO-339 a pick step holds its place, touched or not
+#   (`holdPresentedRow` in EntityReviewWizard.tsx): no team or league settling
+#   elsewhere takes it away, "Create new" holds the New Player step (an edit),
+#   and "Back to the list" returns to the held list. So STEPS 2-3 need no
+#   walk. Until NEO-339 they did: an untouched pick step yielded to the first
+#   settled team, and the flow drained the team steps with
+#   util-wizard-walk-to-player-row first. That util now skips a held pick
+#   step (it is not for flows that want one), so this flow no longer calls it.
+#
+#   It still waits the batch's lookups out, for two reasons. The wait is
+#   R2(b2): the step must still be there once everything has settled. And it
+#   makes STEP 4's read-back deterministic: the link answers the step and
+#   hands control back to the walk (leagues → teams → players), and with every
+#   lookup landed there is always a settled row for it to present, whose
+#   footer carries "Back to previous decision". With lookups still out the
+#   walk could have nothing to present, and the footer would have no Back.
+#   After the wait nothing is left that could stage a step under Shuya
+#   Yamada: his own lookup, started by Create new, finds no career team on
+#   Wikidata (2026-10-11). Nothing is decided by then, so the counts below
+#   are absolute: 0 before the link, 1 after it.
 #
 # R3 — DEDUP: `admin/admin-players-same-name-birth-year` owns the fork itself
 #   (bounds, adopt vs fork) and is the reason this flow can add a second man
@@ -130,22 +146,24 @@ tags:
 # R5 — every in-app step is 7000. The long waits are the utils' own sanctioned
 #   ones and nothing else: the live BSC + SportLots fetch and the cold Base
 #   mapping (util-fetch-real-set-checklist-to-wizard / util-drill-to-base-
-#   variant), the post-launch sign-in gate (45s), and the walk util's
-#   live-Wikidata wait. "Back to the list" is immediate whatever Shuya
-#   Yamada's own lookup is doing.
+#   variant), the post-launch sign-in gate (45s), and the batch's
+#   live-Wikidata wait (180s, the same ceiling the wizard utils give it).
+#   "Back to the list" is immediate whatever Shuya Yamada's own lookup is
+#   doing.
 #
 # R7 / R7a — READ-ONLY on the set: the flow leaves through Cancel → Discard,
-#   commits nothing, and creates nothing from the wizard (the walk's skips
-#   are discarded with the rest). It provisions the set's structure on its
+#   commits nothing, and creates nothing from the wizard (its one decision,
+#   the link, is discarded with the batch). It provisions the set's structure on its
 #   first drill and writes one GLOBAL `players` row that nothing deletes
 #   (registry entry).
 #
 # R9 — drilled through util-fetch-real-set-checklist-to-wizard with a SET
 #   override; no hand-rolled drill.
 #
-# R10 — one conditional of this flow's own, the resumed-batch guard before
-#   STEP 1, and it is a script condition (`when: true`) costing no hierarchy
-#   wait. The walk util's own documented dwells are its own.
+# R10 — one conditional, the resumed-batch guard before STEP 1, and it is a
+#   script condition (`when: true`) costing no hierarchy wait. The lookup wait
+#   after STEP 1 synchronises on the batch settling, which R2(b2) and STEP 4
+#   both read.
 
 - launchApp
 # The list COUNTER, not the heading: the heading paints before the list query
@@ -296,10 +314,8 @@ tags:
       below:
         text: "0 of [0-9]+ reviewed · [0-9]+ still being looked up"
     timeout: 7000
-# The rest of the opening step. The step holds until the first team or
-# league settles, and every team is queued behind all 20 player lookups (the
-# header: +14.1s measured), so these five follow-up reads (~0.37s each, done
-# by ~+3s) are not racing it.
+# The rest of the opening step. The pick step holds its place whatever settles
+# around it (NEO-339), so these five follow-up reads are not racing the batch.
 - assertVisible:
     text: "We've got 2 on file under that name\\. Pick the one on this card\\."
 - assertVisible:
@@ -316,24 +332,26 @@ tags:
     id: "Skip Shuya Yamada — not a person"
 
 # ============================================================
-# THE WALK — wait the batch out and answer its team steps, so the pick step
-# holds still for STEPS 2-4 (header: "WHY THE FLOW WALKS AFTER STEP 1")
+# R2(b2) — THE BATCH SETTLES AND THE PICK STEP IS STILL HERE
+# (header: "WHY THE FLOW WAITS THE BATCH OUT AFTER STEP 1")
 # ============================================================
 
-- runFlow:
-    file: util-wizard-walk-to-player-row.yaml
-# The util stops on the first PLAYER row; it must be this one, untouched.
+# R5 marketplace-class exception: one live Wikidata round-trip per unknown
+# name (20 NPB players, then the career teams they stage), the same 180s
+# ceiling util-wizard-walk-to-player-row gives this wait. "N still looking up"
+# is the wizard's own status line, absent exactly when no undecided row is
+# pending; it returns the moment the queue drains (+44s measured, header).
 - extendedWaitUntil:
-    visible:
-      text: "Which Shuya Yamada is this\\?"
-    timeout: 7000
-# K = the walk's skips (0 when no career team was staged). Every later count
-# is read against it. Nothing is pending now, so the header is exactly
-# "<K> of <total> reviewed".
-- copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
-- evalScript: ${output.DECIDED = parseInt(maestro.copiedText.split(" of ")[0], 10)}
-- evalScript: ${output.DECIDED_AFTER_LINK = output.DECIDED + 1}
+    notVisible: ".*still looking up.*"
+    timeout: 180000
+# Still the untouched pick step, and still nothing decided. Nothing is pending
+# now, so the header is exactly "0 of <total> reviewed" (full match: no
+# "· N still being looked up" tail). The negative above is paired with this
+# positive, so it cannot pass on a closed dialog.
+- assertVisible:
+    text: "Which Shuya Yamada is this\\?"
+    below:
+      text: "0 of [0-9]+ reviewed"
 
 # ============================================================
 # STEP 2 — R2(c): CREATE NEW OPENS THE NEW PLAYER STEP, WITHOUT THE LIST
@@ -374,10 +392,10 @@ tags:
 # The footer's live region says where the operator is (a11y S3).
 - assertVisible:
     text: "Back at the list\\. 2 on file\\."
-# Nothing was recorded: still K decided. Full-match regex, and Create new
+# Nothing was recorded: still 0 decided. Full-match regex, and Create new
 # started Shuya Yamada's own lookup, so the header may carry a tail.
 - assertVisible:
-    text: "${output.DECIDED} of [0-9]+ reviewed.*"
+    text: "0 of [0-9]+ reviewed.*"
 
 # ============================================================
 # STEP 4 — R2(e): TAKE ONE, AND THE READ-BACK SAYS WHICH
@@ -388,18 +406,21 @@ tags:
 # Exactly one decision: the link.
 - extendedWaitUntil:
     visible:
-      text: "${output.DECIDED_AFTER_LINK} of [0-9]+ reviewed.*"
+      text: "1 of [0-9]+ reviewed.*"
     timeout: 7000
 - assertNotVisible:
     text: "Which Shuya Yamada is this\\?"
 
-# The read-back. Not the Decided list: it folds past five, and the walk's
-# skips usually put it there. The link moved the walk on to the next player,
-# whose footer carries "Back to previous decision" (the most recent decision
-# this session made, i.e. the link). It reopens Shuya Yamada read-only, and
-# that panel's accessible name is the row's: `Decision for Shuya Yamada`. On a
-# decided same-name row the panel sits directly under the heading (the
-# lookup's own lines are hidden there), so it is on screen.
+# The read-back. Not the Decided list: it is the last thing in the dialog
+# body, under whatever step comes next, and a tall step pushes it out of the
+# reported hierarchy (README: "Asserting inside a dialog"). The link handed
+# control back to the walk, which presents the next settled row (leagues →
+# teams → players; with every lookup landed there is one, header). Its footer
+# carries "Back to previous decision" (the most recent decision this session
+# made, i.e. the link). It reopens Shuya Yamada read-only, and that panel's
+# accessible name is the row's: `Decision for Shuya Yamada`. On a decided
+# same-name row the panel sits directly under the heading (the lookup's own
+# lines are hidden there), so it is on screen.
 - tapOn:
     id: "Back to previous decision"
 - extendedWaitUntil:

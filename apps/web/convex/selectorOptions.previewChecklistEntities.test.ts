@@ -185,6 +185,8 @@ describe("previewChecklistEntities", () => {
     expect(res.players[1].candidates.map((c) => c.playerId).sort()).toEqual(
       [...s.twins].sort(),
     );
+    // Each carries its birth year: what a spec's `{ link, birthYear }` names.
+    expect(res.players[1].candidates.map((c) => c.birthYear).sort()).toEqual([1950, 1990]);
     expect(res.players[2].candidates).toEqual([]);
 
     expect(res.teams.map((x) => [x.name, x.status])).toEqual([

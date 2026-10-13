@@ -80,13 +80,18 @@ tags:
 #   (checked read-only 2026-10-11: "Alex Gonzalez", 2 Baseball players on
 #   file, and "Ramon Hernandez", 3; neither narrows on a 1996 card), so they
 #   are inserted READY as pick steps ("Which <name> is this?") with no lookup,
-#   and the wizard may OPEN on one. Nothing below changes: an untouched pick
-#   step is an implicitly presented player row, and it yields to the first
-#   settled team exactly as before (`resolveNav`), so the walk in PART 3 still
-#   sees every team step first, and the pick step carries the same
-#   `Skip <name> — not a person` that ends it. The bulk skip in PART 4
-#   decides both rows like any other. Without their lookups, the two staged
-#   career teams above may not appear; the walk skips whatever is staged.
+#   and the wizard usually OPENS on one. Since NEO-339 a pick step HOLDS its
+#   place, touched or not: the teams settling around it no longer take it
+#   away. It is a player row, so it carries the `Skip <name> — not a person`
+#   that ends PART 3's walk, and a walk started under it would answer no team
+#   at all. So before PART 3 the flow does what an operator who is not here
+#   for that player does: it skips a held pick step
+#   (`util-wizard-skip-held-pick-step`, a no-op when the wizard opened on a
+#   league or team), and the walk goes leagues → teams → players from there.
+#   The other same-name row comes up only after the teams, so it ends PART 3
+#   like any player, and PART 4's bulk skip decides it. Without their
+#   lookups, the two staged career teams above may not appear; the walk
+#   skips whatever is staged.
 #
 #   THE ROW UNDER TEST IS NAMED, NOT "WHICHEVER COMES FIRST". The walk reads
 #   each team/league step's heading, acts on one checklist club by name —
@@ -257,6 +262,11 @@ tags:
 - extendedWaitUntil:
     notVisible: ".*still looking up.*"
     timeout: 180000
+
+# A same-name pick step the wizard opened on is still on screen (it holds,
+# NEO-339). Skip it so the league and team steps come next; one read when the
+# wizard is on a league or team instead (header: "THE FIXTURE", NEO-332).
+- runFlow: util-wizard-skip-held-pick-step.yaml
 
 # ============================================================
 # PART 3 — WALK THE TEAM AND LEAGUE STEPS, acting on one club by name

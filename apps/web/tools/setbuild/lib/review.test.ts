@@ -1,7 +1,17 @@
 import { describe, expect, test } from "vitest";
 import { ResolveError } from "../service";
 import { fakeClient } from "../runner/fake-client";
-import { DECISION_PLACEHOLDER, LEVEL_PLACEHOLDER, matchReview, reviewTemplate, runReview, type ReviewRow } from "./review";
+import {
+  DECISION_PLACEHOLDER,
+  LEVEL_PLACEHOLDER,
+  matchReview,
+  pickPlayerByBirthYear,
+  PLAYER_LINK_SCAN_LIMIT,
+  reviewTemplate,
+  runReview,
+  SAME_NAME_PLAYER_PLACEHOLDER,
+  type ReviewRow,
+} from "./review";
 
 const SPORT = "sport1" as ReviewRow["sportId"];
 const SET = "set1" as ReviewRow["selectorOptionId"];
@@ -312,5 +322,130 @@ describe("moot review answers (NEO-339)", () => {
     const out = await runReview(client, CTX, { players: [{ name: "Mark McGwire", decision: "create" }], teams: [], leagues: [] }, { partial: true });
     expect(out.status).toBe("open");
     if (out.status === "open") expect(out.open.players).toMatchObject([{ name: "Mark McGwire", reason: "unmatched" }]);
+  });
+});
+
+describe("NEO-339: a player link by name and birth year", () => {
+  // Four catalogue players share the name; the card's man is the one born 2001.
+  const JOSES = [
+    { _id: "p1894", name: "Jose Rodriguez", confidence: "exact" as const, birthYear: 1894 },
+    { _id: "p1974", name: "Jose Rodriguez", confidence: "exact" as const, birthYear: 1974 },
+    { _id: "p1995", name: "Jose Rodriguez", confidence: "exact" as const, birthYear: 1995 },
+    { _id: "p2001", name: "José Rodriguez", confidence: "exact" as const, birthYear: 2001 },
+    { _id: "pClose", name: "Josh Rodriguez", confidence: "close" as const, birthYear: 2001 },
+  ];
+  const linkJose = (birthYear?: number) => ({
+    players: [{ name: "Jose Rodriguez", decision: { link: "Jose Rodriguez", ...(birthYear !== undefined ? { birthYear } : {}) } }],
+    teams: [],
+    leagues: [],
+  });
+
+  test("birthYear links the one same-name player born that year, and asks for every same-name row", async () => {
+    const rows = [row("player", "Jose Rodriguez")];
+    const client = batchServer(rows);
+    client.on("players:nearMatches", JOSES);
+    const out = await runReview(client, CTX, linkJose(2001));
+    expect(out.status).toBe("done");
+    expect(decisions(client)).toEqual([{ reviewRowId: rows[0]._id, action: "link", linkedPlayerId: "p2001" }]);
+    // The default five could hide one; the link asks for the server's cap.
+    expect(client.callsTo("players:nearMatches").map((c) => c.args)).toEqual([
+      { name: "Jose Rodriguez", sportId: SPORT, limit: PLAYER_LINK_SCAN_LIMIT },
+    ]);
+  });
+
+  test("no same-name player born that year is refused, naming the name, the year and every birth year", async () => {
+    const rows = [row("player", "Jose Rodriguez")];
+    const client = batchServer(rows);
+    client.on("players:nearMatches", JOSES);
+    const err = await runReview(client, CTX, linkJose(1999)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResolveError);
+    expect((err as ResolveError).message).toBe(
+      'No player named "Jose Rodriguez" was born in 1999. Same-name birth years: 1894, 1974, 1995, 2001.',
+    );
+    expect((err as ResolveError).at).toBe("steps[1].base.checklist.review.players");
+    // Every same-name candidate, with its year; the close match is not one.
+    expect((err as ResolveError).candidates.map((c) => [c.id, c.detail])).toEqual([
+      ["p1894", "born 1894"],
+      ["p1974", "born 1974"],
+      ["p1995", "born 1995"],
+      ["p2001", "born 2001"],
+    ]);
+    expect(decisions(client)).toEqual([]);
+  });
+
+  test("two same-name players born that year are refused, never the first", async () => {
+    const rows = [row("player", "Jose Rodriguez")];
+    const client = batchServer(rows);
+    client.on("players:nearMatches", [...JOSES, { _id: "p2001b", name: "Jose Rodriguez", confidence: "exact", birthYear: 2001 }]);
+    const err = await runReview(client, CTX, linkJose(2001)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResolveError);
+    expect((err as ResolveError).message).toBe(
+      '2 players named "Jose Rodriguez" were born in 2001, so birthYear cannot pick one. Same-name birth years: 1894, 1974, 1995, 2001, 2001.',
+    );
+    expect(decisions(client)).toEqual([]);
+  });
+
+  test("a same-name row with no birth year never matches one, and reads as unknown", () => {
+    const hits = [
+      { _id: "a", name: "Jose Rodriguez", confidence: "exact" as const },
+      { _id: "b", name: "Jose Rodriguez", confidence: "exact" as const, birthYear: 1974 },
+    ];
+    expect(pickPlayerByBirthYear(hits, "Jose Rodriguez", 1974, "at")._id).toBe("b");
+    expect(() => pickPlayerByBirthYear(hits, "Jose Rodriguez", 2001, "at")).toThrow(
+      'No player named "Jose Rodriguez" was born in 2001. Same-name birth years: 1974, unknown.',
+    );
+  });
+
+  test("a full window of same-name rows is refused: another one born that year may lie past it", () => {
+    const hits = Array.from({ length: 8 }, (_, i) => ({ _id: `p${i}`, name: "John Smith", confidence: "exact" as const, birthYear: 1900 + i }));
+    expect(() => pickPlayerByBirthYear(hits, "John Smith", 1903, "at")).toThrow(/matches 8 or more players/);
+    // One under the window is checked as usual.
+    expect(pickPlayerByBirthYear(hits.slice(0, 7), "John Smith", 1903, "at")._id).toBe("p3");
+  });
+
+  test("no same-name player at all is refused", () => {
+    expect(() => pickPlayerByBirthYear([JOSES[4]], "Jose Rodriguez", 2001, "at")).toThrow(
+      'No player named "Jose Rodriguez" to link (birthYear 2001).',
+    );
+  });
+
+  test("without birthYear the link behaves as before: one exact match links, the default lookup is unchanged", async () => {
+    const rows = [row("player", "Shohei Ohtani")];
+    const client = batchServer(rows);
+    client.on("players:nearMatches", [{ _id: "pOhtani", name: "Shohei Ohtani", confidence: "exact", birthYear: 1994 }]);
+    await runReview(client, CTX, { players: [{ name: "Shohei Ohtani", decision: { link: "Shohei Ohtani" } }], teams: [], leagues: [] });
+    expect(decisions(client)).toEqual([{ reviewRowId: rows[0]._id, action: "link", linkedPlayerId: "pOhtani" }]);
+    expect(client.callsTo("players:nearMatches").map((c) => c.args)).toEqual([{ name: "Shohei Ohtani", sportId: SPORT }]);
+  });
+
+  test("without birthYear several same-name players still refuse, and the message points at birthYear", async () => {
+    const rows = [row("player", "Jose Rodriguez")];
+    const client = batchServer(rows);
+    client.on("players:nearMatches", JOSES);
+    const err = await runReview(client, CTX, linkJose()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResolveError);
+    expect((err as ResolveError).message).toBe(
+      '"Jose Rodriguez" matches 4 player rows; add the birthYear of the one you mean (born 1894, 1974, 1995, 2001).',
+    );
+    expect((err as ResolveError).candidates).toHaveLength(4);
+    expect(decisions(client)).toEqual([]);
+  });
+
+  test("a same-name pick's template offers the birth-year form and lists the years", () => {
+    const pick = row("player", "Jose Rodriguez", {
+      enrichment: {
+        existingCandidates: [
+          { playerId: "p1974", name: "Jose Rodriguez", birthYear: 1974, careerSummary: "" },
+          { playerId: "p2001", name: "José Rodriguez", birthYear: 2001, careerSummary: "" },
+        ],
+      },
+    } as Partial<ReviewRow>);
+    const t = reviewTemplate([pick, row("player", "Shohei Ohtani")], { players: [], teams: [], leagues: [] });
+    expect(t.players[0].decision).toBe(
+      `${SAME_NAME_PLAYER_PLACEHOLDER} — 2 existing NB player(s) share this name (born 1974, 2001); ` +
+        'link one with {"link": "<name>", "birthYear": <year>}',
+    );
+    // A name no NB player has keeps the plain fill-in.
+    expect(t.players[1].decision).toBe(DECISION_PLACEHOLDER);
   });
 });

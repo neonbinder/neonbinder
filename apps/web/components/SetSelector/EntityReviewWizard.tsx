@@ -1450,14 +1450,37 @@ export default function EntityReviewWizard({
     pinnedEditsRef.current = pinnedRowHasEdits;
   }, [pinnedRowHasEdits]);
 
+  /**
+   * NEO-339 — a pick step holds its place, touched or not.
+   *
+   * The teams-first yield in `resolveNav` swaps an untouched player step for
+   * any team or league that becomes presentable. That yield exists for one
+   * reason, in Jason's words: "if you create a team that needs a new league or
+   * player that needs a new team it needs to show that first before saving the
+   * original card. As long as that still works then yes I'd rather not jump
+   * the line". A "Which {name} is this?" step is neither. It asks which of the
+   * players we already hold is on this card, and none of its answers needs a
+   * team first: a link points at a player we have, a skip needs nothing, and
+   * Create new is itself an edit that holds the row and then stages that
+   * player's own teams. So a league or team settling elsewhere in the batch
+   * while the operator reads the candidates must not take the step away.
+   *
+   * Passed to the yield gate only. `pinnedRowHasEdits` keeps its own meaning
+   * ("there is work on this row to lose"), which the armed auto-add timer also
+   * reads, and the dependency surfacing is untouched: a player waiting on its
+   * own staged teams, and a team waiting on its own staged league, still move
+   * the walk (those clauses of `resolveNav` are not gated by this).
+   */
+  const holdPresentedRow = pinnedRowHasEdits || pickStep;
+
   useEffect(() => {
     if (!rows) return;
-    const next = resolveNav(rows, nav, { pinnedRowHasEdits });
+    const next = resolveNav(rows, nav, { pinnedRowHasEdits: holdPresentedRow });
     if (next === nav) return;
     navRef.current = next;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the presented row follows the batch; the rule that decides when is pure and tested in entity-review-nav.test.tsx
     setNav(next);
-  }, [rows, nav, pinnedRowHasEdits]);
+  }, [rows, nav, holdPresentedRow]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them

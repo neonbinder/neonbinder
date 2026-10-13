@@ -48,10 +48,18 @@ import {
   type RecordDecisionArgs,
 } from "../../../lib/set-build/review";
 import { splitTeamName } from "../../../lib/teams/team-name";
+import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../../lib/players/name-limits";
 import { nextUndecided } from "../../../components/SetSelector/entity-review-nav";
 import type { NbClient } from "../client/convex-client";
 import { ResolveError, type OpenDecisions, type OpenReviewItem, type ResolveCandidate, type RowRef } from "../service";
-import { LEAGUE_LEVEL_VALUES, type LeagueDecision, type NamedDecision, type ReviewAnswers, type TeamDecision } from "../spec/schema";
+import {
+  LEAGUE_LEVEL_VALUES,
+  type LeagueDecision,
+  type NamedDecision,
+  type PlayerDecision,
+  type ReviewAnswers,
+  type TeamDecision,
+} from "../spec/schema";
 import type { LeagueLevel } from "../../../convex/leagues";
 import { ChecklistStepError } from "./fetch-checklist";
 
@@ -102,7 +110,7 @@ export function specNameKey(name: string): string {
 
 const KIND_KEY = { player: "players", team: "teams", league: "leagues" } as const;
 
-type AnyDecision = NamedDecision | TeamDecision | LeagueDecision;
+type AnyDecision = NamedDecision | PlayerDecision | TeamDecision | LeagueDecision;
 
 export interface ReviewMatch {
   /** Row id → its one spec entry. */
@@ -128,7 +136,10 @@ export function rowDetail(row: ReviewRow): string | undefined {
     parts.push(`career teams: ${e.careerTeams.map((c) => c.name).join(", ")}`);
   }
   if (row.kind === "player" && e?.existingCandidates?.length) {
-    parts.push(`${e.existingCandidates.length} existing NB player(s) share this name`);
+    parts.push(
+      `${e.existingCandidates.length} existing NB player(s) share this name (born ${birthYearsText(e.existingCandidates)}); ` +
+        'link one with {"link": "<name>", "birthYear": <year>}',
+    );
   }
   if (row.status === "error") parts.push("lookup failed");
   return parts.length ? parts.join("; ") : undefined;
@@ -209,6 +220,21 @@ export function reviewOpenCount(open: ReviewOpen): number {
 export const DECISION_PLACEHOLDER = '<"create" | "skip" | {"link": "<existing NB name>"}>';
 
 /**
+ * The fill-in for a player row that shares its name with existing NB players
+ * (the pick step): a link by name alone would stop as ambiguous, so the
+ * placeholder offers the `{ link, birthYear }` form.
+ */
+export const SAME_NAME_PLAYER_PLACEHOLDER =
+  '<"create" | "skip" | {"link": "<existing NB name>", "birthYear": <the birth year of the one you mean>}>';
+
+/** The placeholder for one unanswered row. */
+export function decisionPlaceholderFor(row: Pick<ReviewRow, "kind" | "enrichment">): string {
+  return row.kind === "player" && (row.enrichment?.existingCandidates?.length ?? 0) > 0
+    ? SAME_NAME_PLAYER_PLACEHOLDER
+    : DECISION_PLACEHOLDER;
+}
+
+/**
  * NEO-331 — the fill-in a template carries for a league's `level`. A league
  * "create" cannot go without one, and nothing in a review row says where the
  * league sits in the pyramid, so the template never guesses: the operator
@@ -240,9 +266,10 @@ export function reviewTemplate(
     // The hint rides inside the placeholder (the spec is strict, so a separate
     // hint key would have to be deleted by hand after filling).
     const hint = rowDetail(r);
+    const placeholder = decisionPlaceholderFor(r);
     out[listKey].push({
       name: r.name,
-      decision: hint ? `${DECISION_PLACEHOLDER} — ${hint}` : DECISION_PLACEHOLDER,
+      decision: hint ? `${placeholder} — ${hint}` : placeholder,
       ...(r.kind === "league" ? { level: LEVEL_PLACEHOLDER } : {}),
     });
   }
@@ -336,18 +363,103 @@ async function exactOne<T extends { _id: string; name: string; confidence: "exac
   });
 }
 
-/** The one existing NB player/team/league `link` names, in the row's sport. */
+/**
+ * How many rows `players.nearMatches` returns when a link carries a
+ * `birthYear` (its own cap, `NEAR_MATCH_MAX_LIMIT`, mirrored). The default
+ * five could hide the one born that year, or a second one. Exact hits rank
+ * first, so every exact hit the server read is in the list.
+ */
+export const PLAYER_LINK_SCAN_LIMIT = 25;
+
+type PlayerHit = { _id: string; name: string; confidence: "exact" | "close"; birthYear?: number; matchedAlias?: string };
+
+function playerDetail(h: PlayerHit): string | undefined {
+  return [h.birthYear ? `born ${h.birthYear}` : "", h.matchedAlias ? `alias "${h.matchedAlias}"` : ""].filter(Boolean).join(", ") || undefined;
+}
+
+/** "1894, 1974, 1995, 2001" — every same-name player's birth year, "unknown" where a row has none. */
+export function birthYearsText(hits: ReadonlyArray<{ birthYear?: number }>): string {
+  return hits
+    .map((h) => h.birthYear)
+    .sort((a, b) => (a ?? Infinity) - (b ?? Infinity))
+    .map((y) => (y === undefined ? "unknown" : String(y)))
+    .join(", ");
+}
+
+/**
+ * The one same-name player (an `exact` hit) born in `birthYear`, or a
+ * `ResolveError` naming the name, the year and every same-name player's birth
+ * year. Pure. Zero born that year and several born that year refuse, and so
+ * do `scanLimit` or more exact hits: the server reads a bounded window of
+ * same-name rows (`PLAYER_AMBIGUITY_SCAN_LIMIT`), so a full window means "at
+ * least that many" and another one born that year may lie past it.
+ */
+export function pickPlayerByBirthYear<T extends PlayerHit>(
+  hits: readonly T[],
+  link: string,
+  birthYear: number,
+  at: string,
+  scanLimit: number = PLAYER_AMBIGUITY_SCAN_LIMIT,
+): T {
+  const exact = hits.filter((h) => h.confidence === "exact");
+  const born = exact.filter((h) => h.birthYear === birthYear);
+  const candidates = (exact.length > 0 ? exact : hits).map((h) => ({ id: String(h._id), name: h.name, detail: playerDetail(h) }));
+  const years = birthYearsText(exact);
+  if (exact.length >= scanLimit) {
+    throw new ResolveError({
+      kind: "player",
+      query: link,
+      at,
+      candidates,
+      message: `"${link}" matches ${exact.length} or more players, too many to check birthYear ${birthYear} against all of them.`,
+    });
+  }
+  if (born.length === 1) return born[0];
+  throw new ResolveError({
+    kind: "player",
+    query: link,
+    at,
+    candidates,
+    message:
+      exact.length === 0
+        ? `No player named "${link}" to link (birthYear ${birthYear}).`
+        : born.length === 0
+          ? `No player named "${link}" was born in ${birthYear}. Same-name birth years: ${years}.`
+          : `${born.length} players named "${link}" were born in ${birthYear}, so birthYear cannot pick one. Same-name birth years: ${years}.`,
+  });
+}
+
+/**
+ * The one existing NB player/team/league a `link` names, in the row's sport.
+ * A player link may carry `birthYear` (`pickPlayerByBirthYear`); without it,
+ * the name alone must match exactly one row.
+ */
 export async function resolveLinkTarget(
   client: NbClient,
   row: ReviewRow,
-  link: string,
+  answer: { link: string; birthYear?: number },
   at: string,
 ): Promise<Id<"players"> | Id<"teams"> | Id<"leagues">> {
+  const { link } = answer;
   if (row.kind === "player") {
+    const { birthYear } = answer;
+    if (birthYear !== undefined) {
+      const hits = await client.query(api.players.nearMatches, { name: link, sportId: row.sportId, limit: PLAYER_LINK_SCAN_LIMIT });
+      return pickPlayerByBirthYear(hits, link, birthYear, at)._id;
+    }
     const hits = await client.query(api.players.nearMatches, { name: link, sportId: row.sportId });
-    return (await exactOne(hits, "player", link, at, (h) =>
-      [h.birthYear ? `born ${h.birthYear}` : "", h.matchedAlias ? `alias "${h.matchedAlias}"` : ""].filter(Boolean).join(", ") || undefined,
-    ))._id;
+    const exact = hits.filter((h) => h.confidence === "exact");
+    if (exact.length > 1) {
+      // Same refusal as `exactOne`, worded to point at the answer that settles it.
+      throw new ResolveError({
+        kind: "player",
+        query: link,
+        at,
+        candidates: exact.map((h) => ({ id: String(h._id), name: h.name, detail: playerDetail(h) })),
+        message: `"${link}" matches ${exact.length} player rows; add the birthYear of the one you mean (born ${birthYearsText(exact)}).`,
+      });
+    }
+    return (await exactOne(hits, "player", link, at, playerDetail))._id;
   }
   if (row.kind === "team") {
     const hits = await client.query(api.teams.nearMatches, { name: link, sportId: row.sportId });
@@ -585,7 +697,7 @@ export async function runReview(
     if (entry.decision === "skip") {
       decision = { reviewRowId: row._id, action: "skip" };
     } else if (typeof entry.decision === "object") {
-      const linked = await resolveLinkTarget(client, row, entry.decision.link, at);
+      const linked = await resolveLinkTarget(client, row, entry.decision, at);
       decision = buildLinkDecision(row._id, row.kind, linked, row.kind === "team" ? { saveAsAlias: true } : {});
     } else if (row.kind === "player") {
       decision = buildCreateDecision(row._id, {});

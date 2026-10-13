@@ -180,14 +180,15 @@ export interface RowRef {
 
 // The answer shapes are the spec's own (spec/schema.ts), so a `decide` call and
 // a spec's review section cannot drift apart.
-export type { NamedDecision, TeamDecision, LeagueDecision, SlDecision } from "./spec/schema";
-import type { NamedDecision, TeamDecision, LeagueDecision, SlDecision } from "./spec/schema";
+export type { NamedDecision, PlayerDecision, TeamDecision, LeagueDecision, SlDecision } from "./spec/schema";
+import type { PlayerDecision, TeamDecision, LeagueDecision, SlDecision } from "./spec/schema";
 
 /** What `decide` takes: answers to one checklist's entity review (an apply stop). */
 export interface ReviewDecisions {
   /** Which checklist the review belongs to. Omitted = the set's Base row. */
   row?: RowRef;
-  players?: NamedDecision[];
+  /** A player link may carry `birthYear` to pick one of several same-name players. */
+  players?: PlayerDecision[];
   teams?: TeamDecision[];
   /** NEO-331: a league "create" carries its `level`. */
   leagues?: LeagueDecision[];

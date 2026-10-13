@@ -10,6 +10,7 @@ import { api } from "../../../convex/_generated/api";
 import { contentDigest } from "../client/target";
 import { countOpenDecisions, specConfirmPhrase, type DraftedReport, type UnresolvedDraftReport } from "../service";
 import { parseSpec } from "../spec/schema";
+import { SAME_NAME_PLAYER_PLACEHOLDER } from "../lib/review";
 import { draftSet, entitySlices, mergeDraftAnswers, namesOnCards, placeholdersIn } from "./draft";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { DRAFT_READ_ACTIONS, draftClient, PlanWouldWrite } from "./read-only-client";
@@ -77,9 +78,12 @@ function preview(matched: Card[], bscOnly: Card[] = [], opts: { needed?: number;
 }
 
 /** NB's players: a name with candidates, and the ones NB knows exactly. */
-const PLAYERS: Record<string, { status: "known" | "unknown"; candidates: Array<{ playerId: string; name: string }> }> = {
+const PLAYERS: Record<string, { status: "known" | "unknown"; candidates: Array<{ playerId: string; name: string; birthYear?: number }> }> = {
   "Mike Trout": { status: "known", candidates: [] },
-  "Aaron Judge": { status: "unknown", candidates: [{ playerId: "pj1", name: "Aaron Judge" }, { playerId: "pj2", name: "Aaron Judge" }] },
+  "Aaron Judge": {
+    status: "unknown",
+    candidates: [{ playerId: "pj1", name: "Aaron Judge", birthYear: 1992 }, { playerId: "pj2", name: "Aaron Judge" }],
+  },
 };
 
 interface WorldOpts {
@@ -399,7 +403,15 @@ describe("draftSet: never guesses", () => {
       expect.objectContaining({ name: "Aaron Judge", reason: "unanswered", at: "steps[0].base.checklist.review.players" }),
     ]);
     const tpl = r.template as { steps: Array<{ base: { checklist: { review: { players: Array<{ name: string; decision: string }> } } } }> };
-    expect(tpl.steps[0].base.checklist.review.players.find((p) => p.name === "Aaron Judge")!.decision).toMatch(/^<"create" \| "skip" \| \{"link"/);
+    const judge = tpl.steps[0].base.checklist.review.players.find((p) => p.name === "Aaron Judge")!.decision;
+    expect(judge).toMatch(/^<"create" \| "skip" \| \{"link"/);
+    // A same-name pick offers the birth-year form and lists each candidate's year.
+    expect(judge.startsWith(SAME_NAME_PLAYER_PLACEHOLDER)).toBe(true);
+    expect(judge).toContain("Aaron Judge (born 1992) [pj1]");
+    expect(r.openDecisions.review.players[0].candidates).toEqual([
+      { id: "pj1", name: "Aaron Judge", detail: "born 1992" },
+      { id: "pj2", name: "Aaron Judge" },
+    ]);
   });
 });
 

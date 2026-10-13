@@ -24,7 +24,7 @@
  * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave` for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed) | a title clash |
  * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types)  | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair |
- * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name), on every checklist carrying it |
+ * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
  * | builds                  | Parallel rows from Base; an insert's grouped parallels from the insert | — |
  *
@@ -87,7 +87,7 @@ import { pairCandidates, type ReadyCandidates, type ServedSide } from "../lib/fe
 import { currentBaseMapping, openBaseCandidates, pickCandidate } from "../lib/map-base";
 import { dialogOpenDecisions, existingRowsForSeed } from "../lib/reconcile-variants";
 import { cardCount } from "../lib/commit";
-import { DECISION_PLACEHOLDER } from "../lib/review";
+import { DECISION_PLACEHOLDER, SAME_NAME_PLAYER_PLACEHOLDER } from "../lib/review";
 import {
   countOpenDecisions,
   DEFAULT_TEAM_LOOKUP_BUDGET,
@@ -936,9 +936,14 @@ export async function draftSet(
         if (p.status !== "unknown") continue;
         if (p.candidates.length === 0 && p.matchCount === 0) creates.players.push({ name: p.name, decision: "create" });
         else {
-          const candidates: ResolveCandidate[] = p.candidates.map((c) => ({ id: String(c.playerId), name: c.name }));
+          // A same-name pick: the birth year is what a `{ link, birthYear }` answer names.
+          const candidates: ResolveCandidate[] = p.candidates.map((c) => ({
+            id: String(c.playerId),
+            name: c.name,
+            ...(c.birthYear !== undefined ? { detail: `born ${c.birthYear}` } : {}),
+          }));
           open.review.players.push(reviewItem(`${at}.review.players`, row, p.name, candidates, p.matchCount));
-          opens.players.push({ name: p.name, decision: `${DECISION_PLACEHOLDER} — ${candidateText(candidates, p.matchCount)}` });
+          opens.players.push({ name: p.name, decision: `${SAME_NAME_PLAYER_PLACEHOLDER} — ${candidateText(candidates, p.matchCount)}` });
         }
       }
       for (const tm of verdict.teams) {

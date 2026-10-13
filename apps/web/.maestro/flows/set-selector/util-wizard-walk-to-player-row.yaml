@@ -3,8 +3,8 @@ name: "Utility — walk the entity review wizard to a settled player row (skippi
 tags:
   - util
 ---
-# ⚠️ NEO-236 — THE WIZARD DOES NOT OPEN ON A PLAYER ROW, AND IT WILL TAKE ONE
-# BACK OFF YOU WITH NO DECISION MADE. Both are deliberate; both broke flows.
+# ⚠️ NEO-236 — THE WIZARD DOES NOT OPEN ON AN ORDINARY PLAYER ROW, AND IT WILL
+# TAKE ONE BACK OFF YOU WITH NO DECISION MADE. Both are deliberate; both broke flows.
 #
 # The rule, from `entity-review-nav.ts` (`resolveNav` + `nextUndecided`):
 #
@@ -12,6 +12,16 @@ tags:
 #   player the WIZARD walked to yields the moment any team row settles — unless
 #   the operator has started work on it (`pinnedRowHasEdits`: an open link
 #   search, a staged stint, an unticked chip, text in the career-team entry).
+#
+#   EXCEPT a same-name PICK step ("Which <name> is this?", NEO-332). Since
+#   NEO-339 it holds its place, touched or not (`holdPresentedRow`), and it
+#   is usually the step the wizard OPENS on, because it is inserted ready
+#   while every other name waits on its lookup. Left alone it would end the
+#   drain below before a single team step (it is a player row), so step 1b
+#   skips it first: `util-wizard-skip-held-pick-step`. A flow that wants to
+#   stay ON a pick step (checklist-wizard-same-name-pick-step) therefore does
+#   not call this util. The skip is one more "Skipped" decision, so callers
+#   read their counts relative to where the walk left them, as they already do.
 #
 # Jason asked for this so the operator answers one kind of work at a time and
 # every team a later player needs already exists. The consequence for a flow is
@@ -58,6 +68,12 @@ tags:
 - extendedWaitUntil:
     notVisible: ".*still looking up.*"
     timeout: 180000
+
+# --- 1b. a same-name pick step the wizard is holding is skipped, so the
+# league and team steps come next (see the header). One read when there is
+# none. Not repeated after step 3: once the teams are answered the walk
+# reaches players in batch order, the same order this util always stopped in.
+- runFlow: util-wizard-skip-held-pick-step.yaml
 
 # --- 2. answer every team step until a player row is presented
 - repeat:

@@ -110,3 +110,4 @@
 - [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
 - [Zod union hides enum errors](reference_zod_union_hides_enum_errors.md) — a fatal issue under z.union reports "Invalid input" at the union; use z.custom(check, {fatal:false}) or superRefine
 - [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
+- [Identify a same-name catalogue player read-only](reference_identify_a_same_name_catalogue_player_read_only.md) — preview slug from the PR Pipeline log, inline-query players/cardChecklist; never download the bundle, never trust the Wikidata fixture

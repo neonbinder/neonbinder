@@ -174,13 +174,13 @@ Non-markdown helpers: `tools/`
 - [centerElement is one-sided](patterns_center_element_is_one_sided.md) — UP accepts centre > 0.3H, DOWN < 0.7H, one ~313px swipe; scroll to each row…
 - [Multi-team row needs a team count](patterns_multi_team_row_needs_a_team_count.md) — "A, B" sub-line = 2 links OR 1 combined team; Team Mgmt "1 of" on one half closes it; settle lookups before checking team steps
 - [Closed <details> content is in the hierarchy](patterns_closed_details_content_is_in_the_hierarchy.md) — listed with live bounds while hidden; open the summary before asserting inside
-- [Same-name pick step](reference_same_name_player_panel.md) — `Which .* is this\?`; READY at open; a 2nd dated fork beside an undated catalogue row is REFUSED; read back via `Back to previous decision`
+- [Same-name pick step](reference_same_name_player_panel.md) — `Which .* is this\?`; READY at open and HOLDS (NEO-339), blocking team drains; one-read detect; 2nd dated fork REFUSED
 - [Catalogue-seeded wizard staging](reference_catalogue_seeded_wizard_staging.md) — catalogue = prod snapshot; what still stages; all-known fetch → `Saved` replaces `Kept all`
 - [Wizard returns to the staging player after its team step](reference_wizard_returns_to_batch_order_player_after_staged_team.md) — NEO-330: league → team → A…
 - [Wizard decisions: header delta + all-decided summary](patterns_wizard_decisions_read_from_header_and_summary.md) — Decided list is body/off-screen…
 - [Committed checklist opens mid-list](patterns_committed_checklist_opens_mid_list.md) — list mounts on the commit's first batch…
 - [Scroll pass cost is driver overhead](patterns_scroll_pass_cost_is_driver_overhead.md) — ~2s/312px pass on ANY page (executeJS sleeps 100ms); page size is ~+5%…
-- [Record a fixture set's lookups](patterns_record_a_fixture_sets_lookups.md) — captureFromCli refuses on a catalogue preview…
+- [Record a fixture set's lookups](patterns_record_a_fixture_sets_lookups.md) — captureFromCli is boundary-scoped (works on catalogue previews); merge via scripts/merge-enrichment-capture.ts
 - [Insert fixture needs its column writer](patterns_insert_fixture_needs_its_column_writer.md) — insert rows exist only after a reconcile Save…
 - [Branch on copied button text](patterns_branch_on_copied_button_text.md) — vary a drain by step kind: copyTextFrom the guarded button + `when: true:` script; never a 2nd visibility guard
 - [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write proof; level pills required; no sport default, pick MLB (seed-owned row); held rows never say "No matches."
@@ -189,7 +189,7 @@ Non-markdown helpers: `tools/`
 - [takeScreenshot paths + nested runFlow env](patterns_screenshots_and_nested_env.md) — absolute paths refused; env is inherited, so pass SET to the discard util
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~0.7 rows/s live; walk util covers ~125 names; teams settle last; READY rows present at once
 - [SL review filter is substring](patterns_sl_review_filter_is_substring.md) — "first row its own filter shows" covers every label CONTAINING it (`Best Top Prospects` above `Prospects`)
-- [Wizard implicit pin yields to a ready league](patterns_wizard_implicit_pin_yields_to_a_ready_league.md) — untouched player steps swap out; staged teams settle in seconds
+- [Wizard implicit pin yields to a ready league](patterns_wizard_implicit_pin_yields_to_a_ready_league.md) — untouched ordinary player steps swap out (pick steps hold); staged teams settle in seconds
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — one lookup 0.3-20s Convex-side, never a guarantee; size a window on the 5-wide pool's depth; teams settle last
 - [Reference catalogue on CI previews](patterns_reference_catalogue_on_ci_previews.md) — NEO-330: prod catalogue on every CI preview; check fixture names against the bundle; capped lists
 - [Merged flows miss a branch copy sweep](patterns_merged_flows_miss_a_branch_copy_sweep.md) — after merging main, grep the old copy a branch sweep replaced; main-added flows keep it

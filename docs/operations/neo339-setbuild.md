@@ -223,7 +223,12 @@ with the set's path; the draft comes back with:
   with several candidates and no pre-selection; a card disagreement; any
   player or team with an existing NB candidate, never linked by name; a
   checklist the draft could not preview), each as a `<…>` fill-in in the
-  template. To make a pending set its own set instead, change its `leave` to
+  template. A player that shares its name with existing NB players gets a
+  fill-in offering `{"link": "<name>", "birthYear": <year>}` and each
+  candidate's birth year (`José Rodriguez (born 2001) [<id>]`): a link by a
+  shared name alone stops as ambiguous, and `birthYear` names the one born
+  that year (none or several born that year stops too, listing every
+  same-name birth year). To make a pending set its own set instead, change its `leave` to
   `own-set` in the spec and raise that type's `expectRows` (and, for an
   Insert type with a `group`, `expectUngrouped`) by one;
 - between a draft and its apply the brand can change (another writer syncs
@@ -415,6 +420,13 @@ the candidate rows with their marketplace ids, and the JSON fragment to add.
    press on the New League step; the template leaves it as a fill-in because
    nothing on the row says where the league sits. The baseline's own league
    answers use `"other"`, the level the retired seed flow pressed.
+   A player that shares its name with catalogue players (the pick step,
+   `Which <name> is this?`) is linked by name and birth year,
+   `{"link": "Jose Rodriguez", "birthYear": 2001}`: read the card's year,
+   team and RC flag against each candidate's birth year and stints, and
+   answer `"create"` only when none of them is the man on the card. A
+   `{link, birthYear}` that matches none or several stops with every
+   same-name birth year listed.
 
 Other reds and their cause:
 

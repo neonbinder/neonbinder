@@ -479,6 +479,15 @@ tags:
           notVisible: ".*still looking up.*"
           timeout: 180000
 
+      # A SAME-NAME PICK STEP HOLDS ITS PLACE (NEO-339). If the wizard opened
+      # on one ("Which <name> is this?", inserted ready while every other
+      # name waited on its lookup), it is still on screen now, and it is a
+      # player row: the drain below would exit on it at once, check no team
+      # step, and the bulk skip would then decide every team unseen, so (a)
+      # would pass without looking. Skip it first and the league and team
+      # steps come next. One read when the wizard is on anything else.
+      - runFlow: util-wizard-skip-held-pick-step.yaml
+
       # R2 PRECONDITION: the settled wizard is presenting a row (a team, a
       # league or a player), so the loop below cannot exit on a blank or
       # wedged dialog.

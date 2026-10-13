@@ -75,6 +75,33 @@ export const NamedDecisionSchema = z
   })
   .strict();
 
+/**
+ * A player row's answer: `NamedDecision`'s, plus `birthYear` on a link. NB
+ * keeps several players under one name ("Jose Rodriguez"), so a link by name
+ * alone stops as ambiguous; `{ link, birthYear }` names the one same-name
+ * player born that year (exactly-one, or the step stops). Without
+ * `birthYear` a link behaves as before.
+ */
+export const PlayerLinkSchema = z
+  .object({
+    link: text,
+    birthYear: z
+      .number()
+      .int()
+      .gte(1000)
+      .lte(9999)
+      .optional()
+      .describe("The linked player's birth year: picks one of several NB players sharing the name."),
+  })
+  .strict();
+
+export const PlayerDecisionSchema = z
+  .object({
+    name: text,
+    decision: z.union([z.literal("create"), z.literal("skip"), PlayerLinkSchema]),
+  })
+  .strict();
+
 /** A team row's answer; `location` / `league` fill the New Team step when creating. */
 export const TeamDecisionSchema = NamedDecisionSchema.extend({
   location: text.optional(),
@@ -148,7 +175,7 @@ export const LeagueDecisionSchema = NamedDecisionSchema.extend({
 
 export const ReviewAnswersSchema = z
   .object({
-    players: z.array(NamedDecisionSchema).default([]),
+    players: z.array(PlayerDecisionSchema).default([]),
     teams: z.array(TeamDecisionSchema).default([]),
     leagues: z.array(LeagueDecisionSchema).default([]),
   })
@@ -496,6 +523,8 @@ export type CardPair = z.infer<typeof CardPairSchema>;
 export type CardConflict = z.infer<typeof CardConflictSchema>;
 export type ReviewAnswers = z.infer<typeof ReviewAnswersSchema>;
 export type NamedDecision = z.infer<typeof NamedDecisionSchema>;
+export type PlayerDecision = z.infer<typeof PlayerDecisionSchema>;
+export type PlayerLink = z.infer<typeof PlayerLinkSchema>;
 export type TeamDecision = z.infer<typeof TeamDecisionSchema>;
 export type LeagueDecision = z.infer<typeof LeagueDecisionSchema>;
 

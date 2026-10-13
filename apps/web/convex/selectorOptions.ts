@@ -15201,7 +15201,7 @@ type PreviewChecklistEntitiesResult = {
     matchCount: number;
     playerId?: Id<"players">;
     narrowedByCardYear?: boolean;
-    candidates: Array<{ playerId: Id<"players">; name: string }>;
+    candidates: Array<{ playerId: Id<"players">; name: string; birthYear?: number }>;
   }>;
   teams: Array<{
     name: string;
@@ -15257,7 +15257,16 @@ export const previewChecklistEntities = query({
         playerId: v.optional(v.id("players")),
         narrowedByCardYear: v.optional(v.boolean()),
         candidates: v.array(
-          v.object({ playerId: v.id("players"), name: v.string() }),
+          v.object({
+            playerId: v.id("players"),
+            name: v.string(),
+            /**
+             * What tells same-name rows apart, and what a spec's
+             * `{ link, birthYear }` answer names (NEO-339). Omitted when the
+             * row has none.
+             */
+            birthYear: v.optional(v.number()),
+          }),
         ),
       }),
     ),
@@ -15362,6 +15371,7 @@ export const previewChecklistEntities = query({
           candidates: (verdict.candidates ?? []).map((p) => ({
             playerId: p._id,
             name: p.name,
+            ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
           })),
         };
       }),

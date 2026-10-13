@@ -16,6 +16,7 @@
  */
 
 import { convexTest } from "convex-test";
+import { convexToJson } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
@@ -28,6 +29,7 @@ import {
   parseFixtureFile,
   readFixture,
   toFixtureEntry,
+  type EnrichmentFixtureEntry,
   type EnrichmentFixtureFile,
 } from "./adapters/enrichmentFixtures";
 import {
@@ -63,6 +65,15 @@ function fixtureOn() {
 
 function fixtureWith(entries: EnrichmentFixtureFile["entries"]): EnrichmentFixtureFile {
   return { version: 1, capturedAt: "2026-09-20T00:00:00.000Z", sportQid: SPORT_QID, entries };
+}
+
+/**
+ * A capture's entries keyed by fixture key, for lookups in assertions. The
+ * action returns them as a key-sorted `{ key, entry }` list (NEO-346); this
+ * builds the keyed form locally, as the merge script does.
+ */
+function entriesOf(out: { fixture: { entries: Array<{ key: string; entry: EnrichmentFixtureEntry }> } }) {
+  return Object.fromEntries(out.fixture.entries.map(({ key, entry }) => [key, entry]));
 }
 
 /** A `fetch` that fails the test if anything reaches it. */
@@ -742,8 +753,8 @@ describe("listLookedUpNames — entity rows ∪ review-queue rows", () => {
 
     const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out.total).toBe(1);
-    expect(Object.keys(out.fixture.entries)).toEqual([fixtureKey("player", SPORT_QID, "Tony Gwynn")]);
-    expect(out.fixture.entries[fixtureKey("player", SPORT_QID, "Tony Gwynn")]?.result?.wikidataId).toBe("Q1000");
+    expect(Object.keys(entriesOf(out))).toEqual([fixtureKey("player", SPORT_QID, "Tony Gwynn")]);
+    expect(entriesOf(out)[fixtureKey("player", SPORT_QID, "Tony Gwynn")]?.result?.wikidataId).toBe("Q1000");
   });
 });
 
@@ -773,12 +784,12 @@ describe("captureFromCli", () => {
     expect(out.total).toBe(3);
     expect(out.scanned).toBe(3);
     expect(out.skippedTransport).toEqual([]);
-    expect(Object.keys(out.fixture.entries).sort()).toEqual([
+    expect(Object.keys(entriesOf(out)).sort()).toEqual([
       fixtureKey("league", SPORT_QID, "Major League Baseball"),
       fixtureKey("player", SPORT_QID, "Tony Gwynn"),
       fixtureKey("team", SPORT_QID, "San Diego Padres"),
     ]);
-    expect(out.fixture.entries[fixtureKey("player", SPORT_QID, "Tony Gwynn")]).toEqual({
+    expect(entriesOf(out)[fixtureKey("player", SPORT_QID, "Tony Gwynn")]).toEqual({
       kind: "player",
       name: "Tony Gwynn",
       result: {
@@ -793,14 +804,14 @@ describe("captureFromCli", () => {
     });
     // The team is captured under its COMPOSED name, with ESPN's colours, and
     // its stored QID was used as knownQid (no team search was issued).
-    expect(out.fixture.entries[fixtureKey("team", SPORT_QID, "San Diego Padres")]).toEqual({
+    expect(entriesOf(out)[fixtureKey("team", SPORT_QID, "San Diego Padres")]).toEqual({
       kind: "team",
       name: "San Diego Padres",
       result: recordedTeam,
     });
     expect(fetch.calls.some((u) => decodeURIComponent(u).includes("?team wikibase:apiOutputItem"))).toBe(false);
     // The league drops `country` on the way into the recording.
-    expect(out.fixture.entries[fixtureKey("league", SPORT_QID, "Major League Baseball")]).toEqual({
+    expect(entriesOf(out)[fixtureKey("league", SPORT_QID, "Major League Baseball")]).toEqual({
       kind: "league",
       name: "Major League Baseball",
       result: { wikidataId: "Q3000", abbreviation: "MLB", yearsActive: { from: 1903 } },
@@ -825,7 +836,7 @@ describe("captureFromCli", () => {
     expect(page.total).toBe(3);
     expect(page.scanned).toBe(1);
     // Order is player, team, league — so offset 1 is the team.
-    expect(Object.keys(page.fixture.entries)).toEqual([fixtureKey("team", SPORT_QID, "San Diego Padres")]);
+    expect(Object.keys(entriesOf(page))).toEqual([fixtureKey("team", SPORT_QID, "San Diego Padres")]);
   });
 
   test("a Wikidata transport failure is reported, never recorded as no-match", async () => {
@@ -842,8 +853,8 @@ describe("captureFromCli", () => {
 
     const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out.skippedTransport).toEqual([{ kind: "player", name: "Tony Gwynn", reason: "wikidata_transport" }]);
-    expect(out.fixture.entries[fixtureKey("player", SPORT_QID, "Tony Gwynn")]).toBeUndefined();
-    expect(Object.keys(out.fixture.entries)).toHaveLength(2);
+    expect(entriesOf(out)[fixtureKey("player", SPORT_QID, "Tony Gwynn")]).toBeUndefined();
+    expect(Object.keys(entriesOf(out))).toHaveLength(2);
   });
 
   test("a genuine no-match IS recorded as null", async () => {
@@ -859,7 +870,7 @@ describe("captureFromCli", () => {
 
     const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out.skippedTransport).toEqual([]);
-    expect(out.fixture.entries[fixtureKey("player", SPORT_QID, "Tony Gwynn")]).toEqual({
+    expect(entriesOf(out)[fixtureKey("player", SPORT_QID, "Tony Gwynn")]).toEqual({
       kind: "player",
       name: "Tony Gwynn",
       result: null,
@@ -878,10 +889,37 @@ describe("captureFromCli", () => {
 
     const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out.skippedTransport).toEqual([{ kind: "team", name: "San Diego Padres", reason: "espn_unavailable" }]);
-    expect(Object.keys(out.fixture.entries).sort()).toEqual([
+    expect(Object.keys(entriesOf(out)).sort()).toEqual([
       fixtureKey("league", SPORT_QID, "Major League Baseball"),
       fixtureKey("player", SPORT_QID, "Tony Gwynn"),
     ]);
+  });
+
+  test("an accented name crosses the Convex boundary: entries are a key-sorted { key, entry } list (NEO-346)", async () => {
+    armed();
+    countingFetch(happyRoute);
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedNames(t, sportId);
+    await seedQueueRow(t, sportId, { kind: "league", name: "Ciego de Ávila" });
+
+    const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
+
+    // The shape Convex can return: no field name carries the name.
+    expect(Array.isArray(out.fixture.entries)).toBe(true);
+    expect(() => convexToJson(out)).not.toThrow();
+    // The old keyed shape is exactly what Convex refused for this page.
+    expect(() => convexToJson({ entries: entriesOf(out) })).toThrow(/non-control ASCII/);
+
+    const keys = out.fixture.entries.map(({ key }) => key);
+    expect(keys).toEqual([...keys].sort());
+    expect(keys).toEqual([
+      fixtureKey("league", SPORT_QID, "Ciego de Ávila"),
+      fixtureKey("league", SPORT_QID, "Major League Baseball"),
+      fixtureKey("player", SPORT_QID, "Tony Gwynn"),
+      fixtureKey("team", SPORT_QID, "San Diego Padres"),
+    ]);
+    expect(entriesOf(out)[fixtureKey("league", SPORT_QID, "Ciego de Ávila")]?.name).toBe("Ciego de Ávila");
   });
 });
 
@@ -1061,7 +1099,7 @@ describe("listLookedUpNames — the run's names, never the catalogue's", () => {
     const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out.total).toBe(3);
     expect(out.sinceSource).toBe("firstYearRow");
-    expect(Object.keys(out.fixture.entries).sort()).toEqual([
+    expect(Object.keys(entriesOf(out)).sort()).toEqual([
       fixtureKey("league", SPORT_QID, "Major League Baseball"),
       fixtureKey("player", SPORT_QID, "Tony Gwynn"),
       fixtureKey("team", SPORT_QID, "San Diego Padres"),

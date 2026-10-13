@@ -153,6 +153,41 @@ describe("SetBuildSpec", () => {
     expect(issues([{ name: "MLB", decision: "skip", level: "major" }])[0].message).toMatch(/only read on a "create"/);
   });
 
+  test("NEO-339: a player link may carry a birthYear; a team or league link may not", () => {
+    const withReview = (review: Record<string, unknown[]>) => {
+      const spec = structuredClone(minimal) as unknown as {
+        steps: Array<{ base?: { checklist: { review: Record<string, unknown[]> } } }>;
+      };
+      spec.steps[1].base!.checklist.review = { players: [], teams: [], leagues: [], ...review };
+      return spec;
+    };
+    const ok = parseSpec(withReview({ players: [{ name: "Jose Rodriguez", decision: { link: "Jose Rodriguez", birthYear: 2001 } }] }));
+    const set = ok.steps[1];
+    if (set.kind !== "set" || !set.base?.checklist || set.base.checklist.review === "none-expected") {
+      throw new Error("expected review answers");
+    }
+    expect(set.base.checklist.review.players).toEqual([{ name: "Jose Rodriguez", decision: { link: "Jose Rodriguez", birthYear: 2001 } }]);
+    // Without birthYear, a player link parses exactly as before.
+    expect(() => parseSpec(withReview({ players: [{ name: "Jose Rodriguez", decision: { link: "Jose Rodriguez" } }] }))).not.toThrow();
+
+    const pathOf = (review: Record<string, unknown[]>) => {
+      try {
+        parseSpec(withReview(review));
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpecError);
+        return (err as SpecError).issues[0].path;
+      }
+      throw new Error("expected SpecError");
+    };
+    expect(pathOf({ players: [{ name: "J R", decision: { link: "J R", birthYear: 2001.5 } }] })).toMatch(/^steps\[1\]\.base\.checklist\.review\.players\[0\]\.decision/);
+    // A wrong TYPE fails the whole review union (zod reports it on the union's path); still refused.
+    expect(pathOf({ players: [{ name: "J R", decision: { link: "J R", birthYear: "2001" } }] })).toMatch(/^steps\[1\]\.base\.checklist\.review/);
+    expect(pathOf({ players: [{ name: "J R", decision: { link: "J R", birthYear: 1 } }] })).toMatch(/^steps\[1\]\.base\.checklist\.review\.players\[0\]\.decision/);
+    // Strict: birthYear is a player's key only.
+    expect(pathOf({ teams: [{ name: "Mariners", decision: { link: "Seattle Mariners", birthYear: 1977 } }] })).toMatch(/^steps\[1\]\.base\.checklist\.review\.teams\[0\]\.decision/);
+    expect(pathOf({ leagues: [{ name: "MLB", decision: { link: "MLB", birthYear: 1903 } }] })).toMatch(/^steps\[1\]\.base\.checklist\.review\.leagues\[0\]\.decision/);
+  });
+
   test("version, scope and step kind are required", () => {
     expect(() => parseSpec({ ...minimal, version: 2 })).toThrow(SpecError);
     expect(() => parseSpec({ ...minimal, scope: "  " })).toThrow(SpecError);
