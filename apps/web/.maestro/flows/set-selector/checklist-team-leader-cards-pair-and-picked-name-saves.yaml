@@ -17,7 +17,9 @@ tags:
 #       (reported on prod 2026-10-13). STEP 4 bounds both counts under 32, and
 #       STEP 5 reads one team-leader row (#6a, New England Patriots) by its
 #       card number: matched, carrying the bare team name, with no name and no
-#       players conflict on it.
+#       players conflict on it. STEP 9 finds the SAVED #6a with the checklist
+#       search and reads its row: saved under the bare team name, and its team
+#       LINKED to a teams row (Jason requires the link proved in E2E).
 #   (b) NEO-344 — a conflict that IS there shows each value bare, never which
 #       marketplace said it (Jason, 2026-10-13: "I don't want the user swayed
 #       by what marketplace the data comes from"), still opens on the BSC value
@@ -119,7 +121,12 @@ tags:
 #              (Save step only); the post-name walk is
 #              util-wizard-advance-to-save's
 #   checklist  `Sync card checklist`, `No cards in this checklist yet.`,
-#              `Saved N cards`, `Edit card <number>, <name>`
+#              `Saved N cards`, `Edit card <number>, <name>`, the row's number
+#              cell `#<number>` and team sub-line (one text node: linked teams'
+#              full names joined ", ", then ` · ` parts; a typed team with no
+#              row reads `<name> (unconfirmed)`)
+#   search     `Search cards` (the field, no DOM id), its count (`role=status`)
+#              `<n> of <total> cards`; a number term is a PREFIX match
 #
 # ── R3 ──────────────────────────────────────────────────────────────────────
 #   checklist-pairing-dialog-cancel proves the bare pills on a manufactured
@@ -508,3 +515,67 @@ tags:
       # And not BSC's name: the pick replaced it. Rides on the positive above.
       - assertNotVisible:
           id: "Edit card 442, ${output.bscNameRe}"
+
+      # ==========================================================
+      # STEP 9 — (a) ON THE SAVED ROW: #6a IS "New England Patriots", AND ITS
+      # TEAM IS LINKED
+      #
+      # STEP 5 read #6a in the dialog's draft; this reads what the commit
+      # STORED (getCardChecklist), the same read-back STEP 8 gives #442. #6a is
+      # the 6th of 440+ rows in a virtualised inner scroller that opens at its
+      # END, so no scroll reaches it (memory: committed-checklist-opens-mid-
+      # list). The checklist search narrows the list to it instead.
+      #
+      # THE FIELD. It sits in the checklist's filter rows directly above the
+      # list (ChecklistSearch, not sticky). STEP 8 left the window scrolled to
+      # #442 at the list's bottom, so the field is ABOVE it, or at most just on
+      # screen: UP (R5: never rely on the document bottoming out). Centred,
+      # because a tap follows (R8): UP accepts any centre below ~187px, so the
+      # list under it stays on screen.
+      # ==========================================================
+      - scrollUntilVisible:
+          element:
+            id: "Search cards"
+          direction: UP
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          id: "Search cards"
+      # A number term is a PREFIX match (card-search.ts), so "6a" finds #6a
+      # and not #16a or #36a. The number is BSC's ("6a", the parent of a "6b"
+      # photo variation); if the first run shows NB stores it otherwise, STEP
+      # 5's `#6a?` measured it and this query follows.
+      - inputText: "6a"
+      # R2 PRECONDITION: the filter ran and left exactly ONE card, so every
+      # row selector below can only be #6a's. The count is the field's own
+      # status line, debounced 400ms; client-side filtering: 7000.
+      - extendedWaitUntil:
+          visible:
+            text: "1 of [0-9]+ cards"
+          timeout: 7000
+      # THE NAME, as saved: the bare team, no "TL" (a full match on the Edit
+      # control's identity, `Edit card <number>, <name>`).
+      - assertVisible:
+          id: "Edit card 6a, New England Patriots"
+      # THE LINK. The row's sub-line lists the card's LINKED teams first, by
+      # full name (`teamOnCardIds` → `teams.getManyByIds` → `teamFullName`); a
+      # typed team with no row would read `New England Patriots (unconfirmed)`,
+      # and the full match refuses that, a second club joined by ", ", and an
+      # empty line alike. The sub-line arrives on its own per-row read after
+      # the row does, so it is WAITED for (7000, a Convex read), never assumed.
+      #
+      # On a team card the NAME cell holds the same string, so the sub-line is
+      # picked by geometry: `below:` is a top-edge test, and the number cell
+      # (`#6a`, vertically centred in the row) sits below the name's top and
+      # above the sub-line's. The search field's own text is "6a", not "#6a",
+      # so it cannot be the anchor.
+      - extendedWaitUntil:
+          visible:
+            text: "New England Patriots( · .*)?"
+            below:
+              text: "#6a"
+          timeout: 7000
+      # Rides on the positive above (memory: negative-asserts-pass-on-a-dead-
+      # page): no unresolved copy of the team on the row either.
+      - assertNotVisible:
+          text: ".*New England Patriots \\(unconfirmed\\).*"

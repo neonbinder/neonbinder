@@ -11,7 +11,10 @@ takeScreenshot output folder`. A bare relative name works and lands at
 `apps/web/maestro-report/debug/<flow-dir>/<flow name>/takeScreenshot/<name>.png`.
 To hand Jason screenshots from a local run: add the steps temporarily with
 relative names, run, copy the PNGs to `worktrees/<ticket>/screenshots/`, then
-restore the flow. A failure screenshot (`screenshots/step-N-*.png`) at the
+restore the flow. The `<flow name>` directory is the flow's `name:` with
+its spaces and em dashes, so `for f in $(find …)` splits it into words; copy with
+`find … -print0 | while IFS= read -r -d '' f`. Prefix temp steps (`TEMPSHOT-…`)
+so one grep proves they are all gone. A failure screenshot (`screenshots/step-N-*.png`) at the
 right step is also usable. Local captures are 1024x625, CI's 1024x629.
 
 **Nested env is inherited.** `GraalJsEngine.enterEnvScope` pushes a COPY of the

@@ -609,9 +609,10 @@ tags:
           text: "Discard .*"
           below:
             text: ".*No cards have been saved.*"
+      # Discard closes the dialog client-side (no write): R5's 7000 bar.
       - extendedWaitUntil:
           notVisible: "Match Cards.*"
-          timeout: 10000
+          timeout: 7000
       - assertVisible: "Sync cancelled — no cards saved."
 
       # The set is untouched: the Sync button is still available for a retry, and no
