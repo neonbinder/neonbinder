@@ -150,7 +150,6 @@
  * exactly what it has. `false` is a deliberate operator decision ("this really
  * is a brand, leave it in my titles"), and re-deriving the role from the name
  * on every run would undo that answer the next time anybody ran the command.
- * Same reasoning `backfillVariantFacetAndBaseRole` applies to `isBase`.
  *
  * A second run therefore reports every row as `already_has_role` and writes
  * nothing.
@@ -380,8 +379,8 @@ export const run = internalMutation({
 
     if (armed) {
       for (const row of toGrant) {
-        // Spread the existing metadata: `cardNumberPrefix`, `isInsert` and the
-        // rest of the object are none of this task's business, and a bare
+        // Spread the existing metadata: `cardNumberPrefix`, `setNamePrefix` and
+        // the rest of the object are none of this task's business, and a bare
         // `{ isBrandUnknown: true }` patch would drop them.
         await ctx.db.patch(row.id, {
           metadata: { ...(row.metadata ?? {}), isBrandUnknown: true },

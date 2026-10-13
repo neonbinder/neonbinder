@@ -155,9 +155,7 @@ describe("insertSetWithBaseFromSl — the D13 shape", () => {
     expect(baseRow?.level).toBe("variantType");
     expect(baseRow?.value).toBe("Base");
     expect(baseRow?.parentId).toBe(result.setId);
-    // The title is the kind (NEO-334): the Base is born called "Base" and no
-    // flag is written beside it.
-    expect(baseRow?.metadata?.isBase).toBeUndefined();
+    // The title is the kind (NEO-334): the Base is born called "Base".
     // The link, on the Base, through `initialSlots`: slot `s0` + label.
     expect(baseRow?.platformData.sportlots).toEqual({ s0: "sl-9" });
     expect(baseRow?.platformLabels?.sportlots).toEqual({ s0: "Finest" });

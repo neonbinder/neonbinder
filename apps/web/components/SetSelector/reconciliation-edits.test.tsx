@@ -86,7 +86,7 @@ describe("countReconciliationEdits", () => {
     const before = st(set("k1", "Refractors", [], [], { cardNumberPrefix: "DK-" }));
     const after = st(set("k1", "Refractors", [], [], {
       cardNumberPrefix: "DK-",
-      isBase: undefined,
+      setNamePrefix: undefined,
     }));
     expect(countReconciliationEdits(before, after)).toBe(0);
   });

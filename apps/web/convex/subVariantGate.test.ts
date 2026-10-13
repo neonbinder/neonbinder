@@ -2,7 +2,7 @@
  * NEO-334 — sub-variants (`parallel`-level rows) live ONLY under an insert of
  * an Insert type (Jason, 2026-10-10). Never under the Base, a Parallel type,
  * or a variant type with no kind. A type's kind is its TITLE ("Insert" or
- * "Inserts"); a stray retired role flag on a row changes nothing.
+ * "Inserts").
  *
  * Every write path that can create a `parallel`-level row is pinned here:
  *
@@ -40,15 +40,12 @@ const ADMIN = { subject: "admin_neo334", role: "admin" };
 
 type T = ReturnType<typeof convexTest>;
 type OptionId = Id<"selectorOptions">;
-/** A retired flag a row may still carry; it must be IGNORED. */
-type Stray = { isBase?: boolean; variantRole?: "insert" | "parallel" };
 
 async function row(
   t: T,
   level: "setName" | "variantType" | "insert" | "parallel",
   value: string,
   parentId?: OptionId,
-  metadata?: Stray,
 ): Promise<OptionId> {
   return t.run(async (ctx) => {
     const id = await ctx.db.insert("selectorOptions", {
@@ -56,7 +53,6 @@ async function row(
       value,
       platformData: {},
       ...(parentId ? { parentId } : {}),
-      ...(metadata ? { metadata } : {}),
       children: [],
       lastUpdated: 1_700_000_000_000,
     });
@@ -69,23 +65,21 @@ async function row(
 }
 
 /** A set with one variant type of the given TITLE, and one insert under it. */
-async function seedType(t: T, value = "Inserts", metadata?: Stray) {
+async function seedType(t: T, value = "Inserts") {
   const set = await row(t, "setName", "Topps Chrome");
-  const type = await row(t, "variantType", value, set, metadata);
+  const type = await row(t, "variantType", value, set);
   const insert = await row(t, "insert", "Refractor Rookies", type);
   return { set, type, insert };
 }
 
 /** The variant types a sub-variant must be refused under. */
-const REFUSED_TYPES: ReadonlyArray<[string, string, Stray | undefined]> = [
-  ["a Parallel type", "Parallel", undefined],
-  ["a Parallels type", "Parallels", undefined],
-  ["the Base", "Base", undefined],
-  ["a type with no kind", "Promo", undefined],
+const REFUSED_TYPES: ReadonlyArray<[string, string]> = [
+  ["a Parallel type", "Parallel"],
+  ["a Parallels type", "Parallels"],
+  ["the Base", "Base"],
+  ["a type with no kind", "Promo"],
   // Exact word only: a title that merely contains Insert is no Insert type.
-  ["a type titled \"Insert Set\"", "Insert Set", undefined],
-  // The title decides, never a flag.
-  ["a type titled Gold that still carries variantRole insert", "Gold", { variantRole: "insert" }],
+  ["a type titled \"Insert Set\"", "Insert Set"],
 ];
 
 /** The titles of an Insert type: singular and plural. */
@@ -135,10 +129,10 @@ describe("addCustomSelectorOption — a sub-variant only under an Insert type (N
     expect(rows[0].metadata).toBeUndefined();
   });
 
-  for (const [label, value, stray] of REFUSED_TYPES) {
+  for (const [label, value] of REFUSED_TYPES) {
     test(`refuses under ${label}, structured, and writes nothing`, async () => {
       const t = convexTest(schema, modules);
-      const { insert } = await seedType(t, value, stray);
+      const { insert } = await seedType(t, value);
 
       const data = await refusalOf(() =>
         t.withIdentity(ADMIN).mutation(
@@ -224,10 +218,10 @@ describe("storeSelectorOptions — sub-variants only under an Insert type (NEO-3
     expect((await parallelsUnder(t, insert)).map((r) => r.value)).toEqual(["Gold"]);
   });
 
-  for (const [label, value, stray] of REFUSED_TYPES) {
+  for (const [label, value] of REFUSED_TYPES) {
     test(`refuses under ${label} and writes nothing`, async () => {
       const t = convexTest(schema, modules);
-      const { insert } = await seedType(t, value, stray);
+      const { insert } = await seedType(t, value);
 
       expect(await refusalOf(() => store(t, insert))).toEqual(STRUCTURED_REFUSAL);
       expect(await parallelsUnder(t, insert)).toEqual([]);
@@ -255,10 +249,10 @@ describe("storeReconciledOptions — sub-variants only under an Insert type (NEO
     expect((await parallelsUnder(t, insert)).map((r) => r.value)).toEqual(["Gold"]);
   });
 
-  for (const [label, value, stray] of REFUSED_TYPES) {
+  for (const [label, value] of REFUSED_TYPES) {
     test(`refuses under ${label} and writes nothing`, async () => {
       const t = convexTest(schema, modules);
-      const { insert } = await seedType(t, value, stray);
+      const { insert } = await seedType(t, value);
 
       expect(await refusalOf(() => store(t, insert))).toEqual(STRUCTURED_REFUSAL);
       expect(await parallelsUnder(t, insert)).toEqual([]);
@@ -267,8 +261,8 @@ describe("storeReconciledOptions — sub-variants only under an Insert type (NEO
 });
 
 describe("applyParallelGroupings — moves under an insert only on an Insert type (NEO-334)", () => {
-  async function seedGroupable(t: T, value: string, stray?: Stray) {
-    const { type, insert: target } = await seedType(t, value, stray);
+  async function seedGroupable(t: T, value: string) {
+    const { type, insert: target } = await seedType(t, value);
     const source = await row(t, "insert", "Refractor Rookies Gold", type);
     return { type, target, source };
   }
@@ -290,10 +284,10 @@ describe("applyParallelGroupings — moves under an insert only on an Insert typ
     expect((await parallelsUnder(t, target)).map((r) => r._id)).toEqual([source]);
   });
 
-  for (const [label, value, stray] of REFUSED_TYPES) {
+  for (const [label, value] of REFUSED_TYPES) {
     test(`refuses a promotion under ${label} and moves nothing`, async () => {
       const t = convexTest(schema, modules);
-      const { type, target, source } = await seedGroupable(t, value, stray);
+      const { type, target, source } = await seedGroupable(t, value);
 
       const data = await refusalOf(() =>
         t.withIdentity(ADMIN).mutation(api.selectorOptions.applyParallelGroupings, {

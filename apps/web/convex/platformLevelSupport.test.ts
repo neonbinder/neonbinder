@@ -652,7 +652,6 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     const heritageVariants = await variantsUnder(t, heritage._id);
     expect(heritageVariants).toHaveLength(1);
     expect(heritageVariants[0].value).toBe("Base");
-    expect(heritageVariants[0].metadata?.isBase).toBeUndefined();
     expect(heritageVariants[0].platformData.sportlots).toEqual({ s0: "502" });
     expect(heritage.children).toEqual([heritageVariants[0]._id]);
 

@@ -40,7 +40,6 @@ async function row(
   level: Level,
   value: string,
   parentId?: OptionId,
-  metadata?: { isBase?: boolean; variantRole?: "insert" | "parallel" },
 ): Promise<OptionId> {
   return t.run((ctx) =>
     ctx.db.insert("selectorOptions", {
@@ -48,7 +47,6 @@ async function row(
       value,
       platformData: {},
       ...(parentId ? { parentId } : {}),
-      ...(metadata ? { metadata } : {}),
       children: [],
       lastUpdated: 1_700_000_000_000,
     }),
@@ -226,16 +224,15 @@ describe("resolveDrillPath", () => {
     ).toEqual([c.sport, c.year, c.brand, c.set, base]);
   });
 
-  test("a type that merely carries an isBase flag, under another title, is not terminal", async () => {
+  test("a type under another title is not terminal: only the title says Base", async () => {
     const t = convexTest(schema, modules);
     const c = await seedChain(t);
-    // The flag is retired: only the title says Base.
-    const flagged = await row(t, "variantType", "Gold", c.set, { isBase: true });
-    const child = await row(t, "insert", "Child", flagged);
+    const gold = await row(t, "variantType", "Gold", c.set);
+    const child = await row(t, "insert", "Child", gold);
 
     expect(
-      idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, flagged, child])),
-    ).toEqual([c.sport, c.year, c.brand, c.set, flagged, child]);
+      idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, gold, child])),
+    ).toEqual([c.sport, c.year, c.brand, c.set, gold, child]);
   });
 
   test("reads only the first seven ids and ignores the rest", async () => {
@@ -288,10 +285,10 @@ describe("resolveDrillPath — sub-variants only under an Insert type (NEO-334)"
     });
   }
 
-  test("the title decides, never a flag: a type titled Gold carrying variantRole insert stops at the insert", async () => {
+  test("the title decides: a type titled Gold stops at the insert", async () => {
     const t = convexTest(schema, modules);
     const c = await seedChain(t);
-    const lookalike = await row(t, "variantType", "Gold", c.set, { variantRole: "insert" });
+    const lookalike = await row(t, "variantType", "Gold", c.set);
     const insert = await row(t, "insert", "All-Stars", lookalike);
     const parallel = await row(t, "parallel", "Gold", insert);
 

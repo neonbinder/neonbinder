@@ -106,7 +106,6 @@ describe("applyParallelGroupings — a promotion writes no flag (NEO-334)", () =
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const variantTypeId = await insertVariantType(t, "insert");
     const source = await insertInsert(t, variantTypeId, "Refractor", {
-      isInsert: true,
       cardNumberPrefix: "DK-",
     });
     const target = await insertInsert(t, variantTypeId, "Base Refractor");
@@ -122,8 +121,8 @@ describe("applyParallelGroupings — a promotion writes no flag (NEO-334)", () =
     const row = await getRow(t, source);
     expect(row?.level).toBe("parallel");
     expect(row?.parentId).toBe(target);
-    // No isParallel is written, and the stray isInsert is not cleared.
-    expect(row?.metadata).toEqual({ isInsert: true, cardNumberPrefix: "DK-" });
+    // No role is written beside the prefix.
+    expect(row?.metadata).toEqual({ cardNumberPrefix: "DK-" });
   });
 
   test("promoting a row with no metadata leaves it with none", async () => {
@@ -152,7 +151,6 @@ describe("applyParallelGroupings — a demotion writes no flag (NEO-334)", () =>
     const variantTypeId = await insertVariantType(t, "insert");
     const insertRow = await insertInsert(t, variantTypeId, "Refractor");
     const parallelRow = await insertParallel(t, insertRow, "Gold /99", {
-      isParallel: true,
       cardNumberPrefix: "GR-",
     });
 
@@ -167,7 +165,7 @@ describe("applyParallelGroupings — a demotion writes no flag (NEO-334)", () =>
     const row = await getRow(t, parallelRow);
     expect(row?.level).toBe("insert");
     expect(row?.parentId).toBe(variantTypeId);
-    expect(row?.metadata).toEqual({ isParallel: true, cardNumberPrefix: "GR-" });
+    expect(row?.metadata).toEqual({ cardNumberPrefix: "GR-" });
   });
 
   test("demoting under a Parallel-titled variant type — the base-set-parallel shape — writes no flag either", async () => {
