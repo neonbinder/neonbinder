@@ -41,10 +41,22 @@ tags:
 #                   NEO-237 — the util taps it; nothing is created).
 #
 # ── RETURN CONTRACT ─────────────────────────────────────────────────────────
-#   The entity-review wizard is OPEN with nothing decided ("0 of N reviewed").
-#   There is NO parked pairing session behind it, so "Back to matching" is not
-#   offered — a caller whose feature is the parked session needs the two-sided
-#   util instead. The set's Base is still UNMAPPED on SportLots (the picker was
+#   The entity-review wizard is OPEN ("Tidy up this set", NEO-335) with
+#   nothing decided ("Step 1 of N"; callers assert that themselves).
+#   There is NO parked pairing session behind it, so the wizard's way back to
+#   the pairing dialog is not offered — a caller whose feature is the parked
+#   session needs the two-sided util instead. (This util never opens or drives
+#   the pairing dialog, so `scripts/maestro-pairing-sync.test.mjs`'s
+#   wait-for-the-settled-Confirm rule does not apply to it; it keys on the
+#   dialog's title text, so this header deliberately does not quote it.)
+#
+#   NEO-335: a one-sided fetch whose only open question is teams (no unknown
+#   name, a card that would save teamless, or a title that needs a look)
+#   opens the TEAMS-ONLY wizard rather than committing: the same title,
+#   straight onto "Cards with no team" / "Card titles" ("Step 1 of 2" →
+#   Next → "Ready to save"). Its title gate below holds for that shape too;
+#   callers whose fixture has unknown names (every current caller) land on a
+#   name step. The set's Base is still UNMAPPED on SportLots (the picker was
 #   cancelled; nothing was written to the base mapping). The caller owns the
 #   exit: Cancel → Discard for a reader, Confirm & Save for the set's sole
 #   writer (SET-REGISTRY.md).
@@ -111,7 +123,8 @@ tags:
 # ── THE WIZARD ──────────────────────────────────────────────────────────────
 # Every fetched name the deployment does not hold is queued, each behind a live
 # Wikidata lookup. 60s, R5 external round-trip (measured ~0.8s to open on the
-# 25-card Roanoke set).
+# 25-card Roanoke set). Gated on the wizard's title, "Tidy up this set" since
+# NEO-335 (WizardChrome `WIZARD_TITLE`; it was "Confirm New Players & Teams").
 - extendedWaitUntil:
-    visible: "Confirm New Players & Teams"
+    visible: "Tidy up this set"
     timeout: 60000

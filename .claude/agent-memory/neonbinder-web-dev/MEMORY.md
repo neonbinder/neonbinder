@@ -86,7 +86,7 @@
 - [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition
 - [New string Maestro collision sweep](reference_new_string_maestro_collision_sweep.md) — compile every flow selector as an anchored regex vs new copy, then check the page each hit runs on
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
-- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe (window-size clamps ~500px)
+- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe; measure heights per case matrix
 - [Live validation without keystroke renders](reference_live_validation_without_keystroke_renders.md) — drafts in a ref + snapshot state swapped on answer change; ref.current in useMemo fails react-hooks/refs; blocked button gets title for Maestro
 - [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
@@ -99,6 +99,7 @@
 - [MCP stdio server pitfalls](reference_mcp_stdio_server_pitfalls.md) — required zod args skip the handler; npm --silent + console reroute; `${VAR:-}` = ""; 60 s client timeout; stub-a-sibling boot hook
 - [Candidates ready never reaches total](reference_candidates_ready_never_reaches_total.md) — gate a checklist fetch on batch id moved + total === candidateCount, never ready === total
 - [Setbuild CLI tests past the gate](reference_setbuild_cli_tests_past_the_gate.md) — eager token mint trips the network guard; stub fetch with a 401 (5xx/throw retries with backoff); io.prompt = TTY
+- [Ref cleanup sees focus before removal](reference_ref_cleanup_sees_focus_before_removal.md) — park focus when a focused control unmounts: React 19 callback-ref cleanup, not a parent effect cleanup
 - [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
 - [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
 - [Panel-wide shortcut via capture phase](reference_panel_wide_shortcut_via_capture_phase.md) — Ctrl+Enter over a typeahead: onKeyDownCapture + stopPropagation, guard nested role=dialog; stub spy proves the typeahead never sees it
@@ -109,5 +110,11 @@
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — agent shells skip load-nvmrc; export PATH to ~/.nvm/versions/node/v$(cat apps/web/.nvmrc)/bin per gate call
 - [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
 - [Zod union hides enum errors](reference_zod_union_hides_enum_errors.md) — a fatal issue under z.union reports "Invalid input" at the union; use z.custom(check, {fatal:false}) or superRefine
+- [Render-phase state for previous-render values](reference_render_phase_state_for_previous_render_values.md) — conditional setState in render passes lint; reducer returns same object; key transient lines on progress, not x; focus effects key on "focused for", not [screenKey]
+- [Wizard step local drafts settle pattern](reference_wizard_step_local_drafts_settle_pattern.md) — many-field step: local drafts, report on blur/Enter/timer/unmount; Escape undo = focus-time; long title = wrapping Textarea
+- [vi.mock stub component needs a name](reference_vi_mock_stub_component_needs_a_name.md) — stateful stub in a vi.mock factory must be `function StubX` or lint fails rules-of-hooks
+- [No prettier config in apps/web](reference_no_prettier_config_in_apps_web.md) — prettier --write reformats whole hand-formatted files; never run it, eslint is the gate
+- [Candidate field reaches commit only through the client](reference_candidate_field_reaches_commit_only_through_the_client.md) — candidate row → commit hops via pairing-cards.ts, CardPairingModal merge, CardChecklist type; convex-only carry is dead
+- [No review row is not unanswered](reference_no_review_row_is_not_unanswered.md) — the gate drops stored skips before queuing; "no row ⇒ resolved/unreviewed" must read entityReviewSkips
 - [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
 - [Identify a same-name catalogue player read-only](reference_identify_a_same_name_catalogue_player_read_only.md) — preview slug from the PR Pipeline log, inline-query players/cardChecklist; never download the bundle, never trust the Wikidata fixture

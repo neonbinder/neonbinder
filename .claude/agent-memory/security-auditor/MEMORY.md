@@ -69,6 +69,7 @@
 - [Patterns neo318 derived copy column](patterns_neo318_derived_copy_column.md) — exported *Impl split of a gated query is safe if gate stays in handler; derived copy: strip in public helper, spread-insert gap, two-step revert
 - [Confirm phrases and read/write splits](patterns_confirm_phrase_and_read_write_splits.md) — echoed phrase ≠ approval; URL overrides must match the phrase host; read side must hold a read-only client (NEO-339)
 - [Collect mode and preview side effects](patterns_collect_mode_and_preview_side_effects.md) — collect-mode gates keyed by target not step; mocked zero-write tests miss adapter re-auth writes (NEO-339)
+- [Patterns neo335 wizard team answers](patterns_neo335_wizard_team_answers.md) — server match decides insert-only title answers; "kept" flag unbound to text; short-name normaliser misses bidi/C1
 - [Neo330 reference seed CI](patterns_neo330_reference_seed_ci.md) — private bundle in public CI: id-token is job-wide, gcloud echoes gs:// URI, import errors echo rows, empty-bundle floor
 - [Neo330 by-id twin and search](patterns_neo330_by_id_twin_and_search.md) — normalizeId twins: exposure is the returns validator; search query text unbounded house-wide
 - [Patterns neo334 title is kind](patterns_neo334_title_is_kind.md) — title-as-kind door enumeration; id-less intra-batch twins bypass the sameName twin count; exactly-one readers

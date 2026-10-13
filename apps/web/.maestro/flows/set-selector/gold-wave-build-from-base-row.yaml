@@ -213,9 +213,10 @@ tags:
       text: "Gold Wave Refractors — Built (300 cards|299 cards(, [^.]+)?, 1 skipped — Base changed them mid-build)(, [^.]+)?\\..*"
     timeout: 30000
 # D3 — the pairing dialog and the entity review are retired on a
-# base-parallel row. Paired with the positive above.
+# base-parallel row. Paired with the positive above. The review's title is
+# "Tidy up this set" since NEO-335 ("Confirm New Players & Teams" before).
 - assertNotVisible: "Match Cards.*"
-- assertNotVisible: "Confirm New Players & Teams"
+- assertNotVisible: "Tidy up this set"
 
 # ============================================================
 # STEP 3 — THE LAST COPIES CARRY THEIR MARKETPLACE LINKS (f)

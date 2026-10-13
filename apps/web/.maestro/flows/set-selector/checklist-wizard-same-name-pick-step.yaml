@@ -14,30 +14,35 @@ tags:
 # (NEO-339).
 #
 # R2 — HARD ASSERTIONS, every one unhedged:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the wizard OPENS on the pick step while the other names are still
 #         being looked up — the same-name row arrives ready, with no lookup of
-#         its own. The question, "0 of N reviewed" and the header's
-#         "· N still being looked up" are read in ONE hierarchy read, as the
-#         first step after the wizard opens (STEP 1); then the intro that
-#         counts the players on file ("2 on file"), one link per candidate —
-#         `Link to Shuya Yamada, b. 1851` for the flow's own row and an
-#         undated one for the catalogue's — `Create new` and the row's own Skip;
+#         its own. The question and "Step 1 of N" are read in ONE hierarchy
+#         read, as the first step after the wizard opens (STEP 1); then the
+#         intro that counts the players on file ("2 on file"), one link per
+#         candidate — `Link to Shuya Yamada, b. 1851` for the flow's own row
+#         and an undated one for the catalogue's — `Create new`, the row's own
+#         Skip, and the header's screen type "Which player is this?". Since
+#         NEO-335 the header no longer prints "· N still being looked up", so
+#         the "still looked up" half rests on the timing argument below (the
+#         pick step at the FIRST read, inside a ≥2.5s pending window), not on
+#         a string;
 #     (c) Create new shows the New Player step and NOT the list: `Add as New
 #         Player`, `Back to the list`, the heading's sr-only "New Player: "
 #         prefix, and neither the question nor either candidate on screen;
 #     (b2) NEO-339 — the untouched pick step HOLDS: once every other name's
 #         lookup has landed (and the career teams and league they stage have
 #         settled), the question is still on screen under a header that reads
-#         exactly "0 of N reviewed". Before NEO-339 the first settled team or
+#         "Step 1 of N" (nothing decided). Before NEO-339 the first settled team or
 #         league took the step away. The claim bites only on a batch that
 #         stages one; this one did (5 career teams and a league, 2026-10-11),
 #         and it lives on live Wikidata data the flow does not own;
 #     (d) Back to the list returns to the same list with nothing decided: the
 #         question and both candidates are back, the footer says "Back at the
 #         list. 2 on file.", and the decided count has not moved;
-#     (e) taking the b. 1851 row records exactly one decision (the decided
-#         count moves from K to K+1, the question is gone) and its read-back
+#     (e) taking the b. 1851 row records exactly one decision (the counter
+#         moves from "Step 1" to "Step 2", the question is gone) and its read-back
 #         names WHICH man — "Linked to Shuya Yamada, b. 1851" — in the row's
 #         own `Decision for Shuya Yamada` panel. Neither a create ("Added as
 #         new"), a skip ("Skipped") nor a link to the catalogue's undated
@@ -95,8 +100,9 @@ tags:
 #   lookups run in the deployment's one 5-wide FIFO pool, so the 20 need at
 #   least four rounds, and every career team they stage (5 on 2026-10-11:
 #   three for Adam Walker, two for Leandro Cedeno, plus a league) is queued
-#   behind all 20. The header reads "· N still being looked up" until the
-#   last of them settles.
+#   behind all 20. Until the last of them settles the wizard has pending rows
+#   (before NEO-335 the header printed "· N still being looked up"; the
+#   "Step x of y" counter that replaced it carries no tail).
 #
 #   How long one lookup takes is NOT the guarantee: Convex-side it ranged
 #   from 0.3s to 20s in one batch (2026-10-11, PR preview, 502 retries in the
@@ -134,7 +140,7 @@ tags:
 #   After the wait nothing is left that could stage a step under Shuya
 #   Yamada: his own lookup, started by Create new, finds no career team on
 #   Wikidata (2026-10-11). Nothing is decided by then, so the counts below
-#   are absolute: 0 before the link, 1 after it.
+#   are absolute: "Step 1" (0 decided) before the link, "Step 2" after it.
 #
 # R3 — DEDUP: `admin/admin-players-same-name-birth-year` owns the fork itself
 #   (bounds, adopt vs fork) and is the reason this flow can add a second man
@@ -278,11 +284,13 @@ tags:
 # instead of util-discard-resumed-review-batch's 7s `notVisible` dwell, which
 # would spend the window STEP 1 asserts. SET is passed so the util's own
 # refetch drills THIS set (env is inherited by the nested runFlow). STEP 1
-# then asserts "0 of N reviewed" hard, so a resume this fails to clear still
-# fails the flow.
+# then asserts "Step 1 of N" hard, so a resume this fails to clear still
+# fails the flow. NEO-335 Phase 2's counter: x is the decided count plus one
+# on a name step (and a resumed all-decided batch opens past the names, where
+# x is larger still), so "nothing decided" is x === 1.
 - copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
-- evalScript: ${output.RESUMED = maestro.copiedText.split(" of ")[0] !== "0"}
+    text: "Step [0-9]+ of [0-9]+"
+- evalScript: ${output.RESUMED = maestro.copiedText.split(" ")[1] !== "1"}
 - runFlow:
     when:
       true: "${output.RESUMED}"
@@ -294,25 +302,27 @@ tags:
 # STEP 1 — R2(a) + R2(b): THE WIZARD OPENS ON THE PICK STEP, WITH NOTHING
 # DECIDED, WHILE THE OTHER NAMES ARE STILL BEING LOOKED UP
 #
-# ONE hierarchy read proves all three at the same instant: the question,
-# below a header that reads "0 of <total> reviewed · <N> still being looked
-# up" (a full-match regex, so "0 of" cannot match "10 of" and the tail must be
-# there). A product that looked the same-name row up first would present no
-# row while every name is pending — the body's "Looking up N more names…" —
-# and this wait fails by name. See the header for why the window outlasts a
-# read ~1s after the batch starts.
+# ONE hierarchy read proves the pick step and "nothing decided" at the same
+# instant: the question, below a header that reads "Step 1 of <y>" (NEO-335
+# Phase 2's counter; a full-match regex, so "Step 1 of" cannot match "Step 11
+# of"). The header lost its "· N still being looked up" tail in NEO-335, so
+# the third claim is the timing argument in the file header: this is the
+# FIRST read after the wizard opens, inside a pending window of ≥2.5s, and a
+# product that looked the same-name row up first would present no row while
+# every name is pending — the body's "Looking up N more names…" — and this
+# wait fails by name.
 #
-# <total> is never pinned: it GROWS while lookups land, because a settled
+# <y> is never pinned: it GROWS while lookups land, because a settled
 # player's Wikidata career teams are staged as New Team rows (CI run
-# 38068520584 read "0 of 221" and "0 of 229" ten seconds apart on an otherwise
-# identical screen).
+# 38068520584 read the old total as 221 and 229 ten seconds apart on an
+# otherwise identical screen).
 # ============================================================
 
 - extendedWaitUntil:
     visible:
       text: "Which Shuya Yamada is this\\?"
       below:
-        text: "0 of [0-9]+ reviewed · [0-9]+ still being looked up"
+        text: "Step 1 of [0-9]+"
     timeout: 7000
 # The rest of the opening step. The pick step holds its place whatever settles
 # around it (NEO-339), so these five follow-up reads are not racing the batch.
@@ -330,6 +340,10 @@ tags:
     id: "Create new"
 - assertVisible:
     id: "Skip Shuya Yamada — not a person"
+# NEO-335 Phase 2 — the pick step is its own screen type in the wizard's
+# header: subtitle "Which player is this?" under "Tidy up this set". Header
+# text, pinned, so it reads the same wherever the body sits.
+- assertVisible: "Which player is this\\?"
 
 # ============================================================
 # R2(b2) — THE BATCH SETTLES AND THE PICK STEP IS STILL HERE
@@ -344,14 +358,17 @@ tags:
 - extendedWaitUntil:
     notVisible: ".*still looking up.*"
     timeout: 180000
-# Still the untouched pick step, and still nothing decided. Nothing is pending
-# now, so the header is exactly "0 of <total> reviewed" (full match: no
-# "· N still being looked up" tail). The negative above is paired with this
-# positive, so it cannot pass on a closed dialog.
+# Still the untouched pick step, and still nothing decided: the header's
+# counter is still "Step 1 of <y>" (NEO-335 Phase 2: x is the decided count
+# plus one on a name step; a full match, so "Step 1 of" cannot match "Step 11
+# of"). The negative above is paired with this positive, so it cannot pass on
+# a closed dialog. Only x is ever pinned: <y> GROWS while the batch's lookups
+# land (a settled player's career teams are staged as New Team rows; CI run
+# 38068520584 saw the old total go 221 → 229 in ten seconds).
 - assertVisible:
     text: "Which Shuya Yamada is this\\?"
     below:
-      text: "0 of [0-9]+ reviewed"
+      text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 2 — R2(c): CREATE NEW OPENS THE NEW PLAYER STEP, WITHOUT THE LIST
@@ -374,6 +391,8 @@ tags:
     text: "Which Shuya Yamada is this\\?"
 - assertNotVisible:
     id: "Link to Shuya Yamada, .+"
+# …and the header says which screen type this is now: a New Player step.
+- assertVisible: "New player"
 
 # ============================================================
 # STEP 3 — R2(d): BACK TO THE LIST DECIDES NOTHING
@@ -392,10 +411,10 @@ tags:
 # The footer's live region says where the operator is (a11y S3).
 - assertVisible:
     text: "Back at the list\\. 2 on file\\."
-# Nothing was recorded: still 0 decided. Full-match regex, and Create new
-# started Shuya Yamada's own lookup, so the header may carry a tail.
+# Nothing was recorded: still 0 decided, so still "Step 1". Full-match regex,
+# so "Step 1 of" cannot match "Step 11 of".
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 4 — R2(e): TAKE ONE, AND THE READ-BACK SAYS WHICH
@@ -406,7 +425,7 @@ tags:
 # Exactly one decision: the link.
 - extendedWaitUntil:
     visible:
-      text: "1 of [0-9]+ reviewed.*"
+      text: "Step 2 of [0-9]+"
     timeout: 7000
 - assertNotVisible:
     text: "Which Shuya Yamada is this\\?"

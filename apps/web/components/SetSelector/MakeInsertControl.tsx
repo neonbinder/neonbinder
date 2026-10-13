@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../primitives/Input";
+import { useDebouncedValue } from "../../src/hooks/useDebouncedValue";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
 import SetRowActionButton from "./SetRowActionButton";
 import { lossItems, makeParallelCopy, type ReshapeStep } from "./MakeParallelControl";
@@ -112,15 +113,6 @@ type Landing =
   | { kind: "newParallel"; insertId: Id<"selectorOptions"> }
   | { kind: "joinParallel"; parallelId: Id<"selectorOptions"> }
   | { kind: "newInsertNamed"; name: string };
-
-function useDebounced<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-  return debounced;
-}
 
 export default function MakeInsertControl({
   rowId,
@@ -255,7 +247,7 @@ function MakeInsertDialog({
   // ── 2b. a new insert the operator names ───────────────────────────────
   const naming = chosenWhere === NAMED;
   const trimmedName = typedName.trim();
-  const debouncedName = useDebounced(trimmedName, NAMED_PREVIEW_DEBOUNCE_MS);
+  const debouncedName = useDebouncedValue(trimmedName, NAMED_PREVIEW_DEBOUNCE_MS);
   const namedPreview = useQuery(
     api.setInsertConversion.getMakeInsertNamedPreview,
     naming && chosenTarget && debouncedName.length > 0

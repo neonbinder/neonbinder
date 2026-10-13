@@ -10,4 +10,6 @@
 - [Multi-landing dialog copy follows the landing](multi_landing_dialog_copy_follows_the_landing.md) — title/confirm/aria per landing, conditional "link moves", count labels, n=0 grammar
 - [Rebuild/copy features checklist](rebuild-and-copy-features-checklist.md) — SKU churn, hand-edit loss, parallel vs card facts, printing plates, unlinked parallels, counts without names
 - [Twin-names copy review](twin-names-copy-review.md) — fix verbs = control labels; a bare #id is not a tell; series as hint, never prefill
+- [Team pre-fill set-year traps](team-prefill-set-year-traps.md) — season≠set year, one-team-career vs college draft cards, org not affiliate, legends, split groups, multi-team, team cards
+- [Wizard chip and title review checks](wizard-chip-and-title-review-checks.md) — livery dot reads as radio; title cut eats player names; clip meter noise; one-team legend pre-fill; playerless lines
 - [Retro cards: set year is not card year](retro-cards-set-year-is-not-card-year.md) — legends in modern sets; "same player in this set" fill is a guess; never "this set says"

@@ -39,8 +39,19 @@ import {
   type ListingCardInputs,
 } from "./features/generateListing";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
+import {
+  checkTitleAnswer,
+  listingInputsForCard,
+  type TitleContext,
+} from "./features/listingInputs";
+import {
+  buildTitleContext,
+  emptyResolvedNames,
+  titleContextValidator,
+  type ResolvedNames,
+} from "./listingTitleContext";
 import { generateSku } from "./sku";
-import { insertCardRow } from "./cardRowCreate";
+import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
   cardNumberStem,
@@ -181,7 +192,12 @@ import {
   platformServesLevel,
   platformsServingLevel,
 } from "./platformLevels";
-import { findSportForSelectorOption } from "./cardChecklist";
+import {
+  findSportForSelectorOption,
+  MAX_BSC_TEAM_NAME_LENGTH,
+} from "./cardChecklist";
+// NEO-335 — type only: the per-card answer of the fetch-time BSC team lookup.
+import type { BscCardTeamLookup } from "./adapters/buysportscards";
 // NEO-254: the set's year — the evidence that turns "two same-name players"
 // back into one. See convex/lib/selectorAncestry.ts.
 import {
@@ -269,6 +285,15 @@ import {
 // NEO-291 — the one rule for a card number prefix, shared with the
 // reconciler's write path in setReconciliation.ts.
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
+// NEO-335 — the one rule for a listing short name and the one reading of a
+// chain's title facts, shared by every walk below and by listingTitleContext.ts.
+import {
+  LISTING_SHORT_NAME_LEVELS,
+  normalizeListingShortName,
+  titleChainFacts,
+  titleChainFactsFields,
+  type TitleChainFacts,
+} from "./listingShortName";
 // Re-exported for callers that reached the ceiling through this module before
 // the rule moved; convex/cardNumberPrefix.ts is its home.
 export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
@@ -1286,6 +1311,11 @@ type PlayerNameVerdict = {
 type TeamNameVerdict = {
   /** The one row this name means, or null when a human has to decide. */
   teamId: Id<"teams"> | null;
+  /**
+   * NEO-335 — that row's full name (`teamFullName`), for the "Card titles"
+   * step's title context. Set whenever `teamId` is.
+   */
+  fullName?: string;
   /** Every era held under the name, when the lookup can hand them back. */
   candidates?: Array<Doc<"teams">>;
 };
@@ -1532,7 +1562,9 @@ function actionChecklistNameLookups(
         sportId,
         ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
       });
-      return { teamId: existing ? existing._id : null };
+      return existing
+        ? { teamId: existing._id, fullName: teamFullName(existing) }
+        : { teamId: null };
     },
   };
 }
@@ -1568,7 +1600,14 @@ function queryChecklistNameLookups(
         args.setYear,
         { allowPastEra: true },
       );
-      return { teamId, candidates };
+      const row = teamId
+        ? candidates.find((c) => c._id === teamId)
+        : undefined;
+      return {
+        teamId,
+        candidates,
+        ...(row ? { fullName: teamFullName(row) } : {}),
+      };
     },
   };
 }
@@ -1609,6 +1648,14 @@ async function resolveUnknownsAndStartBatch(
      * tie-break.
      */
     cardTeamNamesByPlayer?: Map<string, string[]>;
+    /**
+     * NEO-335 — filled with what this gate RESOLVED (normalized name → player
+     * id / team full name), for the "Card titles" step's `titleContext`. The
+     * gate's own answer is the only one the context may report: a second
+     * resolution could disagree about which names reach the wizard. Absent,
+     * nothing is recorded and the gate is exactly what it was.
+     */
+    resolvedNames?: ResolvedNames;
   },
 ): Promise<{
   unknownPlayers: string[];
@@ -1672,6 +1719,10 @@ async function resolveUnknownsAndStartBatch(
     if (entry.skipped) continue;
     const { name } = entry;
     const resolved = entry.verdict;
+    // NEO-335 — recorded for the title context. A no-op when not asked for.
+    if (resolved.playerId) {
+      args.resolvedNames?.playerIdByNorm.set(entry.normalized, resolved.playerId);
+    }
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
     if (!resolved.playerId) {
@@ -1718,6 +1769,10 @@ async function resolveUnknownsAndStartBatch(
   for (const entry of classified.teams) {
     if (entry.skipped) continue;
     if (entry.verdict.teamId === null) unknownTeams.push(entry.name);
+    // NEO-335 — recorded for the title context, under the gate's own key.
+    else if (entry.verdict.fullName !== undefined) {
+      args.resolvedNames?.teamNameByNorm.set(entry.normalized, entry.verdict.fullName);
+    }
   }
 
   // NEO-92: kick off the review-wizard batch (background Wikidata preview
@@ -3585,6 +3640,11 @@ type CardNameBearing = {
   teams?: string[];
   team?: string;
   playersConflict?: { bsc: string[]; sportlots: string[] };
+  // NEO-335 — operator-chosen NB team ids. Only the COUNT is bounded here;
+  // the ids themselves are validated against the table by the commit.
+  teamIds?: ReadonlyArray<unknown>;
+  // NEO-335 — BSC's unsplit team value, the commit's hint source.
+  rawTeamName?: string;
 };
 
 /**
@@ -3650,12 +3710,32 @@ function assertCardBatchWithinLimits(
         `${fnName}: ${where} carries ${teams.length} teams, above the ${MAX_CARD_TEAMS}-team limit`,
       );
     }
+    // NEO-335 — the operator's picked team ids, on the same per-card cap the
+    // write path holds `teamOnCardIds` to.
+    const teamIds = card.teamIds ?? [];
+    if (teamIds.length > MAX_CARD_TEAMS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${teamIds.length} chosen teams, above the ${MAX_CARD_TEAMS}-team limit`,
+      );
+    }
     for (const name of teams) {
       if (name.length > MAX_PLAYER_NAME_LENGTH) {
         throw new Error(
           `${fnName}: ${where} carries a team name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
         );
       }
+    }
+    // NEO-335 — the raw, unsplit team value rides beside the split (NEO-333's
+    // rule: bounded at every consumer). The server only ever hands out one
+    // within this cap (`checklistCandidates.candidateRawTeamHint`), so a longer
+    // one is not ours and is refused like any over-long name.
+    if (
+      card.rawTeamName !== undefined &&
+      card.rawTeamName.length > MAX_PLAYER_NAME_LENGTH
+    ) {
+      throw new Error(
+        `${fnName}: ${where} carries a listed team value of ${card.rawTeamName.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
     }
     // NEO-251 — the conflict field is two more rosters, on the same terms.
     // `startCandidateBatch` bounds it on the way OUT to the browser; this
@@ -4764,20 +4844,28 @@ export const renameSelectorOption = mutation({
 async function findAncestorLabels(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   node: any,
-): Promise<{
-  setName?: string;
-  sport?: string;
-  manufacturerBrandUnknown?: boolean;
-}> {
+): Promise<
+  {
+    setName?: string;
+    sport?: string;
+    manufacturerBrandUnknown?: boolean;
+  } & TitleChainFacts
+> {
   const labels: {
     setName?: string;
     sport?: string;
     manufacturerBrandUnknown?: boolean;
   } = {};
   if (!node) return labels;
+  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
+  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
+  // nearest short name). Collected on the way past: this walk already passes
+  // every one of them before it can stop.
+  const titleChain: any[] = [];
   let current = node;
   let depth = 0;
   while (current && depth < 16) {
+    if (labels.setName === undefined) titleChain.push(current);
     if (current.level === "setName" && labels.setName === undefined) {
       labels.setName = current.value;
     }
@@ -4811,7 +4899,7 @@ async function findAncestorLabels(
     current = await ctx.db.get(parentId);
     depth += 1;
   }
-  return labels;
+  return { ...labels, ...titleChainFacts(titleChain) };
 }
 
 
@@ -5630,58 +5718,52 @@ export const addCustomCard = mutation({
       setName: setNameValue,
       sport: sportValue,
       manufacturerBrandUnknown,
+      ...chainFacts
     } = await findAncestorLabels(ctx, parentNode);
-    const listingInputs: ListingCardInputs = {
-      cardNumber: args.cardNumber,
-      /*
-       * NEO-254 — the CANONICAL name, deliberately, not `playerLinks`'s
-       * printed one.
-       *
-       * A listing title is what a buyer searches for today, and they search
-       * the name the player is known by — "Dwight Gooden", not the "Doc
-       * Gooden" a 1986 card happens to print. Changing that is a separate
-       * decision with marketplace consequences (titles are write-once, and a
-       * re-titled listing is a different listing to eBay), so the printed name
-       * is recorded on the card and read by the detail panel only.
-       */
-      playerNames: hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames,
-      year: mergedFeatures.season,
-      manufacturer: mergedFeatures.manufacturer,
-      // NEO-272: the ancestor manufacturer row's NB ROLE. When NB has not
-      // identified the set's brand — the set hangs off the marketplace's
-      // all-brands filter option — the generator drops the manufacturer
-      // entirely, see `manufacturerAndSetTokens`. The name above is still
-      // passed, and still stored on the row's `features`; only the title and
-      // description skip it.
-      manufacturerBrandUnknown,
-      setName: setNameValue,
-      parallelName: mergedFeatures.parallelName,
-      isRookie: (args.attributes ?? []).includes("RC"),
-      isRelic: (args.attributes ?? []).includes("RELIC"),
-      autographed: mergedFeatures.autographed,
-      shortPrint: mergedFeatures.shortPrint,
-      // NEO-101: the add-custom-card form has no print-run field either (see
-      // `cardVariation` below); both arrive later through `updateCard`.
-      printRun: undefined,
-      // NEO-101: named explicitly even though it is always absent here — the
-      // add-custom-card form has no variation field, so a custom card acquires
-      // its `cardVariation` later via `updateCard` (which never regenerates the
-      // title; write-once). Spelled out so this stays visibly the same input
-      // shape as the commit insert branch below.
-      cardVariation: undefined,
-      // NEO-208: a hand-added card CAN now be born linked — the quick-add
-      // form's TeamPicker sends real `teams` ids — so the title says the
-      // linked teams' stored names, read once by
-      // `resolveTeamOnCardIdsForWrite` above.
-      //
-      // NEO-101's fallback still stands underneath it, for an old SPA bundle
-      // that sent `teams: [string]`: those names live in `pendingTeamNames`
-      // until a sync resolves them (see `deriveCardAttention`, which counts a
-      // pending name as an answer for exactly the same reason). Either way the
-      // title says what the operator meant, resolved or not.
-      teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
-      sport: sportValue,
-    };
+    /*
+     * NEO-335 — built by `listingInputsForCard`, the mapping the commit's
+     * insert, the parallel build and the pre-save Card titles step share,
+     * rather than by a hand-kept copy of it. The fields it maps are the ones
+     * this object listed by hand before (year/manufacturer/parallel/autograph/
+     * short print off `mergedFeatures`, the set name, the brand ROLE, the
+     * sport), plus the chain's insert role, parallel leaf and short name.
+     *
+     * NEO-254 — `playerNames` is the CANONICAL name, deliberately, not
+     * `playerLinks`'s printed one: a buyer searches "Dwight Gooden", not the
+     * "Doc Gooden" a 1986 card prints, and titles are write-once.
+     *
+     * NEO-272 — `manufacturerBrandUnknown` is the ancestor manufacturer row's
+     * ROLE; the generator drops a brand NB has not identified.
+     *
+     * NEO-101 — no print run and no variation: the add-custom-card form has
+     * neither field, and both arrive later through `updateCard`, which never
+     * regenerates the title (write-once).
+     *
+     * NEO-208 — a hand-added card CAN be born linked (the quick-add
+     * TeamPicker sends ids), so the title says the linked teams' names; an old
+     * bundle's typed names (`pendingTeamNames`) are the fallback, exactly as
+     * for players (NEO-220).
+     */
+    const listingInputs: ListingCardInputs = listingInputsForCard(
+      {
+        cardNumber: args.cardNumber,
+        isRookie: (args.attributes ?? []).includes("RC"),
+        isRelic: (args.attributes ?? []).includes("RELIC"),
+        printRun: undefined,
+        cardVariation: undefined,
+      },
+      {
+        sportValue: sportValue ?? "",
+        setNameValue,
+        manufacturerBrandUnknown,
+        ...chainFacts,
+      },
+      {
+        playerNames: (hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames) ?? [],
+        teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
+      },
+      mergedFeatures,
+    );
     const listingTitle = assessListingTitle(listingInputs);
 
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
@@ -6134,7 +6216,14 @@ export const previewListingTitle = query({
       // the generator dropped would be a lie.
       manufacturerBrandUnknown: v.optional(v.boolean()),
       setName: v.optional(v.string()),
+      // NEO-335 — the insert's name (already gated on its NB role) and the
+      // set's short name for titles, so the TitleFixer can chip them.
+      insertName: v.optional(v.string()),
+      setShortName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
+      // NEO-335 — the leaf's parallel ROLE, which earns the parallel its
+      // "Parallel" label; the client re-assesses these inputs (shortNameUsed).
+      parallelIsRole: v.optional(v.boolean()),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
       autographed: v.optional(v.string()),
@@ -6209,27 +6298,33 @@ export const previewListingTitle = query({
       setName: setNameValue,
       sport: sportValue,
       manufacturerBrandUnknown,
+      ...chainFacts
     } = await findAncestorLabels(ctx, parentNode);
 
-    const inputs: ListingCardInputs = {
-      cardNumber: card.cardNumber,
-      playerNames,
-      year: features.season,
-      manufacturer: features.manufacturer,
-      // NEO-272: same ROLE the insert branches read, from the same walk, so a
-      // regenerated title cannot disagree with the one creation wrote.
-      manufacturerBrandUnknown,
-      setName: setNameValue,
-      parallelName: features.parallelName,
-      isRookie: card.isRookie,
-      isRelic: card.isRelic,
-      autographed: features.autographed,
-      shortPrint: features.shortPrint,
-      printRun: card.printRun,
-      cardVariation: card.cardVariation,
-      teamNames,
-      sport: sportValue,
-    };
+    // NEO-335 — the insert branch's own mapping (`listingInputsForCard`), fed
+    // the STORED row's `features` as the merged snapshot, rather than a
+    // hand-kept mirror of it. Same fields as before — year/manufacturer/
+    // parallel/autograph/short print off `features`, the card's own RC/relic/
+    // print run/verbatim variation, the set name, the NEO-272 brand ROLE and
+    // the sport — plus the chain's insert role, parallel leaf and short name,
+    // so Regenerate and the TitleFixer read the short name an operator set.
+    const inputs: ListingCardInputs = listingInputsForCard(
+      {
+        cardNumber: card.cardNumber,
+        isRookie: card.isRookie,
+        isRelic: card.isRelic,
+        printRun: card.printRun,
+        cardVariation: card.cardVariation,
+      },
+      {
+        sportValue: sportValue ?? "",
+        setNameValue,
+        manufacturerBrandUnknown,
+        ...chainFacts,
+      },
+      { playerNames, teamNames },
+      features,
+    );
 
     const { title, coreFits, dropped } = assessListingTitle(inputs);
     return {
@@ -6861,6 +6956,46 @@ export const setSelectorOptionCardNumberPrefix = mutation({
     await ctx.db.patch(args.id, {
       // Every other key rides along untouched; an emptied object is dropped
       // rather than stored as `{}`.
+      metadata: Object.keys(next).length > 0 ? next : undefined,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * NEO-335 — set or clear a row's `metadata.listingShortName`, the shorter
+ * name listing titles use when the full set + insert names will not fit (the
+ * set attributes panel's "Short name for titles").
+ *
+ * Same shape as `setSelectorOptionCardNumberPrefix` directly above: one key,
+ * nothing else in `metadata` touched; trim, `""` DELETES the key, control /
+ * invisible characters and over-length refused with a string `ConvexError`
+ * (`normalizeListingShortName`, shared with the commit's batch-level arg).
+ * Refused on a row above the set (a sport, year or brand), which no title
+ * walk reads a short name from. Existing titles are not rewritten: they are
+ * write-once, and Regenerate reads the new value.
+ */
+export const setSelectorOptionListingShortName = mutation({
+  args: {
+    id: v.id("selectorOptions"),
+    listingShortName: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new ConvexError("That row is gone. Refresh and try again.");
+    }
+    if (!LISTING_SHORT_NAME_LEVELS.has(row.level)) {
+      throw new ConvexError("A short name goes on a set or a part of one.");
+    }
+    const shortName = normalizeListingShortName(args.listingShortName);
+    const next = { ...(row.metadata ?? {}) };
+    if (shortName) next.listingShortName = shortName;
+    else delete next.listingShortName;
+    await ctx.db.patch(args.id, {
       metadata: Object.keys(next).length > 0 ? next : undefined,
       lastUpdated: Date.now(),
     });
@@ -13130,6 +13265,75 @@ const previewCardFields = {
     }),
   ),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
+  // ── NEO-335: the card's team, answered before save ────────────────────────
+  //
+  // All three OPTIONAL, so an SPA bundle loaded before this deploy posts a
+  // payload that still validates and commits exactly as it always did.
+  //
+  // `teamLookup` — how the fetch-time BSC team lookup for this card ended
+  // (`checklistCandidates.teamLookup`, carried by `candidateToPairingCard`).
+  // "answered" means BSC replied, with a team or with none on file; the commit
+  // stamps such a card's `teamCheckDoneAt` instead of queueing it to ask BSC
+  // the same question again after save. "failed" or ABSENT (an older client,
+  // or a card whose team came from the bulk parse) keeps the old behaviour:
+  // a teamless BSC card is queued for the background lookup. It is a hint
+  // about OUR call, never a value from the marketplace, and it decides only
+  // whether that call is repeated.
+  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  // `rawTeamName` — BSC's team value for this card exactly as the fetch-time
+  // lookup returned it, unsplit (`checklistCandidates.rawTeamName`, present
+  // only where `teams` does not already say it). Read by the commit for one
+  // thing: the "Listed as:" hint (`bscTeamName`) on an ANSWERED card that ends
+  // with no team, so it matches what `applyBscTeamResolution` would keep. A
+  // listing claim, never matched on and never a team. Held to
+  // `MAX_PLAYER_NAME_LENGTH` by `assertCardBatchWithinLimits` — it comes back
+  // from the client.
+  rawTeamName: v.optional(v.string()),
+  // `teamIds` — NB teams the operator picked for this card in the wizard.
+  // A client-chosen id, so the commit re-validates every one before any write
+  // (`validateOperatorTeamIds`): another sport's team refuses the commit, a
+  // team deleted since it was picked is dropped. Unioned with whatever the
+  // card's `teams` NAMES resolve to, deduped, and held to `MAX_CARD_TEAMS`.
+  // Count-bounded by `assertCardBatchWithinLimits`.
+  teamIds: v.optional(v.array(v.id("teams"))),
+  // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
+  // in the wizard (a team staged in this review, or a sibling card's printed
+  // team), not what the card printed. The commit resolves them exactly as it
+  // resolves any printed team, and then treats the ids they resolve to like
+  // `teamIds`: an operator decision that may FILL an existing teamless row
+  // without `applyFields`. Absent — every card that was not answered — the
+  // strings are marketplace content and keep the `applyFields` rule.
+  teamsAnswered: v.optional(v.literal(true)),
+  // `teamNone` — the operator answered "No team on this card". Server-stamped
+  // at commit exactly as `cardChecklist.confirmCardNoTeam` stamps it (now +
+  // the committing admin), together with `teamCheckDoneAt`. Teams win: a card
+  // that ends the commit with any team — from `teamIds`, from a `teams` name
+  // that resolved, or a name still pending review — ignores it.
+  teamNone: v.optional(v.literal(true)),
+  // ── NEO-335: the card's title, answered before save ("Card titles") ───────
+  //
+  // All OPTIONAL, so an older bundle's payload commits exactly as before. Read
+  // only for a card the commit INSERTS (titles are checked on new rows only);
+  // a card that re-syncs a stored row ignores the two title fields, because
+  // that row's title is NB content the operator may already have edited.
+  //
+  // `listingTitle` — the operator's own title, written verbatim. Trimmed and
+  // held to LISTING_TITLE_MAX before any phase writes
+  // (`listingInputs.checkTitleAnswer`); over the cap refuses the commit, the
+  // same rule `updateCard` applies to a title edit.
+  listingTitle: v.optional(v.string()),
+  // `listingTitleKept` — the trimmed title the step SHOWED, which the
+  // operator kept. The server still GENERATES the title (its names are the
+  // truth, not the client's prediction of them) and skips the cut-short flag
+  // only when what it generated is exactly this text; anything else is a
+  // title nobody saw, flagged as before. Held to LISTING_TITLE_MAX like
+  // `listingTitle` (`checkTitleAnswer`).
+  listingTitleKept: v.optional(v.string()),
+  // `cardVariationAnswered` — this card's `cardVariation` is the operator's
+  // trimmed answer, not what the card printed, so it is held to the aspect
+  // cap (ASPECT_VALUE_MAX) the step asked them to trim it to. Absent, the
+  // variation is marketplace content and is not capped (warn-only, NEO-101).
+  cardVariationAnswered: v.optional(v.literal(true)),
 };
 
 const previewCardValidator = v.object(previewCardFields);
@@ -14019,6 +14223,42 @@ async function fetchAndMatchChecklist(
 }
 
 /**
+ * NEO-335 — one `resolveCandidateTeams` entry per looked-up card, from what
+ * `fetchBscCardTeamNames` answered. Shared by the staging path and the
+ * read-only `previewCardChecklist` (NEO-339), so both hand the team decision
+ * the same entries.
+ *
+ * Keyed by the card's OWN ref, inside the adapter boundary: this routes BSC's
+ * answer back to the card it was asked about and nothing else. A ref the
+ * adapter did not answer for (including every ref of a chunk whose lookup
+ * threw, which leaves `lookups` empty) is a FAILED lookup, never "BSC has no
+ * team".
+ */
+function bscTeamLookupEntries(
+  bscRefs: readonly string[],
+  lookups: readonly BscCardTeamLookup[],
+): Array<{
+  bscRef: string;
+  rawTeamName?: string;
+  teamNames?: string[];
+  teamLookup: "answered" | "failed";
+}> {
+  const lookupByRef = new Map(lookups.map((l) => [l.bscCardId, l]));
+  return bscRefs.map((bscRef) => {
+    const lookup = lookupByRef.get(bscRef);
+    if (lookup?.success !== true) {
+      return { bscRef, teamLookup: "failed" as const };
+    }
+    return {
+      bscRef,
+      ...(lookup.rawTeamName ? { rawTeamName: lookup.rawTeamName } : {}),
+      ...(lookup.teamNames.length > 0 ? { teamNames: lookup.teamNames } : {}),
+      teamLookup: "answered" as const,
+    };
+  });
+}
+
+/**
  * NEO-339 — the fields a checklist candidate carries, shared by the staging
  * path (`fetchCardChecklist`, which adds `bucket` and `confidence`) and the
  * read-only `previewCardChecklist`, so a preview card is byte-identical to
@@ -14348,31 +14588,20 @@ export const fetchCardChecklist = action({
         const TEAM_LOOKUP_CHUNK = 50;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
-          // NEO-330 — a chunk whose lookup THROWS is answered "no team" rather
-          // than failing the fetch. Jason, 2026-10-11: "If a team lookup never
-          // returns then the user must select a team." A per-card failure is
-          // already absent from `teamsByRef` and lands the same way; this makes
-          // a whole-chunk failure match it instead of discarding a fetch the
-          // operator may already be pairing. The rows still go `ready` (the
+          // NEO-330 — a chunk whose lookup THROWS does not fail the fetch.
+          // Jason, 2026-10-11: "If a team lookup never returns then the user
+          // must select a team." A throw leaves `lookups` empty, so every ref
+          // in the chunk is recorded below as a FAILED lookup (NEO-335) —
+          // exactly as a per-card failure is. The rows still go `ready` (the
           // client's wait is not left to run out on them, and the NEO-333
           // fence still advances), the cards commit with no team, and the
-          // post-commit queue (`processBscTeamEnrichmentQueue`) asks BSC again
-          // for each one — never a guess.
-          //
-          // NEO-333: each ref maps to BSC's raw team value AND its comma
-          // split. Which one the card carries is decided in
-          // `resolveCandidateTeams`, which has the database: the whole string
-          // when it names exactly one existing team ("Korea, South"), else the
-          // parts ("Cleveland Guardians, Washington Nationals" is two teams).
-          // The candidate row that mutation writes is the only copy the modal
-          // and the commit read; nothing below this loop reads `c.teams`.
-          let teamsByRef: Record<
-            string,
-            { rawTeamName: string; teamNames: string[] }
-          > = {};
+          // commit queues each one for the post-commit lookup
+          // (`processBscTeamEnrichmentQueue`, with its bounded retry and
+          // give-up) — never a guess.
+          let lookups: BscCardTeamLookup[] = [];
           const lookupStartedAt = Date.now();
           try {
-            teamsByRef = await ctx.runAction(
+            lookups = await ctx.runAction(
               internal.adapters.buysportscards.fetchBscCardTeamNames,
               { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
             );
@@ -14389,21 +14618,26 @@ export const fetchCardChecklist = action({
               }),
             );
           }
+          // NEO-335 — keyed by the card's OWN ref, inside the adapter
+          // boundary: this routes BSC's answer back to the card it was asked
+          // about and nothing else. A ref the adapter did not answer for is
+          // treated as a failed lookup, never as "BSC has no team".
+          //
+          // NEO-333: each answer carries BSC's raw team value AND its comma
+          // split. Which one the card carries is decided in
+          // `resolveCandidateTeams`, which has the database: the whole string
+          // when it names an existing team ("Korea, South"), else the parts
+          // ("Cleveland Guardians, Washington Nationals" is two teams). The
+          // candidate row that mutation writes is the only copy the modal and
+          // the commit read; nothing below this loop reads `c.teams`.
           const resolvedChunk: { ready: number } = await ctx.runMutation(
             internal.checklistCandidates.resolveCandidateTeams,
             {
               batchId: candidateBatchId,
-              resolved: chunk.map((c) => {
-                const bscRef = c.platformData.bsc!.ref;
-                const found = teamsByRef[bscRef];
-                return found
-                  ? {
-                      bscRef,
-                      rawTeamName: found.rawTeamName,
-                      teamNames: found.teamNames,
-                    }
-                  : { bscRef };
-              }),
+              resolved: bscTeamLookupEntries(
+                chunk.map((c) => c.platformData.bsc!.ref),
+                lookups,
+              ),
             },
           );
           // `ready` never falls within a batch, so the last chunk's count is
@@ -14525,12 +14759,18 @@ export const resolveChecklistEntities = action({
     // orphaned. It is then a batch of the operator's own decisions and nothing
     // else — see `resolveUnknownsAndStartBatch`.
     batchId: v.optional(v.string()),
+    // NEO-335 — what the wizard's pre-save "Card titles" step titles new
+    // cards from: the set's facts and the canonical name behind every printed
+    // player/team spelling that already resolved. See listingTitleContext.ts.
+    // Optional so the wire change is purely additive; always sent.
+    titleContext: v.optional(titleContextValidator),
   }),
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
     unknownTeams: string[];
     ambiguousPlayers?: string[];
     batchId?: string;
+    titleContext?: TitleContext;
   }> => {
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
@@ -14574,14 +14814,24 @@ export const resolveChecklistEntities = action({
       { id: args.sportId },
     );
 
-    return await resolveUnknownsAndStartBatch(ctx, {
+    const resolvedNames = emptyResolvedNames();
+    const result = await resolveUnknownsAndStartBatch(ctx, {
       selectorOptionId: args.selectorOptionId,
       sportId: args.sportId,
       sportLabel: sportRow?.value ?? "",
       additionalPlayerNames,
       additionalTeamNames,
       cardTeamNamesByPlayer,
+      resolvedNames,
     });
+    // NEO-335 — after the gate, from the gate's own answers.
+    const titleContext = await buildTitleContext(ctx, {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      cards: args.cards,
+      resolved: resolvedNames,
+    });
+    return { ...result, titleContext };
   },
 });
 /**
@@ -14611,9 +14861,17 @@ const previewChecklistCardValidator = v.object({
       preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
     }),
   ),
+  // NEO-335 — what `resolveCandidateTeams` records on the staged row once the
+  // team lookup ran (`lookupTeams: true`): how it ended, and BSC's unsplit
+  // team value where `teams` does not already say it. Absent otherwise.
+  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  rawTeamName: v.optional(v.string()),
 });
 
-type PreviewChecklistCard = ReturnType<typeof checklistCandidateFields>;
+type PreviewChecklistCard = ReturnType<typeof checklistCandidateFields> & {
+  teamLookup?: "answered" | "failed";
+  rawTeamName?: string;
+};
 
 /**
  * NEO-339 — how many marketplace ids one list of the cold form may carry.
@@ -15060,6 +15318,18 @@ export const previewCardChecklist = action({
         (c) => !c.teams?.length && !c.team && c.platformData.bsc?.ref,
       );
       teamLookup.needed = needsTeamLookup.length;
+      // NEO-335 — per BSC ref, the lookup outcome and raw team hint the staged
+      // row would carry (see `resolveCandidateTeams`). Empty unless the
+      // lookup ran.
+      const teamAnswerByRef = new Map<
+        string,
+        { teamLookup?: "answered" | "failed"; rawTeamName?: string }
+      >();
+      const previewCard = (card: ReconciledCard): PreviewChecklistCard => {
+        const ref = card.platformData.bsc?.ref;
+        const answer = ref ? teamAnswerByRef.get(ref) : undefined;
+        return { ...checklistCandidateFields(card), ...answer };
+      };
       if (args.lookupTeams && needsTeamLookup.length > 0) {
         teamLookup.performed = true;
         // The match's sport and year: the row's, or for a cold preview its
@@ -15073,13 +15343,10 @@ export const previewCardChecklist = action({
           // as in `fetchCardChecklist`: the staged rows commit with no team
           // and the operator picks. The preview reports what staging would
           // write, so it does not fail either.
-          let teamsByRef: Record<
-            string,
-            { rawTeamName: string; teamNames: string[] }
-          > = {};
+          let lookups: BscCardTeamLookup[] = [];
           const lookupStartedAt = Date.now();
           try {
-            teamsByRef = await ctx.runAction(
+            lookups = await ctx.runAction(
               internal.adapters.buysportscards.fetchBscCardTeamNames,
               { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
             );
@@ -15096,24 +15363,33 @@ export const previewCardChecklist = action({
               }),
             );
           }
-          const decided: Array<{ bscRef: string; teams?: string[] }> =
-            await ctx.runQuery(
-              internal.checklistCandidates.previewCandidateTeams,
-              {
-                selectorOptionId: teamScopeId,
-                resolved: chunk.map((c) => {
-                  const bscRef = c.platformData.bsc!.ref;
-                  const found = teamsByRef[bscRef];
-                  return found
-                    ? {
-                        bscRef,
-                        rawTeamName: found.rawTeamName,
-                        teamNames: found.teamNames,
-                      }
-                    : { bscRef };
-                }),
-              },
-            );
+          const entries = bscTeamLookupEntries(
+            chunk.map((c) => c.platformData.bsc!.ref),
+            lookups,
+          );
+          const decided: Array<{
+            bscRef: string;
+            teams?: string[];
+            rawTeamName?: string;
+          }> = await ctx.runQuery(
+            internal.checklistCandidates.previewCandidateTeams,
+            { selectorOptionId: teamScopeId, resolved: entries },
+          );
+          // NEO-335 — and what the staged row records beside `teams`: how the
+          // lookup ended and BSC's unsplit value where `teams` does not say
+          // it. Applied to the preview card below, as the mutation patches
+          // the row.
+          for (const e of entries) {
+            teamAnswerByRef.set(e.bscRef, { teamLookup: e.teamLookup });
+          }
+          for (const d of decided) {
+            if (d.rawTeamName) {
+              teamAnswerByRef.set(d.bscRef, {
+                ...teamAnswerByRef.get(d.bscRef),
+                rawTeamName: d.rawTeamName,
+              });
+            }
+          }
           const teamsFor = new Map(decided.map((d) => [d.bscRef, d.teams]));
           for (const c of chunk) {
             const teams = teamsFor.get(c.platformData.bsc!.ref);
@@ -15145,11 +15421,11 @@ export const previewCardChecklist = action({
         attachedSides: report.attachedSides,
         pausedSides: report.pausedSides,
         matched: autoMatchedCards.map((m) => ({
-          card: checklistCandidateFields(m.card),
+          card: previewCard(m.card),
           confidence: m.confidence,
         })),
-        bscOnly: unmatchedBscCards.map(checklistCandidateFields),
-        slOnly: unmatchedSlCards.map(checklistCandidateFields),
+        bscOnly: unmatchedBscCards.map(previewCard),
+        slOnly: unmatchedSlCards.map(previewCard),
         teamLookup,
         marketplaceCalls: report.marketplaceCalls,
       });
@@ -15825,6 +16101,17 @@ export const commitCardChecklistPrelude = internalMutation({
      * unpaged and so has no ceiling to lower.
      */
     cardYearTeamReads: v.optional(v.number()),
+    /**
+     * NEO-335 — the operator's short name for titles, from the wizard's Card
+     * titles step. Written onto the LEAF row (`metadata.listingShortName`) by
+     * the call that opens the commit — the first "creates" page, or a
+     * whole-prelude call — so it is stored before any chunk titles a card,
+     * and every later page's walk (the set facts below) reads it back. The
+     * action has already normalised it; it is normalised again here because
+     * this mutation is separately callable. Absent or blank writes nothing:
+     * the commit never CLEARS a short name, the attributes panel does.
+     */
+    listingShortName: v.optional(v.string()),
   },
   returns: v.object({
     /**
@@ -15862,6 +16149,11 @@ export const commitCardChecklistPrelude = internalMutation({
     // kind. Returned rather than re-derived because the finalize phase, which
     // retires custom cards' pending* entries, cannot see the batch's review
     // rows — they are read here and deleted there.
+    //
+    // NEO-335: plus the names an EARLIER commit of this set skipped that
+    // reached this one with no decision (`isStoredSkip`). Already recorded,
+    // so nothing is written for them; they ride here so the same pending*
+    // retirement applies.
     skippedPlayerNames: v.array(v.string()),
     skippedTeamNames: v.array(v.string()),
     // NEO-236: team names this commit could NOT link and did not create —
@@ -15906,6 +16198,12 @@ export const commitCardChecklistPrelude = internalMutation({
     // whole commit, and handed to every chunk so the insert branch generates
     // the same title `previewListingTitle` would regenerate.
     manufacturerBrandUnknown: v.optional(v.boolean()),
+    // NEO-335 — the chain's title facts (`titleChainFacts`): the insert-level
+    // row's value when it carries the insert ROLE, the leaf's own value when
+    // it carries the parallel role, and the nearest short name — read AFTER
+    // this commit's own short name was written, so the chunks title with it
+    // and a kept title (`listingTitleKept`) regenerates identically.
+    ...titleChainFactsFields,
     existingCustomCardNumbers: v.array(v.string()),
     // ── NEO-203: the match maps, all four resolved ONCE against the
     // pre-commit state of the checklist — and built ONLY over this
@@ -15988,6 +16286,30 @@ export const commitCardChecklistPrelude = internalMutation({
      * skipped rather than guessed.
      */
     const setSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+
+    // NEO-335 — the Card titles step's short name, onto the leaf, ONCE: by
+    // the call that opens the commit (see the arg). First, before any other
+    // write of this transaction, so a refusal costs nothing; and before the
+    // leaf is read for the set facts at the end of this handler, which then
+    // see it (a transaction reads its own writes).
+    const opensCommit =
+      args.phase === undefined || (args.phase === "creates" && !args.resume);
+    if (opensCommit && args.listingShortName !== undefined) {
+      const shortName = normalizeListingShortName(args.listingShortName);
+      if (shortName) {
+        const leaf = await ctx.db.get(args.selectorOptionId);
+        if (!leaf || !LISTING_SHORT_NAME_LEVELS.has(leaf.level)) {
+          throw new ConvexError("A short name goes on a set or a part of one.");
+        }
+        if (leaf.metadata?.listingShortName !== shortName) {
+          await ctx.db.patch(args.selectorOptionId, {
+            metadata: { ...(leaf.metadata ?? {}), listingShortName: shortName },
+            // Same as `setSelectorOptionListingShortName`: an edit is an edit.
+            lastUpdated: Date.now(),
+          });
+        }
+      }
+    }
 
     // NEO-251 (security review) — the LAST place these names can be bounded
     // before they become `players` / `teams` rows.
@@ -16140,6 +16462,47 @@ export const commitCardChecklistPrelude = internalMutation({
     for (const row of reviewRows) {
       reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
     }
+
+    /**
+     * NEO-335 — has an EARLIER commit of this set ruled this name "not a
+     * person / not a team"?
+     *
+     * The review rows only speak for names that were unknown when this
+     * sitting opened. A name skipped in an earlier save never reaches them:
+     * `resolveUnknownsAndStartBatch` drops it at the gate, before it asks
+     * anyone. Judged by the rows alone, such a name read as "unreviewed" and
+     * was stamped onto the card as a pending player or team: a listing's
+     * string the operator had already said is NOT a team, written back onto
+     * the card as an unconfirmed one (invariant 8), with the banner
+     * reporting it as "not reviewed" on every re-sync.
+     *
+     * So a name with no decision consults the set's skip records, and a hit
+     * is handled exactly like a skip decision: nothing linked, nothing
+     * created, not unreviewed, not unresolved.
+     *
+     * Read LAZILY and ONCE per prelude call: one indexed range over this
+     * set's skips, and only when some name actually reaches the no-decision
+     * branch. A commit whose every name resolves pays nothing. The keys use
+     * the same `normalizeEntityName` the gate and the skip writer above use.
+     */
+    let storedSkipKeys: Set<string> | null = null;
+    const isStoredSkip = async (
+      kind: "player" | "team",
+      nameNormalized: string,
+    ): Promise<boolean> => {
+      if (storedSkipKeys === null) {
+        const skips = await ctx.db
+          .query("entityReviewSkips")
+          .withIndex("by_selector_option_and_kind_and_name", (q) =>
+            q.eq("selectorOptionId", args.selectorOptionId),
+          )
+          .collect();
+        storedSkipKeys = new Set(
+          skips.map((s) => `${s.kind}:${s.nameNormalized}`),
+        );
+      }
+      return storedSkipKeys.has(`${kind}:${nameNormalized}`);
+    };
 
     // ── NEO-212: make every skip durable, in THIS transaction ───────────────
     //
@@ -17285,7 +17648,13 @@ export const commitCardChecklistPrelude = internalMutation({
       // unreviewed case counts as either "unresolved" (NEO-236) or
       // "unreviewed" (NEO-221): a skip is an answer to both questions.
       if (!decision || decision.action === "skip") {
-        if (!decision) {
+        // NEO-335 — a name an EARLIER save of this set skipped is an answer
+        // too (see `isStoredSkip`). Reported with this commit's own skips so
+        // the chunk retires it from a stored row's pending names rather than
+        // keeping it there as a team waiting to be confirmed.
+        if (!decision && (await isStoredSkip("team", normalized))) {
+          skippedTeamNames.push(name);
+        } else if (!decision) {
           unresolvedTeamNames.add(name);
           // NEO-221 — same rule as the player loop above.
           unreviewedTeamNames.push(name);
@@ -17666,6 +18035,10 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      // NEO-335 — "not a person" from an EARLIER save of this set (see
+      // `isStoredSkip`). An answer, so it holds back the year narrowing below
+      // exactly as a skip decision does, and it is not unreviewed.
+      const storedSkip = !decision && (await isStoredSkip("player", normalized));
       /**
        * NEO-254 — the card's own year narrows "more than one" back to one.
        *
@@ -17699,7 +18072,7 @@ export const commitCardChecklistPrelude = internalMutation({
        * Placed AFTER the exactly-one fast path so the ordinary name pays
        * nothing for it.
        */
-      if (!decision && existingMatches.length > 1) {
+      if (!decision && !storedSkip && existingMatches.length > 1) {
         const narrowed = await narrowSameNamePlayersByCardYear(
           ctx,
           existingMatches,
@@ -17764,7 +18137,10 @@ export const commitCardChecklistPrelude = internalMutation({
         // NEO-221: no decision at all is an unanswered question — the wizard
         // never ruled on this name, so the card will link to nothing and no
         // later pass will fix it. A skip is an ANSWER and is excluded.
-        if (!decision) unreviewedPlayerNames.push(name);
+        // NEO-335 — and so is an earlier save's skip, reported with this
+        // commit's own so the chunk retires it from a row's pending names.
+        if (storedSkip) skippedPlayerNames.push(name);
+        else if (!decision) unreviewedPlayerNames.push(name);
         continue;
       }
       if (decision.action === "link") {
@@ -17855,6 +18231,11 @@ export const commitCardChecklistPrelude = internalMutation({
 
     // Still need the nearest setName ancestor id (unrelated to features — used
     // only for the totalCardCount/lastSyncedAt patch in the finalize phase).
+    //
+    // NEO-335 — the rows this walk passes (leaf first, up to the setName row)
+    // also carry the title's chain facts: the insert role, a parallel leaf
+    // and the nearest short name (`titleChainFacts`). Kept, not re-walked.
+    const titleChain: Array<Doc<"selectorOptions"> | null> = [leafNode];
     let setNameAncestorId: Id<"selectorOptions"> | undefined =
       leafNode?.level === "setName" ? leafNode._id : undefined;
     if (!setNameAncestorId) {
@@ -17862,10 +18243,12 @@ export const commitCardChecklistPrelude = internalMutation({
       while (cursorId && !setNameAncestorId) {
         const node: Doc<"selectorOptions"> | null = await ctx.db.get(cursorId);
         if (!node) break;
+        titleChain.push(node);
         if (node.level === "setName") setNameAncestorId = node._id;
         cursorId = node.parentId;
       }
     }
+    const chainFacts = titleChainFacts(titleChain);
     // Fetched once for the whole batch (not per-card) — used only for
     // listing-title/description generation on newly-inserted rows.
     const setNameNode = setNameAncestorId
@@ -17949,6 +18332,8 @@ export const commitCardChecklistPrelude = internalMutation({
       setNameAncestorId,
       setNameValue,
       manufacturerBrandUnknown,
+      // NEO-335 — see the returns validator.
+      ...chainFacts,
       // NEO-239 — the numbers that must survive the marketplace upsert:
       // rows with no ref on either side. Field name kept so the action and
       // finalize phases keep agreeing about ordering without a rename ripple.
@@ -17987,6 +18372,11 @@ type CommitPrelude = {
   setNameValue?: string;
   /** NEO-272 — see the returns validator. */
   manufacturerBrandUnknown?: boolean;
+  /** NEO-335 — see the returns validator (`titleChainFacts`). */
+  insertNameValue?: string;
+  insertIsRole?: boolean;
+  parallelLeafValue?: string;
+  listingShortName?: string;
   existingCustomCardNumbers: string[];
   existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
   existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
@@ -18007,6 +18397,116 @@ type CommitPrelude = {
  * Nothing here is re-derived per chunk, which is the point: a chunk is a dumb
  * writer, so two chunks of the same commit cannot disagree about anything.
  */
+/**
+ * NEO-330 × NEO-335 — the listing hint an ANSWERED, teamless card keeps at
+ * commit, or undefined.
+ *
+ * The same answer `cardChecklist.applyBscTeamResolution` reaches for the same
+ * BSC value, so "Listed as:" reads alike whichever path settled the card:
+ *
+ *  - the raw value ruled "not a team" for this set, or every part of its
+ *    split ruled out: no hint. The fixer must never say "The listing names
+ *    <name>" about a name the operator threw out (invariant 8 — a claim the
+ *    operator overruled is not shown back as one);
+ *  - a PART ruled out: the parts still standing, joined — the raw value would
+ *    carry the skipped name back;
+ *  - otherwise BSC's raw value as the lookup returned it, else the card's
+ *    team strings joined (an older client that sent no raw value). Never the
+ *    first part alone: that names one team of a card listed as two.
+ *
+ * `skippedTeamKeys` holds `normalizeEntityName` keys, as `entityReviewSkips`
+ * stores them.
+ */
+export function commitTeamHint(
+  rawTeamName: string | undefined,
+  teamSources: readonly string[],
+  skippedTeamKeys: ReadonlySet<string>,
+): string | undefined {
+  const isSkipped = (name: string) =>
+    skippedTeamKeys.has(normalizeEntityName(name));
+  const raw = rawTeamName?.trim() ?? "";
+  if (raw && isSkipped(raw)) return undefined;
+  const parts = teamSources.map((t) => t.trim()).filter(Boolean);
+  const live = parts.filter((p) => !isSkipped(p));
+  if (live.length < parts.length) return live.join(", ") || undefined;
+  return raw || live.join(", ") || undefined;
+}
+
+/**
+ * NEO-335 — what one card's team ANSWER writes at commit, and whether the card
+ * still needs the background BSC lookup.
+ *
+ * One function for both branches of `commitCardChecklistChunk`, so an insert
+ * and a re-synced row cannot disagree about what an answer means.
+ *
+ * In order, and only for a card that ends the write with NO team:
+ *
+ *  1. "No team on this card" — the operator's pre-save answer. Stamped exactly
+ *     as `cardChecklist.confirmCardNoTeam` stamps it (now, and the committing
+ *     admin), plus `teamCheckDoneAt`, because the lookup has nothing left to
+ *     find for a card a human settled. Never when a team NAME is still pending
+ *     review (that is a team, waiting), never without the operator id, and
+ *     never over an existing confirmation.
+ *  2. BSC ANSWERED at fetch — `teamCheckDoneAt` is stamped, and when the
+ *     card's team string reached commit unresolved and not pending it is kept
+ *     as `bscTeamName`, capped, the hint the missing-team fixer shows — never
+ *     a name the operator ruled "not a team" (`commitTeamHint`). This is `applyBscTeamResolution`'s unmatched
+ *     branch, applied at save instead of 300 ms-per-card later. With a pending
+ *     name the stamp still lands — the lookup has been and gone — but no hint:
+ *     the pending name already carries the string.
+ *  3. Otherwise — a FAILED lookup, or none recorded (an older client, a team
+ *     from the bulk parse) — a card with a BSC ref is queued for the
+ *     background lookup, as it always was.
+ *
+ * `teamLookup` decides only whether NB repeats its own call to BSC. It is
+ * never a marketplace value, and nothing here reads one to decide anything.
+ */
+function settleCardTeamAnswer(a: {
+  hasTeam: boolean;
+  hasPendingTeam: boolean;
+  hasBscRef: boolean;
+  /** The row already carries (and keeps) an operator's "no team" ruling. */
+  noneConfirmed: boolean;
+  /** The row already carries `teamCheckDoneAt`. */
+  teamCheckDone: boolean;
+  teamNone: boolean;
+  teamLookup?: "answered" | "failed";
+  bscTeamHint?: string;
+  operatorUserId?: string;
+  now: number;
+}): { fields: CarriedCardFields; enqueue: boolean } {
+  if (a.hasTeam || a.noneConfirmed) return { fields: {}, enqueue: false };
+  if (a.teamNone && !a.hasPendingTeam && a.operatorUserId) {
+    return {
+      fields: {
+        teamNoneConfirmedAt: a.now,
+        teamNoneConfirmedByUserId: a.operatorUserId,
+        ...(a.teamCheckDone ? {} : { teamCheckDoneAt: a.now }),
+      },
+      enqueue: false,
+    };
+  }
+  if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
+  if (a.teamLookup === "answered") {
+    const hint = a.hasPendingTeam ? "" : (a.bscTeamHint ?? "").trim();
+    // The cap below is the same slice `applyBscTeamResolution` puts on its
+    // hint. A raw value cannot reach it (`assertCardBatchWithinLimits` holds
+    // `rawTeamName` to MAX_PLAYER_NAME_LENGTH, the same 120), but the joined
+    // fallback can: several team strings, each within the cap, joined. Cut
+    // like the background path cuts it, so both store the same hint. Kept as
+    // the WRITER's own bound in any case, as the house does for every
+    // internal arg that lands in a stored field (`boundPendingNames`).
+    return {
+      fields: {
+        teamCheckDoneAt: a.now,
+        ...(hint ? { bscTeamName: hint.slice(0, MAX_BSC_TEAM_NAME_LENGTH) } : {}),
+      },
+      enqueue: false,
+    };
+  }
+  return { fields: {}, enqueue: true };
+}
+
 const commitChunkCardValidator = v.object({
   cardNumber: v.string(),
   cardName: v.string(),
@@ -18059,6 +18559,32 @@ const commitChunkCardValidator = v.object({
   // the card is reported. Required whenever `applyFields` is non-empty: an
   // unverifiable decision is treated the same as no decision.
   baseVersion: v.optional(v.number()),
+  // ── NEO-335: the card's team as the operator answered it before save ─────
+  //
+  // `operatorTeamIds` — the operator's answer as NB team ids: the subset of
+  // the preview card's `teamIds` that the action validated (exist, same
+  // sport) before any phase wrote, plus — on a `teamsAnswered` card — the ids
+  // its answered team names resolved to. Already unioned (first, ahead of
+  // the cap) into `teamOnCardIds` above for an INSERT; carried separately so
+  // the UPDATE branch can fill an existing row that has no team without
+  // treating marketplace content as accepted.
+  operatorTeamIds: v.optional(v.array(v.id("teams"))),
+  // How the fetch-time BSC lookup ended. See `previewCardFields.teamLookup`.
+  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  // The operator answered "No team on this card". Set by the action only when
+  // the card resolved to no team and no pending team name — teams win.
+  teamNone: v.optional(v.literal(true)),
+  // The card's team string that resolved to nothing and was not left pending
+  // (the operator skipped it). Stored as `bscTeamName`, the hint the
+  // missing-team fixer shows, on an answered card. Capped in the handler.
+  bscTeamHint: v.optional(v.string()),
+  // ── NEO-335: the operator's pre-save title answer, INSERTS only ──────────
+  // See `previewCardFields.listingTitle` / `listingTitleKept`. The action
+  // sends them only for a card with no `existingId`; the insert branch
+  // re-caps the title (the writer caps) and the update branch never reads
+  // them.
+  listingTitle: v.optional(v.string()),
+  listingTitleKept: v.optional(v.string()),
 });
 
 /**
@@ -18127,6 +18653,10 @@ export const commitCardChecklistChunk = internalMutation({
     // so a caller that predates this is unchanged: absent means "the brand is
     // known", which is what every row said before the flag existed.
     manufacturerBrandUnknown: v.optional(v.boolean()),
+    // NEO-335 — the chain's title facts, resolved once by the prelude (after
+    // the commit's own short name was written). All optional: absent is the
+    // title every card had before them.
+    ...titleChainFactsFields,
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     // ── NEO-221: names this commit SETTLED, commit-wide ───────────────────
     //
@@ -18147,6 +18677,12 @@ export const commitCardChecklistChunk = internalMutation({
     resolvedTeamNames: v.optional(v.array(v.string())),
     skippedPlayerNames: v.optional(v.array(v.string())),
     skippedTeamNames: v.optional(v.array(v.string())),
+    // NEO-335 — the committing admin, from the action's `requireAdmin`. Stamped
+    // as `teamNoneConfirmedByUserId` on a card the operator answered "No team
+    // on this card" for, exactly as `cardChecklist.confirmCardNoTeam` stamps
+    // it. Absent means no such answer is honoured: the flag is never written
+    // without the operator it belongs to.
+    operatorUserId: v.optional(v.string()),
   },
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
@@ -18350,11 +18886,43 @@ export const commitCardChecklistChunk = internalMutation({
         // this phase runs) never touches the flag, and a sync whose card
         // carries no teams never touches it either — an empty upstream answer
         // is not evidence against a human's answer, it is what produced the
-        // question. Nothing in the commit path ever SETS the flag; that is
-        // `cardChecklist.confirmCardNoTeam`'s job alone.
+        // question. NEO-335: the commit path SETS the flag in exactly one
+        // place — an operator's pre-save "No team on this card"
+        // (`settleCardTeamAnswer`), stamped as the committing admin and never
+        // over an existing ruling — and an operator's pre-save team pick
+        // never retires it (see `operatorFill` below).
         const teamIdsWritten = Array.isArray(contentPatch.teamOnCardIds)
           ? (contentPatch.teamOnCardIds as Array<Id<"teams">>)
           : undefined;
+
+        // ── NEO-335: the operator's own team pick fills an EMPTY row ────────
+        //
+        // `operatorTeamIds` are NB teams the operator chose for this card in
+        // the wizard, validated by the action before any phase wrote. They
+        // are an operator decision, not marketplace content, so they do not
+        // need `applyFields` — but they only ever FILL: a row that will carry
+        // a team after this patch (its own, or an accepted change) keeps it,
+        // and nothing here overwrites one NB team with another.
+        //
+        // Nor do they fill a row an operator already RULED teamless
+        // (`teamNoneConfirmedAt`). That ruling is an answer to this exact
+        // question, made on the row itself; a pick in a later wizard was made
+        // without it on screen (the section does not ask about a ruled row),
+        // so it is not evidence against it. Undoing a ruling is the fixer's
+        // job (`MissingTeamFixer`), where the ruling is what the operator is
+        // looking at.
+        const teamIdsBeforeFill =
+          teamIdsWritten !== undefined ? teamIdsWritten : existing.teamOnCardIds;
+        const operatorFill =
+          existing.teamNoneConfirmedAt === undefined &&
+          (teamIdsBeforeFill?.length ?? 0) === 0 &&
+          (card.operatorTeamIds?.length ?? 0) > 0
+            ? card.operatorTeamIds
+            : undefined;
+
+        // Only an ACCEPTED content change retires the ruling — see the
+        // NEO-102 note above. `operatorFill` cannot: it never runs on a ruled
+        // row.
         const retireNoneConfirmed =
           existing.teamNoneConfirmedAt !== undefined &&
           teamIdsWritten !== undefined &&
@@ -18466,8 +19034,40 @@ export const commitCardChecklistChunk = internalMutation({
         droppedPendingNameCount +=
           nextPendingPlayers.dropped + nextPendingTeams.dropped;
 
+        // Enrichment keys off what the row will actually HAVE after this
+        // patch, not off what the marketplace sent: when content was not
+        // applied, the stored teams are still the row's answer.
+        const effectiveTeamIds = operatorFill ?? teamIdsBeforeFill;
+        // NEO-102: and never re-derive a team for a card an operator settled
+        // as teamless. Read off what the row will HAVE after this patch, like
+        // `effectiveTeamIds` above — a commit that just retired the flag
+        // (because it wrote real teams) is not suppressed by it, and one that
+        // left it standing is.
+        const noneConfirmedAfter = retireNoneConfirmed
+          ? undefined
+          : existing.teamNoneConfirmedAt;
+        const pendingTeamsAfter = nextPendingTeams.changed
+          ? nextPendingTeams.next
+          : existing.pendingTeamNames;
+        const teamAnswer = settleCardTeamAnswer({
+          hasTeam: (effectiveTeamIds?.length ?? 0) > 0,
+          hasPendingTeam: (pendingTeamsAfter?.length ?? 0) > 0,
+          hasBscRef: !!mergedPlatformData.bsc,
+          noneConfirmed: !!noneConfirmedAfter,
+          teamCheckDone: !!existing.teamCheckDoneAt,
+          teamNone: card.teamNone === true,
+          teamLookup: card.teamLookup,
+          bscTeamHint: card.bscTeamHint,
+          operatorUserId: args.operatorUserId,
+          now: Date.now(),
+        });
+
         await ctx.db.patch(existing._id, {
           ...contentPatch,
+          ...(operatorFill ? { teamOnCardIds: operatorFill } : {}),
+          // NEO-335 — the stamps the operator's pre-save answer (or BSC's
+          // fetch-time answer) earned. Empty on every card that has a team.
+          ...teamAnswer.fields,
           // Patching `undefined` is how Convex deletes a field. Spread only
           // when it applies, so an untouched row's patch is byte-identical to
           // what it was before this feature existed.
@@ -18507,29 +19107,7 @@ export const commitCardChecklistChunk = internalMutation({
             await cardSport(),
           );
         }
-        // Enrichment keys off what the row will actually HAVE after this
-        // patch, not off what the marketplace sent: when content was not
-        // applied, the stored teams are still the row's answer.
-        const effectiveTeamIds =
-          contentPatch.teamOnCardIds !== undefined
-            ? card.teamOnCardIds
-            : existing.teamOnCardIds;
-        // NEO-102: and never re-derive a team for a card an operator settled
-        // as teamless. Read off what the row will HAVE after this patch, like
-        // `effectiveTeamIds` above — a commit that just retired the flag
-        // (because it wrote real teams) is not suppressed by it, and one that
-        // left it standing is.
-        const noneConfirmedAfter = retireNoneConfirmed
-          ? undefined
-          : existing.teamNoneConfirmedAt;
-        if (
-          mergedPlatformData.bsc &&
-          (!effectiveTeamIds || effectiveTeamIds.length === 0) &&
-          !existing.teamCheckDoneAt &&
-          !noneConfirmedAfter
-        ) {
-          bscTeamEnrichmentIds.push(existing._id);
-        }
+        if (teamAnswer.enqueue) bscTeamEnrichmentIds.push(existing._id);
       } else {
         // NEO-246 — see the note beside where these are spread in
         // `buildCardRowForInsert`. The payload's lists are already trimmed,
@@ -18570,6 +19148,36 @@ export const commitCardChecklistChunk = internalMutation({
         const insertTeamNames = bornTeams.defaulted
           ? leafTeamNames
           : card.teamNames;
+        // NEO-335 — the operator's pre-save answer, or BSC's fetch-time one.
+        // Decided after the leaf default, so a card that inherits the set's
+        // team is a card WITH a team: teams win over "No team on this card".
+        const insertTeamAnswer = settleCardTeamAnswer({
+          hasTeam: (insertTeamOnCardIds?.length ?? 0) > 0,
+          hasPendingTeam: insertPendingTeamNames.length > 0,
+          hasBscRef: !!card.platformData?.bsc,
+          noneConfirmed: false,
+          teamCheckDone: false,
+          teamNone: card.teamNone === true,
+          teamLookup: card.teamLookup,
+          bscTeamHint: card.bscTeamHint,
+          operatorUserId: args.operatorUserId,
+          now: Date.now(),
+        });
+
+        // NEO-335 — the operator's pre-save title answer. The action already
+        // refused an over-cap one before any phase wrote; capped again here
+        // because this is the writer (`checkTitleAnswer`).
+        let insertTitleAnswer: { listingTitle?: string; listingTitleKept?: string } = {};
+        try {
+          insertTitleAnswer = checkTitleAnswer(
+            { listingTitle: card.listingTitle, listingTitleKept: card.listingTitleKept },
+            `card #${card.cardNumber}`,
+          );
+        } catch (error) {
+          throw new ConvexError(
+            error instanceof Error ? error.message : "Card title is too long.",
+          );
+        }
 
         // NEO-312 — the row itself (features, Signed By, the write-once
         // listing title and description, the SKU) is built by the helper the
@@ -18599,6 +19207,20 @@ export const commitCardChecklistChunk = internalMutation({
             // card.
             playerNames: card.playerNames,
             teamNames: insertTeamNames,
+            // NEO-335 — written with the row rather than patched after it, so
+            // an answered card costs this chunk no extra operation.
+            ...(Object.keys(insertTeamAnswer.fields).length > 0
+              ? { carried: insertTeamAnswer.fields }
+              : {}),
+            // NEO-335 — the "Card titles" answer: the operator's own title,
+            // or the trimmed one kept. Absent on every card nobody answered,
+            // so its row is exactly what it was before.
+            ...(insertTitleAnswer.listingTitle
+              ? { listingTitle: insertTitleAnswer.listingTitle }
+              : {}),
+            ...(insertTitleAnswer.listingTitleKept
+              ? { listingTitleKept: insertTitleAnswer.listingTitleKept }
+              : {}),
           },
           {
             sportSkuCode: args.sportSkuCode,
@@ -18606,18 +19228,18 @@ export const commitCardChecklistChunk = internalMutation({
             setNameValue: args.setNameValue,
             manufacturerBrandUnknown: args.manufacturerBrandUnknown,
             inheritedFeatures: args.inheritedFeatures,
+            // NEO-335 — the insert role, a parallel leaf, the short name.
+            insertNameValue: args.insertNameValue,
+            insertIsRole: args.insertIsRole,
+            parallelLeafValue: args.parallelLeafValue,
+            listingShortName: args.listingShortName,
           },
           // NEO-313 — the new card's player index, kept inside
           // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
           { sport: cardSport },
         );
         storedIds.push(newCardId);
-        if (
-          card.platformData?.bsc &&
-          (!insertTeamOnCardIds || insertTeamOnCardIds.length === 0)
-        ) {
-          bscTeamEnrichmentIds.push(newCardId);
-        }
+        if (insertTeamAnswer.enqueue) bscTeamEnrichmentIds.push(newCardId);
       }
     }
 
@@ -20709,6 +21331,69 @@ export const auditChecklistDataForResync = internalQuery({
  * running. Those belong in finalize, which is one transaction and therefore
  * still atomic in itself.
  */
+/**
+ * NEO-335 — how many distinct operator-chosen team ids one validation read
+ * covers. A read per id; well under a query's budget, and a real commit names
+ * a handful of distinct teams, so one page is the normal case.
+ */
+const OPERATOR_TEAM_IDS_PER_PAGE = 500;
+
+/**
+ * NEO-335 — check the NB team ids an operator picked in the wizard before the
+ * commit writes anything.
+ *
+ * `teamIds` on a preview card is a CLIENT-chosen id, so it is re-read here:
+ *
+ *  - a team that no longer exists (deleted between the pick and the save) is
+ *    DROPPED and counted: the card simply stays teamless, which the
+ *    missing-team lane already handles, and one stale pick must not cost the
+ *    operator a 900-card review;
+ *  - a team from ANOTHER SPORT is counted as foreign, and the action REFUSES
+ *    the commit — the house rule `entityReviewQueue`'s link step applies
+ *    ("Linked team's sport … doesn't match"). That is not a stale render but a
+ *    client offering a choice it was never shown;
+ *  - with no sport resolvable for the row nothing can be verified, so every id
+ *    is reported foreign — fail closed, never written unverified.
+ *
+ * The sport is walked from the row server-side, never taken from the action's
+ * `sportId` argument, which is itself client-supplied.
+ */
+export const validateOperatorTeamIds = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    teamIds: v.array(v.id("teams")),
+  },
+  returns: v.object({
+    teams: v.array(v.object({ id: v.id("teams"), name: v.string() })),
+    missing: v.number(),
+    foreignSport: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.teamIds.length > OPERATOR_TEAM_IDS_PER_PAGE) {
+      throw new Error(
+        `validateOperatorTeamIds: ${args.teamIds.length} ids exceeds the ${OPERATOR_TEAM_IDS_PER_PAGE}-id page`,
+      );
+    }
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    const teams: Array<{ id: Id<"teams">; name: string }> = [];
+    let missing = 0;
+    let foreignSport = 0;
+    for (const id of new Set(args.teamIds)) {
+      const team = await ctx.db.get(id);
+      if (!team) {
+        missing++;
+        continue;
+      }
+      if (!sportId || team.sportId !== sportId) {
+        foreignSport++;
+        continue;
+      }
+      teams.push({ id, name: teamFullName(team) });
+    }
+    return { teams, missing, foreignSport };
+  },
+});
+
 export const commitCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -20724,6 +21409,13 @@ export const commitCardChecklist = action({
     // dropping a card never deletes anything on its own — see the note on
     // `commitCardChecklistFinalize`.
     operatorDeleteIds: v.optional(v.array(v.id("cardChecklist"))),
+    /**
+     * NEO-335 — the short name for titles the wizard's Card titles step
+     * collected, for the WHOLE batch (one set, one name). Checked before any
+     * phase writes; written onto the leaf row by the prelude before any chunk
+     * titles a card. Absent or blank writes nothing.
+     */
+    listingShortName: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -20787,7 +21479,9 @@ export const commitCardChecklist = action({
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
-    await requireAdmin(ctx);
+    // NEO-335: the id is kept — it is who a "No team on this card" answer is
+    // stamped as, the same audit column `confirmCardNoTeam` writes.
+    const operatorUserId = await requireAdmin(ctx);
     // Still the cap on the TOTAL commit, not on a chunk. Chunking raises the
     // per-transaction ceiling, not the per-commit one: the prelude is still
     // O(distinct names) in a single transaction.
@@ -20813,6 +21507,35 @@ export const commitCardChecklist = action({
         } still carries an unsettled players conflict. Settle it in the pairing dialog before committing.`,
       );
     }
+    // NEO-335 — the "Card titles" answers, held to the write path's caps before
+    // ANY phase writes: the title to LISTING_TITLE_MAX (`updateCard`'s rule),
+    // an answered variation to ASPECT_VALUE_MAX (the cap the step asked the
+    // operator to trim it to). The step never sends either over its cap, so a
+    // refusal here is a client that skipped it. Named by NB's card number.
+    for (const [index, card] of args.cards.entries()) {
+      try {
+        checkTitleAnswer(
+          card,
+          `commitCardChecklist: ${
+            card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+          }`,
+        );
+      } catch (error) {
+        throw new ConvexError(
+          error instanceof Error ? error.message : "commitCardChecklist: card title is too long.",
+        );
+      }
+    }
+    // NEO-335 — the Card titles step's short name, held to its rule (trim,
+    // no control or invisible characters, `MAX_LISTING_SHORT_NAME_LENGTH`)
+    // before ANY phase writes, so a refusal costs the operator nothing. The
+    // step never sends an invalid one; a refusal here is a client that
+    // skipped it. The prelude re-checks — it is separately callable.
+    const listingShortName =
+      args.listingShortName === undefined
+        ? undefined
+        : normalizeListingShortName(args.listingShortName);
+
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];
@@ -20820,6 +21543,48 @@ export const commitCardChecklist = action({
       throw new ConvexError(
         `commitCardChecklist: ${operatorDeleteIds.length} operatorDeleteIds exceeds the ${MAX_OPERATOR_DELETE_IDS} limit for a single commit`,
       );
+    }
+
+    // NEO-335 — the operator's picked team ids, validated before ANY phase
+    // writes, so a refusal costs nothing. See `validateOperatorTeamIds`.
+    const operatorTeamNameById = new Map<string, string>();
+    {
+      const distinct = Array.from(
+        new Set(args.cards.flatMap((c) => c.teamIds ?? [])),
+      );
+      let missing = 0;
+      let foreignSport = 0;
+      for (let i = 0; i < distinct.length; i += OPERATOR_TEAM_IDS_PER_PAGE) {
+        const page: {
+          teams: Array<{ id: Id<"teams">; name: string }>;
+          missing: number;
+          foreignSport: number;
+        } = await ctx.runQuery(
+          internal.selectorOptions.validateOperatorTeamIds,
+          {
+            selectorOptionId: args.selectorOptionId,
+            teamIds: distinct.slice(i, i + OPERATOR_TEAM_IDS_PER_PAGE),
+          },
+        );
+        for (const t of page.teams) operatorTeamNameById.set(t.id, t.name);
+        missing += page.missing;
+        foreignSport += page.foreignSport;
+      }
+      if (foreignSport > 0) {
+        throw new ConvexError(
+          `commitCardChecklist: ${foreignSport} chosen team(s) belong to another sport or could not be checked against this set's sport. Pick the teams again and save.`,
+        );
+      }
+      if (missing > 0) {
+        // Counts only. The cards keep no team from a pick that vanished.
+        console.warn(
+          JSON.stringify({
+            msg: "commit_operator_team_ids_missing",
+            selectorOptionId: args.selectorOptionId,
+            missing,
+          }),
+        );
+      }
     }
 
     // Run one phase: retry an optimistic-concurrency conflict a bounded number
@@ -20924,6 +21689,8 @@ export const commitCardChecklist = action({
         ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
       ),
       batchId: args.batchId,
+      // NEO-335 — written by the page that opens the commit, read by all.
+      ...(listingShortName ? { listingShortName } : {}),
     };
     /** Walk one phase to the end, returning every page it produced. */
     const walkPrelude = async (
@@ -21051,6 +21818,13 @@ export const commitCardChecklist = action({
     // counting it would tell the operator "3 names were not reviewed" about a
     // commit that stamped two.
     const stampedUnreviewedNames = new Set<string>();
+    // NEO-330 × NEO-335 — the names this set's operator ruled "not a team",
+    // this commit's skips and an earlier save's alike (`isStoredSkip`), keyed
+    // as `entityReviewSkips` keys them. A ruled-out name is never kept as the
+    // card's listing hint: see `commitTeamHint`.
+    const skippedTeamKeys = new Set(
+      prelude.skippedTeamNames.map((n) => normalizeEntityName(n)),
+    );
     // ── NEO-203: which existing row each incoming card updates ──────────────
     const match = resolveExistingIds(args.cards, prelude);
     const conflictIndices = new Set(match.conflicts.map((c) => c.index));
@@ -21112,11 +21886,40 @@ export const commitCardChecklist = action({
           playerLinks.push({ playerId: id, nameOnCard });
         }
       }
-      const teamOnCardIds: Array<Id<"teams">> = [];
+      let teamOnCardIds: Array<Id<"teams">> = [];
       const teamSources = c.teams?.length ? c.teams : c.team ? [c.team] : [];
       for (const t of teamSources) {
         const id = teamIdByName.get(t.trim());
         if (id) teamOnCardIds.push(id);
+      }
+      // NEO-335 — the operator's answer for this card, as NB team ids:
+      //  - `teamIds` they picked, validated above (a vanished team dropped);
+      //  - and, when `teamsAnswered`, whatever the card's team STRINGS just
+      //    resolved to — those strings ARE the answer (a team staged in this
+      //    review and created by the prelude, or a sibling's printed team),
+      //    resolved by the same `teamIdByName` every printed team goes
+      //    through. A card that was not answered contributes nothing here:
+      //    its strings are marketplace content and stay under `applyFields`.
+      // Kept apart from `teamOnCardIds` so the chunk can FILL an existing
+      // teamless row with them (`operatorTeamIds`), which it never does with
+      // marketplace content.
+      let operatorTeamIds: Array<Id<"teams">> = Array.from(
+        new Set([
+          ...(c.teamIds ?? []).filter((id) => operatorTeamNameById.has(id)),
+          ...(c.teamsAnswered === true ? teamOnCardIds : []),
+        ]),
+      );
+      if (operatorTeamIds.length > 0) {
+        // Operator picks FIRST, then the printed names, then the cap — so a
+        // pick is never the one the per-card cap cuts. Deduped; a card with
+        // no answer takes none of this, so its ids are exactly what they
+        // were before the field existed.
+        teamOnCardIds = Array.from(
+          new Set([...operatorTeamIds, ...teamOnCardIds]),
+        ).slice(0, MAX_CARD_TEAMS);
+        // And only the picks that survived the cap travel on as picks.
+        const kept = new Set<string>(teamOnCardIds);
+        operatorTeamIds = operatorTeamIds.filter((id) => kept.has(id));
       }
       // NEO-221 — this card's share of the commit's unreviewed names. Deduped
       // because one card can list the same name twice (a two-player card whose
@@ -21154,6 +21957,34 @@ export const commitCardChecklist = action({
       // What the operator is actually told about — see `stampedUnreviewedNames`.
       for (const n of pendingPlayerNames) stampedUnreviewedNames.add(n);
       for (const n of pendingTeamNames) stampedUnreviewedNames.add(n);
+      // NEO-335 — the card's team string that reached commit resolving to
+      // nothing and pending nothing. Only offered to the chunk as a HINT for
+      // an answered card with no team (see `settleCardTeamAnswer`); it is
+      // never a team and never matched on.
+      //
+      // The SAME hint `applyBscTeamResolution` keeps for the same card, so
+      // "Listed as:" reads alike whichever path settled it: BSC's raw value
+      // as the lookup returned it (`rawTeamName` — a split card whose parts
+      // were all skipped, or one whose split was refused over the cap and so
+      // carries no `teams` at all), else the card's team strings joined the
+      // way that mutation joins its parts when it has no raw string. Never
+      // the first part alone: that names one team of a card listed as two.
+      //
+      // NEO-330 — minus every name the operator ruled "not a team"
+      // (`commitTeamHint`), exactly as `applyBscTeamResolution` drops them.
+      const bscTeamHint =
+        c.teamLookup === "answered" &&
+        teamOnCardIds.length === 0 &&
+        pendingTeamNames.length === 0
+          ? commitTeamHint(c.rawTeamName, teamSources, skippedTeamKeys)
+          : undefined;
+      // "No team on this card" — teams win. A card carrying any team id or a
+      // pending team name drops the answer here; the chunk drops it again if
+      // the leaf's set-level team fills the card on insert.
+      const teamNone =
+        c.teamNone === true &&
+        teamOnCardIds.length === 0 &&
+        pendingTeamNames.length === 0;
       // Reconciliation markers live in `attributes` so they are visible on the
       // card itself, not only in a log. NEO-203 adds `ref-collision`: this
       // card resolved to a row another incoming card had already claimed, so
@@ -21181,7 +22012,12 @@ export const commitCardChecklist = action({
           isRelic: c.isRelic,
           printRun: c.printRun,
           autographType: c.autographType,
-          cardVariation: c.cardVariation,
+          // NEO-335 — an operator-trimmed variation ("Card titles") is stored
+          // trimmed, exactly as it was checked against the cap above.
+          cardVariation:
+            c.cardVariationAnswered === true && c.cardVariation?.trim()
+              ? c.cardVariation.trim()
+              : c.cardVariation,
           // NEO-137: WIRE shape here (marketplace set ids); the chunk resolves
           // it to slots so a stored card's `src` always names a slot on its own
           // parent row.
@@ -21193,7 +22029,11 @@ export const commitCardChecklist = action({
           // NEO-101: in the same stored order as `teamOnCardIds`, so the title
           // names teams the way the card does.
           teamNames: teamOnCardIds
-            .map((id) => teamNameById.get(id as string))
+            .map(
+              (id) =>
+                teamNameById.get(id as string) ??
+                operatorTeamNameById.get(id as string),
+            )
             .filter((n): n is string => n !== undefined),
           // NEO-221 — absent rather than empty, so the chunk's insert branch
           // omits the field entirely on the common fully-reviewed commit.
@@ -21208,6 +22048,22 @@ export const commitCardChecklist = action({
           // nothing here is trusted, it is only proposed.
           applyFields: c.applyFields,
           baseVersion: c.baseVersion,
+          // NEO-335 — see `commitChunkCardValidator`. Spread only when present
+          // so a card nobody answered is byte-identical to before.
+          ...(operatorTeamIds.length > 0 ? { operatorTeamIds } : {}),
+          ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
+          ...(teamNone ? { teamNone: true as const } : {}),
+          ...(bscTeamHint ? { bscTeamHint } : {}),
+          // NEO-335 — the "Card titles" answer, for a card this commit
+          // INSERTS only: a re-synced row's title is NB content the step never
+          // asked about. Trimmed (and checked above); an empty title is no
+          // answer.
+          ...(match.existingIdByIndex[index] === undefined && c.listingTitle?.trim()
+            ? { listingTitle: c.listingTitle.trim() }
+            : {}),
+          ...(match.existingIdByIndex[index] === undefined && c.listingTitleKept?.trim()
+            ? { listingTitleKept: c.listingTitleKept.trim() }
+            : {}),
         },
       };
     });
@@ -21252,6 +22108,11 @@ export const commitCardChecklist = action({
             // NEO-272 — see the prelude's returns validator.
             manufacturerBrandUnknown: prelude.manufacturerBrandUnknown,
             inheritedFeatures: prelude.inheritedFeatures,
+            // NEO-335 — the chain's title facts, from the same last page.
+            insertNameValue: prelude.insertNameValue,
+            insertIsRole: prelude.insertIsRole,
+            parallelLeafValue: prelude.parallelLeafValue,
+            listingShortName: prelude.listingShortName,
             // NEO-221 — the names this commit settled, so the chunk's update
             // branch retires only what it is entitled to. The same two lists
             // the finalize phase is handed below.
@@ -21259,6 +22120,8 @@ export const commitCardChecklist = action({
             resolvedTeamNames: Array.from(teamIdByName.keys()),
             skippedPlayerNames: prelude.skippedPlayerNames,
             skippedTeamNames: prelude.skippedTeamNames,
+            // NEO-335 — who a "No team on this card" answer is stamped as.
+            operatorUserId,
           }),
       );
       // The chunk returns one stored id per card it was given, in order.

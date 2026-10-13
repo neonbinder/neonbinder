@@ -82,20 +82,25 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
     }),
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(
-        v.string(),
-        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      // NEO-335 shape: one entry per requested id with the lookup's own
+      // success flag. A ref absent from `teamsByRef` ANSWERED with no team.
+      returns: v.array(
+        v.object({
+          bscCardId: v.string(),
+          rawTeamName: v.string(),
+          teamNames: v.array(v.string()),
+          success: v.boolean(),
+        }),
       ),
       handler: async (_ctx, args) => {
         if (mockState.lookupThrows) throw new Error("BuySportsCards is down");
         mockState.lookedUp.push(...args.bscCardIds);
-        const out: Record<string, { rawTeamName: string; teamNames: string[] }> =
-          {};
-        for (const id of args.bscCardIds) {
-          const found = mockState.teamsByRef[id];
-          if (found) out[id] = found;
-        }
-        return out;
+        return args.bscCardIds.map((bscCardId) => ({
+          bscCardId,
+          rawTeamName: mockState.teamsByRef[bscCardId]?.rawTeamName ?? "",
+          teamNames: mockState.teamsByRef[bscCardId]?.teamNames ?? [],
+          success: true,
+        }));
       },
     }),
   };

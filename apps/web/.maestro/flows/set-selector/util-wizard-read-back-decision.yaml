@@ -1,0 +1,124 @@
+appId: com.neonbinder.web
+name: "Utility — read the decision just made back off its own row, then (optionally) walk on"
+tags:
+  - util
+---
+# ════════════════════════════════════════════════════════════════════════════
+# WHY THIS EXISTS — the "Decided (N)" history is not a read-back a flow can use
+#
+# A decision moves the walk straight to the next row, so a flow that wants to
+# prove WHAT it decided ("Linked to Shohei Ohtani", "Skipped", "Added as new")
+# has to read it somewhere. The flows used to read it off the "Decided (N)"
+# list at the bottom of the wizard's body. That list:
+#
+#   • is in BATCH order, not decision order (`decidedRows = rows.filter(...)`);
+#   • is COLLAPSED past five entries (`DECIDED_LIST_INLINE_MAX`), so an operator
+#     cannot see any of it on these fixtures (30+ drained team steps);
+#   • is still reported by maestro-web while collapsed and while clipped under
+#     the footer, because Maestro prunes by the 1024×629 viewport only
+#     (memory: inner-scroller-clip-is-invisible-to-maestro).
+#
+# So those asserts passed only while the flow's row happened to be among the
+# first ~5 rows of the batch: before NEO-335's `resolveNav` change the walk
+# left the teams tier for the batch's FIRST player (Austin Hays on Topps Big
+# League), whose line sat at y≈485-600. Since 10fbd26 a decided staged career
+# team hands the walk back to the player it was staged for, so the walk lands
+# on e.g. Roberto Clemente, whose line is ~30 rows down: CI run 38198207277,
+# three flows red on a decision that HAD landed ("Step 35 of 124",
+# "Decided (34)"). The merged nav (#314's `returnTo`, returning only to an
+# origin the operator edited) puts the walk back in batch order, but the list
+# is still batch-ordered and collapsed, so the rule stands.
+#
+# ── WHAT THIS DOES INSTEAD ──────────────────────────────────────────────────
+# The footer's "Back" (accessible name "Back to previous decision") presents
+# the most recent decision read-only (`presentDecided`), in a panel named
+# "Decision for <name>" that reads "Already decided: <decision>" — the same
+# `describeDecision` string the history uses, rendered for exactly the row the
+# operator last decided, and the ONLY "Decision for …" node on screen while it
+# is up (the footer's decision group of that name renders only when
+# `!reviewingDecided`). The body opens at its top on every row change
+# (`scrollScreenKey`), so this is what an operator sees after pressing Back.
+#
+# ── WHEN THAT DECISION WAS THE LAST NAME ────────────────────────────────────
+# With every name decided the wizard walks straight on to its first post-name
+# step ("Cards with no team" / "Card titles", NEO-335 Phase 2), whose footer
+# Back is a different control: accessible name "Back to previous step", which
+# from the FIRST post-name step presents the last name decided
+# (`goToPreviousStep` → `presentDecided(backTargetId)`). The reference
+# catalogue makes that common: a shared fixture like Topps Big League now
+# stages ONE name (CI run 38302511049 attempt 2, three flows red on
+# `Back to previous decision` / "Added as new" while the wizard sat on
+# "Cards with no team", Step 2 of 3). So the tap takes either Back, and the
+# RESUME exit accepts either a name step or the names-done footer.
+#
+# ── CONTRACT ────────────────────────────────────────────────────────────────
+#   ENTRY  a decision has just been made on a name step; the walk has moved
+#          on to the next name step or, if that was the last name, to the
+#          first post-name step. Either footer offers "Back".
+#   ENV    DECISION — a full-match regex for the decision line ("Skipped",
+#                     "Added as new", "Linked to Shohei Ohtani").
+#          RESUME   — "true" to press the panel's "Next" afterwards, handing
+#                     the walk back its own rule (`resumeWalking`). Callers
+#                     that leave the wizard next (Cancel → Discard) omit it.
+#   EXIT   RESUME: the panel is gone and a name step is presented again
+#          (its footer skip control is up), or, when every name is decided,
+#          the names-done footer ("Next (Enter)" / Confirm & Save). Otherwise:
+#          the panel, still up.
+#
+# ── NEXT CAN SIT UNDER THE FOOTER ───────────────────────────────────────────
+#   "Next" is the panel's last control, and the panel follows the row's career
+#   chips, so on a tall player row it can sit below the body's visible slice
+#   (y≈96-475) — and Maestro still reports it there. At its x (~350) the
+#   footer has nothing in reviewing mode (no decision group; "Back to Match
+#   Cards" starts at x=561), so a tap that lands under the footer changes
+#   nothing. The panel still being up afterwards IS the proof that the body is
+#   taller than its slice, which is the one case where a touch drag latches to
+#   the BODY rather than chaining to the page behind the dialog (memory:
+#   touch-swipe-scrolls-a-dialog-body). So the drag runs only then: one UP drag
+#   pins the body to its end, where Next sits above the Decided disclosure,
+#   and the tap is repeated. Never a blind drag up front.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Back to previous (decision|step)"
+# Our own client state (`presentDecided`) and a name `useQuery` already holds:
+# the R5 bar.
+- extendedWaitUntil:
+    visible:
+      text: "${DECISION}"
+      childOf:
+        id: "Decision for .*"
+    timeout: 7000
+
+- runFlow:
+    when:
+      true: '${typeof RESUME === "string" && RESUME === "true"}'
+    commands:
+      - tapOn:
+          text: "Next"
+          childOf:
+            id: "Decision for .*"
+      - runFlow:
+          when:
+            visible: "Already decided:.*"
+          commands:
+            - swipe:
+                start: "18%, 70%"
+                end: "18%, 20%"
+                duration: 600
+            - tapOn:
+                text: "Next"
+                childOf:
+                  id: "Decision for .*"
+      - extendedWaitUntil:
+          notVisible: "Already decided:.*"
+          timeout: 7000
+      # The positive half (a negative alone passes on a dead page): a name
+      # step is presented again, by its footer skip control's visible text
+      # ("Skip — not a person|team", "Skip — no league"), or every name is
+      # decided and the names-done footer is up. One TEXT matcher, because
+      # "Next (Enter)" has no accessible name of its own.
+      - extendedWaitUntil:
+          visible:
+            text: "Skip . (not a (person|team)|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000

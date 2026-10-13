@@ -11,20 +11,24 @@ tags:
 # person" and creates NOTHING.
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the per-row control is bound to a REAL queued row (its accessible name
 #         composes the row's own name) AND says what it does ("Skip — not a
 #         person"). Two different claims; neither is a duplicate of the other;
-#     (c) one tap records exactly ONE decision — the header's "K of N
-#         reviewed" moves by exactly one (K is wherever the walk left it). A
-#         control that rendered but wrote nothing leaves it where it was;
+#     (c) one tap records exactly ONE decision — the header's "Step x of y"
+#         counter moves x by exactly one (on a name step x is the decided count
+#         plus one; x is wherever the walk left it). A control that rendered
+#         but wrote nothing leaves it where it was;
 #     (d) "Skip remaining names" decides every row that is left, INCLUDING ones whose
-#         Wikidata lookup has not come back. "Confirm & Save" renders only once
-#         EVERY row carries a decision (`allDecided`), so its appearance IS that
-#         assertion — and the bulk links unmount at the same moment, which is
-#         the same fact read the other way round. The all-decided summary then
-#         lists skips and no create or link, so the per-row decision in (c)
-#         was a skip too.
+#         Wikidata lookup has not come back. The wizard leaves its name steps
+#         for the post-name steps only once EVERY row carries a decision
+#         (`allDecided`), and their footer is "Next (Enter)" (teams / titles)
+#         or "Confirm & Save" (Save) — NEO-335 Phase 2 — so that footer's
+#         appearance IS that assertion; the bulk links unmount at the same
+#         moment, which is the same fact read the other way round. The Save
+#         step's summary then lists skips and no create or link, so the
+#         per-row decision in (c) was a skip too.
 #
 # ── WHAT THIS FLOW DOES NOT COVER, AND WHO DOES ─────────────────────────────
 #   The "Skipped names" panel and its Unskip live behind a COMMIT: skip records
@@ -81,7 +85,7 @@ tags:
 # ============================================================
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 2 — R2(b): the skip control, said both ways
@@ -129,21 +133,21 @@ tags:
 # ============================================================
 
 # The HEADER is the counter (README → "Asserting inside a dialog: header and
-# footer only"): `N of M reviewed` counts the same rows as the body's Decided
-# list, and it is pinned on screen. The walk may already have answered staged
-# team steps, so read where it left the count and require exactly one more.
+# footer only"): `Step x of y` (NEO-335 Phase 2) is pinned on screen, and on a
+# name step x is the decided count plus one. The walk may already have
+# answered staged team steps, so read where it left x and require exactly one
+# more. Pin x, not y: y grows as staged steps arrive (README).
 - copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
-- evalScript: '${output.DECIDED_BEFORE = Number(maestro.copiedText.match(/^([0-9]+) of ([0-9]+)/)[1])}'
-- evalScript: '${output.TOTAL = maestro.copiedText.match(/^([0-9]+) of ([0-9]+)/)[2]}'
+    text: "Step [0-9]+ of [0-9]+"
+- evalScript: '${output.STEP_BEFORE = Number(maestro.copiedText.match(/^Step ([0-9]+)/)[1])}'
 - tapOn:
     id: "Skip .* not a (person|team)"
-# Exactly ONE decision: the count moved by one and the total did not move.
-# A control that rendered but wrote nothing leaves the count where it was.
-# Our own mutation answering — 7000 (R5).
+# Exactly ONE decision: x moved by one. "Step 5 of …" is a full match, so it
+# cannot answer for "Step 15 of …". A control that rendered but wrote nothing
+# leaves x where it was. Our own mutation answering — 7000 (R5).
 - extendedWaitUntil:
     visible:
-      text: "${output.DECIDED_BEFORE + 1} of ${output.TOTAL} reviewed.*"
+      text: "Step ${output.STEP_BEFORE + 1} of [0-9]+"
     timeout: 7000
 
 # ============================================================
@@ -158,18 +162,21 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 120000
 # The same fact read the other way round: the bulk links render only while a
 # row is still undecided, so their absence is `allDecided` confirming itself.
 - assertNotVisible:
     text: ".*Skip remaining names \\([0-9]+\\).*"
-# ...and every decision is a SKIP, the per-row one included. The all-decided
-# summary sits at the TOP of the body and lists only non-zero outcomes
-# (`summaryRows`; "Cards to save" always): "Skipped as not a name" present,
-# "New players and teams" and "Linked to existing" absent means no row was
-# created or linked. With STEP 3's "exactly one decision", the per-row tap's
-# decision was a skip.
+# ...and every decision is a SKIP, the per-row one included. Since NEO-335
+# Phase 2 the all-decided summary lives on the SAVE step ("Ready to save",
+# heading "Save N cards?"), at the top of its short body, and lists only
+# non-zero outcomes (`summaryRows`; "Cards to save" always). Walk to it past
+# any teams / titles step, leaving their defaults (nothing is saved: STEP 5
+# cancels). "Skipped as not a name" present, "New players and teams" and
+# "Linked to existing" absent means no row was created or linked. With STEP
+# 3's "exactly one decision", the per-row tap's decision was a skip.
+- runFlow: util-wizard-advance-to-save.yaml
 - assertVisible:
     text: "Skipped as not a name"
 - assertNotVisible:
@@ -180,7 +187,8 @@ tags:
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
 #
-# Every row is decided now, so the confirm names them all. The count is a
+# Every row is decided now, so the confirm names them all. Cancel (Esc) is in
+# the footer on every step, the Save step included. The count is a
 # regex and plural: it is the fixture's unknown total (16 when measured), which
 # is the marketplace's business, not this flow's claim.
 # ============================================================

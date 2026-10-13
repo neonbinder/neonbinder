@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "2024 Topps Chrome Insert — fetching an insert whose whole roster NB already holds saves every card with no entity review (NEO-339)"
+name: "2024 Topps Chrome Insert — fetching an insert whose whole roster NB already holds saves every card with no names review (NEO-339)"
 tags:
   - set-selector
 ---
@@ -9,8 +9,18 @@ tags:
 # On live data, under Baseball → 2024 → Topps → Topps Chrome › `Insert` ›
 # `Youthquake`: every player and team on the insert is already an NB row (the
 # seed's Base commit created them), so after Match Cards → Confirm there is NO
-# `Confirm New Players & Teams` review, and the checklist reads `Saved 50
-# cards.`
+# names review (no player, team or league step), and the checklist reads
+# `Saved 50 cards.`
+#
+# NEO-335 — ONE review shape IS legitimate here: NO NAMES, past-the-names
+# steps only. The pre-save "Tidy up this set" review also opens, with every
+# name known, when a card would save with NO team ("Cards with no team") or a
+# NEW card's generated title gets trimmed ("Card titles"), straight onto that
+# step ("Step 1 of …"). The retired seed's Future Stars block (this flow's
+# origin, below) took the same restatement in NEO-335. So the contract is: no
+# NAMES on this fetch; teams and titles may be asked, and the flow presses
+# straight through them on their defaults (`util-wizard-advance-to-save`),
+# then saves all 50 from the Save step.
 #
 # WHERE THIS CAME FROM (NEO-339). The retired seed flow (`flows/setup.yaml`)
 # carried this as its Future Stars "NO WIZARD ON THIS FETCH, AND THAT IS THE
@@ -48,8 +58,8 @@ tags:
 # ── LIVE / PAUSED (README → "Operator switches") ───────────────────────────
 #   Paused, SportLots is never asked, the insert is BSC-only, and the fetch
 #   takes the NEO-255 one-marketplace path: no dialog, every BSC card kept and
-#   committed. The claim is unchanged — no review, `Saved 50 cards.` (BSC
-#   lists all 50, so the count holds; derived, not yet measured paused).
+#   committed. The claim is unchanged — no names review, `Saved 50 cards.`
+#   (BSC lists all 50, so the count holds; derived, not yet measured paused).
 #
 # ── TIMEOUTS (R5) ───────────────────────────────────────────────────────────
 #   7000 on every in-app step. The waits after the fetch tap (the dialog,
@@ -141,7 +151,7 @@ tags:
     id: "Sync card checklist"
 
 # ============================================================
-# STEP 3 (LIVE) — MATCH CARDS, CONFIRM, NO REVIEW, SAVED 50
+# STEP 3 (LIVE) — MATCH CARDS, CONFIRM, NO NAMES REVIEW
 # ============================================================
 - runFlow:
     when:
@@ -168,23 +178,21 @@ tags:
       - tapOn:
           id: "Confirm card matches"
 
-      # THE CLAIM: no review — the save is the next thing on screen. The gate
-      # admits the review too, so a review that does open is caught HERE,
-      # under its own name, rather than as a missing "Saved" line. 7000: an
-      # NB write (resolve + commit, no marketplace), measured on 2026 Bowman
-      # at 1.06 s for the dialog to close and 0.36 s more for "Saved N
-      # cards" (SET-REGISTRY.md → 2026 Bowman).
+      # THE CLAIM: no names review — the save, or a names-free review, is the
+      # next thing on screen (STEP 4 tells them apart). The gate admits the
+      # review, so one that opens is read HERE, under its own name, rather
+      # than as a missing "Saved" line. 7000: an NB write (resolve + commit,
+      # no marketplace), measured on 2026 Bowman at 1.06 s for the dialog to
+      # close and 0.36 s more for "Saved N cards" (SET-REGISTRY.md → 2026
+      # Bowman).
       - extendedWaitUntil:
           visible:
-            text: "Saved [0-9]+ cards\\..*|.*Confirm New Players.*"
+            text: "Saved [0-9]+ cards\\..*|Tidy up this set"
           timeout: 7000
-      - assertNotVisible: "Confirm New Players & Teams"
-      - assertVisible:
-          text: "Saved 50 cards\\..*"
       - assertNotVisible: "Match Cards.*"
 
 # ============================================================
-# STEP 3 (PAUSED) — ONE MARKETPLACE: NO DIALOG, NO REVIEW, SAVED 50
+# STEP 3 (PAUSED) — ONE MARKETPLACE: NO DIALOG, NO NAMES REVIEW
 # ============================================================
 - runFlow:
     when:
@@ -192,12 +200,49 @@ tags:
     commands:
       # NEO-255 solo path: every BSC card is kept and committed at once.
       # R5 marketplace exception: the live BSC fetch (90000, as above). The
-      # alternation catches a review by name, as in the live branch.
+      # alternation admits the review by name, as in the live branch.
       - extendedWaitUntil:
           visible:
-            text: "Saved [0-9]+ cards\\..*|.*Confirm New Players.*"
+            text: "Saved [0-9]+ cards\\..*|Tidy up this set"
           timeout: 90000
-      - assertNotVisible: "Confirm New Players & Teams"
-      - assertVisible:
-          text: "Saved 50 cards\\..*"
       - assertNotVisible: "Match Cards.*"
+
+# ============================================================
+# STEP 4 — NO NAMES; A TEAMS / TITLES REVIEW IS PRESSED THROUGH (NEO-335)
+# ============================================================
+# Which state the gate found is read ONCE and branched on as a value (`when:
+# true:`), so the direct-save path pays no missed-`when: visible` lookup
+# (R10). The two never coexist: the banner is cleared when a sync starts, and
+# the review is open until its commit writes "Saved N".
+- copyTextFrom:
+    text: "Saved [0-9]+ cards\\..*|Tidy up this set"
+- evalScript: '${output.KNOWN_ROSTER_REVIEW = maestro.copiedText.indexOf("Tidy up this set") >= 0}'
+- runFlow:
+    when:
+      true: "${output.KNOWN_ROSTER_REVIEW}"
+    commands:
+      # Still no names: neither bulk link is offered, because nothing is
+      # undecided. A names review fails here, by name.
+      - assertNotVisible:
+          text: ".*Skip remaining names.*"
+      - assertNotVisible:
+          text: ".*Add remaining players as new.*"
+      # A no-names sitting opens ON its first post-name step — teams, or
+      # titles when no card is teamless — with no name step before it.
+      # Header text, pinned.
+      - assertVisible: "Cards with no team|Card titles"
+      - assertVisible: "Step 1 of [0-9]+"
+      # Next leaves every line on its default (a suggestion where the set's
+      # own evidence gives one, else "Leave for later"; every title kept).
+      - runFlow: util-wizard-advance-to-save.yaml
+      # The Save step, for all 50 — the strict count below then pins the save.
+      - assertVisible: "Save 50 cards\\?"
+      - tapOn:
+          text: ".*Confirm & Save.*"
+      # 7000: our own write (R5), the same bar the direct save above has.
+      - extendedWaitUntil:
+          visible:
+            text: "Saved [0-9]+ cards\\..*"
+          timeout: 7000
+- assertVisible:
+    text: "Saved 50 cards\\..*"

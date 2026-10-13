@@ -17,6 +17,13 @@ tags:
 #     note above STEP 6.
 #   - STEP 7 (NEO-203): the re-sync content-diff review. See the note above
 #     STEP 7 for why it rides on this flow rather than owning one.
+#   - STEP 6c (NEO-335 Phase 2): the wizard's "Card titles" step and its
+#     "Shorter set name for titles" field, proved on a real fetch's titles and
+#     read back off a stored card in STEP 7a. It needs a NEW-card sync under
+#     an insert whose name cuts the title core — this flow's renamed insert
+#     row (STEP 3b) is exactly that, and no other flow commits a real insert
+#     checklist. Added cost, estimated (not yet measured): ~6 driver steps,
+#     ~12s, against a ~4-minute flow and the 600s per-flow kill.
 #
 # WHY ONE FLOW, having briefly been two. I split it on a guess that the combined
 # runtime (cold insert sync + reconcile + cold two-source fetch + entity wizard)
@@ -369,6 +376,58 @@ tags:
           text: ".*PRIMARY.*"
 
       # ============================================================
+      # STEP 3b — RENAME THE INSERT ROW TO ITS NB211 MARKER, BEFORE ANY CARD
+      #
+      # This rename used to open STEP 8 (8a). It moved HERE, ahead of the first
+      # card fetch, for STEP 6c's titles proof (NEO-335 Phase 2): a card under
+      # an insert row now carries the INSERT's name in its title core, right
+      # after the set's, and "Dugout Collection Artists Proofs NB211-<attempt>"
+      # is long enough that nearly every card's core is cut — so the wizard's
+      # "Card titles" step comes up on every run, and its "Shorter set name for
+      # titles" field with it. STEP 8 loses nothing: its claim is that a row
+      # renamed away from its marketplace label survives a forced "Sync
+      # Inserts", and the row is still renamed when 8b forces it (now with a
+      # card fetch and a re-sync in between, which only proves more). The card
+      # fetches read the row's marketplace ids from its slots, never its name
+      # (product invariant 4), so the rename cannot change what STEP 4 fetches.
+      #
+      # The pencil lives in SetAttributesPanel's header; see
+      # rename-selector-option.yaml for the control's mechanics (the input opens
+      # EMPTY, so there is nothing to erase). The panel renders BELOW the
+      # multi-source panel STEP 3 just centred (SetSelector.tsx: base mapping →
+      # MultiSourcePanel → SetAttributesPanel → CardChecklist), so DOWN. The
+      # heading `Attributes for <name> (Insert)` is an ordinary element in the
+      # same header row as the pencil, so centring it puts the tap target in the
+      # band (R8 satisfied by the centring, on the same row).
+      # ============================================================
+
+      - scrollUntilVisible:
+          element:
+            text: ".*Attributes for Dugout Collection Artists Proofs.*"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          id: "Rename Dugout Collection Artists Proofs"
+      - extendedWaitUntil:
+          visible:
+            id: "Edit name for Dugout Collection Artists Proofs"
+          timeout: 7000
+      - tapOn:
+          id: "Edit name for Dugout Collection Artists Proofs"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}"
+      - pressKey: Enter
+
+      # HARD PRECONDITION. The panel header renders the CURRENTLY SELECTED row,
+      # so this proves the rename landed on the row we mean AND that the
+      # selection still resolves to it. STEP 6c's titles and STEP 8 lean on it.
+      - scrollUntilVisible:
+          element:
+            text: ".*Attributes for Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
+          centerElement: true
+          timeout: 7000
+
+      # ============================================================
       # STEP 4 — FETCH CARDS FROM BOTH BSC SOURCES
       #
       # THE FAN-OUT REGRESSION. BSC does not OR multi-value facets: sending both
@@ -500,7 +559,8 @@ tags:
 
       # THE WIZARD IS NOT OPTIONAL HERE, AND THIS WAIT NO LONGER PRETENDS IT MIGHT BE.
       # This used to be an either/or gate (".*Confirm New Players.*|.*Saved N cards.*")
-      # feeding a `when: visible: "Confirm New Players & Teams"` block — so a run in
+      # feeding a `when: visible: "Confirm New Players & Teams"` block (the
+      # wizard's title, "Tidy up this set" since NEO-335 Phase 2) — so a run in
       # which the wizard never appeared skipped every assertion below it and went
       # GREEN having tested nothing (R2). It cannot legitimately not appear: the run-start
       # reset wipes the set-builder tables at the head of every run, so these 220 cards are
@@ -511,7 +571,7 @@ tags:
       #
       # 120s: hundreds of unknown names, each queued behind a live Wikidata lookup.
       - extendedWaitUntil:
-          visible: "Confirm New Players & Teams"
+          visible: "Tidy up this set"
           timeout: 120000
 
       # ── 6a. CANCEL WITH WORK ON THE BOOKS ASKS FIRST, AND "KEEP WORKING"
@@ -598,9 +658,11 @@ tags:
           below:
             text: ".*The same names come back the next time you sync this set.*"
       # Nothing was lost: the wizard is still open …
-      - assertVisible: "Confirm New Players & Teams"
+      - assertVisible: "Tidy up this set"
       # … and the decision is still on the books — read off the wizard's own
-      # progress numerator, which is the ONE place the count is always rendered.
+      # step counter, which is the ONE place the count is always rendered.
+      # NEO-335 Phase 2: "Step x of y", where on a name step x is the decided
+      # count plus one, so ONE decision reads "Step 2 of …".
       #
       # ⚠️ DO NOT go back to `Decided (1)` here. That list is the LAST thing in the
       # dialog body, and on a tall step it falls out of the reported hierarchy
@@ -613,12 +675,13 @@ tags:
       # in it at all. On a short step the same list IS reported, which is why this
       # passed for months and then did not.
       #
-      # "1 of N reviewed" is the same claim, exactly as strict — one decision, no
-      # more — against a node that sits at the top of the dialog and is always there.
+      # "Step 2 of N" (formerly "1 of N reviewed") is the same claim, exactly as
+      # strict — one decision, no more — against a node that sits at the top of
+      # the dialog and is always there.
       # Generalised in `.maestro/README.md` → "Asserting inside a dialog: header and
       # footer only, never the body"; two runs found this independently.
       - assertVisible:
-          text: "1 of [0-9]+ reviewed.*"
+          text: "Step 2 of [0-9]+"
 
       # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
       # The one decision above is absorbed by the bulk (it is already decided,
@@ -659,11 +722,15 @@ tags:
       # tapped its reported bounds at (687,235) — dead space between the filter
       # row and the skipped panel — and the drawer never opened. Creating the
       # teams leaves the page exactly as the rest of this flow expects it.
+      #
+      # NEO-335 Phase 2 — the terminal state is the NAMES-DONE footer: "Next
+      # (Enter)" when the wizard has a teams / titles step to show, else
+      # Confirm & Save. Neither renders while a name is undecided.
       - repeat:
           times: 250
           while:
             notVisible:
-              text: ".*Confirm & Save.*"
+              text: "Next \\(Enter\\)|.*Confirm & Save.*"
           commands:
             # NEO-254 — ANSWER WHATEVER STEP IS UP, WITH ONE GUARD.
             #
@@ -708,12 +775,13 @@ tags:
             # button vanishing between the two reads means the row was
             # ANSWERED, which is this loop finishing, not a failure.
             #
-            # ADJUDICATOR: `.*Confirm & Save.*`, the wait immediately below.
+            # ADJUDICATOR: the names-done footer, the wait immediately below.
             # It is hard, and the product makes it load-bearing —
-            # `components/SetSelector/EntityReviewWizard.tsx` renders that
-            # button ONLY when `allDecided` (`total > 0 && decided === total`),
+            # `components/SetSelector/EntityReviewWizard.tsx` reaches its
+            # post-name steps (whose footers carry `Next (Enter)` / Confirm &
+            # Save) ONLY when `allDecided` (`total > 0 && decided === total`),
             # so a row this loop failed to answer leaves `decided < total`,
-            # the button never appears, and the wait fails by name. R2 holds.
+            # neither button appears, and the wait fails by name. R2 holds.
             #
             # Full mechanism written once at the corresponding step of
             # `util-wizard-walk-to-player-row.yaml` (R3 — not duplicated).
@@ -734,11 +802,91 @@ tags:
       # for the bigger ceiling.
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm & Save.*"
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 240000
+
+      # ── 6c. THE CARD TITLES STEP, AND THE SET'S SHORT NAME FOR TITLES ─────
+      # (NEO-335 Phase 2, "follow the old script title builder")
+      #
+      # WHY IT COMES UP ON EVERY RUN. A card under an insert row carries the
+      # insert's name in its title core, right after the set's: "1996 Score
+      # Dugout Collection Artists Proofs NB211-<attempt> <player> #<number>".
+      # STEP 3b's name makes that prefix 60-62 characters before the player
+      # (ATTEMPT_ID is 7-11 on both runners), and the core gets 80 minus
+      # " #<number>" (5-6 here: #A1-#B110), so any player name past ~12-14
+      # characters cuts the core — "Ken Griffey Jr." alone is 15. A cut core is
+      # what puts a NEW card on the "Card titles" step, so the step is certain;
+      # a run where it does not come up fails at its subtitle below, by name.
+      #
+      # THE FEATURE. The step opens with a "Shorter set name for titles" field
+      # (aria-label; a "Suggested: …" line and "Use suggestion" beside it).
+      # Typing a name recomputes every title live, with the short name standing
+      # in for the set AND insert names (the maker stays), and the trimmed list
+      # empties; the step's status line then reads "Every title fits now." The
+      # name rides the commit as the batch's `listingShortName`: written on the
+      # insert row and used by every card title the commit writes — read back
+      # off a stored card in STEP 7a.
+      #
+      # The short name is ONE alphanumeric token per attempt (README, "Minted
+      # names are single tokens"): `DCAP<token>`, 13-15 characters, so the core
+      # becomes "1996 Score DCAP<token> <player> #<number>" and fits for any
+      # player name under ~45 characters.
+      - evalScript: '${output.SHORT = "DCAP" + String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+      # Which post-name step came first: the teams step only when a card would
+      # save teamless (this fetch names its teams, so usually not). Read off the
+      # header subtitle once and branched on as a value (`when: true:`), so the
+      # usual path pays no missed-`when: visible` lookup (R10). The names-done
+      # gate above means one of the three is on screen now.
+      - extendedWaitUntil:
+          visible: "Cards with no team|Card titles|Ready to save"
+          timeout: 7000
+      - copyTextFrom:
+          text: "Cards with no team|Card titles|Ready to save"
+      - evalScript: '${output.TEAMS_FIRST = maestro.copiedText === "Cards with no team"}'
+      - runFlow:
+          when:
+            true: "${output.TEAMS_FIRST}"
+          commands:
+            # Teams are not this flow's business: Next leaves every line on
+            # its default.
+            - tapOn:
+                text: "Next \\(Enter\\)"
+      # R2 — THE STEP, by its own subtitle. Hard: a run that went straight to
+      # "Ready to save" fails here, by name.
+      - extendedWaitUntil:
+          visible: "Card titles"
+          timeout: 7000
+      # The field opens empty (its placeholder is the suggestion), at the top
+      # of the step's body; each step opens scrolled to its top. By its
+      # accessible name — the Input primitive forwards the caller's
+      # aria-label, and this one passes "Shorter set name for titles".
+      - tapOn:
+          id: "Shorter set name for titles"
+      - inputText: "${output.SHORT}"
+      # THE PROOF THE SHORT NAME REACHED EVERY TITLE. The status line is
+      # computed from the same assessment as the list, over every new card:
+      # "Every title fits now." only when no title on the step is still cut
+      # (the list's "N titles still trimmed." otherwise). Client-side
+      # recompute a beat after typing stops: 7000.
+      - extendedWaitUntil:
+          visible: "Every title fits now\\."
+          timeout: 7000
+      # …and the field holds the name (its VALUE), so it is what the commit
+      # is about to send.
+      - assertVisible:
+          id: "Shorter set name for titles"
+          text: "${output.SHORT}"
+      # On to Save. Next is the step's own footer button; tapping it moves
+      # focus off the field, and the Save step then focuses Confirm & Save.
+      - tapOn:
+          text: "Next \\(Enter\\)"
+      - extendedWaitUntil:
+          visible: "Ready to save"
+          timeout: 7000
       # KEYBOARD COMMIT, not a tap (NEO-220). Confirm & Save is autofocused the
-      # moment every row is decided, and its label says "(Enter)" — so Enter
-      # committing IS the feature, and a tap would leave that promise untested.
+      # moment the Save step opens (NEO-335 Phase 2: focus follows the step),
+      # and its label says "(Enter)" — so Enter committing IS the feature, and a
+      # tap would leave that promise untested.
       # This works only because the button carries its own `useFieldTestClass`
       # marker class (`mb-field-<id>-btn-confirm-save`): maestro-web's `pressKey`
       # re-finds the active element by an XPath that falls back to the class
@@ -851,6 +999,19 @@ tags:
                 visible:
                   id: "Card name"
                 timeout: 15000
+
+      # NEO-335 Phase 2 — STEP 6c's short name is in this STORED card's title
+      # (for an <input>, Maestro reads its VALUE). Any card serves: with
+      # STEP 3b's insert name the full title of EVERY card here either cuts
+      # its core (player names past ~12-14 characters) or, for a shorter name,
+      # leaves no room for the card's team (the 60-character prefix plus a
+      # player, the number and a full team name is over 80) — and a dropped
+      # team is a non-filler drop, which also makes the generator use the
+      # short name (`SHORT_NAME_RULE` "A", generateListing.ts). The title the
+      # commit wrote, not a preview: nothing here has regenerated it.
+      - assertVisible:
+          id: "Card title"
+          text: ".*1996 Score ${output.SHORT} .*"
 
       # Type a marker INTO the existing name rather than replacing it. A Maestro-web
       # tap on a filled input drops the caret mid-string, so `inputText` inserts the
@@ -1047,12 +1208,57 @@ tags:
           id: "Apply selected changes"
 
       # Every player and team on these 220 cards was created by STEP 6's commit, so
-      # the entity wizard has nothing to ask and the commit runs straight through.
-      # 120s mirrors STEP 6's budget for the identical 220-card commit.
+      # the entity wizard has no NAMES to ask about. NEO-335: it can still open
+      # TEAMS-ONLY — same title ("Tidy up this set"), straight onto its teams
+      # step, no "Skip remaining names" — when a card would save with no team (a re-synced row
+      # that already holds a team is not asked again; one STEP 6 saved teamless
+      # is). Whether any card here is in that state is the marketplaces'
+      # business, so both shapes are accepted and the save is asserted after
+      # either.
+      #
+      # One gate for both terminal states, then ONE read of which it was,
+      # branched on as a value (`when: true:`) so the common direct-commit path
+      # pays no 7s missed-`when: visible` lookup (R10). The two never coexist:
+      # the sync cleared the previous run's "Saved 220 cards." banner when it
+      # started (CardChecklist `setSyncMessage(null)`), and the wizard is open
+      # until its commit writes the next one. 120s mirrors STEP 6's budget for
+      # the identical 220-card commit.
       - extendedWaitUntil:
           visible:
-            text: ".*Saved 220 cards.*"
+            text: "Tidy up this set|.*Saved 220 cards.*"
           timeout: 120000
+      - copyTextFrom:
+          text: "Tidy up this set|.*Saved 220 cards.*"
+      - evalScript: '${output.TEAMS_ONLY_REVIEW = maestro.copiedText.indexOf("Tidy up this set") === 0}'
+      - runFlow:
+          when:
+            true: "${output.TEAMS_ONLY_REVIEW}"
+          commands:
+            # R2 — the precondition, by name: no names to decide (so this
+            # really is the no-names shape, not a names review this flow
+            # would wrongly confirm), and a post-name step is up — the
+            # sitting's first step, under its own subtitle (header text,
+            # pinned). Teams here; "Card titles" is the D7 twin for a NEW card
+            # whose title gets trimmed (a re-sync of stored rows is excluded
+            # from it, but accepting it costs nothing and fails nothing).
+            - assertNotVisible:
+                text: ".*Skip remaining names.*"
+            - assertVisible: "Cards with no team|Card titles"
+            - assertVisible: "Step 1 of [0-9]+"
+            # Teams are not this flow's business: Next leaves every line on
+            # its own default (a pre-filled suggestion, else "Leave for
+            # later") and the util walks on to the Save step.
+            - runFlow: util-wizard-advance-to-save.yaml
+            # The count is left open here: what the re-sync writes is the
+            # review's business, and "Saved 220 cards" below pins the result.
+            - assertVisible:
+                text: "Save [0-9]+ cards?\\?"
+            - tapOn:
+                text: ".*Confirm & Save.*"
+            - extendedWaitUntil:
+                visible:
+                  text: ".*Saved 220 cards.*"
+                timeout: 120000
 
       # THE ACCEPTANCE CRITERION. The marketplace's name for this card was offered
       # and declined, so the checklist still shows OURS. If the re-sync had written
@@ -1112,14 +1318,12 @@ tags:
       # panel scrolling for no additional coverage: the assertion that matters is that
       # the name we chose is still the name on the row.
       #
-      # ── 8a. RENAME THE INSERT ROW ────────────────────────────────────
+      # ── 8a. THE ROW IS STILL RENAMED (renamed at STEP 3b) ────────────
       # The insert row has been the deepest selection since STEP 3, so
-      # SetAttributesPanel is already pointed at it and no re-drill is needed. The
-      # pencil lives in that panel's header; see rename-selector-option.yaml for the
-      # control's mechanics (the input opens EMPTY, so there is nothing to erase).
+      # SetAttributesPanel is already pointed at it and no re-drill is needed.
       # ============================================================
 
-      # SCROLL **UP**, and scroll to the PANEL HEADING rather than to the pencil.
+      # SCROLL **UP**, and scroll to the PANEL HEADING.
       #
       # Both halves are load-bearing (CI run 2, runner-5 step-145). By this point the
       # page is parked deep inside the CardChecklist, whose rows are their own inner
@@ -1130,35 +1334,18 @@ tags:
       #
       # Targeting the heading rather than the pencil keeps the scroll on an ordinary,
       # non-virtualised element — `Attributes for <name> (Insert)` — instead of
-      # hunting an icon button. The pencil (`aria-label="Rename <currentValue>"`,
-      # RenameEntityControl.tsx:191) sits in that same header row immediately after
-      # the title, so centring the heading puts the tap target at y≈315 with it. That
-      # is why the tap below needs no scroll of its own (R8 satisfied by the centring
-      # above, on the same row).
-      - scrollUntilVisible:
-          element:
-            text: ".*Attributes for Dugout Collection Artists Proofs.*"
-          direction: UP
-          centerElement: true
-          timeout: 7000
-      - tapOn:
-          id: "Rename Dugout Collection Artists Proofs"
-      - extendedWaitUntil:
-          visible:
-            id: "Edit name for Dugout Collection Artists Proofs"
-          timeout: 7000
-      - tapOn:
-          id: "Edit name for Dugout Collection Artists Proofs"
-          waitToSettleTimeoutMs: 250
-      - inputText: "Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}"
-      - pressKey: Enter
-
-      # HARD PRECONDITION. The panel header renders the CURRENTLY SELECTED row, so
-      # this proves the rename landed on the row we mean AND that the selection still
+      # hunting an icon button (STEP 3b taps the pencil beside it).
+      #
+      # NEO-335 Phase 2 — the RENAME itself now happens at STEP 3b, before the
+      # first card fetch (STEP 6c's titles proof needs the long name). What is
+      # left of 8a is its hard precondition: the panel header renders the
+      # CURRENTLY SELECTED row, so this proves the row still carries OUR name
+      # after a card fetch, a commit and a re-sync, and that the selection still
       # resolves to it. Everything below is meaningless without it.
       - scrollUntilVisible:
           element:
             text: ".*Attributes for Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
+          direction: UP
           centerElement: true
           timeout: 7000
 

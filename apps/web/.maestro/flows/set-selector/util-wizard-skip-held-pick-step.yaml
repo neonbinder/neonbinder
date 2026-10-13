@@ -31,26 +31,37 @@ tags:
 #   * any other player:   "Add as New Player", or "Add as New Player anyway"
 #                         beside a promoted "Link to <name>";
 #   * a team step:        "Skip — not a team";
-#   * a league step:      "Skip — no league" (em dash matched with ".").
+#   * a league step:      "Skip — no league" (em dash matched with ".");
+#   * past the names:     "Next (Enter)" on a teams or titles step, or
+#                         "Confirm & Save" on the Save step (NEO-335 Phase 2).
+#                         A fetch whose names are all known still opens the
+#                         wizard straight onto one of these when a card would
+#                         save teamless or a title needs a look, and then
+#                         there is no pick step to skip.
 # The copy is HARD: a dialog showing none of them fails here by name. The
 # branch is a script condition, free when false, so the usual case (no pick
 # step on screen) costs one read and no `when: visible` dwell.
 #
-# The skip is hard too, and so is its result: the decided count moves by
-# exactly one. Nothing races it — a held step stays put by definition, and a
-# pick row has no lookup of its own to stage steps under it.
+# The skip is hard too, and so is its result: the header's `Step x of y`
+# (NEO-335 Phase 2; x is the decided count plus one on a name step) moves by
+# exactly one. That holds whichever step comes next: another name is
+# `decided + 1`, and with the names done the first post-name step (teams,
+# titles or Save) is numbered straight after the last name. Nothing races
+# it — a held step stays put by definition, and a pick row has no lookup of
+# its own to stage steps under it. Pin x, not y: y grows as staged steps
+# arrive (README).
 - copyTextFrom:
-    text: "Create new|Add as New Player( anyway)?|Skip . (not a team|no league)"
+    text: "Create new|Add as New Player( anyway)?|Skip . (not a team|no league)|Next \\(Enter\\)|.*Confirm & Save.*"
 - runFlow:
     when:
       true: '${maestro.copiedText === "Create new"}'
     commands:
       - copyTextFrom:
-          text: "[0-9]+ of [0-9]+ reviewed.*"
-      - evalScript: ${output.PICK_SKIP_DECIDED = parseInt(maestro.copiedText.split(" of ")[0], 10) + 1}
+          text: "Step [0-9]+ of [0-9]+"
+      - evalScript: '${output.PICK_SKIP_STEP = Number(maestro.copiedText.match(/^Step ([0-9]+)/)[1]) + 1}'
       - tapOn:
           id: "Skip .* — not a person"
       - extendedWaitUntil:
           visible:
-            text: "${output.PICK_SKIP_DECIDED} of [0-9]+ reviewed.*"
+            text: "Step ${output.PICK_SKIP_STEP} of [0-9]+"
           timeout: 7000

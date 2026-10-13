@@ -18,6 +18,15 @@
 import type { PairingCard } from "../../lib/set-build/pairing";
 
 /**
+ * NEO-335 — how the fetch-time BSC team lookup for a card ended:
+ * "answered" (BSC replied, with a team or with none on file) or "failed" (the
+ * call failed). Absent when no lookup ran. The commit stamps an answered
+ * teamless card as checked instead of asking BSC again after save; see
+ * `previewCardFields.teamLookup` in convex/selectorOptions.ts.
+ */
+export type TeamLookup = NonNullable<PairingCard["teamLookup"]>;
+
+/**
  * The half of `checklistCandidates.getReadyCandidates`' card shape this
  * mapping reads.
  *
@@ -48,6 +57,9 @@ export type ReadyCandidate = {
     preferred?: "bsc" | "sportlots";
   };
   bucket: "matched" | "bscOnly" | "slOnly";
+  teamLookup?: TeamLookup;
+  /** NEO-335 — BSC's unsplit team value; see `PairingCard.rawTeamName`. */
+  rawTeamName?: string;
 };
 
 /**
@@ -59,7 +71,9 @@ export type ReadyCandidate = {
  * `commitCardChecklist` writes its `unmatched-<side>` attribute from, so the
  * badge on a kept single is decided here.
  */
-export function candidateToPairingCard(c: ReadyCandidate): PairingCard {
+export function candidateToPairingCard(
+  c: ReadyCandidate,
+): PairingCard {
   return {
     cardNumber: c.cardNumber,
     cardName: c.cardName,
@@ -83,6 +97,12 @@ export function candidateToPairingCard(c: ReadyCandidate): PairingCard {
     playersConflict: c.playersConflict,
     unmatched:
       c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
+    // NEO-335: spread only when present, so a card with no lookup is
+    // byte-identical to what this mapping built before the field existed.
+    ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
+    // NEO-335: BSC's raw team value, only on the rows the server kept one for
+    // (a split or refused split). Spread on the same terms as `teamLookup`.
+    ...(c.rawTeamName ? { rawTeamName: c.rawTeamName } : {}),
   };
 }
 

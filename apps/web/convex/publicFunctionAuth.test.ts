@@ -1015,81 +1015,6 @@ describe("NEO-277: the set-level team surface is admin-gated, and its cascade is
   });
 });
 
-describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal", () => {
-  /**
-   * `previewTeamFill` and `applyTeamFill` are the only client-callable
-   * surface — a set-level bulk write that can touch every teamless card
-   * under a set, so it carries the same admin gate as `setSelectorOptionTeams`
-   * above. The four reads and the apply chunk are `internalQuery` /
-   * `internalMutation`: `applyTeamFillChunk` in particular takes a bare
-   * `(cardId, teamIds)` list with no re-derivation of its own, so a client
-   * that could call it directly could write any team onto any card under the
-   * guise of a fill — the whole reason `applyTeamFill` recomputes server-side
-   * instead of trusting the preview's own fills.
-   *
-   * Called against a real `setName` row with no candidates, so the refusal is
-   * the gate and not a `ConvexError` about the level or an empty plan.
-   */
-  test.each([
-    [
-      "teamFill.previewTeamFill",
-      (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
-        t.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId }),
-    ],
-    [
-      "teamFill.applyTeamFill",
-      (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
-        t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId, expectedFillable: 0 }),
-    ],
-  ] as const)("%s refuses a signed-in non-admin and a signed-out caller, writing nothing", async (_name, call) => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const setNameId = await t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "setName",
-        value: "2024 Topps",
-        platformData: {},
-        parentId: sportId,
-        children: [],
-        lastUpdated: 1_700_000_000_000,
-      }),
-    );
-    const cardId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
-        selectorOptionId: setNameId,
-        cardNumber: "1",
-        cardName: "Card 1",
-        platformData: {},
-        sortOrder: 0,
-        lastUpdated: 1_700_000_000_000,
-      }),
-    );
-
-    await expect(call(t.withIdentity(SIGNED_IN), setNameId)).rejects.toThrow();
-    await expect(call(t, setNameId)).rejects.toThrow();
-    // Refused before any write.
-    const row = await t.run(async (ctx) => ctx.db.get(cardId));
-    expect(row!.teamOnCardIds).toBeUndefined();
-  });
-
-  test.each([
-    ["listTeamFillSubtree", "internalQuery"],
-    ["readTeamFillCards", "internalQuery"],
-    // NEO-296 — the bounded subtree walk that replaced the one-shot read.
-    ["readTeamFillNodes", "internalQuery"],
-    ["readTeamFillPlayers", "internalQuery"],
-    ["readTeamFillTeams", "internalQuery"],
-    // NEO-330 — resolves BSC's team names so a fill BSC contradicts is held back.
-    ["readTeamFillBscTeamNames", "internalQuery"],
-    ["applyTeamFillChunk", "internalMutation"],
-  ])("%s is declared %s, not the public form", (fn, keyword) => {
-    const src = readFileSync(join(__dirname, "teamFill.ts"), "utf8");
-    expect(src).toContain(`export const ${fn} = ${keyword}({`);
-    const publicKeyword = keyword === "internalQuery" ? "query" : "mutation";
-    expect(src).not.toContain(`export const ${fn} = ${publicKeyword}(`);
-  });
-});
-
 describe("NEO-287: the marketplace pause switch is readable by any signed-in user", () => {
   /**
    * `marketplacePause.getPausedPlatforms` is the one client-facing surface of
@@ -1193,6 +1118,41 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     const row = await t.run(async (ctx) => ctx.db.get(sportId));
     expect(row!.lastUpdated).toBe(1_700_000_000_000);
     expect(row!.metadata).toBeUndefined();
+  });
+
+  /**
+   * NEO-335 — the short name for listing titles is the second operator-typed
+   * metadata key, with its own narrow mutation gated exactly like the prefix
+   * above. Valid, inert value on a set-level row so the refusal is the gate,
+   * not argument validation or the level check.
+   */
+  test("selectorOptions.setSelectorOptionListingShortName refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const setNameId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Collector's Choice",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionListingShortName, {
+        id: setNameId,
+        listingShortName: "UD Choice",
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(setNameId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(setNameId)))!.metadata).toEqual({
+      listingShortName: "UD Choice",
+    });
   });
 
   test("the whole-metadata mutation stays deleted", () => {
@@ -1798,6 +1758,17 @@ describe("NEO-325 internal queries stay internal", () => {
   test.each([
     ["selectorOptions.ts", "heldIdsForTwinNotice"],
     ["setReconciliation.ts", "baseSlIdsBesideVariantType"],
+    // NEO-335 — reads caller-supplied team ids and answers each team's name
+    // with no `requireAdmin`; only `commitCardChecklist`, behind its own
+    // gate, may call it.
+    ["selectorOptions.ts", "validateOperatorTeamIds"],
+    // NEO-335 — the "Card titles" context. `titleSetFacts` reads a set's
+    // features and set-level teams for a caller-supplied node, and
+    // `playerNamesByIds` answers names for caller-supplied ids; neither runs
+    // `requireAdmin`. Only `resolveChecklistEntities`, behind its own gate,
+    // may call them.
+    ["listingTitleContext.ts", "titleSetFacts"],
+    ["listingTitleContext.ts", "playerNamesByIds"],
   ])("%s :: %s is declared internalQuery (it trusts its arguments)", (file, fn) => {
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = internalQuery({`);
@@ -2124,5 +2095,26 @@ describe("NEO-339: the set-build previews are admin-gated and contact nothing wh
       const at = handler.indexOf(later);
       if (at > -1) expect(gate).toBeLessThan(at);
     }
+  });
+});
+
+/**
+ * NEO-335 — the entity review wizard's pre-save team suggestions. Public
+ * because the wizard calls it; admin-only because it reads players' cards
+ * and careers across a set. Its own file covers the answers; this pins the
+ * gate beside every other decision.
+ */
+describe("NEO-335: the wizard's team suggestions are admin-gated", () => {
+  test("cardChecklist.teamSuggestionsForPreview refuses a signed-out caller and a non-admin, and answers an admin", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const args = { selectorOptionId: sportId, players: [] };
+    await expect(t.query(api.cardChecklist.teamSuggestionsForPreview, args)).rejects.toThrow();
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.cardChecklist.teamSuggestionsForPreview, args),
+    ).rejects.toThrow();
+    await expect(
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, args),
+    ).resolves.toBeDefined();
   });
 });

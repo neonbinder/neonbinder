@@ -9,7 +9,7 @@ tags:
 # set, "Sync card checklist" no longer opens the Match Cards dialog. There is
 # nothing to line up, so every fetched card is kept as a single-marketplace
 # card and the operator lands straight on the entity review with NO
-# "Back to matching".
+# "Back to Match Cards".
 #
 # WHAT THIS FLOW PROVES, end to end, on live marketplace data:
 #   1. PRECONDITION: BSC really answers for this set — the base picker offers a
@@ -19,7 +19,7 @@ tags:
 #   2. The "Match Cards" dialog NEVER appears — asserted at the two moments it
 #      would still have to be up if it were coming (the result surface, and
 #      again at the entity review), not once at a random instant.
-#   3. The entity review opens with NO "Back to matching": there was no pairing
+#   3. The entity review opens with NO "Back to Match Cards": there was no pairing
 #      session to go back to.
 #   4. Every card the fetch produced is SAVED. The count is read ONCE, off the
 #      run's own "Kept all N cards from <marketplace>" sentence, and then has
@@ -161,6 +161,71 @@ tags:
 #   selector can pick one of twenty-five identical rows that is also on screen —
 #   the whole argument is in STEP 8's block, along with what that trades away.
 #
+# ── R1/R2 — AND A THIRD, ON THE SAME FIXTURE (NEO-335) ──────────────────────
+#   STEPS 5, 6, 6b, 6c, 7, 9 and 10 prove the team half of a sync, which
+#   NEO-335 moved in front of the save, and the wizard chrome Phase 2 put
+#   around it:
+#     • the wizard is "Tidy up this set" with ONE counter, "Step x of y", and
+#       a subtitle per screen type — "New player" and "New team" on the name
+#       steps (STEP 6), "Cards with no team" on the teams step (STEP 6b) and
+#       "Ready to save" on the Save step, which is always "Step y of y"
+#       (STEP 6c);
+#     • every card that would save with NO team is asked about on its OWN
+#       step after the names ("Pick a team for each card, or leave it for
+#       later.", one line per player, and ONE shared line "Cards with no
+#       players (N)" for every card nobody is on, whose cards open one by one
+#       for answers of their own), left with "Next (Enter)";
+#     • a line whose evidence gives exactly one team is PRE-FILLED with it —
+#       here a player created in this review with ONE career team covering the
+#       set's window [setYear-1, setYear] (STEP 6), whose card's line comes up
+#       with that team checked (STEP 6b), and whose card carries it after the
+#       save (STEP 9, read in the card drawer);
+#     • "Other team…" on any answer row finds or CREATES a team the evidence
+#       never offered: here a brand-new team typed into its search field,
+#       created in the New Team dialog it opens, selected on ONE card of the
+#       shared line through "Just this card…" (STEP 6b), and read back on
+#       that card's drawer after the save (STEP 9);
+#     • "No team on this card" and "Leave for later" are answers that ride the
+#       commit (STEP 6b), and the checklist's "N need you" count is FINAL the
+#       moment "Saved N cards." shows (STEP 7) — a card whose fetch-time BSC
+#       lookup answered is stamped at the commit, so nothing is left to climb
+#       (before NEO-335 it climbed for ~15s, SET-REGISTRY measurement 10);
+#     • a RE-SYNC with no names left to ask but teamless cards stored opens the
+#       review TEAMS-ONLY, "Step 1 of 2", straight onto its teams step and then
+#       Save (STEP 10).
+#
+#   Same justification as STEP 8: this is the suite's one fixture where every
+#   card saves TEAMLESS (K = the fetch count), it is already committed here,
+#   it is this flow's alone, and
+#   only a real fetch + commit can put a BSC-linked card through the stamp. A
+#   hand-made set carries no BSC ref (NEO-239), so its cards never wait on a
+#   lookup and could never be re-synced at all.
+#
+#   ⚠️ MEASURED (CI run 38285320710, after NEO-333 #316 merged): the fetch now
+#   waits for BSC's per-card team lookups, so all 25 cards ARRIVE listing
+#   "Roanoke Express". Before, the lookup landed after the commit and the
+#   cards came in blank (green run 38208753526 raised no team step). The walk
+#   util in STEP 6 now meets a "New Team: Roanoke Express" step before the
+#   first player and answers it "Skip — not a team". That skip is recorded
+#   for this set (`entityReviewSkips`), so the listed team holds no guess back
+#   and links nothing: the cards still save teamless, K is still the fetch
+#   count, and STEP 10's re-sync has no team NAME left to ask, only
+#   teamless cards.
+#
+#   ⚠️ WRITES BEYOND THE CARDS, deliberately: ONE player (whichever Roanoke
+#   name the wizard presents first — a name no other flow touches, filed under
+#   Hockey) and TWO teams, `RXT<token>` (the career team) and `RXO<token>T`
+#   (the "Other team…" create), each a single search token, per attempt. All
+#   three are global; the same trade `checklist-wizard-career-team-commits`
+#   makes for the same reason.
+#
+#   COST, measured nowhere yet: the walk to a settled player row waits out the
+#   batch's Wikidata lookups (fixture-backed on previews, NEO-289) plus the
+#   util's deliberate 7s dwell; the career team's own lookup; a second live
+#   BSC fetch for the re-sync; and up to one drawer step per card to reach the
+#   pre-filled one. All inside the 600s per-flow kill, but this is now one of
+#   the longer set-selector flows.
+
 # ── R3 — NO OTHER FLOW TESTS THIS ───────────────────────────────────────────
 #   Every other flow that reaches the pairing dialog is on a TWO-sided set and
 #   proves the opposite half of the same rule, unchanged by this ticket:
@@ -201,6 +266,13 @@ tags:
 
 - evalScript: '${output.SET = "Roanoke Express ECHL"}'
 - evalScript: '${output.YEAR = "1995"}'
+# One alphanumeric search token per attempt (README, "Minted names are single
+# tokens"); `ATTEMPT_ID` is the runner's binding, never `output.ATTEMPT_ID`.
+# Names the TWO teams this flow creates, `RXT<token>` and `RXO<token>T`
+# (SET-REGISTRY). RXO ends in a LETTER so it cannot be a prefix of another
+# attempt's longer token (Convex search treats the last term as a prefix), which
+# would turn the picker's "No matches." into a match and Enter into a pick.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # LAUNCH + SIGN IN (R4 — the entry URL IS the Clerk handshake; no in-body login)
@@ -513,29 +585,58 @@ tags:
 # Measured ~0.8s to the wizard; 60s covers the live Wikidata lookup each
 # unknown name queues (R5 exception).
 - extendedWaitUntil:
-    visible: "Confirm New Players & Teams"
+    visible: "Tidy up this set"
     timeout: 60000
+# NEO-335 Phase 2 — the sitting starts at its first step: nothing is decided,
+# and on a name step x is the decided count plus one. y is the batch's own
+# business (and grows as staged steps arrive), so it is left free. Header
+# text, pinned.
+- assertVisible: "Step 1 of [0-9]+"
 
 # ── STILL NO DIALOG, at the terminal surface ────────────────────────────────
 - assertNotVisible: "Match Cards.*"
 
-# ── NO "Back to matching" ───────────────────────────────────────────────────
+# ── NO "Back to Match Cards" ──────────────────────────────────────────────
 # The wizard offers it only when there is a parked pairing session to go back
 # TO. There was never one, so the footer must not offer it. This is the clause
 # that would break if the client entered the review phase "just in case".
-- assertNotVisible: "Back to matching"
+- assertNotVisible: "Back to Match Cards"
 
 # ============================================================
-# STEP 6 — DECIDE EVERY NAME AS A SKIP, SO THE COMMIT IS ABOUT THE CARDS
+# STEP 6 — CREATE ONE PLAYER WITH ONE CAREER TEAM, THEN SKIP EVERY OTHER NAME
 #
-# The names themselves are not what this flow is about, and skipping is the
-# cheapest way to reach a commit: it decides every remaining row in one press
-# — lookups included — creates no players, and raises none of the per-team
-# "New Team" steps the bulk ADD path raises (NEO-236). What lands is exactly
-# what NEO-255 is about: the CARDS.
+# NEO-335 needs ONE card whose team the evidence knows, and none of these
+# cards carries a team, so the evidence has to be a player's career. The
+# cheapest honest source is the review itself: create the first player the
+# wizard presents, with ONE career team staged by hand. `teams-on-cards.ts`
+# (`createdPlayerVerdict`) reads a created row's `enrichment.careerTeams` plus
+# its decision's `manualCareerTeams` through the shared WINDOW rule (NEO-335
+# Phase 2, C2 — `careerTeamVerdict` in convex/lib/teamFill.ts): a career
+# pre-fills only when EXACTLY ONE of its teams covers [setYear-1, setYear].
+# The set year is 1995, so the window is [1994, 1995], and the staged stint
+# 1994–1996 covers it (`stintCoversWindow`: from 1994 <= 1995, to 1996 >=
+# 1994). Nothing else can share the window: a Wikidata career team the util
+# met on the way is answered as a SKIP, and a skipped team string is not a team
+# (`refFromString` returns null), so it never counts. There is no year-blind
+# "one-team career" shortcut any more — the stint years are what make this
+# card pre-fill. The staged team is decided "Add as New Team" in its own New
+# Team step, so the line's chip is that row's composed name, `RXT<token>`.
 #
-# Skip coverage itself belongs to `checklist-wizard-skip-not-a-person` and the
-# entity-review unit files; nothing here re-asserts it.
+# The mechanics are `checklist-wizard-career-team-commits` STEPs 1–3, reused
+# step for step (R3): the util walks to a SETTLED player row the operator's
+# way; "Add career team" stages a New Team step and hops the walk to it once
+# its lookup settles; "Add as New Team" brings the player back with the chip
+# (years intact); "Add as New Player" records the create. Which Roanoke name
+# that is, the flow never learns — every later assertion keys on the TEAM.
+#
+# The header names each screen type as the walk passes it (NEO-335 Phase 2):
+# "New player" on the player row, "New team" on the staged team's step.
+#
+# Every other name is then SKIPPED, the cheapest way to a commit: it decides
+# every remaining row in one press — lookups included — creates no players,
+# and raises none of the per-team "New Team" steps the bulk ADD path raises
+# (NEO-236). Skip coverage itself belongs to `checklist-wizard-skip-not-a-
+# person` and the entity-review unit files; nothing here re-asserts it.
 #
 # THE RETRY IS NOT DECORATION. The batch can still GROW after the wizard opens:
 # a player's Wikidata career history stages that player's TEAMS as further
@@ -543,10 +644,70 @@ tags:
 # went "Skip remaining names (28)" → "(29)" three seconds after the wizard
 # appeared, which is exactly when this flow presses it. One press then leaves
 # one row undecided and "Confirm & Save" never renders. Result-keyed and
-# bounded: press, wait 60s for the terminal state, and press once more if a
-# late row turned up. (Roanoke Express ECHL measured 25 players and 0 teams,
-# stable for 27s — so on the happy path the retry costs nothing at all.)
+# bounded: press, wait 60s for the end of the names, and press once more if a
+# late row turned up. The end of the names is the footer's "Next (Enter)": every
+# card here is teamless, so the wizard MUST walk on to its teams step — a
+# straight "Confirm & Save" would mean the step never came, and STEP 6b then
+# fails by name on its subtitle. (Roanoke Express ECHL measured 25 players and 0 teams,
+# stable for 27s — so on the happy path the retry costs nothing at all. Since
+# NEO-333 the listed team "Roanoke Express" is a 26th row, a team, which the
+# walk util skips before it reaches the player; header ⚠️.)
 # ============================================================
+
+# R9-equivalent for the wizard: the util owns the walk (and its R5 lookup
+# exceptions — the batch's live Wikidata round-trips).
+- runFlow: util-wizard-walk-to-player-row.yaml
+
+# The career-team mini-form renders only on a PLAYER row — the precondition —
+# and the header says which screen type this is.
+- assertVisible:
+    id: "Career team name"
+- assertVisible: "New player"
+- tapOn:
+    id: "Career team name"
+- inputText: "RXT${output.ATTEMPT_TOKEN}"
+# The name is a fresh single token, so no "Existing team suggestions" row can
+# open over "From year" (career-team-commits' header has the trap).
+- tapOn:
+    id: "From year"
+- inputText: "1994"
+- tapOn:
+    id: "To year \\(optional\\)"
+- inputText: "1996"
+- tapOn:
+    id: "Add career team"
+
+# The staged club's New Team step appears once ITS Wikidata lookup settles
+# (career-team-commits STEP 3 has the CI evidence): a 7s proof the stage
+# landed, the long gate named for the external round-trip (R5 exception),
+# then 7s for the step itself.
+- extendedWaitUntil:
+    visible: "New Team: RXT${output.ATTEMPT_TOKEN}|.*still looking up.*"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
+- extendedWaitUntil:
+    visible: "New Team: RXT${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- assertVisible: "New team"
+# One tap accepts the pre-filled Location (blank: the name has no place in
+# it), Name and League; the name is unique, so the button cannot have
+# relabelled itself to "Link to …".
+- tapOn: "Add as New Team"
+- extendedWaitUntil:
+    visible:
+      id: "Career team name"
+    timeout: 7000
+# Back on the player, the staged stint survived the hop, years and all
+# (71f23a4). The en dash is matched with ".".
+- assertVisible:
+    text: ".*RXT${output.ATTEMPT_TOKEN} \\(1994.1996\\).*"
+- tapOn: "Add as New Player"
+- extendedWaitUntil:
+    visible:
+      text: "Added as new"
+    timeout: 7000
 
 - retry:
     maxRetries: 1
@@ -555,18 +716,334 @@ tags:
           text: ".*Skip remaining names \\([0-9]+\\).*"
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm & Save.*"
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 60000
+
+# ============================================================
+# STEP 6b — THE CARDS THAT WOULD SAVE WITH NO TEAM GET THEIR OWN STEP
+#           (NEO-335; see the third R1/R2 block in the header)
+#
+# NEO-335 Phase 2: past the names the wizard walks on to a TEAMS step — header
+# subtitle "Cards with no team", the intro "Pick a team for each card, or
+# leave it for later.", and the footer's "Next (Enter)" (class
+# `btn-next-step`) in place of Confirm & Save, which lives on the Save step
+# alone. The header's "Step x of y" is the step's only running number.
+#
+# Each line is a radio group "Team for <owner>" whose radios are named
+# "<choice> — <owner>" (`lineOwner`, TeamsOnCardsSection.tsx), followed by an
+# "Other team… — <owner>" button. Two lines here:
+#   • the card of the player STEP 6 created — a PLAYER line, owned by that
+#     player's printed name, offering the career team `RXT<token>` CHECKED;
+#   • every other card. A skipped name is nobody, so those cards have NO
+#     players, and every teamless card with no players shares ONE line, owned
+#     "Cards with no players (N)" — keyed on having no players, never on a
+#     card's name or number. It offers "No team on this card" and "Leave for
+#     later", defaults to the second, and is never pre-filled (no player, no
+#     evidence). Its card numbers and count ("#NNO, #NNO, #NNO +21 · 24 cards
+#     ▸") are a button that opens the cards one by one, each with
+#     "Just this card… — #<n> <name>", which gives that card its own answers
+#     (a "Match the others" button takes it back).
+#
+# Every card number here is `NNO` and the card names are the marketplace's
+# (STEP 8's block), so the cards inside the shared line are told apart by
+# POSITION: `index:` sorts by y then x, and card 1 is the top-most.
+#
+# ⚠️ BODY CONTENT, which the README's dialog rule ("header and footer only")
+# warns about: the section lives in the wizard's inner-scrolling body. Only
+# the shared line and its FIRST two cards are touched, and each tap's target
+# is first asserted above the pinned footer's "Next (Enter)", so it cannot
+# land on a footer button through a clipped row (README;
+# guard-a-tap-at-a-footer). Nothing here scrolls the body until the pre-fill
+# read at the end.
+#
+# "checked" is unreadable as an attribute on maestro-web, so it is read off
+# the radio's own ✓ glyph — rendered INSIDE the checked radio only (1.4.1:
+# checked is not colour alone), and a `childOf:` scope ties it to one radio.
+# ============================================================
+
+# THE STEP, by its own header and intro. The subtitle is pinned header text;
+# the intro is the first line of the body, at its top on arrival.
+- assertVisible: "Cards with no team"
+# …and the step OPENS AT ITS TOP (the wizard resets its body's scroll on
+# every step change): the intro sits under the header, not scrolled up behind
+# it. A step that inherited the previous step's scroll would put the lines
+# above the body's visible top — where Maestro still "sees" them (an inner
+# scroller's clip is invisible to it) and a tap lands on the header. `below:`
+# compares top edges, so the intro reads below the subtitle only while the
+# body is at (or within ~60px of) its top.
+- assertVisible:
+    text: "Pick a team for each card, or leave it for later\\."
+    below:
+      text: "Cards with no team"
+
+# ── THE SHARED NO-PLAYERS LINE ──────────────────────────────────────────────
+# Every card whose name was SKIPPED has no players, and all of them are ONE
+# line — keyed on having no players, never on a card's name or number. How
+# many that is is no longer FETCHED - 1: with the reference catalogue loaded
+# (NEO-330) a Roanoke player the catalogue already holds is never a name step,
+# so his card keeps its player and gets a PLAYER line of its own. CI run
+# 38302511049 attempt 2: 25 cards, "24 names need a look" (23 players + the
+# listed team), Daniel Berthiaume and Matt DelGuidice known (their own lines,
+# career chips, "Leave for later"), Paul Croteau created → "Cards with no
+# players (22)". Which players the catalogue knows is the catalogue's
+# business, so the count is READ off the line's own heading (one text node)
+# and every later check is exact against it. Card 1 and card 2 below need two
+# cards in the line.
+- copyTextFrom:
+    text: "Cards with no players \\([0-9]+\\)"
+- evalScript: '${output.NO_PLAYERS = maestro.copiedText.match(/[0-9]+/)[0]}'
+- assertTrue: '${Number(output.NO_PLAYERS) >= 2 && Number(output.NO_PLAYERS) <= Number(output.FETCHED) - 1}'
+# "LEAVE FOR LATER" IS ITS DEFAULT — nothing is known about a card nobody is
+# on, so nothing is pre-filled.
+- assertVisible:
+    text: "✓"
+    childOf:
+      id: "Leave for later — Cards with no players \\(${output.NO_PLAYERS}\\)"
+
+# Open its cards. The button's words are the line's card numbers and its card
+# count ("… · 24 cards"); no accessible name of its own, so by text.
+- assertVisible:
+    text: "#.* · ${output.NO_PLAYERS} cards"
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    text: "#.* · ${output.NO_PLAYERS} cards"
+# Client-side disclosure: 7000. `.` matches the label's U+2026 ellipsis.
+- extendedWaitUntil:
+    visible:
+      id: "Just this card. — #.*"
+    timeout: 7000
+# PIN THE OPENED LIST INTO THE BODY'S SLICE. With the reference catalogue the
+# known players' lines sit ABOVE the shared line (Daniel Berthiaume, Paul
+# Croteau's pre-filled line), so the opened cards start at the body's bottom
+# edge: card 1's "Just this card…" at y=476-500 while the body shows ~96-475,
+# where Maestro still reports it and its tap lands under the footer on
+# nothing (local run on the PR preview, 2026-10-12: "Match the others" never
+# appeared). When the THIRD card's button is not above the footer's Next, the
+# list is that low, and the opened list makes the body taller than its slice
+# — the one case where a touch drag latches to the body (memory:
+# touch-swipe-scrolls-a-dialog-body). ONE drag of a quarter viewport (~156px,
+# the same gesture as the RXT pre-fill read below; x=18% is the dialog's left
+# gutter, never a control) lifts card 1 to ~320. The guard after it is the
+# hard check.
+- runFlow:
+    when:
+      notVisible:
+        id: "Just this card. — #.*"
+        index: 2
+        above:
+          text: "Next \\(Enter\\)"
+    commands:
+      - swipe:
+          start: "18%, 70%"
+          end: "18%, 45%"
+
+# ── CARD 1: "NO TEAM ON THIS CARD" ──────────────────────────────────────────
+# GUARD, then "Just this card…" gives card 1 its own answers, starting from
+# the line's ("Leave for later"); its button turns into "Match the others".
+# Card 1's button is clear of the slice's bottom when card 3's top is above
+# the footer's Next (`above:` compares top edges; ~24px rows).
+- assertVisible:
+    id: "Just this card. — #.*"
+    index: 2
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    id: "Just this card. — #.*"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "Match the others — #.*"
+    timeout: 7000
+# Card 1's own row is the only per-card row open, so its "No team on this
+# card — #…" is the only one on screen (the line's own is owned "Cards with no
+# players (…)" and cannot match `— #`). Recorded on the card at commit as the
+# operator's answer (`teamNone`), so it is not flagged after the save.
+- assertVisible:
+    id: "No team on this card — #.*"
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    id: "No team on this card — #.*"
+- extendedWaitUntil:
+    visible:
+      text: "✓"
+      childOf:
+        id: "No team on this card — #.*"
+    timeout: 7000
+# …and the LINE, untouched, is still left for later — a card's own answer is
+# per card, not the line's.
+- assertVisible:
+    text: "✓"
+    childOf:
+      id: "Leave for later — Cards with no players \\(${output.NO_PLAYERS}\\)"
+
+# ── CARD 2: "OTHER TEAM…" CREATES A TEAM NOBODY OFFERED (C1) ────────────────
+# Card 1's button now reads "Match the others", so the top-most
+# "Just this card…" is card 2's.
+- assertVisible:
+    id: "Just this card. — #.*"
+    index: 0
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    id: "Just this card. — #.*"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "Match the others — #.*"
+      index: 1
+    timeout: 7000
+# Every answer row carries "Other team…". It opens ONE focused search field
+# under the row (placeholder "Search or add a team…", accessible name
+# "Team name to find"); its last option is always `+ New team "<typed>"…`,
+# and a name nothing matches opens the New Team dialog, where the team is
+# created at once and joins the row selected. The fixture comes from the UI (a
+# single-token name minted per attempt), and its chip is read back on the
+# card after the save (STEP 9).
+#
+# Two per-card rows are open now, card 1's above card 2's, so card 2's
+# "Other team… — #…" is index 1 (the line's own is owned "Cards with no
+# players (…)", the player line's by his name; neither matches `— #`).
+- assertVisible:
+    id: "Other team. — #.*"
+    index: 1
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    id: "Other team. — #.*"
+    index: 1
+# Client-side mount: 7000. The field takes focus on arrival; the tap below is
+# belt-and-braces so the typing cannot land anywhere else.
+- extendedWaitUntil:
+    visible:
+      id: "Team name to find"
+    timeout: 7000
+- tapOn:
+    id: "Team name to find"
+- inputText: "RXO${output.ATTEMPT_TOKEN}T"
+# NOTHING MATCHES THAT NAME — the precondition for creating it, and the proof
+# that Enter below can only mean "create": the field shows "No matches." only
+# once the search has answered for exactly what was typed and returned
+# nothing, leaving `+ New team "<typed>"…` the one option. In-app search
+# behind a debounce: 7000.
+- extendedWaitUntil:
+    visible: "No matches."
+    timeout: 7000
+# Enter picks the field's highlighted option — the create row — and reads no
+# coordinates. The field sits under a uniquely-id'd host, so maestro-web's
+# XPath re-find of the focused element lands on it and no other node
+# (README, pressKey).
+- pressKey: Enter
+# THE DIALOG, labelled and seeded (`checklist-attention-walker-missing-team`
+# has why both): portalled to `document.body` at z-[60], so nothing clips it.
+- extendedWaitUntil:
+    visible: "New team: RXO${output.ATTEMPT_TOKEN}T"
+    timeout: 7000
+- assertVisible:
+    id: "New team name"
+    text: "RXO${output.ATTEMPT_TOKEN}T"
+# THE WRITE. Location blank and no League picked, so the composed name is
+# exactly what was typed. By id, never a second Enter (Create and Cancel share
+# a class string — README, pressKey).
+- tapOn:
+    id: "Create team RXO${output.ATTEMPT_TOKEN}T"
+# The created team joins card 2's row SELECTED. The chip reads "Loading…"
+# until the team's row arrives, so this waits on the chip's real name being
+# the checked radio — a create that wrote nothing, or a pick that missed the
+# row, leaves no such radio. Our own write and a query: 7000.
+- extendedWaitUntil:
+    visible:
+      text: "✓"
+      childOf:
+        id: "RXO${output.ATTEMPT_TOKEN}T — #.*"
+    timeout: 7000
+
+# THE PRE-FILL. The created player's line offers his one in-window career team
+# and has it CHECKED by default — nobody touched it. Read last, because
+# reaching it may scroll the wizard's body: lines are in preview order, so his
+# line is either above the shared no-players line or below it — and below it
+# means below that line's opened list of 24 cards. The body is an inner
+# scroller the window never moves, so the reach is TOUCH swipes (half a swipe,
+# ~157px each) that start in the body's own left padding (the max-w-2xl dialog
+# spans x≈168-840, so x=18% is its p-6 gutter, clear of every radio) and stop
+# the moment the chip is in the hierarchy; 8 cover ~1,250px, more than the
+# opened list.
+- repeat:
+    times: 8
+    while:
+      notVisible:
+        id: "RXT${output.ATTEMPT_TOKEN} — .*"
+    commands:
+      - swipe:
+          start: "18%, 70%"
+          end: "18%, 45%"
+- extendedWaitUntil:
+    visible:
+      text: "✓"
+      childOf:
+        id: "RXT${output.ATTEMPT_TOKEN} — .*"
+    timeout: 7000
+
+# What the checklist must say once this saves: every card left for later is
+# flagged; the one answered "no team" is not, nor the pre-filled one, nor the
+# one given RXO — K - 3, in the pill's own words ("1 needs you" singular, "N
+# need you" otherwise). Exactly 3 because one Roanoke card per player
+# (SET-REGISTRY measurement 5), so each answer above covers one card. The
+# catalogue-known players' cards (their own lines) are left for later too:
+# their careers hold several teams, none alone covering the 1994-95 window,
+# so nothing pre-fills them (measured in the run above; a catalogue refresh
+# that gave one of them a single covering team would pre-fill it and fail the
+# pill count by name). LEFT is the bare number the re-sync in STEP 10 finds
+# on its NO-PLAYERS line: that line less the two cards answered above.
+- evalScript: '${output.NEED_YOU_N = String(Number(output.FETCHED) - 3)}'
+- evalScript: '${output.NEED_YOU = output.NEED_YOU_N === "1" ? "1 needs you" : output.NEED_YOU_N + " need you"}'
+- evalScript: '${output.LEFT = String(Number(output.NO_PLAYERS) - 2)}'
+
+# ============================================================
+# STEP 6c — NEXT (ENTER) LEAVES THE TEAMS STEP FOR THE SAVE STEP
+#
+# The step is left with the footer's Next (the answers above are held by the
+# section, which stays mounted). `util-wizard-advance-to-save` presses it —
+# and Next again on a "Card titles" step, should a title here ever need a look
+# (none has: the titles are ~50 characters, nowhere near 80) — and stops on
+# "Ready to save", which it asserts.
+# ============================================================
+
+# y, read on the teams step AFTER its answers (a team answer can change a
+# card's title, and a title that then needs a look would add the "Card titles"
+# step — the one way y may still grow here) and held to on the Save step,
+# which is always "Step y of y" and adds nothing (entity-review-steps.ts, C6).
+- copyTextFrom:
+    text: "Step [0-9]+ of [0-9]+"
+# NO `$` ANYWHERE INSIDE `${…}`. Maestro finds a script with the regex
+# `(?<!\\)\$\{([^$]*)}` (maestro-orchestra-models `Env`), so a `$` in the body —
+# here a regex end-anchor — means the text is never recognised as a script:
+# the evalScript completes without running, STEPS_TOTAL stays undefined, and
+# the assertTrue below compares against NaN. CI run 38198207277 failed exactly
+# so ("false is true") on a header that read "Step 27 of 28" (re-run locally
+# with the copied text logged: "Step 27 of 28"). The counter has one "of", so
+# the anchor bought nothing.
+- evalScript: '${output.STEPS_TOTAL = maestro.copiedText.match(/of ([0-9]+)/)[1]}'
+# The teams step is never the last step: Save comes after it.
+- assertTrue: '${Number(maestro.copiedText.match(/^Step ([0-9]+)/)[1]) < Number(output.STEPS_TOTAL)}'
+
+- runFlow: util-wizard-advance-to-save.yaml
+
+# Save is ALWAYS the last step: x = y, and y is the total the teams step read.
+- assertVisible: "Step ${output.STEPS_TOTAL} of ${output.STEPS_TOTAL}"
 
 # ── LINK 2 OF THE CHAIN: the review is about EVERY card the fetch produced ──
 # How many cards this set has is the marketplace's business, not this flow's
 # claim — so the number is the one read off the "Kept all …" line, never a
 # literal. This is where a build that kept the dialog's narrowing behaviour
 # (only the matched bucket, only what was explicitly kept) would part company
-# with the fetch count.
+# with the fetch count. "Save N cards?" is the Save step's own heading.
 - assertVisible:
-    text: ".*All reviewed — save ${output.FETCHED} cards?.*"
+    text: "Save ${output.FETCHED} cards?\\?"
 
+# Never gated by the teams step's answers: Confirm & Save is the Save step's
+# footer button.
 - tapOn:
     text: ".*Confirm & Save.*"
 
@@ -580,8 +1057,9 @@ tags:
 # ============================================================
 
 # ── LINK 3 OF THE CHAIN: fetched == offered == SAVED ────────────────────────
-# `.*`-wrapped because the banner appends the attention count after the
-# sentence as team enrichment lands ("Saved 25 cards. 7 need attention — …").
+# The banner is "Saved 25 cards." — NEO-335 removed the attention count and
+# its "Fix them one at a time" button that used to trail it. `.*`-wrapped so
+# the full stop and any later clause cannot break the count's match.
 # R5 — the commit of a live fetch is the sanctioned wait, so it gets its own
 # GATE and the scroll gets the bar. The banner appears once the server has
 # written every fetched card plus its skip records; that is the R5
@@ -610,6 +1088,23 @@ tags:
     element:
       text: ".*[(]${output.FETCHED}[)].*"
     centerElement: true
+    timeout: 7000
+
+# ── THE COUNT IS FINAL AT "Saved" (NEO-335) ─────────────────────────────────
+# The header's amber pill counts the cards that need a person, and it must
+# read K - 3 now — STEP 6b answered one card "No team on this card", gave
+# another the team it created with "Other team…", the created player's card
+# saved with its pre-filled team, and the rest were left for later. Before NEO-335 a BSC card was not flagged until the
+# background queue re-asked BSC (300ms a card, a measured ~15s tail to 25), so
+# this count started near 0 and climbed; now the commit stamps every card
+# whose fetch-time lookup answered and the count is whole the moment the
+# banner shows. 7000 is the R5 bar, and it is the discriminator: the old
+# climb could not finish inside it. Full match, so a count that is still
+# moving fails by its number. The pill sits in the checklist header's
+# attention row, a few rows under the Cards header just centred.
+- extendedWaitUntil:
+    visible:
+      text: ${output.NEED_YOU}
     timeout: 7000
 
 # ── THE BADGE: these cards came from ONE marketplace, and the row says so ───
@@ -688,8 +1183,9 @@ tags:
 #     scroll offset was 183px in that run, an emergent value nothing in the flow
 #     chose (Virtuoso's `initialTopMostItemIndex` racing 25 rows' arrival), and
 #     maestro-web's only scroll is `window.scroll` (README, R8) so no flow can
-#     move it. The lowest anchor above the list is the ATTENTION filter row at
-#     y=373 against a list viewport starting at y=406: a shift of 19-42px in
+#     move it. The lowest anchor above the list was the ATTENTION row at
+#     y=373 (then the filter chip, now NEO-335's "N need you" pill) against a
+#     list viewport starting at y=406: a shift of 19-42px in
 #     that offset silently puts a fully-clipped row on the near side of the
 #     anchor and the tap lands on page chrome again.
 #
@@ -780,26 +1276,24 @@ tags:
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 
-# THE RETRY IS NOT DECORATION. `Saved 25 cards. <n> need attention` is still
-# climbing here as the background team pass lands (SET-REGISTRY: a ~15s tail to
-# 25), and a row whose attention slot flips re-measures the Virtuoso list under
-# the bounds Maestro has already read — CardChecklist.tsx's "bounds-then-tap
-# window races Virtuoso's height recompute", the long-standing dropped-tap
-# flake. Result-keyed and bounded: tap, wait for the drawer, tap once more if
-# the first one was eaten. It costs nothing when the tap lands.
+# NO RETRY ANY MORE (NEO-335). One wrapped this tap while the attention count
+# was still climbing after the commit: a row whose attention slot flipped
+# re-measured the Virtuoso list under bounds Maestro had already read
+# (CardChecklist.tsx's "bounds-then-tap window races Virtuoso's height
+# recompute"). The count is now final at "Saved" — STEP 7 asserts exactly
+# that — and this card is born with its own badge, so no row's attention slot
+# changes between the bounds read and the click. A dropped tap here is a
+# finding about the list, not a retry to restore.
 #
 # The gate is `Card title`, not `Card name`: the add form has a `Card name` too,
 # and a gate that a just-closed form could satisfy is not a gate.
-- retry:
-    maxRetries: 1
-    commands:
-      - tapOn:
-          id: "Edit card NB272-${ATTEMPT_ID}(, .*)?"
-          waitToSettleTimeoutMs: 1000
-      - extendedWaitUntil:
-          visible:
-            id: "Card title"
-          timeout: 7000
+- tapOn:
+    id: "Edit card NB272-${ATTEMPT_ID}(, .*)?"
+    waitToSettleTimeoutMs: 1000
+- extendedWaitUntil:
+    visible:
+      id: "Card title"
+    timeout: 7000
 
 # THE POSITIVE, FIRST — a negative alone is satisfied by a drawer that never
 # opened. For an `<input>` Maestro's getNodeText returns its VALUE, so this
@@ -832,3 +1326,188 @@ tags:
 - assertNotVisible:
     id: "Card title"
     text: ".*All Brands.*"
+
+# ============================================================
+# STEP 9 — BOTH TEAMS ANSWERED IN THE WIZARD ARE ON THEIR CARDS (NEO-335)
+#
+# The pre-filled `RXT<token>` on the created player's card, and the
+# `RXO<token>T` created with "Other team…" on the second card of the shared
+# no-players line.
+#
+# The drawer STEP 8 opened is the way to those cards. Every committed card is
+# `NNO` and its name is the marketplace's, so no selector can pick the row
+# (STEP 8's block); the drawer's own "Next card" walks the checklist in its
+# display order instead, and `NB272-…` sorts FIRST (`compareCardNumbers`: the
+# text token "NB" before "NNO"), so walking forward visits every committed
+# card once. Those two are the ONLY cards on this checklist with a team (the
+# rest were left for later, answered "no team", or are NB272), and which of
+# them the walk meets first is the checklist's display order, not this
+# flow's to know. So the walk stops on the first drawer showing ANY team
+# chip — matched loosely so a chip whose name is still loading
+# (`Remove team <id>`) stops it too — waits for it to name one of the two,
+# reads WHICH, steps past it, and walks on to the next teamed card, which
+# must name the other. Each chip is the drawer's TeamPicker reading the stored
+# row's `teamOnCardIds`: the read-back. `times:` is a runaway guard; a walk
+# that never finds a chip fails at the gate under it. The TeamPicker sits
+# above "Card title" in the drawer body, which STEP 8 just read, so no
+# in-drawer swipe is needed (Teams is the body's second field).
+# ============================================================
+
+- repeat:
+    times: 30
+    while:
+      notVisible:
+        id: "Remove team .*"
+    commands:
+      - tapOn:
+          id: "Next card"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team (RXT${output.ATTEMPT_TOKEN}|RXO${output.ATTEMPT_TOKEN}T)( · .*)?"
+    timeout: 7000
+# The chip's own name span ("Team: <name>" is its accessible name; its text is
+# the name) says which of the two this card carries.
+- copyTextFrom:
+    id: "Team: (RXT${output.ATTEMPT_TOKEN}|RXO${output.ATTEMPT_TOKEN}T)( · .*)?"
+- evalScript: '${output.FIRST_TEAM = maestro.copiedText.indexOf("RXO") === 0 ? "RXO" + output.ATTEMPT_TOKEN + "T" : "RXT" + output.ATTEMPT_TOKEN}'
+- evalScript: '${output.SECOND_TEAM = output.FIRST_TEAM.indexOf("RXO") === 0 ? "RXT" + output.ATTEMPT_TOKEN : "RXO" + output.ATTEMPT_TOKEN + "T"}'
+# Step past it, and wait for its chip to go, so the walk below cannot stop on
+# the drawer it is leaving (the positive wait under the walk is what makes
+# this negative mean something on a live page).
+- tapOn:
+    id: "Next card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Remove team ${output.FIRST_TEAM}( · .*)?"
+    timeout: 7000
+- repeat:
+    times: 30
+    while:
+      notVisible:
+        id: "Remove team .*"
+    commands:
+      - tapOn:
+          id: "Next card"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.SECOND_TEAM}( · .*)?"
+    timeout: 7000
+- tapOn:
+    id: "Done editing card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card title"
+    timeout: 7000
+
+# ============================================================
+# STEP 10 — A RE-SYNC WITH NO NAMES LEFT OPENS THE REVIEW TEAMS-ONLY (NEO-335)
+#
+# Every name on these cards is now known (the created player) or skipped for
+# this set (the skip records the commit wrote, which entity resolution
+# consults), and LEFT cards are stored with no team. So the next sync has no
+# names to ask but cards that would save teamless, and NEO-335 opens the
+# review straight onto its teams step for them — "Step 1 of 2", the teams
+# step and then Save (NEO-335 Phase 2; a re-synced row is not a NEW row, so
+# no "Card titles" step can join them).
+#
+# THE CONTENT REVIEW COMES FIRST, AND IT ALWAYS COMES. A re-sync diffs every
+# incoming card against its stored row (NEO-203). The pre-filled card is
+# stored WITH `RXT<token>` and arrives with none (BSC lists "Roanoke Express",
+# which the first sitting skipped as "not a team"; header ⚠️), and every
+# skipped card is stored with no player link against an incoming name — both
+# are content changes, so `needsSyncReview` is true on every run of this
+# flow, and "Skip changes" (apply nothing, keep NeonBinder's version) is the
+# deterministic way through. No Match Cards: still one marketplace attached.
+#
+# The teams step then asks about the LEFT cards and no others: the re-synced
+# rows that carry a team (the pre-filled one, the RXO one) or an operator's
+# "no team" (the one STEP 6b answered) are settled (`settledTeamIndexes`),
+# and NB272 carries no marketplace id, so it is not in the fetch at all. The
+# skipped-name cards left for later are all playerless (their names were
+# skipped for this set), so they are ONE line, "Cards with no players
+# (LEFT)" — an exact count, in the line's own accessible names. The
+# catalogue-known players' cards (left for later too) come back as their own
+# player lines beside it; they are not this step's claim.
+# ============================================================
+
+# The Refresh button heads the checklist, ABOVE the rows the drawer walk
+# scrolled — UP. Its accessible name is the same "Sync card checklist" as the
+# empty state's button (one renders at a time).
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Sync card checklist"
+
+# R5 exception: a live BSC fetch, then the diff. Same 60s ceiling as STEP 5.
+- extendedWaitUntil:
+    visible:
+      id: "Skip reviewing changes and continue"
+    timeout: 60000
+- assertNotVisible: "Match Cards.*"
+# The review is a fixed dialog; its footer button is tapped where it stands
+# (R8 case 2).
+- tapOn:
+    id: "Skip reviewing changes and continue"
+
+# THE FEATURE: the same review, teams only. Entity resolution runs no lookups
+# here (nothing is unknown), so this is our own server answering: 7000.
+- extendedWaitUntil:
+    visible: "Tidy up this set"
+    timeout: 7000
+# Teams-only is a two-step sitting: this step, then Save. Header text, pinned.
+- assertVisible: "Step 1 of 2"
+- assertVisible: "Cards with no team"
+# No names: neither bulk link exists, because nothing is undecided. Paired
+# with the positives above, so a dead page cannot satisfy them.
+- assertNotVisible:
+    text: ".*Skip remaining names.*"
+- assertNotVisible:
+    text: ".*Add remaining players as new.*"
+# The LEFT cards, exactly, on one shared line, back on "Leave for later" (the
+# same default; nothing about them is known now that was not known then).
+# Full match on the count, so a step that re-asked the "no team" or RXO card
+# reads LEFT+1 or LEFT+2 and fails here…
+- assertVisible:
+    text: "✓"
+    childOf:
+      id: "Leave for later — Cards with no players \\(${output.LEFT}\\)"
+# …and the settled pre-filled card is NOT asked again: its line would be the
+# created player's, offering (and pre-filling) `RXT<token>` from his stored
+# card and career. Paired with the positive above.
+- assertNotVisible:
+    id: "RXT${output.ATTEMPT_TOKEN} — .*"
+
+# Next leaves every line on its default and lands on Save, "Step 2 of 2", for
+# every fetched card again.
+- runFlow: util-wizard-advance-to-save.yaml
+- assertVisible: "Step 2 of 2"
+- assertVisible:
+    text: "Save ${output.FETCHED} cards?\\?"
+
+# Never gated: Confirm & Save with every line on its default saves the same
+# cards again, and the count must hold. Our own write: 7000 (R5).
+#
+# EXACTLY "Saved N cards.", with NO tail (R2). Every name on these cards was
+# answered in the first sitting (one created, the rest skipped, the skips
+# stored per set), so this commit has nothing to report beyond the count.
+# The banner is ONE text node holding the count and every note the commit
+# appends (CardChecklist `committedText`), and `text:` is a full match, so
+# any note fails here by name. The one this pins:
+# "N names were not reviewed; those cards have no player/team link." That is
+# the commit treating names it found in the set's stored skips as
+# unanswered, and stamping them back onto the cards as pending names. CI run
+# 38285320710 showed it as "25 names were not reviewed" with
+# "Roanoke Express (unconfirmed)" on the rows, a team the operator had ruled
+# "not a team". The other notes cannot apply here: nothing is deleted or
+# stale, no card links twice, all 25 match by BSC ref, and NB272 carries no
+# marketplace id, so it is never "no longer listed upstream".
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: "Saved ${output.FETCHED} cards\\."
+    timeout: 7000

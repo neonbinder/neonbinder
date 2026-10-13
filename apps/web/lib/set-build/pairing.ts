@@ -117,6 +117,20 @@ export type PairingCard = {
     sportlots?: { ref: string; setId?: string };
   };
   unmatched?: "bsc" | "sl";
+  /**
+   * NEO-335 — how the fetch-time BSC team lookup for this card ended
+   * (`pairing-cards.ts`'s `TeamLookup`). Rides through the dialog untouched;
+   * the commit stamps an answered teamless card as checked.
+   */
+  teamLookup?: "answered" | "failed";
+  /**
+   * NEO-335 — BSC's team value for this card exactly as its fetch-time lookup
+   * returned it, unsplit (`checklistCandidates.rawTeamName`). Present only
+   * where `teams` does not already say it. Rides through the dialog
+   * untouched; the commit stores it as the "Listed as:" hint on an answered
+   * card that saves with no team. A listing claim, never a team.
+   */
+  rawTeamName?: string;
 };
 
 /**
@@ -694,6 +708,13 @@ export function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
     // number, SportLots brackets the description, and one may have catalogued
     // a variation the other has not.
     isVariation: bsc.isVariation || sl.isVariation || undefined,
+    // NEO-335: the lookup is BSC's — only the BSC side ever runs one — so a
+    // hand-linked pair carries the BSC card's outcome. Dropping it would fall
+    // back to queueing the card for a lookup that already answered.
+    ...(bsc.teamLookup ? { teamLookup: bsc.teamLookup } : {}),
+    // NEO-335: and BSC's raw team value with it, from the BSC side only — it
+    // is what BSC listed, and SportLots never runs that lookup.
+    ...(bsc.rawTeamName ? { rawTeamName: bsc.rawTeamName } : {}),
     platformData: {
       ...(bsc.platformData.bsc ? { bsc: bsc.platformData.bsc } : {}),
       ...(sl.platformData.sportlots

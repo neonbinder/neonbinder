@@ -57,14 +57,16 @@ tags:
 #                   the set's ancestors. Default to Baseball / 2024 / Topps.
 #
 # ── RETURN CONTRACT ─────────────────────────────────────────────────────────
-#   The entity-review wizard is OPEN, every row undecided ("0 of N reviewed"),
-#   and the card-pairing session is PARKED behind it — so "Back to matching"
+#   The entity-review wizard is OPEN ("Tidy up this set"), every row
+#   undecided ("Step 1 of N" — NEO-335 Phase 2's counter; x is the decided
+#   count plus one on a name step),
+#   and the card-pairing session is PARKED behind it — so "Back to Match Cards"
 #   is offered. The caller owns the exit.
 #
 #   NEO-287 — WHILE SPORTLOTS IS ON PAUSE (`-e PAUSED_PLATFORMS`, decided by
 #   util-paused-platforms) the fetch is ONE-marketplace: no Match Cards
 #   dialog, the NEO-255 solo path keeps every BSC card and opens the wizard
-#   directly, so there is NO parked session and "Back to matching" is NOT
+#   directly, so there is NO parked session and "Back to Match Cards" is NOT
 #   offered. The unknown names still come from BSC, so the wizard still
 #   opens on the same fixture. A caller whose feature is the parked session
 #   branches on `output.SL_PAUSED` itself.
@@ -166,5 +168,5 @@ tags:
 # Every name the fetch brought back that `players`/`teams` does not hold is
 # queued, each behind a live Wikidata lookup. 120s covers that external work.
 - extendedWaitUntil:
-    visible: "Confirm New Players & Teams"
+    visible: "Tidy up this set"
     timeout: 120000

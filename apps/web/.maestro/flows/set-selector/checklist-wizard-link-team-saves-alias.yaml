@@ -49,7 +49,8 @@ tags:
 #         prints "Loc<token> Ali<token> already answers to this name as an
 #         alias — remove it there before a team can take the name.", offers
 #         "Link to Loc<token> Ali<token>", and "Add as New Team" records
-#         nothing (the header's reviewed-count is unchanged seconds later).
+#         nothing (the header's "Step x of y" is unchanged seconds later;
+#         NEO-335 Phase 2: on a name step x is the decided count plus one).
 #
 # ── (h), THE PAST-ERA TEAM LINK, IS NOT HERE ────────────────────────────────
 #   NEO-307's past-era claims (a card resolving a club whose era ended before
@@ -243,8 +244,10 @@ tags:
       YEAR: "1996"
       SET: "Line Up Venezuelan Winter League"
 
+# NEO-335 Phase 2's counter: on a name step x is the decided count plus one,
+# so nothing decided is "Step 1 of N" (full match: not "Step 11 of …").
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # Wait the batch's lookups out, so every step the walk below reads is settled
 # and nothing that settles later can out-rank the row under test (NEO-236/254
@@ -283,6 +286,19 @@ tags:
 #   * anything else (a league, another club, a staged career team) → skip.
 # A skip creates nothing (R7). `optional: true` on the skip tap is the
 # guard/tap race noted at `util-wizard-walk-to-player-row.yaml` (R3).
+#
+# THE SKIP TAP NAMES THE ROW IT READ (NEO-335). The heading copy and the tap
+# are separate hierarchy reads (memory: guard-then-tap-toctou). A bare
+# `Skip .*` tap issued while the previous pass's skip is still landing reads
+# the OLD heading, takes the else-branch, and then lands on whatever control
+# is up by the time it resolves — and the next row can be Navegantes, which
+# would be skipped unseen (ALIAS_DONE then fails the flow, but as a flake).
+# So the tap's selector is built from the heading just copied: if the row
+# moved on in between, it matches nothing, `optional: true` lets the loop come
+# round, and the next pass reads the new heading. Copied names go into a
+# full-match regex, so they are escaped first (memory: runtime-names-need-
+# regex-escaping). A league's control ends "— this team has no league", a
+# team's "— not a team"; the em dash is matched with ".".
 - evalScript: '${output.ALIAS_DONE = false}'
 - repeat:
     times: 20
@@ -373,10 +389,12 @@ tags:
             # "· years" tail). Asserted only; the flow's own link is made
             # through the search below.
             - assertVisible: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
-            # The refused create. The header's counter counts every decision,
-            # so it is read before the tap and must still read the same after.
+            # The refused create. The header's "Step x of y" moves with every
+            # decision (x is the decided count plus one on a name step,
+            # NEO-335 Phase 2), so it is read before the tap and must still
+            # read the same after.
             - copyTextFrom:
-                text: "[0-9]+ of [0-9]+ reviewed.*"
+                text: "Step [0-9]+ of [0-9]+"
             - evalScript: '${output.COUNT_BEFORE = maestro.copiedText}'
             - tapOn:
                 id: "Add as New Team"
@@ -414,7 +432,7 @@ tags:
             # R2(i), the refusal's second reading: seconds after the tap on
             # the refused "Add as New Team", nothing has been decided.
             - copyTextFrom:
-                text: "[0-9]+ of [0-9]+ reviewed.*"
+                text: "Step [0-9]+ of [0-9]+"
             - assertTrue: '${maestro.copiedText === output.COUNT_BEFORE}'
             # The option's only direct text node is the composed full name. It
             # comes back from `teams.search` after a 200ms debounce — 7000.
@@ -455,8 +473,9 @@ tags:
           when:
             true: '${output.STEP_HEADING !== "New Team: Navegantes del Magallanes"}'
           commands:
+            - evalScript: '${output.STEP_NAME_RE = output.STEP_HEADING.replace(/^New (Team|League): /, "").replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
             - tapOn:
-                id: "Skip .*(not a team|has no league)"
+                id: "Skip ${output.STEP_NAME_RE} . (not a team|this team has no league)"
                 optional: true
 - extendedWaitUntil:
     visible:
@@ -476,8 +495,11 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 7000
+# NEO-335 Phase 2 — the teams / titles steps (a skipped club leaves its cards
+# teamless) stay on their defaults; this flow's feature is the alias.
+- runFlow: util-wizard-advance-to-save.yaml
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:

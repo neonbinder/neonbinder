@@ -75,6 +75,8 @@ const state = vi.hoisted(() => ({
   slSets: [] as Item[],
   /** bsc ref → BSC's raw team value; the mock splits it as the adapter does. */
   teamNames: {} as Record<string, string>,
+  /** NEO-335 — bsc refs whose team lookup FAILS (no answer from BSC). */
+  failedTeamRefs: [] as string[],
 }));
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
@@ -99,30 +101,32 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       },
     }),
     // NEO-333 shape: the raw value AND its comma split, as
-    // `fetchBscCardTeamNameRaw` produces them (the real splitter).
+    // `fetchBscCardTeamNameRaw` produces them (the real splitter). NEO-335
+    // shape: one entry per requested id, in order, each with `success`; an
+    // id with no value is BSC answering "no team".
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(
-        v.string(),
-        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      returns: v.array(
+        v.object({
+          bscCardId: v.string(),
+          rawTeamName: v.string(),
+          teamNames: v.array(v.string()),
+          success: v.boolean(),
+        }),
       ),
-      handler: async (
-        _ctx,
-        args,
-      ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
-        const out: Record<string, { rawTeamName: string; teamNames: string[] }> =
-          {};
-        for (const id of args.bscCardIds) {
-          const raw = state.teamNames[id];
-          if (raw) {
-            out[id] = {
-              rawTeamName: raw,
-              teamNames: splitMarketplaceTeamNames(raw).names,
-            };
+      handler: async (_ctx, args) =>
+        args.bscCardIds.map((bscCardId) => {
+          if (state.failedTeamRefs.includes(bscCardId)) {
+            return { bscCardId, rawTeamName: "", teamNames: [], success: false };
           }
-        }
-        return out;
-      },
+          const raw = state.teamNames[bscCardId] ?? "";
+          return {
+            bscCardId,
+            rawTeamName: raw,
+            teamNames: raw ? splitMarketplaceTeamNames(raw).names : [],
+            success: true,
+          };
+        }),
     }),
     fetchBscSelectorOptions: action({
       args: {
@@ -268,6 +272,7 @@ beforeEach(() => {
     { value: "Topps Heritage Clubhouse Collection", platformValue: "556" },
   ];
   state.teamNames = {};
+  state.failedTeamRefs = [];
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -388,6 +393,9 @@ async function stagedBuckets(
         teamResolved: _teamResolved,
         bucket,
         confidence,
+        // NEO-335 — compared on its own (`stagedTeamLookups`): the staging
+        // path always runs the team lookup, a preview only with `lookupTeams`.
+        teamLookup: _teamLookup,
         ...card
       } = c;
       return {
@@ -405,16 +413,41 @@ type Preview = {
   slOnly: unknown[];
 };
 
+function withoutTeamLookup(card: unknown): unknown {
+  const { teamLookup: _teamLookup, ...rest } = card as Record<string, unknown>;
+  return rest;
+}
+
 function previewBuckets(p: Preview): string[] {
   return normalise([
     ...p.matched.map((m) => ({
       bucket: "matched",
       confidence: m.confidence,
-      card: m.card,
+      card: withoutTeamLookup(m.card),
     })),
-    ...p.bscOnly.map((card) => ({ bucket: "bscOnly", card })),
-    ...p.slOnly.map((card) => ({ bucket: "slOnly", card })),
+    ...p.bscOnly.map((card) => ({ bucket: "bscOnly", card: withoutTeamLookup(card) })),
+    ...p.slOnly.map((card) => ({ bucket: "slOnly", card: withoutTeamLookup(card) })),
   ]);
+}
+
+/**
+ * NEO-335 — bsc ref → the `teamLookup` a staged row recorded. Only the rows
+ * the first lookup pass reached: a row past the first write page is patched
+ * by the NEO-294 retry, a delayed tail `drainScheduled` does not run.
+ */
+async function stagedTeamLookups(
+  t: ReturnType<typeof convexTest>,
+  id: Id<"selectorOptions">,
+): Promise<Map<string, string>> {
+  const live = await t
+    .withIdentity(ADMIN)
+    .query(api.checklistCandidates.getReadyCandidates, { selectorOptionId: id });
+  const out = new Map<string, string>();
+  for (const c of live.cards) {
+    const ref = c.platformData.bsc?.ref;
+    if (ref && c.teamLookup) out.set(ref, c.teamLookup);
+  }
+  return out;
 }
 
 describe("previewCardChecklist", () => {
@@ -562,11 +595,87 @@ describe("previewCardChecklist", () => {
     expect(teamsOf("2")).toEqual(["Cleveland Guardians", "Washington Nationals"]);
     expect(teamsOf("3")).toEqual(["Korea, South"]);
 
+    // NEO-335 — what the staged row records beside `teams`: the lookup
+    // answered, and BSC's unsplit value only where `teams` does not say it
+    // (the split dual-team card), never where it does.
+    const cardOf = (cardNumber: string) =>
+      ([...preview.matched.map((m) => m.card), ...preview.bscOnly] as Array<{
+        cardNumber: string;
+        teamLookup?: string;
+        rawTeamName?: string;
+      }>).find((c) => c.cardNumber === cardNumber);
+    expect(cardOf("2")?.rawTeamName).toBe(
+      "Cleveland Guardians, Washington Nationals",
+    );
+    expect(cardOf("1")?.rawTeamName).toBeUndefined();
+    expect(cardOf("3")?.rawTeamName).toBeUndefined();
+    expect(cardOf("1")?.teamLookup).toBe("answered");
+    expect(cardOf("2")?.teamLookup).toBe("answered");
+
     await t
       .withIdentity(ADMIN)
       .action(api.selectorOptions.fetchCardChecklist, { selectorOptionId: baseId });
     await drainScheduled(t);
     expect(previewBuckets(preview)).toEqual(await stagedBuckets(t, baseId));
+    // Every lookup outcome a staged row recorded, the preview card carries.
+    const staged = await stagedTeamLookups(t, baseId);
+    expect(staged.size).toBeGreaterThan(0);
+    const previewLookup = new Map(
+      ([...preview.matched.map((m) => m.card), ...preview.bscOnly] as Array<{
+        platformData: { bsc?: { ref: string } };
+        teamLookup?: string;
+      }>).map((c) => [c.platformData.bsc?.ref, c.teamLookup]),
+    );
+    for (const [ref, outcome] of staged) {
+      expect(previewLookup.get(ref)).toBe(outcome);
+    }
+  });
+
+  test("lookupTeams: a failed lookup is recorded as failed, never as no team (NEO-335)", async () => {
+    const t = convexTest(schema, modules);
+    const { setId } = await seedSet(t);
+    const baseId = await seedBase(t, setId);
+    state.teamNames = { "bsc-1": "Boston Red Sox" };
+    state.failedTeamRefs = ["bsc-2"];
+
+    const preview = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.previewCardChecklist, {
+        selectorOptionId: baseId,
+        lookupTeams: true,
+      });
+    expect(preview.success).toBe(true);
+    const cardOf = (cardNumber: string) =>
+      ([...preview.matched.map((m) => m.card), ...preview.bscOnly] as Array<{
+        cardNumber: string;
+        teams?: string[];
+        teamLookup?: string;
+      }>).find((c) => c.cardNumber === cardNumber);
+    expect(cardOf("1")).toMatchObject({
+      teams: ["Boston Red Sox"],
+      teamLookup: "answered",
+    });
+    expect(cardOf("2")?.teams).toBeUndefined();
+    expect(cardOf("2")?.teamLookup).toBe("failed");
+    // Answered with no team on file.
+    expect(cardOf("4")?.teams).toBeUndefined();
+    expect(cardOf("4")?.teamLookup).toBe("answered");
+  });
+
+  test("without lookupTeams no card carries a lookup outcome", async () => {
+    const t = convexTest(schema, modules);
+    const { setId } = await seedSet(t);
+    const baseId = await seedBase(t, setId);
+    const preview = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.previewCardChecklist, { selectorOptionId: baseId });
+    const cards = [
+      ...preview.matched.map((m) => m.card),
+      ...preview.bscOnly,
+      ...preview.slOnly,
+    ] as Array<{ teamLookup?: string; rawTeamName?: string }>;
+    expect(cards.some((c) => c.teamLookup !== undefined)).toBe(false);
+    expect(cards.some((c) => c.rawTeamName !== undefined)).toBe(false);
   });
 
   test("cold lookupTeams decides teams by the set's sport, the same as by row", async () => {

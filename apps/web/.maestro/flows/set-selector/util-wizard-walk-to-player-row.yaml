@@ -167,9 +167,9 @@ tags:
 # This is a sanctioned R10 exception; do not "optimise" it.
 - runFlow:
     when:
-      notVisible: "Confirm New Players & Teams"
+      notVisible: "Tidy up this set"
     commands:
-      - assertVisible: "Confirm New Players & Teams"
+      - assertVisible: "Tidy up this set"
 
 # --- 4. drain whatever the staging inserted, and settle on the player
 - extendedWaitUntil:
@@ -249,3 +249,53 @@ tags:
     visible:
       id: "Skip .* not a person"
     timeout: 30000
+
+# --- 5. (opt-in, READY_TO_CREATE: "true") a player whose CREATE is live
+#
+# Skipping a staged career-team step says "that is not a team", and the player
+# it was staged for then holds its create: the chip reads "needs a team
+# decision" and the footer "<team> still needs a team decision, or untick it."
+# (`createBlocked`; `Add as New Player` goes aria-disabled). The batch-order
+# walk can reach such a player at any time. (NEO-335's 10fbd26 briefly made it
+# the norm by handing the walk back to the staging player; the merged nav is
+# #314's `returnTo` stack, which returns to an origin only when the operator
+# EDITED it, so a Wikidata-staged step this util skips is followed by batch
+# order again.) CI run 38198207277: `Anthony Santander` on Topps Baltimore
+# Orioles, "2 career teams still need a team decision, or untick them."
+#
+# A caller that must CREATE the player (the career-team flows) therefore walks
+# past held players the way it walked past team steps: as SKIPS, which create
+# nothing (R7). Never by unticking the chip: excluding a career team is not a
+# path any flow takes. Link and Skip are not held, so callers that only link or
+# skip leave this off and keep the player the walk handed them.
+#
+# A skipped PLAYER is no staged step, so the walk goes on in batch order
+# (`nextUndecided`); the lookups were drained above, so nothing new can be
+# staged meanwhile. The guard and the tap cannot race: nothing but this tap
+# changes the row. `times:` is a runaway guard; a batch whose every remaining
+# player is held runs out of players and fails the hard wait below.
+- runFlow:
+    when:
+      true: '${typeof READY_TO_CREATE === "string" && READY_TO_CREATE === "true"}'
+    commands:
+      - repeat:
+          times: 20
+          while:
+            visible: ".*needs? a team decision.*"
+          commands:
+            # Wait for THIS skip to land before the guard reads again: until
+            # the decision round-trips the held row is still up, and a second
+            # pass would skip the player after it too. On a name step x is the
+            # decided count plus one, so x moving is the decision landing.
+            - copyTextFrom:
+                text: "Step [0-9]+ of [0-9]+"
+            - evalScript: '${output.HELD_STEP = maestro.copiedText.match(/^Step ([0-9]+)/)[1]}'
+            - tapOn:
+                id: "Skip .* not a person"
+            - extendedWaitUntil:
+                notVisible: "Step ${output.HELD_STEP} of [0-9]+"
+                timeout: 7000
+      - extendedWaitUntil:
+          visible:
+            id: "Skip .* not a person"
+          timeout: 7000
