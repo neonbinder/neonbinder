@@ -487,21 +487,6 @@ describe("teamSuggestionsForPreview — adversarial", () => {
     expect(result.players[0].answer).toBeNull();
   });
 
-  test("a stale isBase flag under another title is not the base: the title decides (NEO-334)", async () => {
-    const t = convexTest(schema, modules);
-    const s = await seed(t);
-    // Retitle the real base and leave the retired flag behind on it.
-    await t.run((ctx) => ctx.db.patch(s.baseId, { value: "Flagship", metadata: { isBase: true } }));
-    const b = await player(t, s.sportId, "Player B");
-    await storedCard(t, s.sportId, s.baseId, [b], [s.phillies]);
-
-    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
-      selectorOptionId: s.insertId,
-      players: [{ playerId: b }],
-    });
-    expect(result.players[0].answer).toBeNull();
-  });
-
   test("a deleted player id answers empty rather than throwing; a repeated one answers twice, identically", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);

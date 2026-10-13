@@ -98,25 +98,22 @@ describe("setSelectorOptionListingShortName", () => {
     },
   );
 
-  // `isInsert` here is a RETIRED role flag (NEO-334: the kind is the variant
-  // type's title) that stored rows keep until `stripRoleFlags` runs. Nothing
-  // reads it; the point is that a short-name write never drops a key it does
-  // not own.
-  test("\"\" removes the key and leaves every other metadata key (prefix, a retired flag) intact", async () => {
+  // The point is that a short-name write never drops a key it does not own.
+  test("\"\" removes the key and leaves every other metadata key intact", async () => {
     const t = convexTest(schema, modules);
     const id = await insertRow(t, {
-      metadata: { isInsert: true, cardNumberPrefix: "H-", listingShortName: "UD Hologram" },
+      metadata: { cardNumberPrefix: "H-", isBrandUnknown: true, listingShortName: "UD Hologram" },
     });
     await set(t, id, "");
-    expect((await getRow(t, id))?.metadata).toEqual({ isInsert: true, cardNumberPrefix: "H-" });
+    expect((await getRow(t, id))?.metadata).toEqual({ cardNumberPrefix: "H-", isBrandUnknown: true });
   });
 
   test("setting one never touches the keys beside it", async () => {
     const t = convexTest(schema, modules);
-    const id = await insertRow(t, { metadata: { isInsert: true } });
+    const id = await insertRow(t, { metadata: { cardNumberPrefix: "H-" } });
     await set(t, id, "UD Hologram");
     expect((await getRow(t, id))?.metadata).toEqual({
-      isInsert: true,
+      cardNumberPrefix: "H-",
       listingShortName: "UD Hologram",
     });
   });
