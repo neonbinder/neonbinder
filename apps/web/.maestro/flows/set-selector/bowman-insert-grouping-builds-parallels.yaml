@@ -915,6 +915,20 @@ tags:
 # New Team steps (checklist-one-marketplace-skips-match-dialog STEP 6). The
 # either/or gate is legitimate here because the hard result is the SAME in
 # both shapes and is asserted below: cards saved.
+#
+# NEO-335 adds a THIRD shape: every name known but some card would save with
+# no team (a SportLots-only card never carries one). The wizard then opens
+# TEAMS-ONLY — same title ("Tidy up this set" since NEO-335 Phase 2),
+# straight onto its teams step with "Next (Enter)" and no "Skip remaining
+# names". NEO-335 Phase 2 (D7) adds the same shape for TITLES: every name
+# known, no teamless card, but a NEW card whose generated title gets trimmed
+# (a long insert name is the likely trigger) opens the wizard on its "Card
+# titles" step — also "Next (Enter)", then Save. Both no-names shapes are the
+# same branch below. Which shape opened is read off the footer in one copyTextFrom and
+# branched on as a value (`when: true:`), so neither path pays a 7s
+# missed-`when: visible` lookup (R10). Teams are not this flow's business
+# either: `util-wizard-advance-to-save` leaves the teams / titles steps on
+# their defaults and stops on the Save step.
 # 60000 on the gate: the review opens behind the live Wikidata lookup each
 # unknown name queues, and the direct commit behind the card write (R5
 # marketplace-class exceptions, the same ceilings the flows cited use).
@@ -922,26 +936,49 @@ tags:
 
 - extendedWaitUntil:
     visible:
-      text: "Confirm New Players & Teams|.*Saved [0-9]+ cards.*"
+      text: "Tidy up this set|.*Saved [0-9]+ cards.*"
     timeout: 60000
 - runFlow:
     when:
-      visible: "Confirm New Players & Teams"
+      visible: "Tidy up this set"
     commands:
-      # THE RETRY IS NOT DECORATION: the batch can still grow after the wizard
-      # opens (a settled lookup stages a player's teams as further rows), and
-      # one press then leaves one row undecided. Press, wait for the terminal
-      # state, press once more if a late row turned up — measured on the
-      # Roanoke fixture, where the happy path pays nothing for it.
-      - retry:
-          maxRetries: 1
+      # The footer's first action: names to decide ("Skip remaining names
+      # (N)") or, teams-only, nothing to decide ("Next (Enter)" on the teams
+      # step; "Confirm & Save" were it ever straight onto Save). A names
+      # wizard renders neither of the last two until every row is decided,
+      # so they never share the footer with the bulk link and one read says
+      # which shape this is. 7000 — the footer paints with the batch
+      # (measured ~0.8s on Roanoke).
+      - extendedWaitUntil:
+          visible:
+            text: ".*Skip remaining names \\([0-9]+\\).*|Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000
+      - copyTextFrom:
+          text: ".*Skip remaining names \\([0-9]+\\).*|Next \\(Enter\\)|.*Confirm & Save.*"
+      - evalScript: '${output.WIZARD_HAS_NAMES = maestro.copiedText.indexOf("Skip remaining names") >= 0}'
+      - runFlow:
+          when:
+            true: "${output.WIZARD_HAS_NAMES}"
           commands:
-            - tapOn:
-                text: ".*Skip remaining names \\([0-9]+\\).*"
-            - extendedWaitUntil:
-                visible:
-                  text: ".*Confirm & Save.*"
-                timeout: 60000
+            # THE RETRY IS NOT DECORATION: the batch can still grow after the
+            # wizard opens (a settled lookup stages a player's teams as
+            # further rows), and one press then leaves one row undecided.
+            # Press, wait for the terminal state, press once more if a late
+            # row turned up — measured on the Roanoke fixture, where the
+            # happy path pays nothing for it.
+            - retry:
+                maxRetries: 1
+                commands:
+                  - tapOn:
+                      text: ".*Skip remaining names \\([0-9]+\\).*"
+                  - extendedWaitUntil:
+                      visible:
+                        text: "Next \\(Enter\\)|.*Confirm & Save.*"
+                      timeout: 60000
+      # Both shapes arrive here past the names; the util walks the teams /
+      # titles steps on their defaults to the Save step ("Save N cards?" over
+      # Confirm & Save). The save itself is asserted below.
+      - runFlow: util-wizard-advance-to-save.yaml
       - tapOn:
           text: ".*Confirm & Save.*"
 

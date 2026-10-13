@@ -606,6 +606,52 @@ describe("NEO-212 — admin-gated reads still omit their audit fields", () => {
   });
 });
 
+/**
+ * NEO-335 — `cardChecklist.teamSuggestionsForPreview` is an admin read over
+ * players' careers. `publicFunctionAuth.test.ts` pins its gate; this pins the
+ * other half: what an admin is answered carries the team, never the player
+ * row's audit column or its raw career.
+ */
+describe("NEO-335 — the wizard's team suggestions are an admin read with no audit field", () => {
+  test("teamSuggestionsForPreview answers an admin without shipping the player row's createdByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { teamId, playerId } = await t.run(async (ctx) => {
+      const teamId = await ctx.db.insert("teams", {
+        name: "Cincinnati Reds",
+        nameNormalized: "cincinnati reds",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Johnny Bench",
+        nameNormalized: "bench johnny",
+        sportId,
+        teamYears: [{ teamId, fromYear: 1967, toYear: 1983 }],
+        createdByUserId: "clerk_some_operator",
+        lastUpdated: Date.now(),
+      });
+      return { teamId, playerId };
+    });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: sportId,
+        players: [{ playerId }],
+      });
+
+    // Not vacuous: the read really answered with the player's team. NEO-335
+    // Phase 2 (C2): the query runs on the sport node, so there is no set year
+    // and no window — the team comes back as a candidate, not a pre-fill.
+    expect(result.players[0].candidates.map((x) => x.teamId)).toEqual([teamId]);
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain("createdByUserId");
+    expect(wire).not.toContain("clerk_some_operator");
+    expect(wire).not.toContain("teamYears");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // NEO-240 — the League Management surface
 // ---------------------------------------------------------------------------
@@ -1027,5 +1073,76 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
     expect(await cardsOn(baseId)).toEqual([before]);
     // Not even the stale review clear ran.
     expect(await t.run((ctx) => ctx.db.get(candidateId))).not.toBeNull();
+  });
+});
+
+/**
+ * NEO-335 — the short name for listing titles has two doors, and a refusal at
+ * either persists nothing: the attributes panel's
+ * `setSelectorOptionListingShortName`, and the batch-level `listingShortName`
+ * on `commitCardChecklist`, which the prelude writes onto the leaf row. The
+ * second is the one to watch: a refused commit must not have written the
+ * leaf's metadata on its way to the refusal.
+ */
+describe("NEO-335 — a refused short-name write persists nothing", () => {
+  async function seedSetChain(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const leafId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Collector's Choice",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { sportId, leafId };
+    });
+  }
+
+  test("setSelectorOptionListingShortName refuses an anonymous caller and a non-admin without touching the row", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedSetChain(t);
+    for (const tt of [t, t.withIdentity(MEMBER)]) {
+      await expect(
+        tt.mutation(api.selectorOptions.setSelectorOptionListingShortName, {
+          id: leafId,
+          listingShortName: "UD Choice",
+        }),
+      ).rejects.toThrow();
+    }
+    const row = await t.run(async (ctx) => ctx.db.get(leafId));
+    expect(row!.metadata).toBeUndefined();
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+  });
+
+  test("commitCardChecklist with a short name refuses a non-admin without writing the leaf or a card", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSetChain(t);
+    for (const tt of [t, t.withIdentity(MEMBER)]) {
+      await expect(
+        tt.action(api.selectorOptions.commitCardChecklist, {
+          selectorOptionId: leafId,
+          sportId,
+          cards: [],
+          listingShortName: "UD Choice",
+        }),
+      ).rejects.toThrow();
+    }
+    const row = await t.run(async (ctx) => ctx.db.get(leafId));
+    expect(row!.metadata).toBeUndefined();
+    const cards = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", leafId))
+        .collect(),
+    );
+    expect(cards).toHaveLength(0);
   });
 });

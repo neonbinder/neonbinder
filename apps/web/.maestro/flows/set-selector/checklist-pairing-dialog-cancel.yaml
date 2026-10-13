@@ -568,7 +568,7 @@ tags:
 
       # The set is untouched: the Sync button is still available for a retry, and no
       # entity-review wizard was opened (cancel happens before entity resolution).
-      - assertNotVisible: "Confirm New Players & Teams"
+      - assertNotVisible: "Tidy up this set"
       - scrollUntilVisible:
           element:
             id: "Sync card checklist"

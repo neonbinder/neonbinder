@@ -1,6 +1,6 @@
 ---
 name: neo306-sl-review-and-insert-door
-description: NEO-306 surfaces — the Sets column's "N SportLots sets to sort" review (picker names lead with their visible choice), Make insert of…'s landing-dependent title/confirm/path toast, the checklist's "N cards need a team" — plus the trap that a POPULATED insert column never auto-reconciles
+description: NEO-306 surfaces — the Sets column's "N SportLots sets to sort" review (picker names lead with their visible choice), Make insert of…'s landing-dependent title/confirm/path toast, the checklist's "N cards need a team" (retired by NEO-335) — plus the trap that a POPULATED insert column never auto-reconciles
 metadata:
   type: reference
 ---
@@ -57,8 +57,9 @@ joined …`. Choice lists are max-h-40 inner scrollers with a filter (`Find a se
 it is there (`runFlow when: visible` on the filter resolves at once when
 present), then assert the radio.
 
-Fill teams: checklist header, amber, `1 card needs a team` / `N cards need a
-team`, only while N > 0; result in the checklist's own notice line.
+Fill teams (`N cards need a team`) was RETIRED by NEO-335 with its dialog;
+the checklist header's one amber control is now the `N need you` pill (see
+[[reference_neo102_card_attention_walker]]).
 
 Worked examples (2026 Bowman, split by NEO-312): the review in `setup.yaml`'s 2026 Bowman step; Bowman › Insert in `bowman-insert-grouping-builds-parallels.yaml`; Bowman › Parallel, Promote, Make parallel of… and Make insert of… in `bowman-sportlots-links-move-between-set-parallel-insert.yaml`. Selector
 mechanics: [[childof-parent-is-first-match]].

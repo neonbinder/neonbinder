@@ -13,11 +13,12 @@ tags:
 # against the wizard's render.
 #
 # R2 — HARD ASSERTIONS:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the row under test is a PLAYER row (its link panel is labelled for
 #         players), asserted before the feature action;
 #     (c) the search finds the existing roster player BY NAME and taking it
-#         records a LINK — the history reads "Linked to Wayne Gretzky", the one
+#         records a LINK — its own row reads "Linked to Wayne Gretzky", the one
 #         string neither a create ("Added as new") nor a skip ("Skipped") can
 #         produce;
 #     (d) the commit lands cleanly ("Saved N cards") with the link on the batch.
@@ -145,7 +146,7 @@ tags:
 # ============================================================
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # NEO-236 — the wizard does not open on a player row, and the first player it
 # shows can move out from under you while its career teams are staged. The util
@@ -192,10 +193,16 @@ tags:
     timeout: 7000
 - tapOn:
     id: "Link to Wayne Gretzky"
-- extendedWaitUntil:
-    visible:
-      text: "Linked to Wayne Gretzky"
-    timeout: 7000
+# Read back off the row the link was made on (its "Already decided:" panel),
+# never off the "Decided (N)" history — batch-ordered and collapsed past five,
+# the same reason STEP 3b below already gave for not reading it. CI run
+# 38198207277 went red here on a link that had landed. RESUME hands the walk
+# back its own rule before the next util call.
+- runFlow:
+    file: util-wizard-read-back-decision.yaml
+    env:
+      DECISION: "Linked to Wayne Gretzky"
+      RESUME: "true"
 
 # ============================================================
 # STEP 3b — R2(e)+(f): the NEXT player, moved to Football and linked
@@ -264,12 +271,22 @@ tags:
     childOf:
       id: "Choose a sport"
 # The switch is one mutation (`switchRowSport`) — our own server, 7000 (R5).
-# This label is also the check on the typeahead and the tap together: a jump
-# that stopped on another F-sport, or a tap under the box's clip, cannot
-# produce it.
+# The pick closes the sport list.
+#
+# NOT "Sport for this name: Football" HERE. The switch re-queues the row's
+# lookup, and on a preview the NEO-289 recording answers it at once; a lookup
+# that stages career teams makes the row `waitingOnStagedTeams`, so the walk
+# leaves it for its own steps within a second or two (CI run 38302511049
+# attempt 2: the row was gone 8s after the tap, "Jamie Bird" on screen, Step 3
+# of 19). The row carries an edit (its sport now differs from the set's,
+# `pinnedRowHasEdits`), so #314's `returnTo` (NEO-330 W6, `resolveNav`) keeps
+# it on the stack and the walk brings it BACK once those steps are answered.
+# The label is therefore asserted after the walk below, where it is also the
+# check on the typeahead and the tap together: a jump that stopped on another
+# F-sport, or a tap under the box's clip, cannot produce it.
 - extendedWaitUntil:
-    visible:
-      id: "Sport for this name: Football"
+    notVisible:
+      id: "Choose a sport"
     timeout: 7000
 
 # THE ROW IS LOOKED UP AGAIN, IN FOOTBALL. `switchRowSport` puts it back to
@@ -281,8 +298,9 @@ tags:
 # racing the lookup to the link. The walk's own waits carry the live-Wikidata
 # ceiling (R5 external round-trip, stated at its site).
 - runFlow: util-wizard-walk-to-player-row.yaml
-# ...and prove the walk came back to THIS row: it is the only player on the
-# batch whose switch reads Football.
+# ...and prove the switch landed AND the walk came back to THIS row: it is
+# the only player on the batch whose switch reads Football (the returnTo stack
+# above, or the row never left).
 - assertVisible:
     id: "Sport for this name: Football"
 
@@ -334,8 +352,12 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 120000
+# NEO-335 Phase 2 — past the names the wizard may ask about teamless cards and
+# card titles; this flow's feature is the link, so those stay on their
+# defaults and the util walks to the Save step.
+- runFlow: util-wizard-advance-to-save.yaml
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:

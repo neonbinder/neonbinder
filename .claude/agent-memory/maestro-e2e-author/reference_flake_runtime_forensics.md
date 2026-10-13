@@ -47,3 +47,15 @@ Do not read "runner (7): success" as "nothing failed on r7".
 
 ## Size a real fixture from a GREEN run before writing an assert on it
 Green runs keep `debug/<flow>/maestro.log` too, and every `tapOn` logs the tapped node's FULL text (`Tapping on element: … text=Accept all suggestions (141)`), every centred scroll logs `Element bounds`, and command start/finish stamps give per-step cost. So before asserting on a list whose length is the marketplace's business, grep the last green run for the count: NEO-300 found 2026 Bowman nests 141 parallels, which ruled out asserting a row inside a disclosure that renders in a dialog's non-scrolling header — and the 156-set reconcile Save measured 1.0s, which justified 7000 instead of an inherited 60000 on the re-sync save.
+
+## A sync-failed panel: prove the marketplace stalled, not the code
+A red step whose screenshot shows a column's `Sync failed: could not load
+variants. BuySportsCards failed, nothing was changed.` (with Retry/Cancel) is
+read from `convex-logs-seed`: the matching `fetchBscSelectorOptions`
+`adapter_sync_call` line carries `error_class: "timeout"`, `attempt: 3` and
+`filters_call_ms` ≈ 30000, beside `[fetchBscSelectorOptions] BSC API request
+timed out after 10s (attempt n/3)` lines. Then prove the request did not
+change: the same call (same level and parents) in the last green seed, and
+`git diff <green sha> <red sha>` over the adapter, its caller and the flow
+step. Identical code that answered in ~60 ms on green is a marketplace-side
+stall: a full rerun, not a flow edit. Never add a Retry tap to absorb it.

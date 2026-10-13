@@ -1,0 +1,107 @@
+appId: com.neonbinder.web
+name: "Utility — walk the entity review wizard from its last name to the Save step"
+tags:
+  - util
+---
+# ════════════════════════════════════════════════════════════════════════════
+# NEO-335 Phase 2 — THE WIZARD NO LONGER ENDS ON ITS LAST NAME.
+#
+# Once every name is decided the wizard walks up to two more screens before
+# the one that saves, each with its own subtitle under "Tidy up this set":
+#
+#   "Cards with no team"  — only if a card would save with no team
+#   "Card titles"         — only if a new card's title needs a look
+#   "Ready to save"       — always; heading "Save N cards?", footer
+#                           "Confirm & Save (Enter)"
+#
+# The first two carry a footer "Next (Enter)" and NO Confirm & Save, so a flow
+# that used to wait for Confirm & Save straight after its last decision now has
+# to press Next on whatever comes first. Which of the two a fixture raises is
+# the fixture's business (a skipped team name makes a card teamless; a long
+# variation makes a title need a look), not something a caller whose feature
+# is a NAME decision should have to know — so this util presses Next until the
+# Save step is up, and nothing else.
+#
+# WHAT IT DOES NOT DO: answer anything on those steps. Next leaves every line
+# on its default (a pre-filled team, else "Leave for later"; every title kept),
+# which is exactly what pressing Confirm & Save on the old final step did. A
+# flow whose FEATURE is the teams or titles step drives that step itself
+# (`checklist-one-marketplace-skips-match-dialog`) and does not call this.
+#
+# ── CONTRACT ────────────────────────────────────────────────────────────────
+#   ENTRY  the wizard is open and every name is decided: its footer shows
+#          "Next (Enter)" or "Confirm & Save". Callers gate on exactly that
+#          (`Next \(Enter\)|.*Confirm & Save.*`) before calling.
+#   EXIT   the Save step: subtitle "Ready to save", "Confirm & Save" on
+#          screen. Nothing pressed on it — the caller asserts its own
+#          "Save N cards?" and owns the commit.
+#
+# ── HOW IT LOOPS: ON A VALUE, NOT ON THE SCREEN (R10) ───────────────────────
+#   The footer is read ONCE per screen (`copyTextFrom` on the one pattern
+#   that matches either state) into `output.ADVANCE_ON_SAVE`, and the loop
+#   runs `while: true:` on that value. A script condition costs nothing to
+#   evaluate. The earlier `while: notVisible: Confirm & Save` paid Maestro's
+#   ~7s optional timeout on the pass where it EXITED, because a `notVisible`
+#   condition waits for a visible element to go away before it reports
+#   false. Measured 7.00s per call, on every caller. Maestro re-evaluates the
+#   `while:` script on every pass: `RepeatCommand.evaluateScripts` resolves
+#   only `times` and `label`, and `repeatCommand$checkCondition` runs
+#   `Condition.evaluateScripts` each time (decompiled from the pinned jars).
+#
+# ── R2 ──────────────────────────────────────────────────────────────────────
+#   Each Next press is proved to have MOVED the wizard: the "Step x of y"
+#   counter (WizardChrome, header, every screen) is read before the tap and
+#   the wait after it needs that x gone. A Next that does nothing fails there
+#   by name. The loop is followed by a hard wait for Confirm & Save and an
+#   assert of the "Ready to save" subtitle, so a wizard stuck on the teams or
+#   titles step fails here rather than in the caller's commit. No guard/tap
+#   race: the wizard never leaves a post-review step on its own, only on the
+#   operator's Next or Back (entity-review-steps.ts).
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 throughout: Next is a client-side step change, no server round-trip.
+#
+# `times: 3` is a runaway guard, not a budget: at most two screens sit between
+# the names and Save, so a third press means the footer never read as Save,
+# and the gate under the loop fails by name.
+# ════════════════════════════════════════════════════════════════════════════
+
+# The footer, read once: "Next (Enter)" on the teams / titles steps,
+# "Confirm & Save (Enter)" on Save. The two never share a footer.
+- extendedWaitUntil:
+    visible:
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
+    timeout: 7000
+- copyTextFrom:
+    text: "Next \\(Enter\\)|.*Confirm & Save.*"
+- evalScript: '${output.ADVANCE_ON_SAVE = maestro.copiedText.indexOf("Confirm & Save") >= 0}'
+
+- repeat:
+    times: 3
+    while:
+      true: "${!output.ADVANCE_ON_SAVE}"
+    commands:
+      # x before the press; "Step 5 of …" is a full match, so it cannot
+      # answer for "Step 15 of …".
+      - copyTextFrom:
+          text: "Step [0-9]+ of [0-9]+"
+      - evalScript: '${output.ADVANCE_STEP = maestro.copiedText.match(/^Step ([0-9]+)/)[1]}'
+      - tapOn:
+          text: "Next \\(Enter\\)"
+      - extendedWaitUntil:
+          notVisible: "Step ${output.ADVANCE_STEP} of [0-9]+"
+          timeout: 7000
+      # The new screen's footer, read once for the next `while:`.
+      - extendedWaitUntil:
+          visible:
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000
+      - copyTextFrom:
+          text: "Next \\(Enter\\)|.*Confirm & Save.*"
+      - evalScript: '${output.ADVANCE_ON_SAVE = maestro.copiedText.indexOf("Confirm & Save") >= 0}'
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 7000
+# The header subtitle, which is pinned with the footer — not body content.
+- assertVisible: "Ready to save"

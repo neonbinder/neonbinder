@@ -736,8 +736,8 @@ listed here so a flow author meets them in one place.
   trimmed to suit a flow, so a flow that breaks against it is fixed in the
   flow or, when the screen cannot cope, in the product. Four consequences:
   1. **The wizard only opens for names the catalogue does not know.**
-     "Confirm New Players & Teams" stages a player or team only when no row of
-     that name exists. A set whose roster is all real, well-known players
+     The review wizard ("Tidy up this set" since NEO-335) stages a player or
+     team only when no row of that name exists. A set whose roster is all real, well-known players
      commits straight through with no wizard, so any flow that drives the
      wizard needs a fixture set the catalogue does not cover. Choosing one is
      a real-set decision (`SET-REGISTRY.md`, owner approval).
@@ -843,8 +843,26 @@ player's Possible-matches panel, plus a whole New Team form) its
 lower half is simply gone.
 
 So: **assert only on the pinned header and footer.** They carry everything a
-flow needs — `Confirm New Players & Teams`, the `N of M reviewed` counter, and
+flow needs — the title `Tidy up this set`, the screen-type subtitle (`New
+league`, `New team`, `New player`, `Which player is this?`, `Cards with no
+team`, `Card titles`, `Ready to save`), the one `Step x of y` counter, and
 every decision control. Body content is for the operator to read.
+
+**The counter, since NEO-335 Phase 2** (`Step x of y` replaced `N of M
+reviewed` and its ` · N still being looked up` tail; the title replaced
+`Confirm New Players & Teams`). On a NAME step x is the decided count plus
+one, so `Step 1 of …` is the old `0 of … reviewed` and one decision reads
+`Step 2 of …`. y grows as staged steps arrive, so pin x, not y. Past the names
+come a teams step (`Cards with no team`) and a titles step (`Card titles`),
+each only when needed and each with a footer `Next (Enter)` and NO Confirm &
+Save; then the Save step (`Ready to save`, heading `Save N cards?`), which is
+always `Step y of y` and the only step with Confirm & Save. So "every name is
+decided" is the footer state `Next \(Enter\)|.*Confirm & Save.*`, and
+`flows/set-selector/util-wizard-advance-to-save.yaml` walks a flow from there
+to the Save step. A sync with no unknown names opens the wizard only when a
+post-name step is needed, straight onto it (`Step 1 of 2`). The post-save
+attention walker wears the same title, subtitles and counter; tell the two
+apart by the walker's `Skip for now, card <number>` or the wizard's footer.
 
 Two runs paid for this rule. CI 34007264279 killed a `tapOn` outright
 (`null cannot be cast to non-null type kotlin.Int`) when a step's primary action
@@ -852,7 +870,7 @@ grew past the dialog's own bottom edge — which is why the decision controls no
 live in the footer. CI 34071657961 then failed
 `inserts-1996-score-one-nb-set-two-bsc-sources` on `Decided (1)`, a disclosure at
 the bottom of the body, with a count that was entirely correct; the header's
-`1 of N reviewed` is the same number (`decided` and `decidedRows` are the same
+`1 of N reviewed` (now `Step 2 of N`) is the same number (`decided` and `decidedRows` are the same
 `rows.filter(r => r.decision)`) and cannot move.
 
 The same rule applies to any inner scroller — a `max-h-*` picker group, the
@@ -1282,7 +1300,7 @@ the adapter, never a stub of it.
 What that changes for flows:
 
 - **`setup.yaml` no longer proves the live lane.** Its wizard drain
-  (`.*Confirm & Save.*`, 240 s) is now an upper bound over a fixture-backed
+  (the names-done footer, 240 s) is now an upper bound over a fixture-backed
   hit: it returns in seconds when the recording covers the seed and only pays
   for the network on the names it does not. The 240 s stays — it is the
   setup track's sanctioned cold-path ceiling (R5) and the miss path is still

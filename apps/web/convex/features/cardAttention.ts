@@ -21,10 +21,13 @@
  *
  * NEO-101 added the three listing-title/aspect kinds below. Keep this module
  * free of anything that would stop it running in the browser — its only import
- * is `listingLimits.ts`, which is itself nothing but exported numbers.
+ * is `listingInputs.ts` (NEO-335), which is itself pure: the title generator,
+ * the feature derivations and `listingLimits.ts`'s numbers.
  */
 
-import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
+// NEO-335: the title/aspect rules live in `listingInputs.ts`, which is as
+// browser-safe as this module (pure features only, no server imports).
+import { titleAttentionItems } from "./listingInputs";
 
 /**
  * One thing a card still needs from a human.
@@ -249,28 +252,12 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
     items.push({ kind: "missingTeam" });
   }
 
-  // NEO-101 — the two title rules are MUTUALLY EXCLUSIVE by construction, not
-  // by coincidence. A row that is both over the limit and flagged truncated
-  // (an operator pasted an over-long title onto a row whose generated title had
-  // been cut, before `updateCard` gained its cap) has exactly one thing worth
-  // saying to a human: it is too long. Reporting "was cut short" alongside
-  // "is 94 characters" reads as a contradiction, and the over-limit fix
-  // subsumes the other one anyway — rewriting the title clears both.
-  const titleLength = row.listingTitle?.length ?? 0;
-  if (titleLength > LISTING_TITLE_MAX) {
-    items.push({ kind: "titleOverLimit", length: titleLength });
-  } else if (row.listingTitleTruncated) {
-    items.push({ kind: "titleTruncated" });
-  }
-
-  const variationLength = row.cardVariation?.length ?? 0;
-  if (variationLength > ASPECT_VALUE_MAX) {
-    items.push({
-      kind: "aspectValueOverLimit",
-      field: "cardVariation",
-      length: variationLength,
-    });
-  }
+  // NEO-101 — the title/aspect kinds. NEO-335 moved the rules into
+  // `listingInputs.titleAttentionItems`, unchanged, so the wizard's pre-save
+  // "Card titles" step asks the same question of a card that is not a row yet
+  // (over the assessment `buildCardRowForInsert` writes the row from). See
+  // there for why the two title rules are mutually exclusive.
+  items.push(...titleAttentionItems(row));
 
   // NEO-221 — see the note where `unreviewed` is computed, at the top. Pushed
   // last so the title/aspect items keep the order they had.

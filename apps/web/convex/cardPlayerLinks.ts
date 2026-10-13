@@ -39,7 +39,7 @@
 
 import { ConvexError, v } from "convex/values";
 import { internalAction, internalMutation } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { findSportForSelectorOption } from "./cardChecklist";
@@ -150,6 +150,31 @@ export async function deleteCardPlayerLinks(
   for (const row of rows) await ctx.db.delete(row._id);
   // The ids, for a caller that logs every row it deletes (the subtree wipe).
   return rows.map((row) => row._id);
+}
+
+/**
+ * NEO-335 — a player's most recent cards in one sport, newest first, capped.
+ *
+ * A READ, for `cardChecklist.teamSuggestionsForPreview` (the entity review
+ * wizard's pre-save team suggestions). It lives here so this module stays the
+ * one place outside `players.ts` that queries the index (see
+ * `cardPlayerLinks.pin.test.ts`). `sportId` is the CARD's sport, which is what
+ * the index files rows under. Ids only; the caller reads the cards it wants.
+ */
+export async function recentCardIdsForPlayer(
+  ctx: Pick<QueryCtx, "db">,
+  playerId: Id<"players">,
+  sportId: Id<"selectorOptions">,
+  limit: number,
+): Promise<Array<Id<"cardChecklist">>> {
+  const rows = await ctx.db
+    .query("cardPlayerLinks")
+    .withIndex("by_player_and_sport", (q) =>
+      q.eq("playerId", playerId).eq("sportId", sportId),
+    )
+    .order("desc")
+    .take(limit);
+  return rows.map((row) => row.cardChecklistId);
 }
 
 // ───────────────────────────────────────────────────────────────────────────

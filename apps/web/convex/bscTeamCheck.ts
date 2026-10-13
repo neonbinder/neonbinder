@@ -7,8 +7,8 @@
  * exactly as it was, with `teamCheckDoneAt` unset so a later enqueue could try
  * again. But no enqueue was ever coming for it, and an unset `teamCheckDoneAt`
  * on a BSC-linked card is what `features/cardAttention.ts` reads as "still
- * waiting on the automatic answer" — so the card was never badged and never
- * offered to Fill. It sat with no team and nobody was told.
+ * waiting on the automatic answer" — so the card was never badged. It sat with
+ * no team and nobody was told.
  *
  * The queue now retries a failed card a bounded number of times (see
  * `BSC_TEAM_CHECK_MAX_PASSES` in `adapters/buysportscards.ts`) and, when the

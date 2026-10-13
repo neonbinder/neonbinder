@@ -25,3 +25,11 @@ added in the same push. Check the capped and plural forms too: a sweep that
 adds "10+ matches" breaks every `[0-9]+ matches` anchor whose search can fill
 the cap. See [[reference-catalogue-on-ci-previews]] and
 [[present-in-failure-dump-means-late-arrival]].
+
+**Resolving the conflict hunks by script:** split on a LINE that is exactly
+`=======`, never on the substring `=======\n`. Every flow's
+`# ============…` banner ends in seven `=` and a newline, so a non-greedy
+`<<<<<<< HEAD\n(.*?)=======\n` regex cuts the HEAD side at the first banner
+inside it and silently keeps half of both sides (NEO-335's merge of NEO-330
+did this once). After any scripted resolution, grep for `^=======$` and diff
+the file against both parents.

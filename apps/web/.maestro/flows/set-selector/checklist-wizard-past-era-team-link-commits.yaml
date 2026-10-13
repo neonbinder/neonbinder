@@ -18,7 +18,9 @@ tags:
 #
 # R2 — HARD ASSERTIONS, none satisfiable by an inert page:
 #     (a) the fetch stages exactly ONE name: the one-marketplace notice reads
-#         "0 new players + 1 new teams need confirmation". Every player is a
+#         "1 name needs a look before this saves." (NEO-335 Phase 2's one
+#         count; it was "0 new players + 1 new teams need confirmation"), and
+#         (b) shows that one name is a team. Every player is a
 #         catalogue row, and Brooklyn Dodgers (one dated row, 1911–1957 in the
 #         catalogue) never reached the review, which is the AUTOMATIC half;
 #     (b) that one step is "New Team: Philadelphia Athletics", a TEAM step by
@@ -30,7 +32,7 @@ tags:
 #     (d) the operator picks the 1901–1954 era BY ITS LABEL (never by
 #         position: NEO-331 ranks a typed search by the set's context and the
 #         default list is the server's order), with the remember-box UNTICKED
-#         first: the all-decided summary then reads "Linked to existing" and
+#         first: the Save step's summary then reads "Linked to existing" and
 #         the decision is exactly "Linked to Philadelphia Athletics" — no
 #         "· remembered as" tail, so no alias lands on a shared catalogue row;
 #     (e) the commit lands ("Saved N cards.");
@@ -107,12 +109,16 @@ tags:
       MANUFACTURER: "Topps"
       SET: "Topps Welcome to the Club: 3X MVP"
 
-# R2(a) — the notice names what reached the review: no player, one team. The
-# set's other clubs, Brooklyn Dodgers included, were settled before it.
+# R2(a) — the notice counts what reached the review: ONE name (PART 2 reads
+# that it is a team). The set's other clubs, Brooklyn Dodgers included, were
+# settled before it. NEO-335 Phase 2: one count, no per-type split
+# (`entityConfirmationMessage`).
 - assertVisible:
-    text: ".*Kept all [0-9]+ cards from BSC.* 0 new players \\+ 1 new teams? need confirmation.*"
+    text: ".*Kept all [0-9]+ cards from BSC.* 1 name needs a look before this saves\\..*"
+# NEO-335 Phase 2's counter: on a name step x is the decided count plus one,
+# so nothing decided is "Step 1 of N".
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # The batch's one lookup (the team's Wikidata/ESPN enrichment). R5 exception
 # above 7000, approved by Jason 2026-10-12 at 20000 as a STOPGAP until the
@@ -124,8 +130,12 @@ tags:
 # flows share FIFO. So the 11s is the pool's depth, not this step's work.
 # Raising this further is a new decision for Jason, not a tuning knob; the
 # Playwright rewrite retires it.
+# NEO-335 Phase 2 dropped the header's "· N still being looked up" tail; the
+# pending count lives in the footer status now ("N still looking up — wait or
+# skip"), so that is the string this negative waits out. The positive that
+# pairs with it is the step heading straight after.
 - extendedWaitUntil:
-    notVisible: ".*still being looked up.*"
+    notVisible: ".*still looking up.*"
     timeout: 20000
 
 # ============================================================
@@ -175,14 +185,23 @@ tags:
     text: "same name . [A-Z]+ . 1901.1954"
 
 # The decision landing is what moves the wizard off the step: with one row in
-# the batch, it goes straight to the all-decided summary. The summary is short
-# (one Decided row), so its lines are on screen: "Linked to existing" is the
-# count line, and the Decided row's decision text is a full match — the link,
-# and no "· remembered as" tail.
+# the batch, every name is decided at once. NEO-335 Phase 2: the wizard then
+# walks its post-name steps (a teams step only for a card that would save
+# teamless, a titles step only for a title that needs a look; each "Next
+# (Enter)", no Confirm & Save) before the Save step, so the names-done footer
+# is either button and the util walks to Save on the defaults. The batch's ONE
+# row reaching names-done is the "exactly one decision" claim. The Save step's
+# summary is short (one Decided row; the Decided list renders on the names and
+# on Save, never on teams/titles), so its lines are on screen: "Linked to
+# existing" is the count line, and the Decided row's decision text is a full
+# match — the link, and no "· remembered as" tail.
 - extendedWaitUntil:
-    visible: "All reviewed . save [0-9]+ cards\\?"
+    visible:
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 7000
-- assertVisible: "1 of [0-9]+ reviewed.*"
+- runFlow: util-wizard-advance-to-save.yaml
+- assertVisible:
+    text: "Save [0-9]+ cards?\\?"
 - assertVisible: "Linked to existing"
 - assertVisible: "Linked to Philadelphia Athletics"
 
