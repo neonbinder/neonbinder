@@ -38,6 +38,16 @@ Vite, an iframe, a fake Convex client) is overkill. This takes about a minute:
    JSON, run with `npx tsx file.tsx`, then delete it. Put `class="dark"` on the
    scratch `<html>` so `dark:` variants apply.
 
+6. To prove a height claim ("the footer does not jump"), measure instead of
+   eyeballing: generate the scratch HTML as a case matrix (each realistic
+   label set x old/new classes, one `data-case` wrapper each) and read
+   `getBoundingClientRect()` heights and distinct child `top`s per case from a
+   headless browser script. A Playwright install from any checkout works via
+   `createRequire(<that package.json>)`. NEO-335 found this way that a 32px
+   button wrapping alone onto a flex-wrap row's second line grows the row by
+   16px where a `-my-2` text link grew it by nothing; `-my-2` on the button
+   restored the old heights in every case.
+
 Limits: no React state, no live data, and the page's own container padding is
 whatever you write. A layout problem the mock shows in markup you did NOT
 change is a lead to check in the real app, not proof.

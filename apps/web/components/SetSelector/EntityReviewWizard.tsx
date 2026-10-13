@@ -386,6 +386,23 @@ const BULK_CREATE_LABEL = "Add remaining players as new";
 const BULK_SKIP_LABEL = "Skip remaining names";
 
 /**
+ * NEO-335 — the wizard's ONE Back style: the outlined secondary button.
+ *
+ * Jason chose it for the post-review steps' Back (Phase 2), then for the name
+ * steps' Back and NEO-332's "Back to the list" too (2026-10-13: "yes stay
+ * consistent"), so every way back in the wizard reads the same. `h-8` is the
+ * Radix size-2 height the footer's NeonButtons already have, and it clears the
+ * 24px SC 2.5.8 minimum without a padding trick. (In the name steps' wrapping
+ * decision row the call site adds `-my-2`; see the note there.)
+ *
+ * The class string is shared, so each use adds its OWN `footerFieldClass`
+ * marker: two controls with an identical class string collapse into one
+ * Maestro XPath (see `footerFieldClass`).
+ */
+const OUTLINED_BACK_BUTTON_CLASS =
+  "inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-md border border-[#00C2FF] px-3 text-sm font-medium text-[#00C2FF] hover:bg-[#00C2FF]/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed";
+
+/**
  * NEO-335 — the batch a teams-only review stands on: no names at all. One
  * module-level array so every render hands the hooks below the same object.
  */
@@ -3703,8 +3720,8 @@ export default function EntityReviewWizard({
           its 16px line-height tall, under the 24x24 minimum, and these are the
           row's decision ALTERNATIVES, not decoration. The negative margin gives
           the padding back to the layout, so the flex line stays 16px and the
-          footer's height does not move — the same convention `Back` and `Stop`
-          already use here.
+          footer's height does not move. (The row's Back is no longer a link:
+          it is the 32px outlined button, `OUTLINED_BACK_BUTTON_CLASS`.)
         */}
         {showExactHierarchy && (
           <button
@@ -3772,24 +3789,37 @@ export default function EntityReviewWizard({
           text and accessible name are the same string (SC 2.5.3). Creates
           nothing. The previous decision is still one Back away, from the
           list.
+
+          Both are the outlined Back button the post-review steps use
+          (`OUTLINED_BACK_BUTTON_CLASS`, Jason 2026-10-13: one Back style
+          across the wizard). Each has its own marker class so neither
+          shares an XPath with the other.
+
+          `-my-2`: the row's convention for keeping the footer still. On the
+          first line the button sits beside the 32px primary and changes
+          nothing. But this row wraps (an exact match, or "Back to Match
+          Cards" crowding it from the right), and a 32px button alone on a
+          wrapped line grew the footer 8px past its 4.25rem floor, so the
+          footer jumped the moment Back appeared (measured at 1024px). With
+          the margin the button lays out as 16px, the same line height as
+          the text links it replaced, and the footer measures exactly what
+          it did with the old link in every case.
         */}
         {createNewStep ? (
           <button
             type="button"
             onClick={() => leaveCreateNew(current._id)}
-            className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+            className={`${footerFieldClass("btn-back-to-list")} ${OUTLINED_BACK_BUTTON_CLASS} -my-2`}
           >
             Back to the list
           </button>
         ) : (
           backTargetId && (
-            // a11y (2.5.8): p-2 -m-2 grows the tap target without moving the
-            // visible text or its siblings in this row.
             <button
               type="button"
               onClick={() => presentDecided(backTargetId)}
               aria-label="Back to previous decision"
-              className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+              className={`${footerFieldClass("btn-back-decision")} ${OUTLINED_BACK_BUTTON_CLASS} -my-2`}
             >
               Back
             </button>
@@ -5388,7 +5418,7 @@ export default function EntityReviewWizard({
                       onClick={goToPreviousStep}
                       aria-label="Back to previous step"
                       aria-disabled={saving || undefined}
-                      className={`${footerFieldClass("btn-back-step")} inline-flex h-8 shrink-0 items-center rounded-md border border-[#00C2FF] px-3 text-sm font-medium text-[#00C2FF] hover:bg-[#00C2FF]/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
+                      className={`${footerFieldClass("btn-back-step")} ${OUTLINED_BACK_BUTTON_CLASS}`}
                     >
                       Back
                     </button>

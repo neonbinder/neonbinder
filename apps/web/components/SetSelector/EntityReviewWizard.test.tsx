@@ -4165,6 +4165,31 @@ describe("EntityReviewWizard — back and re-decide", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
   });
 
+  it("Back is the outlined secondary button the post-review steps use (Jason, 2026-10-13)", async () => {
+    currentRows = [alpha(), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    rerender(wizardEl());
+
+    const back = screen.getByRole("button", { name: "Back to previous decision" });
+    expect(back.textContent).toBe("Back");
+    expect(back.className).toContain("border-[#00C2FF]");
+    // 32px tall, the primary NeonButton's height; laid out as 16px (-my-2) so
+    // a wrapped row keeps the footer at the height the text link gave it.
+    expect(back.className).toContain("h-8");
+    expect(back.className).toContain("-my-2");
+    expect(back.className).not.toContain("underline");
+    expect(back.className).not.toContain("text-xs");
+    // Its own XPath marker, distinct from every other footer control's.
+    expect(markerClassOf(back)).toMatch(/-btn-back-decision$/);
+    // Still in the decision row, beside Skip.
+    const skip = screen.getByRole("button", { name: "Skip Bravo — not a person" });
+    expect(back.parentElement).toBe(skip.parentElement);
+  });
+
   it("the presented decided row does NOT auto-advance when the batch updates", async () => {
     // The `explicit` half of the nav rule. Without it the read-only panel would
     // be swept away by the next reactive update, because the row it shows is
@@ -8243,9 +8268,16 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     ).toBeNull();
     expect(screen.queryByText(/on file under that name/)).toBeNull();
     expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Back to the list" })).toBeTruthy();
+    const backToList = screen.getByRole("button", { name: "Back to the list" });
     // One Back per screen: the previous-decision Back gives way to it.
     expect(screen.queryByLabelText("Back to previous decision")).toBeNull();
+    // …and it looks like every other Back in the wizard: the outlined button,
+    // not a dotted link (Jason, 2026-10-13: "yes stay consistent").
+    expect(backToList.className).toContain("border-[#00C2FF]");
+    expect(backToList.className).toContain("h-8");
+    expect(backToList.className).toContain("-my-2");
+    expect(backToList.className).not.toContain("underline");
+    expect(markerClassOf(backToList)).toMatch(/-btn-back-to-list$/);
   });
 
   it("Create new moves focus to the step's heading", async () => {
