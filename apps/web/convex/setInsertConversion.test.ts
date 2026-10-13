@@ -361,7 +361,7 @@ describe("sourceDataOfRow (S2's operator data)", () => {
   test("its own level-derived keys stay behind; everything the operator typed comes along", () => {
     const row = {
       features: { cardType: "Parallel", parallelName: "Red Ink", season: "2026", printRun: "/25" },
-      metadata: { cardNumberPrefix: "AA-", isParallel: true },
+      metadata: { cardNumberPrefix: "AA-" },
       teamIds: ["t1" as Id<"teams">],
       declinedUpstreamLabels: { sportlots: "Red Ink Autos" },
     } as unknown as Row;
@@ -957,15 +957,10 @@ describe("convertToInsert — refusals", () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     const row = await slRow(t, ids.parallelTypeId, "Red Ink", [RED_INK]);
-    // The title is the kind, exactly: "Insert Set" is not an Insert type, and
-    // a stray retired flag on a type titled Gold does not make it one.
+    // The title is the kind, exactly: "Insert Set" is not an Insert type,
+    // and nor is a type titled Gold.
     const named = await insertRow(t, { level: "variantType", value: "Insert Set", parentId: ids.chromeId });
-    const flagged = await insertRow(t, {
-      level: "variantType",
-      value: "Gold",
-      parentId: ids.chromeId,
-      metadata: { variantRole: "insert" },
-    });
+    const gold = await insertRow(t, { level: "variantType", value: "Gold", parentId: ids.chromeId });
     const landing = { kind: "newInsert" as const };
     await expectRefusal(
       t,
@@ -984,7 +979,7 @@ describe("convertToInsert — refusals", () => {
     );
     await expectRefusal(
       t,
-      () => convert(t, row, flagged, landing),
+      () => convert(t, row, gold, landing),
       insertConversionRefusal.notInsertType("Gold", "Bowman Chrome"),
     );
     await expectRefusal(

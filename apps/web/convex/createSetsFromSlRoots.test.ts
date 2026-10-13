@@ -179,8 +179,7 @@ describe("createSetsFromSlRoots — the set and its Base", () => {
     expect(variants).toHaveLength(1);
     const [base] = variants;
     expect(base.value).toBe("Base");
-    // The title is the kind (NEO-334); no flag is written.
-    expect(base.metadata?.isBase).toBeUndefined();
+    // The title is the kind (NEO-334).
     expect(base.platformData).toEqual({ sportlots: { s0: "502" } });
     expect(base.platformLabels?.sportlots).toEqual({ s0: "Heritage" });
     expect(base.platformData.bsc).toBeUndefined();

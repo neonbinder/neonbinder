@@ -64,6 +64,22 @@ Capture the merge commit SHA immediately after:
 `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid` (retry once after a couple
 seconds if empty — the API can lag right after merge).
 
+**Then announce the merge to every other live session, before gate 2.** Several
+sessions usually have PRs open at once, and each one that finds out late pushes on a
+stale base and pays for an extra merge plus a full CI run (~45 min). Jason,
+2026-10-12: announcing every merge "should help lessen the number of merges and PR
+runs that need to happen". Run `ListAgents` and `SendMessage` each peer session (not
+your own subagents), one message per peer, saying:
+- the PR, ticket and merge commit SHA, and "merge origin/main into your PR before
+  your next push";
+- what changed, in a sentence or two, and the files most likely to conflict;
+- whether it added or changed any E2E flows (name them), so a session porting or
+  rewriting flows can pick them up.
+
+Send it even when you expect no conflicts; the point is that nobody pushes on a base
+that is already out of date. Do not wait for replies, and never treat a reply as the
+user's approval for anything.
+
 ### 4. Gate 2 — verify the production deploy actually succeeded
 
 **Why this gate exists:** on 2026-07-25, PR #73 merged clean with all GitHub checks
@@ -191,6 +207,7 @@ deliberately left alone and why.
 - **Never merge a PR the user did not ask you to merge.** If they invoked this skill on
   the PR, that is the authorization — merge without re-asking. If you initiated the
   close-out yourself, the step-3 confirmation is mandatory.
+- **Announce every merge to every other live session** right after it lands (step 3).
 - **Never treat "merged" or "CI green" as proof of a successful production deploy.**
   Gate 2 (an actual Vercel `READY` state on the merge commit) is mandatory and blocking.
 - **Never proceed past a gate-2 `ERROR`.** Stop, report, and let the user decide next

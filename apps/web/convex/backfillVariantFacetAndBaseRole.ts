@@ -44,9 +44,8 @@
  *
  * ## DEPLOY THE VALIDATORS FIRST
  *
- * `platformFacets.bsc` was a two-literal union (`setName` | `variantName`) and
- * `metadata` had no `isBase`. Both are widened in `convex/schema.ts` in this
- * same ticket. Convex validates documents on READ as well as on write, so a row
+ * `platformFacets.bsc` was a two-literal union (`setName` | `variantName`),
+ * widened in `convex/schema.ts` in the same ticket (NEO-239). Convex validates documents on READ as well as on write, so a row
  * this backfill has tagged cannot be read by a deployment running the old
  * validators. **Deploy, then run.** Rolling back after a run means rolling
  * forward again, not restoring.

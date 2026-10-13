@@ -58,7 +58,7 @@ async function seedVariantType(
   opts: {
     bsc?: Record<string, string>;
     facets?: Record<string, "setName" | "variantName" | "variant">;
-    isBase?: boolean;
+    cardNumberPrefix?: string;
   } = {},
 ) {
   return t.run(async (ctx) =>
@@ -67,7 +67,9 @@ async function seedVariantType(
       value,
       platformData: opts.bsc ? { bsc: opts.bsc } : {},
       ...(opts.facets ? { platformFacets: { bsc: opts.facets } } : {}),
-      ...(opts.isBase !== undefined ? { metadata: { isBase: opts.isBase } } : {}),
+      ...(opts.cardNumberPrefix !== undefined
+        ? { metadata: { cardNumberPrefix: opts.cardNumberPrefix } }
+        : {}),
       parentId,
       children: [],
       lastUpdated: SENTINEL,
@@ -243,20 +245,20 @@ describe("backfillVariantFacetAndBaseRole — the armed run", () => {
     expect(afterSecond?.lastUpdated).toBe(afterFirst?.lastUpdated);
   });
 
-  test("a stray isBase flag is left exactly as found: tagging neither reads nor rewrites it", async () => {
-    // The flag is retired (the strip migration removes it); a tag run must not
-    // grant, flip or clear it.
+  test("a row's metadata is left exactly as found: tagging writes the facet only", async () => {
+    // NEO-334 removed the role-granting half; a tag run must not add, flip or
+    // clear anything in `metadata`.
     const t = convexTest(schema, modules);
     const setId = await seedSet(t);
-    const demoted = await seedVariantType(t, setId, "Base", {
+    const base = await seedVariantType(t, setId, "Base", {
       bsc: { b0: "base" },
-      isBase: false,
+      cardNumberPrefix: "B-",
     });
 
     const report = await armed(t);
     expect(report.tagged).toBe(1);
-    const row = await t.run(async (ctx) => ctx.db.get(demoted));
-    expect(row?.metadata).toEqual({ isBase: false });
+    const row = await t.run(async (ctx) => ctx.db.get(base));
+    expect(row?.metadata).toEqual({ cardNumberPrefix: "B-" });
     expect(row?.platformFacets?.bsc).toEqual({ b0: "variant" });
   });
 

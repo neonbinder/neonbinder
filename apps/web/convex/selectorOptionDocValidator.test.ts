@@ -58,31 +58,27 @@ const FULLY_POPULATED = {
   platformSlotSeq: { bsc: 2, sportlots: 1 },
   isCustom: false,
   createdByUserId: "clerk|admin_user_137",
-  // NEO-239 — `isBase` added. Leaving it out is precisely how this fixture
-  // stopped catching the drift it exists for: `getAncestorChain`'s hand-typed
-  // metadata validator missed the new field, and no seeded row carried it, so
-  // every test passed while the query threw in the preview for any chain
-  // containing a Base row. A fixture that is not FULLY POPULATED is not a
-  // drift guard.
+  // NEO-239 — the then-new `isBase` was left out of this fixture, which is
+  // precisely how it stopped catching the drift it exists for:
+  // `getAncestorChain`'s hand-typed metadata validator missed the new field,
+  // and no seeded row carried it, so every test passed while the query threw
+  // in the preview for any chain containing a Base row. A fixture that is not
+  // FULLY POPULATED is not a drift guard. (NEO-334 retired `isBase`,
+  // `variantRole`, `isInsert` and `isParallel` from the table.)
   // NEO-272 — `isBrandUnknown` added for the same reason: a fixture that
   // is not FULLY POPULATED is not a drift guard, and this flag rides in the
   // SAME `metadata` object `isBase` broke `getAncestorChain` from.
   metadata: {
     cardNumberPrefix: "DK-",
-    isInsert: true,
-    isParallel: false,
-    isBase: true,
     isBrandUnknown: true,
-    // NEO-237 — `setNamePrefix` added for the same reason as `isBase` and
+    // NEO-237 — `setNamePrefix` added for the same reason as
     // `isBrandUnknown` above: `getAncestorChain`'s hand-typed metadata
     // validator has to name every key or it throws on any real row carrying
     // one this fixture omits.
     setNamePrefix: "Topps",
-    // NEO-294 — `brandSetByOperator`, and NEO-306 — `variantRole`, for the
-    // same reason: the fixture had gone without the first, which left the
-    // drift guard dead for it.
+    // NEO-294 — `brandSetByOperator`, for the same reason: the fixture had
+    // gone without it, which left the drift guard dead for it.
     brandSetByOperator: true,
-    variantRole: "parallel",
   },
   sportConfig: {
     skuCode: "BB",
@@ -255,9 +251,11 @@ describe("selectorOptions returns-validator drift", () => {
    * write that set the flag was correct, the row was correct, and the page
    * error-boundaried on the next query that walked a chain containing it. Only
    * a fixture carrying the field can see it — which is why `FULLY_POPULATED`
-   * gained `isBase` above rather than this test being written around it.
+   * carries every metadata key rather than this test being written around
+   * one. (`isBase` itself was retired in NEO-334; `isBrandUnknown` and
+   * `setNamePrefix` ride in the same object now.)
    */
-  test("getAncestorChain returns a chain whose metadata carries isBase", async () => {
+  test("getAncestorChain returns a chain whose metadata carries every key", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { insertId } = await seedFullTree(t);
@@ -268,11 +266,12 @@ describe("selectorOptions returns-validator drift", () => {
 
     // sport → setName → variantType → insert, every one of them populated.
     expect(chain).toHaveLength(4);
-    expect(chain.every((node) => node.metadata?.isBase === true)).toBe(true);
     // NEO-272 — the same projection, the same hazard, the next field along.
     expect(
       chain.every((node) => node.metadata?.isBrandUnknown === true),
     ).toBe(true);
+    expect(chain.every((node) => node.metadata?.setNamePrefix === "Topps")).toBe(true);
+    expect(chain.every((node) => node.metadata?.brandSetByOperator === true)).toBe(true);
     // The projection's other derived fields, so a future re-inlining of THOSE
     // is caught here too rather than in a preview.
     expect(chain[0].platformFacets).toBeUndefined();

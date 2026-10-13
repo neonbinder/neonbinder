@@ -3,10 +3,8 @@
  *
  * `variantTypeKindFromTitle` / `variantTypeKind` / `sameTitleWord` /
  * `derivedVariantFlags` / `subVariantsAllowedUnder` / `variantTypeRenameOutcome`
- * are the pure rules. There is no flag to read: a stray `metadata.isBase` or
- * `metadata.variantRole` on a row is IGNORED (the follow-up PR removes the
- * fields; `stripRoleFlags` clears stored rows). See the header of
- * convex/variantRole.ts for the fuller "why".
+ * are the pure rules. There is no flag to read: the title is the only input.
+ * See the header of convex/variantRole.ts for the fuller "why".
  */
 
 import { describe, expect, test } from "vitest";
@@ -106,14 +104,6 @@ describe("variantTypeKind", () => {
     expect(variantTypeKind({ value: "Inserts" })).toBe("insert");
     expect(variantTypeKind({ value: "Base" })).toBe("base");
   });
-
-  test("a stray role flag on a row is ignored: the title decides", () => {
-    // Rows still carry the retired fields until the strip migration runs.
-    const gold = { value: "Gold", metadata: { variantRole: "insert", isBase: true } };
-    expect(variantTypeKind(gold)).toBeUndefined();
-    const insert = { value: "Insert", metadata: { variantRole: "parallel" } };
-    expect(variantTypeKind(insert)).toBe("insert");
-  });
 });
 
 // ===========================================================================
@@ -190,15 +180,6 @@ describe("derivedVariantFlags", () => {
     expect(derivedVariantFlags("insert", undefined)).toBeUndefined();
   });
 
-  test("a stray flag on a plain-titled parent is ignored", () => {
-    expect(
-      derivedVariantFlags("insert", {
-        value: "Gold",
-        metadata: { variantRole: "insert" },
-      } as { value: string }),
-    ).toBeUndefined();
-  });
-
   test("any other level gets no flag", () => {
     for (const level of ["sport", "year", "manufacturer", "setName", "variantType"]) {
       expect(derivedVariantFlags(level, { value: "Inserts" }), level).toBeUndefined();
@@ -224,15 +205,6 @@ describe("subVariantsAllowedUnder (NEO-334)", () => {
     expect(subVariantsAllowedUnder({})).toBe(false);
     expect(subVariantsAllowedUnder(null)).toBe(false);
     expect(subVariantsAllowedUnder(undefined)).toBe(false);
-  });
-
-  test("a flag cannot admit sub-variants under a type not titled Insert", () => {
-    expect(
-      subVariantsAllowedUnder({
-        value: "Gold",
-        metadata: { variantRole: "insert" },
-      } as { value: string }),
-    ).toBe(false);
   });
 });
 
