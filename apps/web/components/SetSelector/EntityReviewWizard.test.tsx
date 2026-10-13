@@ -4480,7 +4480,12 @@ describe("EntityReviewWizard — commit failure", () => {
     const onDismissCommitError = vi.fn();
     renderWizard({ commitError: "Commit failed: timeout", onDismissCommitError });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to review" }));
+    const back = screen.getByRole("button", { name: "Back to review" });
+    // The wizard's one Back style: the outlined button, never a text link.
+    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("-btn-back-to-review");
+    expect(back.className).not.toContain("underline");
+    fireEvent.click(back);
 
     expect(onDismissCommitError).toHaveBeenCalledTimes(1);
   });

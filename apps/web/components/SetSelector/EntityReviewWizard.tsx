@@ -5157,16 +5157,14 @@ export default function EntityReviewWizard({
                         {saving ? "Saving..." : "Retry commit"}
                       </NeonButton>
                       {onDismissCommitError && (
-                        // a11y (2.5.8): p-2 -m-2 grows the tap target without
-                        // moving the visible text — same convention as
-                        // TrackingCode's Copy button.
+                        // The wizard's one Back style (Jason, 2026-10-13).
                         <button
                           type="button"
                           onClick={() => {
                             onDismissCommitError();
                             if (backTargetId) presentDecided(backTargetId);
                           }}
-                          className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+                          className={`${footerFieldClass("btn-back-to-review")} ${OUTLINED_BACK_BUTTON_CLASS}`}
                         >
                           Back to review
                         </button>
