@@ -545,7 +545,7 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
 const ATTENTION_ANNOUNCE_DEBOUNCE_MS = 1500;
 
 /** NEO-343: matches no term; never reached (every card has a haystack). */
-const NO_HAYSTACK: CardSearchHaystack = { number: "", text: "" };
+const NO_HAYSTACK: CardSearchHaystack = { number: "", text: "", platforms: [] };
 
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;
@@ -2657,6 +2657,21 @@ export default function CardChecklist({
     selectedCardId,
     cardNumberById,
   ]);
+
+  // NEO-343 (a11y): a search that drops the OPEN card from the results closes
+  // its panel for good, rather than leaving the selection parked. Parked, the
+  // panel would remount the moment the card matched again (clearing the
+  // search does exactly that) and take focus from the search field the
+  // operator is typing in. Adjusted during render (React's "storing
+  // information from previous renders" pattern), so the panel is never drawn
+  // for a card the list no longer shows.
+  if (
+    searching &&
+    selectedCardId !== null &&
+    !displayRows.some((r) => r.card._id === selectedCardId)
+  ) {
+    setSelectedCardId(null);
+  }
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from

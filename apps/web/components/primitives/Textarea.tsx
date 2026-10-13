@@ -43,7 +43,7 @@ export interface TextareaProps
  * under a light-mode OS and this surface is always dark (see Input).
  */
 const BASE_TEXTAREA =
-  "rounded-md border border-slate-700 bg-slate-900 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
+  "rounded-md border border-slate-700 bg-slate-900 text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
 
 // `resize-none` lives here, not in BASE: resize behaviour is geometry, and a
 // caller that wants `resize-y` could not override it from `className` (Tailwind

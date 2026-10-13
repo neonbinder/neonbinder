@@ -76,7 +76,12 @@ vi.mock("react-virtuoso", () => ({
   },
 }));
 
-vi.mock("./CardDetailPanel", () => ({ default: () => null }));
+// A visible stand-in, so "the panel is open" is observable.
+vi.mock("./CardDetailPanel", () => ({
+  default: ({ card }: { card: { cardNumber: string } }) => (
+    <div role="dialog" aria-label={`Card detail stand-in ${card.cardNumber}`} />
+  ),
+}));
 vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
@@ -150,6 +155,10 @@ function card(
     ...overrides,
   };
 }
+
+/** The fixture as the row's prop type (its ids are plain strings here). */
+const asRow = (c: ReturnType<typeof card>) =>
+  c as unknown as React.ComponentProps<typeof CardChecklistItem>["card"];
 
 function ui(sourceChips = {}) {
   return (
@@ -358,6 +367,44 @@ describe("CardChecklist — search (NEO-343)", () => {
     expect(screen.getByText(/Variation of #6/)).toBeTruthy();
   });
 
+  it("a search that drops the open card closes its panel for good; clearing does not bring it back", () => {
+    render(ui());
+    const panel = () => screen.queryByRole("dialog", { name: /^Card detail stand-in/ });
+    fireEvent.click(screen.getByRole("button", { name: /^Edit card 6a,/ }));
+    expect(panel()?.getAttribute("aria-label")).toBe("Card detail stand-in 6a");
+
+    // Still a match: the panel stays.
+    searchBox().focus();
+    type("6a");
+    expect(panel()).not.toBeNull();
+
+    type("gronk");
+    expect(panel()).toBeNull();
+    // Cleared by the clear button and by an emptied field alike.
+    fireEvent.click(screen.getByRole("button", { name: "Clear card search" }));
+    expect(shownNumbers()).toContain("6a");
+    expect(panel()).toBeNull();
+    expect(document.activeElement).toBe(searchBox());
+
+    type("gronk");
+    type("");
+    expect(panel()).toBeNull();
+    expect(document.activeElement).toBe(searchBox());
+  });
+
+  it("sits in a search landmark; the clear button has no tooltip to drift from its name", () => {
+    render(ui());
+    const landmark = screen.getByRole("search");
+    expect(within(landmark).getByRole("searchbox", { name: "Search cards" })).toBe(searchBox());
+    expect(landmark.getAttribute("aria-label")).toBeNull();
+    type("x");
+    const clear = screen.getByRole("button", { name: "Clear card search" });
+    expect(clear.getAttribute("title")).toBeNull();
+    expect(clear.id).toBe("");
+    expect(clear.classList.contains("h-7")).toBe(true);
+    expect(clear.classList.contains("w-7")).toBe(true);
+  });
+
   it("scrolls back to the top on a new query, never on mount", () => {
     render(ui());
     expect(scrollToIndex).not.toHaveBeenCalled();
@@ -378,8 +425,20 @@ describe("what the row shows is what search finds (NEO-343)", () => {
   });
 
   it.each(TOKENS)("the '%s' badge's text finds its card", (token) => {
-    const c = card("1", "Somebody", { attributes: [token], teamOnCardIds: [] });
-    const { container } = render(<CardChecklistItem card={c} onEdit={() => {}} />);
+    // An "SL only" / "BSC only" card is linked on that side, as a synced
+    // one always is: an exact "sl" / "bsc" term reads the platform slot.
+    const platformData =
+      token === "unmatched-bsc"
+        ? { sportlots: { ref: "s1" } }
+        : token === "unmatched-sl"
+          ? { bsc: { ref: "b1" } }
+          : {};
+    const c = card("1", "Somebody", {
+      attributes: [token],
+      teamOnCardIds: [],
+      platformData,
+    });
+    const { container } = render(<CardChecklistItem card={asRow(c)} onEdit={() => {}} />);
     const badges = [...container.querySelectorAll("span.rounded.border")];
     expect(badges).toHaveLength(1);
     const text = badges[0].textContent!;
@@ -395,7 +454,7 @@ describe("what the row shows is what search finds (NEO-343)", () => {
       features: { autographed: "On-Card" },
       platformData: { bsc: { ref: "b1" }, sportlots: { ref: "s1" } },
     });
-    const { container } = render(<CardChecklistItem card={c} onEdit={() => {}} />);
+    const { container } = render(<CardChecklistItem card={asRow(c)} onEdit={() => {}} />);
     const row = within(container as HTMLElement);
     const subLine = row.getByText(/\/99/).textContent!;
     const parts = subLine.split(" · ");

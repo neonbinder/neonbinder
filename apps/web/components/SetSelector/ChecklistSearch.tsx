@@ -84,7 +84,11 @@ export default function ChecklistSearch({
   };
 
   return (
-    <div className="flex items-center gap-2 flex-wrap mb-3">
+    // role="search": a search landmark, so the field is reachable from a
+    // screen reader's landmark list. Unlabelled on purpose — the field's own
+    // name says what it searches, and an aria-label here would become a second
+    // resource-id for maestro-web.
+    <div role="search" className="flex items-center gap-2 flex-wrap mb-3">
       {/* Matches the other filter rows' label column. Visible text "Search" is
           contained in the field's accessible name (SC 2.5.3). */}
       <span
@@ -130,15 +134,17 @@ export default function ChecklistSearch({
           enterKeyHint="search"
           // The native search-field "x" is hidden: the clear button below is
           // the one, with a name a screen reader can say.
-          className="w-full pl-8 pr-9 py-1.5 text-sm [&::-webkit-search-cancel-button]:appearance-none"
+          className="w-full pl-8 pr-10 py-1.5 text-sm [&::-webkit-search-cancel-button]:appearance-none"
         />
         {query !== "" && (
           <button
             type="button"
             onClick={clear}
             aria-label={SEARCH_CLEAR_LABEL}
-            title="Clear search"
-            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            // 28px: past the 24px floor (SC 2.5.8) with room to spare inside
+            // the field's right padding. No `title` — a tooltip saying less
+            // than the name is a second, drifting label.
+            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
           >
             <span aria-hidden="true" className="text-base leading-none">
               ×

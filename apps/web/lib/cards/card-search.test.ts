@@ -233,6 +233,46 @@ describe("platform", () => {
     expect(cardMatchesSearch(bsc, "bsc sl")).toBe(false);
   });
 
+  test("an exact alias reads the platform field only: 'sl' never finds the Islanders", () => {
+    const islanders = card({
+      cardName: "Mathew Barzal",
+      teamOnCardIds: ["team-nyi"],
+    });
+    const islandersOnSl = card({
+      cardName: "Mathew Barzal",
+      teamOnCardIds: ["team-nyi"],
+      platformData: { sportlots: { ref: "s1" } },
+    });
+    const withIslanders: CardSearchLookups = {
+      teamNames: new Map([["team-nyi", "New York Islanders"]]),
+      playerNames: new Map(),
+    };
+    expect(cardMatchesSearch(islanders, "sl", withIslanders)).toBe(false);
+    expect(cardMatchesSearch(islanders, "#SL", withIslanders)).toBe(false);
+    expect(cardMatchesSearch(islandersOnSl, "sl", withIslanders)).toBe(true);
+    // A longer term is an ordinary substring term again.
+    expect(cardMatchesSearch(islanders, "isl", withIslanders)).toBe(true);
+    expect(cardMatchesSearch(islanders, "islanders sl", withIslanders)).toBe(false);
+  });
+
+  test("an exact 'bsc' does not reach a name or card number that contains it", () => {
+    const named = card({ cardNumber: "BSC-1", cardName: "Absc Obscure" });
+    expect(cardMatchesSearch(named, "bsc")).toBe(false);
+    expect(cardMatchesSearch(named, "obsc")).toBe(true);
+    expect(cardMatchesSearch(named, "bsc-1")).toBe(true);
+    expect(cardMatchesSearch({ ...named, platformData: { bsc: { ref: "b" } } }, "bsc")).toBe(true);
+  });
+
+  test("a term that is not exactly an alias stays a substring: 'slo'", () => {
+    const sloan = card({ cardName: "Jerry Sloan" });
+    expect(cardMatchesSearch(sloan, "slo")).toBe(true);
+    // 'slo' is not inside "sportlots", so an SL link alone does not answer it.
+    expect(cardMatchesSearch(sl, "slo")).toBe(false);
+    // A partial platform name is ordinary substring, and still finds the slot.
+    expect(cardMatchesSearch(sl, "sportl")).toBe(true);
+    expect(cardMatchesSearch(bsc, "buysports")).toBe(true);
+  });
+
   test("the fields list names the platforms as the row's badges do", () => {
     expect(cardSearchFields(both).platforms).toEqual([
       "BSC",

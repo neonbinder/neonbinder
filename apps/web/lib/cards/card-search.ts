@@ -38,6 +38,9 @@
  * - platform — which marketplace slots are filled ON NB'S OWN ROW: "BSC" /
  *              "BuySportsCards", "SL" / "SportLots". Nothing here queries a
  *              marketplace; it reads whether `platformData.<side>` is present.
+ *              A term that exactly equals one of those four (after "#" and
+ *              case folding) matches this field ONLY, so "sl" never finds
+ *              "Islanders".
  *
  * Deliberately NOT read: `bscTeamName`. It is a marketplace's hint, never NB
  * data (CLAUDE.md product invariant), and the row does not render it.
@@ -215,7 +218,25 @@ export function cardSearchFields(
  * with a newline, which no term can contain (terms split on whitespace), so a
  * term never matches across the seam between two fields.
  */
-export type CardSearchHaystack = { number: string; text: string };
+export type CardSearchHaystack = {
+  number: string;
+  text: string;
+  /** The platform aliases of the filled slots, folded ("bsc", "sl", …). */
+  platforms: readonly string[];
+};
+
+/**
+ * A term that IS a platform's name or code reads as "linked on that
+ * platform" and nothing else. Otherwise "sl" would also find every
+ * "New York Islanders" card. A longer or different term ("slo",
+ * "sportl") is an ordinary substring term.
+ */
+const PLATFORM_ALIASES: ReadonlySet<string> = new Set([
+  "bsc",
+  "buysportscards",
+  "sl",
+  "sportlots",
+]);
 
 export function cardSearchHaystack(
   card: SearchableCard,
@@ -232,19 +253,23 @@ export function cardSearchHaystack(
         ...fields.platforms,
       ].join("\n"),
     ),
+    platforms: fields.platforms.map(foldSearchText),
   };
 }
 
 /**
- * Every term matches: the start of the card number, or somewhere in the other
- * fields. No terms matches everything.
+ * Every term matches. A platform alias matches the platform field only;
+ * any other term matches the start of the card number or somewhere in the
+ * other fields. No terms matches everything.
  */
 export function haystackMatches(
   haystack: CardSearchHaystack,
   terms: readonly string[],
 ): boolean {
-  return terms.every(
-    (term) => haystack.number.startsWith(term) || haystack.text.includes(term),
+  return terms.every((term) =>
+    PLATFORM_ALIASES.has(term)
+      ? haystack.platforms.includes(term)
+      : haystack.number.startsWith(term) || haystack.text.includes(term),
   );
 }
 
