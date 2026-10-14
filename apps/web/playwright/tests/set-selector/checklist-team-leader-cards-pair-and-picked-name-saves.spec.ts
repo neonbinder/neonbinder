@@ -6,15 +6,17 @@
 //       TL"), SportLots as "<Team>". BSC's parser strips "TL" as it strips
 //       "TC", so the 32 team-leader cards raise no decision. Before the fix
 //       the header read 40 name and 38 player conflicts on this set (prod,
-//       2026-10-13). STEP 4 bounds both counts under 32; STEP 5 reads #6a (New
-//       England Patriots) in the dialog: matched, bare team name, no name or
-//       players conflict; STEP 9 finds the SAVED #6a with the checklist search
-//       and reads its team as LINKED, not "(unconfirmed)".
+//       2026-10-13). STEP 4 bounds both counts at 12 (measured 8 and 7; see
+//       below); STEP 5 reads #6a (New England Patriots) in the dialog:
+//       matched, bare team name, no name or players conflict; STEP 9 finds the
+//       SAVED #6a with the checklist search and reads its team as LINKED, not
+//       "(unconfirmed)".
 //   (b) NEO-344: a conflict that IS there shows each value bare (Jason,
 //       2026-10-13: "I don't want the user swayed by what marketplace the data
 //       comes from"), still opens on BSC's value, and the value the operator
 //       picks is the one the card is saved with. STEP 6 manufactures the
-//       conflict on #442, STEP 7 saves, STEP 8 reads the saved name back.
+//       conflict on #442 (unlink it, then link it to a SportLots-only card),
+//       STEP 7 saves, STEP 8 reads the saved name back.
 //
 // One fetch carries both: a second spec would fetch this ~1,000-row real set
 // again, and a real set has exactly one writer (R7a).
@@ -26,10 +28,19 @@
 // checklist committed and fails at STEP 3's empty-checklist assert, by name.
 // Mints nothing: every review-wizard name is skipped.
 //
-// The conflict is MANUFACTURED from two real fetched halves (as
-// checklist-pairing-dialog-cancel's is): #442 (BSC's Jordan Lynch SP, which
-// SportLots does not list) is linked to the first SportLots-only card. Both
-// names are read off the screen; nothing is hardcoded but the card numbers.
+// MEASURED on PR #335 run 38501127928 (Football 2014 Topps Base, live): the
+// dialog opens on "Matched (554)" with 8 name conflicts and 7 player
+// conflicts, "BSC only (0)" and "SportLots only (2)": #28 Vernon David ·
+// Jumping and #35 Navarro Bowman · Celebrating. EVERY BSC card matched, #442
+// included, so #442 is NOT BSC-only (an earlier draft assumed it was and
+// failed to find its row in the BSC column).
+//
+// The conflict is MANUFACTURED from the real fetched halves (as
+// checklist-pairing-dialog-cancel's is): #442 is found in the Matched list,
+// UNLINKED (its BSC half lands in BSC only: 0 -> 1), and linked to the first
+// SportLots-only card, a different person, so a name conflict is guaranteed.
+// Both names are read off the screen; nothing is hardcoded but the card
+// numbers.
 //
 // R3: checklist-pairing-dialog-cancel proves the bare pills on Future Stars
 // and then CANCELS (its set is read-only); this is the only spec that saves
@@ -96,17 +107,20 @@ test(
     await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
     await expect(confirm).toHaveText("Confirm");
 
-    // ── STEP 4 (a): fewer than 32 of each kind of conflict. The Matched
-    // toggle's name appends ", N with a player conflict" then ", M with a name
+    // ── STEP 4 (a): at most 12 of each kind of conflict. The Matched toggle's
+    // name appends ", N with a player conflict" then ", M with a name
     // conflict" whenever either is non-zero, so one full match bounds both at
-    // 0-31. Unwired, all 32 team-leader cards conflict on both. Bounded, not
-    // pinned: the rest are live marketplace disagreements (#72, #247, #257,
-    // #405 by the catalogues), not this spec's business.
-    const upTo31 = "([0-9]|[12][0-9]|3[01])";
+    // 0-12. Measured 8 name and 7 player conflicts (PR #335 run 38501127928);
+    // unwired, all 32 team-leader cards conflict on both (40 and 38 on prod).
+    // Bounded, not pinned: the natural 8 and 7 are live marketplace
+    // disagreements (#72, #247, #257, #405 by the catalogues), not this
+    // spec's business, so 4 of slack absorbs catalogue drift while a
+    // regression on more than 4 of the 32 team-leader cards still fails.
+    const upTo12 = "([0-9]|1[0-2])";
     await expect(
       dialog.getByRole("button", {
         name: new RegExp(
-          `^(Expand|Collapse) matched cards(, ${upTo31} with a player conflict)?(, ${upTo31} with a name conflict)?$`,
+          `^(Expand|Collapse) matched cards(, ${upTo12} with a player conflict)?(, ${upTo12} with a name conflict)?$`,
         ),
       }),
     ).toBeVisible();
@@ -129,8 +143,15 @@ test(
     await expect(dialog.getByRole("group", { name: /^Name conflict on #6a?( .*)?$/ })).toHaveCount(0);
     await expect(dialog.getByRole("group", { name: /^Players conflict on #6a?( .*)?$/ })).toHaveCount(0);
 
-    // ── STEP 6 (b): a conflict on #442, shown bare. Collapse Matched so the
-    // columns are the dialog's working area again.
+    // ── STEP 6 (b): a conflict on #442, shown bare. Matched is still open
+    // from STEP 5. The measured shape (R2): every BSC card matched, so BSC
+    // only is empty and #442 sits in the Matched list. Unlink it (the button
+    // carries its label, `Unlink #442 <name>`); its BSC half lands in BSC only.
+    const bscOnly = (n: number) => dialog.getByRole("heading", { name: `BSC only (${n})`, exact: true });
+    await expect(bscOnly(0)).toBeVisible();
+    await dialog.getByRole("button", { name: /^Unlink #442 / }).click();
+    await expect(bscOnly(1)).toBeVisible();
+    // Collapse Matched so the columns are the dialog's working area again.
     await collapseMatched.click();
     await expect(expandMatched).toBeVisible();
 
@@ -143,8 +164,9 @@ test(
     const bscName = nameFromLabel(((await bscRow.getAttribute("aria-label")) ?? "").replace(/^Select BSC card /, ""));
 
     // The SportLots half: whichever SportLots-only card heads its column (any
-    // one will do; expected one of its Retail Factory Set / Leaning left
-    // variations). Its pill shows the NAME, so the number and variation go.
+    // one will do; measured #28 Vernon David · Jumping, and an unlinked
+    // SportLots half of #442, if it had one, is appended AFTER the fetched
+    // ones). Its pill shows the NAME, so the number and variation go.
     const slRow = dialog.getByRole("button", { name: /^Link selected BSC card to / }).first();
     await expect(slRow).toBeVisible();
     const slLabel = ((await slRow.getAttribute("aria-label")) ?? "").replace(/^Link selected BSC card to /, "");
