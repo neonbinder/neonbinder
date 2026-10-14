@@ -381,7 +381,7 @@ export default function PipelineRunsPage() {
           incomplete for a status with older runs off the end of the list. Said
           plainly here rather than left as a trap. */}
       {runs !== undefined && runs.length > 0 && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-slate-400">
           Showing the {runs.length} most recent runs (up to 100). Filters and
           sorting apply to these, not the full history.
         </p>

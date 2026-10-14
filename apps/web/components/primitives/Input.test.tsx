@@ -77,9 +77,9 @@ describe("Input — bare mode", () => {
   });
 
   it("pairs its hardcoded surface with a hardcoded text colour", () => {
-    // The surface is always bg-slate-900, but `--foreground` flips to #171717
-    // under a light-mode OS — so `text-foreground` here would be near-black
-    // text on a near-black field for anyone not in dark mode.
+    // The surface is always bg-slate-900, so its text colour is hardcoded too
+    // rather than borrowed from the page's `--foreground` token (which used to
+    // flip to #171717 under a light-mode OS, before NEO-341 pinned it dark).
     render(<Input bare aria-label="field" />);
     const cls = field().className;
     expect(cls).toContain("text-slate-100");

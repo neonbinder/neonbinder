@@ -313,22 +313,44 @@ describe("decideRowsByIds — the read set is the rows it writes (NEO-301)", () 
       new Set(s.all.filter((id) => id !== s.decidedPlayer)),
     );
 
-    const { reads, gets } = await t.run(async (ctx) => {
+    const { decided, reads, gets } = await t.run(async (ctx) => {
       const rec = recordingCtx(ctx);
-      await decideRowsByIdsImpl(rec.ctx, {
+      const decided = await decideRowsByIdsImpl(rec.ctx, {
         ids: page.ids,
         selectorOptionId: s.selectorOptionId,
         batchId: BATCH,
         action: "skip",
         callerId: CALLER,
       });
-      return { reads: rec.reads, gets: rec.gets };
+      return { decided, reads: rec.reads, gets: rec.gets };
     });
 
-    // A skip reads nothing but its own rows: no index read at all.
-    expect(reads).toEqual([]);
+    // NEO-341 — beyond its own rows a skip reads only the steps each SETTLED
+    // row staged, through an index keyed on that row's own id
+    // (`skipStagedStepsOf`): never the batch window, never a scan.
+    expect(reads.filter((r) => r.index === "by_selector_option_and_batch")).toEqual([]);
+    expect(reads.filter((r) => r.index === null)).toEqual([]);
+    for (const r of reads) {
+      expect(r.table).toBe("entityReviewQueue");
+      expect(["by_source_player", "by_source_team"]).toContain(r.index);
+      expect(r.ranged).toBe(false);
+      expect(r.eqFields).toEqual([
+        r.index === "by_source_player" ? "source.playerRowId" : "source.teamRowId",
+      ]);
+    }
+    // A pending row has had no lookup land, so nothing can be staged under it
+    // and it costs no read at all.
+    expect(reads.length).toBe(
+      s.all.filter((id) => id !== s.decidedPlayer && !s.pendingPlayers.includes(id))
+        .length -
+        // The league row stages nothing, so it has no source index to read.
+        1,
+    );
     expect(new Set(gets)).toEqual(new Set(page.ids));
     expect(gets).not.toContain(s.decidedPlayer);
+    // The staged Oregon State Beavers step is in the page AND under its
+    // player: skipped and counted once.
+    expect(decided).toBe(page.ids.length);
   });
 });
 

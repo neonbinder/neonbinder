@@ -273,7 +273,7 @@ export default function ResilientEntityColumn(
   // put the level name on screen twice and make the E2E text selectors
   // ambiguous.
   return (
-    <div className="min-w-[260px] max-w-[340px] flex-shrink-0 flex flex-col gap-4">
+    <div className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4">
       {isVisible && gaveUp ? (
         <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
           <div

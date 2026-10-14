@@ -360,7 +360,7 @@ export default function PublicProfileEditor() {
         {/* Username */}
         <div>
           <label htmlFor="pub-username" className={labelClass}>
-            Username <span className="text-slate-500 text-xs">(neonbinder.com/u/username)</span>
+            Username <span className="text-slate-400 text-xs">(neonbinder.com/u/username)</span>
           </label>
           <div className="relative">
             <Input
@@ -503,6 +503,9 @@ export default function PublicProfileEditor() {
         <div
           className="h-8 rounded-md w-full"
           style={{ background: `linear-gradient(135deg, ${brandColor1}, ${brandColor2})` }}
+          // role="img" so the label names something: aria-label on a bare div
+          // is prohibited (axe aria-prohibited-attr) and is never announced.
+          role="img"
           aria-label="Gradient preview"
         />
       </div>
@@ -549,7 +552,7 @@ export default function PublicProfileEditor() {
             <label htmlFor="pub-paypal" className={labelClass}>
               PayPal username (Friends & Family){" "}
               {paypalUsername && (
-                <span className="text-slate-500 text-xs">→ paypal.me/{paypalUsername}</span>
+                <span className="text-slate-400 text-xs">→ paypal.me/{paypalUsername}</span>
               )}
             </label>
             <FillButton onClick={() => edit(setPaypalUsername)(username)} url={inferredUrls.paypal()} canInfer={canInferUrl} />
@@ -567,7 +570,7 @@ export default function PublicProfileEditor() {
         <div>
           <label htmlFor="pub-paypal-email" className={labelClass}>
             PayPal email (Goods & Services){" "}
-            <span className="text-slate-500 text-xs">Buyer-protected payments</span>
+            <span className="text-slate-400 text-xs">Buyer-protected payments</span>
           </label>
           <Input
             bare
@@ -584,7 +587,7 @@ export default function PublicProfileEditor() {
             <label htmlFor="pub-venmo" className={labelClass}>
               Venmo username{" "}
               {venmoUsername && (
-                <span className="text-slate-500 text-xs">→ venmo.com/{venmoUsername}</span>
+                <span className="text-slate-400 text-xs">→ venmo.com/{venmoUsername}</span>
               )}
             </label>
             <FillButton onClick={() => edit(setVenmoUsername)(username)} url={inferredUrls.venmo()} canInfer={canInferUrl} />
@@ -604,7 +607,7 @@ export default function PublicProfileEditor() {
             <label htmlFor="pub-cashapp" className={labelClass}>
               Cash App username{" "}
               {cashAppUsername && (
-                <span className="text-slate-500 text-xs">→ cash.app/${cashAppUsername}</span>
+                <span className="text-slate-400 text-xs">→ cash.app/${cashAppUsername}</span>
               )}
             </label>
             <FillButton onClick={() => edit(setCashAppUsername)(username)} url={inferredUrls.cashApp()} canInfer={canInferUrl} />

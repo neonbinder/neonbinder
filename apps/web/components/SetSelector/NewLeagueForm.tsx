@@ -45,17 +45,20 @@
  * common case — the lookup got it right — costs zero taps and the operator can
  * still see everything the commit will write.
  *
- * ## Level is `aria-pressed` toggles, not a radiogroup
+ * ## Level is a radiogroup of pills, not a type-ahead
  *
+ * `LevelGroup`, reused from the admin form verbatim: `role="radiogroup"`
+ * (named "Level", `aria-required`) over native buttons carrying `role="radio"`
+ * and `aria-checked`, one Tab stop with arrow keys between the choices.
  * Deliberately not a type-ahead like the New Team step's League field
- * (NEO-307): Level is a small FIXED set, not a table that grows, and it reuses
- * `LevelGroup` from the admin form verbatim. NEO-331 made level REQUIRED with
- * no default (Jason, 2026-10-10: "force a choice"): the step opens with nothing
- * pressed, the primary waits until one is, and a pressed level cannot be
- * un-pressed. It also means the control an operator learns here is
- * byte-identical to the one on League Management, including its Maestro
- * selectors (`tapOn: "Major"`). Consistency with the other place this exact
- * field is edited beats consistency with the League field on the team step.
+ * (NEO-307): Level is a small FIXED set, not a table that grows. NEO-331 made
+ * level REQUIRED with no default (Jason, 2026-10-10: "force a choice"): the
+ * step opens with nothing checked, the primary waits until one is, and a
+ * checked level cannot be unchecked. It also means the control an operator
+ * learns here is byte-identical to the one on League Management, including
+ * the accessible names the E2E specs select by ("Major"). Consistency with
+ * the other place this exact field is edited beats consistency with the
+ * League field on the team step.
  *
  * ## No generated ids on inputs
  *

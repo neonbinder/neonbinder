@@ -553,7 +553,7 @@ required for this ticket.
 **Exact strings to keep stable for the E2E author**
 - Column affordance visible text: `"{n} suggestion"` / `"{n} suggestions"`
   (bare count + noun, no other decoration) — this is what
-  `1972-73-topps-hockey-tcg-rename.yaml` (or whatever the maestro-e2e-author
+  `1972-73-topps-hockey-tcg-rename.yaml` (or whatever the playwright-e2e-author
   names it) will `scrollUntilVisible`/`tapOn`.
 - Per-side suggestion badge text: exactly `"BSC: {label}"` / `"SportLots:
   {label}"` — the plan's own E2E acceptance asserts the literal string `"BSC:

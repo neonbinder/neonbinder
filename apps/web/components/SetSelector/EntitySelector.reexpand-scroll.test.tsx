@@ -201,30 +201,24 @@ describe("EntitySelector — re-expanding opens at the selection (NEO-276)", () 
   });
 
   // -------------------------------------------------------------------------
-  // The Maestro tripwire
+  // The DOM-shape tripwire
   // -------------------------------------------------------------------------
 
-  it("changes no class string on the list it scrolls, and adds only a classless id wrapper", () => {
-    // ~105 flows read this DOM. The scroll is a `scrollTop` write on the node
-    // that already existed and its class string is the one the flows were
-    // written against. Was: "changes no node and no class string" — NEO-224
-    // adds ONE node, a classless wrapper div carrying the `aria-controls` id,
-    // between the card and the list (an id on the listbox itself would shadow
-    // its aria-label as maestro-web's resource-id).
+  it("changes no class string on the list it scrolls, and the combobox controls the list itself", () => {
+    // The scroll is a `scrollTop` write on the node that already existed, and
+    // its class string is unchanged. NEO-224 had put a classless id wrapper
+    // between the card and the list for maestro-web's sake; NEO-341 removed it
+    // and put the `aria-controls` id on the listbox, the APG shape axe needs
+    // to exempt this scrollable popup from `scrollable-region-focusable`.
     const { rerender } = render(column({ selectedId: "set30", expanded: false }));
     rerender(column({ selectedId: "set30", expanded: true }));
 
     expect(list().className).toBe("space-y-2 max-h-[400px] overflow-y-auto");
-    expect(list().getAttribute("id")).toBeNull();
-
-    const wrapper = list().parentElement!;
-    expect(wrapper.tagName).toBe("DIV");
-    expect(wrapper.getAttribute("class")).toBeNull();
-    expect(wrapper.getAttribute("id")).toBeTruthy();
-    expect(wrapper.getAttribute("id")).toBe(
+    expect(list().getAttribute("id")).toBeTruthy();
+    expect(list().getAttribute("id")).toBe(
       screen.getByRole("combobox").getAttribute("aria-controls"),
     );
-    expect(wrapper.parentElement?.className).toBe(
+    expect(list().parentElement?.className).toBe(
       "bg-white dark:bg-gray-800 p-6 rounded-lg shadow",
     );
     for (const option of screen.getAllByRole("option")) {

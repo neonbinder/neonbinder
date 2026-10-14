@@ -91,7 +91,7 @@ export default function ProfileLayout() {
                 className={({ isActive }) =>
                   "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm " +
                   (isActive
-                    ? "border-neon-purple text-neon-purple"
+                    ? "border-neon-purple text-neon-purple-text"
                     : "border-transparent text-slate-400 hover:text-foreground hover:border-slate-600")
                 }
               >

@@ -233,7 +233,7 @@ export default function PrintShopPage() {
               </div>
             </div>
             <div>
-              <h2 className="text-4xl font-bold mb-4 text-neon-purple">
+              <h2 className="text-4xl font-bold mb-4 text-neon-purple-text">
                 Print, Cut, Slide In
               </h2>
               <p className="text-lg text-slate-300 mb-6">
@@ -244,21 +244,21 @@ export default function PrintShopPage() {
               </p>
               <div className="space-y-4 text-slate-400">
                 <div className="flex items-start gap-3">
-                  <span className="text-neon-purple font-bold text-xl">▸</span>
+                  <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">No Special Printer</h4>
                     <p>Plain paper for spine labels, cardstock if you&apos;re fancy. Any printer that takes Letter or A4.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
-                  <span className="text-neon-purple font-bold text-xl">▸</span>
+                  <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">True To Size</h4>
                     <p>Placeholders print at exactly 2.5&quot; × 3.5&quot; and labels at your binder&apos;s exact width — no shrink-to-fit surprises.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
-                  <span className="text-neon-purple font-bold text-xl">▸</span>
+                  <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">Cut Guides Included</h4>
                     <p>Corner ticks sit inside the cut line, so the guides end up in the scrap pile — not on your label.</p>

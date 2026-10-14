@@ -120,7 +120,7 @@ export default function ComingSoon() {
 
         {/* 90s Footer Elements */}
         <div className="mt-16 pt-8 border-t-4 border-neon-purple space-y-3">
-          <p className="text-lg font-bold text-neon-pink animate-pulse" style={{ fontFamily: "'Lexend', sans-serif" }}>
+          <p className="text-lg font-bold text-neon-pink animate-neon-glow" style={{ fontFamily: "'Lexend', sans-serif" }}>
             {progressBar} {percent}% Complete
           </p>
           <p className="text-sm text-white" style={{ fontFamily: "'Lexend', sans-serif" }}>

@@ -619,8 +619,20 @@ export function resolveNav<T extends NavRow>(
    * unanswerable.
    *
    * Defaults to false, so every existing caller keeps today's behaviour.
+   *
+   * `interactionOpen` — NEO-341: the operator is MID-GESTURE on the row on
+   * screen: a list, search or form is open on it (the sport chooser, the link
+   * search, an "Add years" form). Holds an implicit pin against BOTH of its
+   * yields, not just the teams-first one, because moving now unmounts the
+   * control under their pointer and the click they are making is lost (CI
+   * caught exactly that on a phone: "Sport for this name" open, a lookup
+   * settled, the wizard jumped to a New League step). It is a deferral, never
+   * a refusal: the caller re-resolves when the control closes, and the yield
+   * it held lands then. A decided or vanished row still moves.
+   *
+   * Defaults to false.
    */
-  opts: { pinnedRowHasEdits?: boolean } = {},
+  opts: { pinnedRowHasEdits?: boolean; interactionOpen?: boolean } = {},
 ): NavState {
   const presented =
     nav.rowId === null ? null : (rows.find((r) => r._id === nav.rowId) ?? null);
@@ -630,52 +642,53 @@ export function resolveNav<T extends NavRow>(
     presented === null ||
     (!nav.explicit &&
       (!!presented.decision ||
-        /*
-         * NEO-236 — a player the WALK chose yields while any team waits.
-         *
-         * Jason's 118-row batch: 13 settled undecided teams, and the wizard
-         * sitting on a player. `nextUndecided` was already teams-first, so a
-         * FRESH resolve picked a team correctly — the hole was that
-         * `resolveNav` only consults it when the pin goes STALE, and an
-         * implicitly-pinned undecided player never is.
-         *
-         * That matters because of how a batch actually drains: everything
-         * starts `pending`, the pool resolves 5-wide over a real Wikidata round
-         * trip, and with 105 of 118 rows being players the first row to settle
-         * is almost always a player. The walk pins it, the 13 teams settle a
-         * moment later, and nothing ever re-asks. The operator gets exactly
-         * what Jason got — a player whose chips say "needs a team decision"
-         * while every team it needs is sitting there answered by nobody.
-         *
-         * Only an IMPLICIT pin yields. An explicit one is the operator's own
-         * navigation (Back, "Change decision", "Decide team") and outranks
-         * this — that is the NEO-221 promise about not losing your place, and
-         * it is what keeps this from undoing a deliberate move.
-         */
-        (presented.kind === "player" &&
-          !opts.pinnedRowHasEdits &&
-          // NEO-330 W6 — nor once the walk has brought the operator BACK to
-          // this row: they were mid-way through it. See `NavState.returned`.
-          !nav.returned &&
-          hasSettledUndecidedTeam(rows)) ||
-        // NEO-236 — an implicit pin YIELDS to steps staged under it.
-        //
-        // This is the defect Jason hit on CI run 5: on the first player of a
-        // fresh batch he was shown the New Player step and never saw a New Team
-        // step at all. The player's own lookup is what stages its career teams,
-        // and the wizard is already presenting that player when the lookup
-        // lands — so the rows appear ahead of it, `nextUndecided` correctly
-        // refuses to offer the player, and none of that mattered, because a
-        // present + undecided + implicitly-presented row was not "stale" and
-        // the rule was never consulted.
-        //
-        // An implicit pin is the WIZARD'S OWN WALK, not something the operator
-        // chose, so it has no claim to stay put once the walk's own rule says
-        // this row is not ready. An EXPLICIT pin still wins (see below): the
-        // operator asked for that row, and its step is where an unanswerable
-        // career team gets unticked.
-        (waitingOnStagedTeams(presented, rows) ||
-          waitingOnStagedLeagues(presented, rows))));
+        (!opts.interactionOpen &&
+          (/*
+           * NEO-236 — a player the WALK chose yields while any team waits.
+           *
+           * Jason's 118-row batch: 13 settled undecided teams, and the wizard
+           * sitting on a player. `nextUndecided` was already teams-first, so a
+           * FRESH resolve picked a team correctly — the hole was that
+           * `resolveNav` only consults it when the pin goes STALE, and an
+           * implicitly-pinned undecided player never is.
+           *
+           * That matters because of how a batch actually drains: everything
+           * starts `pending`, the pool resolves 5-wide over a real Wikidata round
+           * trip, and with 105 of 118 rows being players the first row to settle
+           * is almost always a player. The walk pins it, the 13 teams settle a
+           * moment later, and nothing ever re-asks. The operator gets exactly
+           * what Jason got — a player whose chips say "needs a team decision"
+           * while every team it needs is sitting there answered by nobody.
+           *
+           * Only an IMPLICIT pin yields. An explicit one is the operator's own
+           * navigation (Back, "Change decision", "Decide team") and outranks
+           * this — that is the NEO-221 promise about not losing your place, and
+           * it is what keeps this from undoing a deliberate move.
+           */
+          (presented.kind === "player" &&
+            !opts.pinnedRowHasEdits &&
+            // NEO-330 W6 — nor once the walk has brought the operator BACK to
+            // this row: they were mid-way through it. See `NavState.returned`.
+            !nav.returned &&
+            hasSettledUndecidedTeam(rows)) ||
+          // NEO-236 — an implicit pin YIELDS to steps staged under it.
+          //
+          // This is the defect Jason hit on CI run 5: on the first player of a
+          // fresh batch he was shown the New Player step and never saw a New Team
+          // step at all. The player's own lookup is what stages its career teams,
+          // and the wizard is already presenting that player when the lookup
+          // lands — so the rows appear ahead of it, `nextUndecided` correctly
+          // refuses to offer the player, and none of that mattered, because a
+          // present + undecided + implicitly-presented row was not "stale" and
+          // the rule was never consulted.
+          //
+          // An implicit pin is the WIZARD'S OWN WALK, not something the operator
+          // chose, so it has no claim to stay put once the walk's own rule says
+          // this row is not ready. An EXPLICIT pin still wins (see below): the
+          // operator asked for that row, and its step is where an unanswerable
+          // career team gets unticked.
+          (waitingOnStagedTeams(presented, rows) ||
+            waitingOnStagedLeagues(presented, rows))))));
   if (!stale) return nav;
 
   /*

@@ -15,10 +15,14 @@
  *
  *  - the fence names the batch `getReadyCandidates` shows, and its `ready`
  *    equals the subscription's `ready` once every team write has landed;
- *  - it is the count the server SAW, never a target. Since NEO-330 a row's
- *    status is per row (`initialCandidateStatus`): a card that arrived with
- *    its team already parsed is never looked up and is written `ready`, so
- *    on a healthy run the fence equals `total`;
+ *  - it is the count the server SAW, never a target. A row's status is per
+ *    row (NEO-330 / NEO-341, `teamPending` in `startCandidateBatch`, decided
+ *    by `initialCandidateStatus`): a card that arrived with its team already
+ *    parsed is never looked up and is written `ready`, so once the lookups
+ *    have landed `ready` reaches `total`. The client gates on both the fence
+ *    and `ready === total`; per-row status is what keeps the second from
+ *    hanging the one-marketplace path — the reason NEO-255 refused to gate on
+ *    readiness at all;
  *  - a run with no lookup to do reports 0, and the count is the whole fence;
  *  - a lookup that THROWS is answered "no team" (NEO-330): the run still
  *    succeeds and the fence still advances, so the client's wait ends;
@@ -230,8 +234,8 @@ describe("fetchCardChecklist — the team fence (NEO-333)", () => {
       bscCard("1"),
       // Looked up: BSC has no team for it. Still an answer — the row is ready.
       bscCard("2"),
-      // Arrived with its team parsed: never looked up, so (NEO-330) its row
-      // is written `ready` from the start.
+      // Arrived with its team parsed: never looked up, so its row is written
+      // `ready` from the start (NEO-330 / NEO-341).
       bscCard("3", ["San Diego Padres"]),
     ];
     mockState.teamsByRef = {
@@ -268,10 +272,12 @@ describe("fetchCardChecklist — the team fence (NEO-333)", () => {
     expect(byNumber.get("3")?.teams).toEqual(["San Diego Padres"]);
 
     // The fence is what the server SAW, never a target it might not reach.
-    // With per-row status (NEO-330) the pre-parsed row is `ready` from the
-    // start, so here it happens to equal `total`.
+    // Every row is ready, the pre-parsed one included, so the client's
+    // `ready === total` half of the gate is met too — no row that never
+    // needed a lookup can hold it (the hang NEO-255 refused to risk).
     expect(live.total).toBe(3);
     expect(live.ready).toBe(live.total);
+    expect(byNumber.get("3")?.teamResolved).toBe(true);
   });
 
   test("a run with nothing to look up reports 0, and every row is already ready with its team", async () => {

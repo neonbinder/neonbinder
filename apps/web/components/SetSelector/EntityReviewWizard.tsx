@@ -619,6 +619,15 @@ export default function EntityReviewWizard({
    */
   const [careerEntryDirty, setCareerEntryDirty] = useState(false);
   /**
+   * NEO-341 — the row whose sport chooser ("Sport for this name") is open, and
+   * the row whose "Add years" form is open. Both controls keep their open state
+   * themselves and report it up through `onOpenChange`; the ROW id rather than
+   * a boolean, so a report that outlives its row can never hold the next one.
+   * See `rowInteractionOpen`.
+   */
+  const [sportChooserOpenFor, setSportChooserOpenFor] = useState<string | null>(null);
+  const [undatedFormOpenFor, setUndatedFormOpenFor] = useState<string | null>(null);
+  /**
    * Manual career-team entries the admin has staged, keyed by PLAYER review-row
    * id. Held here (not in CareerTeamEntry) so it can be passed through to
    * recordDecision on "Add as New Player".
@@ -686,11 +695,18 @@ export default function EntityReviewWizard({
   >({});
   /**
    * NEO-254 — the same, per LEAGUE row, and never reset per row for the same
-   * reason: a typed correction must survive NEO-221 back-navigation. Absent
-   * means "untouched", which renders the live prefill.
+   * reason: a typed correction must survive NEO-221 back-navigation.
+   *
+   * Holds only the fields the operator has TOUCHED, never a snapshot of the
+   * whole draft. A league step is presented before its Wikidata lookup lands
+   * (NEO-307) and Level is its one required press, so a snapshot taken at that
+   * press froze abbreviation, years and QID as blank and the lookup's answer
+   * never arrived. Merged over the live prefill instead: the lookup fills every
+   * field nobody touched, and never overwrites one somebody did (a pressed
+   * level, a corrected name, even a field cleared on purpose).
    */
   const [leagueCreateByRow, setLeagueCreateByRow] = useState<
-    Record<string, NewLeagueDraft>
+    Record<string, Partial<NewLeagueDraft>>
   >({});
   /**
    * NEO-313 — per PLAYER row moved off the set's sport: "also add the set's
@@ -1051,12 +1067,14 @@ export default function EntityReviewWizard({
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
-  const stillLookingUp = useMemo(
-    () => rows?.filter((r) => r.status === "pending").length ?? 0,
-    [rows],
-  );
   /** What the OPERATOR is waiting on — every kind of row. Drives the status
-   *  line, which is why it must not be narrowed to players. */
+   *  line, which is why it must not be narrowed to players.
+   *
+   *  NEO-341: UNDECIDED rows only, in the header's "N still being looked up"
+   *  too. A row "Skip remaining names" decided mid-lookup stays `pending` for
+   *  good — `applyLookupResult` drops an answer for a decided row — so
+   *  counting it told an operator on the summary that ten names were still
+   *  being looked up when nothing was left to wait for. */
   const pendingUndecided = useMemo(
     () => countPendingUndecided(rows ?? []),
     [rows],
@@ -1666,8 +1684,25 @@ export default function EntityReviewWizard({
    *  - a New Team form the operator has edited (team rows never yield, so this
    *    is belt-and-braces rather than load-bearing).
    */
-  const pinnedRowHasEdits =
+  /**
+   * NEO-341 — the operator is mid-gesture on the row on screen: a list, search
+   * or form is OPEN on it. Moving now unmounts that control under the pointer
+   * and the click being made is lost (CI, on a phone: the sport chooser open,
+   * a lookup settled, the walk jumped to a New League step). So it holds an
+   * implicit pin against every yield (`resolveNav`'s `interactionOpen`), and
+   * counts as edits for the auto-add timer below. Closing the control
+   * re-resolves, and the held yield lands then.
+   *
+   * The career-team entry's suggestion list only opens on typed text, which
+   * `careerEntryDirty` already covers; the New Team form is `teamCreateByRow`.
+   */
+  const rowInteractionOpen =
     linkingOpen ||
+    (current !== null &&
+      (sportChooserOpenFor === current._id || undatedFormOpenFor === current._id));
+
+  const pinnedRowHasEdits =
+    rowInteractionOpen ||
     careerEntryDirty ||
     // NEO-248: presence of a KEY, not a non-empty list — the same test as
     // `teamCreateByRow` below. The list can now be rehydrated from the batch on
@@ -1698,12 +1733,15 @@ export default function EntityReviewWizard({
 
   useEffect(() => {
     if (!rows) return;
-    const next = resolveNav(rows, nav, { pinnedRowHasEdits });
+    const next = resolveNav(rows, nav, {
+      pinnedRowHasEdits,
+      interactionOpen: rowInteractionOpen,
+    });
     if (next === nav) return;
     navRef.current = next;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the presented row follows the batch; the rule that decides when is pure and tested in entity-review-nav.test.tsx
     setNav(next);
-  }, [rows, nav, pinnedRowHasEdits]);
+  }, [rows, nav, pinnedRowHasEdits, rowInteractionOpen]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
@@ -3052,10 +3090,12 @@ export default function EntityReviewWizard({
     }));
   };
 
-  // NEO-254 — the league step's draft, read and written the same way.
+  // NEO-254 — the league step's draft: the operator's touched fields over the
+  // LIVE prefill, so a lookup that lands later still fills the rest (see
+  // `leagueCreateByRow`).
   const leagueCreate: NewLeagueDraft =
     current && current.kind === "league"
-      ? (leagueCreateByRow[current._id] ?? newLeaguePrefill(current))
+      ? { ...newLeaguePrefill(current), ...leagueCreateByRow[current._id] }
       : {
           name: "",
           abbreviation: "",
@@ -3110,7 +3150,7 @@ export default function EntityReviewWizard({
   const patchLeagueCreate = (rowId: string, patch: Partial<NewLeagueDraft>) => {
     setLeagueCreateByRow((prev) => ({
       ...prev,
-      [rowId]: { ...(prev[rowId] ?? leagueCreate), ...patch },
+      [rowId]: { ...prev[rowId], ...patch },
     }));
   };
 
@@ -4031,6 +4071,9 @@ export default function EntityReviewWizard({
                           setSportId={current.setSportId}
                           disabled={busy}
                           prefix={null}
+                          onOpenChange={(open) =>
+                            setSportChooserOpenFor(open ? current._id : null)
+                          }
                           onChange={(sportId) => {
                             void handleSwitchSport(current._id, sportId);
                           }}
@@ -4146,13 +4189,16 @@ export default function EntityReviewWizard({
                     current.enrichment &&
                     (current.enrichment.wikidataId || current.enrichment.enwikiTitle) && (
                       <p className="mt-1 flex flex-wrap items-center gap-3 text-xs">
+                        {/* a11y (2.5.8): py-1 grows each 16px link line to a
+                            24px target; these are standalone links, not ones
+                            inside a sentence. */}
                         {current.enrichment.wikidataId &&
                           (wikidataUrl(current.enrichment.wikidataId) ? (
                             <a
                               href={wikidataUrl(current.enrichment.wikidataId)!}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                              className="py-1 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
                             >
                               Wikidata {current.enrichment.wikidataId}
                               <span className="sr-only"> (opens in new tab)</span>
@@ -4171,7 +4217,7 @@ export default function EntityReviewWizard({
                             href={wikipediaUrl(current.enrichment.enwikiTitle)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                            className="py-1 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
                           >
                             Wikipedia
                             <span className="sr-only"> (opens in new tab)</span>
@@ -4436,6 +4482,9 @@ export default function EntityReviewWizard({
                             key={current._id}
                             names={undatedCareerTeams}
                             disabled={busy}
+                            onOpenChange={(open) =>
+                              setUndatedFormOpenFor(open ? current._id : null)
+                            }
                             onAdd={(entry) =>
                               setStagedCareerTeams((prev) => [...prev, entry])
                             }
@@ -5175,7 +5224,7 @@ export default function EntityReviewWizard({
               </div>
             ) : (
               <p className="text-sm text-gray-400 italic">
-                Looking up {stillLookingUp} more {stillLookingUp === 1 ? "name" : "names"}…
+                Looking up {pendingUndecided} more {pendingUndecided === 1 ? "name" : "names"}…
               </p>
             )}
 
@@ -5339,13 +5388,13 @@ export default function EntityReviewWizard({
                * league picker, and a reserved gap cannot move under a cursor.
                */
               /*
-               * NEO-335 Phase 2 (visual pass) — below `sm` the row WRAPS: at
-               * 375px the right group ("Back to Match Cards", "Cancel (Esc)",
-               * "Confirm & Save (Enter)") is wider than the dialog and used to
-               * clip the one button the step exists for. From `sm` up nothing
-               * changes, so the 1024 CI viewport keeps its fixed geometry.
+               * NEO-341 / NEO-335 — below sm (a phone) row 1 wraps: the decision
+               * group takes its own full-width line and the exits drop to the
+               * line under it. Squeezed onto one line the decision links wrapped
+               * word by word, and at 375px the right group clipped the one
+               * button the step exists for. sm and up are unchanged.
                */
-              className="flex min-h-[4.25rem] items-center justify-between gap-4 max-sm:flex-wrap max-sm:gap-y-2"
+              className="flex min-h-[4.25rem] items-center justify-between gap-4 max-sm:flex-wrap max-sm:gap-y-3"
             >
             {/*
               ROW 1 LEFT — THE DECISION FOR THE ROW ON SCREEN.
@@ -5363,7 +5412,7 @@ export default function EntityReviewWizard({
               Mutually exclusive with "Confirm & Save" on the right by
               construction: a presented row means not every row is decided.
             */}
-            <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-3 max-sm:basis-full">
               {decisionControls}
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
@@ -5567,9 +5616,16 @@ export default function EntityReviewWizard({
               than a stack: the operator is either waiting on lookups or
               watching them be added, never both.
             */}
-            {/* NEO-335 Phase 2 (visual pass): wraps below `sm`, where the two
-                bulk links alone are wider than a 375px dialog. */}
-            <div className="flex min-h-6 items-center gap-3 max-sm:flex-wrap">
+            {/*
+              NEO-341 — below sm row 2 wraps, and the live status line takes a
+              full-width line of its own (`max-sm:basis-full` below). On a 412px
+              phone the bulk links alone outgrow the row, so the `flex-1` line
+              beside them was squeezed to zero width: "N still looking up" and
+              "Back at the list. N on file." were in the DOM and invisible. The
+              bulk links wrap onto the next line inside the dialog rather than
+              running past its right edge. sm and up are unchanged.
+            */}
+            <div className="flex min-h-6 items-center gap-3 max-sm:flex-wrap max-sm:gap-y-2">
               {/*
                 The live region is its OWN element and holds only text. The bulk
                 links sit beside it, deliberately outside it: a button inside a
@@ -5597,7 +5653,7 @@ export default function EntityReviewWizard({
                      it this inherits Radix's 16px body size, which is not the
                      `text-xs` line `min-h-6` reserves the footer's height
                      for. */
-                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3]"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3] max-sm:basis-full"
                 >
                   {/*
                     The id sits on the TEXT, not on this flex wrapper: the
@@ -5633,7 +5689,7 @@ export default function EntityReviewWizard({
                    note above. Inherited, this was Radix's `--gray-12` at 16px:
                    not a contrast failure, but not the muted status line the
                    footer's reserved height is measured against either. */
-                className={`min-w-0 truncate text-xs text-gray-400 ${
+                className={`min-w-0 truncate text-xs text-gray-400 max-sm:basis-full ${
                   createBlocked && !pickStep ? "shrink-0" : "flex-1"
                 }`}
                 role="status"
@@ -5691,7 +5747,7 @@ export default function EntityReviewWizard({
                    * reason takes the width. Nothing moves vertically either
                    * way, which is what row 1 is protected by.
                    */
-                  className={`flex items-center gap-3 whitespace-nowrap max-sm:min-w-0 max-sm:shrink max-sm:flex-wrap ${
+                  className={`flex items-center gap-3 whitespace-nowrap max-sm:basis-full max-sm:flex-wrap max-sm:gap-y-2 ${
                     createBlocked ? "min-w-0 overflow-hidden" : "shrink-0"
                   }`}
                 >

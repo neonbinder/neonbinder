@@ -53,7 +53,7 @@ export default function AboutPage() {
             </section>
 
             <section className="bg-gradient-to-br from-slate-900/50 to-slate-800/50 rounded-2xl p-8 border border-slate-700/50">
-              <h2 className="text-2xl font-bold mb-4 text-neon-purple">In-Person Sales & Card Shows</h2>
+              <h2 className="text-2xl font-bold mb-4 text-neon-purple-text">In-Person Sales & Card Shows</h2>
               <p className="text-lg text-slate-300 leading-relaxed">
                 Neon Binder also supports in-person sales at card shows and events through QR code generation. Sellers can print QR codes 
                 for inventory tracking—when scanned, cards are marked as sold and inventory updates automatically. Buyers can also scan 

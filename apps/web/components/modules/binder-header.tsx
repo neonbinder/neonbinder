@@ -24,8 +24,19 @@ export default function BinderHeader({
   // pointer-events-none on the sticky header background (with -auto on the
   // interactive groups) makes the empty middle click-through so it doesn't
   // steal clicks from elements scrolled flush against the top edge.
+  //
+  // Sticky from `sm` up only (NEO-341). On a phone the bar's controls (the
+  // account button, Sign out, the menu toggle) span most of its 412px width,
+  // so a pinned bar parks real controls on top of whatever button the page has
+  // scrolled up to the top edge: Add player / Add league after the detail
+  // panel reveals itself, the credentials site tabs after a rejected sign-in.
+  // The covered button keeps a sliver of tappable area under someone else's
+  // control (axe target-size, "partially obscured", WCAG 2.5.8). Letting the
+  // bar scroll away on a phone removes the overlap rather than chasing each
+  // scroll position, and hands the 74px back to the content. globals.css
+  // drops `scroll-padding-top` below `sm` to match; keep the two in step.
   return (
-    <header className="sticky top-0 z-20 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center pointer-events-none">
+    <header className="sm:sticky sm:top-0 z-20 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center pointer-events-none">
       <div className="flex items-center gap-2 pointer-events-auto">
         <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
         <span className="neon-header neon-header-sm">Neon Binder</span>

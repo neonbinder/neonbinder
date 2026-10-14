@@ -677,7 +677,7 @@ describe("candidate status is per row (NEO-330)", () => {
       ctx.db.query("checklistCandidates").collect(),
     );
     expect(rows).toHaveLength(1);
-    expect("awaitsTeamLookup" in rows[0]).toBe(false);
+    expect("teamPending" in rows[0]).toBe(false);
   });
 });
 

@@ -51,7 +51,7 @@ const TOOL_DETAILS: Record<
     description:
       "Print a 3 × 3 sheet of 2.5″ × 3.5″ placeholders — one sheet fills one 9-pocket binder page.",
     icon: Squares2X2Icon,
-    accent: "text-neon-purple group-hover:border-neon-purple/50",
+    accent: "text-neon-purple-text group-hover:border-neon-purple/50",
   },
   "/print/spine-label": {
     description:

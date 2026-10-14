@@ -18,7 +18,6 @@ Pattern that passes (NEO-325 ReconciliationModal title-clash check):
   a later reducer change never reads a stale draft for a committed row;
 - render computes from `(state, snapshotState)` — no ref read.
 
-Also: Maestro web cannot read `disabled` / `aria-disabled` /
-`aria-describedby` (TreeNode.enabled is null on web). A blocked button gets
-`title={reason}` while blocked and no aria-label — the title becomes its
-Maestro id. See [[maestro-resource-id-is-id-or-aria-label]].
+Also: a blocked button gets `title={reason}` while blocked and `aria-disabled`;
+the E2E suite finds it by role plus its accessible name and asserts `toBeDisabled()`
+(Playwright reads `aria-disabled`). See [[interactive-controls-carry-no-dom-id]].

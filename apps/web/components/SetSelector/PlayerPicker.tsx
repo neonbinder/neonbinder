@@ -613,7 +613,7 @@ export default function PlayerPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
-            className="text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            className="text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
           >
             ×
           </button>
@@ -652,15 +652,20 @@ export default function PlayerPicker({
         {popoverOpen && (
           // NEO-272: `PickerPopover` rather than an `absolute` div. The surface
           // classes are untouched — only the positioning ones moved, into the
-          // portal that keeps a scrolling host from clipping this list. The
-          // listbox role and its accessible name stay exactly where they were.
+          // portal that keeps a scrolling host from clipping this list.
+          //
+          // NEO-341 (axe aria-required-children): `role="listbox"` moved OFF
+          // this container and onto the options list below, the shape
+          // TeamPicker took in NEO-236. The popover also holds the search box,
+          // status lines and the sport switch, and a listbox may own only
+          // options. The listbox keeps its name and is rendered for the whole
+          // life of the popover, so "is the listbox present" still reads as
+          // "is the popover open".
           <PickerPopover
             anchorRef={triggerRef}
             popoverRef={popoverRef}
             onTabOut={closePopover}
             className="w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
-            role="listbox"
-            aria-label={labels.results}
           >
             <Input
               bare
@@ -721,113 +726,128 @@ export default function PlayerPicker({
             )}
 
             {!candidates && (
-              <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>
+              <div className="text-xs text-gray-400 px-2 py-1">Loading…</div>
             )}
             {candidates &&
               matches.length === 0 &&
               query.trim().length === 0 && (
-                <div className="text-xs text-gray-500 px-2 py-1">
+                <div className="text-xs text-gray-400 px-2 py-1">
                   Start typing a player name…
                 </div>
               )}
-            {matches.map((m, idx) => (
-              <button
-                key={m._id}
-                type="button"
-                onClick={() => addChip(m._id)}
-                onMouseEnter={() => setHighlightIdx(idx)}
-                aria-label={`Add ${m.name}`}
-                role="option"
-                aria-selected={idx === highlightIdx}
-                className={`w-full text-left px-2 py-1 text-sm rounded ${
-                  idx === highlightIdx
-                    ? "bg-[#00D558]/20 text-[#00D558]"
-                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
-                }`}
-              >
-                {m.name}
-                {/* NEO-313 — only on a cross-sport search: the sport, then
-                    the career line that tells two same-name men apart. Never
-                    on the set-sport path, whose rows are exactly as before. */}
-                {crossSport && (
-                  <>
-                    {m.sportValue ? (
-                      <SportTag label={m.sportValue} className="ml-2" />
-                    ) : (
-                      <SportTagById sportId={m.sportId} className="ml-2" />
-                    )}
-                    {m.stints && m.stints.length > 0 && (
-                      <span className="mt-0.5 block truncate text-[11px] text-gray-600 dark:text-gray-400">
-                        {m.stints.slice(0, RESULT_STINT_LIMIT).map((st, i) => {
-                          const color = liveryColors(st.primaryColor);
-                          // Each theme reads its own custom property, so a
-                          // colour that fails one theme is dropped there
-                          // only (see `liveryColors`).
-                          const style = {
-                            ...(color.light ? { "--livery-light": color.light } : {}),
-                            ...(color.dark ? { "--livery-dark": color.dark } : {}),
-                          } as CSSProperties;
-                          return (
-                            <span key={i}>
-                              {i > 0 && ", "}
-                              <span
-                                style={style}
-                                className={`${
-                                  color.light
-                                    ? "text-[color:var(--livery-light)]"
-                                    : "text-gray-700"
-                                } ${
-                                  color.dark
-                                    ? "dark:text-[color:var(--livery-dark)]"
-                                    : "dark:text-gray-300"
-                                }`}
-                              >
-                                {st.label}
-                              </span>{" "}
-                              <span className="tabular-nums">
-                                {st.toYear === undefined
-                                  ? `${st.fromYear}–`
-                                  : st.toYear === st.fromYear
-                                    ? `${st.fromYear}`
-                                    : `${st.fromYear}–${st.toYear}`}
+            <div
+              role="listbox"
+              aria-label={labels.results}
+              className="space-y-1"
+            >
+              {matches.map((m, idx) => (
+                <button
+                  key={m._id}
+                  type="button"
+                  onClick={() => addChip(m._id)}
+                  onMouseEnter={() => setHighlightIdx(idx)}
+                  aria-label={`Add ${m.name}`}
+                  role="option"
+                  aria-selected={idx === highlightIdx}
+                  className={`w-full text-left px-2 py-1 text-sm rounded ${
+                    idx === highlightIdx
+                      ? "bg-[#00D558]/20 text-[#00D558]"
+                      : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  {m.name}
+                  {/* NEO-313 — only on a cross-sport search: the sport, then
+                      the career line that tells two same-name men apart. Never
+                      on the set-sport path, whose rows are exactly as before. */}
+                  {crossSport && (
+                    <>
+                      {m.sportValue ? (
+                        <SportTag label={m.sportValue} className="ml-2" />
+                      ) : (
+                        <SportTagById sportId={m.sportId} className="ml-2" />
+                      )}
+                      {m.stints && m.stints.length > 0 && (
+                        <span
+                          className={`mt-0.5 block truncate text-[11px] ${
+                            // NEO-341 (axe color-contrast): the years read
+                            // 3.8:1 in gray-400 on the green-tinted ArrowDown
+                            // row, so that row's small print is gray-300.
+                            idx === highlightIdx
+                              ? "text-gray-700 dark:text-gray-300"
+                              : "text-gray-600 dark:text-gray-400"
+                          }`}
+                        >
+                          {m.stints.slice(0, RESULT_STINT_LIMIT).map((st, i) => {
+                            const color = liveryColors(st.primaryColor);
+                            // Each theme reads its own custom property, so a
+                            // colour that fails one theme is dropped there
+                            // only (see `liveryColors`).
+                            const style = {
+                              ...(color.light ? { "--livery-light": color.light } : {}),
+                              ...(color.dark ? { "--livery-dark": color.dark } : {}),
+                            } as CSSProperties;
+                            return (
+                              <span key={i}>
+                                {i > 0 && ", "}
+                                <span
+                                  style={style}
+                                  className={`${
+                                    color.light
+                                      ? "text-[color:var(--livery-light)]"
+                                      : "text-gray-700"
+                                  } ${
+                                    color.dark
+                                      ? "dark:text-[color:var(--livery-dark)]"
+                                      : "dark:text-gray-300"
+                                  }`}
+                                >
+                                  {st.label}
+                                </span>{" "}
+                                <span className="tabular-nums">
+                                  {st.toYear === undefined
+                                    ? `${st.fromYear}–`
+                                    : st.toYear === st.fromYear
+                                      ? `${st.fromYear}`
+                                      : `${st.fromYear}–${st.toYear}`}
+                                </span>
                               </span>
-                            </span>
-                          );
-                        })}
-                      </span>
-                    )}
-                  </>
-                )}
-              </button>
-            ))}
-            {showCreateOption && (
-              <button
-                type="button"
-                // NEO-220: `aria-disabled`, not `disabled` — the row stays
-                // mounted and focusable for the request (see
-                // `showCreateOption`). Native `disabled` force-blurs a focused
-                // element straight to <body>, which is the same focus-park
-                // pattern documented on `TitleFixer`'s Save button and would
-                // reproduce the very bug this avoids.
-                aria-disabled={creating || undefined}
-                onClick={() => void createAndAdd()}
-                onMouseEnter={() => setHighlightIdx(matches.length)}
-                aria-label={`Create player ${query.trim()}`}
-                role="option"
-                aria-selected={highlightIdx === matches.length}
-                className={`w-full text-left px-2 py-1 text-sm rounded border-t border-gray-200 dark:border-gray-700 ${
-                  highlightIdx === matches.length
-                    ? "bg-[#00D558]/20 text-[#00D558]"
-                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
-                }`}
-              >
-                {creating ? "Creating…" : `+ Create "${query.trim()}"`}
-                {/* NEO-313: after a switch, say where the new player goes. */}
-                {crossSport && activeSportId && !creating && (
-                  <SportTagById sportId={activeSportId} className="ml-2" />
-                )}
-              </button>
-            )}
+                            );
+                          })}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </button>
+              ))}
+              {showCreateOption && (
+                <button
+                  type="button"
+                  // NEO-220: `aria-disabled`, not `disabled` — the row stays
+                  // mounted and focusable for the request (see
+                  // `showCreateOption`). Native `disabled` force-blurs a focused
+                  // element straight to <body>, which is the same focus-park
+                  // pattern documented on `TitleFixer`'s Save button and would
+                  // reproduce the very bug this avoids.
+                  aria-disabled={creating || undefined}
+                  onClick={() => void createAndAdd()}
+                  onMouseEnter={() => setHighlightIdx(matches.length)}
+                  aria-label={`Create player ${query.trim()}`}
+                  role="option"
+                  aria-selected={highlightIdx === matches.length}
+                  className={`w-full text-left px-2 py-1 text-sm rounded border-t border-gray-200 dark:border-gray-700 ${
+                    highlightIdx === matches.length
+                      ? "bg-[#00D558]/20 text-[#00D558]"
+                      : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  {creating ? "Creating…" : `+ Create "${query.trim()}"`}
+                  {/* NEO-313: after a switch, say where the new player goes. */}
+                  {crossSport && activeSportId && !creating && (
+                    <SportTagById sportId={activeSportId} className="ml-2" />
+                  )}
+                </button>
+              )}
+            </div>
 
             {/* NEO-313 — the cross-sport override, last in the popover and
                 quiet on purpose: it is used rarely, it must never be the

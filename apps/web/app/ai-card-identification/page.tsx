@@ -31,7 +31,7 @@ export default function AiCardIdentificationPage() {
             <p className="text-xl text-slate-400 mb-8">
               The totally awesome way to recognize and catalog cards with AI power
             </p>
-            <p className="text-lg font-semibold text-neon-purple mt-6">
+            <p className="text-lg font-semibold text-neon-purple-text mt-6">
               Free Tier: For personal collections
             </p>
           </div>

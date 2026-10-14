@@ -3,7 +3,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 
-// Test-only reset landing page. A Maestro flow signs in via /testing/sign-in
+// Test-only reset landing page. An E2E spec signs in via /testing/sign-in
 // with `redirect=/testing/reset?redirect=<final>`; this page waits for the
 // Convex client to pick up the new Clerk session, calls the auth-scoped
 // resetMyTestState mutation (wipes the signed-in user's own per-user rows),

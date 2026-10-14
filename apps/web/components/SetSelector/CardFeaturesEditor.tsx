@@ -82,7 +82,7 @@ export default function CardFeaturesEditor({
         type="button"
         onClick={() => setExpanded(true)}
         aria-label="Show features editor"
-        className="text-xs text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+        className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
       >
         Show features ▾
       </button>
@@ -102,7 +102,7 @@ export default function CardFeaturesEditor({
           type="button"
           onClick={() => setExpanded(false)}
           aria-label="Hide features editor"
-          className="text-xs text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+          className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
         >
           Hide ▴
         </button>

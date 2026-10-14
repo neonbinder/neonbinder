@@ -48,5 +48,5 @@ live "League" control ever exists at a time) over renaming the label — that
 fixes the practical collision with zero Maestro-flow impact. A full rename
 back to "New team league" is the more complete SC 2.5.3/4.1.2 fix but changes
 what `id: "League"` selectors match in `checklist-wizard-career-team-entry.yaml`
-(lines ~257, ~292, ~356) — sequence that with maestro-e2e-author, never do it
+(lines ~257, ~292, ~356) — sequence that with playwright-e2e-author, never do it
 solo in an accessibility-only patch.

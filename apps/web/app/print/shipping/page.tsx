@@ -828,7 +828,7 @@ export default function ShippingLabelsPage() {
             />
           </div>
         </div>
-        <p className="text-xs text-gray-500 text-center max-w-md">
+        <p className="text-xs text-gray-400 text-center max-w-md">
           Shown at actual size. Print at 100% scale — not &quot;fit to
           page&quot; — so the label lands square on the media.
         </p>

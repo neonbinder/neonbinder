@@ -1092,7 +1092,11 @@ export default function ParallelBuildPanel({
             data-parallel-line={i}
             className="leading-5"
           >
-            <div className="flex items-start gap-1.5">
+            {/* a11y (2.5.8): py-0.5 makes every row 24px (the 20px line plus
+                4px), and the disclosure button reclaims that padding with
+                -my-0.5 py-0.5, so its target is the full 24px while its text
+                sits exactly where a plain row's does. */}
+            <div className="flex items-start gap-1.5 py-0.5">
               <RunGlyph kind={entry.line.kind} />
               {hasDetail ? (
                 // The line IS the disclosure: its text is the button's name,
@@ -1107,7 +1111,7 @@ export default function ParallelBuildPanel({
                   onKeyDown={(event) =>
                     activateOnEnter(event, () => toggle(entry.id))
                   }
-                  className="group min-w-0 break-words text-left rounded-sm underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                  className="group -my-0.5 min-w-0 break-words py-0.5 text-left rounded-sm underline decoration-dotted underline-offset-2 hover:decoration-solid"
                 >
                   {text}
                   <ChevronRightIcon

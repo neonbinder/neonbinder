@@ -7,7 +7,7 @@ A TypeScript-based web automation service for card delisting operations.
 > runs a real BSC + SportLots login probe against it (`browser.yml`). The
 > top-level deployment pipeline (`pr-pipeline.yml`) then points the Convex
 > preview's `NEONBINDER_BROWSER_URL` at that `pr-<N>` URL and only afterward runs
-> the web Maestro E2E — so a PR is validated against its OWN browser code
+> the web Playwright E2E — so a PR is validated against its OWN browser code
 > end-to-end. (Vercel never talks to the browser service; the wiring lives in the
 > deployment pipeline, preserving the FE → Convex → browser boundary.)
 

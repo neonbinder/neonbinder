@@ -144,9 +144,12 @@ failure you see the exit code and the first error line, cut off at
 
 ## 4. How CI uses it
 
-The E2E seed job downloads `$NEONBINDER_REFERENCE_SEED_URI` to the runner's
-temp directory and exports its path as `NB_REFERENCE_BUNDLE`.
-`run-e2e-smoke.sh setup` then runs these two steps against the PR's preview:
+Both E2E seed jobs (`seed` for the desktop pass, `seed-mobile` for the mobile
+pass; each reset wipes the earlier pass's data) download
+`$NEONBINDER_REFERENCE_SEED_URI` to the runner's temp directory and export its
+path as `NB_REFERENCE_BUNDLE`. `apps/web/e2e-seed-reset.sh` (also behind
+`npm run test:e2e:seed`) then runs these two steps against the PR's preview,
+before the Playwright `setup` project:
 
 1. `e2e-baseline.sh reset --except-reference-seed`. This is the scripted
    reset with every table drained except the eight that the import replaces.

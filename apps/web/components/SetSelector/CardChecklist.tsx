@@ -65,6 +65,7 @@ import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
+import { streamedBatchSettled } from "@/lib/cards/streamed-batch";
 import {
   candidateToPairingCard,
   candidatesToPairingCards,
@@ -377,7 +378,7 @@ type LiveBatch = {
   batchId?: string;
   total: number;
   ready: number;
-  cards: unknown[];
+  cards: readonly unknown[];
 };
 
 /**
@@ -404,27 +405,42 @@ export function streamRowsArrived(
 }
 
 /**
- * Have the TEAMS this run's fetch resolved reached the subscription?
+ * NEO-333 + NEO-330 / NEO-341 — have the TEAMS this run's fetch owes reached
+ * the subscription? Two conditions, both on the LIVE value:
  *
- * NEO-333: when the server sent a fence, `ready` must have reached its own
- * post-lookup count (`readyAfterTeams`) — the count it SAW, never a target it
- * may not reach. NEO-330: with no fence (a server older than this client, in
- * the deploy window), every row must be `ready`; the server writes `status`
- * per row (`initialCandidateStatus`), so a fully landed batch reaches it.
+ *  - `ready` has reached the server's own post-lookup count
+ *    (`readyAfterTeams`, NEO-333), so the subscription is at or past the last
+ *    team write the action made before it returned.
+ *  - Every row is `ready` (`streamedBatchSettled`). The server writes a row
+ *    `pending` only while a BSC team lookup it is owed is outstanding
+ *    (`teamPending`, `initialCandidateStatus`), so `ready === total` cannot
+ *    be held back by a row that never needed one; what it adds over the fence
+ *    is a lookup the action's own count could not include — the one retry
+ *    `resolveCandidateTeams` schedules for a row the paged write had not
+ *    reached yet, which can land after the action returned. It is also the
+ *    whole signal when the server sent no fence (a server older than this
+ *    client, in the deploy window).
  *
- * Either way the wait is bounded by the caller (`awaitStreamedBatch`): teams
- * that never land end the wait with `teamsLate`, never a hang.
+ * The fence alone would pass that retried row without its team. Callers bound
+ * the wait (`awaitStreamedBatch`, `SOLO_STREAM_TIMEOUT_MS`): teams that never
+ * land end it with `teamsLate`, never a hang.
  */
 export function streamTeamsLanded(live: LiveBatch, fence: StreamFence): boolean {
-  if (fence.readyAfterTeams !== undefined) {
-    return live.ready >= fence.readyAfterTeams;
-  }
-  return live.ready >= fence.count;
+  return (
+    live.ready >= (fence.readyAfterTeams ?? 0) &&
+    streamedBatchSettled(live, {
+      candidateCount: fence.count,
+      previousBatchId: undefined,
+    })
+  );
 }
 
 /**
- * NEO-333 — has the candidate subscription caught up with everything the fetch
- * wrote, teams included?
+ * NEO-333 + NEO-341 — has the candidate subscription caught up with
+ * everything the fetch wrote, teams included? THIS run's whole batch
+ * (`streamRowsArrived`) with every team it is owed (`streamTeamsLanded`).
+ * The one gate both commit paths wait on: the auto-keep before it commits,
+ * the dialog's Confirm through `streamSettled`.
  */
 export function streamHasCaughtUp(
   live: LiveBatch,
@@ -929,9 +945,9 @@ export default function CardChecklist({
    * state that used to hold a whole second copy of the fetch result — see the
    * note on `streamedPairing` below.
    *
-   * Distinct from `fetchInFlight`, which ends when the action resolves and
-   * its batch has fully reached the client (NEO-330). This
-   * one outlives the fetch: the session stays alive until the operator
+   * Distinct from `fetchInFlight`, which ends when the action resolves (the
+   * dialog's Confirm separately waits for its batch to reach the client with
+   * every team in — `streamSettled`, NEO-341). This one outlives the fetch: the session stays alive until the operator
    * confirms and commits, or aborts.
    *
    * NEO-221 (D9) widened this from a boolean to three states, so the wizard
@@ -1112,11 +1128,35 @@ export default function CardChecklist({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const newCardIdRef = useRef<Id<"cardChecklist"> | null>(null);
   const prevCardCountRef = useRef(0);
-  // NEO-195: true from the moment a sync starts until the action resolves —
-  // and, since NEO-330, until the batch it published has reached the client
-  // with every team in (`awaitStreamedBatch`). Distinct from `syncing`, which
-  // also covers the commit phase.
+  // NEO-195: true from the moment a sync starts until the action resolves.
+  // Distinct from `syncing`, which also covers the commit phase. Not "the
+  // cards are here" — see `settleTarget` (NEO-341).
   const [fetchInFlight, setFetchInFlight] = useState(false);
+  /**
+   * NEO-341 — what the current run's fetch REPORTED, once it has resolved:
+   * its team fence (NEO-333: the batch, the candidate count and the `ready`
+   * count after its last team write), and which batch the subscription showed
+   * before the call. Null until then, and reset by every new sync.
+   *
+   * `fetchInFlight` going false is not "the cards are here". An action's
+   * promise resolves on its own response, independently of the subscription
+   * that carries the writes it made, so the last chunk of BSC teams can reach
+   * this client after it. Confirm therefore also waits for the subscription to
+   * show this run's whole batch with every team it is owed — see
+   * `streamHasCaughtUp`.
+   *
+   * `gaveUp` is the bound on that wait: set when every row has arrived but
+   * some teams have not within `SOLO_STREAM_TIMEOUT_MS` of the fetch
+   * resolving (NEO-330 `teamsLate`), and it unlocks Confirm on what the dialog
+   * holds rather than stranding the review behind a lock nothing will lift.
+   * Rows that never arrive close the session instead (see the dialog branch
+   * of `handleSync`).
+   */
+  const [settleTarget, setSettleTarget] = useState<{
+    fence: StreamFence;
+    previousBatchId: string | undefined;
+    gaveUp: boolean;
+  } | null>(null);
   // NEO-195 — which sync run is current. Bumped whenever the operator cancels,
   // so a run whose result arrives afterwards knows it was abandoned.
   //
@@ -1263,12 +1303,12 @@ export default function CardChecklist({
    * — same set, same operator, coincidentally the same count — would satisfy
    * the equality and be committed as if they were this fetch's.
    *
-   * NEO-330 — and every row must be `ready`. A Convex ACTION's promise
-   * resolves before the client's subscriptions show the action's last writes
-   * (mutations wait for their write to be visible; actions do not). The fetch
-   * publishes its rows, THEN runs the BSC team lookup and patches each chunk's
-   * teams in, so the moment `fetchChecklist` resolves the subscription can
-   * still hold the pre-patch snapshot: right `batchId`, right `total`, no
+   * NEO-330 / NEO-341 — and every row must be `ready`. A Convex ACTION's
+   * promise resolves before the client's subscriptions show the action's last
+   * writes (mutations wait for their write to be visible; actions do not). The
+   * fetch publishes its rows, THEN runs the BSC team lookup and patches each
+   * chunk's teams in, so the moment `fetchChecklist` resolves the subscription
+   * can still hold the pre-patch snapshot: right `batchId`, right `total`, no
    * teams. Gating on `total` alone committed that snapshot, so entity
    * resolution saw no team names, staged no team steps, and the post-commit
    * queue turned an ambiguous name into "needs a team" with no review (a
@@ -1277,13 +1317,13 @@ export default function CardChecklist({
    *
    * `ready` is the signal because the server now writes it per row: `pending`
    * only while a lookup for THAT row is outstanding, `ready` otherwise
-   * (`initialCandidateStatus`). Before NEO-330 a row whose team was already
-   * parsed stayed `pending` forever, which is why this gate used to leave
-   * `ready` out. Waiting on it also covers `resolveCandidateTeams`' one
-   * delayed retry (~1s) for a ref whose row the paged write had not reached
-   * yet — that retry lands after the action has returned.
+   * (`teamPending`, `initialCandidateStatus`). Before that a row whose team
+   * was already parsed stayed `pending` forever, which is why this gate used
+   * to leave `ready` out. Waiting on it also covers `resolveCandidateTeams`'
+   * one delayed retry (~1s) for a ref whose row the paged write had not
+   * reached yet — that retry lands after the action has returned.
    *
-   * ## NEO-333 — but the TEAMS must have landed
+   * ## NEO-333 — and the fence
    *
    * The count alone let this return before the teams did. The team lookup is
    * the fetch's LAST step, ~70s after the rows were written, so the count has
@@ -1293,21 +1333,20 @@ export default function CardChecklist({
    * never asked about them and the commit saved team-less cards, which the
    * background queue linked seconds later, unreviewed.
    *
-   * So the action now returns a fence (`candidateBatchId`, `readyAfterTeams`):
+   * So the action also returns a fence (`candidateBatchId`, `readyAfterTeams`):
    * the batch it wrote and the `ready` count the server saw after its last
    * team write. `ready` never falls within a batch, so `ready >= readyAfterTeams`
    * on THAT batch means the subscription is at or past every team the fetch
-   * resolved. It is the server's own count, not `total`, so it can never name
-   * a target the batch does not reach. It costs one subscription round trip
-   * after the action returns — the fetch's own time, not the operator's. The
-   * dialog path waits on the same fence before it unlocks Confirm (see
-   * `handleSync`).
+   * resolved. The gate is both (`streamHasCaughtUp`): THIS run's batch, `ready`
+   * at or past `readyAfterTeams`, and every row `ready` — the fence alone
+   * would pass a retried row without its team. It costs one subscription
+   * round trip after the action returns — the fetch's own time, not the
+   * operator's. An absent fence (a server older than this client, in the
+   * deploy window) leaves the moved-batch, count and per-row checks.
    *
-   * When the fence is present it is the readiness signal; an absent fence (a
-   * server older than this client, in the deploy window) falls back to the
-   * NEO-330 per-row gate above, `ready === total` (`streamTeamsLanded`).
-   * Either way the NEO-330 bound below still holds: teams that never land end
-   * the wait with `teamsLate`, and rows that never land save nothing.
+   * The dialog's Confirm waits on the same gate, read reactively off the
+   * subscription (`streamSettled`); this loop runs beside it on that path only
+   * to bound the wait (see the end of `handleSync`).
    *
    * If the ROWS do not arrive inside the budget, nothing is committed and the
    * operator gets the honest timeout message (`undefined`).
@@ -1317,7 +1356,8 @@ export default function CardChecklist({
    * "If a team lookup never returns then the user must select a team"). The
    * wait is kept — in the normal case it is what gets the teams to the player
    * gate and the wizard — but it ends: the cards without a team commit with
-   * none and reach the operator through the "need attention" lane. See
+   * none and reach the operator through the "need attention" lane. Never a
+   * guess, and never a failed fetch (wrapper CLAUDE.md invariant 8). See
    * `TEAMS_LATE_NOTICE`.
    */
   const awaitStreamedBatch = useCallback(
@@ -1446,6 +1486,8 @@ export default function CardChecklist({
     setPairingInstance((n) => n + 1);
     setCommitError(null);
     setSyncMessage(null);
+    // NEO-341: a new run has reported nothing yet.
+    setSettleTarget(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
       // Cancelled while the fetch was still running: leave the operator's own
@@ -1476,6 +1518,14 @@ export default function CardChecklist({
         await handlePairingConfirm({ cards: [], conflictsByIndex: {} });
         return;
       }
+      const fence: StreamFence = {
+        count: result.candidateCount,
+        batchId: result.candidateBatchId,
+        readyAfterTeams: result.readyAfterTeams,
+      };
+      // NEO-341 — Confirm now waits for the subscription to show what this
+      // fetch reported, with every team lookup landed (see `settleTarget`).
+      setSettleTarget({ fence, previousBatchId, gaveUp: false });
       /**
        * NEO-255 — exactly one marketplace attached: keep everything, no dialog.
        *
@@ -1505,11 +1555,6 @@ export default function CardChecklist({
       const agreed =
         expectedSides.length === serverSides.length &&
         expectedSides.every((side, i) => side === serverSides[i]);
-      const fence: StreamFence = {
-        count: result.candidateCount,
-        batchId: result.candidateBatchId,
-        readyAfterTeams: result.readyAfterTeams,
-      };
       if (expectSolo && agreed && serverSides.length === 1) {
         const streamed = await awaitStreamedBatch(
           fence,
@@ -1593,51 +1638,52 @@ export default function CardChecklist({
         setSoloFetch(null);
         setPairingPhase("review");
       }
-      setSyncMessage(result.message);
-      /**
-       * NEO-330 — the dialog's Confirm waits for the teams too.
-       *
-       * The same race the auto-keep path waits out above: this action resolves
-       * before the subscription shows its last team patch, and on a batch large
+      /*
+       * NEO-333 + NEO-330 / NEO-341 — the dialog's Confirm is NOT unlocked by
+       * this promise. The action can resolve before the subscription carries
+       * its last team writes (see `awaitStreamedBatch`), and on a batch large
        * enough to page `resolveCandidateTeams`' one delayed retry lands after
-       * it. Confirm is gated on `fetchInFlight` (`isStreaming` in the dialog),
-       * so ending the "fetch" here would let an operator confirm cards whose
-       * teams are still on their way — and entity resolution, the player
-       * gate's card-team tie-break included, would run without them.
+       * it; a Confirm pressed in that window would hand the wizard and the
+       * commit cards whose teams the modal had not absorbed — and entity
+       * resolution, the player gate's card-team tie-break included, would run
+       * without them. Confirm waits on `streamSettled` instead: the same
+       * `streamHasCaughtUp` gate the auto-keep path uses, read reactively off
+       * the subscription, and only once the dialog's own reducer has absorbed
+       * the settled batch (`CardPairingModal`'s `streamSettled`). The dialog
+       * keeps saying "teams are still resolving … (X of Y done)" while it
+       * waits. The operator can go on pairing throughout — only Confirm waits.
        *
-       * So `fetchInFlight` holds until `awaitStreamedBatch` sees this batch
-       * whole, every row `ready`; the `finally` below clears it. The dialog
-       * keeps saying what it already says while it waits ("teams are still
-       * resolving … (X of Y done). Confirm unlocks when the fetch finishes"),
-       * which is now exactly true. The operator can go on pairing throughout —
-       * only Confirm waits. Cancel supersedes the run, which ends the wait.
+       * Bounded, so it cannot hang: the same wait runs here in the background,
+       * with the auto-keep path's budget and outcomes.
        *
-       * Same budget and same outcomes as the auto-keep path. Rows that never
-       * arrive save nothing. Teams that miss the wait do NOT cost the operator
-       * their pairing (Jason, 2026-10-11): Confirm unlocks when the wait ends,
-       * the notice says what happened, and the commit goes ahead with the
-       * cards whose teams never landed carrying none.
+       *  - Rows that never arrive save nothing: a short batch is a partial
+       *    checklist (NEO-195), so the session closes with the timeout message
+       *    rather than unlocking a Confirm on part of the set.
+       *  - Teams that miss the wait do NOT cost the operator their pairing
+       *    (Jason, 2026-10-11): it sets `gaveUp`, Confirm unlocks on what the
+       *    dialog holds, the notice says what happened, and the commit goes
+       *    ahead with the cards whose teams never landed carrying none — the
+       *    operator picks those (wrapper CLAUDE.md invariant 8).
        *
-       * NEO-333 — the wait is on the fetch's fence (`candidateBatchId`,
-       * `readyAfterTeams`) when the server sent one, so it is normally one
-       * subscription round trip; a server that sent none is held to the
-       * per-row `ready === total` gate instead (`streamTeamsLanded`).
+       * Not awaited: `fetchInFlight` and the Sync button release as soon as
+       * the fetch itself is over. Cancel, or a new Sync, supersedes the run,
+       * and `abandoned()` then drops whatever this wait comes back with.
        */
-      const settled = await awaitStreamedBatch(
-        fence,
-        previousBatchId,
-        abandoned,
+      setSyncMessage(result.message);
+      void awaitStreamedBatch(fence, previousBatchId, abandoned).then(
+        (settled) => {
+          if (abandoned()) return;
+          if (!settled) {
+            setSyncMessage(SOLO_STREAM_TIMEOUT_MESSAGE, "error");
+            abandonPairingSession();
+            return;
+          }
+          if (!settled.teamsLate) return;
+          teamsLateRef.current = true;
+          setSyncMessage(`${result.message} ${TEAMS_LATE_NOTICE}`);
+          setSettleTarget((t) => (t ? { ...t, gaveUp: true } : t));
+        },
       );
-      if (abandoned()) return;
-      if (!settled) {
-        setSyncMessage(SOLO_STREAM_TIMEOUT_MESSAGE, "error");
-        abandonPairingSession();
-        return;
-      }
-      if (settled.teamsLate) {
-        teamsLateRef.current = true;
-        setSyncMessage(`${result.message} ${TEAMS_LATE_NOTICE}`);
-      }
     } catch (error) {
       // Same abandonment rule as the resolved path: a cancelled run that
       // rejects afterwards must not overwrite "Sync cancelled — no cards
@@ -2711,6 +2757,21 @@ export default function CardChecklist({
    * A candidate carries its bucket, so the three columns come straight off it
    * rather than being re-derived here.
    */
+  /**
+   * NEO-333 + NEO-341 — the client has SEEN the end of this run's team
+   * lookups (`streamHasCaughtUp`), or has waited its full budget for it
+   * (`gaveUp`; see the dialog branch of `handleSync`).
+   */
+  const streamSettled =
+    settleTarget !== null &&
+    (settleTarget.gaveUp ||
+      (liveCandidates !== undefined &&
+        liveCandidates !== null &&
+        streamHasCaughtUp(
+          liveCandidates,
+          settleTarget.fence,
+          settleTarget.previousBatchId,
+        )));
   const streamedPairing = useMemo(() => {
     if (
       pairingPhase === "closed" ||
@@ -2748,7 +2809,7 @@ export default function CardChecklist({
     return (
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Cards</h2>
-        <div className="text-gray-500">Loading checklist...</div>
+        <div className="text-gray-400">Loading checklist...</div>
       </div>
     );
   }
@@ -2847,13 +2908,17 @@ export default function CardChecklist({
           <h2 className="text-xl font-semibold">
             Cards{" "}
             {cards.length > 0 && (
-              <span className="text-sm font-normal text-gray-500">
+              <span className="text-sm font-normal text-gray-400">
                 ({cards.length})
               </span>
             )}
           </h2>
           {!showAddForm && (
-            <div className="flex gap-2">
+            // NEO-341: `flex-wrap` — Add Card, Add Cross-Release Cards and
+            // Refresh measure ~400px together, wider than a phone's card
+            // panel, so unwrapped they pushed the page 6px past a 412px
+            // viewport. At desktop widths they still sit on one line.
+            <div className="flex flex-wrap gap-2">
               {/* NEO-312 (a11y 1): held while a build is replacing these
                   cards — aria-disabled (focusable, and described by the line
                   that says why), never native `disabled`. */}
@@ -3526,6 +3591,9 @@ export default function CardChecklist({
           // late join without disturbing a decision already made.
           initialData={streamedPairing}
           isStreaming={fetchInFlight}
+          // NEO-341: Confirm also waits for the subscription to show this
+          // run's whole batch with every team lookup landed.
+          streamSettled={streamSettled}
           teamsLateNotice={TEAMS_LATE_NOTICE}
           streamProgress={
             liveCandidates

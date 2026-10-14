@@ -56,7 +56,9 @@ export const ALL_TEST_INCLUDE = [...CONVEX_LIB_INCLUDE, ...COMPONENTS_INCLUDE];
  * on this machine is not necessarily the version in `.nvmrc`, so the script
  * must not depend on which one it gets.
  */
-export const EXCLUDED_DIRS = ["node_modules", "dist", "build"];
+// `playwright` holds the Playwright E2E suite: its *.spec.ts files are run by
+// `playwright test`, never by vitest, so they are not "expected" here.
+export const EXCLUDED_DIRS = ["node_modules", "dist", "build", "playwright"];
 
 /**
  * DISCOVERY glob — deliberately broader than the COLLECTION globs above, and

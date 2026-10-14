@@ -324,7 +324,7 @@ export default function PublicProfilePage() {
               height={40}
               className="opacity-70 hover:opacity-100 transition-opacity"
             />
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-400">
               Powered by{" "}
               <Link
                 to="/"

@@ -795,10 +795,14 @@ export default function CardDetailPanel({
           NEO-47's reasoning, inherited from SetAttributesPanel: FIXED in the
           viewport rather than in-flow, because an edit made while scrolled
           down to the print run would otherwise render its confirmation above
-          the fold, invisible to the operator who just made it. */}
+          the fold, invisible to the operator who just made it.
+
+          NEO-341: `pointer-events-none`. It only reports; on a phone the
+          drawer is full width and this toast lands on the Card name field,
+          so for its few seconds it swallowed the tap meant for the field. */}
       {toast && (
         <div
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
           role="status"
           aria-live="polite"
         >
@@ -888,7 +892,7 @@ export default function CardDetailPanel({
             disabled={!hasPrev}
             aria-label="Previous card"
             title="Previous card (↑)"
-            className="px-2 py-1 text-sm rounded text-gray-500 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↑
           </button>
@@ -897,7 +901,7 @@ export default function CardDetailPanel({
             disabled={!hasNext}
             aria-label="Next card"
             title="Next card (↓)"
-            className="px-2 py-1 text-sm rounded text-gray-500 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↓
           </button>
@@ -1068,7 +1072,9 @@ export default function CardDetailPanel({
                   // always-dark walker dialog. #0369A1 measures 5.93:1
                   // against white; #00B7FF unchanged for dark mode (6.44:1
                   // against gray-800).
-                  className="rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+                  // inline-flex + min-h-6: the 10px label alone is a 15px-tall target;
+                  // SC 2.5.8 needs 24px (axe target-size).
+                  className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
                 >
                   {preview.loading
                     ? "Rebuilding…"
@@ -1264,7 +1270,7 @@ export default function CardDetailPanel({
                     className={`text-xs px-2 py-0.5 rounded border transition-colors aria-disabled:cursor-progress aria-disabled:opacity-60 ${
                       active
                         ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-                        : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+                        : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
                     }`}
                   >
                     {ATTRIBUTE_LABEL[token]}

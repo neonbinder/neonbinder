@@ -491,7 +491,10 @@ export function ReviewGrid({
                     {(["front", "back"] as const).map((value) => (
                       <label
                         key={value}
-                        className="flex items-center gap-1 text-slate-300 capitalize"
+                        // a11y (2.5.8): min-h-6 makes each row 24px, so the
+                        // 13px radio's centre sits 24px+ from the checkbox
+                        // below it. The whole label is the hit area anyway.
+                        className="flex min-h-6 items-center gap-1 text-slate-300 capitalize"
                       >
                         <input
                           type="radio"
@@ -513,7 +516,7 @@ export function ReviewGrid({
 
                   {/* Separate from the side, because they answer different
                       questions: what IS this, and do I want to pair it now. */}
-                  <label className="flex items-center gap-1 text-xs text-slate-300">
+                  <label className="flex min-h-6 items-center gap-1 text-xs text-slate-300">
                     <input
                       type="checkbox"
                       checked={isPicked}

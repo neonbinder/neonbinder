@@ -3,7 +3,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 
-// Test-only credential-seeding landing page (NEO-29). A Maestro flow signs in
+// Test-only credential-seeding landing page (NEO-29). An E2E spec signs in
 // via /testing/sign-in (optionally through /testing/reset first), redirecting
 // to /testing/seed-credentials?redirect=<final>; this page waits for the Convex
 // client to pick up the new Clerk session, calls the auth-scoped

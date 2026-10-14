@@ -71,7 +71,7 @@ export const NAV_ITEMS: NavItem[] = [
     path: "/profile",
     icon: UserIcon,
     glowClass: "binder-tab-glow-purple",
-    activeColor: "text-neon-purple",
+    activeColor: "text-neon-purple-text",
   },
 ];
 
