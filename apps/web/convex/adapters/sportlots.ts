@@ -1207,7 +1207,19 @@ export function parseSlVariationMarker(desc: string): {
  *      is precisely the smell the invariant names.
  *
  * So the abbreviation is stripped off a candidate name (below) and dropped on
- * the floor. `team`/`teams` stay `undefined` on every SportLots row.
+ * the floor. `team` stays `undefined` on every SportLots row, and `teams` does
+ * too with ONE exception: a team card.
+ *
+ * ## The exception: "<Team> Team" (NEO-343)
+ *
+ * On some sets SportLots names a team card "Philadelphia Eagles Team", where
+ * BSC sends "Philadelphia Eagles TL" (or "TC"). That is not an abbreviation to
+ * look up; it is the team's whole name, printed by the marketplace on the
+ * marketplace's own row, followed by a card-type word. `parseSlTeamCard`
+ * strips the word and the row carries the bare name in `cardName`, `players`
+ * and `teams`, exactly as BSC's team-card branch does (`parsePlayersField`).
+ * Still pure parsing of SportLots' own string: nothing is looked up in NB, and
+ * no name is matched against anything.
  */
 function tokenizeSlDescription(desc: string): {
   attributes: string[];
@@ -1370,7 +1382,7 @@ const SL_SUFFIX_ONLY_PART = /^\s*(?:jr|sr|ii|iii|iv)\.?\s*$/i;
  * check it against the surname first — a false veto costs a real name, which
  * is the cost this list is supposed to be avoiding.
  */
-const SL_SUBJECT_STOPWORDS = [
+const SL_SUBJECT_STOPWORD_LIST = [
   // Structural / non-card rows.
   "checklist",
   "team",
@@ -1407,7 +1419,14 @@ const SL_SUBJECT_STOPWORDS = [
   "pick",
   "future",
   "clock",
-].map((word) => new RegExp(`\\b${word.replace(/-/g, "\\-")}\\b`));
+];
+
+/** A whole-word, lowercase matcher for one stoplist entry. */
+function slStopwordPattern(word: string): RegExp {
+  return new RegExp(`\\b${word.replace(/-/g, "\\-")}\\b`);
+}
+
+const SL_SUBJECT_STOPWORDS = SL_SUBJECT_STOPWORD_LIST.map(slStopwordPattern);
 
 /**
  * A single name token: an uppercase letter followed by letters, apostrophes,
@@ -1574,6 +1593,142 @@ export function parseSlSubjects(residual: string): { players?: string[] } {
   }
 
   return players.length ? { players } : {};
+}
+
+/**
+ * NEO-343 — the card-type word SportLots appends to a team card:
+ * "Philadelphia Eagles Team". Its own final token after whitespace, and
+ * case-sensitive like BSC's `TC`/`TL` suffixes, so "Eagles team",
+ * "Teammates" and "Team USA" never match.
+ */
+const SL_TEAM_CARD_SUFFIX = /^(.+?)\s+Team$/;
+
+/**
+ * Stoplist entries that are also FRANCHISE names, so they must not veto a
+ * team card: "Dallas Stars", "Los Angeles Kings", "Sacramento Kings". They
+ * stay on the subject stoplist, where they veto "Future Stars" and "Diamond
+ * Kings".
+ */
+const SL_TEAM_CARD_FRANCHISE_WORDS = new Set(["stars", "kings"]);
+
+/**
+ * Whole-word veto list for the text in FRONT of " Team". Any hit means the
+ * row is not "<franchise> Team" and the team-card reading is refused.
+ *
+ * The subject stoplist, minus the two franchise words above, plus the words
+ * that turn "<X> Team" into a subset or a national side rather than a club's
+ * team card. Real SportLots rows of that shape, read off its public catalogue
+ * on 2026-10-13: "Collegiate National Team", "18U National Team",
+ * "Junior Team", "Usa Team", "USA Basketball Team", "1992 Usa Men'S Olympic
+ * Team". In those, "Team" is part of the side's NAME, so stripping it would
+ * mint a team that does not exist ("Collegiate National"). Likewise
+ * "Washington Football Team" is a franchise whose name ends in Team, and
+ * "Pro Bowl Team" / "All-Pro Team" / "All-Rookie Team" are honours subsets.
+ */
+const SL_TEAM_CARD_STOPWORDS = [
+  ...SL_SUBJECT_STOPWORD_LIST.filter(
+    (word) => !SL_TEAM_CARD_FRANCHISE_WORDS.has(word),
+  ),
+  "all",
+  "pro",
+  "bowl",
+  "rookies",
+  "dream",
+  "national",
+  "junior",
+  "collegiate",
+  "olympic",
+  "usa",
+  "men",
+  "mens",
+  "women",
+  "womens",
+  "world",
+  "champions",
+  "championship",
+  "super",
+  "football",
+  "baseball",
+  "basketball",
+  "hockey",
+  "soccer",
+].map(slStopwordPattern);
+
+/**
+ * One token of a franchise name: a capital letter or a digit first, so
+ * "San Francisco 49Ers" and "Philadelphia 76ers" pass. Lowercase particles
+ * ("Los Angeles Angels of Anaheim") are allowed separately.
+ */
+const SL_TEAM_NAME_TOKEN = /^[\p{Lu}\d][\p{L}\d'\-.]*$/u;
+/**
+ * A token that is a number or an age group ("1992", "18U") marks a dated or
+ * age-group side, never a franchise. "49Ers" is not one: it carries letters.
+ */
+const SL_TEAM_NUMERIC_TOKEN = /^\d+u?$/i;
+/**
+ * Every 2013 and 2015 Topps Football team card is "<City> <Nickname>", and
+ * one token is the shape that carries the risk: "Junior Team", "Dream Team",
+ * a player surnamed Team. A one-word franchise ("Athletics Team") is a
+ * documented false negative: the row keeps today's behaviour and any
+ * disagreement with BSC reaches the operator.
+ */
+const SL_MIN_TEAM_TOKENS = 2;
+/** "Los Angeles Angels of Anaheim" is five. */
+const SL_MAX_TEAM_TOKENS = 5;
+
+/**
+ * NEO-343 — read a SportLots team card, "<Team> Team", as the team it names.
+ *
+ * Returns `{ team }` with the bare team name, or `{}` when the row is not a
+ * team card. The caller puts that one name in `cardName`, `players` and
+ * `teams`, the same product choice BSC's team-card branch makes in
+ * `parsePlayersField` (the team row links via `teamOnCardIds`, and a matching
+ * players row is created so the card can link via `playerIds` too). With both
+ * marketplaces reporting the bare name, a BSC "Philadelphia Eagles TL" row and
+ * a SportLots "Philadelphia Eagles Team" row raise no name or roster conflict.
+ *
+ * Pure parsing of the marketplace's own string, and as pessimistic as
+ * `parseSlSubjects`: any doubt returns `{}`, and the row falls back to the
+ * subject parse, which vetoes the word "team" and so emits no players. A
+ * missed team card costs the operator one conflict to settle; a wrong team
+ * name is minted into NB's own data.
+ *
+ * Input contract: the tokenizer residual, already decoded exactly once by the
+ * caller (see `parseSlSubjects`). The rules, in order:
+ *
+ *  1. Reject `<`, `>` and control characters.
+ *  2. The residual must end in whitespace + "Team" (case-sensitive, own
+ *     token). The text in front is the candidate team name, whitespace
+ *     collapsed.
+ *  3. Reject a name longer than `MAX_PLAYER_NAME_LENGTH` (it is emitted as a
+ *     player too), or one holding a subject separator (`|`, `,`, ` / `,
+ *     ` & `): a multi-subject row is not a team card.
+ *  4. Reject on a whole-word `SL_TEAM_CARD_STOPWORDS` hit.
+ *  5. The name must be 2-5 tokens, each a capitalised or digit-led name token
+ *     or a lowercase particle, and none a bare number or age group.
+ */
+export function parseSlTeamCard(residual: string): { team?: string } {
+  if (/[<>]/.test(residual) || SL_CONTROL_CHARS.test(residual)) return {};
+
+  const match = residual.match(SL_TEAM_CARD_SUFFIX);
+  if (!match) return {};
+  const team = match[1].replace(/\s+/g, " ").trim();
+  if (!team || team.length > SL_MAX_SUBJECT_LENGTH) return {};
+  if (/\||,|\s\/\s|\s&\s/.test(team)) return {};
+
+  const lowered = team.toLowerCase();
+  if (SL_TEAM_CARD_STOPWORDS.some((pattern) => pattern.test(lowered))) return {};
+
+  const tokens = team.split(" ");
+  if (tokens.length < SL_MIN_TEAM_TOKENS || tokens.length > SL_MAX_TEAM_TOKENS)
+    return {};
+  for (const token of tokens) {
+    if (SL_NAME_PARTICLES.has(token)) continue;
+    if (SL_TEAM_NUMERIC_TOKEN.test(token)) return {};
+    if (!SL_TEAM_NAME_TOKEN.test(token)) return {};
+  }
+
+  return { team };
 }
 
 /**
@@ -1849,18 +2004,27 @@ export async function walkSlListcards(
 
       const { attributes, printRun, residual } =
         tokenizeSlDescription(withoutVariation);
-      const cardName = residual || withoutVariation || decodedDescription;
+      // NEO-343: a team card, "Philadelphia Eagles Team", names the team in
+      // all three fields with the card-type word stripped — the same bare
+      // name BSC's team-card branch emits for "Philadelphia Eagles TL", so
+      // the pair raises no name or roster conflict. `{}` on anything else.
+      const { team: teamCardTeam } = parseSlTeamCard(residual);
+      const cardName =
+        teamCardTeam ?? (residual || withoutVariation || decodedDescription);
 
       // NEO-251: player names off the same residual `cardName` is built
-      // from. `cardName` itself is untouched — this only ADDS a field.
-      // Returns `{}` (so `players` stays undefined) on any doubt; see
-      // parseSlSubjects. `team`/`teams` are never set here, deliberately.
-      const { players } = parseSlSubjects(residual);
+      // from. Returns `{}` (so `players` stays undefined) on any doubt; see
+      // parseSlSubjects. `teams` is set ONLY for a team card, from the
+      // marketplace's own string; `team` never is.
+      const { players } = teamCardTeam
+        ? { players: [teamCardTeam] }
+        : parseSlSubjects(residual);
 
       pageCards.push({
         cardNumber,
         cardName,
         players,
+        ...(teamCardTeam ? { teams: [teamCardTeam] } : {}),
         attributes: attributes.length ? attributes : undefined,
         printRun,
         autographType: attributes.includes("AU") ? "Unknown" : undefined,

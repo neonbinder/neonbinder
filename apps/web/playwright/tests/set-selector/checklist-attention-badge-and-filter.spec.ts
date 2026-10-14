@@ -8,9 +8,17 @@
 // (quick-add pickers) and is neither badged nor counted; the player is read back
 // from its drawer, the quick-add create path's only E2E proof since NEO-335
 // retired set-fill-teams-from-teammate-card.
+//
+// NEO-343: the checklist search's "attention" keyword lists exactly the cards
+// the pill counts, by the same rule, and ANDs with another term. Proved here
+// because this is the spec whose data GUARANTEES a flagged card (a hand-added
+// card with no team has no automatic team source, so it is flagged at once);
+// a marketplace fetch flags a card only if its team string resolves to no NB
+// team. The search control itself is checklist-search-narrows-and-clears'.
+// Searching is client-side and writes nothing.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
-import { addCardViaForm, editCardButton } from "../../support/cards";
+import { addCardViaForm, editCardButton, escapeRe } from "../../support/cards";
 import type { Page } from "@playwright/test";
 
 /** Raise a brand-new team through the card form's team picker. */
@@ -118,6 +126,28 @@ test(
     await expect(badge("701")).toBeVisible();
     await expect(pill("1 needs you")).toBeVisible();
     await expect(page.getByText(teamA).first()).toBeVisible();
+
+    // NEO-343 — "attention" in the checklist search lists the one flagged card
+    // the pill counts, out of the set's three, and every row it lists carries
+    // the attention mark. Rows and marks are scoped to this attempt's cards.
+    const search = page.getByRole("searchbox", { name: "Search cards" });
+    const rows = page.getByRole("button", { name: new RegExp(`^Edit card [0-9]+-${escapeRe(id)}(, .*)?$`) });
+    const marks = page.getByRole("img", { name: new RegExp(`^Card [0-9]+-${escapeRe(id)}(, .*)? needs attention: `) });
+    await search.fill("attention");
+    await expect(page.getByText("1 of 3 cards", { exact: true })).toBeVisible();
+    await expect(editCardButton(page, `701-${id}`)).toBeVisible();
+    await expect(rows).toHaveCount(1);
+    await expect(badge("701")).toBeVisible();
+    await expect(marks).toHaveCount(1);
+    // A keyword ANDs with the other terms: flagged AND #702 is nothing.
+    await search.fill(`attention 702-${id}`);
+    await expect(page.getByText(`No cards match "attention 702-${id}".`)).toBeVisible();
+    await expect(page.getByText("0 of 3 cards", { exact: true })).toBeVisible();
+    await expect(rows).toHaveCount(0);
+    // Escape clears it: all three rows are back.
+    await search.press("Escape");
+    await expect(search).toHaveValue("");
+    await expect(rows).toHaveCount(3);
 
     // WHICH card: the pill opens the walker on the flagged set and only that. It
     // opens on the lowest-numbered flagged card, #701, and the counter's y is the

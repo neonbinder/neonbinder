@@ -128,6 +128,58 @@ describe("parsePlayersField", () => {
     });
   });
 
+  test("NEO-343: a Team Leaders card (TL) parses exactly like a Team Checklist card", () => {
+    // 2014 Topps Football: BSC sends "Buffalo Bills TL" where SportLots sends
+    // "Buffalo Bills". Before the fix the whole string became a "player", no
+    // team was set, and the card name read "Buffalo Bills TL" — a name AND a
+    // players conflict on every team card in the Match Cards dialog.
+    expect(parsePlayersField("Buffalo Bills TL")).toEqual({
+      players: ["Buffalo Bills"],
+      teams: ["Buffalo Bills"],
+    });
+    expect(parsePlayersField("Buffalo Bills TL")).toEqual(
+      parsePlayersField("Buffalo Bills TC"),
+    );
+    // Single-word team name, as for TC.
+    expect(parsePlayersField("Packers TL")).toEqual({
+      players: ["Packers"],
+      teams: ["Packers"],
+    });
+    // Surrounding whitespace is trimmed before the suffix is read.
+    expect(parsePlayersField("  Buffalo Bills TL  ")).toEqual({
+      players: ["Buffalo Bills"],
+      teams: ["Buffalo Bills"],
+    });
+  });
+
+  test("NEO-343: 'TL' counts only as a whitespace-separated, upper-case final token", () => {
+    // A surname ending in "tl" is a player, not a team card.
+    expect(parsePlayersField("Kevin Battl")).toEqual({
+      players: ["Kevin Battl"],
+      teams: [],
+    });
+    // No preceding whitespace — not a suffix.
+    expect(parsePlayersField("PlayerNamedTL")).toEqual({
+      players: ["PlayerNamedTL"],
+      teams: [],
+    });
+    // Lower/mixed case is not the BSC marker (the match is case-sensitive,
+    // as it is for TC).
+    expect(parsePlayersField("Kevin Tl")).toEqual({
+      players: ["Kevin Tl"],
+      teams: [],
+    });
+    // Anchored at the end: a leading or interior "TL" is part of a name.
+    expect(parsePlayersField("TL Hardy")).toEqual({
+      players: ["TL Hardy"],
+      teams: [],
+    });
+    expect(parsePlayersField("Buffalo TL Bills")).toEqual({
+      players: ["Buffalo TL Bills"],
+      teams: [],
+    });
+  });
+
   test("word-boundary check — a name that merely CONTAINS 'TC' with no preceding space is not stripped", () => {
     // No space before "TC" — must not be treated as a team-card suffix.
     expect(parsePlayersField("PlayerNamedTC")).toEqual({

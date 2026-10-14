@@ -740,6 +740,26 @@ export function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
 }
 
 /**
+ * NEO-344 — the SPELLING of a typed card name, with only the invisible
+ * differences taken out: Unicode normalisation form (NFD "José" vs NFC
+ * "José") and runs of whitespace of any kind (a doubled space, an NBSP)
+ * collapsed to one ordinary space, then trimmed.
+ *
+ * Why it exists: the conflict pills are bare names, so a typed name that
+ * differs from a marketplace name only in one of those ways would render as a
+ * third pill that looks and reads aloud exactly like the marketplace one —
+ * a radiogroup offering a choice between two identical options.
+ *
+ * Deliberately NOT `nameKey`: case and accents are visible, meaningful
+ * corrections ("José" over "Jose" is the operator fixing the card), so both
+ * survive here. Only what neither the eye nor a screen reader can tell apart
+ * is folded.
+ */
+function canonicalTypedName(name: string): string {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim();
+}
+
+/**
  * NEO-251 — record that the operator decided something about one row, without
  * changing anything else about it.
  *
@@ -1033,13 +1053,17 @@ function baseReducer(state: State, action: Action): State {
      *  2. On a CONFLICTED row where the typed name is exactly one of the two
      *     marketplace names: this is indistinguishable from having clicked
      *     that pill, so it IS that — same `chosen`, same result. Anything else
-     *     would leave the radiogroup showing "Custom: <BSC's name>" checked
-     *     alongside an unchecked, identical "BSC: <BSC's name>", which is a
+     *     would leave the radiogroup showing the operator's copy of BSC's name
+     *     checked alongside an unchecked, identical BSC pill, which is a
      *     control asking the operator to choose between two spellings of the
-     *     same decision. Matched on the exact trimmed string rather than
-     *     `nameKey`, deliberately: `nameKey` folds accents and punctuation, so
-     *     "José Ramírez" typed over BSC's "Jose Ramirez" would be swallowed as
-     *     "you picked BSC" and the operator's correction silently discarded.
+     *     same decision. Matched on `canonicalTypedName` (Unicode form and
+     *     whitespace only) rather than `nameKey`, deliberately: `nameKey`
+     *     folds accents and punctuation, so "José Ramírez" typed over BSC's
+     *     "Jose Ramirez" would be swallowed as "you picked BSC" and the
+     *     operator's correction silently discarded. Case and accents stay
+     *     significant; a doubled space or an NFD accent does not (NEO-344:
+     *     the pills are bare names, so those would read as twins). On a match
+     *     the card carries the marketplace's own spelling, not the typed one.
      *  3. On a conflicted row where it matches neither: it becomes a third
      *     option in the same radiogroup, checked. See `NameConflict.custom`.
      *
@@ -1051,7 +1075,10 @@ function baseReducer(state: State, action: Action): State {
     case "RENAME": {
       const pair = state.matched[action.index];
       if (!pair) return state;
-      const cardName = action.cardName.trim();
+      // NEO-344: canonicalised once, here, so every comparison below and the
+      // stored `custom` value are the same form — a later re-type with a
+      // doubled space compares equal to what is stored.
+      const cardName = canonicalTypedName(action.cardName);
       if (!cardName) return state;
       // NEO-251 security review — this name reaches `players.findOrCreate`
       // through the entity wizard, which refuses over-length names at the
@@ -1063,7 +1090,10 @@ function baseReducer(state: State, action: Action): State {
       if (cardName.length > MAX_PLAYER_NAME_LENGTH) return state;
       const conflict = pair.nameConflict;
       if (!conflict) {
-        if (cardName === pair.card.cardName) return state;
+        // Canonicalised on both sides: tabbing through the field of a card
+        // whose marketplace name carries a doubled space must stay a no-op,
+        // not a silent rename to the single-spaced form.
+        if (cardName === canonicalTypedName(pair.card.cardName)) return state;
         return {
           ...state,
           matched: state.matched.map((m, i) =>
@@ -1074,17 +1104,25 @@ function baseReducer(state: State, action: Action): State {
         };
       }
       const chosen: NameConflict["chosen"] =
-        cardName === conflict.bsc
+        cardName === canonicalTypedName(conflict.bsc)
           ? "bsc"
-          : cardName === conflict.sportlots
+          : cardName === canonicalTypedName(conflict.sportlots)
             ? "sportlots"
             : "custom";
       const nameConflict: NameConflict =
         chosen === "custom"
           ? { ...conflict, chosen, custom: cardName }
           : { ...conflict, chosen };
+      // A typed match IS a click on that pill, so the card carries that
+      // marketplace's own spelling — exactly what `CHOOSE_NAME` would set.
+      const nextCardName =
+        chosen === "bsc"
+          ? conflict.bsc
+          : chosen === "sportlots"
+            ? conflict.sportlots
+            : cardName;
       if (
-        cardName === pair.card.cardName &&
+        nextCardName === pair.card.cardName &&
         conflict.chosen === nameConflict.chosen &&
         conflict.custom === nameConflict.custom
       ) {
@@ -1096,7 +1134,7 @@ function baseReducer(state: State, action: Action): State {
           i === action.index
             ? {
                 ...pair,
-                card: { ...pair.card, cardName },
+                card: { ...pair.card, cardName: nextCardName },
                 nameConflict,
                 touched: true,
               }

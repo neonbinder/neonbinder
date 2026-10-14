@@ -72,3 +72,4 @@
 - [SL review filter is substring](patterns_sl_review_filter_is_substring.md) — "first row its own filter shows" covers every label CONTAINING it (`Best Top Prospects` above `Prospects`)
 - [Wizard implicit pin yields to a ready league](patterns_wizard_implicit_pin_yields_to_a_ready_league.md) — untouched ordinary player steps swap out (pick steps hold, NEO-339); staged teams settle in seconds
 - [Blank bootstrap = stale Vite dep cache](patterns_blank_bootstrap_is_a_stale_vite_dep_cache.md) — white page, 504 Outdated Optimize Dep in the trace console after a deps merge; the Vite owner restarts with --force
+- [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these players for <scope>`; read each side's value off the unmatched columns before linking; toBeChecked, exact scopes, no-source negatives
