@@ -22,7 +22,9 @@ import { main, type CliIO } from "../cli";
 import { parseTarget } from "../client/target";
 import { specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
-import { BUILD_SET_NEEDS_TTY, MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
+import { BUILD_SET_NEEDS_TTY, draftMarkdown, MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
+import { compactDraftReport } from "./draft";
+import type { DraftedReport } from "../service";
 
 function io(env: NodeJS.ProcessEnv = {}): CliIO & { out: string[]; err: string[] } {
   const out: string[] = [];
@@ -277,6 +279,7 @@ describe("setbuild draft-set / build-set", () => {
     expect(await main(["draft-set", "--path", "Baseball/2024/Topps", "--out", out], io(ENV))).toBe(2);
     expect(await main(["draft-set", "--path", SET, "--out", out, "--team-lookup-budget", "-1"], io(ENV))).toBe(2);
     expect(await main(["draft-set", "--path", SET, "--out", out, "--team-lookup-budget", "999999"], io(ENV))).toBe(2);
+    expect(await main(["draft-set", "--path", SET, "--out", out, "--detail", "everything"], io(ENV))).toBe(2);
     expect(sent()).toBe(0);
   });
 
@@ -287,5 +290,49 @@ describe("setbuild draft-set / build-set", () => {
     expect(await main(["draft-set", "--path", SET, "--out", join(dir, "draft.json")], a)).toBe(1);
     expect(sent()).toBeGreaterThan(0);
     expect(a.err.join("\n")).not.toContain("ak_secret_value");
+  });
+});
+
+describe("draftMarkdown", () => {
+  const report = {
+    status: "drafted",
+    target: { convexUrl: "https://happy-otter-123.convex.cloud", host: "happy-otter-123.convex.cloud" },
+    path: { sport: "Baseball", year: "2014", manufacturer: "Topps", set: "Topps Chrome" },
+    pathText: "Baseball/2014/Topps/Topps Chrome",
+    scope: "Baseball/2014/Topps/Topps Chrome",
+    spec: { version: 1, scope: "Baseball/2014/Topps/Topps Chrome", steps: [] },
+    proposals: Array.from({ length: 12 }, (_, i) => ({ at: `steps[0].p${i}`, kind: "build", detail: `build row ${i}` })),
+    openDecisions: { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [], grouping: [] },
+    openCount: 0,
+    template: null,
+    confirmPhrase: null,
+    steps: [],
+    notes: [],
+    leftUnasked: [
+      {
+        at: "steps[0].variants[0].sync.pending",
+        type: "Insert",
+        outsideScope: 970,
+        pairedElsewhere: 2,
+        outsideScopeSets: Array.from({ length: 970 }, (_, i) => ({ id: `9${i}`, name: `Heritage ${i}` })),
+      },
+    ],
+    marketplaceCalls: 4,
+    durationMs: 1000,
+  } as unknown as DraftedReport;
+
+  test("the summary prints the first few proposals, the full count and how to see the rest; full prints all", () => {
+    const short = draftMarkdown(compactDraftReport(report));
+    expect(short).toContain("### 12 proposals");
+    expect(short).toContain("build row 4");
+    expect(short).not.toContain("build row 5");
+    expect(short).toContain("… and 7 more (build 12)");
+    expect(short).toContain("970 SportLots set(s) outside this set's SportLots filter (90 Heritage 0;");
+    expect(short).not.toContain("Heritage 5;");
+    expect(short).toContain('detail "full"');
+    const full = draftMarkdown(compactDraftReport(report, "full"));
+    expect(full).toContain("build row 11");
+    expect(full).toContain("Heritage 969");
+    expect(full).not.toContain('detail "full"');
   });
 });

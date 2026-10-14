@@ -11,7 +11,20 @@ import { contentDigest } from "../client/target";
 import { countOpenDecisions, specConfirmPhrase, type DraftedReport, type UnresolvedDraftReport } from "../service";
 import { parseSpec } from "../spec/schema";
 import { SAME_NAME_PLAYER_PLACEHOLDER } from "../lib/review";
-import { draftSet, entitySlices, mergeDraftAnswers, namesOnCards, placeholdersIn } from "./draft";
+import {
+  compactDraftReport,
+  conflictDependentPlayers,
+  draftSet,
+  entitySlices,
+  mergeDraftAnswers,
+  namesOnCards,
+  placeholdersIn,
+  SUMMARY_OUTSIDE_SCOPE,
+  SUMMARY_PROPOSALS_PER_KIND,
+  unsyncedMessage,
+  type CompactDraftReport,
+} from "./draft";
+import { filedByOtherTypes } from "./engine";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { DRAFT_READ_ACTIONS, draftClient, PlanWouldWrite } from "./read-only-client";
 
@@ -89,6 +102,10 @@ const PLAYERS: Record<string, { status: "known" | "unknown"; candidates: Array<{
 interface WorldOpts {
   setExists?: boolean;
   setsSynced?: boolean;
+  /** false: Baseball › 2024 holds no manufacturer at all (its column never synced). */
+  manufacturersSynced?: boolean;
+  /** Extra SportLots sets every Insert/Parallel fetch lists (SportLots' brand-year-wide list). */
+  brandYearSl?: Array<[string, string]>;
   baseSl?: Array<[string, string]>;
   basePreview?: unknown;
   insertPreview?: (args: Record<string, unknown>) => unknown;
@@ -109,7 +126,7 @@ function world(o: WorldOpts = {}): FakeClient {
   const tree: Record<string, unknown[]> = {
     "sport:": [sel("sp", "sport", "Baseball")],
     "year:sp": [sel("yr", "year", "2024")],
-    "manufacturer:yr": [sel("mf", "manufacturer", "Topps")],
+    "manufacturer:yr": o.manufacturersSynced === false ? [] : [sel("mf", "manufacturer", "Topps")],
     "setName:mf": sets,
     "variantType:tc": [sel("tcI", "variantType", "Insert")],
   };
@@ -138,7 +155,16 @@ function world(o: WorldOpts = {}): FakeClient {
               ["Future Stars", "fs", "2024 Topps Chrome Black Future Stars", "sl-fs"],
               ["Future Stars Gold", "fs-gold", "2024 Topps Chrome Black Future Stars Gold", "sl-fsg"],
             ],
-            sl: [["2024 Topps Chrome Black Something", "sl-other"], ["2024 Topps Chrome Future Stars", "sl-held"]],
+            // SportLots names are brand-stripped ("Chrome Black …"). "Heritage
+            // Chrome" is another product of the brand-year: outside the set's
+            // SportLots filter. sl-gold is the Parallel type's to pair.
+            sl: [
+              ["Chrome Black Something", "sl-other"],
+              ["2024 Topps Chrome Future Stars", "sl-held"],
+              ["Heritage Chrome", "sl-heritage"],
+              ["Chrome Black Gold Refractors", "sl-gold"],
+              ...(o.brandYearSl ?? []),
+            ],
           }),
         },
         {
@@ -149,7 +175,12 @@ function world(o: WorldOpts = {}): FakeClient {
           // set the Insert sync pairs, too.
           candidates: raw({
             autoMatched: [["Gold Refractors", "gold", "2024 Topps Chrome Black Gold Refractors", "sl-gold"]],
-            sl: [["2024 Topps Chrome Black Future Stars", "sl-fs"], ["2024 Topps Chrome Black Something", "sl-other"]],
+            sl: [
+              ["2024 Topps Chrome Black Future Stars", "sl-fs"],
+              ["Chrome Black Something", "sl-other"],
+              ["Heritage Chrome", "sl-heritage"],
+              ...(o.brandYearSl ?? []),
+            ],
           }),
         },
       ],
@@ -221,19 +252,42 @@ describe("draftSet: proposals vs open decisions", () => {
         { name: "Future Stars", bsc: ["fs"], sportlots: ["sl-fs"] },
         { name: "Future Stars Gold", bsc: ["fs-gold"], sportlots: ["sl-fsg"] },
       ],
-      pending: [{ side: "sportlots", id: "sl-other", decision: "leave" }],
+      // Each with the marketplace's name, so it can be paired from the draft.
+      pending: [{ side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: "leave" }],
     });
     expect(r.openDecisions.reconcile).toEqual([]);
+    // Not listed, only counted: Heritage Chrome (another product: outside the
+    // set's SportLots filter) and sl-gold (the Parallel type pairs it).
+    expect(r.leftUnasked).toEqual([
+      {
+        at: "steps[0].variants[0].sync.pending",
+        type: "Insert",
+        outsideScope: 1,
+        pairedElsewhere: 1,
+        outsideScopeSets: [{ id: "sl-heritage", name: "Heritage Chrome" }],
+      },
+      {
+        at: "steps[0].variants[1].sync.pending",
+        type: "Parallel",
+        outsideScope: 1,
+        pairedElsewhere: 0,
+        outsideScopeSets: [{ id: "sl-heritage", name: "Heritage Chrome" }],
+      },
+    ]);
     expect(r.proposals.filter((p) => p.kind === "reconcile-leave")).toEqual([
       {
         at: "steps[0].variants[0].sync.pending",
         kind: "reconcile-leave",
-        detail: "1 Insert set(s) not paired; the dialog leaves them in Pending (SportLots 1: sl-other)",
+        detail:
+          "1 Insert set(s) not paired (SportLots 1); Save leaves them in Pending. Each is listed with its name: pair any that belong together. " +
+          "Not asked about: 1 SportLots set(s) outside this set's SportLots filter (other products of the brand-year); 1 set(s) another variant type pairs.",
       },
       {
         at: "steps[0].variants[1].sync.pending",
         kind: "reconcile-leave",
-        detail: "1 Parallel set(s) not paired; the dialog leaves them in Pending (SportLots 1: sl-other)",
+        detail:
+          "1 Parallel set(s) not paired (SportLots 1); Save leaves them in Pending. Each is listed with its name: pair any that belong together. " +
+          "Not asked about: 1 SportLots set(s) outside this set's SportLots filter (other products of the brand-year).",
       },
     ]);
     expect(JSON.stringify(r.spec)).not.toContain("own-set");
@@ -298,7 +352,11 @@ describe("draftSet: proposals vs open decisions", () => {
     // sl-fs is paired by the Insert sync, which apply runs first: by the
     // Parallel sync it is held (NEO-312), so it is not pending there and gets
     // no `leave`. sl-other is still pending in both types.
-    expect(parallel.sync!.pending).toEqual([{ side: "sportlots", id: "sl-other", decision: "leave" }]);
+    expect(parallel.sync!.pending).toEqual([{ side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: "leave" }]);
+    // The other way round too: sl-gold waits in the Insert dialog's Pending,
+    // but the Parallel type pairs it, so the Insert sync does not leave it.
+    const insert = spec.steps[0].variants!.find((v) => v.type === "Insert")!;
+    expect(insert.sync!.pending.map((p) => (p as { id: string }).id)).toEqual(["sl-other"]);
     // And the engine makes apply honour that order: the Parallel sync waits
     // on an open Insert sync rather than run with sl-fs unheld (collect.test.ts).
     expect(spec.steps[0].variants!.map((v) => v.type)).toEqual(["Insert", "Parallel"]);
@@ -514,6 +572,157 @@ describe("draftSet: sessions and budgets (security audit)", () => {
   });
 });
 
+describe("draftSet: SportLots' brand-year-wide list stays bounded (NEO-339 live: 641,833 characters on 2014 Topps Chrome)", () => {
+  // 2014 Topps on SportLots: about a thousand sets, every product of the
+  // brand-year, returned by every Insert and Parallel fetch of every set.
+  const BRAND_YEAR = Array.from({ length: 1500 }, (_, i): [string, string] => [
+    `${["Heritage", "Update", "Allen & Ginter", "Archives", "Stadium Club"][i % 5]} Insert ${i}`,
+    `9${String(i).padStart(5, "0")}`,
+  ]);
+
+  test("only the set's own sets are listed, each with its name; the brand-year's other products are counted", async () => {
+    const r = await drafted(world({ brandYearSl: BRAND_YEAR }));
+    const spec = r.spec as unknown as Spec;
+    for (const v of spec.steps[0].variants!) {
+      expect(v.sync!.pending).toEqual([{ side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: "leave" }]);
+    }
+    expect(r.leftUnasked.map((l) => [l.type, l.outsideScope])).toEqual([
+      ["Insert", BRAND_YEAR.length + 1],
+      ["Parallel", BRAND_YEAR.length + 1],
+    ]);
+    // Not one brand-year id reaches the spec, the template or a proposal.
+    const text = JSON.stringify({ spec: r.spec, template: r.template, proposals: r.proposals });
+    expect(text).not.toContain(BRAND_YEAR[0][1]);
+    expect(text).not.toContain(BRAND_YEAR[BRAND_YEAR.length - 1][1]);
+  });
+
+  test("the summary result (nb_draft_set's default) stays small; detail full keeps every entry", async () => {
+    const small = await drafted(world());
+    const big = await drafted(world({ brandYearSl: BRAND_YEAR }));
+    const size = (x: unknown) => JSON.stringify(x).length;
+    const summary = compactDraftReport(big) as CompactDraftReport;
+    // A thousand and a half more SportLots sets cost the summary only their counts.
+    expect(size(summary)).toBeLessThan(size(compactDraftReport(small)) + 1_000);
+    expect(size(summary)).toBeLessThan(20_000);
+    for (const l of summary.leftUnasked) expect(l.outsideScopeSets).toHaveLength(SUMMARY_OUTSIDE_SCOPE);
+    expect(summary.summary!.omitted.outsideScopeSets).toBe(2 * (BRAND_YEAR.length + 1 - SUMMARY_OUTSIDE_SCOPE));
+    // What a run needs is whole: the template (spec left out while it carries it) and every open decision.
+    expect(summary.template).toEqual(big.template);
+    expect(summary.spec).toBeUndefined();
+    expect(summary.summary!.specInTemplate).toBe(true);
+    expect(summary.openDecisions).toEqual(big.openDecisions);
+    expect(summary.openCount).toBe(big.openCount);
+    // Full: nothing cut, no summary.
+    const full = compactDraftReport(big, "full") as typeof big;
+    expect(full).toBe(big);
+    expect(full.leftUnasked[0].outsideScopeSets).toHaveLength(BRAND_YEAR.length + 1);
+  });
+
+  test("a summary keeps the first few proposals of each kind, every step not done, and says what it cut", () => {
+    const proposals = Array.from({ length: 30 }, (_, i) => ({ at: `p${i}`, kind: i % 2 ? ("build" as const) : ("expect" as const), detail: "" }));
+    const steps = Array.from({ length: 12 }, (_, i) => ({ index: 0, kind: "x", path: "p", action: `a${i}`, status: i < 4 ? "todo" : "done" }));
+    const r = {
+      status: "drafted",
+      proposals,
+      steps,
+      notes: [],
+      leftUnasked: [],
+      template: null,
+      spec: { version: 1 },
+      openDecisions: {},
+    } as unknown as DraftedReport;
+    const c = compactDraftReport(r) as CompactDraftReport;
+    expect(c.proposals).toHaveLength(2 * SUMMARY_PROPOSALS_PER_KIND);
+    expect(c.summary!.proposalCounts).toEqual({ expect: 15, build: 15 });
+    expect(c.steps.map((s) => s.action)).toEqual(["a0", "a1", "a2", "a3"]);
+    expect(c.summary!.stepCounts).toEqual({ todo: 4, done: 8 });
+    expect(c.summary!.omitted).toMatchObject({ proposals: 30 - 2 * SUMMARY_PROPOSALS_PER_KIND, steps: 8 });
+    // Nothing open: the spec is what apply takes, so it stays.
+    expect(c.spec).toEqual({ version: 1 });
+  });
+});
+
+describe("draftSet: review names that ride on an unanswered card conflict", () => {
+  const conflicted = (bsc: string[], sl: string[], extra: Card[] = []) =>
+    world({
+      basePreview: {
+        ...preview(extra),
+        matched: [
+          ...extra.map((c) => ({ card: card(c), confidence: 1 })),
+          {
+            card: { ...card({ num: "12", players: bsc, bsc: "b12", sl: "s12" }), playersConflict: { bsc, sportlots: sl } },
+            confidence: 1,
+          },
+        ],
+      },
+    });
+
+  test("a spelling only one side carries is never pre-filled: it is open, naming the conflict it rides on", async () => {
+    const r = await drafted(conflicted(["Alex Guerrero"], ["Alexander Guerrero"]));
+    const step = (r.spec as unknown as Spec).steps[0];
+    // No create for either spelling: which one the review asks about is the conflict's answer.
+    expect(step.base!.checklist!.review).toBe("none-expected");
+    expect(r.proposals.filter((p) => p.kind === "review-create" && p.at.startsWith("steps[0].base"))).toEqual([]);
+    expect(r.openDecisions.conflicts).toEqual([expect.objectContaining({ cardNumber: "12" })]);
+    const open = r.openDecisions.review.players.filter((p) => p.at === "steps[0].base.checklist.review.players");
+    expect(open.map((p) => p.name)).toEqual(["Alex Guerrero", "Alexander Guerrero"]);
+    expect(open[0].detail).toContain(`asked only if card #12's players conflict is answered "bsc"`);
+    expect(open[1].detail).toContain(`asked only if card #12's players conflict is answered "sportlots"`);
+    expect(open[1].detail).toContain("no NB player has this name");
+    // The fill-ins say the same, and the conflict's own fill-in sits beside them.
+    const tpl = r.template as unknown as { steps: Array<{ base: { checklist: { review: { players: Array<{ name: string; decision: string }> } } } }> };
+    const fills = tpl.steps[0].base.checklist.review.players;
+    expect(fills.map((f) => f.name)).toEqual(["Alex Guerrero", "Alexander Guerrero"]);
+    for (const f of fills) expect(f.decision).toMatch(/^<"create" \| "skip"/);
+    expect(fills[1].decision).toContain('answered "sportlots"');
+    expect(placeholdersIn(r.template)).toContain("steps[0].base.checklist.pairing.conflicts[0].choose");
+    expect(r.confirmPhrase).toBeNull();
+  });
+
+  test("a name both sides carry, or another card carries, is asked whatever the answer: proposed as before", async () => {
+    const r = await drafted(
+      conflicted(["Kris Bryant", "Javier Baez"], ["Kris Bryant"], [{ num: "13", players: ["Javier Baez"], bsc: "b13", sl: "s13" }]),
+    );
+    const review = (r.spec as unknown as Spec).steps[0].base!.checklist!.review as { players: Array<{ name: string }> };
+    expect(review.players.map((p) => p.name)).toEqual(["Javier Baez", "Kris Bryant"]);
+    expect(r.openDecisions.review.players.filter((p) => p.at.startsWith("steps[0].base"))).toEqual([]);
+  });
+
+  test("conflictDependentPlayers: one side only, not settled elsewhere, folded by name", () => {
+    const deps = conflictDependentPlayers([
+      { cardNumber: "1", cardName: "", players: ["A. Guerrero"], playersConflict: { bsc: ["A. Guerrero", "Both"], sportlots: ["Alexander Guerrero", "both"] } },
+      { cardNumber: "2", cardName: "", players: ["Elsewhere"], playersConflict: { bsc: ["Elsewhere"], sportlots: ["Other Side"] } },
+      { cardNumber: "3", cardName: "", players: ["Elsewhere"] },
+    ] as unknown as Parameters<typeof conflictDependentPlayers>[0]);
+    expect([...deps.entries()]).toEqual([
+      [expect.stringMatching(/guerrero/i), [{ cardNumber: "1", side: "bsc" }]],
+      [expect.stringMatching(/alexander/i), [{ cardNumber: "1", side: "sportlots" }]],
+      [expect.stringMatching(/other/i), [{ cardNumber: "2", side: "sportlots" }]],
+    ]);
+  });
+});
+
+describe("draftSet: a brand-year not synced yet (NEO-339 live: 2014 Topps)", () => {
+  test("an empty Manufacturers column says the brand's year is not synced yet, and offers the prepare spec", async () => {
+    const r = (await draftSet(world({ manufacturersSynced: false }), FAKE_TARGET, PATH, {})) as UnresolvedDraftReport;
+    expect(r).toMatchObject({ status: "unresolved", kind: "manufacturer", candidates: [] });
+    expect(r.message).toBe(unsyncedMessage("Baseball/2024/Topps"));
+    expect(r.message).toBe("Baseball/2024/Topps has not been synced yet. Apply the prepare spec, then draft this set again.");
+    expect(r.prepare?.spec).toMatchObject({ steps: [{ kind: "brand-year", syncSets: true }] });
+  });
+
+  test("a name the synced column does not hold keeps the plain message", async () => {
+    const r = (await draftSet(world(), FAKE_TARGET, { ...PATH, manufacturer: "Leaf" }, {})) as UnresolvedDraftReport;
+    expect(r.message).toBe('No manufacturer named "Leaf".');
+    expect(r.prepare).toBeDefined();
+  });
+
+  test("Sets never synced say so", async () => {
+    const r = (await draftSet(world({ setsSynced: false }), FAKE_TARGET, PATH, {})) as UnresolvedDraftReport;
+    expect(r.message).toBe("Baseball/2024/Topps's Sets have not been synced yet. Apply the prepare spec, then draft this set again.");
+  });
+});
+
 describe("the draft client", () => {
   test("refuses every mutation and every action but fetchRawOptions and the two previews", async () => {
     const inner = fakeClient()
@@ -545,6 +754,17 @@ describe("the draft client", () => {
 });
 
 describe("pure helpers", () => {
+  test("filedByOtherTypes: every other type's paired and own-set ids, never this type's or a leave", () => {
+    const variants = [
+      { type: "Insert", sync: { pairs: [{ name: "A", bsc: ["a"], sportlots: ["1"] }], pending: [{ side: "sportlots", id: "9", decision: "leave" }] } },
+      { type: "Parallel", sync: { pairs: [{ name: "B", sportlots: ["2"] }], pending: [{ side: "bsc", id: "own", decision: "own-set" }, { side: "sportlots", id: "8", decision: "leave" }] } },
+      { type: "Short Prints" },
+    ] as unknown as Parameters<typeof filedByOtherTypes>[0];
+    expect(filedByOtherTypes(variants, 0)).toEqual({ bsc: ["own"], sportlots: ["2"] });
+    expect(filedByOtherTypes(variants, 1)).toEqual({ bsc: ["a"], sportlots: ["1"] });
+    expect(filedByOtherTypes(variants, 2)).toEqual({ bsc: ["a", "own"], sportlots: ["1", "2"] });
+  });
+
   test("entitySlices never sends more than 200 names in one call", () => {
     const players = Array.from({ length: 250 }, (_, i) => `P${i}`);
     const teams = Array.from({ length: 30 }, (_, i) => `T${i}`);

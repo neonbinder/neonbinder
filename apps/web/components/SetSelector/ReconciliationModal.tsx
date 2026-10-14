@@ -63,6 +63,8 @@ import { BASE_MATCH_COPY, type BaseMatchSide } from "@/lib/cards/base-match";
 // lib/set-build/reconcile.ts, shared with the set-building tool.
 import {
   buildReconciledItems,
+  defaultSlPrefixes as defaultSlPrefixesOf,
+  inSlPrefixScope,
   reconciliationReducer,
   seedReconciliationState,
   type ItemMetadata,
@@ -938,27 +940,12 @@ function ReconciliationDialog({
   const triggerRef = useRef<HTMLElement | null>(null);
   // Default SL-side prefixes: full set name, set name with manufacturer
   // prefix stripped, plus any caller-supplied extras (typically the SL Base
-  // anchor's name). De-duped and lowercased.
-  // e.g. setName="Topps Chrome", mfg="Topps", extra=["Chrome"] → ["topps chrome", "chrome"]
-  const defaultSlPrefixes = useMemo(() => {
-    const setNorm = setName.trim().toLowerCase();
-    const mfgNorm = manufacturer.trim().toLowerCase();
-    const prefixes: string[] = [];
-    const seen = new Set<string>();
-    const push = (p: string) => {
-      const v = p.trim().toLowerCase();
-      if (v && !seen.has(v)) {
-        seen.add(v);
-        prefixes.push(v);
-      }
-    };
-    if (setNorm) push(setNorm);
-    if (mfgNorm && setNorm.startsWith(`${mfgNorm} `)) {
-      push(setNorm.slice(mfgNorm.length + 1).trim());
-    }
-    for (const extra of extraSlPrefixes) push(extra);
-    return prefixes;
-  }, [setName, manufacturer, extraSlPrefixes]);
+  // anchor's name). NEO-339: the rule lives in lib/set-build/reconcile.ts,
+  // where the set-building tool reads the same scope.
+  const defaultSlPrefixes = useMemo(
+    () => defaultSlPrefixesOf(setName, manufacturer, extraSlPrefixes),
+    [setName, manufacturer, extraSlPrefixes],
+  );
 
   const [slFilter, setSlFilter] = useState<string>("");
   const [showAllSl, setShowAllSl] = useState<boolean>(showAllSlInitially);
@@ -997,14 +984,7 @@ function ReconciliationDialog({
   const scopedPendingSl = useMemo(() => {
     return state.pendingSl.filter((item) => {
       if (usedSlSet.has(item.platformValue)) return false;
-      const v = item.value.toLowerCase();
-      if (
-        activeSlPrefixes.length > 0 &&
-        !activeSlPrefixes.some((p) => v.startsWith(p))
-      ) {
-        return false;
-      }
-      return true;
+      return inSlPrefixScope(item.value, activeSlPrefixes);
     });
   }, [state.pendingSl, activeSlPrefixes, usedSlSet]);
 

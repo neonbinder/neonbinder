@@ -100,6 +100,56 @@ export type ReconciliationState = {
 
 export type Side = "bsc" | "sl";
 
+// ===== THE SPORTLOTS PREFIX FILTER =====
+
+/**
+ * The dialog's default SportLots prefixes: the set's name, the set's name with
+ * its manufacturer stripped, then every caller-supplied extra (the Base's
+ * SportLots slot labels). Lower-cased and de-duped, in that order. Moved
+ * verbatim from `ReconciliationModal`.
+ *
+ * SportLots lists a whole brand-year at the insert level (it has no set/
+ * variant split), so the dialog opens its Pending column on the sets whose
+ * names start with one of these and hides the rest behind "Show all". The
+ * set-building tool reads the same scope (`inSlPrefixScope`).
+ *
+ * e.g. setName="Topps Chrome", mfg="Topps", extra=["Chrome"] → ["topps chrome", "chrome"]
+ */
+export function defaultSlPrefixes(
+  setName: string,
+  manufacturer: string,
+  extraSlPrefixes: readonly string[] = [],
+): string[] {
+  const setNorm = setName.trim().toLowerCase();
+  const mfgNorm = manufacturer.trim().toLowerCase();
+  const prefixes: string[] = [];
+  const seen = new Set<string>();
+  const push = (p: string) => {
+    const v = p.trim().toLowerCase();
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      prefixes.push(v);
+    }
+  };
+  if (setNorm) push(setNorm);
+  if (mfgNorm && setNorm.startsWith(`${mfgNorm} `)) {
+    push(setNorm.slice(mfgNorm.length + 1).trim());
+  }
+  for (const extra of extraSlPrefixes) push(extra);
+  return prefixes;
+}
+
+/**
+ * Whether a SportLots set's name passes the prefix filter. An empty prefix
+ * list ("Show all") passes everything. Moved verbatim from
+ * `ReconciliationModal`'s Pending filter.
+ */
+export function inSlPrefixScope(value: string, prefixes: readonly string[]): boolean {
+  if (prefixes.length === 0) return true;
+  const v = value.toLowerCase();
+  return prefixes.some((p) => v.startsWith(p));
+}
+
 export type ReconciliationAction =
   // Two pending items become a new set. The 1:1 case, which is 95%+ of real
   // reconciliation and stays a single drag.

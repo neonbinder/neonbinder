@@ -122,15 +122,66 @@ describe("reconcileVariants: the Reconcile dialog path", () => {
     expect(client.callsTo(FETCH)[0].args).toMatchObject({ level: "insert", parentId: "vt-ins", baseSlPrefix: "Topps Chrome" });
   });
 
-  test("a pending set no decision names is open, even one the dialog hides by default; nothing is saved", async () => {
+  test("a pending set inside the dialog's SportLots filter that no decision names is open; nothing is saved", async () => {
     const client = world();
     const sync = cleanSync();
-    sync.pending = sync.pending.filter((p) => p.id !== "9030"); // "Bowman Chrome": outside the prefix view
+    sync.pending = sync.pending.filter((p) => p.id !== "9020"); // "Topps Chrome Black": inside the "topps chrome" filter
     const res = await reconcileVariants(client, "set1" as never, "Insert", sync, opts);
     expect(res.outcome).toBe("open");
     if (res.outcome !== "open") return;
-    expect(res.reconcile.pending).toEqual([{ side: "sportlots", id: "9030", name: "Bowman Chrome" }]);
+    expect(res.reconcile.pending).toEqual([{ side: "sportlots", id: "9020", name: "Topps Chrome Black" }]);
     expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+
+  test("a SportLots set outside the dialog's SportLots filter (another product of the brand-year) is left unasked and counted", async () => {
+    const client = world();
+    const sync = cleanSync();
+    sync.pending = sync.pending.filter((p) => p.id !== "9030"); // "Bowman Chrome": the dialog hides it behind "Show all"
+    const res = await reconcileVariants(client, "set1" as never, "Insert", sync, opts);
+    expect(res).toMatchObject({ outcome: "saved", sent: 3, leftUnasked: { outsideScope: 1, pairedElsewhere: 0 } });
+    // Save leaves it in Pending: no row carries it.
+    const items = client.callsTo(STORE)[0].args.reconciledItems as Array<{ platformData: { sportlots?: string[] } }>;
+    expect(items.flatMap((i) => i.platformData.sportlots ?? [])).not.toContain("9030");
+  });
+
+  test("an answered set outside the filter is still applied: the filter only decides what is ASKED", async () => {
+    const client = world();
+    const sync = cleanSync();
+    sync.pending = sync.pending.map((p) => (p.id === "9030" ? { ...p, decision: "own-set" as const } : p));
+    const res = await reconcileVariants(client, "set1" as never, "Insert", sync, opts);
+    expect(res).toMatchObject({ outcome: "saved", sent: 4 });
+    expect(res).not.toHaveProperty("leftUnasked");
+  });
+
+  test("with \"Show all\" on (twins on a one-sided fetch) nothing is outside the filter", async () => {
+    const lone = sl("Bowman Chrome", "9030");
+    const twinA = sl("Topps Chrome Future Stars", "9001");
+    const twinB = sl("Topps Chrome Future Stars", "9002");
+    const client = world({
+      fetch: {
+        bscOptions: [],
+        slOptions: [twinA, twinB, lone],
+        autoMatched: [],
+        unmatchedBsc: [],
+        unmatchedSl: [twinA, twinB, lone],
+        twinIds: { bsc: [], sportlots: ["9001", "9002"] },
+      },
+    });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", { pairs: [], pending: [] }, opts);
+    expect(res.outcome).toBe("open");
+    if (res.outcome !== "open") return;
+    expect(res.reconcile.pending.map((p) => p.id)).toEqual(["9001", "9002", "9030"]);
+  });
+
+  test("a set the spec files under another variant type is left unasked here and counted", async () => {
+    const client = world();
+    const sync = cleanSync();
+    sync.pending = sync.pending.filter((p) => p.id !== "9020");
+    const res = await reconcileVariants(client, "set1" as never, "Insert", sync, {
+      ...opts,
+      pairedElsewhere: { bsc: [], sportlots: ["9020"] },
+    });
+    expect(res).toMatchObject({ outcome: "saved", leftUnasked: { outsideScope: 0, pairedElsewhere: 1 } });
   });
 
   test("an auto-match the spec leaves unanswered comes back as the proposed pair", async () => {

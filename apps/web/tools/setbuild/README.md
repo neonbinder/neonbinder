@@ -31,9 +31,19 @@ the server's three read-only previews (`previewSetStructure`,
 openDecisions, template, confirmPhrase, marketplaceCalls }`: proposals are
 what the UI settles without asking (and the three Jason ruled pre-filled:
 Group Parallels suggestions, `create` for a name with no NB candidate, and an
-explicit `leave` per id for every pending marketplace set nobody pairs, shown
-as one `reconcile-leave` proposal per type; `own-set` is never proposed);
-everything else is an open decision with a `<…>` fill-in. `confirmPhrase` is
+explicit `leave` per id, with the marketplace's name, for every pending
+marketplace set nobody pairs, shown as one `reconcile-leave` proposal per
+type; `own-set` is never proposed); everything else is an open decision with
+a `<…>` fill-in. A player name only one side of an unanswered card conflict
+carries is never pre-filled: its fill-in names the conflict it rides on.
+SportLots' insert-level list is brand-year wide, so a SportLots set outside
+the Reconcile dialog's own prefix filter (`defaultSlPrefixes` in
+`lib/set-build/reconcile.ts`), or one another variant type of the set pairs,
+is not listed: it is counted in `leftUnasked`, and apply leaves it in Pending
+unasked (`dialogOpenDecisions`' `left`). `nb_draft_set` returns a summary by
+default (`compactDraftReport`: the template or spec and every open decision
+whole, the other lists sampled with complete counts); `detail: "full"` /
+`--detail full` returns everything. `confirmPhrase` is
 null while anything is open, and is never an approval. The draft runs on
 `draftClient` (`DRAFT_READ_ACTIONS` = `fetchRawOptions` + the two preview
 actions; every mutation refused) and is bounded: a per-draft BSC team-lookup

@@ -35,7 +35,7 @@ import {
 } from "../service";
 import { parseSpec, specJsonSchema } from "../spec/schema";
 import { applySpec, confirmedSpec, publicApplyReport } from "./apply";
-import { draftSet, placeholdersIn } from "./draft";
+import { compactDraftReport, draftSet, placeholdersIn, type CompactDraftReport, type DraftDetail } from "./draft";
 import { RunFailed } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
@@ -332,6 +332,7 @@ const DRAFT_OPTIONS = {
   "skip-checklists": { type: "boolean" },
   "skip-builds": { type: "boolean" },
   "team-lookup-budget": { type: "string" },
+  detail: { type: "string" },
 } as const;
 
 function setPathFlag(ctx: CommandContext): SetPath {
@@ -340,6 +341,14 @@ function setPathFlag(ctx: CommandContext): SetPath {
   const path = parsePathArg(raw);
   if (!isSetPath(path)) throw new UsageError(`--path ${raw} names a brand-year; a draft needs a set (Sport/Year/Manufacturer/Set).`);
   return path;
+}
+
+/** `--detail summary|full` (default summary): how much the printed draft lists, as nb_draft_set's `detail`. */
+function draftDetail(ctx: CommandContext): DraftDetail {
+  const raw = str(ctx.values.detail);
+  if (raw === undefined) return "summary";
+  if (raw !== "summary" && raw !== "full") throw new UsageError('--detail must be "summary" or "full".');
+  return raw;
 }
 
 function draftOptions(ctx: CommandContext): DraftOptions {
@@ -356,7 +365,7 @@ function draftOptions(ctx: CommandContext): DraftOptions {
 }
 
 /** A draft for a person: the plan-style report, then the proposals and notes. */
-export function draftMarkdown(r: DraftReport): string {
+export function draftMarkdown(r: DraftReport | CompactDraftReport): string {
   if (r.status === "unresolved") {
     const lines = [
       `## setbuild draft-set: ${r.pathText}`,
@@ -375,9 +384,22 @@ export function draftMarkdown(r: DraftReport): string {
     openDecisions: r.openDecisions,
     template: r.template,
   }).replace(/^## setbuild plan:/, "## setbuild draft-set:");
-  const out = [head.trimEnd(), "", `### ${r.proposals.length} proposal${r.proposals.length === 1 ? "" : "s"} (filled by the draft; read them before approving)`, ""];
+  const total = r.summary ? Object.values(r.summary.proposalCounts).reduce((n, c) => n + c, 0) : r.proposals.length;
+  const out = [head.trimEnd(), "", `### ${total} proposal${total === 1 ? "" : "s"} (filled by the draft; read them before approving)`, ""];
   for (const p of r.proposals) out.push(`- \`${p.at}\` ${p.kind}: ${p.detail}`);
+  if (r.summary && r.summary.omitted.proposals > 0) {
+    const counts = Object.entries(r.summary.proposalCounts).map(([k, n]) => `${k} ${n}`).join(", ");
+    out.push(`- … and ${r.summary.omitted.proposals} more (${counts})`);
+  }
+  for (const l of r.leftUnasked ?? []) {
+    const sample = l.outsideScopeSets.map((o) => `${o.id} ${o.name}`).join("; ");
+    out.push(
+      `- \`${l.at}\` not asked: ${l.outsideScope} SportLots set(s) outside this set's SportLots filter` +
+        `${sample ? ` (${sample}${l.outsideScopeSets.length < l.outsideScope ? "; …" : ""})` : ""}, ${l.pairedElsewhere} another variant type pairs`,
+    );
+  }
   if (r.notes.length) out.push("", "### Notes", "", ...r.notes.map((n) => `- ${n}`));
+  if (r.summary) out.push("", r.summary.hint);
   out.push("", `Marketplace requests: ${r.marketplaceCalls} · ${(r.durationMs / 1000).toFixed(1)}s`);
   return `${out.join("\n")}\n`;
 }
@@ -391,7 +413,7 @@ export const draftSetCommand: CommandSpec = {
   summary:
     "Read-only on NB data: draft a whole set's spec from the server previews. Writes the spec (or, with open decisions, its fill-in template) to --out. Exit 3 when something needs an answer.",
   usage:
-    "setbuild draft-set --path <Sport/Year/Manufacturer/Set> --out <file.json> [--skip-checklists] [--skip-builds] [--team-lookup-budget <n>] [--report <draft.json>] [--json] [connection flags]",
+    "setbuild draft-set --path <Sport/Year/Manufacturer/Set> --out <file.json> [--skip-checklists] [--skip-builds] [--team-lookup-budget <n>] [--detail summary|full] [--report <draft.json>] [--json] [connection flags]",
   options: { ...DRAFT_OPTIONS, out: { type: "string" }, report: { type: "string" } },
   run: (ctx) =>
     usageGuard(ctx, async () => {
@@ -399,12 +421,15 @@ export const draftSetCommand: CommandSpec = {
       const out = str(ctx.values.out);
       if (!out) throw new UsageError("Pass --out <file.json> for the drafted spec.");
       const opts = draftOptions(ctx);
+      const detail = draftDetail(ctx);
       const report = await withClient(ctx, (client, conn) => draftSet(client, conn.target, path, opts));
       const secrets = secretsOf(ctx);
       const reportPath = str(ctx.values.report);
+      // The files are always whole; what is printed follows --detail, as nb_draft_set's result does.
       if (reportPath) await writeFile(reportPath, scrub(`${JSON.stringify(report, null, 2)}\n`, secrets), "utf8");
       if (report.status === "drafted") await writeFile(out, scrub(`${JSON.stringify(draftFile(report), null, 2)}\n`, secrets), "utf8");
-      ctx.io.stdout(scrub(ctx.json ? JSON.stringify(report, null, 2) : draftMarkdown(report).trimEnd(), secrets));
+      const shown = compactDraftReport(report, detail);
+      ctx.io.stdout(scrub(ctx.json ? JSON.stringify(shown, null, 2) : draftMarkdown(shown).trimEnd(), secrets));
       if (report.status === "drafted" && !ctx.json) {
         ctx.io.stdout(
           report.openCount > 0
@@ -452,7 +477,7 @@ export const buildSetCommand: CommandSpec = {
   summary:
     "WRITES, interactively: draft a set, show the draft, ask for the confirm phrase, apply --collect, then ask for the answers to anything only the run could see and apply again. Terminal only.",
   usage:
-    "setbuild build-set --path <Sport/Year/Manufacturer/Set> [--out <file.json>] [--skip-checklists] [--skip-builds] [--team-lookup-budget <n>] [--paused-platforms <keys>] [connection flags]",
+    "setbuild build-set --path <Sport/Year/Manufacturer/Set> [--out <file.json>] [--skip-checklists] [--skip-builds] [--team-lookup-budget <n>] [--detail summary|full] [--paused-platforms <keys>] [connection flags]",
   options: { ...DRAFT_OPTIONS, out: { type: "string" }, ...PAUSED_OPTION },
   run: (ctx) =>
     usageGuard(ctx, async () => {
@@ -460,11 +485,12 @@ export const buildSetCommand: CommandSpec = {
       if (!ctx.io.prompt) throw new UsageError(BUILD_SET_NEEDS_TTY);
       const path = setPathFlag(ctx);
       const opts = draftOptions(ctx);
+      const detail = draftDetail(ctx);
       const file = str(ctx.values.out) ?? `${formatSlug(path)}.build.json`;
       const secrets = secretsOf(ctx);
       return withClient(ctx, async (client, conn) => {
         const draft = await draftSet(client, conn.target, path, opts);
-        ctx.io.stdout(scrub(draftMarkdown(draft).trimEnd(), secrets));
+        ctx.io.stdout(scrub(draftMarkdown(compactDraftReport(draft, detail)).trimEnd(), secrets));
         if (draft.status === "unresolved") return EXIT_STOPPED;
         await writeFile(file, scrub(`${JSON.stringify(draftFile(draft), null, 2)}\n`, secrets), "utf8");
         let spec: unknown = draft.spec;

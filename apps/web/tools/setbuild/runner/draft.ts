@@ -21,10 +21,10 @@
  * |-------------------------|------------------------------------------------------|------------------------------------------------|
  * | variant types           | the set's variant-type sync (always)                  | —                                              |
  * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
- * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave` for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed) | a title clash |
+ * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash |
  * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types)  | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair |
- * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it |
+ * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
  * | builds                  | Parallel rows from Base; an insert's grouped parallels from the insert | — |
  *
@@ -85,7 +85,13 @@ import type { NbClient } from "../client/convex-client";
 import type { Target } from "../client/target";
 import { pairCandidates, type ReadyCandidates, type ServedSide } from "../lib/fetch-checklist";
 import { currentBaseMapping, openBaseCandidates, pickCandidate } from "../lib/map-base";
-import { dialogOpenDecisions, existingRowsForSeed } from "../lib/reconcile-variants";
+import {
+  baseSlLabelsOf,
+  dialogOpenDecisions,
+  existingRowsForSeed,
+  slPrefixesForFetch,
+  type PendingSet,
+} from "../lib/reconcile-variants";
 import { cardCount } from "../lib/commit";
 import { DECISION_PLACEHOLDER, SAME_NAME_PLAYER_PLACEHOLDER } from "../lib/review";
 import {
@@ -108,8 +114,8 @@ import {
   type UnresolvedDraftReport,
 } from "../service";
 import { parseSpec, type RowRef } from "../spec/schema";
-import { childrenOf, resolveBrandYear, tryResolveSetPath, type RowId, type SelectorRow } from "../spec/resolve";
-import { emptyOpenDecisions, RunFailed, runSpec, setAt } from "./engine";
+import { childrenOf, resolveBrandYear, resolveChild, tryResolveSetPath, type RowId, type SelectorRow } from "../spec/resolve";
+import { emptyOpenDecisions, filedByOtherTypes, RunFailed, runSpec, setAt } from "./engine";
 import { draftClient, readOnlyClient } from "./read-only-client";
 
 type Structure = FunctionReturnType<typeof api.setReconciliation.previewSetStructure>;
@@ -253,6 +259,60 @@ export function namesOnCards(cards: ReadonlyArray<PreviewCard>): {
   return { players: [...players.values()], teams: [...teams.values()], playerCardTeams };
 }
 
+/** A players disagreement a name depends on: the side whose roster carries it. */
+export interface ConflictDependency {
+  cardNumber: string;
+  side: "bsc" | "sportlots";
+}
+
+/**
+ * Player names the review asks about only once a card's players conflict is
+ * answered: each name that appears on ONE side of an unanswered disagreement
+ * and on no other card of the checklist (nor on both sides of a
+ * disagreement). Keyed by normalized name, with every conflict it rides on.
+ * Pure.
+ *
+ * A conflicted card carries BSC's roster in `players` until the operator
+ * chooses (the merge default, convex/selectorOptions.ts), so its `players` is
+ * read as the BSC side, never as settled.
+ */
+export function conflictDependentPlayers(cards: ReadonlyArray<PreviewCard>): Map<string, ConflictDependency[]> {
+  const settled = new Set<string>();
+  const keyOf = (name: string) => normalizeEntityName(name.trim());
+  for (const c of cards) {
+    const conflict = c.playersConflict;
+    if (!conflict) {
+      for (const n of c.players ?? []) if (n.trim()) settled.add(keyOf(n));
+      continue;
+    }
+    const sl = new Set(conflict.sportlots.map(keyOf));
+    for (const n of conflict.bsc) if (sl.has(keyOf(n))) settled.add(keyOf(n));
+  }
+  const out = new Map<string, ConflictDependency[]>();
+  for (const c of cards) {
+    const conflict = c.playersConflict;
+    if (!conflict) continue;
+    for (const side of ["bsc", "sportlots"] as const) {
+      const other = new Set(conflict[side === "bsc" ? "sportlots" : "bsc"].map(keyOf));
+      for (const n of conflict[side]) {
+        const key = keyOf(n);
+        if (!n.trim() || settled.has(key) || other.has(key)) continue;
+        const list = out.get(key) ?? [];
+        if (!list.some((d) => d.cardNumber === c.cardNumber && d.side === side)) list.push({ cardNumber: c.cardNumber, side });
+        out.set(key, list);
+      }
+    }
+  }
+  return out;
+}
+
+const sideName = (side: "bsc" | "sportlots") => (side === "bsc" ? "BSC" : "SportLots");
+
+/** "card #21's players conflict is answered "sportlots"", for every conflict a name rides on. */
+export function dependencyText(deps: readonly ConflictDependency[]): string {
+  return deps.map((d) => `card #${d.cardNumber}'s players conflict is answered "${d.side}" (the ${sideName(d.side)} roster)`).join(", or ");
+}
+
 /** Slice players then teams into calls of at most `per` names together. */
 export function entitySlices(players: readonly string[], teams: readonly string[], per = ENTITY_NAMES_PER_CALL) {
   const all = [...players.map((name) => ({ kind: "player" as const, name })), ...teams.map((name) => ({ kind: "team" as const, name }))];
@@ -266,6 +326,81 @@ export function entitySlices(players: readonly string[], teams: readonly string[
 
 const pick = (cands: ReadonlyArray<{ id: string; name: string }>) =>
   `<one of: ${cands.map((c) => `${c.id} (${c.name})`).join(" | ") || "(none offered)"}>`;
+
+// ---------------------------------------------------------------------------
+// The summary a result carries by default
+// ---------------------------------------------------------------------------
+
+/** How much detail a draft result carries: `summary` (the default) or `full`. */
+export type DraftDetail = "summary" | "full";
+
+/** Proposals kept per kind in a summary. */
+export const SUMMARY_PROPOSALS_PER_KIND = 5;
+/** Steps kept in a summary: the ones not done yet, in order. */
+export const SUMMARY_STEPS = 40;
+/** Notes kept in a summary. */
+export const SUMMARY_NOTES = 20;
+/** SportLots sets outside the set's filter kept per variant type in a summary. */
+export const SUMMARY_OUTSIDE_SCOPE = 5;
+
+export const DRAFT_SUMMARY_HINT =
+  'Lists are cut to the first few; every count is complete. Draft again with detail "full" (CLI: --detail full) ' +
+  "for every entry. The template, or the spec when nothing is open, is always complete: fill it in and plan it.";
+
+export type CompactDraftReport = Omit<DraftedReport, "spec"> & { spec?: DraftedReport["spec"] };
+
+/**
+ * A draft cut to stay readable (NEO-339 live: 641,833 characters on 2014
+ * Topps Chrome). What a run needs stays whole: the template (or, with nothing
+ * open, the spec), every open decision, the confirm phrase. `spec` is left
+ * out while `template` carries it with the fill-ins. Proposals keep the first
+ * few of each kind, steps the ones not done yet up to a cap, notes and the
+ * out-of-scope SportLots lists a short sample; `summary` says what was cut.
+ * Pure; an unresolved report is returned as it is.
+ */
+export function compactDraftReport(r: DraftReport, detail: DraftDetail = "summary"): DraftReport | CompactDraftReport {
+  if (r.status !== "drafted" || detail === "full") return r;
+  // Each list read defensively: a stub service (the MCP tests) returns a partial report.
+  const allProposals = r.proposals ?? [];
+  const allSteps = r.steps ?? [];
+  const allNotes = r.notes ?? [];
+  const proposalCounts: Record<string, number> = {};
+  const proposals = allProposals.filter((p) => {
+    proposalCounts[p.kind] = (proposalCounts[p.kind] ?? 0) + 1;
+    return proposalCounts[p.kind] <= SUMMARY_PROPOSALS_PER_KIND;
+  });
+  const stepCounts: Record<string, number> = {};
+  for (const s of allSteps) stepCounts[s.status] = (stepCounts[s.status] ?? 0) + 1;
+  // What apply still has to do, in order; the done steps are counted only.
+  const steps = allSteps.filter((s) => s.status !== "done").slice(0, SUMMARY_STEPS);
+  let outsideCut = 0;
+  const leftUnasked = (r.leftUnasked ?? []).map((l) => {
+    outsideCut += Math.max(0, l.outsideScopeSets.length - SUMMARY_OUTSIDE_SCOPE);
+    return { ...l, outsideScopeSets: l.outsideScopeSets.slice(0, SUMMARY_OUTSIDE_SCOPE) };
+  });
+  const { spec, ...rest } = r;
+  const specInTemplate = r.template !== null && r.template !== undefined;
+  return {
+    ...rest,
+    ...(specInTemplate ? {} : { spec }),
+    proposals,
+    steps,
+    notes: allNotes.slice(0, SUMMARY_NOTES),
+    leftUnasked,
+    summary: {
+      proposalCounts,
+      stepCounts,
+      omitted: {
+        proposals: allProposals.length - proposals.length,
+        steps: allSteps.length - steps.length,
+        notes: Math.max(0, allNotes.length - SUMMARY_NOTES),
+        outsideScopeSets: outsideCut,
+      },
+      specInTemplate,
+      hint: DRAFT_SUMMARY_HINT,
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // The draft
@@ -305,6 +440,7 @@ export async function draftSet(
   const proposals: DraftProposal[] = [];
   const open = emptyOpenDecisions();
   const notes: string[] = [];
+  const leftUnasked: DraftedReport["leftUnasked"] = [];
   const fills: Array<{ at: string; value: unknown }> = [];
   const propose = (at: string, kind: DraftProposal["kind"], detail: string) => proposals.push({ at, kind, detail });
   const openCondition = (at: string, kind: string, name: string, detail: string, value?: unknown) => {
@@ -455,6 +591,16 @@ export async function draftSet(
   const usedSoFar = { bsc: new Set<string>(), sportlots: new Set<string>() };
   let brandHolders: HeldRow[] | null = null;
   const typed = structure.types.filter((t) => t.role === "insert" || t.role === "parallel");
+  // The dialog's SportLots prefix filter reads the Base's SportLots labels:
+  // the mapped Base's slots, or the label of the set this draft maps it to.
+  const baseSlLabels =
+    baseRow && baseMap && currentBaseMapping(baseRow).sportlots === baseMap.sportlots
+      ? baseSlLabelsOf(baseRow as never)
+      : baseMap?.sportlots && structure.baseSportlots?.id === baseMap.sportlots
+        ? [structure.baseSportlots.label]
+        : [];
+  /** Per type, the sets the dialog leaves in Pending: settled once every type's pairs are known. */
+  const pendingByType: Array<{ j: number; at: string; title: string; leave: PendingSet[]; outsideScope: PendingSet[] }> = [];
   for (const t of structure.types) {
     if (t.role === null) notes.push(`BSC lists a "${t.label}" variant whose title is not Base, Insert or Parallel; the variant-type sync creates it, the draft has no rows for it.`);
   }
@@ -527,19 +673,37 @@ export async function draftSet(
         sportlots: [...result.slOptions, ...result.unmatchedSl, ...result.autoMatched.map((m) => m.sl)].map((o) => o.platformValue),
       };
       const outcome = applyExplicitPairs(seed.state, pairs, [], { fetched });
-      const decisions = dialogOpenDecisions({ outcome, pairs, pending: [], savedSiblings: seed.savedSiblings, at, path: pathText, type: title });
+      const decisions = dialogOpenDecisions({
+        outcome,
+        pairs,
+        pending: [],
+        savedSiblings: seed.savedSiblings,
+        at,
+        path: pathText,
+        type: title,
+        slPrefixes: slPrefixesForFetch({ setName: setRow.value, manufacturer, baseSlLabels }, result),
+      });
       open.names.push(...decisions.names);
       const clashed = new Set(decisions.names.filter((n) => n.kind === "reconcile-title").map((n) => n.name));
       const syncPairs = pairs.map((p) => ({ name: p.name, ...(p.bsc ? { bsc: [...p.bsc] } : {}), ...(p.sportlots ? { sportlots: [...p.sportlots] } : {}) }));
       // Every marketplace set nobody pairs: an explicit `leave`, one line per
-      // id (Jason, 2026-10-11). It is what Save does with a set left in
-      // Pending; `own-set` is never proposed.
-      const leave = decisions.reconcile.pending.map((p) => ({
-        side: p.side === "buysportscards" ? ("bsc" as const) : ("sportlots" as const),
-        id: p.id,
-        decision: "leave" as const,
-      }));
-      entry.sync = { pairs: syncPairs, pending: leave };
+      // id with the marketplace's name for it (Jason, 2026-10-11). It is what
+      // Save does with a set left in Pending; `own-set` is never proposed.
+      // Settled after the loop: a set another type pairs is not listed here.
+      // A SportLots set outside the dialog's prefix filter (another product
+      // of the brand-year) is not listed at all, only counted.
+      entry.sync = { pairs: syncPairs, pending: [] };
+      pendingByType.push({
+        j,
+        at,
+        title,
+        leave: decisions.reconcile.pending.map((p) => ({
+          side: p.side === "buysportscards" ? ("bsc" as const) : ("sportlots" as const),
+          id: p.id,
+          name: p.name,
+        })),
+        outsideScope: decisions.left.outsideScope,
+      });
       syncPairs.forEach((p, k) => {
         if (clashed.has(p.name)) fills.push({ at: `${at}.sync.pairs[${k}].name`, value: `<rename: two sets would save as "${p.name}">` });
       });
@@ -547,20 +711,6 @@ export async function draftSet(
       // (the draft names every Ready set, so this stays empty; kept open if not).
       if (decisions.reconcile.proposedPairs.length > 0) {
         open.reconcile.push({ ...decisions.reconcile, pending: [] });
-      }
-      if (leave.length > 0) {
-        const ids = (side: "bsc" | "sportlots") => leave.filter((l) => l.side === side).map((l) => l.id);
-        const bscIds = ids("bsc");
-        const slIds = ids("sportlots");
-        propose(
-          `${at}.sync.pending`,
-          "reconcile-leave",
-          `${leave.length} ${title} set(s) not paired; the dialog leaves them in Pending (` +
-            [bscIds.length ? `BSC ${bscIds.length}: ${bscIds.join(", ")}` : "", slIds.length ? `SportLots ${slIds.length}: ${slIds.join(", ")}` : ""]
-              .filter(Boolean)
-              .join("; ") +
-            ")",
-        );
       }
       if (pairs.length > 0) propose(`${at}.sync.pairs`, "reconcile-pairs", `the Reconcile dialog's ${pairs.length} Ready set(s) (its auto-matches and saved rows, by marketplace id)`);
       rows = seed.state.ready.map((s) => ({
@@ -639,10 +789,52 @@ export async function draftSet(
     }
     if (rowSpecs.length > 0) entry.rows = rowSpecs;
   }
+  settlePending();
   if (variants.length > 0) step.variants = variants;
   return finish();
 
   // ── helpers (closures over the draft's state) ────────────────────────────
+
+  /**
+   * Each type's `leave` list, now that every type's pairs are known: a set
+   * another type of the set pairs (or makes its own set) is that type's to
+   * file, so it is not left here (apply leaves it unasked:
+   * `filedByOtherTypes`). One `reconcile-leave` proposal per type.
+   */
+  function settlePending() {
+    const asSteps = variants as unknown as Parameters<typeof filedByOtherTypes>[0];
+    for (const p of pendingByType) {
+      const elsewhere = filedByOtherTypes(asSteps, p.j);
+      const filed = { bsc: new Set(elsewhere.bsc), sportlots: new Set(elsewhere.sportlots) };
+      const leave = p.leave.filter((l) => !filed[l.side].has(l.id));
+      const pairedElsewhere = p.leave.length - leave.length;
+      (variants[p.j].sync as { pending: unknown[] }).pending = leave.map((l) => ({ side: l.side, id: l.id, name: l.name, decision: "leave" }));
+      if (p.outsideScope.length + pairedElsewhere > 0) {
+        leftUnasked.push({
+          at: `${p.at}.sync.pending`,
+          type: p.title,
+          outsideScope: p.outsideScope.length,
+          pairedElsewhere,
+          outsideScopeSets: p.outsideScope.map((o) => ({ id: o.id, name: o.name })),
+        });
+      }
+      if (leave.length + p.outsideScope.length + pairedElsewhere === 0) continue;
+      const count = (side: Side) => leave.filter((l) => l.side === side).length;
+      const sides = [count("bsc") ? `BSC ${count("bsc")}` : "", count("sportlots") ? `SportLots ${count("sportlots")}` : ""].filter(Boolean).join(", ");
+      const unasked = [
+        p.outsideScope.length ? `${p.outsideScope.length} SportLots set(s) outside this set's SportLots filter (other products of the brand-year)` : "",
+        pairedElsewhere ? `${pairedElsewhere} set(s) another variant type pairs` : "",
+      ].filter(Boolean);
+      propose(
+        `${p.at}.sync.pending`,
+        "reconcile-leave",
+        (leave.length
+          ? `${leave.length} ${p.title} set(s) not paired (${sides}); Save leaves them in Pending. Each is listed with its name: pair any that belong together.`
+          : `No ${p.title} set is left unpaired.`) +
+          (unasked.length ? ` Not asked about: ${unasked.join("; ")}.` : ""),
+      );
+    }
+  }
 
   function unresolved(err: ResolveError): Promise<UnresolvedDraftReport> {
     return (async () => {
@@ -656,20 +848,43 @@ export async function draftSet(
         durationMs: 0,
       };
       const brandYear = { sport: path.sport, year: path.year, manufacturer: path.manufacturer };
+      const brandYearText = formatPath(brandYear);
       const prepare = (reason: string) => ({
         reason,
-        spec: { version: 1, scope: formatPath(brandYear), steps: [{ kind: "brand-year", path: brandYear, syncSets: true }] },
+        spec: { version: 1, scope: brandYearText, steps: [{ kind: "brand-year", path: brandYear, syncSets: true }] },
       });
       if (err.kind === "set") {
         const brand = await resolveBrandYear(client, brandYear);
         const sets = await childrenOf(client, "setName", brand.manufacturerId);
-        if (sets.length === 0) report.prepare = prepare(`${formatPath(brandYear)}'s Sets have never been synced; apply this, then draft again.`);
+        if (sets.length === 0) {
+          report.message = unsyncedMessage(brandYearText, "Sets");
+          report.prepare = prepare(`${brandYearText}'s Sets have never been synced; apply this, then draft again.`);
+        }
       } else if (err.candidates.length === 0) {
-        report.prepare = prepare(`${formatPath(brandYear)} does not resolve yet; this syncs its columns and Sets (nothing is created by name).`);
+        // The name matched nothing. When the column it sits in holds no rows
+        // at all, that column was never synced: the name is not unknown, the
+        // brand's year just is not in NeonBinder yet.
+        if (await columnEmpty(err.kind)) report.message = unsyncedMessage(brandYearText);
+        report.prepare = prepare(`${brandYearText} does not resolve yet; this syncs its columns and Sets (nothing is created by name).`);
       }
       report.durationMs = now() - started;
       return report;
     })();
+  }
+
+  /** Whether the column `kind` sits in (under the path's resolved parent) holds no rows. */
+  async function columnEmpty(kind: string): Promise<boolean> {
+    try {
+      if (kind === "sport") return (await childrenOf(client, "sport", undefined)).length === 0;
+      const sport = await resolveChild(client, "sport", undefined, path.sport);
+      if (kind === "year") return (await childrenOf(client, "year", sport._id)).length === 0;
+      const year = await resolveChild(client, "year", sport._id, path.year);
+      if (kind === "manufacturer") return (await childrenOf(client, "manufacturer", year._id)).length === 0;
+      return false;
+    } catch (e) {
+      if (e instanceof ResolveError) return false;
+      throw e;
+    }
   }
 
   async function insertTree(variantTypeId: RowId) {
@@ -915,6 +1130,10 @@ export async function draftSet(
     // no-op), and an earlier checklist that stops open cannot strand it.
     const cards = [...preview.matched.map((m) => m.card), ...preview.bscOnly, ...preview.slOnly];
     const names = namesOnCards(cards);
+    // A name only one side of an unanswered players conflict carries is asked
+    // about only if that side is chosen: never pre-filled, and its fill-in
+    // says which answer it rides on (the conflicts are open decisions here).
+    const dependent = conflictDependentPlayers(cards);
     const players = names.players;
     const teams = names.teams;
     const creates = { players: [] as Array<Record<string, unknown>>, teams: [] as Array<Record<string, unknown>> };
@@ -934,6 +1153,24 @@ export async function draftSet(
       });
       for (const p of verdict.players) {
         if (p.status !== "unknown") continue;
+        const deps = dependent.get(normalizeEntityName(p.name.trim()));
+        if (deps) {
+          const candidates: ResolveCandidate[] = p.candidates.map((c) => ({
+            id: String(c.playerId),
+            name: c.name,
+            ...(c.birthYear !== undefined ? { detail: `born ${c.birthYear}` } : {}),
+          }));
+          const none = p.candidates.length === 0 && p.matchCount === 0;
+          const known = none ? "no NB player has this name, so create is the usual answer" : candidateText(candidates, p.matchCount);
+          const when = `asked only if ${dependencyText(deps)} at ${at}.pairing.conflicts; otherwise it is not asked and any answer here is ignored`;
+          const item = reviewItem(`${at}.review.players`, row, p.name, candidates, p.matchCount);
+          open.review.players.push({ ...item, detail: `${when}; ${known}` });
+          opens.players.push({
+            name: p.name,
+            decision: `${none ? DECISION_PLACEHOLDER : SAME_NAME_PLAYER_PLACEHOLDER} — ${when}; ${known}`,
+          });
+          continue;
+        }
         if (p.candidates.length === 0 && p.matchCount === 0) creates.players.push({ name: p.name, decision: "create" });
         else {
           // A same-name pick: the birth year is what a `{ link, birthYear }` answer names.
@@ -1007,11 +1244,24 @@ export async function draftSet(
         confirmPhrase: openCount === 0 ? specConfirmPhrase(target, parsed) : null,
         steps,
         notes,
+        leftUnasked,
         marketplaceCalls,
         durationMs: now() - started,
       };
     })();
   }
+}
+
+/**
+ * The unresolved message when the brand's year (or its Sets) was never
+ * synced: the name is not unknown, NeonBinder just has not read that column
+ * yet. A name that matches nothing in a synced column keeps ResolveError's
+ * "No manufacturer named …".
+ */
+export function unsyncedMessage(brandYear: string, what?: "Sets"): string {
+  return what === "Sets"
+    ? `${brandYear}'s Sets have not been synced yet. Apply the prepare spec, then draft this set again.`
+    : `${brandYear} has not been synced yet. Apply the prepare spec, then draft this set again.`;
 }
 
 function reviewItem(at: string, row: ServiceRowRef | null, name: string, candidates: ResolveCandidate[], matchCount: number): OpenReviewItem {

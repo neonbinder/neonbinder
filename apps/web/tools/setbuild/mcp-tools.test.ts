@@ -226,6 +226,53 @@ describe("read tools", () => {
     expect(f.write.apply).not.toHaveBeenCalled();
   });
 
+  test("nb_draft_set returns a summary by default and every entry with detail full; the template is whole either way", async () => {
+    const big = {
+      status: "drafted",
+      openCount: 1,
+      confirmPhrase: null,
+      openDecisions: noDecisions(),
+      spec: { version: 1, scope: "x", steps: [] },
+      template: { version: 1, scope: "x", steps: [], fill: "<answer>" },
+      proposals: Array.from({ length: 200 }, (_, i) => ({ at: `steps[0].p${i}`, kind: "build", detail: "build" })),
+      steps: [],
+      notes: [],
+      leftUnasked: [
+        {
+          at: "steps[0].variants[0].sync.pending",
+          type: "Insert",
+          outsideScope: 970,
+          pairedElsewhere: 3,
+          outsideScopeSets: Array.from({ length: 970 }, (_, i) => ({ id: `9${i}`, name: `Heritage ${i}` })),
+        },
+      ],
+    };
+    const f = fakeService();
+    f.read.draftSet.mockResolvedValue(big as never);
+    const client = await connect(f.service);
+    const summary = await callTool(client, "nb_draft_set", { path: TOPPS_CHROME });
+    const s = summary.json() as Record<string, any>;
+    expect(s.proposals).toHaveLength(5);
+    expect(s.summary).toMatchObject({ proposalCounts: { build: 200 }, omitted: { proposals: 195, outsideScopeSets: 965 }, specInTemplate: true });
+    expect(s.summary.hint).toContain('detail "full"');
+    expect(s.leftUnasked[0]).toMatchObject({ outsideScope: 970, pairedElsewhere: 3 });
+    expect(s.leftUnasked[0].outsideScopeSets).toHaveLength(5);
+    expect(s.template).toEqual(big.template);
+    expect(s.spec).toBeUndefined();
+    // One line of JSON: no indentation.
+    expect(summary.text).not.toContain("\n");
+    // The service is never told about `detail`: it always drafts in full.
+    expect(f.read.draftSet).toHaveBeenLastCalledWith(TOPPS_CHROME, {});
+
+    const full = (await callTool(client, "nb_draft_set", { path: TOPPS_CHROME, detail: "full" })).json() as Record<string, any>;
+    expect(full.proposals).toHaveLength(200);
+    expect(full.leftUnasked[0].outsideScopeSets).toHaveLength(970);
+    expect(full.spec).toEqual(big.spec);
+    expect(full.summary).toBeUndefined();
+    expect(f.read.draftSet).toHaveBeenLastCalledWith(TOPPS_CHROME, {});
+    expect((await callTool(client, "nb_draft_set", { path: TOPPS_CHROME, detail: "everything" })).isError).toBe(true);
+  });
+
   test("a relative specPath resolves against the launch directory", async () => {
     const f = fakeService();
     const readSpecFile = vi.fn(async () => JSON.stringify(SPEC));

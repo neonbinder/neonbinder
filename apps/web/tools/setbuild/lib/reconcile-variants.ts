@@ -35,9 +35,22 @@
  *    operator never sees a held set in Pending to decide about. An
  *    `own-set` for such an id stays open (it asked for a row that cannot
  *    now be made), and so does a `leave` for an id the spec also pairs;
- *  - `unaddressedPending`: EVERY marketplace set left in Pending that no
- *    decision names, on screen in the dialog or not. An auto-match the spec
- *    left out whose halves are both unanswered is offered as `proposedPairs`;
+ *  - `unaddressedPending`: every marketplace set left in Pending that no
+ *    decision names, with TWO exceptions that are reported, never asked
+ *    (NEO-339 live measurement, 2014 Topps Chrome: ~970 SportLots ids per
+ *    type):
+ *      - a SportLots set outside the dialog's SportLots prefix filter
+ *        (`defaultSlPrefixes`: the set's name, that name less its brand, the
+ *        Base's SportLots labels). SportLots lists the whole brand-year at
+ *        this level, so these are the brand-year's other products; the
+ *        dialog hides them behind "Show all" and Save leaves them, which is
+ *        exactly what happens here. When the dialog would open with "Show
+ *        all" on (a twin on a one-sided fetch), nothing is outside;
+ *      - a set the spec pairs (or makes its own set) under ANOTHER variant
+ *        type of the same set: that type's sync files it, and Save here
+ *        leaves it, as an operator syncing the types in turn would.
+ *    An auto-match the spec left out whose halves are both unanswered is
+ *    offered as `proposedPairs`;
  *  - `unaddressedReady`: a saved row no pair names;
  *  - two Ready sets (or a Ready set and a saved row) saving under one name,
  *    which the dialog's Save refuses (`readyTitleClashes`).
@@ -52,6 +65,7 @@ import { api } from "../../../convex/_generated/api";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import {
   primarySlot,
+  slotEntries,
   slotIds,
   slotLabel,
   type PlatformSide,
@@ -61,6 +75,8 @@ import { variantTypeKind } from "../../../convex/variantRole";
 import {
   applyExplicitPairs,
   buildReconciledItems,
+  defaultSlPrefixes,
+  inSlPrefixScope,
   seedReconciliationState,
   type ExistingReconcileRow,
   type ExplicitPair,
@@ -211,6 +227,34 @@ function baseSlPrefixOf(base: BaseVariant | null): string | undefined {
   return slot ? slotLabel(row, "sportlots", slot) : undefined;
 }
 
+/**
+ * Every SportLots slot label on the Base, as VariantForm hands them to the
+ * dialog's `extraSlPrefixes` (a slot with no label reads as its id).
+ */
+export function baseSlLabelsOf(base: Pick<SlotBearingRow, "platformData" | "platformLabels"> | null): string[] {
+  if (!base) return [];
+  const row = base as SlotBearingRow;
+  const out: string[] = [];
+  for (const { slot } of slotEntries(row, "sportlots")) {
+    const label = slotLabel(row, "sportlots", slot);
+    if (label && !out.includes(label)) out.push(label);
+  }
+  return out;
+}
+
+/**
+ * The SportLots prefix filter the dialog opens with for this fetch: its
+ * `defaultSlPrefixes`, or none ("Show all") when VariantForm opens it with
+ * `showAllSlInitially` (twins on a one-sided fetch). Pure.
+ */
+export function slPrefixesForFetch(
+  o: { setName: string; manufacturer: string; baseSlLabels: readonly string[] },
+  result: Pick<RawOptions, "bscOptions" | "slOptions" | "twinIds">,
+): string[] {
+  const showAll = !!result.twinIds && (result.bscOptions.length === 0 || result.slOptions.length === 0);
+  return showAll ? [] : defaultSlPrefixes(o.setName, o.manufacturer, o.baseSlLabels);
+}
+
 export async function fetchVariantOptions(client: NbClient, ctx: ReconcileContext): Promise<RawOptions> {
   const prefix = baseSlPrefixOf(ctx.baseVariant);
   return client.action(api.setReconciliation.fetchRawOptions, {
@@ -241,12 +285,15 @@ export type ReconcileOutcome =
       pausedSides: PlatformSide[];
       /** `leave` entries whose id the dialog no longer shows (held elsewhere, or no longer listed): no-ops. */
       leftMoot?: MootLeave[];
+      /** Unanswered sets Save left in Pending without asking (see the file comment). */
+      leftUnasked?: LeftUnasked;
     }
   | {
       outcome: "skipped";
       reason: "already-saved" | "unchanged" | "nothing-fetched" | "all-held";
       pausedSides: PlatformSide[];
       leftMoot?: MootLeave[];
+      leftUnasked?: LeftUnasked;
     }
   | {
       outcome: "open";
@@ -254,6 +301,16 @@ export type ReconcileOutcome =
       names: OpenName[];
       pausedSides: PlatformSide[];
     };
+
+/**
+ * Unanswered Pending sets a run leaves without asking: SportLots sets outside
+ * the dialog's prefix filter, and sets the spec files under another variant
+ * type of the set. Counts only; both are left exactly as Save leaves them.
+ */
+export interface LeftUnasked {
+  outsideScope: number;
+  pairedElsewhere: number;
+}
 
 /** A `leave` that had nothing to leave: the id was not in the dialog when the step ran. */
 export interface MootLeave {
@@ -282,6 +339,11 @@ export function splitMootLeaves(
 
 export interface ReconcileOptions {
   paused?: PausedContext;
+  /**
+   * Ids the spec pairs (or makes its own set) under the set's OTHER variant
+   * types: left here unasked, since that type's sync files them.
+   */
+  pairedElsewhere?: { bsc: readonly string[]; sportlots: readonly string[] };
   /** Where in the spec, e.g. `steps[3].variants[1]`. */
   at?: string;
   /** `formatPath` of the set, for the open decision. */
@@ -385,6 +447,17 @@ export interface DialogDecisionInput {
   at: string;
   path: string;
   type: string;
+  /** The dialog's SportLots prefix filter (`slPrefixesForFetch`); absent or [] = every set is in scope. */
+  slPrefixes?: readonly string[];
+  /** Ids another variant type of the set files (`ReconcileOptions.pairedElsewhere`). */
+  pairedElsewhere?: { bsc: ReadonlySet<string>; sportlots: ReadonlySet<string> };
+}
+
+/** One marketplace set Save leaves in Pending, with the marketplace's name for it. */
+export interface PendingSet {
+  side: "bsc" | "sportlots";
+  id: string;
+  name: string;
 }
 
 /**
@@ -395,6 +468,8 @@ export interface DialogDecisionInput {
 export function dialogOpenDecisions(input: DialogDecisionInput): {
   reconcile: OpenReconcile;
   names: OpenName[];
+  /** Unanswered sets left without asking (see the file comment): never open decisions. */
+  left: { outsideScope: PendingSet[]; pairedElsewhere: PendingSet[] };
 } {
   const { outcome, at, path, type } = input;
   const names: OpenName[] = [];
@@ -434,9 +509,24 @@ export function dialogOpenDecisions(input: DialogDecisionInput): {
     });
   }
 
-  // Every unaddressed pending set, on screen or not (coordinator rule: a
-  // partial answer is never saved).
-  const open = outcome.unaddressedPending;
+  // Every unaddressed pending set is open (coordinator rule: a partial answer
+  // is never saved), except the two the dialog itself never asks about: a
+  // SportLots set outside its prefix filter (another product of the
+  // brand-year), and a set another variant type of the set files.
+  const prefixes = input.slPrefixes ?? [];
+  const left: { outsideScope: PendingSet[]; pairedElsewhere: PendingSet[] } = { outsideScope: [], pairedElsewhere: [] };
+  const open = outcome.unaddressedPending.filter((p) => {
+    const set: PendingSet = { side: p.side, id: p.item.platformValue, name: p.item.value };
+    if (p.side === "sportlots" && !inSlPrefixScope(p.item.value, prefixes)) {
+      left.outsideScope.push(set);
+      return false;
+    }
+    if (input.pairedElsewhere?.[p.side].has(p.item.platformValue)) {
+      left.pairedElsewhere.push(set);
+      return false;
+    }
+    return true;
+  });
   const openIds = {
     bsc: new Set(open.filter((p) => p.side === "bsc").map((p) => p.item.platformValue)),
     sportlots: new Set(open.filter((p) => p.side === "sportlots").map((p) => p.item.platformValue)),
@@ -496,7 +586,13 @@ export function dialogOpenDecisions(input: DialogDecisionInput): {
     });
   }
 
-  return { reconcile: { at: `${at}.sync`, path, type, proposedPairs, pending }, names };
+  return { reconcile: { at: `${at}.sync`, path, type, proposedPairs, pending }, names, left };
+}
+
+/** `left` as counts, or undefined when nothing was left unasked. */
+export function leftUnaskedOf(left: { outsideScope: readonly unknown[]; pairedElsewhere: readonly unknown[] }): LeftUnasked | undefined {
+  if (left.outsideScope.length + left.pairedElsewhere.length === 0) return undefined;
+  return { outsideScope: left.outsideScope.length, pairedElsewhere: left.pairedElsewhere.length };
 }
 
 /** Where a pair sits in the spec: `applyExplicitPairs` hands back the objects it was given. */
@@ -639,7 +735,16 @@ export async function reconcileVariants(
     path,
     type: ctx.variantType.value,
     pairs: sync.pairs,
+    slPrefixes: slPrefixesForFetch(
+      { setName: ctx.setName, manufacturer: ctx.manufacturer, baseSlLabels: baseSlLabelsOf(ctx.baseVariant as never) },
+      result,
+    ),
+    ...(opts.pairedElsewhere
+      ? { pairedElsewhere: { bsc: new Set(opts.pairedElsewhere.bsc), sportlots: new Set(opts.pairedElsewhere.sportlots) } }
+      : {}),
   });
+  const unasked = leftUnaskedOf(decisions.left);
+  const leftUnasked = unasked ? { leftUnasked: unasked } : {};
   const anyOpen =
     decisions.names.length > 0 ||
     decisions.reconcile.pending.length > 0 ||
@@ -650,7 +755,7 @@ export async function reconcileVariants(
 
   const items = buildReconciledItems(outcome.state.ready);
   if (!itemsChangeAnything(items, ctx.existingRows)) {
-    return { outcome: "skipped", reason: "unchanged", pausedSides, ...leftMoot };
+    return { outcome: "skipped", reason: "unchanged", pausedSides, ...leftMoot, ...leftUnasked };
   }
   const covered = coveredSidesFromFetch(result.errors, skippedSidesOf(result));
   const storeItems = toStoreItems(items);
@@ -671,5 +776,6 @@ export async function reconcileVariants(
     unlinkedTotal: drained.stored.unlinkedTotal ?? 0,
     pausedSides,
     ...leftMoot,
+    ...leftUnasked,
   };
 }

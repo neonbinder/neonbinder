@@ -46,6 +46,7 @@ import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
 import { assertPhrase, ConfirmMismatch, type Target } from "./client/target";
 import { parseSpec } from "./spec/schema";
+import { compactDraftReport } from "./runner/draft";
 import {
   buildParallelConfirmPhrase,
   decideConfirmPhrase,
@@ -129,10 +130,10 @@ export function describeError(err: unknown): Record<string, unknown> {
   return { error: "failed", message };
 }
 
-function textResult(body: unknown, secrets: readonly string[], isError = false): CallToolResult {
+function textResult(body: unknown, secrets: readonly string[], isError = false, indent = 2): CallToolResult {
   let text: string;
   try {
-    text = JSON.stringify(body, null, 2) ?? "null";
+    text = JSON.stringify(body, null, indent) ?? "null";
   } catch {
     text = JSON.stringify({ error: "failed", message: "The result could not be serialised." });
     isError = true;
@@ -140,9 +141,9 @@ function textResult(body: unknown, secrets: readonly string[], isError = false):
   return { content: [{ type: "text", text: scrub(text, secrets) }], ...(isError ? { isError: true } : {}) };
 }
 
-async function run(secrets: readonly string[], fn: () => Promise<unknown>): Promise<CallToolResult> {
+async function run(secrets: readonly string[], fn: () => Promise<unknown>, opts: { indent?: number } = {}): Promise<CallToolResult> {
   try {
-    return textResult(await fn(), secrets);
+    return textResult(await fn(), secrets, false, opts.indent);
   } catch (err) {
     return textResult(describeError(err), secrets, true);
   }
@@ -368,14 +369,20 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "Read-only on NB data (it reads both marketplaces through the server's previews; an adapter may refresh " +
         "a marketplace session, as any fetch does). Drafts the complete set-build spec for one set: variant types, " +
         "the Base mapping, every Insert/Parallel reconcile pair, Group Parallels nesting, every checklist with its " +
-        "Match Cards answers and entity-review proposals, and every parallel build. Returns spec (proposals only; " +
-        "open decisions left out), proposals (what was filled and why, including an explicit \"leave\" for every " +
-        "pending marketplace set nobody pairs; \"own-set\" is never proposed), openDecisions (what the operator must " +
-        "answer: Base candidates when there is no sole or pre-selected one, card conflicts, any name with " +
-        "existing NB candidates, a checklist the draft could not preview), template (the spec with a <…> fill-in per open " +
-        "decision), notes, marketplaceCalls, and confirmPhrase only when nothing is open. An unknown set comes " +
-        'back as status "unresolved" with candidates (and, when the brand\'s Sets were never synced, the prepare ' +
-        "spec); nothing is created. Slow on a big set (minutes): it previews every checklist. " +
+        "Match Cards answers and entity-review proposals, and every parallel build. Returns template (the spec with a " +
+        "<…> fill-in per open decision) while anything is open, else spec; proposals (what was filled and why); " +
+        "openDecisions (what the operator must answer: Base candidates when there is no sole or pre-selected one, card " +
+        "conflicts, any name with existing NB candidates, a review name that rides on an unanswered card conflict, a " +
+        "checklist the draft could not preview); leftUnasked; notes; marketplaceCalls; and confirmPhrase only when " +
+        "nothing is open. Each variant type's sync.pending lists every marketplace set nobody pairs as an explicit " +
+        "\"leave\" with the marketplace's name for it, so sets that belong together can be paired from the draft " +
+        "(\"own-set\" is never proposed). SportLots lists a whole brand-year: its sets outside the set's SportLots " +
+        "filter (other products) and sets another variant type pairs are not listed, only counted in leftUnasked, and " +
+        'apply leaves them in Pending. detail "summary" (the default) cuts proposals, steps, notes and the ' +
+        'leftUnasked samples to the first few and says what it cut; detail "full" returns every entry (it drafts ' +
+        "again). An unknown set comes back as status \"unresolved\" with candidates (and, when the brand's year or " +
+        "its Sets were never synced, the prepare spec); nothing is created. Slow on a big set (minutes): it previews " +
+        "every checklist. " +
         WORKFLOW,
       inputSchema: {
         path: setPathSchema,
@@ -388,16 +395,30 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
           .max(MAX_TEAM_LOOKUP_BUDGET)
           .optional()
           .describe("Cards the draft may send to BSC's per-card team lookup in total (default 2000; 0 = none)."),
+        detail: z
+          .enum(["summary", "full"])
+          .optional()
+          .describe(
+            'How much the result lists. "summary" (default): the template or spec and every open decision in full, ' +
+              'the other lists cut to the first few with complete counts. "full": every entry.',
+          ),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ path, checklists, builds, teamLookupBudget }) =>
-      run(ctx.secrets, () =>
-        read.draftSet(toPath(path) as Parameters<SetBuildRead["draftSet"]>[0], {
-          ...(checklists !== undefined ? { checklists } : {}),
-          ...(builds !== undefined ? { builds } : {}),
-          ...(teamLookupBudget !== undefined ? { teamLookupBudget } : {}),
-        }),
+    async ({ path, checklists, builds, teamLookupBudget, detail }) =>
+      run(
+        ctx.secrets,
+        async () =>
+          compactDraftReport(
+            await read.draftSet(toPath(path) as Parameters<SetBuildRead["draftSet"]>[0], {
+              ...(checklists !== undefined ? { checklists } : {}),
+              ...(builds !== undefined ? { builds } : {}),
+              ...(teamLookupBudget !== undefined ? { teamLookupBudget } : {}),
+            }),
+            detail ?? "summary",
+          ),
+        // One line: a big set's draft is mostly structure, and indentation was a third of it.
+        { indent: 0 },
       ),
   );
 }

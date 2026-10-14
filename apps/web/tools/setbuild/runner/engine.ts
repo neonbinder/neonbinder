@@ -460,7 +460,7 @@ export async function runSpec(
     }
 
     for (let j = 0; j < (step.variants ?? []).length; j++) {
-      await variantType(i, j, path, set.setId, sportId, step.variants![j], deps);
+      await variantType(i, j, path, set.setId, sportId, step.variants![j], deps, filedByOtherTypes(step.variants!, j));
     }
   }
 
@@ -473,6 +473,7 @@ export async function runSpec(
     sportId: RowId,
     vt: VariantTypeStep,
     deps: SetDeps,
+    pairedElsewhere: { bsc: string[]; sportlots: string[] },
   ): Promise<void> {
     const at = `steps[${i}].variants[${j}]`;
     const typeKey = vt.type.trim().toLowerCase();
@@ -502,9 +503,11 @@ export async function runSpec(
     if (vt.sync) {
       const sync = vt.sync;
       const synced = await sub(i, "reconcile", path, `sync ${vt.type} rows`, () =>
-        reconcileVariants(client, setId, vt.type, sync, { paused, at, path }),
+        reconcileVariants(client, setId, vt.type, sync, { paused, at, path, pairedElsewhere }),
       (r) => {
-        const moot = r.outcome !== "open" && r.leftMoot?.length ? `; ${mootText(r.leftMoot)}` : "";
+        const moot =
+          (r.outcome !== "open" && r.leftMoot?.length ? `; ${mootText(r.leftMoot)}` : "") +
+          (r.outcome !== "open" && r.leftUnasked ? `; ${unaskedText(r.leftUnasked)}` : "");
         if (r.outcome === "saved") {
           counts.reconciled += r.stored;
           return { status: "done", detail: `${r.stored} stored (${r.mode})${r.specNotConsulted ? "; one marketplace returned rows, so no dialog — the spec's answers were not needed" : ""}${moot}` };
@@ -522,7 +525,7 @@ export async function runSpec(
           ],
           pending: [
             ...sync.pending,
-            ...r.reconcile.pending.map((p) => ({ side: p.side === "buysportscards" ? "bsc" : "sportlots", id: p.id, decision: `<"own-set" | "leave"> — ${p.name}` })),
+            ...r.reconcile.pending.map((p) => ({ side: p.side === "buysportscards" ? "bsc" : "sportlots", id: p.id, name: p.name, decision: `<"own-set" | "leave"> — ${p.name}` })),
           ],
         });
         return { status: "blocked", detail: "open decisions", stopReason: `${vt.type}: ${r.reconcile.proposedPairs.length + r.reconcile.pending.length + r.names.length} reconcile decision(s) need an answer` };
@@ -790,6 +793,33 @@ function mootText(moot: ReadonlyArray<{ id: string; why: "held" | "not-listed" }
     [held ? `${held} now held by another NB row` : "", gone ? `${gone} no longer listed` : ""].filter(Boolean).join(", ") +
     ")"
   );
+}
+
+/** How a step reports the Pending sets it left without asking (see reconcile-variants). */
+function unaskedText(u: { outsideScope: number; pairedElsewhere: number }): string {
+  return [
+    u.outsideScope ? `${u.outsideScope} SportLots set(s) outside this set's SportLots filter left in Pending` : "",
+    u.pairedElsewhere ? `${u.pairedElsewhere} set(s) another variant type files left in Pending` : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+/**
+ * The marketplace ids the set's OTHER variant types file (their pairs and
+ * own-set decisions): a type's sync leaves them in Pending unasked. Pure.
+ */
+export function filedByOtherTypes(variants: readonly VariantTypeStep[], j: number): { bsc: string[]; sportlots: string[] } {
+  const out = { bsc: new Set<string>(), sportlots: new Set<string>() };
+  variants.forEach((v, k) => {
+    if (k === j || !v.sync) return;
+    for (const p of v.sync.pairs) {
+      for (const id of p.bsc ?? []) out.bsc.add(id);
+      for (const id of p.sportlots ?? []) out.sportlots.add(id);
+    }
+    for (const p of v.sync.pending) if (p.decision === "own-set") out[p.side].add(p.id);
+  });
+  return { bsc: [...out.bsc], sportlots: [...out.sportlots] };
 }
 
 /** A set path folded for comparison, as `brandYearKey` folds a brand-year. */

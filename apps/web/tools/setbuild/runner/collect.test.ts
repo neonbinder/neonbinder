@@ -543,6 +543,73 @@ describe("draft → apply drift (NEO-339 live measurement)", () => {
     expect(client.callsTo("setReconciliation:storeReconciledOptions")).toEqual([]);
   });
 
+  test("a set waiting in one type's Pending that the spec pairs under another type is left unasked there, and named in the step", async () => {
+    // "Chrome Gold" sits inside the set's SportLots filter: unanswered, it
+    // would be an open decision for the Insert sync. The Parallel entry pairs
+    // it, so the Insert sync leaves it in Pending (that sync files it).
+    const gold = { value: "Chrome Gold", platformValue: "sl-gold" };
+    const client = fetchWorld({ ...WIDE(), vtB: 2 }, []).on("setReconciliation:fetchRawOptions", (a) => {
+      const fs = { value: "Future Stars", platformValue: "future-stars" };
+      const slFs = { value: "2024 Topps Chrome Future Stars", platformValue: "sl-fs" };
+      const yq = { value: "Youthquake", platformValue: "youthquake" };
+      const insert = a.parentId === "vtI";
+      return {
+        success: true,
+        bscOptions: insert ? [fs, yq] : [{ value: "Gold", platformValue: "bsc-gold" }],
+        slOptions: [slFs, gold],
+        autoMatched: insert ? [{ displayName: "Future Stars", bsc: fs, sl: slFs, confidence: 0.99 }] : [],
+        unmatchedBsc: insert ? [yq] : [{ value: "Gold", platformValue: "bsc-gold" }],
+        unmatchedSl: insert ? [gold] : [slFs, gold],
+        slCandidates: [],
+        errors: [],
+        message: "",
+        skippedSides: [],
+        pausedSides: [],
+        twinIds: { bsc: [], sportlots: [] },
+      };
+    });
+    const raw = {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        {
+          kind: "set",
+          path: PATH,
+          variantTypes: { sync: true },
+          base: MAPPED,
+          variants: [
+            {
+              type: "Insert",
+              sync: {
+                pairs: [
+                  { name: "Future Stars", bsc: ["future-stars"], sportlots: ["sl-fs"] },
+                  { name: "Youthquake", bsc: ["youthquake"] },
+                ],
+                pending: [],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const lone = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    // Alone, the Insert spec leaves "Chrome Gold" unanswered: open, with its name.
+    expect(lone.openDecisions.reconcile).toEqual([expect.objectContaining({ pending: [{ side: "sportlots", id: "sl-gold", name: "Chrome Gold" }] })]);
+
+    const both = structuredClone(raw) as typeof raw & { steps: Array<{ variants: unknown[] }> };
+    both.steps[0].variants.push({
+      type: "Parallel",
+      sync: { pairs: [{ name: "Gold", bsc: ["bsc-gold"], sportlots: ["sl-gold"] }], pending: [{ side: "sportlots", id: "sl-fs", decision: "leave" }] },
+    });
+    const r = await applySpec(client, FAKE_TARGET, both, confirmFor(both), { pausedPlatforms: "", stopAt: "end" });
+    // (The fixture's Parallel type has a saved row this spec does not name; only the Insert sync is under test.)
+    expect(r.openDecisions.reconcile.filter((x) => x.type === "Insert")).toEqual([]);
+    expect(r.steps.find((s) => s.action === "sync Insert rows")).toMatchObject({
+      status: "done",
+      detail: expect.stringContaining("1 set(s) another variant type files left in Pending"),
+    });
+  });
+
   test("(b) a later type's sync waits on an earlier open one in the same set, and never fetches with stale held ids", async () => {
     // The Insert sync is open (a pair names an id the fetch did not return).
     const raw = {

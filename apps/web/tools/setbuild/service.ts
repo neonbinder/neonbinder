@@ -452,7 +452,7 @@ export interface DraftProposal {
   kind:
     | "base-map"
     | "reconcile-pairs"
-    /** Every pending marketplace set nobody pairs, left in Pending: one per type, the ids listed. */
+    /** Every pending marketplace set nobody pairs, left in Pending: one per type, with the counts (each set is in `sync.pending` with its name). */
     | "reconcile-leave"
     | "grouping"
     | "pairing"
@@ -490,9 +490,42 @@ export interface DraftedReport {
   steps: PlanStep[];
   /** What the draft could not see or chose not to do (budgets, previews skipped). */
   notes: string[];
+  /**
+   * Per variant type, the Pending sets the draft does not list and apply
+   * leaves without asking (lib/reconcile-variants.ts): SportLots sets outside
+   * the set's SportLots filter, which on SportLots' brand-year-wide list are
+   * the brand-year's other products, and sets another variant type of the set
+   * pairs. `outsideScopeSets` is every such SportLots set with
+   * `detail: "full"`, a short sample otherwise.
+   */
+  leftUnasked: Array<{
+    at: string;
+    type: string;
+    outsideScope: number;
+    pairedElsewhere: number;
+    outsideScopeSets: Array<{ id: string; name: string }>;
+  }>;
   /** Marketplace requests the previews reported making. */
   marketplaceCalls: number;
   durationMs: number;
+  /**
+   * Present on a `detail: "summary"` result (the MCP default): what was cut
+   * to keep the result small, and how to get all of it.
+   */
+  summary?: DraftSummary;
+}
+
+/** How a summary draft was cut (`compactDraftReport`). */
+export interface DraftSummary {
+  /** Proposals per kind; `proposals` keeps the first few of each. */
+  proposalCounts: Record<string, number>;
+  /** Steps per status; `steps` keeps the ones that are not done, up to a cap. */
+  stepCounts: Record<string, number>;
+  /** Entries left out of `proposals`, `steps`, `notes` and `leftUnasked[].outsideScopeSets`. */
+  omitted: { proposals: number; steps: number; notes: number; outsideScopeSets: number };
+  /** True when `spec` was left out because `template` carries it (with the fill-ins). */
+  specInTemplate: boolean;
+  hint: string;
 }
 
 export interface UnresolvedDraftReport {

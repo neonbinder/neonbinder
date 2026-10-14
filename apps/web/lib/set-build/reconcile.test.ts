@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   applyExplicitPairs,
+  defaultSlPrefixes,
+  inSlPrefixScope,
   type PlatformItem,
   type ReadySet,
   type ReconciliationState,
@@ -567,5 +569,26 @@ describe("applyExplicitPairs: purity", () => {
       [],
     );
     expect(initial).toEqual(before);
+  });
+});
+
+describe("the SportLots prefix filter (shared with the set-building tool, NEO-339)", () => {
+  it("defaultSlPrefixes: the set name, the name less its brand, then the extras; lower-cased, de-duped", () => {
+    expect(defaultSlPrefixes("Topps Chrome", "Topps", ["Chrome", "Topps Chrome Refractor"])).toEqual([
+      "topps chrome",
+      "chrome",
+      "topps chrome refractor",
+    ]);
+    // A set not named after its brand keeps only its own name.
+    expect(defaultSlPrefixes("Bowman Chrome", "Topps")).toEqual(["bowman chrome"]);
+    expect(defaultSlPrefixes("", "", [])).toEqual([]);
+  });
+
+  it("inSlPrefixScope: a starts-with test, case-folded; no prefixes passes everything", () => {
+    const prefixes = defaultSlPrefixes("Topps Chrome", "Topps");
+    expect(inSlPrefixScope("Chrome Refractors", prefixes)).toBe(true);
+    expect(inSlPrefixScope("TOPPS CHROME Update", prefixes)).toBe(true);
+    expect(inSlPrefixScope("Heritage Chrome", prefixes)).toBe(false);
+    expect(inSlPrefixScope("Heritage Chrome", [])).toBe(true);
   });
 });

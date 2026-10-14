@@ -216,20 +216,38 @@ An operator says "build 2025 Topps Pristine". The agent calls `nb_draft_set`
 with the set's path; the draft comes back with:
 
 - `spec`: the whole set, every **proposal** filled in, every open decision
-  left out;
+  left out. The default summary result carries `template` instead while
+  anything is open (the spec plus a fill-in per open decision), never both;
 - `proposals`: what the draft filled and why (a sole or pre-selected Base
   candidate, the Reconcile dialog's own auto-matches, an explicit `leave` for
   every pending marketplace set nobody pairs, Group Parallels prefix
   suggestions, Match Cards' keep-all defaults, `create` for a player or team
   no NB row is named like, observed counts, parallel builds). The `leave`
-  entries are one spec line per marketplace id (no wildcard), listed as one
-  `reconcile-leave` proposal per variant type with the count and the ids;
-  `own-set` is never proposed (Jason, 2026-10-11);
+  entries are one spec line per marketplace id (no wildcard), each with the
+  marketplace's `name` for the set (display only; matched by id), so a BSC
+  set and a SportLots set that belong together can be paired from the draft
+  alone: replace their two `leave`s with one `sync.pairs` entry. One
+  `reconcile-leave` proposal per variant type gives the counts; `own-set` is
+  never proposed (Jason, 2026-10-11);
+- `leftUnasked`: per variant type, the Pending sets the draft does not list.
+  SportLots lists a whole brand-year at the insert level, so every fetch
+  returns every product of the brand-year (about a thousand sets for 2014
+  Topps). Only the sets inside the Reconcile dialog's own SportLots filter are
+  listed (names starting with the set's name, the set's name less its brand,
+  or the Base's SportLots name; the dialog hides the rest behind "Show all");
+  the rest are counted, with a short sample. A set another variant type of
+  the set pairs is not listed under this one either. Apply leaves both kinds
+  in Pending without asking, exactly as Save does, and says so in the step's
+  detail;
 - `openDecisions` and `template`: what the operator must answer (a Base side
   with several candidates and no pre-selection; a card disagreement; any
   player or team with an existing NB candidate, never linked by name; a
   checklist the draft could not preview), each as a `<…>` fill-in in the
-  template. A player that shares its name with existing NB players gets a
+  template. A player name that only one side of an unanswered card
+  disagreement carries (BSC "Alex Guerrero" vs SportLots "Alexander
+  Guerrero") is never pre-filled: the review asks about it only if that side
+  is chosen, so its fill-in names the conflict it rides on, and an answer for
+  the side not chosen is a reported no-op at apply. A player that shares its name with existing NB players gets a
   fill-in offering `{"link": "<name>", "birthYear": <year>}` and each
   candidate's birth year (`José Rodriguez (born 2001) [<id>]`): a link by a
   shared name alone stops as ambiguous, and `birthYear` names the one born
@@ -242,7 +260,9 @@ with the set's path; the draft comes back with:
   longer shows (now held by another NB row, or no longer listed) is a
   reported no-op in the step's detail: the dialog would create no row for it
   either way. An `own-set` for such a set, a `leave` for a set the spec also
-  pairs, and any NEW pending set the spec does not name stay open decisions.
+  pairs, and any NEW pending set the spec does not name stay open decisions
+  (a new SportLots set outside the set's SportLots filter is left unasked, as
+  above).
   The same holds for review answers: an answer for a name the review no
   longer asks about (it is known by now, or was never staged) is a reported
   no-op, for players, teams and leagues alike; a row the review asks about
@@ -262,7 +282,20 @@ plan and its phrase, and `nb_apply` with that phrase. `nb_apply` collects
 New League steps the lookups stage, a review name the preview could not see)
 come back together with one template; answer them and apply again. A set that
 does not resolve comes back `unresolved` with near names, plus the brand-year
-prepare spec when its Sets were never synced; nothing is created.
+prepare spec when the brand-year does not resolve or its Sets were never
+synced; nothing is created. When the column a name sits in was never synced
+(no manufacturers under the year, no Sets under the brand) the message says
+so ("Baseball/2014/Topps has not been synced yet. Apply the prepare spec, then
+draft this set again.") rather than "No manufacturer named …", which is kept
+for a name a synced column does not hold.
+
+**Result size.** `nb_draft_set` returns a summary by default (`detail:
+"summary"`, one line of JSON): the template or spec and every open decision in
+full; proposals cut to the first five of each kind, steps to the ones not done
+yet (up to 40), notes to 20, `leftUnasked` samples to five, with complete
+counts in `summary`. `detail: "full"` returns every entry (it drafts again).
+The CLI matches: `draft-set` / `build-set` print the summary unless `--detail
+full`; the `--out` file and the `--report` JSON are always whole.
 
 On a terminal, `npm run setbuild -- build-set --path "Baseball/2025/Topps/Pristine"`
 runs the same loop: it drafts, writes the template (or spec) to `--out`

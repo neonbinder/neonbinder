@@ -126,3 +126,4 @@
 - [Identify a same-name catalogue player read-only](reference_identify_a_same_name_catalogue_player_read_only.md) — preview slug from the PR Pipeline log, inline-query players/cardChecklist; never download the bundle, never trust the Wikidata fixture
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
+- [Draft shape changes hit the CI oneshot](reference_draft_shape_changes_hit_the_ci_oneshot.md) — index-merged vs oneshot.spec.json; new fill-ins/reorders go red

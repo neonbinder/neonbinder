@@ -255,11 +255,17 @@ export const ReconcilePairSchema = z
     message: "A reconcile pair names at least one marketplace id.",
   });
 
-/** What to do with one marketplace set no pair names: "Make its own set", or leave it in Pending. */
+/**
+ * What to do with one marketplace set no pair names: "Make its own set", or
+ * leave it in Pending. `name` is the marketplace's name for the set, as a
+ * draft lists it so a reader can pair it: display only, never matched (the
+ * set is named by `id`).
+ */
 export const ReconcilePendingSchema = z
   .object({
     side: SideSchema,
     id: text,
+    name: text.optional(),
     decision: z.enum(["own-set", "leave"]),
   })
   .strict();
