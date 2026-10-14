@@ -844,8 +844,17 @@ export function parseVariationDescription(
  * single-word team names like "Athletics"/"Angels" — suffix-stripping must
  * not assume multi-word). Extensible: add more here if/when a new one is
  * confirmed against real data — don't guess at unconfirmed tokens.
+ *
+ *   - "TC" — Team Checklist (2026 Topps Baseball, above).
+ *   - "TL" — Team Leaders, NEO-343: 2014 Topps Football sends
+ *     "Buffalo Bills TL" where SportLots sends "Buffalo Bills". Parsed
+ *     exactly like a TC row.
+ *
+ * A suffix counts only as its own whitespace-separated, case-sensitive
+ * final token (`\s+<suffix>$`), so "Kevin Battl" or "PlayerNamedTL" is a
+ * player, never a team.
  */
-const TEAM_CARD_SUFFIXES = ["TC"];
+const TEAM_CARD_SUFFIXES = ["TC", "TL"];
 
 // NEO-246/NEO-251 `boundParsedNames` (the emit bound: over-length names
 // dropped, an over-cap list refused) and the NEO-333 splitter that applies it

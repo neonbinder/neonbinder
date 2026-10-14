@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import {
   decodeSlEntities,
   parseSlSubjects,
+  parseSlTeamCard,
   parseSlVariationMarker,
   stripBrandPrefixForLabel,
 } from "./sportlots";
@@ -653,6 +654,177 @@ describe("parseSlSubjects", () => {
       expect(players).toHaveLength(4);
       expect(players!.length).toBeLessThanOrEqual(4);
     });
+  });
+});
+
+/**
+ * NEO-343 — `parseSlTeamCard`.
+ *
+ * BSC sends a Topps Football team card as "<Team> TL"; `parsePlayersField`
+ * reads that as the bare team name. SportLots names the same card three ways,
+ * read off its public catalogue on 2026-10-13:
+ *
+ *   - 2013 Topps base: "Philadelphia Eagles Team" on 31 of the 32 team cards
+ *     (#97 is a bare "Detroit Lions");
+ *   - 2014 and 2015 Topps base: the bare "Buffalo Bills".
+ *
+ * The bare form already agreed with BSC. The "Team" form raised a name
+ * conflict on every team card, and the subject parse vetoes "team", so SL
+ * contributed no roster either. This parser closes that, and nothing wider:
+ * "<X> Team" is also how SportLots names national and age-group sides, where
+ * "Team" is part of the name.
+ */
+describe("parseSlTeamCard (NEO-343)", () => {
+  /** Every "<Team> Team" row of SportLots' 2013 Topps base set, verbatim. */
+  const REAL_2013_TEAM_ROWS = [
+    "New Orleans Saints Team",
+    "Cleveland Browns Team",
+    "Chicago Bears Team",
+    "Denver Broncos Team",
+    "Carolina Panthers Team",
+    "Seattle Seahawks Team",
+    "Dallas Cowboys Team",
+    "Pittsburgh Steelers Team",
+    "New York Jets Team",
+    "Kansas City Chiefs Team",
+    "San Francisco 49Ers Team",
+    "Washington Redskins Team",
+    "Oakland Raiders Team",
+    "Minnesota Vikings Team",
+    "St. Louis Rams Team",
+    "Baltimore Ravens Team",
+    "Cincinnati Bengals Team",
+    "Miami Dolphins Team",
+    "Atlanta Falcons Team",
+    "Houston Texans Team",
+    "Tampa Bay Buccaneers Team",
+    "New York Giants Team",
+    "Buffalo Bills Team",
+    "Arizona Cardinals Team",
+    "Jacksonville Jaguars Team",
+    "Green Bay Packers Team",
+    "New England Patriots Team",
+    "Tennessee Titans Team",
+    "Indianapolis Colts Team",
+    "San Diego Chargers Team",
+    "Philadelphia Eagles Team",
+  ];
+
+  const refused = (residual: string) =>
+    expect(parseSlTeamCard(residual)).toEqual({});
+
+  test("every real 2013 Topps team card reads as its bare team name", () => {
+    expect(REAL_2013_TEAM_ROWS).toHaveLength(31);
+    for (const row of REAL_2013_TEAM_ROWS) {
+      expect(parseSlTeamCard(row)).toEqual({ team: row.slice(0, -" Team".length) });
+    }
+    // The spellings that matter: a period-initial, a digit-led nickname in
+    // SportLots' own casing, a three-token city.
+    expect(parseSlTeamCard("St. Louis Rams Team")).toEqual({ team: "St. Louis Rams" });
+    expect(parseSlTeamCard("San Francisco 49Ers Team")).toEqual({
+      team: "San Francisco 49Ers",
+    });
+    expect(parseSlTeamCard("Tampa Bay Buccaneers Team")).toEqual({
+      team: "Tampa Bay Buccaneers",
+    });
+  });
+
+  test("the other real rows of those sets are not team cards to this parser", () => {
+    // 2013 #97, and every 2014/2015 team card: already the bare name, which
+    // the subject parse handles. 2013 #23 and #154 are subset cards.
+    refused("Detroit Lions");
+    refused("Buffalo Bills");
+    refused("Ravens Super Bowl");
+    refused("Rookie Premiere");
+    refused("Adrian Peterson");
+  });
+
+  test("'Team' counts only as a whitespace-separated, case-sensitive final token", () => {
+    refused("Team USA");
+    refused("Yankees Teammates");
+    refused("Philadelphia Eagles Teammates");
+    refused("Philadelphia Team Eagles");
+    refused("Philadelphia Eagles team");
+    refused("Philadelphia Eagles TEAM");
+    refused("Philadelphia EaglesTeam");
+    refused("Team Checklist");
+    refused("New York Yankees Team Card");
+    refused("Team");
+    refused(" Team");
+  });
+
+  test("a single token in front of 'Team' is refused: a player surnamed Team reads the same", () => {
+    refused("Steve Team");
+    refused("Dream Team");
+    refused("Athletics Team"); // the documented false negative
+  });
+
+  test("national, age-group and honours sides are refused: there 'Team' is part of the name", () => {
+    // Real SportLots rows. Stripping "Team" here would mint "Collegiate
+    // National", a side that does not exist.
+    refused("Collegiate National Team");
+    refused("18U National Team");
+    refused("15U National Team");
+    refused("Junior Team");
+    refused("Usa Team");
+    refused("USA Basketball Team");
+    refused("Usa Collegiate National Team");
+    refused("1992 Usa Men'S Olympic Team");
+    refused("Usa Womens Team");
+    // Honours subsets and a franchise whose name really ends in Team.
+    refused("Pro Bowl Team");
+    refused("All-Pro Team");
+    refused("All-Rookie Team");
+    refused("All-Star Team");
+    refused("Washington Football Team");
+    refused("Philadelphia Eagles Team Team");
+  });
+
+  test("franchise names that sit on the subject stoplist still read", () => {
+    // "stars" and "kings" veto "Future Stars" / "Diamond Kings" as PLAYERS;
+    // as franchises they are real teams.
+    expect(parseSlTeamCard("Dallas Stars Team")).toEqual({ team: "Dallas Stars" });
+    expect(parseSlTeamCard("Los Angeles Kings Team")).toEqual({
+      team: "Los Angeles Kings",
+    });
+    expect(parseSlTeamCard("Los Angeles Angels of Anaheim Team")).toEqual({
+      team: "Los Angeles Angels of Anaheim",
+    });
+    expect(parseSlTeamCard("Philadelphia 76ers Team")).toEqual({
+      team: "Philadelphia 76ers",
+    });
+  });
+
+  test("a multi-subject row is not a team card", () => {
+    refused("Philadelphia Eagles|New York Giants Team");
+    refused("Philadelphia Eagles, New York Giants Team");
+    refused("Philadelphia Eagles / New York Giants Team");
+    refused("Philadelphia Eagles & New York Giants Team");
+  });
+
+  test("hostile and over-long input is refused, never echoed", () => {
+    refused("<b>Philadelphia</b> Eagles Team");
+    refused("Philadelphia Eagles > Team");
+    refused("Philadelphia\nEagles Team");
+    refused("Philadelphia Eagles\u0000 Team");
+    refused(`Philadelphia ${"E".repeat(MAX_PLAYER_NAME_LENGTH)} Team`);
+    refused("Philadelphia eagles Team");
+    refused("One Two Three Four Five Six Team");
+  });
+
+  test("whitespace inside the name collapses", () => {
+    expect(parseSlTeamCard("Philadelphia   Eagles   Team")).toEqual({
+      team: "Philadelphia Eagles",
+    });
+  });
+
+  test("the subject parse still refuses the same rows, so no row gets both readings", () => {
+    // A team card's players come from THIS parser; `parseSlSubjects` keeps
+    // vetoing "team", so a refused team card emits no player at all.
+    for (const row of REAL_2013_TEAM_ROWS) {
+      expect(parseSlSubjects(row)).toEqual({});
+    }
+    expect(parseSlSubjects("Collegiate National Team")).toEqual({});
   });
 });
 

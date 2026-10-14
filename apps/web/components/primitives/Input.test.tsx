@@ -30,6 +30,32 @@ import { Textarea } from "./Textarea";
 
 const field = () => screen.getByLabelText("field") as HTMLInputElement;
 
+describe("Input — surface", () => {
+  it("defaults to the always-dark field", () => {
+    render(<Input bare aria-label="field" />);
+    const el = field();
+    expect(el.classList.contains("bg-slate-900")).toBe(true);
+    expect(el.classList.contains("bg-white")).toBe(false);
+  });
+
+  it("'panel' follows the bi-themed card: white in light, gray-900 in dark", () => {
+    render(<Input bare surface="panel" aria-label="field" />);
+    const el = field();
+    for (const cls of [
+      "bg-white",
+      "text-gray-900",
+      "placeholder:text-gray-500",
+      "border-gray-500",
+      "dark:bg-gray-900",
+      "dark:text-gray-100",
+      "dark:placeholder:text-gray-400",
+    ]) {
+      expect(el.classList.contains(cls)).toBe(true);
+    }
+    expect(el.classList.contains("bg-slate-900")).toBe(false);
+  });
+});
+
 describe("Input — bare mode", () => {
   it("renders the input as the only element, with no wrapper", () => {
     const { container } = render(<Input bare aria-label="field" />);

@@ -41,6 +41,10 @@ vi.mock("../../convex/_generated/api", () => ({
     // NEO-335: CardChecklist reads the set's skip records itself (for the
     // wizard's teams step), not only through the mocked SkippedNamesPanel.
     entityReviewSkips: { listForSet: "entityReviewSkips.listForSet" },
+    // NEO-343: the search box's team and player names (skipped until the
+    // field is focused, but the references still have to resolve).
+    teams: { getManyByIds: "teams.getManyByIds" },
+    players: { getManyByIds: "players.getManyByIds" },
   },
 }));
 

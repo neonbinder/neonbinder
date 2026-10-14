@@ -5065,7 +5065,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     await act(async () => {
       fireEvent.click(
         screen.getByRole("radio", {
-          name: /^SportLots: Mike Yastrzemski \/ Carl Yastrzemski/,
+          name: /^Mike Yastrzemski \/ Carl Yastrzemski/,
         }),
       );
     });
@@ -5116,7 +5116,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     await act(async () => {
       fireEvent.click(
-        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+        screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }),
       );
     });
     await act(async () => {
