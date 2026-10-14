@@ -52,6 +52,26 @@ import { MAX_CARD_PLAYERS } from "./card-attention";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 
 /**
+ * NEO-344 — the SPELLING of a typed card name, with only the invisible
+ * differences taken out: Unicode normalisation form (NFD "José" vs NFC
+ * "José") and runs of whitespace of any kind (a doubled space, an NBSP)
+ * collapsed to one ordinary space, then trimmed.
+ *
+ * Why it exists: the conflict pills are bare names, so a typed name that
+ * differs from a marketplace name only in one of those ways would render as a
+ * third pill that looks and reads aloud exactly like the marketplace one —
+ * a radiogroup offering a choice between two identical options.
+ *
+ * Deliberately NOT `nameKey`: case and accents are visible, meaningful
+ * corrections ("José" over "Jose" is the operator fixing the card), so both
+ * survive here. Only what neither the eye nor a screen reader can tell apart
+ * is folded.
+ */
+function canonicalTypedName(name: string): string {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim();
+}
+
+/**
  * NEO-137 — card-level pairing, before any NB card exists.
  *
  * Deliberately the same three-bucket screen the operator already knows from
@@ -1247,13 +1267,17 @@ function baseReducer(state: State, action: Action): State {
      *  2. On a CONFLICTED row where the typed name is exactly one of the two
      *     marketplace names: this is indistinguishable from having clicked
      *     that pill, so it IS that — same `chosen`, same result. Anything else
-     *     would leave the radiogroup showing "Custom: <BSC's name>" checked
-     *     alongside an unchecked, identical "BSC: <BSC's name>", which is a
+     *     would leave the radiogroup showing the operator's copy of BSC's name
+     *     checked alongside an unchecked, identical BSC pill, which is a
      *     control asking the operator to choose between two spellings of the
-     *     same decision. Matched on the exact trimmed string rather than
-     *     `nameKey`, deliberately: `nameKey` folds accents and punctuation, so
-     *     "José Ramírez" typed over BSC's "Jose Ramirez" would be swallowed as
-     *     "you picked BSC" and the operator's correction silently discarded.
+     *     same decision. Matched on `canonicalTypedName` (Unicode form and
+     *     whitespace only) rather than `nameKey`, deliberately: `nameKey`
+     *     folds accents and punctuation, so "José Ramírez" typed over BSC's
+     *     "Jose Ramirez" would be swallowed as "you picked BSC" and the
+     *     operator's correction silently discarded. Case and accents stay
+     *     significant; a doubled space or an NFD accent does not (NEO-344:
+     *     the pills are bare names, so those would read as twins). On a match
+     *     the card carries the marketplace's own spelling, not the typed one.
      *  3. On a conflicted row where it matches neither: it becomes a third
      *     option in the same radiogroup, checked. See `NameConflict.custom`.
      *
@@ -1265,7 +1289,10 @@ function baseReducer(state: State, action: Action): State {
     case "RENAME": {
       const pair = state.matched[action.index];
       if (!pair) return state;
-      const cardName = action.cardName.trim();
+      // NEO-344: canonicalised once, here, so every comparison below and the
+      // stored `custom` value are the same form — a later re-type with a
+      // doubled space compares equal to what is stored.
+      const cardName = canonicalTypedName(action.cardName);
       if (!cardName) return state;
       // NEO-251 security review — this name reaches `players.findOrCreate`
       // through the entity wizard, which refuses over-length names at the
@@ -1277,7 +1304,10 @@ function baseReducer(state: State, action: Action): State {
       if (cardName.length > MAX_PLAYER_NAME_LENGTH) return state;
       const conflict = pair.nameConflict;
       if (!conflict) {
-        if (cardName === pair.card.cardName) return state;
+        // Canonicalised on both sides: tabbing through the field of a card
+        // whose marketplace name carries a doubled space must stay a no-op,
+        // not a silent rename to the single-spaced form.
+        if (cardName === canonicalTypedName(pair.card.cardName)) return state;
         return {
           ...state,
           matched: state.matched.map((m, i) =>
@@ -1288,17 +1318,25 @@ function baseReducer(state: State, action: Action): State {
         };
       }
       const chosen: NameConflict["chosen"] =
-        cardName === conflict.bsc
+        cardName === canonicalTypedName(conflict.bsc)
           ? "bsc"
-          : cardName === conflict.sportlots
+          : cardName === canonicalTypedName(conflict.sportlots)
             ? "sportlots"
             : "custom";
       const nameConflict: NameConflict =
         chosen === "custom"
           ? { ...conflict, chosen, custom: cardName }
           : { ...conflict, chosen };
+      // A typed match IS a click on that pill, so the card carries that
+      // marketplace's own spelling — exactly what `CHOOSE_NAME` would set.
+      const nextCardName =
+        chosen === "bsc"
+          ? conflict.bsc
+          : chosen === "sportlots"
+            ? conflict.sportlots
+            : cardName;
       if (
-        cardName === pair.card.cardName &&
+        nextCardName === pair.card.cardName &&
         conflict.chosen === nameConflict.chosen &&
         conflict.custom === nameConflict.custom
       ) {
@@ -1310,7 +1348,7 @@ function baseReducer(state: State, action: Action): State {
           i === action.index
             ? {
                 ...pair,
-                card: { ...pair.card, cardName },
+                card: { ...pair.card, cardName: nextCardName },
                 nameConflict,
                 touched: true,
               }
@@ -1719,7 +1757,7 @@ function ConflictRadioGroup({
             tabIndex={chosen === option.side ? 0 : -1}
             // The accessible name STARTS WITH the visible label so it
             // satisfies WCAG 2.5.3 Label in Name — a speech-input user saying
-            // "click BSC: <value>" has to match what is actually announced.
+            // "click <value>" has to match what is actually announced.
             aria-label={option.ariaLabel}
             onClick={() => onChoose(option.side, false)}
             className={`text-xs rounded px-2 py-1.5 ${
@@ -2535,131 +2573,86 @@ export default function CardPairingModal({
             />
           </header>
 
-          {/* TWO deliberate details on this scroller, both in service of the
-              sticky Matched header below.
+          {/* NEO-189 operator feedback: the collapse control stays in reach
+              however long the matched list is.
 
-              `px-4 pb-4` and NOT `p-4`. The top padding used to live here, and
-              OBSERVED (Jason's screenshot): the stuck bar sat 16px below the
-              scrollport's top edge and rows slid up through the strip between
-              the dialog header and the bar, visible ABOVE it — "it looks funny
-              with the list scrolling behind it". The 16px is the scroller's own
-              `pt-4`. Rather than cancel it with a negative `top` — which
-              depends on exactly where `top: 0` resolves against a padded
-              scrollport, and over-shoots into a clipped bar if that assumption
-              is wrong — the padding is MOVED INTO the bar as its own `pt-4`.
-              With no top padding on the scroller there is no band between the
-              scrollport top and the bar for anything to show through: the 16px
-              is now opaque bar. That holds however the offset resolves, which
-              is why it is the fix rather than a tuned constant. Spacing at rest
-              is unchanged, because the matched section is this scroller's first
-              child and the 16px simply moved inside it.
+              Jason: "when I scroll the matched line should lock to the
+              top... that will allow somebody to quickly collapse again."
+              With 220 matched rows the toggle is the only way back to the
+              columns.
 
-              `scroll-pt-12` is what makes the bar safe for the OTHER way this
-              list scrolls. Linking a pair calls `refocusSelectedRadio`, and
-              `.focus()` makes the browser scroll the merged row into view on
-              its own — with a sticky bar and no scroll-padding that lands the
-              row UNDER the bar, so the operator is sent to a decision they
-              cannot see. `scroll-padding-top` on the scroller is honoured by
-              focus-driven scrolling as well as by `scrollIntoView`, so it
-              covers both of Jason's causes (manual scroll, and the auto-scroll
-              after a drag or click link) with one declaration rather than a
-              scroll-margin on every row. 48px clears the bar's ~43px (pt-4 +
-              text-sm line box + py-1.5 + border). */}
-          <div className="flex-1 overflow-y-auto scroll-pt-12 px-4 pb-4 flex flex-col gap-4">
+              It is a sibling ABOVE the scroller, not a `position: sticky`
+              bar inside it. It used to be sticky, and a sticky bar paints
+              over whatever row happens to be under it: at most scroll
+              positions a row's own button (Edit name, Unlink) sits half
+              under the bar, so the operator sees a sliver of a control they
+              cannot hit until they scroll again. axe-core's target-size rule
+              measures exactly that (the row's button partly covered by the
+              toggle, leaving a 5px strip; NEO-343, PR #335 CI) and, worse,
+              whether it fires depends on the exact scrollTop. Outside the
+              scroller nothing overlaps: rows are clipped by the scroller's
+              edge and never covered by a control. It also removes the two
+              workarounds the sticky bar needed (the scroller's top padding
+              moved into the bar, and `scroll-pt-12` so a focus-driven scroll
+              did not park the linked row under the bar): the browser scrolls
+              within the scroller, which now begins below the bar.
+
+              Opaque and flush with the dialog body (`bg-gray-900`), so at
+              rest it reads as the section heading it always was. */}
+          <div className="flex-none px-4 pt-4 bg-gray-900 border-b border-gray-700/60">
+            <button
+              type="button"
+              ref={matchedToggleRef}
+              className="text-sm font-semibold text-gray-200 px-2 py-1.5"
+              onClick={() => setMatchedCollapsed((v) => !v)}
+              // The count is appended ONLY when there is a conflict: an
+              // aria-label overrides the button's own text for assistive
+              // tech, so a silent label would hide the very thing the
+              // visible badge exists to announce.
+              // NEO-251 adds a SECOND clause rather than replacing the
+              // first, and puts it BEFORE the name-conflict clause: the
+              // Maestro flow addresses this label with the full-match regex
+              // `Collapse matched cards, .* with a name conflict`, so the
+              // name-conflict wording must stay the LAST thing in the
+              // string (PR #236 run 1 failed on exactly that). A row with no
+              // roster conflict still produces the string it always did.
+              aria-label={
+                `${matchedCollapsed ? "Expand" : "Collapse"} matched cards` +
+                (playersConflictCount > 0
+                  ? `, ${playersConflictCount} with a player conflict`
+                  : "") +
+                (nameConflictCount > 0
+                  ? `, ${nameConflictCount} with a name conflict`
+                  : "")
+              }
+            >
+              {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
+              {nameConflictCount > 0 && (
+                <span className="text-[#FF2EB3] ml-2">
+                  {/* The glyph is decorative — "name conflict(s)" already
+                      carries the meaning in words, so AT shouldn't also be
+                      made to announce "warning sign" on top of that. */}
+                  <span aria-hidden="true">⚠</span> {nameConflictCount} name
+                  conflict
+                  {nameConflictCount === 1 ? "" : "s"}
+                </span>
+              )}
+              {/* NEO-251: its OWN line, not a second clause on the name
+                  badge. The two counts are two different kinds of work, and
+                  "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
+                  one line reads as one number the eye has to parse apart. */}
+              {playersConflictCount > 0 && (
+                <span className="block text-[#FF2EB3]">
+                  <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
+                  player conflict
+                  {playersConflictCount === 1 ? "" : "s"}
+                </span>
+              )}
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pt-2 pb-4 flex flex-col gap-4">
             {/* Matched */}
             <section>
-              {/* NEO-189 operator feedback — the collapse control follows you
-                  down the list.
-
-                  Jason: "when I scroll the matched line should lock to the
-                  top… that will allow somebody to quickly collapse again."
-                  With 220 matched rows the toggle is the only way back to the
-                  columns, and it scrolled off after the first screenful, so
-                  collapsing meant scrolling all the way back up first.
-
-                  Sticky, not fixed: the containing block is this <section>, so
-                  the bar un-sticks when the matched list's end scrolls past
-                  and does NOT hover over the unmatched columns below — the
-                  default behaviour is the wanted behaviour, which is why the
-                  section is the right place for it and nothing between here
-                  and the scroll container may introduce its own overflow,
-                  transform or containment.
-
-                  A WRAPPER rather than the button itself: the bar has to be
-                  an opaque box spanning the WHOLE scrollport for rows to read
-                  as passing under it, and the button is only as wide as its
-                  text and as tall as its own line. So the wrapper owns every
-                  edge a row could show through:
-                    - `-mx-4 px-4` bleeds it across the scroller's horizontal
-                      padding, so nothing peeks at the sides;
-                    - `pt-4` is the scroller's former `pt-4`, moved here so
-                      nothing peeks above it either (see the note on the
-                      scroller);
-                    - `bg-gray-900` matches the dialog body exactly, so at rest
-                      the bar is invisible and only its border reads.
-                  `z-20` puts it over the static rows and the draggable
-                  unmatched rows, and under dnd-kit's DragOverlay (fixed,
-                  z-999) so a dragged card still passes over the top. The
-                  shadow is what makes a row read as travelling UNDER the bar
-                  rather than being clipped by it — Tailwind's own `shadow-*`
-                  are tuned for light backgrounds and are invisible on
-                  gray-900, hence the explicit value.
-
-                  It never covers the first row: sticky keeps the element in
-                  flow, so at scroll-top the bar occupies its own space and
-                  offsets only once the section scrolls — collapsed or short,
-                  there is nothing to cover. */}
-              <div className="sticky top-0 z-20 -mx-4 px-4 pt-4 mb-2 bg-gray-900 border-b border-gray-700/60 shadow-[0_6px_8px_-6px_rgba(0,0,0,0.8)]">
-              <button
-                type="button"
-                ref={matchedToggleRef}
-                className="text-sm font-semibold text-gray-200 px-2 py-1.5"
-                onClick={() => setMatchedCollapsed((v) => !v)}
-                // The count is appended ONLY when there is a conflict: an
-                // aria-label overrides the button's own text for assistive
-                // tech, so a silent label would hide the very thing the
-                // visible badge exists to announce.
-                // NEO-251 adds a SECOND clause rather than replacing the
-                // first, and puts it BEFORE the name-conflict clause: the
-                // Maestro flow addresses this label with the full-match regex
-                // `Collapse matched cards, .* with a name conflict`, so the
-                // name-conflict wording must stay the LAST thing in the
-                // string (PR #236 run 1 failed on exactly that). A row with no
-                // roster conflict still produces the string it always did.
-                aria-label={
-                  `${matchedCollapsed ? "Expand" : "Collapse"} matched cards` +
-                  (playersConflictCount > 0
-                    ? `, ${playersConflictCount} with a player conflict`
-                    : "") +
-                  (nameConflictCount > 0
-                    ? `, ${nameConflictCount} with a name conflict`
-                    : "")
-                }
-              >
-                {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
-                {nameConflictCount > 0 && (
-                  <span className="text-[#FF2EB3] ml-2">
-                    {/* The glyph is decorative — "name conflict(s)" already
-                        carries the meaning in words, so AT shouldn't also be
-                        made to announce "warning sign" on top of that. */}
-                    <span aria-hidden="true">⚠</span> {nameConflictCount} name
-                    conflict
-                    {nameConflictCount === 1 ? "" : "s"}
-                  </span>
-                )}
-                {/* NEO-251: its OWN line, not a second clause on the name
-                    badge. The two counts are two different kinds of work, and
-                    "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
-                    one line reads as one number the eye has to parse apart. */}
-                {playersConflictCount > 0 && (
-                  <span className="block text-[#FF2EB3]">
-                    <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
-                    player conflict
-                    {playersConflictCount === 1 ? "" : "s"}
-                  </span>
-                )}
-              </button>
-              </div>
               {!matchedCollapsed && (
                 <ul className="flex flex-col gap-1">
                   {state.matched.map((m, i) => {
@@ -2864,7 +2857,10 @@ export default function CardPairingModal({
                               // editor closes; keyed like `data-name-conflict`
                               // and for the same reason.
                               data-card-title={domKey(m.card)}
-                              className="text-left border-b border-dotted border-gray-600 hover:border-[#00B7FF] hover:text-white"
+                              // inline-block + min-h-6: the text-sm line alone
+                              // is a ~20px target; SC 2.5.8 needs 24px (axe
+                              // target-size).
+                              className="inline-block min-h-6 text-left border-b border-dotted border-gray-600 hover:border-[#00B7FF] hover:text-white"
                               onClick={() => {
                                 // Prefilled with `cardName` ALONE — not
                                 // `label()`. The number and the variation
@@ -2905,14 +2901,26 @@ export default function CardPairingModal({
                       {/* NEO-189: the marketplaces name this card differently.
                           Show BOTH, say which one is currently winning, and
                           let the operator switch — the ambiguity is reported,
-                          never resolved by heuristic. */}
+                          never resolved by heuristic.
+
+                          NEO-344 (Jason, 2026-10-13): the pills, their
+                          accessible names and the warning say only WHAT each
+                          value is, never which marketplace it came from. "The
+                          name in NB should come from the user when there is a
+                          conflict and I don't want the user swayed by what
+                          marketplace the data comes from." The `side` keys,
+                          the BSC default and the reducer are unchanged; this
+                          is display only. Each option still has a distinct
+                          name because the values differ as strings by construction:
+                          `conflictingNames` only reports differing names, and
+                          `custom` exists only when it matches neither. */}
                       {m.nameConflict && (
                         <ConflictRadioGroup
                           handleAttr="data-name-conflict"
                           handleKey={domKey(m.card)}
                           groupLabel={`Name conflict on ${scope}`}
                           warningId={`name-conflict-warning-${domKey(m.card)}`}
-                          warning="These marketplaces name this card differently — pick the right one before it is listed."
+                          warning="Potential names for this card — pick the right one before it is listed."
                           radioGroupLabel={`Name for ${scope}`}
                           chosen={m.nameConflict.chosen}
                           // NEO-272 — each pill's "which card is this
@@ -2934,13 +2942,13 @@ export default function CardPairingModal({
                           options={[
                             {
                               side: "bsc",
-                              label: `BSC: ${m.nameConflict.bsc}`,
-                              ariaLabel: `BSC: ${m.nameConflict.bsc} — use this name for ${scope}`,
+                              label: m.nameConflict.bsc,
+                              ariaLabel: `${m.nameConflict.bsc} — use this name for ${scope}`,
                             },
                             {
                               side: "sportlots",
-                              label: `SportLots: ${m.nameConflict.sportlots}`,
-                              ariaLabel: `SportLots: ${m.nameConflict.sportlots} — use this name for ${scope}`,
+                              label: m.nameConflict.sportlots,
+                              ariaLabel: `${m.nameConflict.sportlots} — use this name for ${scope}`,
                             },
                             // The operator's own name, once they have typed one
                             // that is neither marketplace's. Present on the SAME
@@ -2953,8 +2961,8 @@ export default function CardPairingModal({
                               ? [
                                   {
                                     side: "custom" as const,
-                                    label: `Custom: ${m.nameConflict.custom}`,
-                                    ariaLabel: `Custom: ${m.nameConflict.custom} — use this name for ${scope}`,
+                                    label: m.nameConflict.custom,
+                                    ariaLabel: `${m.nameConflict.custom} — use this name for ${scope}`,
                                   },
                                 ]
                               : []),
@@ -2982,7 +2990,7 @@ export default function CardPairingModal({
                           handleKey={domKey(m.card)}
                           groupLabel={`Players conflict on ${scope}`}
                           warningId={`players-conflict-warning-${domKey(m.card)}`}
-                          warning="These marketplaces list different players on this card — pick the right ones before it is listed."
+                          warning="Potential players for this card — pick the right ones before it is listed."
                           radioGroupLabel={`Players for ${scope}`}
                           chosen={m.playersConflict.chosen}
                           // Scoped exactly like the name pills above,
@@ -2994,20 +3002,20 @@ export default function CardPairingModal({
                           options={[
                             {
                               side: "bsc",
-                              label: `BSC: ${joinPlayers(m.playersConflict.bsc)}`,
-                              ariaLabel: `BSC: ${joinPlayers(m.playersConflict.bsc)} — use these players for ${scope}`,
+                              label: joinPlayers(m.playersConflict.bsc),
+                              ariaLabel: `${joinPlayers(m.playersConflict.bsc)} — use these players for ${scope}`,
                             },
                             {
                               side: "sportlots",
-                              label: `SportLots: ${joinPlayers(m.playersConflict.sportlots)}`,
-                              ariaLabel: `SportLots: ${joinPlayers(m.playersConflict.sportlots)} — use these players for ${scope}`,
+                              label: joinPlayers(m.playersConflict.sportlots),
+                              ariaLabel: `${joinPlayers(m.playersConflict.sportlots)} — use these players for ${scope}`,
                             },
                             ...(m.playersConflict.custom !== undefined
                               ? [
                                   {
                                     side: "custom" as const,
-                                    label: `Custom: ${joinPlayers(m.playersConflict.custom)}`,
-                                    ariaLabel: `Custom: ${joinPlayers(m.playersConflict.custom)} — use these players for ${scope}`,
+                                    label: joinPlayers(m.playersConflict.custom),
+                                    ariaLabel: `${joinPlayers(m.playersConflict.custom)} — use these players for ${scope}`,
                                   },
                                 ]
                               : []),

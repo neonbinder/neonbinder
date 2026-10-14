@@ -763,10 +763,12 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     // The disagreement is announced as its own labelled region on the row.
     expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();
     // Both names are on screen — "Carl" is no longer thrown away by the merge.
-    expect(screen.getByText(/BSC: Mike Yastrzemski/)).toBeTruthy();
+    // NEO-344: each pill shows the bare value, never which marketplace sent it.
     expect(
-      screen.getByText(/SportLots: Mike Yastrzemski\|Carl Yastrzemski/),
-    ).toBeTruthy();
+      screen
+        .getAllByRole("radio")
+        .map((r) => r.textContent?.replace(/^✓ /, "")),
+    ).toEqual(["Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski"]);
   });
 
   test("neither name is pre-resolved as correct — BSC is marked as the current default, SportLots is one click away", () => {
@@ -777,10 +779,10 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     linkYastrzemski();
 
     const bscChoice = screen.getByRole("radio", {
-      name: 'BSC: Mike Yastrzemski — use this name for #227c',
+      name: 'Mike Yastrzemski — use this name for #227c',
     });
     const slChoice = screen.getByRole("radio", {
-      name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
+      name: 'Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
     });
     expect(bscChoice.getAttribute("aria-checked")).toBe("true");
     expect(slChoice.getAttribute("aria-checked")).toBe("false");
@@ -795,7 +797,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     fireEvent.click(
       screen.getByRole("radio", {
-        name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
+        name: 'Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
       }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -820,7 +822,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     expect(screen.getByLabelText("Unlink #227c Mike Yastrzemski · SSSP")).toBeTruthy();
     fireEvent.click(
       screen.getByRole("radio", {
-        name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
+        name: 'Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
       }),
     );
     expect(
@@ -839,12 +841,12 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     fireEvent.click(
       screen.getByRole("radio", {
-        name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
+        name: 'Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
       }),
     );
     fireEvent.click(
       screen.getByRole("radio", {
-        name: 'BSC: Mike Yastrzemski — use this name for #227c',
+        name: 'Mike Yastrzemski — use this name for #227c',
       }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -972,7 +974,9 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();
     expect(
-      screen.getByText(/SportLots: Mike Yastrzemski\|Carl Yastrzemski/),
+      screen.getByRole("radio", {
+        name: /^Mike Yastrzemski\|Carl Yastrzemski — /,
+      }),
     ).toBeTruthy();
   });
 
@@ -1057,11 +1061,11 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
         screen.getByRole("radiogroup", { name: "Name for #227c" }),
       ).toBeTruthy();
       expect(
-        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+        screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }),
       ).toBeTruthy();
       expect(
         screen.getByRole("radio", {
-          name: /^SportLots: Mike Yastrzemski\|Carl Yastrzemski —/,
+          name: /^Mike Yastrzemski\|Carl Yastrzemski —/,
         }),
       ).toBeTruthy();
     });
@@ -1093,7 +1097,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
       fireEvent.click(
         screen.getByRole("radio", {
-          name: /^SportLots: Mike Yastrzemski\|Carl Yastrzemski —/,
+          name: /^Mike Yastrzemski\|Carl Yastrzemski —/,
         }),
       );
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -1250,8 +1254,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       expect(
         screen.getByRole("radiogroup", { name: "Name for #227c" }),
       ).toBeTruthy();
-      expect(screen.getByRole("radio", { name: /^BSC:/ })).toBeTruthy();
-      expect(screen.getByRole("radio", { name: /^SportLots:/ })).toBeTruthy();
+      expect(screen.getByRole("radio", { name: /^Mike Yastrzemski — / })).toBeTruthy();
+      expect(screen.getByRole("radio", { name: /^Mike Yastrzemski\|Carl Yastrzemski — / })).toBeTruthy();
     });
 
     test("the radiogroup is described by the warning explaining WHY there is a choice", () => {
@@ -1265,7 +1269,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       const describedBy = group.getAttribute("aria-describedby");
       expect(describedBy).toBeTruthy();
       expect(document.getElementById(describedBy!)?.textContent).toMatch(
-        /marketplaces name this card differently/,
+        /Potential names for this card/,
       );
     });
 
@@ -1276,8 +1280,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       });
       linkYastrzemski();
 
-      const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
-      const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+      const bscChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
+      const slChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski\|Carl Yastrzemski — / });
       expect(bscChoice.tabIndex).toBe(0);
       expect(slChoice.tabIndex).toBe(-1);
     });
@@ -1289,8 +1293,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       });
       linkYastrzemski();
 
-      const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
-      const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+      const bscChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
+      const slChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski\|Carl Yastrzemski — / });
       bscChoice.focus();
 
       fireEvent.keyDown(bscChoice, { key: "ArrowRight" });
@@ -1306,9 +1310,10 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
   /**
    * a11y audit (NEO-189) — WCAG 2.5.3 Label in Name: the accessible name of a
    * control has to CONTAIN the control's own visible text, or a speech-input
-   * user saying what they see on screen ("click SportLots: ...") cannot match
-   * what assistive tech announces. `Use the SportLots name "..." for #N` does
-   * not contain the visible label `SportLots: ...` anywhere in it.
+   * user saying what they see on screen ("click <value>") cannot match
+   * what assistive tech announces. `Use the SportLots name "..." for #N` did
+   * not START with the visible label. Since NEO-344 the visible label is the
+   * bare value, with no marketplace prefix.
    */
   test("each name choice's accessible name starts with its own visible label (WCAG 2.5.3)", () => {
     renderModal({
@@ -1319,12 +1324,12 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     // SportLots starts UNCHECKED, so its visible text carries no checkmark —
     // this isolates the label-in-name check from the colour-blind fix below.
-    const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+    const slChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski\|Carl Yastrzemski — / });
     expect(slChoice.textContent).toBe(
-      "SportLots: Mike Yastrzemski|Carl Yastrzemski",
+      "Mike Yastrzemski|Carl Yastrzemski",
     );
     expect(slChoice.getAttribute("aria-label")).toMatch(
-      /^SportLots: Mike Yastrzemski\|Carl Yastrzemski\b/,
+      /^Mike Yastrzemski\|Carl Yastrzemski\b/,
     );
   });
 
@@ -1343,8 +1348,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     linkYastrzemski();
 
     // BSC is the default choice straight after LINK.
-    const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
-    const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+    const bscChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
+    const slChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski\|Carl Yastrzemski — / });
     expect(bscChoice.textContent?.startsWith("✓")).toBe(true);
     expect(slChoice.textContent?.startsWith("✓")).toBe(false);
 
@@ -1354,8 +1359,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
   });
 
   /**
-   * a11y audit (NEO-189) — the warning glyph is decorative: "These
-   * marketplaces name this card differently" already says everything the
+   * a11y audit (NEO-189) — the warning glyph is decorative: "Potential
+   * names for this card" already says everything the
    * glyph would, in words. Without aria-hidden, some screen readers announce
    * U+26A0 by its Unicode name ("warning sign") ahead of that sentence — a
    * redundant announcement, not a wrong one, but worth not shipping twice.
@@ -1368,7 +1373,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     linkYastrzemski();
 
     const warning = screen.getByText(
-      /These marketplaces name this card differently/,
+      /Potential names for this card/,
     );
     expect(warning.querySelector('[aria-hidden="true"]')?.textContent).toBe(
       "⚠",
@@ -1395,7 +1400,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     linkYastrzemski();
 
-    const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
+    const bscChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
     await waitFor(() => expect(document.activeElement).toBe(bscChoice));
   });
 
@@ -1642,11 +1647,11 @@ describe("CardPairingModal — same number, different cards (NEO-189)", () => {
       linkBoth();
 
       const mantleRow = screen
-        .getByRole("radio", { name: /^SportLots: Mickey Mantle/ })
+        .getByRole("radio", { name: /^Mickey Mantle/ })
         .closest('[role="radiogroup"]')!;
       await waitFor(() =>
         expect(
-          within(mantleRow as HTMLElement).getByRole("radio", { name: /^BSC:/ }),
+          within(mantleRow as HTMLElement).getByRole("radio", { name: /^Mike Yastrzemski — / }),
         ).toBe(document.activeElement),
       );
     });
@@ -1907,7 +1912,7 @@ describe("CardPairingModal — order does not depend on arrival order (NEO-201)"
     ]);
 
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Zack Wheeler/ }),
+      screen.getByRole("radio", { name: /^Zack Wheeler/ }),
     );
 
     // The name changed — and the row stayed exactly where it was.
@@ -1996,7 +2001,7 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
    * #227`. That is the same defect one level down and it bites harder, because
    * the pills are the control the operator actually activates and the
    * marketplaces routinely file ONE name across a card and its variation — so
-   * both rows here offer a radio announced "BSC: Mike Yastrzemski — use this
+   * both rows here offer a radio announced "Mike Yastrzemski — use this
    * name for #227", and choosing by name cannot say which card it renames.
    *
    * The scope is the only qualifier available: every name-derived candidate is
@@ -2016,10 +2021,10 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
     link("#227 Mike Yastrzemski · Sliding", "#227 Mickey Mantle");
 
     expect(accessibleNames("radio").sort()).toEqual([
-      "BSC: Mike Yastrzemski — use this name for #227 · In Dugout",
-      "BSC: Mike Yastrzemski — use this name for #227 · Sliding",
-      "SportLots: Carl Yastrzemski — use this name for #227 · In Dugout",
-      "SportLots: Mickey Mantle — use this name for #227 · Sliding",
+      "Carl Yastrzemski — use this name for #227 · In Dugout",
+      "Mickey Mantle — use this name for #227 · Sliding",
+      "Mike Yastrzemski — use this name for #227 · In Dugout",
+      "Mike Yastrzemski — use this name for #227 · Sliding",
     ]);
   });
 
@@ -2124,8 +2129,8 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
     // rename field read exactly as they did before the scope reached them —
     // no suffix, no separator, nothing appended.
     expect(accessibleNames("radio").sort()).toEqual([
-      "BSC: Mike Yastrzemski — use this name for #227",
-      "SportLots: Carl Yastrzemski — use this name for #227",
+      "Carl Yastrzemski — use this name for #227",
+      "Mike Yastrzemski — use this name for #227",
     ]);
     fireEvent.click(screen.getByLabelText("Edit name for #227 Mike Yastrzemski"));
     expect(screen.getByLabelText("Edit name for #227").tagName).toBe("INPUT");
@@ -2172,10 +2177,10 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
     const radiogroupsBefore = accessibleNames("radiogroup");
 
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Carl Yastrzemski/ }),
+      screen.getByRole("radio", { name: /^Carl Yastrzemski/ }),
     );
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Mickey Mantle/ }),
+      screen.getByRole("radio", { name: /^Mickey Mantle/ }),
     );
 
     // The choice took effect — both rows now carry SportLots' name…
@@ -2205,7 +2210,7 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
 
     const before = accessibleNames("group");
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Carl Yastrzemski/ }),
+      screen.getByRole("radio", { name: /^Carl Yastrzemski/ }),
     );
 
     expect(screen.getByLabelText("Unlink #227 Carl Yastrzemski")).toBeTruthy();
@@ -2326,7 +2331,7 @@ describe("CardPairingModal — enrichment that lands after the dialog opened", (
     );
 
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Carl Yastrzemski —/ }),
+      screen.getByRole("radio", { name: /^Carl Yastrzemski —/ }),
     );
     // The stream ticks again — same row, still carrying BSC's name, now with
     // its team resolved.
@@ -2825,15 +2830,15 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
 
     const custom = screen.getByRole("radio", {
-      name: "Custom: Carl Yastrzemski (Legend SP) — use this name for #227c",
+      name: "Carl Yastrzemski (Legend SP) — use this name for #227c",
     });
     expect(custom.getAttribute("aria-checked")).toBe("true");
     // Visible label plus the non-colour ✓ cue the other two pills carry.
-    expect(custom.textContent).toBe("✓ Custom: Carl Yastrzemski (Legend SP)");
+    expect(custom.textContent).toBe("✓ Carl Yastrzemski (Legend SP)");
     // Both marketplace names are still one click away — the choice stays as
     // reversible as the original two-way one.
-    expect(screen.getByRole("radio", { name: /^BSC:/ })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: /^SportLots:/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Mike Yastrzemski — / })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Carl Yastrzemski — / })).toBeTruthy();
   });
 
   test("the radiogroup still exposes exactly one checked option, with three of them", () => {
@@ -2843,13 +2848,13 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
 
     expect(radios()).toHaveLength(3);
     expect(checkedNames()).toEqual([
-      "Custom: Carl Yastrzemski (Legend SP) — use this name for #227c",
+      "Carl Yastrzemski (Legend SP) — use this name for #227c",
     ]);
 
     // …and it stays exactly one as the operator moves between them.
-    fireEvent.click(screen.getByRole("radio", { name: /^BSC:/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski — / }));
     expect(checkedNames()).toEqual([
-      "BSC: Mike Yastrzemski — use this name for #227c",
+      "Mike Yastrzemski — use this name for #227c",
     ]);
     expect(radios()).toHaveLength(3);
   });
@@ -2868,20 +2873,20 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
 
   /**
    * Typing a marketplace's name verbatim IS clicking its pill — anything else
-   * would render "Custom: Mike Yastrzemski" checked beside an unchecked,
-   * identical "BSC: Mike Yastrzemski", i.e. a control asking the operator to
+   * would render a typed "Mike Yastrzemski" checked beside an unchecked,
+   * identical BSC "Mike Yastrzemski", i.e. a control asking the operator to
    * choose between two spellings of the same decision.
    */
   test("typing BSC's name exactly is the same as choosing BSC — no third option appears", () => {
     renderModal({ autoMatched: [conflicted()] });
 
     // Move off BSC first, so landing back on it is a real transition.
-    fireEvent.click(screen.getByRole("radio", { name: /^SportLots:/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Carl Yastrzemski — / }));
     rename("#227c Carl Yastrzemski", "Mike Yastrzemski");
 
     expect(radios()).toHaveLength(2);
     expect(checkedNames()).toEqual([
-      "BSC: Mike Yastrzemski — use this name for #227c",
+      "Mike Yastrzemski — use this name for #227c",
     ]);
   });
 
@@ -2892,7 +2897,7 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
 
     expect(radios()).toHaveLength(2);
     expect(checkedNames()).toEqual([
-      "SportLots: Carl Yastrzemski — use this name for #227c",
+      "Carl Yastrzemski — use this name for #227c",
     ]);
   });
 
@@ -2915,7 +2920,7 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
 
     expect(
       screen
-        .getByRole("radio", { name: /^Custom:/ })
+        .getByRole("radio", { name: /^José Ramírez — / })
         .getAttribute("aria-checked"),
     ).toBe("true");
     expect(screen.getByLabelText("Unlink #30 José Ramírez")).toBeTruthy();
@@ -2925,10 +2930,10 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     renderModal({ autoMatched: [conflicted()] });
 
     rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
-    fireEvent.click(screen.getByRole("radio", { name: /^SportLots:/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Carl Yastrzemski — / }));
 
     expect(screen.getByLabelText("Unlink #227c Carl Yastrzemski")).toBeTruthy();
-    const custom = screen.getByRole("radio", { name: /^Custom:/ });
+    const custom = screen.getByRole("radio", { name: /^Carl Yastrzemski \(Legend SP\) — / });
     expect(custom.getAttribute("aria-checked")).toBe("false");
 
     // And it is still selectable, which is what makes the rename reversible.
@@ -2946,8 +2951,118 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
 
     expect(radios()).toHaveLength(3);
     expect(checkedNames()).toEqual([
-      "Custom: Carl Yastrzemski (Legend SP) — use this name for #227c",
+      "Carl Yastrzemski (Legend SP) — use this name for #227c",
     ]);
+  });
+
+  /**
+   * NEO-344 — the pills are bare names now, so a typed name that differs from
+   * a marketplace's only in what nobody can see or hear (a doubled space, an
+   * NBSP, NFD vs NFC) would be a third pill identical to that marketplace's.
+   * Those differences are folded; case and accents, which ARE visible
+   * corrections, are not.
+   */
+  describe("invisible differences select the matching side (NEO-344)", () => {
+    // Spelled with escapes so the source file cannot silently re-normalise them.
+    const JOSE_NFC = "José Ramírez";
+    const JOSE_NFD = "José Ramírez";
+
+    test("a doubled space selects BSC and commits BSC's own spelling", async () => {
+      const { onConfirm } = renderModal({ autoMatched: [conflicted()] });
+
+      fireEvent.click(screen.getByRole("radio", { name: /^Carl Yastrzemski — / }));
+      rename("#227c Carl Yastrzemski", "Mike  Yastrzemski");
+
+      expect(radios()).toHaveLength(2);
+      expect(checkedNames()).toEqual([
+        "Mike Yastrzemski — use this name for #227c",
+      ]);
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike Yastrzemski");
+    });
+
+    test("an interior NBSP selects SportLots", () => {
+      renderModal({ autoMatched: [conflicted()] });
+
+      rename("#227c Mike Yastrzemski", "Carl Yastrzemski");
+
+      expect(radios()).toHaveLength(2);
+      expect(checkedNames()).toEqual([
+        "Carl Yastrzemski — use this name for #227c",
+      ]);
+    });
+
+    test("an NFD-typed name selects the NFC side and keeps its NFC spelling", async () => {
+      const { onConfirm } = renderModal({
+        autoMatched: [autoConflict("30", "Andres Gimenez", JOSE_NFC)],
+      });
+
+      fireEvent.click(screen.getByLabelText("Edit name for #30 Andres Gimenez"));
+      const field = screen.getByLabelText("Edit name for #30");
+      fireEvent.change(field, { target: { value: JOSE_NFD } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      expect(radios()).toHaveLength(2);
+      expect(checkedNames()).toEqual([`${JOSE_NFC} — use this name for #30`]);
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(JOSE_NFC);
+    });
+
+    test("dropping the accents is still a correction, not a pick", () => {
+      renderModal({
+        autoMatched: [autoConflict("30", JOSE_NFC, "Andres Gimenez")],
+      });
+
+      fireEvent.click(screen.getByLabelText(`Edit name for #30 ${JOSE_NFC}`));
+      const field = screen.getByLabelText("Edit name for #30");
+      fireEvent.change(field, { target: { value: "Jose Ramirez" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      expect(radios()).toHaveLength(3);
+      expect(checkedNames()).toEqual(["Jose Ramirez — use this name for #30"]);
+    });
+
+    test("a case difference is still a correction, not a pick", () => {
+      renderModal({ autoMatched: [conflicted()] });
+
+      rename("#227c Mike Yastrzemski", "mike yastrzemski");
+
+      expect(radios()).toHaveLength(3);
+      expect(checkedNames()).toEqual([
+        "mike yastrzemski — use this name for #227c",
+      ]);
+    });
+
+    test("a typed custom name is stored canonically, so re-typing it is no new option", () => {
+      const { onConfirm } = renderModal({ autoMatched: [conflicted()] });
+
+      rename("#227c Mike Yastrzemski", "  Carl  Y.  ");
+      expect(screen.getByLabelText("Unlink #227c Carl Y.")).toBeTruthy();
+      rename("#227c Carl Y.", "Carl  Y.");
+
+      expect(radios()).toHaveLength(3);
+      expect(checkedNames()).toEqual(["Carl Y. — use this name for #227c"]);
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      return waitFor(() =>
+        expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Carl Y."),
+      );
+    });
+
+    test("on a row with no conflict, committing an untouched spaced name is a no-op", async () => {
+      const { onConfirm } = renderModal({
+        autoMatched: [{ card: pairedCard("12", "Mike  Yastrzemski"), confidence: 1 }],
+      });
+
+      // Testing Library collapses whitespace in the accessible name it matches.
+      fireEvent.click(screen.getByLabelText("Edit name for #12 Mike Yastrzemski"));
+      fireEvent.keyDown(screen.getByLabelText("Edit name for #12"), { key: "Enter" });
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike  Yastrzemski");
+    });
   });
 
   /**
@@ -2988,14 +3103,62 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     expect(screen.getByText(/1 name conflict/)).toBeTruthy();
   });
 
+  /**
+   * NEO-344 (Jason, 2026-10-13): "The name in NB should come from the user
+   * when there is a conflict and I don't want the user swayed by what
+   * marketplace the data comes from." Nothing the operator sees or hears in
+   * the name control says where a value came from — not the warning, not a
+   * pill, not a pill's accessible name, and not the operator's own typed
+   * option either ("keep it bare"). BSC stays the preselected default.
+   */
+  test("the name choice never says which marketplace (or the operator) a value came from", () => {
+    renderModal({ autoMatched: [conflicted()] });
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+    const group = screen.getByRole("group", { name: "Name conflict on #227c" });
+    expect(group.textContent).toContain(
+      "Potential names for this card — pick the right one before it is listed.",
+    );
+    expect(
+      radios().map((r) => [
+        r.textContent?.replace(/^✓ /, ""),
+        r.getAttribute("aria-label"),
+      ]),
+    ).toEqual([
+      ["Mike Yastrzemski", "Mike Yastrzemski — use this name for #227c"],
+      ["Carl Yastrzemski", "Carl Yastrzemski — use this name for #227c"],
+      [
+        "Carl Yastrzemski (Legend SP)",
+        "Carl Yastrzemski (Legend SP) — use this name for #227c",
+      ],
+    ]);
+    for (const el of [group, ...Array.from(group.querySelectorAll("*"))]) {
+      for (const text of [
+        el.getAttribute("aria-label") ?? "",
+        el.getAttribute("title") ?? "",
+      ]) {
+        expect(text).not.toMatch(/\b(BSC|SportLots|SL|Custom)\b/i);
+      }
+    }
+    expect(group.textContent).not.toMatch(/\b(BSC|SportLots|SL|Custom)\b/i);
+  });
+
+  test("BSC's value is still the preselected default (NEO-344 changed display only)", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    expect(checkedNames()).toEqual([
+      "Mike Yastrzemski — use this name for #227c",
+    ]);
+  });
+
   describe("a11y — three options in the radiogroup", () => {
     test("arrow keys cycle through all three and wrap, moving focus with selection", async () => {
       renderModal({ autoMatched: [conflicted()] });
       rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
 
-      const bsc = () => screen.getByRole("radio", { name: /^BSC:/ });
-      const sl = () => screen.getByRole("radio", { name: /^SportLots:/ });
-      const custom = () => screen.getByRole("radio", { name: /^Custom:/ });
+      const bsc = () => screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
+      const sl = () => screen.getByRole("radio", { name: /^Carl Yastrzemski — / });
+      const custom = () => screen.getByRole("radio", { name: /^Carl Yastrzemski \(Legend SP\) — / });
 
       // Starting on the custom option, which the rename checked.
       fireEvent.keyDown(custom(), { key: "ArrowRight" });
@@ -3015,8 +3178,8 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
       renderModal({ autoMatched: [conflicted()] });
       rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
 
-      const sl = () => screen.getByRole("radio", { name: /^SportLots:/ });
-      const custom = () => screen.getByRole("radio", { name: /^Custom:/ });
+      const sl = () => screen.getByRole("radio", { name: /^Carl Yastrzemski — / });
+      const custom = () => screen.getByRole("radio", { name: /^Carl Yastrzemski \(Legend SP\) — / });
 
       fireEvent.keyDown(custom(), { key: "ArrowLeft" });
       expect(checkedNames()).toEqual([sl().getAttribute("aria-label")]);
@@ -3034,14 +3197,14 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
       renderModal({ autoMatched: [conflicted()] });
       rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
 
-      const custom = screen.getByRole("radio", { name: /^Custom:/ });
+      const custom = screen.getByRole("radio", { name: /^Carl Yastrzemski \(Legend SP\) — / });
       expect(custom.textContent?.startsWith("✓")).toBe(true);
-      fireEvent.click(screen.getByRole("radio", { name: /^BSC:/ }));
+      fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski — / }));
       expect(custom.textContent?.startsWith("✓")).toBe(false);
       // …and its accessible name still STARTS with its visible label
       // (WCAG 2.5.3), unchecked, exactly like the other two.
       expect(custom.getAttribute("aria-label")).toMatch(
-        /^Custom: Carl Yastrzemski \(Legend SP\) —/,
+        /^Carl Yastrzemski \(Legend SP\) —/,
       );
     });
 
@@ -3111,7 +3274,7 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     expect(editor().value).toBe("A".repeat(121));
     // Nothing committed: the radiogroup still shows BSC's name winning.
     expect(
-      screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+      screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
         .getAttribute("aria-checked"),
     ).toBe("true");
   });
@@ -3317,120 +3480,64 @@ describe("CardPairingModal — drag-and-drop linking (NEO-189 follow-up)", () =>
 });
 
 /**
- * NEO-189 operator feedback — the Matched toggle sticks to the top of the
- * dialog's scroll body, so the collapse control is reachable from anywhere in
- * a 220-row list.
+ * NEO-189 operator feedback, revised by NEO-343 — the Matched toggle stays in
+ * reach however long the list is, by living ABOVE the scroller instead of
+ * sticking inside it.
  *
- * WHAT IS TESTABLE HERE, AND WHY IT IS ONLY THIS. `position: sticky` is a pure
- * layout behaviour and jsdom implements no layout at all: every box is 0×0,
- * nothing scrolls, and `getComputedStyle` returns the declared value whether
- * or not the element could ever stick. So a test that "scrolled" and asserted
- * the bar stayed put would pass on markup that is broken in a real browser —
- * worse than no test.
- *
- * What CAN be pinned is the set of conditions sticky needs, all of which are
- * structural:
- *   - the declaration is present, on a full-width opaque container rather than
- *     on the button (which is only as wide as its text);
- *   - it is inside the <section> that owns the matched list, which is what
- *     makes the bar un-stick at the list's end instead of hovering over the
- *     unmatched columns;
- *   - nothing between that container and the scroll container introduces its
- *     own overflow, transform, filter or containment — any one of those
- *     silently retargets the containing block and kills sticky. This is the
- *     failure mode a future wrapper div would introduce, and it is invisible
- *     in review;
- *   - the scroller carries scroll-padding-top, which is what stops the
- *     focus-driven auto-scroll after a link from parking the merged row
- *     underneath the bar.
+ * Why not sticky: a sticky bar paints over whatever row is under it, so at
+ * most scroll positions a row's own button is half hidden behind the toggle
+ * (axe-core target-size: "partially obscured", and only at some scrollTops).
+ * jsdom has no layout, so what can be pinned is the structure that rules the
+ * overlap out: the bar is not a descendant of the scroller, it is not sticky,
+ * and it comes before the scroller in DOM (and so tab) order.
  */
-describe("CardPairingModal — the Matched header sticks (NEO-189 follow-up)", () => {
-  const stickyBar = () =>
+describe("CardPairingModal — the Matched header sits above the scroller (NEO-343)", () => {
+  const matchedBar = () =>
     screen.getByLabelText(/^(Collapse|Expand) matched cards/)
       .parentElement as HTMLElement;
+  const scrollerOf = () =>
+    screen.getByLabelText("Unlink #1 Griffey").closest(".overflow-y-auto") as HTMLElement;
 
-  test("the toggle sits in a sticky, opaque, full-width bar", () => {
+  test("the toggle's bar is outside the scroll container, opaque and not sticky", () => {
     renderModal({
       autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
     });
 
-    const bar = stickyBar();
-    expect(bar.className).toContain("sticky");
-    expect(bar.className).toContain("top-0");
-    // Opaque, and the same colour as the dialog body — rows must disappear
-    // under it, not show through it.
-    expect(bar.className).toContain("bg-gray-900");
-    // Above the static matched rows and the draggable unmatched ones; dnd-kit's
-    // DragOverlay is fixed at z-999 and still passes over the top.
-    expect(bar.className).toContain("z-20");
-    // Full-bleed across the scroll container's padding, so no row edge is
-    // visible beside the bar.
-    expect(bar.className).toContain("-mx-4");
-  });
-
-  /**
-   * The bar leaked once already: with `pt-4` on the SCROLLER, the stuck bar sat
-   * 16px below the scrollport's top edge and rows slid up through the gap and
-   * were visible above it. The fix is that the bar owns that padding instead,
-   * so there is no band between the scrollport top and the bar for anything to
-   * show through — which means the two halves have to stay in sync, and a
-   * later "tidy `px-4 pb-4` back into `p-4`" silently reopens the gap.
-   *
-   * This is the one pairing jsdom CAN speak to. It cannot tell us the bar is
-   * flush (no layout), but it can tell us the invariant that makes it flush is
-   * still declared in both places.
-   */
-  test("the scroller has no top padding and the bar owns it instead", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
-    });
-
-    const bar = stickyBar();
-    const scroller = bar.closest(".overflow-y-auto") as HTMLElement;
-
-    // `p-4` would reintroduce the 16px see-through band above the stuck bar.
-    expect(scroller.className).not.toMatch(/(^|\s)p-4(\s|$)/);
-    expect(scroller.className).not.toMatch(/(^|\s)pt-\d/);
-    // The same 16px, now inside the bar's opaque box.
-    expect(bar.className).toContain("pt-4");
-    // And it still reads as a header rows travel under, not a clip edge.
-    expect(bar.className).toMatch(/border-b|shadow-/);
-  });
-
-  test("the sticky bar's containing block is the section that owns the list", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
-    });
-
-    const section = stickyBar().closest("section") as HTMLElement;
-    // Same <section> holds the row list, so the bar un-sticks when the matched
-    // list ends rather than following the operator into the columns below.
-    expect(section.contains(screen.getByLabelText("Unlink #1 Griffey"))).toBe(
-      true,
-    );
-  });
-
-  test("nothing between the bar and the scroll container can defeat sticky", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
-    });
-
-    const bar = stickyBar();
-    const scroller = bar.closest(".overflow-y-auto") as HTMLElement;
+    const bar = matchedBar();
+    const scroller = scrollerOf();
     expect(scroller).toBeTruthy();
 
-    // Any overflow, transform, filter or containment on an ancestor below the
-    // scroller re-roots the sticky element's containing block and it stops
-    // sticking — with no error and no visual clue in review.
-    const hostile = /(^|\s)(overflow-|transform|filter|contain-|backdrop-)/;
-    for (let el = bar.parentElement; el && el !== scroller; el = el.parentElement) {
-      expect(el.className).not.toMatch(hostile);
-    }
+    // Not inside the scroller: rows can only be clipped by its edge, never
+    // covered by a control.
+    expect(scroller.contains(bar)).toBe(false);
+    expect(bar.className).not.toMatch(/(^|\s)(sticky|fixed|absolute)(\s|$)/);
+    // A non-scrolling flex child, opaque and the dialog body's colour.
+    expect(bar.className).toContain("flex-none");
+    expect(bar.className).toContain("bg-gray-900");
+    // Its own edge is what reads as the header of the list below.
+    expect(bar.className).toContain("border-b");
+  });
 
-    // The other scroll cause Jason named: linking a pair focuses the merged
-    // row, and the browser scrolls it into view by itself. Without
-    // scroll-padding on the scroller it lands under the bar.
-    expect(scroller.className).toMatch(/(^|\s)scroll-pt-/);
+  test("the toggle precedes the rows in document and tab order", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+
+    const toggle = screen.getByLabelText(/^(Collapse|Expand) matched cards/);
+    const unlink = screen.getByLabelText("Unlink #1 Griffey");
+    expect(
+      toggle.compareDocumentPosition(unlink) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  test("the scroller carries no sticky-bar workarounds", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+
+    // `scroll-pt-*` only existed to keep a focus-driven scroll from parking a
+    // row under the sticky bar; the scroller now starts below the bar.
+    expect(scrollerOf().className).not.toMatch(/(^|\s)scroll-pt-/);
   });
 
   test("the toggle keeps its accessible name and its ref-driven focus", () => {
@@ -3446,9 +3553,8 @@ describe("CardPairingModal — the Matched header sticks (NEO-189 follow-up)", (
       "Collapse matched cards, 1 with a name conflict",
     );
     expect(toggle.tagName).toBe("BUTTON");
-    // Wrapping it changed nothing about focusability or tab order — the
-    // wrapper is an unfocusable div.
-    expect(stickyBar().getAttribute("tabindex")).toBeNull();
+    // The wrapper is an unfocusable div.
+    expect(matchedBar().getAttribute("tabindex")).toBeNull();
     toggle.focus();
     expect(document.activeElement).toBe(toggle);
 
@@ -3666,12 +3772,12 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     ).toBeTruthy();
     expect(
       screen.getByRole("radio", {
-        name: "BSC: Mike Yastrzemski — use these players for #227c",
+        name: "Mike Yastrzemski — use these players for #227c",
       }).getAttribute("aria-checked"),
     ).toBe("true");
     expect(
       screen.getByRole("radio", {
-        name: "SportLots: Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
+        name: "Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
       }).getAttribute("aria-checked"),
     ).toBe("false");
   });
@@ -3694,7 +3800,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ }),
+      screen.getByRole("radio", { name: /^Mike Yastrzemski \/ Carl/ }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
@@ -3768,7 +3874,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ }),
+      screen.getByRole("radio", { name: /^Mike Yastrzemski \/ Carl/ }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
@@ -3797,7 +3903,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
 
     // The pill that is already checked.
     fireEvent.click(
-      screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+      screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
@@ -3826,7 +3932,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+      screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
@@ -3958,12 +4064,12 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       typeRoster("Carl Yastrzemski | Willie Mays");
 
       const custom = screen.getByRole("radio", {
-        name: "Custom: Carl Yastrzemski / Willie Mays — use these players for #227c",
+        name: "Carl Yastrzemski / Willie Mays — use these players for #227c",
       });
       expect(custom.getAttribute("aria-checked")).toBe("true");
       // Both marketplace answers are still one click away.
       expect(
-        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
       ).toBe("false");
     });
@@ -3973,14 +4079,14 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       typeRoster("Carl Yastrzemski / Willie Mays");
 
       expect(
-        screen.getByRole("radio", { name: /^Custom: Carl Yastrzemski \/ Willie Mays/ }),
+        screen.getByRole("radio", { name: /^Carl Yastrzemski \/ Willie Mays/ }),
       ).toBeTruthy();
     });
 
     /**
      * Retyping one marketplace's answer IS picking it. Anything else leaves the
-     * group showing "Custom: <BSC's roster>" checked beside an identical,
-     * unchecked "BSC: <BSC's roster>" — a control asking the operator to choose
+     * group showing the typed copy of BSC's roster checked beside an identical,
+     * unchecked BSC pill — a control asking the operator to choose
      * between two spellings of one decision.
      */
     test("typing BSC's roster back is the same as clicking BSC, not a third option", () => {
@@ -3990,10 +4096,10 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       typeRoster("Mike Yastrzemski");
 
       expect(
-        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
       ).toBe("true");
-      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
     });
 
     test("typing SportLots' roster in a different order picks SportLots", () => {
@@ -4002,10 +4108,10 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
 
       expect(
         screen
-          .getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ })
+          .getByRole("radio", { name: /^Mike Yastrzemski \/ Carl/ })
           .getAttribute("aria-checked"),
       ).toBe("true");
-      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
     });
 
     test("a blank field is a no-op, not a roster of nothing", () => {
@@ -4013,10 +4119,10 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       typeRoster("   ");
 
       expect(
-        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
       ).toBe("true");
-      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
     });
 
     /**
@@ -4029,11 +4135,51 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       renderModal({ autoMatched: [autoPlayersConflict()] });
       typeRoster("A".repeat(121));
 
-      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
       expect(
-        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
       ).toBe("true");
+    });
+
+    /** NEO-344 — the roster control is as source-blind as the name one. */
+    test("the players choice never says which marketplace (or the operator) a roster came from", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("Carl Yastrzemski | Willie Mays");
+
+      const group = screen.getByRole("group", {
+        name: "Players conflict on #227c",
+      });
+      expect(group.textContent).toContain(
+        "Potential players for this card — pick the right ones before it is listed.",
+      );
+      expect(
+        screen
+          .getAllByRole("radio")
+          .map((r) => [
+            r.textContent?.replace(/^✓ /, ""),
+            r.getAttribute("aria-label"),
+          ]),
+      ).toEqual([
+        ["Mike Yastrzemski", "Mike Yastrzemski — use these players for #227c"],
+        [
+          "Mike Yastrzemski / Carl Yastrzemski",
+          "Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
+        ],
+        [
+          "Carl Yastrzemski / Willie Mays",
+          "Carl Yastrzemski / Willie Mays — use these players for #227c",
+        ],
+      ]);
+      for (const el of [group, ...Array.from(group.querySelectorAll("*"))]) {
+        for (const text of [
+          el.getAttribute("aria-label") ?? "",
+          el.getAttribute("title") ?? "",
+        ]) {
+          expect(text).not.toMatch(/\b(BSC|SportLots|SL|Custom)\b/i);
+        }
+      }
+      expect(group.textContent).not.toMatch(/\b(BSC|SportLots|SL|Custom)\b/i);
     });
 
     test("more than MAX_CARD_PLAYERS names is refused", () => {
@@ -4042,7 +4188,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
         Array.from({ length: 21 }, (_, i) => `Player ${i}`).join(" | "),
       );
 
-      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
     });
 
     /**
@@ -4114,7 +4260,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     );
     expect(
       screen.getByRole("radio", {
-        name: "SportLots: Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
+        name: "Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
       }),
     ).toBeTruthy();
   });
@@ -4126,7 +4272,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     fireEvent.keyDown(group, { key: "ArrowRight" });
     expect(
       screen
-        .getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ })
+        .getByRole("radio", { name: /^Mike Yastrzemski \/ Carl/ })
         .getAttribute("aria-checked"),
     ).toBe("true");
 
@@ -4134,7 +4280,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     fireEvent.keyDown(group, { key: "ArrowRight" });
     expect(
       screen
-        .getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        .getByRole("radio", { name: /^Mike Yastrzemski —/ })
         .getAttribute("aria-checked"),
     ).toBe("true");
 
@@ -4142,7 +4288,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     fireEvent.keyDown(group, { key: "ArrowLeft" });
     expect(
       screen
-        .getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ })
+        .getByRole("radio", { name: /^Mike Yastrzemski \/ Carl/ })
         .getAttribute("aria-checked"),
     ).toBe("true");
   });
@@ -4211,7 +4357,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     ).toBeTruthy();
     expect(
       screen
-        .getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        .getByRole("radio", { name: /^Mike Yastrzemski —/ })
         .getAttribute("aria-checked"),
     ).toBe("true");
   });
@@ -4269,10 +4415,10 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
         .map((el) => el.getAttribute("aria-label"))
         .sort(),
     ).toEqual([
-      "BSC: Mickey Mantle — use these players for #227 · In Dugout",
-      "BSC: Mike Yastrzemski — use these players for #227 · Sliding",
-      "SportLots: Carl Yastrzemski — use these players for #227 · Sliding",
-      "SportLots: Willie Mays — use these players for #227 · In Dugout",
+      "Carl Yastrzemski — use these players for #227 · Sliding",
+      "Mickey Mantle — use these players for #227 · In Dugout",
+      "Mike Yastrzemski — use these players for #227 · Sliding",
+      "Willie Mays — use these players for #227 · In Dugout",
     ]);
   });
 });

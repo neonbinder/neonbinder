@@ -2,7 +2,9 @@
 // NEO-137/189/220: syncing the real 2024 Topps Chrome Insert > Future Stars
 // checklist opens the Match Cards dialog instead of committing; a manual
 // cross-link whose two sides name the card differently raises a name-conflict
-// choice (BSC by default, SportLots on request, or a typed third name);
+// choice (BSC's value preselected, SportLots' on request, or a typed third
+// name); NEO-344: every choice is the bare value, never which marketplace
+// said it, and the warning reads "Potential names/players for this card";
 // a conflict does not block Confirm; Cancel asks to discard and writes nothing.
 // READ-ONLY on the shared set: the flow only ever cancels.
 //
@@ -10,6 +12,7 @@
 // sync commits at once), so the paused branch never syncs; it proves the
 // pause on the page instead.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { escapeRe } from "../../support/cards";
 import {
   columnHeading,
   columnOption,
@@ -90,57 +93,102 @@ test(
     await expect(dialog.getByRole("button", { name: /^Expand matched cards/ })).toBeVisible();
     await expect(dialog.getByText(/BSC only \(2\)/)).toBeVisible();
 
+    // NEO-344: the pills no longer say which marketplace a value came from,
+    // so both names are read where the screen still says which side a card is
+    // on: the two unmatched columns. A row's name is `<verb> #<number> <name>`
+    // (plus ` · <variation>` on a variation), so stripping the verb and the
+    // number leaves the value its pill will show. Read BEFORE the BSC row is
+    // selected: selecting renames it to `#FS-1 …, selected. Press to deselect.`.
+    // No live value is hardcoded.
+    const bscRow = dialog.getByRole("button", { name: /^Select BSC card #FS-1 / });
+    const slRow = dialog.getByRole("button", { name: /^Link selected BSC card to #FS-2 / });
+    const nameOf = async (row: typeof bscRow, prefix: string) =>
+      ((await row.getAttribute("aria-label")) ?? "").replace(prefix, "").replace(/ · .*$/, "").trim();
+    await expect(bscRow).toBeVisible();
+    await expect(slRow).toBeVisible();
+    const bscName = await nameOf(bscRow, "Select BSC card #FS-1 ");
+    const slName = await nameOf(slRow, "Link selected BSC card to #FS-2 ");
+    // The data precondition, stated (R2): #FS-1 and #FS-2 must be different
+    // players for there to be a disagreement at all.
+    expect(bscName, "#FS-1's BSC name").not.toBe("");
+    expect(slName, "#FS-1 and #FS-2 must name different players").not.toBe(bscName);
+
     // Cross-link BSC's #FS-1 to SportLots' #FS-2.
-    await dialog.getByRole("button", { name: /^Select BSC card #FS-1 / }).click();
+    await bscRow.click();
     await expect(dialog.getByRole("button", { name: /^#FS-1 .*, selected\. Press to deselect\.$/ })).toBeVisible();
-    await dialog.getByRole("button", { name: /^Link selected BSC card to #FS-2 / }).click();
+    await slRow.click();
 
     // The warning is surfaced AND the section opened itself to show it.
     await expect(dialog.getByRole("button", { name: /^Collapse matched cards, .* with a name conflict$/ })).toBeVisible();
     await expect(dialog.getByText(/name conflict/).first()).toBeVisible();
 
-    // The row: warning region, the explanation, and the two names as a group.
-    await expect(dialog.getByRole("group", { name: "Name conflict on #FS-1" })).toBeVisible();
-    await expect(dialog.getByText(/These marketplaces name this card differently/)).toBeVisible();
-    await expect(dialog.getByRole("radiogroup", { name: "Name for #FS-1" })).toBeVisible();
-    const bscPill = dialog.getByRole("radio", { name: /^BSC: .* — use this name for #FS-1$/ });
-    const slPill = dialog.getByRole("radio", { name: /^SportLots: .* — use this name for #FS-1$/ });
+    // The row: the warning group (exact, or #FS-10 … #FS-19 would answer),
+    // its sentence, and the names as a single-select group. NEO-344: the
+    // sentence names no marketplace.
+    const nameGroup = dialog.getByRole("group", { name: "Name conflict on #FS-1", exact: true });
+    await expect(nameGroup).toBeVisible();
+    await expect(
+      nameGroup.getByText("Potential names for this card — pick the right one before it is listed."),
+    ).toBeVisible();
+    await expect(dialog.getByRole("radiogroup", { name: "Name for #FS-1", exact: true })).toBeVisible();
+    // Each pill is the BARE value, announced and shown: its accessible name is
+    // `<value> — use this name for #FS-1` and its text the value (the checked
+    // pill's `✓ ` is a separate aria-hidden span).
+    const pill = (value: string) =>
+      dialog.getByRole("radio", { name: `${value} — use this name for #FS-1`, exact: true });
+    const bscPill = pill(bscName);
+    const slPill = pill(slName);
     await expect(bscPill).toBeVisible();
+    await expect(bscPill).toHaveText(new RegExp(`^(✓ )?${escapeRe(bscName)}$`));
     await expect(slPill).toBeVisible();
+    await expect(slPill).toHaveText(new RegExp(`^(✓ )?${escapeRe(slName)}$`));
+
+    // The cross-link puts two different players' rosters on one row, so the
+    // players decision is raised too, worded the same way.
+    const playersGroup = dialog.getByRole("group", { name: "Players conflict on #FS-1", exact: true });
+    await expect(playersGroup).toBeVisible();
+    await expect(
+      playersGroup.getByText("Potential players for this card — pick the right ones before it is listed."),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("radio", { name: /— use these players for #FS-1$/ }).first(),
+    ).toBeVisible();
+
+    // …and no marketplace is named anywhere in the conflict UI: not the old
+    // sentence, not a prefixed choice name or text, title or roster. These
+    // negatives ride on the positives just above (R2).
+    const sourcePrefix = /^(BSC|SportLots|Custom): /;
+    await expect(dialog.getByText(/These marketplaces/)).toHaveCount(0);
+    await expect(dialog.getByRole("radio", { name: sourcePrefix })).toHaveCount(0);
+    await expect(dialog.getByRole("radio").filter({ hasText: /^(✓ )?(BSC|SportLots|Custom): / })).toHaveCount(0);
     await expectAccessible(page, { within: dialog, label: "Match Cards dialog, name conflict on a manual link" });
 
-    // Both names are read off the screen, so no live value is hardcoded.
-    const bscName = ((await bscPill.getAttribute("aria-label")) ?? "")
-      .replace(/^BSC: /, "")
-      .replace(/ — use this name for #FS-1$/, "")
-      .trim();
-    const slName = ((await slPill.getAttribute("aria-label")) ?? "")
-      .replace(/^SportLots: /, "")
-      .replace(/ — use this name for #FS-1$/, "")
-      .trim();
-    // #FS-1 and #FS-2 must be different players for there to be a disagreement.
-    expect(slName).not.toBe(bscName);
-
-    // BSC is the default: the merged row is saved with BSC's name.
+    // BSC stays preselected (Jason, 2026-10-13: only its label goes): read on
+    // the name the merged row will be saved with, which its Unlink carries.
+    await expect(bscPill).toBeChecked();
     await expect(dialog.getByRole("button", { name: `Unlink #FS-1 ${bscName}`, exact: true })).toBeVisible();
 
-    // Choosing SportLots changes the name the card would be saved with.
+    // Choosing the other value, by the value it shows, changes the name the
+    // card would be saved with.
     await slPill.click();
     await expect(dialog.getByRole("button", { name: `Unlink #FS-1 ${slName}`, exact: true })).toBeVisible();
     await expect(dialog.getByRole("button", { name: `Unlink #FS-1 ${bscName}`, exact: true })).toBeHidden();
 
-    // Neither marketplace is right: the operator types the name, which joins
-    // the same group as a third checked option.
+    // Neither value is right: the operator types the name, which joins the
+    // same group as a third checked option, bare like the others.
     await dialog.getByRole("button", { name: /^Edit name for #FS-1 / }).click();
-    const nameField = dialog.getByRole("textbox", { name: "Edit name for #FS-1" });
+    const nameField = dialog.getByRole("textbox", { name: "Edit name for #FS-1", exact: true });
     await expect(nameField).toBeVisible();
     await expectAccessible(page, { within: dialog, label: "Match Cards dialog, editing the card name" });
     await nameField.fill("NB Operator Name");
     await nameField.press("Enter");
-    await expect(dialog.getByRole("radio", { name: /^Custom: NB Operator Name.* — use this name for #FS-1$/ })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: /^Unlink #FS-1 NB Operator Name/ })).toBeVisible();
+    const typedPill = pill("NB Operator Name");
+    await expect(typedPill).toBeVisible();
+    await expect(typedPill).toBeChecked();
+    await expect(dialog.getByRole("radio", { name: sourcePrefix })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Unlink #FS-1 NB Operator Name", exact: true })).toBeVisible();
     await expect(dialog.getByRole("button", { name: `Unlink #FS-1 ${slName}`, exact: true })).toBeHidden();
-    // Both marketplace names stay on offer.
+    // Both fetched values stay on offer.
     await expect(bscPill).toBeVisible();
     await expect(slPill).toBeVisible();
 

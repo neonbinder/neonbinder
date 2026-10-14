@@ -54,6 +54,15 @@ import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
 import SkippedNamesPanel from "./SkippedNamesPanel";
 import { needsAttention } from "./card-attention";
+import ChecklistSearch, { searchEmptyText } from "./ChecklistSearch";
+import {
+  cardSearchHaystack,
+  haystackMatches,
+  parseCardSearchTerms,
+  type CardSearchHaystack,
+  type CardSearchLookups,
+} from "@/lib/cards/card-search";
+import { teamFullName } from "@/lib/teams/team-name";
 import SetRowActionButton from "./SetRowActionButton";
 import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
@@ -565,6 +574,14 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
  * short enough that the announcement still lands with the change.
  */
 const ATTENTION_ANNOUNCE_DEBOUNCE_MS = 1500;
+
+/** NEO-343: matches no term; never reached (every card has a haystack). */
+const NO_HAYSTACK: CardSearchHaystack = {
+  number: "",
+  text: "",
+  platforms: [],
+  attention: false,
+};
 
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;
@@ -1112,6 +1129,11 @@ export default function CardChecklist({
   // NEO-21: let the operator collapse the checklist back to just this set's
   // own cards. Local to this component — nothing above needs it.
   const [hideCrossListed, setHideCrossListed] = useState(false);
+  // NEO-343: the search box's query, and whether it has ever had focus on this
+  // mount — the cue to load the team and player names it matches against (see
+  // `searchLookups`), so a checklist nobody searches never subscribes to them.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchWarm, setSearchWarm] = useState(false);
   /**
    * NEO-102 — the "needs attention" pass.
    *
@@ -1141,6 +1163,7 @@ export default function CardChecklist({
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
     setHideCrossListed(false);
+    setSearchQuery("");
     setPairingPhase("closed");
     // NEO-255: a fetch started on one variant says nothing about another.
     setSoloFetch(null);
@@ -2552,6 +2575,97 @@ export default function CardChecklist({
       .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
   }, [cards, sourceFilter, hideCrossListed]);
 
+  /**
+   * NEO-343 — the search box, applied AFTER the source filter and the
+   * cross-release toggle, so it narrows whatever those already narrowed (AND).
+   * What a query finds is `lib/cards/card-search.ts`'s rule: the strings the
+   * row renders — number, names, teams, features, which marketplace slots are
+   * filled.
+   *
+   * Team and player names. A row resolves its own team names per row
+   * (`CardChecklistItem`), and only for the rows Virtuoso has mounted, so the
+   * checklist never holds them for the whole set. Searching needs all of them,
+   * so they are read here through the same bounded `getManyByIds` queries the
+   * row and the pickers use (one `db.get` per DISTINCT id) — but only once the
+   * search field has been focused. A checklist nobody searches costs nothing
+   * extra. Ids are sorted so a reactive update that re-orders cards does not
+   * re-subscribe. Until the names arrive a query still matches everything else
+   * on the card (its own name, printed names, number, features, platform).
+   */
+  const searchTerms = useMemo(
+    () => parseCardSearchTerms(searchQuery),
+    [searchQuery],
+  );
+  const searching = searchTerms.length > 0;
+  const searchTeamIds = useMemo(() => {
+    const ids = new Set<Id<"teams">>();
+    for (const card of cards ?? []) {
+      for (const id of card.teamOnCardIds ?? []) ids.add(id);
+    }
+    return [...ids].sort();
+  }, [cards]);
+  const searchPlayerIds = useMemo(() => {
+    const ids = new Set<Id<"players">>();
+    for (const card of cards ?? []) {
+      for (const id of card.playerIds ?? []) ids.add(id);
+    }
+    return [...ids].sort();
+  }, [cards]);
+  const searchTeamRows = useQuery(
+    api.teams.getManyByIds,
+    searchWarm && searchTeamIds.length > 0 ? { ids: searchTeamIds } : "skip",
+  );
+  const searchPlayerRows = useQuery(
+    api.players.getManyByIds,
+    searchWarm && searchPlayerIds.length > 0
+      ? { ids: searchPlayerIds }
+      : "skip",
+  );
+  const searchLookups = useMemo<CardSearchLookups>(
+    () => ({
+      teamNames: new Map(
+        (searchTeamRows ?? []).map((t) => [t._id as string, teamFullName(t)]),
+      ),
+      playerNames: new Map(
+        (searchPlayerRows ?? []).map((p) => [p._id as string, p.name]),
+      ),
+    }),
+    [searchTeamRows, searchPlayerRows],
+  );
+  // Built once per (cards, names) rather than per keystroke: typing only
+  // re-runs the substring checks below.
+  const searchHaystacks = useMemo(() => {
+    if (!searching) return null;
+    const map = new Map<string, CardSearchHaystack>();
+    for (const card of cards ?? []) {
+      map.set(card._id as string, cardSearchHaystack(card, searchLookups));
+    }
+    return map;
+  }, [cards, searchLookups, searching]);
+  const searchedCards = useMemo(() => {
+    if (!searchHaystacks) return sortedCards;
+    return sortedCards.filter((c) =>
+      haystackMatches(
+        searchHaystacks.get(c._id as string) ?? NO_HAYSTACK,
+        searchTerms,
+      ),
+    );
+  }, [sortedCards, searchHaystacks, searchTerms]);
+
+  // NEO-343: a new query starts the list from its top, where its first match
+  // is. Not on mount: the list opens at its END on purpose (see
+  // `initialTopMostItemIndex`), and a mount is not a query change.
+  const lastSearchQueryRef = useRef(searchQuery);
+  useEffect(() => {
+    if (lastSearchQueryRef.current === searchQuery) return;
+    lastSearchQueryRef.current = searchQuery;
+    virtuosoRef.current?.scrollToIndex({
+      index: 0,
+      align: "start",
+      behavior: "auto",
+    });
+  }, [searchQuery]);
+
   // NEO-189 — variations hang off their parent instead of sitting flat in the
   // scroll.
   //
@@ -2584,7 +2698,7 @@ export default function CardChecklist({
 
   const variationsByParent = useMemo(() => {
     const map = new Map<string, typeof sortedCards>();
-    for (const card of sortedCards) {
+    for (const card of searchedCards) {
       if (!card.variationOfCardId) continue;
       const key = card.variationOfCardId as string;
       const bucket = map.get(key);
@@ -2592,10 +2706,10 @@ export default function CardChecklist({
       else map.set(key, [card]);
     }
     return map;
-  }, [sortedCards]);
+  }, [searchedCards]);
 
   const displayRows = useMemo(() => {
-    const presentIds = new Set(sortedCards.map((c) => c._id as string));
+    const presentIds = new Set(searchedCards.map((c) => c._id as string));
     // NEO-189: the open card's parent counts as expanded, whatever the toggle
     // says.
     //
@@ -2606,11 +2720,14 @@ export default function CardChecklist({
     // `expandedParents` so this never fights the operator's own toggle: close
     // the parent and it stays closed once the selection moves on.
     const selectedParentId = selectedCardId
-      ? (sortedCards.find((c) => c._id === selectedCardId)
+      ? (searchedCards.find((c) => c._id === selectedCardId)
           ?.variationOfCardId as string | undefined)
       : undefined;
+    // NEO-343: while searching, every match is shown — a matching variation
+    // under a matching parent is listed under it, open, whatever the toggle
+    // says (the toggle is withdrawn while searching; see the row below).
     const isExpanded = (id: string) =>
-      expandedParents.has(id) || id === selectedParentId;
+      searching || expandedParents.has(id) || id === selectedParentId;
     const rows: Array<{
       card: (typeof sortedCards)[number];
       isVariation: boolean;
@@ -2624,7 +2741,7 @@ export default function CardChecklist({
       // instead of `undefined`.
       parentCardNumber?: string;
     }> = [];
-    for (const card of sortedCards) {
+    for (const card of searchedCards) {
       // Rendered under its parent below, unless that parent is filtered out.
       if (
         card.variationOfCardId &&
@@ -2656,12 +2773,28 @@ export default function CardChecklist({
     }
     return rows;
   }, [
-    sortedCards,
+    searchedCards,
+    searching,
     variationsByParent,
     expandedParents,
     selectedCardId,
     cardNumberById,
   ]);
+
+  // NEO-343 (a11y): a search that drops the OPEN card from the results closes
+  // its panel for good, rather than leaving the selection parked. Parked, the
+  // panel would remount the moment the card matched again (clearing the
+  // search does exactly that) and take focus from the search field the
+  // operator is typing in. Adjusted during render (React's "storing
+  // information from previous renders" pattern), so the panel is never drawn
+  // for a card the list no longer shows.
+  if (
+    searching &&
+    selectedCardId !== null &&
+    !displayRows.some((r) => r.card._id === selectedCardId)
+  ) {
+    setSelectedCardId(null);
+  }
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
@@ -3344,6 +3477,20 @@ export default function CardChecklist({
             : ""}
         </p>
 
+        {/* NEO-343 — search, directly above the list it narrows. Shown once
+            there is a list to search (and kept while a query is typed, so the
+            field never vanishes from under the cursor). */}
+        {(sortedCards.length > 0 || searchQuery !== "") && (
+          <ChecklistSearch
+            query={searchQuery}
+            onQueryChange={setSearchQuery}
+            onFocus={() => setSearchWarm(true)}
+            active={searching}
+            matchedCount={searchedCards.length}
+            totalCount={sortedCards.length}
+          />
+        )}
+
         {sortedCards.length === 0 ? (
           <div className="text-center py-6">
             <p className="text-gray-500 dark:text-gray-400 mb-4">
@@ -3388,6 +3535,13 @@ export default function CardChecklist({
             }}
             className={editsHeld ? "opacity-60 cursor-not-allowed" : undefined}
           >
+          {searchedCards.length === 0 ? (
+            // NEO-343: the query found nothing. The field and its clear
+            // button sit directly above, so this only has to say so.
+            <p className="text-center py-6 text-gray-500 dark:text-gray-400">
+              {searchEmptyText(searchQuery)}
+            </p>
+          ) : (
           <Virtuoso
             ref={virtuosoRef}
             data={displayRows}
@@ -3403,8 +3557,13 @@ export default function CardChecklist({
                   isVariation={row.isVariation}
                   isExpanded={row.expanded}
                   parentCardNumber={row.parentCardNumber}
+                  // NEO-343: withdrawn while searching — every match is
+                  // already listed open (see `displayRows`), so a toggle
+                  // would change nothing.
                   onToggleVariations={
-                    row.variationCount > 0 ? toggleVariations : undefined
+                    row.variationCount > 0 && !searching
+                      ? toggleVariations
+                      : undefined
                   }
                 />
               </div>
@@ -3418,12 +3577,19 @@ export default function CardChecklist({
             // `scrollUntilVisible`. Initial-bottom also matches how a
             // real operator returns to a checklist: they want to see what
             // they were last working on, not browse from #001 every time.
+            //
+            // NEO-343: a search result opens at its FIRST match instead — the
+            // list remounts when a query that found nothing starts finding
+            // cards again.
             initialTopMostItemIndex={
-              displayRows.length > 0 ? displayRows.length - 1 : 0
+              searching || displayRows.length === 0
+                ? 0
+                : displayRows.length - 1
             }
             style={{ height: "min(70vh, 800px)" }}
             increaseViewportBy={{ top: 200, bottom: 400 }}
           />
+          )}
           </div>
         )}
       </div>
