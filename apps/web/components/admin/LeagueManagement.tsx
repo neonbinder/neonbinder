@@ -118,10 +118,9 @@ const COUNTER_ANNOUNCE_DEBOUNCE_MS = 400;
  * which is also the background `PlayerManagement` measures its row team colour
  * against.
  *
- * Explicit rather than inherited from the page: `--background` flips to white
- * under a light-mode OS, so a colour measured against "whatever is behind this"
- * would be measured against the wrong thing for anyone whose system is not in
- * dark mode. A chip that carries its own background can be measured honestly.
+ * Explicit rather than inherited from the page: a colour measured against
+ * "whatever is behind this" is only as honest as that surface is stable. A chip
+ * that carries its own background can be measured honestly.
  */
 const TEAM_CHIP_BG = "#0f172a";
 
@@ -1219,7 +1218,7 @@ export default function LeagueManagement() {
                operator is being handed to the new league's panel and moving
                them off it would be a worse bug than the one this fixes. */
             <p
-              className={`pointer-events-none sticky top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
+              className={`pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
                 status.isError ? "text-neon-pink" : "text-slate-300"
               }`}
               role={status.isError ? "alert" : "status"}

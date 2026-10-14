@@ -86,10 +86,10 @@ A plan document, written to be read by a person and executed by agents:
    (disjoint from every other row), done criteria, who tests it.
    Builders are `neonbinder-web-dev`, `marketplace-adapter-dev`,
    `puppeteer-security-engineer`; `convex-schema-specialist` plans schema;
-   tests are `unit-test-author` and `maestro-e2e-author`; the audit round is
+   tests are `unit-test-author` and `playwright-e2e-author`; the audit round is
    `security-auditor`, `accessibility-auditor` and `card-collector-tester`.
 5. **Test and E2E coverage** — what proves this works, including which
-   existing flows are affected. Retiring a flow needs replacement coverage
+   existing specs are affected. Retiring a spec needs replacement coverage
    first.
 6. **Risks and open questions** — ranked, each with what it would cost to be
    wrong.

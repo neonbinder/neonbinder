@@ -2351,6 +2351,105 @@ describe("CardPairingModal — enrichment that lands after the dialog opened", (
 });
 
 /**
+ * NEO-341 — Confirm waits for the end of the team lookups the CLIENT has seen.
+ *
+ * `isStreaming` goes false when the fetch action's promise resolves, and that
+ * can happen before the subscription carrying the last chunk of BSC team
+ * writes reaches the browser. Confirming in that window saved those cards
+ * without a team and kept the teams out of the entity-review wizard.
+ * `streamSettled` is the parent's word that the batch, with every lookup
+ * landed, has arrived; the modal latches it in the SAME reducer step that
+ * folds in the teams, so Confirm can never act on the flag without the data.
+ */
+describe("CardPairingModal — Confirm waits for streamSettled (NEO-341)", () => {
+  const withoutTeam = pairedCard("50", "Elly De La Cruz");
+  const withTeam: PairingCard = { ...withoutTeam, teams: ["Cincinnati Reds"] };
+  const data = (card: PairingCard) => ({
+    autoMatched: [{ card, confidence: 1 }],
+    unmatchedBsc: [],
+    unmatchedSl: [],
+  });
+
+  function renderGate(card: PairingCard, streamSettled: boolean | undefined) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const ui = (c: PairingCard, settled: boolean | undefined) => (
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        isStreaming={false}
+        streamSettled={settled}
+        streamProgress={{ ready: settled ? 1 : 0, total: 1 }}
+        initialData={data(c)}
+      />
+    );
+    const { rerender } = render(ui(card, streamSettled));
+    return {
+      onConfirm,
+      update: (c: PairingCard, settled: boolean | undefined) =>
+        rerender(ui(c, settled)),
+    };
+  }
+
+  test("fetch resolved but the end of the lookups not yet seen: Confirm stays blocked", async () => {
+    const { onConfirm } = renderGate(withoutTeam, false);
+    const confirm = screen.getByLabelText("Confirm card matches");
+
+    expect(confirm.textContent).toBe("Loading…");
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(confirm.getAttribute("aria-describedby")).toBe(
+      "pairing-streaming-status",
+    );
+    // The same in-progress line as during the fetch — the wait is still a wait.
+    // (NEO-330 a11y: the visible sentence is static text; the coarse
+    // announcements go through the separate status region.)
+    expect(
+      document.getElementById("pairing-streaming-status")?.textContent,
+    ).toMatch(
+      /teams are still resolving in the background \(0 of 1 done\)/,
+    );
+
+    fireEvent.click(confirm);
+    await act(async () => {});
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  test("once settled arrives with the last teams, Confirm unlocks and carries them", async () => {
+    const { onConfirm, update } = renderGate(withoutTeam, false);
+
+    update(withTeam, true);
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.textContent).toBe("Confirm");
+    expect(confirm.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(/teams are still resolving/)).toBeNull();
+
+    fireEvent.click(confirm);
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teams).toEqual([
+      "Cincinnati Reds",
+    ]);
+  });
+
+  test("settled is latched: a later subscription value cannot re-lock Confirm", () => {
+    const { update } = renderGate(withoutTeam, false);
+    update(withTeam, true);
+    // e.g. the parked → back-to-matching trip, after which the parent's own
+    // derivation may no longer hold.
+    update(withTeam, false);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+  });
+
+  test("a caller that does not stream (prop omitted) is not gated", () => {
+    renderGate(withTeam, undefined);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+  });
+});
+
+/**
  * NEO-189 follow-up — the operator retypes a matched card's name.
  *
  * The gap this closes: the name-conflict control lets the operator pick

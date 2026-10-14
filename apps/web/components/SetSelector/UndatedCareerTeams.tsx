@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Input } from "../primitives/Input";
 import type { CareerTeamDraft } from "./CareerTeamEntry";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
@@ -61,6 +61,7 @@ export default function UndatedCareerTeams({
   names,
   disabled,
   onAdd,
+  onOpenChange,
 }: {
   /**
    * `enrichment.undatedCareerTeams`, minus anything the operator has already
@@ -71,6 +72,13 @@ export default function UndatedCareerTeams({
   disabled?: boolean;
   /** Promote one lead into the wizard's staged manual career teams. */
   onAdd: (entry: CareerTeamDraft) => void;
+  /**
+   * NEO-341 — told when a year form opens and when the last one closes (Save,
+   * Cancel, Escape, or this panel unmounting with one open). The review wizard
+   * holds the row on screen while a form is open, so half-typed years are
+   * never unmounted by a lookup settling elsewhere in the batch.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const headingId = useId();
   /**
@@ -102,6 +110,26 @@ export default function UndatedCareerTeams({
    * cost a second render to clear it.
    */
   const refocusRef = useRef<string | null>(null);
+
+  // Transitions only, through a ref — see SportSwitch's `onOpenChange`.
+  // A form whose name has left the list is not on screen, so it holds nothing.
+  const formOpen = openFor !== null && names.includes(openFor);
+  const onOpenChangeRef = useRef(onOpenChange);
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  }, [onOpenChange]);
+  const reportedOpenRef = useRef(false);
+  useEffect(() => {
+    if (reportedOpenRef.current === formOpen) return;
+    reportedOpenRef.current = formOpen;
+    onOpenChangeRef.current?.(formOpen);
+  }, [formOpen]);
+  useEffect(
+    () => () => {
+      if (reportedOpenRef.current) onOpenChangeRef.current?.(false);
+    },
+    [],
+  );
 
   if (names.length === 0) return null;
 

@@ -574,7 +574,7 @@ Generated at card-creation time (`commitCardChecklist`'s insert branch, and `add
 | **Stage 2** | Schema + validators | `convex/schema.ts`, `convex/selectorOptions.ts` | ✓ New optional fields: `setMetadata`, `features` (both tables) |
 | **Stage 3** | BSC/SL harvest + TCDB fallback | `convex/adapters/buysportscards.ts`, `convex/adapters/tcdb.ts` (Puppeteer) | ✓ BSC fetch persists `printRun`, `autographType`, `attributes`; TCDB enrichment deployed to Cloud Run |
 | **Stage 4** | NEO-26 team refactor + UI | `CardChecklistItem.tsx`, `TeamPicker.tsx`, `SetFeaturesPanel.tsx` | ✓ Team picker multi-select; features panel with propagation preview |
-| **Stage 5** | Tests | `maestro/` + unit tests | ✓ All flows + propagation tests green |
+| **Stage 5** | Tests | `playwright/` + unit tests | ✓ All specs + propagation tests green |
 | **NEO-91** | SL per-card matching fix + cross-marketplace SKU | `convex/adapters/sportlots.ts`, `convex/sku.ts` | ✓ SL badge appears where SportLots genuinely matched; every new card gets a bounded-length `sku` |
 
 ---

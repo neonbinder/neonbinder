@@ -235,7 +235,7 @@ export default function ShippingLabelsPage() {
               </div>
             </div>
             <div>
-              <h2 className="text-4xl font-bold mb-4 text-neon-purple">
+              <h2 className="text-4xl font-bold mb-4 text-neon-purple-text">
                 Fits Any 4×6 Label Printer
               </h2>
               <p className="text-lg text-slate-300 mb-6">
@@ -246,21 +246,21 @@ export default function ShippingLabelsPage() {
               </p>
               <div className="space-y-4 text-slate-400">
                 <div className="flex items-start gap-3">
-                  <span className="text-neon-purple font-bold text-xl">▸</span>
+                  <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">The Standard Size</h4>
                     <p>The same 4×6 label every shipping service uses. Buy them anywhere.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
-                  <span className="text-neon-purple font-bold text-xl">▸</span>
+                  <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">Thermal Or Inkjet</h4>
                     <p>Pure black on white, so it comes out crisp on either one.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
-                  <span className="text-neon-purple font-bold text-xl">▸</span>
+                  <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">True To Size</h4>
                     <p>Prints at exactly 6 by 4 inches — no shrink-to-fit, no crooked labels.</p>

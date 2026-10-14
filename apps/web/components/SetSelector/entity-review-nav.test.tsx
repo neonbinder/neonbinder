@@ -865,6 +865,80 @@ describe("resolveNav — the walk stops revising once the operator has started",
   });
 });
 
+describe("resolveNav — NEO-341: an open control holds the row through every yield", () => {
+  /**
+   * CI, on a phone: "Sport for this name" open on a player, a lookup settled,
+   * the walk jumped to a New League step and the list unmounted under the
+   * pointer. `interactionOpen` is the operator mid-gesture (a list, search or
+   * form open on the presented row). It defers BOTH implicit yields, and never
+   * holds a row that is finished or gone.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const league = (id: string): NavRow => ({ _id: id, status: "pending", kind: "league" });
+  const player = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    ...over,
+  });
+  const onPlayer = { rowId: "p1", explicit: false };
+
+  it("holds the teams-first yield to a league that arrives", () => {
+    const rows = [league("l1"), player("p1")];
+    expect(resolveNav(rows, onPlayer)).toEqual({ rowId: "l1", explicit: false });
+    expect(resolveNav(rows, onPlayer, { interactionOpen: true })).toBe(onPlayer);
+  });
+
+  it("holds the yield to the player's OWN staged team, which edits alone do not", () => {
+    const blocked = [
+      player("p1", { enrichment: { careerTeams: [{ name: "Montreal Canadiens" }] } }),
+      { ...careerTeamOf("t-habs", "p1"), name: "Montreal Canadiens" },
+    ];
+    // Edits alone yield — and (NEO-330 W6) remember to come back to p1.
+    expect(resolveNav(blocked, onPlayer, { pinnedRowHasEdits: true })).toEqual({
+      rowId: "t-habs",
+      explicit: false,
+      returnTo: ["p1"],
+    });
+    expect(
+      resolveNav(blocked, onPlayer, { pinnedRowHasEdits: true, interactionOpen: true }),
+    ).toBe(onPlayer);
+  });
+
+  it("holds a team row against the league staged under it", () => {
+    const rows = [
+      team("t1"),
+      { ...league("l1"), source: { kind: "leagueOf", teamRowId: "t1" } } as NavRow,
+    ];
+    const onTeam = { rowId: "t1", explicit: false };
+    expect(resolveNav(rows, onTeam)).toEqual({ rowId: "l1", explicit: false });
+    expect(resolveNav(rows, onTeam, { interactionOpen: true })).toBe(onTeam);
+  });
+
+  it("still moves a DECIDED row on", () => {
+    const rows = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      team("t1"),
+    ];
+    expect(resolveNav(rows, onPlayer, { interactionOpen: true })).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("still moves on when the presented row vanishes", () => {
+    expect(resolveNav([team("t1")], onPlayer, { interactionOpen: true })).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+});
+
 describe("resolveNav — a CHECKLIST team row answers a career chip too", () => {
   /**
    * Jason, on the Canadiens: the batch held a plain team row for "Montreal

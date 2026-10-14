@@ -1148,6 +1148,219 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 });
 
 /**
+ * NEO-341 — Confirm waits for the end of the team lookups the client has SEEN.
+ *
+ * `fetchCardChecklist` patches BSC teams onto its candidates in chunks through
+ * `ctx.runMutation`. An action's promise resolves on the action's response,
+ * not when this client's subscription has caught up with those writes, so the
+ * dialog used to unlock Confirm while the last chunk's teams were still on
+ * their way — those cards were saved without a team and the entity-review
+ * wizard never saw it. The gate is now the subscription itself: this run's
+ * whole batch (`total === candidateCount`) with every row `ready`.
+ */
+describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341)", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  const pair = (n: string, teams?: string[]) => ({
+    cardNumber: n,
+    cardName: `Player ${n}`,
+    bucket: "matched" as const,
+    confidence: 1,
+    platformData: { bsc: { ref: `bsc-${n}` }, sportlots: { ref: `sl-${n}` } },
+    ...(teams ? { teams } : {}),
+  });
+
+  /** Card 2's BSC team lookup has not reached this client yet. */
+  const lookupOutstanding = {
+    batchId: "batch-341",
+    ready: 1,
+    total: 2,
+    cards: [pair("1", ["Reds"]), pair("2")],
+  };
+  /** ...and now it has. */
+  const lookupsLanded = {
+    batchId: "batch-341",
+    ready: 2,
+    total: 2,
+    cards: [pair("1", ["Reds"]), pair("2", ["Cubs"])],
+  };
+
+  const fetched = {
+    success: true,
+    message: "2 matched, 0 BSC-only, 0 SL-only",
+    candidateCount: 2,
+    attachedSides: ["bsc", "sportlots"],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockDiffChecklist.mockResolvedValue({
+      cards: [],
+      removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 },
+      conflicts: [],
+      collisionInsertCount: 0,
+      ambiguityBlockedCount: 0,
+    });
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  it("keeps Confirm blocked after the fetch resolves until the last team lookup is seen, then confirms with it", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, lookupOutstanding);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    // The promise resolves while card 2's team is still in flight.
+    await act(async () => {
+      resolveFetch(fetched);
+    });
+
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.textContent).toBe("Loading…");
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText(/teams are still resolving in the background \(1 of 2 done\)/),
+    ).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+
+    // The last lookup reaches the subscription: the marker is observed.
+    await streamCandidates(rerender, lookupsLanded);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    const sent = mockResolveEntities.mock.calls[0][0].cards as Array<{
+      cardNumber: string;
+      teams?: string[];
+    }>;
+    expect(sent.find((c) => c.cardNumber === "2")?.teams).toEqual(["Cubs"]);
+  });
+
+  it("does not settle on a batch shorter than the count the fetch reported", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    // Every row that has ARRIVED is ready, but only one of two has arrived.
+    await streamCandidates(rerender, {
+      batchId: "batch-341",
+      ready: 1,
+      total: 1,
+      cards: [pair("1", ["Reds"])],
+    });
+    await act(async () => {
+      resolveFetch(fetched);
+    });
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Loading…",
+    );
+
+    await streamCandidates(rerender, lookupsLanded);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+  });
+
+  it("a failed fetch releases everything: no dialog, Sync usable, and the next run gates afresh", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, lookupOutstanding);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch({
+        success: false,
+        message: "Failed to fetch checklist: BSC timed out",
+        candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
+      });
+    });
+
+    // Nothing is left waiting on lookups that will never land.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.queryByText(/teams are still resolving/)).toBeNull();
+    const sync = screen.getByLabelText("Sync card checklist");
+    expect((sync as HTMLButtonElement).disabled).toBe(false);
+
+    // A second run is gated on ITS OWN report, not the failed one's.
+    await streamCandidates(rerender, null);
+    fireEvent.click(sync);
+    await streamCandidates(rerender, lookupOutstanding);
+    await act(async () => {
+      resolveFetch(fetched);
+    });
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Loading…",
+    );
+    await streamCandidates(rerender, lookupsLanded);
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+  });
+
+  it("the one-marketplace auto-keep waits for the same marker before committing", async () => {
+    state.ancestorChain = soloSlChain();
+    const solo = (ready: number) => ({
+      batchId: "batch-341-solo",
+      ready,
+      total: 2,
+      cards: [
+        {
+          cardNumber: "1",
+          cardName: "Solo One",
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-1" } },
+        },
+        {
+          cardNumber: "2",
+          cardName: "Solo Two",
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-2" } },
+        },
+      ],
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, solo(1));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    // Give the auto-keep's poll a few ticks: it must still be waiting.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    await streamCandidates(rerender, solo(2));
+    await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+  });
+});
+
+/**
  * NEO-255 — the Match Cards dialog only when TWO OR MORE marketplaces are
  * ATTACHED to the set.
  *
@@ -4017,12 +4230,15 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
     const form = openAddForm();
     fireEvent.click(screen.getByLabelText(QA_TRIGGER));
 
-    const popover = screen.getByLabelText("Player results for the new card");
+    // NEO-341: the named listbox is the options list INSIDE the portalled
+    // popover (a listbox may own only options), so the popover is its parent.
+    const results = screen.getByLabelText("Player results for the new card");
+    expect(results.getAttribute("role")).toBe("listbox");
+    const popover = results.parentElement as HTMLElement;
     expect(form.contains(screen.getByLabelText(QA_TRIGGER))).toBe(true);
     expect(form.contains(popover)).toBe(false);
     expect(container.contains(popover)).toBe(false);
     expect(popover.parentElement?.parentElement).toBe(document.body);
-    expect(popover.getAttribute("role")).toBe("listbox");
   });
 
   it("keeps the popover open when focus moves between controls inside it", async () => {
@@ -5567,29 +5783,44 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     ]);
   });
 
-  it("one marketplace: a fence below total is met — rows that never needed a lookup do not hang it", async () => {
-    // NEO-255 refused to gate on readiness because rows that arrived with a
-    // team already parsed stay `pending` for good, so `ready` never reaches
-    // `total`. The fence is the server's own post-lookup count, which those
-    // rows are not in.
+  it("one marketplace: a met fence still waits for a row whose lookup is retried after the action returned", async () => {
+    // NEO-333 + NEO-341. The fence is the `ready` count the server saw when
+    // the action returned; `resolveCandidateTeams` can still owe one retry for
+    // a row the paged write had not reached, and that retry lands later. The
+    // fence alone would hand card 2 on without its team. Every row `ready` is
+    // the half of the gate that holds it — and it cannot hang on rows that
+    // never needed a lookup, because the server writes those `ready`
+    // (pinned in fetchCardChecklist.teamFence.test.ts and
+    // checklistCandidates.test.ts).
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
     fireEvent.click(screen.getByLabelText("Sync card checklist"));
     await streamCandidates(rerender, {
       ...rowsWithTeams,
       ready: 1,
-      cards: [
-        rowsWithTeams.cards[0],
-        // Parsed at fetch time, never looked up, still `pending`.
-        { ...rowsWithTeams.cards[1], teamResolved: false },
-      ],
+      cards: [rowsWithTeams.cards[0], bscCandidate("2")],
     });
     await act(async () => {
       resolveFetch({ ...fencedResult, readyAfterTeams: 1, attachedSides: ["bsc"] });
     });
+    // The fence is met; the batch is not settled. Give the poll a few turns.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
 
+    // The retry lands.
+    await streamCandidates(rerender, rowsWithTeams);
     await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
-    expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
+    expect(
+      mockCommitChecklist.mock.calls[0][0].cards.map(
+        (c: { teams?: string[] }) => c.teams,
+      ),
+    ).toEqual([
+      ["Cleveland Guardians", "Washington Nationals"],
+      ["San Diego Padres"],
+    ]);
   });
 
   it("one marketplace: a fence naming another batch is never met by this one", async () => {
@@ -5631,13 +5862,51 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     );
     expect(screen.getByText("0 matched, 2 BSC-only, 0 SL-only")).toBeTruthy();
   });
+
+  it("two marketplaces: a stream that never settles unlocks Confirm after the budget instead of hanging", async () => {
+    // The bound on the combined gate. The server leaves no row `pending` that
+    // is not owed a lookup, so this is only a lost team write — but a lock
+    // nothing will ever lift would strand the operator's review.
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      state.ancestorChain = twoSidedChain();
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, rowsWithoutTeams);
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
+      await act(async () => {
+        resolveFetch({ ...fencedResult, attachedSides: ["bsc", "sportlots"] });
+      });
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Loading…",
+      );
+
+      // Just short of the budget: still locked.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(29_000);
+      });
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Loading…",
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+        "Confirm",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /**
- * NEO-330 × NEO-333 — the two halves of "has the stream caught up". Rows
- * decide whether anything may be saved; teams decide whether the wait ended
- * on time (`teamsLate`). The fence, when sent, is the team signal; without one
- * the per-row `ready === total` gate stands in.
+ * NEO-330 × NEO-333 × NEO-341 — the two halves of "has the stream caught up".
+ * Rows decide whether anything may be saved; teams decide whether the wait
+ * ended on time (`teamsLate`). The teams half is the fence (when sent) AND
+ * every row `ready`: the fence alone passes a retried lookup that lands after
+ * the action returned.
  */
 describe("CardChecklist — stream readiness helpers", () => {
   const live = (over: Partial<{ batchId: string; total: number; ready: number }> = {}) => ({
@@ -5662,9 +5931,13 @@ describe("CardChecklist — stream readiness helpers", () => {
     expect(streamRowsArrived(live({ total: 2 }), { count: 3, batchId: "b-new" }, undefined)).toBe(false);
   });
 
-  it("teams: a fence is met at the server's own count, never total", () => {
-    expect(streamTeamsLanded(live({ ready: 2 }), { count: 3, readyAfterTeams: 2 })).toBe(true);
+  it("teams: the fence must be met AND every row ready", () => {
+    // Met fence, one row still pending (a retry the fence could not count).
+    expect(streamTeamsLanded(live({ ready: 2 }), { count: 3, readyAfterTeams: 2 })).toBe(false);
     expect(streamTeamsLanded(live({ ready: 1 }), { count: 3, readyAfterTeams: 2 })).toBe(false);
+    expect(streamTeamsLanded(live({ ready: 3 }), { count: 3, readyAfterTeams: 2 })).toBe(true);
+    // Every row ready, but the subscription is behind the fence.
+    expect(streamTeamsLanded(live({ ready: 3 }), { count: 3, readyAfterTeams: 4 })).toBe(false);
   });
 
   it("teams: with no fence, every row must be ready", () => {

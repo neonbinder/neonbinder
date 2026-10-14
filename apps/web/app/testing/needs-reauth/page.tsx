@@ -3,8 +3,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 
-// Test-only "kill this marketplace session" landing page (NEO-141). A Maestro
-// flow signs in via /testing/sign-in, seeds credentials, then visits
+// Test-only "kill this marketplace session" landing page (NEO-141). An E2E
+// spec signs in via /testing/sign-in, seeds credentials, then visits
 // /testing/needs-reauth?site=<site>&redirect=<final>; this page waits for the
 // Convex client to pick up the Clerk session, calls the auth-scoped
 // markSiteNeedsReauth mutation (flags the signed-in user's own row for that

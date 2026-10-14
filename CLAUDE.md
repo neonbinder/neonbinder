@@ -20,7 +20,7 @@ NeonBinder is a platform for trading card collectors to manage collections and s
 >
 > **`services/preprocess/` is the only Python in the repo.** pip + pinned `requirements.txt` / `requirements-dev.txt` (no npm, no workspace), `ruff` + `pytest` rather than eslint + vitest, and all its commands run from `services/preprocess/` (its `pyproject.toml` sets `pythonpath = ["."]`). Nothing in `apps/web` or `services/browser` imports it yet — it is deployed and standalone.
 >
-> **Not in this repo:** GCP infrastructure is a separate Terraform repo, **`neonbinder/neonbinder_ioc`** (GitFlow: `develop`→dev apply, `main`→prod apply). The React Native mobile client (`NeonBinderApp`) is **paused** and not part of the monorepo today; it's expected to return after the web stabilizes (keep cross-platform concerns like Maestro in mind).
+> **Not in this repo:** GCP infrastructure is a separate Terraform repo, **`neonbinder/neonbinder_ioc`** (GitFlow: `develop`→dev apply, `main`→prod apply). The React Native mobile client (`NeonBinderApp`) is **paused** and not part of the monorepo today; it's expected to return after the web stabilizes. The Playwright E2E suite is web-only; the RN app has no E2E today and will need its own harness when it returns.
 
 ## Product invariant: NB owns the data; marketplaces are input and linkage, never truth
 
@@ -115,13 +115,14 @@ The economics, measured on 2026-08-25:
 
 | | Workers | E2E wall-clock | Actions cost | Vercel cost |
 |---|---|---|---|---|
-| CI | 8 shards | ~17–25 min | **$0** — public repo | 1 preview build |
-| Local | 1 | ~90 min | $0 | $0 |
+| CI | 8 shards x 2 passes (desktop, then mobile) | wall-clock set by the slowest shard of each pass | **$0** — public repo | 1 preview build |
+| Local | 1 | far longer than CI | $0 | $0 |
 
-A dev laptop runs an individual flow at roughly CI's pace (median x1.08 over 18
-matched flows). CI is not faster per flow — it is faster because it runs eight
-at once. So **CI is the right place to discover E2E failures, and the laptop is
-the right place to fix them.**
+A dev laptop runs an individual spec at roughly CI's pace. CI is not faster
+per spec — it is faster because it runs eight shards at once (in two passes, desktop then mobile). So **CI is the
+right place to discover E2E failures, and the laptop is the right place to fix
+them.** The timing numbers above were measured on the old Maestro suite;
+re-measure before quoting them for Playwright.
 
 #### The loop
 
@@ -130,9 +131,9 @@ the right place to fix them.**
    `services/browser` — they are not the expensive part, and they catch most
    breakage without a round trip.
 3. Push and open the PR. CI runs the full suite.
-4. On a red flow: **run that one flow locally**, with Vite pointed at the PR's
+4. On a red spec: **run that one spec locally**, with Vite pointed at the PR's
    own preview stack (below).
-5. Push again **only once that flow passes locally.** This step is the actual
+5. Push again **only once that spec passes locally.** This step is the actual
    cost control — push-and-hope is what burns CI cycles, not the first push.
 6. Watch to green.
 7. Merge via the `pr-close` skill (merge → verify the prod deploy actually
@@ -148,14 +149,15 @@ the right place to fix them.**
 | Dependencies | see the `deps-batch` skill — gate each bump separately |
 
 **The one case that still wants the full local suite before pushing:** changes to
-`.maestro/**`, the maestro-runner action, or a pinned tool version. Those ARE the
+the E2E harness itself (`apps/web/playwright/support/**`, `playwright.config.ts`,
+`shard-plan.mjs`, `e2e.yml`) or a Playwright version bump. Those ARE the
 harness — a change there invalidates every other result, so a green CI run proves
 less than usual.
 
-#### Debugging a red flow against the PR's own services
+#### Debugging a red spec against the PR's own services
 
-Local E2E normally points at **shared dev**, which means it cannot exercise the
-PR's `services/browser` or `services/preprocess` code at all. To close that gap,
+Running E2E against **shared dev** cannot exercise the PR's `services/browser`
+or `services/preprocess` code at all, and the seed resets its target. Always
 run a second local Vite on its own port, wired to the PR's Convex preview
 instead of dev, and use that port as `APP_URL`:
 
@@ -165,18 +167,20 @@ TESTING_ENDPOINT_SECRET=<this worktree's value, e.g. from .env.local> \
 VITE_CONVEX_URL=<the PR's Convex preview URL> \
 VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001
 
-# in another shell, point the E2E runner at it
-APP_URL=http://localhost:3001 MAESTRO_PARALLELISM=1 npm run test:e2e:pick -- <flow>
+# in another shell, point Playwright at it and run just the failing spec
+APP_URL=http://localhost:3001 WORKER_INDEX=0 \
+  npx playwright test --project=e2e --no-deps <path-substring>
+# phone project: re-seed first (reset + setup), then --project=e2e-mobile
 ```
 
-- **Port 3001, not 3000** — keeps this Vite instance separate from a `vite-keeper.sh`
-  instance you may already have running against shared dev on 3000, so you can debug
-  the PR's stack without tearing that one down.
-- **`VITE_DEV_DISABLE_HTTPS=1`** — same reason `vite-keeper.sh` sets it for the 3000
-  instance: Chrome for Testing hangs after `launchApp` under the mkcert HTTPS plugin.
+- **Spare port, not 3000** — keeps this Vite instance separate from any other
+  Vite you have running (a `vite-keeper.sh` instance on 3000, another worktree),
+  so you can debug the PR's stack without tearing that one down.
+- **`VITE_DEV_DISABLE_HTTPS=1`** — avoids the mkcert HTTPS plugin, which can hang
+  the browser after sign-in.
 - **`TESTING_ENDPOINT_SECRET`** must be exported into the Vite process itself — it's
   read by `vite.config.ts`'s own dev-server middleware (not the deployed preview) to
-  check the `x-testing-auth` header the flow sends. Use this worktree's existing
+  check the `x-testing-auth` header the sign-in hop sends. Use this worktree's existing
   value; there is nothing preview-specific about it.
 
 `wire-browser-url` and `wire-preprocess-url` have already pointed that preview's
@@ -184,13 +188,11 @@ APP_URL=http://localhost:3001 MAESTRO_PARALLELISM=1 npm run test:e2e:pick -- <fl
 Cloud Run revisions, so this gives you local Vite → PR Convex → PR browser +
 preprocess: the whole stack of the change, debuggable locally.
 
-**Verified 2026-09-05:** bootstrap and a set-selector drill both pass run this way
-against a real PR's Convex preview. One gotcha found in the process: phase-0
-bootstrap **hangs** against a preview at the default `MAESTRO_PARALLELISM=3` (3
-concurrent workers racing the same freshly-created preview data) — pass
-`MAESTRO_PARALLELISM=1` whenever `APP_URL` points at a PR preview instead of shared
-dev. `npm run test:e2e:pick` runs exactly the flows you name and nothing else, so
-seed the preview first with `npm run test:e2e -- setup`.
+Seed the preview first (`./e2e-baseline.sh reset --deployment <preview>`, then
+`npx playwright test --project=setup`); run the `bootstrap` project once per
+session (drop `--no-deps` for that run) so the account has its credentials. Run
+one worker, and only the specs covering your change. `apps/web/playwright/GUIDE.md`
+→ **Running** has the full recipe and how to read a red CI run.
 
 A protected preview may additionally need `VERCEL_AUTOMATION_BYPASS_SECRET` — not
 exercised by the runs above; confirm on a PR with deployment protection enabled
@@ -219,7 +221,7 @@ instead. Two live examples:
 An unrunnable test is a disclosure. An unrun one is a defect.
 
 If the local environment is what is blocking you, fix that rather than skipping
-— see NEO-181, and `.maestro/README.md` for the pinned toolchain.
+— see NEO-181, and `apps/web/playwright/GUIDE.md` → **Running** for the E2E setup.
 ## Development Commands
 
 ### apps/web (main development)
@@ -232,7 +234,10 @@ npm run dev:backend:tunnel  # Convex dev with cloudflared tunnel for browser ser
 npm run build            # Vite production build
 npm run preview          # Preview built bundle
 npm run lint             # ESLint
-npm run test:e2e         # Maestro E2E locally (see E2E Testing below)
+npm run test:e2e         # Playwright E2E (CI's job; locally run only your specs, see E2E Testing below)
+npm run test:e2e:list    # list the specs
+npm run test:e2e:typecheck  # typecheck playwright/
+npm run test:e2e:seed    # e2e-baseline.sh reset + the setup (seed) project
 ```
 
 > **The dev Convex deployment is a developer's *personal* deployment, not a shared dev
@@ -241,8 +246,8 @@ npm run test:e2e         # Maestro E2E locally (see E2E Testing below)
 > (`npx convex dev`) against your own dev deployment when you want to test locally, or
 > at the same time you push to a PR. When you need to exercise the PR's *own* backend
 > code, point local Vite at **that PR's Convex preview** instead — see "Debugging a red
-> flow against the PR's own services" above for the verified recipe (keep
-> `MAESTRO_PARALLELISM=1` and the port-3001 / `VITE_DEV_DISABLE_HTTPS=1` notes). Now
+> spec against the PR's own services" above for the verified recipe (keep the
+> spare-port / `VITE_DEV_DISABLE_HTTPS=1` notes). Now
 > that every PR gets its own preview, the dev deployment is mostly unused.
 > `dev-backend.sh`'s behavior is unchanged by this — it still does exactly what its
 > comments say — this is a policy about when to run it, not a code change.
@@ -433,25 +438,29 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
 - **`browser.yml`** — `services/browser` build + unit tests + the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a real BSC + SportLots login probe against it). **Pre-merge only.**
 - **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.
 - **`preprocess.yml`** — `services/preprocess` lint + unit tests + the **per-PR preprocess preview** (`pr-<N>` tagged no-traffic revision on the dev service + smoke + sticky PR comment). **Pre-merge only.**
-- **`e2e.yml`** — reusable (`workflow_call`) Maestro suite on the NEO-49 dynamic Convex work-queue: a homogeneous pool of work-stealing runners drains a shared queue; the single required **`e2e`** gate is green iff every queued flow passed and the queue fully drained. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's `timings.json`) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → the single required **`e2e`** gate (green iff both seeds and every shard succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
 - **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image, and deletes the PR's Convex preview. Browser and preprocess get **separate jobs**, because each authenticates as its own deployer SA and `google-github-actions/auth` rewrites ADC in place — a second auth in one job would silently run later steps as the wrong identity. The Convex job finds its target via the PR head SHA's GitHub Deployment record; since NEO-162 it accepts **both** `vercel[bot]` (PRs opened before the cutover) and `github-actions[bot]` (previews built by `web-preview`), so the pre-cutover backlog stays reclaimable.
-- **`refresh-flow-timings.yml`** — weekly chore PR keeping the LPT flow-timings table aligned to main's flow set.
-- **`e2e-repeat.yml`** — manual flakiness sampler (runs the suite N times).
+- **`refresh-flow-timings.yml`** — refreshes `apps/web/playwright/timings.json` (the shard planner's per-spec, per-project timings) from CI.
+- **`e2e-repeat.yml`** — manual flakiness sampler (runs the Playwright suite N times).
 
-## E2E Testing (Maestro)
+## E2E Testing (Playwright)
 
-Maestro flows live in `apps/web/.maestro/flows/`, mirroring app routes.
+The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, helpers under `support/`, config `apps/web/playwright.config.ts`). **`apps/web/playwright/GUIDE.md` is the authoring and running guide** — hard rules (role/label/text locators only, 7 s budget, no sleeps), the R1–R9 spec rules, tags, support helpers, the seed, the PAUSED_PLATFORMS switch, local commands, CI shape, and how to read a red run. Read it before writing or changing a spec. `SET-REGISTRY.md` beside it lists the real sets the suite touches and who may write to them.
 
-**Run locally** (validates against local Vite → the remote **dev** browser service):
+**Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite. `playwright-e2e-author` writes and debugs specs.
+
+**Run locally** — only the specs covering your change, against the PR's Convex preview (never shared dev, never the full suite; see the PR loop above):
 ```bash
 cd apps/web
-APP_URL=http://localhost:3000 npm run test:e2e
-npm run test:e2e -- setup         # seed first: e2e-baseline.sh reset + flows/setup.yaml
-npm run test:e2e:pick -- <flow>   # then run a subset (name / list / regex / tag)
+npm run test:e2e:list -- --project=e2e     # check a new spec is listed once (once per project)
+npm run test:e2e:typecheck                 # tsc -p playwright/tsconfig.json
+APP_URL=http://localhost:3001 WORKER_INDEX=0 \
+  npx playwright test --project=e2e --no-deps <path-substring>
+# phone project: re-seed first (reset + setup), then --project=e2e-mobile
 ```
 
-> Local Maestro web runs headless at CI's **1024×629** viewport — always run via the npm scripts (bare `maestro test` is non-headless and hides CI-only fold/layout gotchas). Use parallelism 1 locally (higher crashes Chrome tabs on a laptop).
+**In CI:** the suite runs via `pr-pipeline.yml` → `e2e.yml` on every PR (see CI/CD). The `e2e` check is the merge-blocking gate. One test account per shard (workers 0–7 used in each pass; 0–11 exist); desktop and mobile run in separate passes on separate seeds; specs must be self-contained and parallel-safe (create-and-use their own data; no shared global state; writes only to a per-worker hand-made set or a registered sole-writer spec).
 
-**In CI:** the suite runs via `pr-pipeline.yml` → `e2e.yml` on every PR (see CI/CD). The `e2e` check is the merge-blocking gate. Test users are provisioned per work-queue runner (`dev+e2e-<N>@neonbinder.io`); flows must be self-contained and parallel-safe (create-and-use their own data; no shared global state).
+**Test tags:** `@smoke` plus a feature grouping (`@set-selector`, `@profile`, ...). There is no `@regression` tag and never a `wip` tag — fix the underlying bug instead.
 
-**Test tags:** `smoke` plus feature groupings (`auth`/`dashboard`/`profile`/...), and the three the runner treats specially (`util`, `wip`, `setup`). **There is no `regression` tag** — NEO-260 deleted it suite-wide: `smoke` and `regression` had drifted into disjoint sets with 38 flows in neither, while `npm run test:e2e` already runs every flow. The full suite is `test:e2e`; `smoke` is the only subset. Never add a `wip` tag — fix the underlying bug instead.
+**Mobile:** Playwright is web-only. The React Native app (`NeonBinderApp`) is paused and has no E2E; it will need its own harness when it returns.

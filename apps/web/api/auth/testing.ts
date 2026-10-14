@@ -170,13 +170,13 @@ export default async function handler(
     return;
   }
 
-  // Per-user state reset is done browser-side by the Maestro flow after
-  // sign-in: it reads the per-PR Convex URL from window.__convexUrl, then
-  // POSTs to /testing/reset-user-state on the Convex preview deployment.
-  // The Vercel lambda can't do this itself — its process.env.VITE_CONVEX_URL
-  // is the dev URL (from the Vercel dashboard), not the per-PR preview that
-  // the client bundle actually talks to. clerkUserId is returned so the test
-  // flow has the value to send as the reset body.
+  // Per-user state reset is done browser-side after sign-in: an E2E spec
+  // routes through /testing/reset, which calls the auth-scoped
+  // resetMyTestState mutation on the Convex deployment the client bundle
+  // talks to. The Vercel lambda can't do this itself — its
+  // process.env.VITE_CONVEX_URL is the dev URL (from the Vercel dashboard),
+  // not the per-PR preview the bundle actually uses. clerkUserId is returned
+  // for callers that need the signed-in user's id.
   res.status(200).json({
     signInToken: result.signInToken,
     testingToken: result.testingToken,

@@ -695,6 +695,32 @@ describe("NEO-332: linking or skipping a same-name row releases the steps staged
     expect(await getRow(t, beavers._id)).toBeNull();
   });
 
+  test("NEO-341: a SKIPPED teammate does not inherit the step — it is deleted, not left as a question about nobody", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, elder, rowId, blueSox } = await createNewThenBack(t);
+    // Names the same club, but the operator has said he is not a person: no
+    // player is being made, so no club he played for is a question.
+    await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      enrichment: {
+        wikidataId: "Q1",
+        careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2020 }],
+      },
+      decision: { action: "skip" },
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "link",
+      linkedPlayerId: elder,
+    });
+
+    expect(await getRow(t, blueSox._id)).toBeNull();
+  });
+
   test("Change decision → Create new again re-stages the steps the link released, without a second lookup", async () => {
     const t = convexTest(schema, modules);
     const { elder, rowId } = await createNewThenBack(t);

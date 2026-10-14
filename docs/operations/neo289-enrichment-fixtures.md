@@ -12,7 +12,8 @@ key and lookup wrapper) and `apps/web/convex/enrichmentFixtures.ts` (the
 `captureFromCli` / `coverageReportFromCli` internal actions). Read those
 files' headers for the exact behaviour; this document only covers operating
 them.
-**Workflow half:** `.github/workflows/e2e.yml`, `seed` job.
+**Workflow half:** `.github/workflows/e2e.yml` (`seed`, `seed-mobile` and `report` jobs) and
+`.github/scripts/enrichment-fixture-coverage.sh`.
 
 Nothing in this document names a deployment, a project number, a secret or a
 URL. Prod is `--prod`; the branch's Convex preview is "the PR's preview" and
@@ -34,7 +35,7 @@ two batches, both Baseball only (`sportQid: "Q5369"`):
 - the names the E2E seed's 2024 Topps Chrome set surfaces (Base + Future
   Stars + Gold Wave), captured with §4's procedure;
 - since NEO-330, every lookup the review batch of 1996 Line Up Venezuelan
-  Winter League makes (`checklist-wizard-link-team-saves-alias.yaml`): 200
+  Winter League makes (`apps/web/playwright/tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts`): 200
   players, the 8 clubs, the 2 career teams and the league the wizard stages,
   211 of 211, added with §4a's method.
 
@@ -85,12 +86,14 @@ is not part of the key.
 
 ## 3. Coverage report (informational, non-blocking)
 
-After the seed step, `e2e.yml` runs a coverage check:
+`e2e.yml` runs a coverage check, through
+`.github/scripts/enrichment-fixture-coverage.sh`, at the points listed at the
+end of this section. Each call is:
 
 ```bash
 npx convex run \
   enrichmentFixtures:coverageReportFromCli \
-  '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
+  '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES","since":<ms>}' \
   --deployment <this PR's preview>
 ```
 
@@ -147,8 +150,21 @@ name a run asked about that the recording would send live. It is not a CI
 gate, because an uncovered name still falls back to a live lookup and the
 suite stays correct, only slower.
 
-The step runs right after the seed, so it sees the seed's lookups. It does
-not see lookups the runner jobs' flows make later in the same run.
+The suite runs in two passes, each on a freshly reset and reloaded preview,
+and the reset wipes the rows the report reads, so each pass is read before
+the next reset. The calls, each with the `since` of the pass it describes
+(the start of that pass's seed, recorded in the seed job and passed on as a
+job output):
+
+1. `seed`: after the desktop seed (the `setup` project's lookups).
+2. `seed-mobile`, first step: after the desktop shards drained, before the
+   mobile reset, with the desktop seed's `since`. This is the call that sees
+   what the desktop specs looked up.
+3. `seed-mobile`: after the mobile seed.
+4. `report`: after the mobile shards drained, with the mobile seed's `since`.
+
+Every call is non-failing and writes its own heading ("after the seed",
+"after the desktop shards drained", ...) to the step summary.
 
 ## 4. Capture procedure
 
@@ -213,13 +229,13 @@ a catalogue-loaded preview too. Use this method when you would rather not
 arm a deployment, or when the batch's linked names matter: §4 cannot see
 those (§3).
 
-1. **Get the exact names the batch stages.** Run the flow that commits the
+1. **Get the exact names the batch stages.** Run the spec that commits the
    set once on the PR's preview (an ordinary E2E run), then read the set's
    `entityReviewSkips` rows read-only (index
    `by_selector_option_and_kind_and_name`). They hold the raw `name` of every
    row the operator SKIPPED: the per-player strings the wizard staged, not
-   the card's name (an "A / B" card stages two names). Rows the flow LINKED
-   are not there; add those names by hand from the flow. Staged career teams
+   the card's name (an "A / B" card stages two names). Rows the spec LINKED
+   are not there; add those names by hand from the spec. Staged career teams
    and leagues carry a `knownQid` (their `source.wikidataId`); keep it with
    the name, because the lookup is keyed on the name but a hit is honoured
    only when the recorded `wikidataId` equals it (§1), and a recorded `null`
@@ -258,25 +274,25 @@ because the JSON is imported at build time: the next push to the PR.
 ## 5. When to re-capture
 
 - The seed's fixture set changes (a different set, brand, or card range gets
-  added to `setup.yaml`'s Base/Future Stars/Gold Wave coverage).
+  added to the `setup` spec's (`apps/web/playwright/tests/setup.spec.ts`) Base/Future Stars/Gold Wave coverage).
 - A recorded flow fixture changes: a different set, or a different batch on
-  the same set, for `checklist-wizard-link-team-saves-alias.yaml`. Redo §4a
+  the same set, for `checklist-wizard-link-team-saves-alias.spec.ts`. Redo §4a
   for the new batch.
 - The coverage warning (§3) shows a growing `missing` list.
 - An operator spots a wrong entity in a recorded answer (e.g. during the
-  live-proof flow below, or from a §4 review) — re-capture that name's
+  live-proof spec below, or from a §4 review) — re-capture that name's
   neighbourhood and diff before committing.
 
-## 6. The one live-proof flow
+## 6. The one live-proof spec
 
-One flow deliberately proves the live lane still works end to end, using a
-player who is real but is **not** in the recording: `.maestro/flows/admin/
-player-live-wikidata-enrichment.yaml` adds **Vladislav Tretiak** (Hockey) through
+One spec deliberately proves the live lane still works end to end, using a
+player who is real but is **not** in the recording:
+`apps/web/playwright/tests/admin/player-live-wikidata-enrichment.spec.ts` adds **Vladislav Tretiak** (Hockey) through
 `/admin/players` and asserts the resulting `Wikidata Q[0-9]+` link in the
 detail header. The recording is Baseball-only and Tretiak never played in the
 NHL, so he is in neither the recording nor the NEO-330 reference catalogue, and
-this flow always makes a real Wikidata round-trip regardless of the fixture
+this spec always makes a real Wikidata round-trip regardless of the fixture
 switch. (Harmon Killebrew held this slot until NEO-330: the catalogue holds
 him.) A red run here during a live Wikidata outage is expected — rerun rather
-than treating it as a product bug (same as any other flow that
+than treating it as a product bug (same as any other spec that
 depends on a live third party).

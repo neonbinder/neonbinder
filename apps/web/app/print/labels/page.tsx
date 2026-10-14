@@ -540,7 +540,13 @@ export default function LabelHistoryPage() {
                             href={row.publicTrackingUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+                            // a11y (2.5.8): a standalone link, not one inside a
+                            // sentence, so it needs a 24px target. inline-block
+                            // + py-0.5 makes it the 20px line plus 4px (an
+                            // inline box measured only the 16px glyphs, within
+                            // 12px of the copy button above). Not flex: that
+                            // would drop the space before the arrow.
+                            className="inline-block py-0.5 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
                           >
                             Public scan page
                             {/* Visible arrow for sighted users, spelled out for

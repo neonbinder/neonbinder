@@ -2704,31 +2704,6 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_user", ["userId"]),
 
-  // E2E test work-queue (NEO-49). CI runners atomically pull the next pending
-  // flow from here instead of running a static shard slice, so dispatch is
-  // dynamic (work-stealing): any runner grabs whatever's available, slow flows
-  // can't drag a fixed shard, and the suite scales by just adding flows + runners
-  // (no SHARD_TOTAL re-tuning). Scoped per CI run (`runId`) so re-runs/concurrent
-  // runs never collide. Lives ONLY on the ephemeral per-PR Convex preview — the
-  // queue functions fail closed in prod (gated on E2E_QUEUE_SECRET). Doubles as
-  // live run observability (counts queryable any time).
-  e2eFlowQueue: defineTable({
-    runId: v.string(), // CI run identifier (e.g. GitHub run id) — partitions one suite execution
-    flowPath: v.string(), // .maestro/flows/<dir>/<name>.yaml
-    status: v.union(
-      v.literal("pending"),
-      v.literal("running"),
-      v.literal("passed"),
-      v.literal("failed"),
-    ),
-    claimedBy: v.optional(v.string()), // worker that claimed it (e.g. "r2-w1")
-    attempts: v.number(), // claim count (a re-claimed lease-expired flow increments this)
-    startedAt: v.optional(v.number()),
-    finishedAt: v.optional(v.number()),
-  })
-    .index("by_run_status", ["runId", "status"])
-    .index("by_run_flow", ["runId", "flowPath"]),
-
   // Placeholder-upload job ownership record (NEO-148). Written by
   // createPlaceholderUploadUrl (convex/adapters/placeholderUploads.ts)
   // immediately after minting the signed POST policy, so the row exists

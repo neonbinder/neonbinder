@@ -8,8 +8,8 @@ name: PR Pipeline
 # When a PR changes services/browser, Browser CI (browser.yml) independently
 # builds + deploys a `pr-<N>` tagged, NO-traffic Cloud Run preview on the dev
 # service. THIS pipeline then points the Convex preview's NEONBINDER_BROWSER_URL
-# at that tagged URL and only AFTERWARD invokes the E2E suite — so the Maestro
-# flows exercise the PR's browser service, not shared dev. Web-only PRs skip the
+# at that tagged URL and only AFTERWARD invokes the E2E suite — so the Playwright
+# specs exercise the PR's browser service, not shared dev. Web-only PRs skip the
 # wiring and run E2E against the canonical dev browser default.
 #
 # Why the wiring lives HERE (not in e2e.yml, not in the Vercel build):
@@ -32,7 +32,7 @@ concurrency:
 
 # Superset of what the reusable e2e.yml needs (a called workflow's GITHUB_TOKEN
 # can't exceed the caller's): checks:write + pull-requests:write for the E2E
-# "Maestro E2E" check + sticky comment. The wire-* jobs add id-token:write at the
+# "Playwright E2E" check + sticky comment. The wire-* jobs add id-token:write at the
 # job level (for WIF), and web-preview adds deployments:write (for the preview's
 # Deployment record). The `e2e:` caller job also gets id-token:write (NEO-330:
 # e2e.yml's seed job reads the private reference-seed bundle over WIF) but still
@@ -104,9 +104,8 @@ jobs:
       # The carve-out swallowed the exact PR it existed to spare.
       #
       # Condition 2 stays deliberately narrow: manifests ONLY. CI-infrastructure
-      # bumps that Dependabot also raises — `.github/workflows/**` and
-      # `apps/web/.github/actions/maestro-runner/**` (setup-chrome, setup-java,
-      # actions/cache) — ARE the E2E harness. Skipping E2E on those would leave
+      # bumps that Dependabot also raises — `.github/workflows/**`
+      # (setup-node, upload-artifact, the Playwright install) — ARE the E2E harness. Skipping E2E on those would leave
       # an unexercised test runner, so they keep running the full matrix.
       #
       # Do not "simplify" condition 1 to `github.actor`. See the note at the
@@ -532,7 +531,7 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          npx --yes convex@1.39.1 env set NEONBINDER_BROWSER_URL "$BROWSER_URL" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BROWSER_URL "$BROWSER_URL" --deployment "$CONVEX_NAME"
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_BROWSER_URL --deployment "$CONVEX_NAME")
           echo "Convex preview NEONBINDER_BROWSER_URL = $got"
           if [ "$got" != "$BROWSER_URL" ]; then
@@ -747,7 +746,7 @@ jobs:
             exit 1
           fi
 
-          npx --yes convex@1.39.1 env set NEONBINDER_PREPROCESS_URL "$HEAVY_URL" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_PREPROCESS_URL "$HEAVY_URL" --deployment "$CONVEX_NAME"
           got=$(npx --yes convex@1.39.1 env get NEONBINDER_PREPROCESS_URL --deployment "$CONVEX_NAME")
           echo "Convex preview NEONBINDER_PREPROCESS_URL = $got"
           if [ "$got" != "$HEAVY_URL" ]; then
@@ -755,7 +754,7 @@ jobs:
           fi
 
           if [ "$FAST_EXISTS" = "true" ]; then
-            npx --yes convex@1.39.1 env set NEONBINDER_PREPROCESS_FAST_URL "$FAST_URL" --deployment "$CONVEX_NAME"
+            "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_PREPROCESS_FAST_URL "$FAST_URL" --deployment "$CONVEX_NAME"
             got_fast=$(npx --yes convex@1.39.1 env get NEONBINDER_PREPROCESS_FAST_URL --deployment "$CONVEX_NAME")
             echo "Convex preview NEONBINDER_PREPROCESS_FAST_URL = $got_fast"
             if [ "$got_fast" != "$FAST_URL" ]; then
@@ -916,14 +915,14 @@ jobs:
           fi
           echo "This PR's Convex preview calls the '${ROW}' preprocess services — targeting heavy=$HEAVY fast=$FAST."
 
-          npx --yes convex@1.39.1 env set HEAVY_PREPROCESS_MAX_PARALLELISM "$HEAVY" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set HEAVY_PREPROCESS_MAX_PARALLELISM "$HEAVY" --deployment "$CONVEX_NAME"
           got_heavy=$(npx --yes convex@1.39.1 env get HEAVY_PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
           echo "Convex preview HEAVY_PREPROCESS_MAX_PARALLELISM = $got_heavy"
           if [ "$got_heavy" != "$HEAVY" ]; then
             echo "::error::read-back mismatch: expected $HEAVY, got '$got_heavy'"; exit 1
           fi
 
-          npx --yes convex@1.39.1 env set PREPROCESS_MAX_PARALLELISM "$FAST" --deployment "$CONVEX_NAME"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set PREPROCESS_MAX_PARALLELISM "$FAST" --deployment "$CONVEX_NAME"
           got_fast=$(npx --yes convex@1.39.1 env get PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
           echo "Convex preview PREPROCESS_MAX_PARALLELISM = $got_fast"
           if [ "$got_fast" != "$FAST" ]; then
@@ -1160,7 +1159,7 @@ jobs:
   #
   # Why it is here and not in E2E: the border-shaving bug this suite exists to
   # catch shipped to production and ran for a week with E2E green the whole
-  # time. Maestro asserts on rendered UI, and a card cropped to 87% of itself
+  # time. The E2E suite asserts on rendered UI, and a card cropped to 87% of itself
   # still renders, classifies and pairs. The defect was geometry, so the
   # assertion has to be geometry.
   #

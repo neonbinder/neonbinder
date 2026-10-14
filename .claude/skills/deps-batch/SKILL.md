@@ -1,7 +1,7 @@
 ---
 name: deps-batch
-description: Consolidate all open Dependabot PRs in the NeonBinder monorepo into one maintainer-authored, locally-validated batch PR — triage the bumps, integrate them one at a time in a fresh worktree with a validation gate after each, run the full local test + E2E suite, push, watch CI, and on approval merge and close out every Dependabot artifact (PRs, branches, Linear ticket, worktree). Use when Dependabot PRs have piled up (e.g. "deal with the dependabot PRs", "batch the dependency updates", "run the deps batch"). Never merges a Dependabot PR directly; never adds secrets to the Dependabot secret store; requires explicit approval before merging the batch.
-argument-hint: [--repo <dir>] [--exclude <pr#>[,<pr#>...]] [--skip-e2e]
+description: Consolidate all open Dependabot PRs in the NeonBinder monorepo into one maintainer-authored, locally-validated batch PR — triage the bumps, integrate them one at a time in a fresh worktree with a validation gate after each, run the full local lint/unit/build gates, push, let CI run the full E2E suite, watch CI, and on approval merge and close out every Dependabot artifact (PRs, branches, Linear ticket, worktree). Use when Dependabot PRs have piled up (e.g. "deal with the dependabot PRs", "batch the dependency updates", "run the deps batch"). Never merges a Dependabot PR directly; never adds secrets to the Dependabot secret store; requires explicit approval before merging the batch.
+argument-hint: [--repo <dir>] [--exclude <pr#>[,<pr#>...]]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, ToolSearch, AskUserQuestion, WebFetch, mcp__linear-server__get_issue, mcp__linear-server__list_issues, mcp__linear-server__save_issue, mcp__linear-server__list_issue_statuses, mcp__linear-server__list_teams
 ---
 
@@ -20,7 +20,7 @@ This is not a preference. `.github/workflows/pr-pipeline.yml` encodes it in the
 
 GitHub deliberately withholds repo **Actions secrets** from Dependabot-triggered runs
 (supply-chain protection). So on any `dependabot/**` PR, `secrets.GCP_WIF_PROVIDER_DEV`,
-the Vercel bypass, and `E2E_QUEUE_SECRET` are all empty → the per-PR browser deploy,
+the Vercel bypass, and the Convex preview deploy key are all empty → the per-PR browser deploy,
 the browser-URL wiring, and the whole E2E gate hard-fail **regardless of the bump**.
 Proven on #24 (2026-06-29): `Secret source: Dependabot`, `google-github-actions/auth`
 dead. A Dependabot PR *cannot* satisfy the required `CI Gate` as authored.
@@ -37,7 +37,7 @@ exactly the point: the thing that ships gets the full suite.
   `services/browser`. There is no root `package.json` — these are **not** npm workspaces.
 - **Worktree parent**: `<workspace>/worktrees`, i.e. `$(git rev-parse --show-toplevel)/../worktrees`
 - **Dependabot config**: `.github/dependabot.yml` — weekly; three ecosystems
-  (`github-actions` at `/` and `/apps/web/.github/actions/maestro-runner`, npm at
+  (`github-actions` at `/`, npm at
   `/apps/web`, npm at `/services/browser`). **Minor/patch are grouped; majors arrive
   as individual PRs, by design.** Do not "simplify" by grouping all versions — that
   broke E2E once already (closed PR #9).
@@ -224,7 +224,7 @@ cd apps/web && npm run lint && npm run test:unit && npm run build \
 cd services/browser && npm run build && npm test
 ```
 
-If workflows or the maestro-runner action changed, also run `actionlint` and diff its
+If workflows or a local composite action changed, also run `actionlint` and diff its
 output against unmodified `origin/main` — this repo has pre-existing shellcheck
 advisories, and the only meaningful signal is a **new** one.
 
@@ -277,55 +277,24 @@ output, read the source, and attribute it.
 
 ---
 
-## Step 6 — Full local test suite, including E2E
+## Step 6 — Full local test suite
 
-Unit/lint/build gates from step 4 are per-bump. Now run the **whole** suite against the
-final combined tree.
+Unit/lint/build gates from step 4 are per-bump. Now run the **whole** fast-gate set
+against the final combined tree (the commands in step 4, for every toolchain the
+batch touched). Record the counts for the PR body.
 
-Never invoke `maestro` directly (a second Chrome crashes the laptop and contends
-globally) — always the npm scripts, which pass `--headless` and so use CI's 1024×629
-viewport. Never run two local stacks at once.
+**E2E is CI's job here, not the laptop's.** The batch is maintainer-authored, so it
+gets the full 8-shard Playwright matrix on the PR, and a local full-suite run costs far
+more than it proves (see CLAUDE.md, "The PR loop"). A local run needs the PR's own
+Convex preview anyway — the seed resets its target, so it must never point at shared
+dev — and that does not exist until step 7 pushes. Do not skip or defer anything
+silently: the E2E result is part of step 8's verdict, and a red spec is debugged with
+that one spec against the PR preview (`apps/web/playwright/GUIDE.md` -> **Running**).
 
-**A dependency-only batch changes no Convex code**, so you do NOT need `npm run
-dev:backend` — the dev deployment already has the functions. Vite against the existing
-dev deployment is sufficient, which removes most of the setup cost. (If a batch ever
-does touch `convex/`, push it first.)
-
-Worktree setup, in order — each of these cost time on 2026-08-02:
-
-1. **`.env.local` does not exist in a fresh worktree.** Copy it from the main checkout:
-   `cp <repo>/apps/web/.env.local <worktree>/apps/web/.env.local`. It is gitignored
-   (`.env*.local`), so this leaves the tree clean — verify with `git status --short`.
-2. **Java must be 21, and `openjdk@21` is keg-only** — it does not appear in
-   `/usr/libexec/java_home -V`, so a bare `java -version` reports 23 and Maestro hits a
-   JVM SIGSEGV. Run `npm run test:e2e:check` first, then
-   `export JAVA_HOME=/opt/homebrew/opt/openjdk@21`.
-3. **Free port 3000.** A Vite from a previous worktree is often still holding it; that
-   stack serves the *other* checkout's code, so reusing it validates nothing. Stopping
-   Vite is sanctioned — tell the user which one you stopped.
-4. **Vite serves `https://localhost:3000` (mkcert), not http.** An `http://` readiness
-   poll never fires and looks like a hung startup. Poll with `curl -skf https://…`.
-   Run it under a keeper loop — Node 24.3.0 SIGSEGVs intermittently.
-
-```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21
-export PATH="$JAVA_HOME/bin:$HOME/.nvm/versions/node/v24.3.0/bin:$PATH"
-MAESTRO_PARALLELISM=1 npm run test:e2e:smoke     # 3 crashes Chrome locally
-```
-
-**Determine the smoke set from the `tags:` block, never by grepping for the word.**
-`grep -rl smoke .maestro/flows/` matches comments ("NEO-6 phase 1 smoke test", "no
-separate `smoke` variant") and reports roughly double the real count — which then looks
-like the runner silently skipped flows. As of 2026-08-02 the real set is **7 tagged
-flows**, and the runner also pulls in `profile/worker-bootstrap` via the dependency
-graph, so a complete run reports **8 passed**.
-
-Run the smoke suite at minimum; run regression too if any bucket-D (runtime major) bump
-is in the batch. `--skip-e2e` is available but is a deliberate, reported downgrade —
-say so explicitly in the PR body and to the user, do not quietly skip.
-
-Any E2E failure here is config/secrets/env or a real bug — diagnose from evidence
-(screenshot + log + persist check) before touching anything.
+If a bump touches the E2E harness itself (`@playwright/test`, `playwright.config.ts`,
+the shard planner), say so in the PR body: a green run proves less than usual there, so
+also run `npm run test:e2e:typecheck` and `npx eslint playwright` locally, and
+`npm run test:e2e:list -- --project=e2e` to confirm every spec still lists once.
 
 ---
 
@@ -360,8 +329,9 @@ CI green is **not** authorization to merge. Report the verdict and stop. Merging
 requires the user's explicit per-PR approval, every time.
 
 While waiting: if CI goes red, diagnose from the actual failure log before pushing any
-fix. Note that `gh run rerun` is a **no-op** on the E2E queue (keyed by `E2E_RUN_ID`) —
-push a fresh commit instead. Also note that `main`'s ruleset requires branches be
+fix. A `gh run rerun` of the PR Pipeline re-runs the E2E workflow from setup
+(scripted reset and seed included), so it is a valid retry for a flake; push a fresh
+commit when the code changed. Also note that `main`'s ruleset requires branches be
 up to date, so every trailing PR merged ahead of this one costs a branch update and a
 full ~25-minute re-run — another reason the batch is one PR, not N.
 
@@ -436,8 +406,8 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
 
 - **Never merge a Dependabot PR directly.** They are screening. The batch is what ships.
 - **Never add repo secrets to the Dependabot secret store** to "fix" the failing gate.
-  That hands a malicious dependency update access to GCP WIF, Vercel, and the queue
-  secret — the exact risk GitHub's withholding exists to prevent. A maintainer push to
+  That hands a malicious dependency update access to GCP WIF, Vercel, and the Convex preview
+  deploy key — the exact risk GitHub's withholding exists to prevent. A maintainer push to
   the branch is the sanctioned way to flip the actor and grant secrets.
 - **Never merge/cherry-pick `dependabot/**` branches into the batch.** Edit
   `package.json`, regenerate the lockfile.

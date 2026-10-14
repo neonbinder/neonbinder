@@ -53,23 +53,14 @@ yarn-error.log*
 .env.local
 .env*.local
 
-# Maestro E2E outputs
-maestro-report/
-# Local debugging runs use a custom REPORT_DIR (e.g. maestro-report-local) so a
-# previous run's JUnit files cannot skew the next run's pass/fail tally — that
-# misreport is easy to chase for a while before spotting it.
-maestro-report-*/
-# Local E2E queue-harness run context (holds the dev queue secret) + sentinels
-.e2e-local/
-artifacts/
-junit/
-summary.md
-hs_err_pid*.log
+# Playwright E2E outputs (PW_REPORT_DIR defaults to playwright/report)
+/playwright/report/
+/playwright/results/
 
-# Local Maestro per-run report dirs (REPORT_DIR=mr-*) and JVM crash dumps
-mr-*/
-hs_err_pid*.log
-replay_pid*.log
+# vite-keeper.sh's Vite log (maestro-report/logs/vite.log) and its stop
+# sentinel (.e2e-local/stop). The directory names predate the Playwright move.
+maestro-report/
+.e2e-local/
 
 # design-sync converter (staged scripts + build output; regenerated per run)
 .ds-sync/

@@ -11,18 +11,21 @@
  * undecided row the page could not contain, the mutation skipped him, and the
  * walk ended with the staged step open.
  *
- * Two fixes, each pinned here:
+ * Two halves of one fix, each pinned here:
  *
- *   1. `runBulkDecidePage` — a skip's LAST page re-reads the batch from its
- *      cursor once its decisions have committed, and reports `hasMore` when a
- *      late row turned up, so the client's walk takes it too. The race is
- *      reproduced by driving the action with a ctx whose `runQuery` lands the
- *      lookup right after the page query returns — convex-test runs
- *      transactions serially, so that is the only way to put the lookup in
- *      the window.
+ *   1. The skip's own mutation skips each settled row's staged steps in the
+ *      same transaction (NEO-341, `skipStagedStepsOf` in
+ *      `decideRowsByIdsImpl`), so a step staged after the page was chosen is
+ *      skipped with its parent and the walk ends on the same page. The race
+ *      is reproduced by driving `runBulkDecidePage` with a ctx whose
+ *      `runQuery` lands the lookup right after the page query returns —
+ *      convex-test runs transactions serially, so that is the only way to put
+ *      the lookup in the window. (NEO-330 first fixed this with a re-read of
+ *      the batch on the skip's last page; the merge with NEO-341 kept one
+ *      mechanism, the transactional one.)
  *   2. `stageCareerTeamRowsImpl` / `stageLeagueRowsImpl` refuse a SKIPPED
  *      parent, so nothing stages under a row once it is skipped — which is
- *      what makes (1) converge. The public `stageCareerTeamRows` (the
+ *      what makes (1) race-free. The public `stageCareerTeamRows` (the
  *      wizard's belt-and-braces pass) is how a test reaches the impl guard
  *      directly; `applyLookupResult` already drops any decided row's result.
  *
@@ -172,12 +175,12 @@ describe("NEO-330: a lookup landing mid-skip cannot leave a step open", () => {
     );
     // The lookup really did land in the window and stage the step…
     expect(staged.map((r) => r.name)).toEqual(["Columbus Chill"]);
-    // …and the walk went back for it rather than ending on it.
+    // …and it was skipped with its parent rather than left open.
     expect(staged[0].decision).toEqual({ action: "skip" });
     expect(rows.every((r) => r.decision?.action === "skip")).toBe(true);
     expect(decided).toBe(3);
-    // One page plus the one the late row asked for.
-    expect(calls).toBe(2);
+    // In the same transaction as Glen's own skip: no second page needed.
+    expect(calls).toBe(1);
   });
 
   test("a team's league staged in the same window is skipped too", async () => {

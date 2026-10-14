@@ -111,6 +111,22 @@ export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
  * Pointer users get an outside-click close as well — see the effect below for
  * why that is not just polish.
  */
+/**
+ * NEO-341 (axe color-contrast) — the tone of a row's small print: its era,
+ * its league, the create row's "Already here" line.
+ *
+ * gray-400 reads 5.6:1 on the popover's gray-800, but the ArrowDown row lays
+ * `bg-[#00D558]/20` over that (#184b3f), where gray-400 drops to 3.8:1. The
+ * highlighted row's small print goes to gray-300 (6.7:1) instead — the same
+ * step `EntityLinkSearch` and the wizard took for their highlighted rows. The
+ * name itself stays neon green (5.0:1).
+ */
+function secondaryTone(highlighted: boolean): string {
+  return highlighted
+    ? "text-gray-700 dark:text-gray-300"
+    : "text-gray-600 dark:text-gray-400";
+}
+
 export default function TeamPicker({
   value,
   onChange,
@@ -761,7 +777,11 @@ export default function TeamPicker({
                         league, because it is identity and the league is
                         context. */}
                     {m.yearsActive && (
-                      <span className="ml-2 font-mono text-[10px] tabular-nums text-gray-600 dark:text-gray-400">
+                      <span
+                        className={`ml-2 font-mono text-[10px] tabular-nums ${secondaryTone(
+                          idx === highlightIdx,
+                        )}`}
+                      >
                         {eraLabel(m.yearsActive)}
                       </span>
                     )}
@@ -770,7 +790,9 @@ export default function TeamPicker({
                         immediately to the left, and repeating it read as a
                         stutter ("San Diego Padres · San Diego"). */}
                     {m.league && (
-                      <span className="ml-2 text-[10px] text-gray-600 dark:text-gray-400">
+                      <span
+                        className={`ml-2 text-[10px] ${secondaryTone(idx === highlightIdx)}`}
+                      >
                         {m.league}
                       </span>
                     )}
@@ -825,7 +847,11 @@ export default function TeamPicker({
                     server refuses a second era until the operator confirms it
                     in the dialog. Offer here, insist there. */}
                 {sameNameTeams.length > 0 && (
-                  <span className="mt-0.5 block text-[10px] text-gray-600 dark:text-gray-400">
+                  <span
+                    className={`mt-0.5 block text-[10px] ${secondaryTone(
+                      highlightIdx === matches.length,
+                    )}`}
+                  >
                     Already here:{" "}
                     <span className="font-mono tabular-nums">
                       {sameNameTeams

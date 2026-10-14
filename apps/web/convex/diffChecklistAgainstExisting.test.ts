@@ -22,6 +22,7 @@ import { Id } from "./_generated/dataModel";
 // than hand-spelled so a fixture cannot key a seeded player differently from
 // the way the prelude will look it up.
 import { normalizePlayerName } from "./players";
+import { normalizeTeamName } from "./teams";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
 beforeEach(() => {
@@ -1013,6 +1014,241 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
     // carries, not on who created it.
     expect(result.removedUpstream.fullyOrphaned).toHaveLength(0);
     expect(result.removedUpstream.partialOrphanCount).toBe(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+});
+
+/**
+ * A missing marketplace team is absence of data, not a claim.
+ *
+ * Found by E2E: a re-sync whose last BSC team-lookup chunk had not reached the
+ * confirmed cards proposed "Team: Toronto Blue Jays → —" on twenty cards. The
+ * incoming card's team list is empty whenever a lookup failed, timed out, or
+ * had not landed yet, so an empty list can never be read as "this card has no
+ * team". Only an explicit team that differs is a suggestion.
+ */
+describe("diffChecklistAgainstExisting — a missing team is not a claim", () => {
+  /** One stored card on a Blue Jays team row, committed through the real path. */
+  async function seedCardWithTeam(t: ReturnType<typeof convexTest>) {
+    const { sportId, leafId } = await seedTree(t);
+    await t.run(async (ctx) => {
+      for (const name of ["Toronto Blue Jays", "Texas Rangers"]) {
+        await ctx.db.insert("teams", {
+          name,
+          nameNormalized: normalizeTeamName(name),
+          sportId,
+          lastUpdated: Date.now(),
+        });
+      }
+    });
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          card({
+            cardNumber: "91",
+            cardName: "Alex Gonzalez",
+            bscRef: "bsc-91",
+            slRef: "sl-91",
+            teams: ["Toronto Blue Jays"],
+          }),
+        ],
+      });
+    const [row] = await storedRows(t, leafId);
+    // Precondition: the team actually resolved onto the row, or every
+    // assertion below would pass against a row with nothing to clear.
+    expect(row.teamOnCardIds).toHaveLength(1);
+    return { sportId, leafId, row };
+  }
+
+  test("an empty incoming team list proposes no change and leaves the card identical", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedCardWithTeam(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "91",
+        cardName: "Alex Gonzalez",
+        bscRef: "bsc-91",
+        slRef: "sl-91",
+        teams: [],
+      }),
+    ]);
+
+    expect(result.cards).toHaveLength(1);
+    expect(result.cards[0].bucket).toBe("identical");
+    expect(result.cards[0].fields).toEqual([]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("a card with neither `teams` nor `team` on the wire proposes no team change", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedCardWithTeam(t);
+    const full = card({
+      cardNumber: "91",
+      cardName: "Alex Gonzalez",
+      bscRef: "bsc-91",
+      slRef: "sl-91",
+    });
+    const noTeamField: Omit<typeof full, "teams"> = { ...full };
+    delete (noTeamField as Partial<typeof full>).teams;
+    expect("teams" in noTeamField).toBe(false);
+
+    // Straight to the query: `diff` types its cards as always carrying `teams`.
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .query(api.selectorOptions.diffChecklistAgainstExisting, {
+        selectorOptionId: leafId,
+        cards: [noTeamField],
+      });
+
+    expect(result.cards[0].bucket).toBe("identical");
+    expect(result.cards[0].fields).toEqual([]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("a missing team does not ride along with a real change on the same card", async () => {
+    // The E2E shape: the operator's rename is the one genuine content change,
+    // and the card's team is missing from the incoming view at the same time.
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedCardWithTeam(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "91",
+        cardName: "Alex Gonzalez Jr",
+        bscRef: "bsc-91",
+        slRef: "sl-91",
+        teams: [],
+      }),
+    ]);
+
+    expect(result.cards[0].bucket).toBe("contentChanges");
+    expect(result.cards[0].fields.map((f) => f.name)).toEqual(["cardName"]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("an explicit different team is a tier-1 needs-review change", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedCardWithTeam(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "91",
+        cardName: "Alex Gonzalez",
+        bscRef: "bsc-91",
+        slRef: "sl-91",
+        teams: ["Texas Rangers"],
+      }),
+    ]);
+
+    const [entry] = result.cards;
+    expect(entry.bucket).toBe("contentChanges");
+    expect(entry.fields).toHaveLength(1);
+    expect(entry.fields[0]).toMatchObject({
+      name: "teamOnCardIds",
+      tier: 1,
+      oldValue: "Toronto Blue Jays",
+      newValue: "Texas Rangers",
+      foldEqual: false,
+      source: "both",
+    });
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("the same team is unchanged", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedCardWithTeam(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "91",
+        cardName: "Alex Gonzalez",
+        bscRef: "bsc-91",
+        slRef: "sl-91",
+        teams: ["Toronto Blue Jays"],
+      }),
+    ]);
+
+    expect(result.cards[0].bucket).toBe("identical");
+    expect(result.cards[0].fields).toEqual([]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("the commit never clears a stored team from an empty incoming list, even when told to", async () => {
+    // The diff no longer offers the row, but the wire card is the client's:
+    // the transaction that writes holds the same line on its own.
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, row } = await seedCardWithTeam(t);
+
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          {
+            ...card({
+              cardNumber: "91",
+              cardName: "Alex Gonzalez",
+              bscRef: "bsc-91",
+              slRef: "sl-91",
+              teams: [],
+            }),
+            applyFields: ["teamOnCardIds"],
+            baseVersion: row.lastUpdated,
+          },
+        ],
+      });
+    expect(result.success).toBe(true);
+
+    const [after] = await storedRows(t, leafId);
+    expect(after.teamOnCardIds).toEqual(row.teamOnCardIds);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("the commit still writes an explicit different team the operator accepted", async () => {
+    // The guard above must not swallow the genuine case.
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, row } = await seedCardWithTeam(t);
+    const rangersId = await t.run(async (ctx) =>
+      ctx.db
+        .query("teams")
+        .collect()
+        .then((all) => all.find((x) => x.name === "Texas Rangers")!._id),
+    );
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          {
+            ...card({
+              cardNumber: "91",
+              cardName: "Alex Gonzalez",
+              bscRef: "bsc-91",
+              slRef: "sl-91",
+              teams: ["Texas Rangers"],
+            }),
+            applyFields: ["teamOnCardIds"],
+            baseVersion: row.lastUpdated,
+          },
+        ],
+      });
+
+    const [after] = await storedRows(t, leafId);
+    expect(after.teamOnCardIds).toEqual([rangersId]);
     await drainScheduled(t);
     await cancelScheduled(t);
   });

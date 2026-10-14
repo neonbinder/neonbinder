@@ -1088,10 +1088,10 @@ function ReadySetRow({
         {set.bsc.map((i) => chip("bsc", i))}
         {set.sl.map((i) => chip("sl", i))}
         {set.bsc.length === 0 && (
-          <span className="text-[11px] text-gray-500 italic">no BSC mapping</span>
+          <span className="text-[11px] text-gray-400 italic">no BSC mapping</span>
         )}
         {set.sl.length === 0 && (
-          <span className="text-[11px] text-gray-500 italic">no SL mapping</span>
+          <span className="text-[11px] text-gray-400 italic">no SL mapping</span>
         )}
       </div>
 
@@ -2524,12 +2524,12 @@ function ReconciliationDialog({
             </div>
           ))}
           {all.length === 0 && mapped.length === 0 && (
-            <p className="text-xs text-gray-500 italic py-2">
+            <p className="text-xs text-gray-400 italic py-2">
               Nothing pending on {isBsc ? "BSC" : "SportLots"}
             </p>
           )}
           {all.length > 0 && filtered.length === 0 && mismatched.length === 0 && (
-            <p className="text-xs text-gray-500 italic py-2">
+            <p className="text-xs text-gray-400 italic py-2">
               {query
                 ? `No ${isBsc ? "BSC" : "SL"} items contain "${query}"`
                 : !isBsc && activeSlPrefixes.length > 0
@@ -2669,7 +2669,7 @@ function ReconciliationDialog({
                   : ""}
                 )
               </h3>
-              <p className="text-xs text-gray-500 mb-2">
+              <p className="text-xs text-gray-400 mb-2">
                 These become NeonBinder sets. The title is ours — edit it freely.
                 Each set can map to any number of BSC and SportLots sets.
               </p>
@@ -2684,11 +2684,11 @@ function ReconciliationDialog({
                 </div>
               )}
               {state.ready.length === 0 ? (
-                <p className="text-xs text-gray-500 italic py-2">
+                <p className="text-xs text-gray-400 italic py-2">
                   No sets yet. Pair two items below, or make one its own set.
                 </p>
               ) : filteredReady.length === 0 ? (
-                <p className="text-xs text-gray-500 italic py-2">
+                <p className="text-xs text-gray-400 italic py-2">
                   No sets match "{readyQuery}"
                 </p>
               ) : (
@@ -2727,7 +2727,7 @@ function ReconciliationDialog({
               <h3 className="text-sm font-medium text-gray-300 mb-1">
                 Pending ({pendingCount})
               </h3>
-              <p className="text-xs text-gray-500 mb-2">
+              <p className="text-xs text-gray-400 mb-2">
                 Drag one onto the other to make a set, or onto a set above to add
                 it there. Anything left here is not saved.
               </p>
@@ -2737,7 +2737,10 @@ function ReconciliationDialog({
                   life when the check was asked for, so it is in the tree
                   (empty) before its first words. */}
               {baseCheck && <LiveLine text={probe.announcement} />}
-              <div className="grid grid-cols-2 gap-4">
+              {/* NEO-341: one column below sm. Side by side in a phone-width
+                  dialog each column was ~170px, and a row's "Make its own
+                  set" button left the item name one letter wide. */}
+              <div className="grid grid-cols-2 max-sm:grid-cols-1 gap-4">
                 {renderPendingColumn("bsc")}
                 {renderPendingColumn("sl")}
               </div>

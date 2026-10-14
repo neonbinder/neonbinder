@@ -788,8 +788,12 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
     return { ...utils, onChange };
   }
 
-  /** This picker's popover IS its listbox — the role sits on the container. */
-  const popover = () => screen.getByRole("listbox");
+  /**
+   * The popover is the portalled container; since NEO-341 the listbox is the
+   * options list INSIDE it (a direct child), not the container itself.
+   */
+  const results = () => screen.getByRole("listbox");
+  const popover = () => results().parentElement as HTMLElement;
 
   function anchorAt(bottom: number, left: number) {
     return vi
@@ -829,10 +833,11 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
     expect(popover().parentElement?.parentElement).toBe(document.body);
   });
 
-  it("keeps its listbox role and accessible name on the popover itself", () => {
-    // The portal moved the element, not its semantics: the container is still
-    // the listbox, still named by `labels.results`, which is what both a
-    // screen reader and a Maestro `id:` selector read it by.
+  it("names its options list as the listbox, and keeps the role off the popover (NEO-341)", () => {
+    // The portal moved the element, not its semantics. NEO-341: the listbox
+    // is the options list inside the popover, still named by
+    // `labels.results`. The popover also holds the search box and the sport
+    // switch, which a listbox may not own (axe aria-required-children).
     renderInScrollBox({
       labels: {
         root: "Player picker",
@@ -843,7 +848,13 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
     });
     openPopover();
 
-    expect(popover().getAttribute("aria-label")).toBe("Player typeahead results");
+    expect(results().getAttribute("aria-label")).toBe("Player typeahead results");
+    expect(popover().getAttribute("role")).toBeNull();
+    expect(popover().contains(screen.getByRole("textbox", { name: "Search players" }))).toBe(true);
+    expect(results().contains(screen.getByRole("textbox", { name: "Search players" }))).toBe(false);
+    for (const child of Array.from(results().children)) {
+      expect(child.getAttribute("role")).toBe("option");
+    }
     expect(popover().className).toContain("w-64");
     expect(popover().className).toContain("dark:bg-gray-800");
     expect(popover().className).toContain("z-[55]");
