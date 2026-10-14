@@ -4,7 +4,10 @@ import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import {
+  deriveOwnLevelFeatures,
+  inheritableFeatures,
+} from "./features/deriveCardFeatures";
 import { platformServesLevel } from "./platformLevels";
 import {
   slotIds,
@@ -2460,7 +2463,8 @@ export const storeReconciledOptions = mutation({
       // NEO-291 — the derived flags reach `deriveOwnLevelFeatures` so the
       // write-once `features.cardType` snapshot is right at birth.
       const features = {
-        ...(parentFeatures ?? {}),
+        // NEO-345: never a node-only key (autographFormat).
+        ...inheritableFeatures(parentFeatures),
         ...deriveOwnLevelFeatures(level, insertValue, variantFlags),
       };
 

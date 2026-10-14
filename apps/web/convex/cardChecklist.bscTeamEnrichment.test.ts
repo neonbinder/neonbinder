@@ -21,7 +21,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
+import { applyBscAttributeFill } from "./cardChecklist";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -930,5 +931,511 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
     // work whose best outcome is a no-op and whose worst is a contradiction.
     expect(result.enqueued).toBe(1);
     expect(result.remaining).toBe(0);
+  });
+});
+
+// ===========================================================================
+// NEO-345 — why the lookup finished, and the hint a "no team" answer clears
+// ===========================================================================
+
+describe("applyBscTeamResolution records the outcome (NEO-345)", () => {
+  test("every stamp it makes says 'answered': no team, unmatched, linked, already linked", async () => {
+    const t = harness();
+    const { variantTypeId, sportId } = await seedTree(t);
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Yankees",
+        nameNormalized: "yankees",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const noTeam = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+    const unmatched = await insertCard(t, variantTypeId, "2", { bsc: "bsc-2" });
+    const linked = await insertCard(t, variantTypeId, "3", { bsc: "bsc-3" });
+    const already = await insertCard(t, variantTypeId, "4", {
+      bsc: "bsc-4",
+      teamOnCardIds: [teamId],
+    });
+    const confirmed = await insertCard(t, variantTypeId, "5", {
+      bsc: "bsc-5",
+      teamNoneConfirmedAt: 1,
+    });
+
+    const apply = (id: Id<"cardChecklist">, raw: string) =>
+      t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+        cardChecklistId: id,
+        rawTeamName: raw,
+        teamNames: raw ? [raw] : [],
+      });
+    await apply(noTeam, "");
+    await apply(unmatched, "Nowhere Nobodies");
+    await apply(linked, "Yankees");
+    await apply(already, "Yankees");
+    await apply(confirmed, "Yankees");
+    await drainScheduled(t);
+
+    for (const id of [noTeam, unmatched, linked, already, confirmed]) {
+      const card = (await getCard(t, id))!;
+      expect(card.teamCheckDoneAt).toBeTypeOf("number");
+      expect(card.teamCheckOutcome).toBe("answered");
+    }
+  });
+
+  test("the retryable broken-ancestor branch stamps nothing, outcome included", async () => {
+    const t = harness();
+    const orphanLeaf = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const cardId = await insertCard(t, orphanLeaf, "1", { bsc: "bsc-1" });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      rawTeamName: "Yankees",
+      teamNames: ["Yankees"],
+    });
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamCheckDoneAt).toBeUndefined();
+    expect(card.teamCheckOutcome).toBeUndefined();
+    vi.restoreAllMocks();
+  });
+
+  test("a 'no team on file' answer clears a hint an earlier answer left", async () => {
+    const t = harness();
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { bscTeamName: "AU  SN1" }),
+    );
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      rawTeamName: "",
+      teamNames: [],
+    });
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.bscTeamName).toBeUndefined();
+    expect(card.teamCheckOutcome).toBe("answered");
+  });
+});
+
+// ===========================================================================
+// NEO-345 — applyBscAttributeFill: fill-empty, never overwrite
+// ===========================================================================
+
+describe("applyBscAttributeFill (NEO-345)", () => {
+  type FillOpts = Parameters<typeof applyBscAttributeFill>[2];
+
+  async function seedCard(
+    t: ReturnType<typeof convexTest>,
+    fields: Partial<Doc<"cardChecklist">> = {},
+    playerNames: string[] = [],
+  ) {
+    const { variantTypeId, sportId } = await seedTree(t);
+    return t.run(async (ctx) => {
+      const playerIds: Id<"players">[] = [];
+      for (const name of playerNames) {
+        playerIds.push(
+          await ctx.db.insert("players", {
+            name,
+            nameNormalized: name.toLowerCase(),
+            sportId,
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantTypeId,
+        cardNumber: "1",
+        cardName: "Card 1",
+        platformData: { bsc: { ref: "bsc-1", src: "b0" } },
+        sortOrder: 1,
+        lastUpdated: 1000,
+        ...(playerIds.length ? { playerIds } : {}),
+        ...fields,
+      });
+    });
+  }
+
+  const fill = (
+    t: ReturnType<typeof convexTest>,
+    id: Id<"cardChecklist">,
+    opts: FillOpts,
+  ) =>
+    t.run(async (ctx) => {
+      const row = (await ctx.db.get(id))!;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return applyBscAttributeFill(ctx as any, row, opts);
+    });
+
+  test("raw tokens become NB's: NUM + print run, RELIC + isRelic, RC + isRookie, shortPrint", async () => {
+    const t = harness();
+    const id = await seedCard(t);
+
+    const result = await fill(t, id, { tokens: ["AU", "MEM", "SN49", "RC", "SSP"] });
+
+    expect(result).toEqual({
+      wrote: true,
+      printRunDisagreement: false,
+      autographFormatted: false,
+    });
+    const card = (await getCard(t, id))!;
+    expect(card.attributes).toEqual(["AU", "RELIC", "RC", "SSP", "NUM"]);
+    expect(card.printRun).toBe(49);
+    expect(card.isRelic).toBe(true);
+    expect(card.isRookie).toBe(true);
+    expect(card.features).toEqual({
+      isRookie: "true",
+      isRelic: "true",
+      shortPrint: "SSP",
+    });
+    expect(card.lastUpdated).toBeGreaterThan(1000);
+  });
+
+  test("idempotent: a second call writes nothing and leaves lastUpdated alone", async () => {
+    const t = harness();
+    const id = await seedCard(t);
+    await fill(t, id, { tokens: ["AU", "SN25", "RC"] });
+    const first = (await getCard(t, id))!;
+
+    const again = await fill(t, id, { tokens: ["AU", "SN25", "RC"] });
+
+    expect(again.wrote).toBe(false);
+    expect((await getCard(t, id))!).toEqual(first);
+  });
+
+  test("a stored raw SN<n> is canonicalised to NUM and becomes the print run; nothing else is removed", async () => {
+    const t = harness();
+    const id = await seedCard(t, { attributes: ["SN99", "MEM", "IA"] });
+
+    await fill(t, id, { tokens: ["SN99", "MEM", "IA"] });
+
+    const card = (await getCard(t, id))!;
+    expect(card.printRun).toBe(99);
+    expect(card.attributes).toEqual(["MEM", "IA", "RELIC", "NUM"]);
+  });
+
+  test("a different print run already on the row is left, BSC's token kept beside NUM, disagreement reported", async () => {
+    const t = harness();
+    const id = await seedCard(t, { printRun: 99, attributes: ["NUM"] });
+
+    const result = await fill(t, id, { tokens: ["SN25"], printRun: 25 });
+
+    expect(result.printRunDisagreement).toBe(true);
+    const card = (await getCard(t, id))!;
+    expect(card.printRun).toBe(99);
+    expect(card.attributes).toEqual(["NUM", "SN25"]);
+  });
+
+  test("operator values are never overwritten: features set, flags already true", async () => {
+    const t = harness();
+    const id = await seedCard(t, {
+      isRookie: true,
+      features: { shortPrint: "SSP", isRelic: "false", autographed: "On Card" },
+    });
+
+    await fill(t, id, {
+      tokens: ["AU", "SP", "RELIC"],
+      autographFormat: "Sticker/Label",
+    });
+
+    const card = (await getCard(t, id))!;
+    expect(card.features).toMatchObject({
+      shortPrint: "SSP",
+      isRelic: "false",
+      autographed: "On Card",
+    });
+    expect(card.isRelic).toBe(true);
+  });
+
+  test("an explicit false flag counts as empty", async () => {
+    const t = harness();
+    const id = await seedCard(t, { isRookie: false });
+
+    await fill(t, id, { tokens: ["RC"] });
+
+    expect((await getCard(t, id))!.isRookie).toBe(true);
+  });
+
+  test("AU without a format leaves the card unformatted", async () => {
+    const t = harness();
+    const id = await seedCard(t, { features: { autographed: "None" } }, ["Ken Griffey Jr."]);
+
+    const result = await fill(t, id, { tokens: ["AU"] });
+
+    expect(result.autographFormatted).toBe(false);
+    const card = (await getCard(t, id))!;
+    expect(card.features?.autographed).toBe("None");
+    expect(card.features?.signedBy).toBeUndefined();
+  });
+
+  test("a format with no AU token formats nothing", async () => {
+    const t = harness();
+    const id = await seedCard(t, { features: { autographed: "None" } });
+
+    const result = await fill(t, id, { tokens: ["RC"], autographFormat: "On Card" });
+
+    expect(result.autographFormatted).toBe(false);
+    expect((await getCard(t, id))!.features?.autographed).toBe("None");
+  });
+
+  test("AU + format on an unformatted card: formatted, Signed By seeded from every player", async () => {
+    const t = harness();
+    const id = await seedCard(t, { features: { autographed: "None" } }, [
+      "Mike Trout",
+      "Shohei Ohtani",
+    ]);
+
+    const result = await fill(t, id, { tokens: ["AU"], autographFormat: "On Card" });
+
+    expect(result.autographFormatted).toBe(true);
+    expect((await getCard(t, id))!.features).toMatchObject({
+      autographed: "On Card",
+      signedBy: "Mike Trout, Shohei Ohtani",
+    });
+  });
+
+  test("an existing Signed By is kept", async () => {
+    const t = harness();
+    const id = await seedCard(
+      t,
+      { features: { autographed: "None", signedBy: "Someone Else" } },
+      ["Mike Trout"],
+    );
+
+    await fill(t, id, { tokens: ["AU"], autographFormat: "On Card" });
+
+    expect((await getCard(t, id))!.features?.signedBy).toBe("Someone Else");
+  });
+
+  test("the cascade re-answers a card still on the previous format, and only that one", async () => {
+    const t = harness();
+    const onPrevious = await seedCard(
+      t,
+      { attributes: ["AU"], features: { autographed: "On Card", signedBy: "A" } },
+    );
+
+    const result = await fill(t, onPrevious, {
+      tokens: ["AU"],
+      autographFormat: "Sticker/Label",
+      previousAutographFormat: "On Card",
+    });
+
+    expect(result.autographFormatted).toBe(true);
+    expect((await getCard(t, onPrevious))!.features).toMatchObject({
+      autographed: "Sticker/Label",
+      signedBy: "A",
+    });
+
+    const t2 = harness();
+    const override = await seedCard(t2, {
+      attributes: ["AU"],
+      features: { autographed: "Sticker/Label" },
+    });
+    const kept = await fill(t2, override, {
+      tokens: ["AU"],
+      autographFormat: "On Card",
+      previousAutographFormat: "None",
+    });
+    expect(kept.autographFormatted).toBe(false);
+    expect((await getCard(t2, override))!.features?.autographed).toBe("Sticker/Label");
+  });
+
+  test("a print run outside 1..1,000,000 passed by a caller is ignored", async () => {
+    const t = harness();
+    const id = await seedCard(t);
+
+    await fill(t, id, { tokens: [], printRun: 0 });
+    await fill(t, id, { tokens: [], printRun: 2.5 });
+
+    const card = (await getCard(t, id))!;
+    expect(card.printRun).toBeUndefined();
+    expect(card.attributes).toBeUndefined();
+  });
+
+  test("the listing title is never regenerated", async () => {
+    const t = harness();
+    const id = await seedCard(t, { listingTitle: "2024 Topps #1 Card" });
+
+    await fill(t, id, { tokens: ["AU", "SN5"] });
+
+    expect((await getCard(t, id))!.listingTitle).toBe("2024 Topps #1 Card");
+  });
+});
+
+// ===========================================================================
+// NEO-345 — enqueueBscTeamBackfill: re-ask and dry run
+// ===========================================================================
+
+describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
+  async function seedEveryKind(t: ReturnType<typeof convexTest>) {
+    const { variantTypeId, sportId } = await seedTree(t);
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Yankees",
+        nameNormalized: "yankees",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const ids = {
+      unchecked: await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" }),
+      legacy: await insertCard(t, variantTypeId, "2", {
+        bsc: "bsc-2",
+        teamCheckDoneAt: 5,
+      }),
+      gaveUp: await insertCard(t, variantTypeId, "3", {
+        bsc: "bsc-3",
+        teamCheckDoneAt: 5,
+      }),
+      answeredNoTeam: await insertCard(t, variantTypeId, "4", {
+        bsc: "bsc-4",
+        teamCheckDoneAt: 5,
+      }),
+      answeredHinted: await insertCard(t, variantTypeId, "5", {
+        bsc: "bsc-5",
+        teamCheckDoneAt: 5,
+      }),
+      linked: await insertCard(t, variantTypeId, "6", {
+        bsc: "bsc-6",
+        teamCheckDoneAt: 5,
+        teamOnCardIds: [teamId],
+      }),
+      ruledNone: await insertCard(t, variantTypeId, "7", {
+        bsc: "bsc-7",
+        teamCheckDoneAt: 5,
+        teamNoneConfirmedAt: 5,
+      }),
+      noRef: await insertCard(t, variantTypeId, "8"),
+    };
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids.gaveUp, { teamCheckOutcome: "gaveUp" });
+      await ctx.db.patch(ids.answeredNoTeam, { teamCheckOutcome: "answered" });
+      await ctx.db.patch(ids.answeredHinted, {
+        teamCheckOutcome: "answered",
+        bscTeamName: "Somewhere Else",
+      });
+      await ctx.db.patch(ids.linked, { teamCheckOutcome: "answered" });
+    });
+    return ids;
+  }
+
+  const expectedCounts = {
+    legacyNoOutcome: 1,
+    gaveUp: 1,
+    answeredNoTeam: 1,
+    answeredHinted: 1,
+    unchecked: 1,
+  };
+
+  test("dry run counts every kind and writes and schedules nothing", async () => {
+    const t = harness();
+    await seedEveryKind(t);
+    const before = await t.run(async (ctx) =>
+      ctx.db.query("cardChecklist").collect(),
+    );
+
+    const result = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { mode: "reask", dryRun: true },
+    );
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      enqueued: 0,
+      selected: 2,
+      remaining: 0,
+      estimatedDrainMs: 0,
+      counts: expectedCounts,
+    });
+    expect(await pendingScheduled(t)).toHaveLength(0);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("cardChecklist").collect()),
+    ).toEqual(before);
+  });
+
+  test("re-ask clears the stamp on given-up and legacy cards only, and queues exactly them", async () => {
+    const t = harness();
+    const ids = await seedEveryKind(t);
+
+    const result = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { mode: "reask" },
+    );
+
+    expect(result).toMatchObject({
+      dryRun: false,
+      enqueued: 2,
+      selected: 2,
+      counts: expectedCounts,
+    });
+    for (const id of [ids.legacy, ids.gaveUp]) {
+      const card = (await getCard(t, id))!;
+      expect(card.teamCheckDoneAt).toBeUndefined();
+      expect(card.teamCheckOutcome).toBeUndefined();
+    }
+    for (const id of [ids.answeredNoTeam, ids.answeredHinted, ids.linked, ids.ruledNone]) {
+      expect((await getCard(t, id))!.teamCheckDoneAt).toBe(5);
+    }
+    expect((await getCard(t, ids.answeredHinted))!.bscTeamName).toBe("Somewhere Else");
+
+    const pending = await pendingScheduled(t);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].name).toContain("processBscTeamEnrichmentQueue");
+    expect(
+      [...(pending[0].args[0] as { cardChecklistIds: string[] }).cardChecklistIds].sort(),
+    ).toEqual([ids.legacy, ids.gaveUp].sort());
+  });
+
+  test("a second re-ask does not select the re-asked cards again", async () => {
+    const t = harness();
+    await seedEveryKind(t);
+    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { mode: "reask" });
+
+    const again = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { mode: "reask", dryRun: true },
+    );
+
+    expect(again.selected).toBe(0);
+  });
+
+  test("the default mode is unchanged: only never-checked cards", async () => {
+    const t = harness();
+    const ids = await seedEveryKind(t);
+
+    const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {});
+
+    expect(result.enqueued).toBe(1);
+    const pending = await pendingScheduled(t);
+    expect(
+      (pending[0].args[0] as { cardChecklistIds: string[] }).cardChecklistIds,
+    ).toEqual([ids.unchecked]);
+    expect((await getCard(t, ids.gaveUp))!.teamCheckOutcome).toBe("gaveUp");
+  });
+
+  test("batchSize above the page size means the whole page; below 1 is refused", async () => {
+    const t = harness();
+    await seedEveryKind(t);
+
+    const big = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
+      mode: "reask",
+      dryRun: true,
+      batchSize: 5000,
+    });
+    expect(big.selected).toBe(2);
+
+    await expect(
+      t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { batchSize: 0 }),
+    ).rejects.toThrow(/batchSize/);
   });
 });

@@ -86,12 +86,14 @@ describe("fetchBscCardTeamNames", () => {
         rawTeamName: "New York Yankees",
         teamNames: ["New York Yankees"],
         success: true,
+        attributeTokens: [],
       },
       {
         bscCardId: "bsc-2",
         rawTeamName: "Boston Red Sox",
         teamNames: ["Boston Red Sox"],
         success: true,
+        attributeTokens: [],
       },
     ]);
   });
@@ -117,8 +119,9 @@ describe("fetchBscCardTeamNames", () => {
         rawTeamName: "New York Yankees",
         teamNames: ["New York Yankees"],
         success: true,
+        attributeTokens: [],
       },
-      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: true },
+      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: true, attributeTokens: [] },
     ]);
   });
 
@@ -146,9 +149,10 @@ describe("fetchBscCardTeamNames", () => {
         rawTeamName: "New York Yankees",
         teamNames: ["New York Yankees"],
         success: true,
+        attributeTokens: [],
       },
-      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: false },
-      { bscCardId: "bsc-3", rawTeamName: "", teamNames: [], success: false },
+      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: false, attributeTokens: [] },
+      { bscCardId: "bsc-3", rawTeamName: "", teamNames: [], success: false, attributeTokens: [] },
     ]);
   });
 
@@ -233,6 +237,7 @@ describe("fetchBscCardTeamNames", () => {
         rawTeamName: "Cleveland Guardians, Washington Nationals",
         teamNames: ["Cleveland Guardians", "Washington Nationals"],
         success: true,
+        attributeTokens: [],
       },
     ]);
   });
@@ -255,6 +260,7 @@ describe("fetchBscCardTeamNames", () => {
         rawTeamName: "Bodø/Glimt",
         teamNames: ["Bodø/Glimt"],
         success: true,
+        attributeTokens: [],
       },
     ]);
   });
@@ -271,7 +277,7 @@ describe("fetchBscCardTeamNames", () => {
     );
 
     expect(result).toEqual([
-      { bscCardId: "bsc-1", rawTeamName: raw, teamNames: [], success: true },
+      { bscCardId: "bsc-1", rawTeamName: raw, teamNames: [], success: true, attributeTokens: [] },
     ]);
     // Flagged, with the card id only: never the marketplace text.
     const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
@@ -297,7 +303,7 @@ describe("fetchBscCardTeamNames", () => {
 
     // Dropped, never truncated.
     expect(result).toEqual([
-      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [a, b], success: true },
+      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [a, b], success: true, attributeTokens: [] },
     ]);
     expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain(a);
     warn.mockRestore();
@@ -317,7 +323,141 @@ describe("fetchBscCardTeamNames", () => {
     // One 200-char part is over-length and dropped; raw is dropped: nothing
     // to carry. BSC still ANSWERED (NEO-335), so the entry is not a failure.
     expect(result).toEqual([
-      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [], success: true },
+      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [], success: true, attributeTokens: [] },
     ]);
+  });
+});
+
+/**
+ * NEO-345 — the card-listing response also carries the card's attribute
+ * tokens (`playerAttribute`, a comma string), and on some cards BSC puts the
+ * attribute LABEL where the team belongs. Payload shapes below are the ones
+ * seen when the public endpoint was probed for autograph cards.
+ */
+function makePayloadFetch(
+  responses: Record<string, Record<string, unknown>>,
+): typeof fetch {
+  return (async (url: string | URL | Request) => {
+    const match = String(url).match(/\/marketplace\/card\/([^/]+)\/card-listing/);
+    const body = responses[match?.[1] ?? ""];
+    if (!body) throw new Error("unexpected fetch");
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+}
+
+describe("fetchBscCardTeamNames — attribute tokens (NEO-345)", () => {
+  test("carries the raw tokens and the print run beside the team", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": { teamName: "Seattle Mariners", playerAttribute: "AU ,  SN50" },
+        "bsc-2": { teamName: "Detroit Tigers", playerAttribute: "FY, AU, RC" },
+        "bsc-3": { teamName: "Boston Red Sox" },
+      }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1", "bsc-2", "bsc-3"] },
+    );
+
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "Seattle Mariners",
+        teamNames: ["Seattle Mariners"],
+        success: true,
+        attributeTokens: ["AU", "SN50"],
+        printRun: 50,
+      },
+      {
+        bscCardId: "bsc-2",
+        rawTeamName: "Detroit Tigers",
+        teamNames: ["Detroit Tigers"],
+        success: true,
+        attributeTokens: ["FY", "AU", "RC"],
+      },
+      {
+        bscCardId: "bsc-3",
+        rawTeamName: "Boston Red Sox",
+        teamNames: ["Boston Red Sox"],
+        success: true,
+        attributeTokens: [],
+      },
+    ]);
+  });
+
+  test("a team value that is the attribute label ('AU  SN1') is no team, and its tokens are the card's", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({ "bsc-1": { teamName: "AU  SN1", playerAttribute: "" } }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    // Answered, with no team on file — never a team called "AU  SN1".
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "",
+        teamNames: [],
+        success: true,
+        attributeTokens: ["AU", "SN1"],
+        printRun: 1,
+      },
+    ]);
+    // A flag and the card id only, never the marketplace text.
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("bsc-1");
+    expect(logged).not.toContain("AU  SN1");
+  });
+
+  test("the label beside a populated playerAttribute takes the payload's tokens", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": { teamName: "AU SN25", playerAttribute: "AU, SN25" },
+      }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const [entry] = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(entry.rawTeamName).toBe("");
+    expect(entry.teamNames).toEqual([]);
+    expect(entry.attributeTokens).toEqual(["AU", "SN25"]);
+    expect(entry.printRun).toBe(25);
+  });
+
+  test("a non-string playerAttribute is ignored, not trusted", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": { teamName: "Boston Red Sox", playerAttribute: { evil: true } },
+      }),
+    );
+
+    const [entry] = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(entry.attributeTokens).toEqual([]);
+    expect(entry.printRun).toBeUndefined();
+    expect(entry.rawTeamName).toBe("Boston Red Sox");
   });
 });

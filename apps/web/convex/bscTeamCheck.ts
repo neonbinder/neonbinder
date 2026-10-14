@@ -12,8 +12,8 @@
  *
  * The queue now retries a failed card a bounded number of times (see
  * `BSC_TEAM_CHECK_MAX_PASSES` in `adapters/buysportscards.ts`) and, when the
- * last pass fails too, calls this. It stamps `teamCheckDoneAt` and nothing
- * else:
+ * last pass fails too, calls this. It stamps `teamCheckDoneAt` (NEO-345: with
+ * `teamCheckOutcome: "gaveUp"`, so a re-ask can find it) and nothing else:
  *
  * - `teamCheckDoneAt` means "the automatic lookup has been and gone,
  *   regardless of outcome" (`cardChecklist.applyBscTeamResolution`). Giving up
@@ -43,7 +43,13 @@ export const markBscTeamCheckGivenUp = internalMutation({
     // Already answered — by a late success, an operator's team, or an
     // operator's "no team" (which `applyBscTeamResolution` stamps as well).
     if (row.teamCheckDoneAt) return false;
-    await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+    // NEO-345: and WHY it is done — nothing came back, so a later re-ask
+    // (`enqueueBscTeamBackfill` mode "reask") can tell this card from one
+    // BSC actually answered.
+    await ctx.db.patch(row._id, {
+      teamCheckDoneAt: Date.now(),
+      teamCheckOutcome: "gaveUp",
+    });
     return true;
   },
 });

@@ -2040,3 +2040,51 @@ describe("NEO-335: the wizard's team suggestions are admin-gated", () => {
     ).resolves.toBeDefined();
   });
 });
+
+/**
+ * NEO-345 — the leaf's autograph format. Public because the checklist header
+ * prompt and the set attributes panel call it; admin-only like every other
+ * set-side edit, and it schedules a cascade over the leaf's cards, so the
+ * refusal must land before the leaf is read or the walk is scheduled.
+ */
+describe("NEO-345: the autograph format door is admin-gated", () => {
+  test("autographFormat.setAutographFormat refuses a signed-out caller and a non-admin without touching the row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leafId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Autographs",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.autographFormat.setAutographFormat, {
+        selectorOptionId: leafId,
+        value: "On Card",
+      });
+    await expect(call(t)).rejects.toThrow();
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    const row = await t.run(async (ctx) => ctx.db.get(leafId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.features).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(leafId)))!.features).toEqual({
+      autographFormat: "On Card",
+    });
+    await drainScheduled(t);
+  });
+
+  test.each([
+    ["autographFormat.ts", "cascadeAutographFormat", "internalAction"],
+    ["autographFormat.ts", "cascadeAutographFormatPage", "internalMutation"],
+    ["backfillBscAttributeFeatures.ts", "run", "internalMutation"],
+  ])("%s :: %s is declared %s", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+});

@@ -59,6 +59,19 @@ import {
 import { findLeagueByName } from "./leagues";
 import { pickTeamForYear, teamOptionLabel } from "../lib/teams/team-era";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
+// NEO-345: BSC attribute tokens read into NB's vocabulary, and the closed
+// autograph-format vocabulary the fill writes into `features.autographed`.
+import {
+  boundBscAttributeTokens,
+  normalizeBscAttributeTokensDetailed,
+  printRunFromToken,
+  MAX_BSC_PRINT_RUN,
+} from "./lib/bscAttributeTokens";
+import {
+  carriesAutographToken,
+  deriveCardObservedFeatures,
+  isAutographFormat,
+} from "./features/deriveCardFeatures";
 import { variantTypeKind } from "./variantRole";
 
 /**
@@ -277,6 +290,247 @@ export const backfillTeamToOnCardIds = internalMutation({
   },
 });
 
+// ===========================================================================
+// NEO-345 — BSC attribute fill
+// ===========================================================================
+
+/**
+ * NEO-345 — Signed By's default for a card that just became an autograph: the
+ * card's own players, comma-joined, in `playerIds` order. Undefined when the
+ * card has none (or none still exist). The ONE spelling of the rule
+ * `setCardFeature` applies on a manual edit and `buildCardRowForInsert`
+ * applies at insert, for every server-side writer of `features.autographed`.
+ */
+export async function signedByFromPlayers(
+  ctx: Pick<MutationCtx, "db">,
+  playerIds: ReadonlyArray<Id<"players">> | undefined,
+): Promise<string | undefined> {
+  if (!playerIds || playerIds.length === 0) return undefined;
+  const players = await Promise.all(playerIds.map((id) => ctx.db.get(id)));
+  const names = players
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+    .map((p) => p.name)
+    .filter((name) => !!name && name.trim().length > 0);
+  return names.length > 0 ? names.join(", ") : undefined;
+}
+
+/** A `features` value that says nothing yet. */
+function featureIsEmpty(value: string | undefined): boolean {
+  return value === undefined || value === "" || value === "None";
+}
+
+function hasToken(list: ReadonlyArray<string>, token: string): boolean {
+  const key = token.toUpperCase();
+  return list.some((t) => t.trim().toUpperCase() === key);
+}
+
+/**
+ * NEO-345 — fill a stored card from BSC's attribute tokens. FILL-EMPTY, NEVER
+ * OVERWRITE: a marketplace value only ever lands where NB has nothing, and a
+ * disagreement is left standing for the NEO-203 re-sync review.
+ *
+ * Callers: `applyBscTeamResolution` on every answered card, the leaf
+ * autograph-format cascade (`autographFormat.ts`), and the stored-row backfill
+ * (`backfillBscAttributeFeatures.ts`). The tokens may be raw BSC tokens or an
+ * already-normalised list; they are bounded and normalised here.
+ *
+ * - `attributes`: the union of what the row holds and what BSC says. A raw
+ *   `SN<n>`/`1/1` on the row is canonicalised to `NUM`; nothing else is
+ *   removed.
+ * - `printRun`: set only when the row has none. When the row's differs, it is
+ *   left, BSC's raw `SN<n>` is kept beside `NUM`, and the disagreement is
+ *   reported.
+ * - `isRookie` / `isRelic`: set true from `RC` / `RELIC` when not already
+ *   true (an explicit false counts as empty).
+ * - `features.shortPrint` / `isRookie` / `isRelic`: only where the key is
+ *   absent or "None".
+ * - `features.autographed`: only when the card carries `AU`, a format is
+ *   known (the LEAF's `autographFormat`, never a marketplace's wording), and
+ *   the card's value is absent/"None" or equals `previousAutographFormat`
+ *   (the cascade re-answering a leaf). Signed By is then seeded from the
+ *   card's players when empty.
+ * - `lastUpdated` is bumped only when something was written. The listing
+ *   title is NOT regenerated. Idempotent: a second call writes nothing.
+ */
+export async function applyBscAttributeFill(
+  ctx: MutationCtx,
+  row: Doc<"cardChecklist">,
+  opts: {
+    tokens: string[];
+    printRun?: number;
+    autographFormat?: "On Card" | "Sticker/Label";
+    previousAutographFormat?: string;
+  },
+): Promise<{
+  wrote: boolean;
+  printRunDisagreement: boolean;
+  autographFormatted: boolean;
+}> {
+  const incoming = normalizeBscAttributeTokensDetailed(
+    boundBscAttributeTokens(opts.tokens).tokens,
+  );
+  const callerPrintRun =
+    opts.printRun !== undefined &&
+    Number.isInteger(opts.printRun) &&
+    opts.printRun >= 1 &&
+    opts.printRun <= MAX_BSC_PRINT_RUN
+      ? opts.printRun
+      : undefined;
+  const incomingPrintRun = callerPrintRun ?? incoming.printRun;
+
+  const stored = row.attributes ?? [];
+  // The row's own raw print-run tokens (a pre-NEO-345 parse stored "SN25").
+  const storedRuns = new Set<number>();
+  for (const t of stored) {
+    const n = printRunFromToken(t);
+    if (n !== undefined) storedRuns.add(n);
+  }
+  const storedRun = storedRuns.size === 1 ? [...storedRuns][0] : undefined;
+
+  // ── print run ──────────────────────────────────────────────────────────
+  const offeredRun = incomingPrintRun ?? storedRun;
+  let printRun = row.printRun;
+  let printRunDisagreement = false;
+  if (offeredRun !== undefined) {
+    if (printRun === undefined) {
+      printRun = offeredRun;
+    } else if (printRun !== offeredRun) {
+      printRunDisagreement = true;
+    }
+  }
+  // A stored token that disagrees with the row's run is a disagreement too.
+  if (printRun !== undefined) {
+    for (const n of storedRuns) if (n !== printRun) printRunDisagreement = true;
+  }
+
+  // ── attributes ─────────────────────────────────────────────────────────
+  // A raw print-run token stays only while it disagrees with the row's run
+  // (or no single run could be settled); `NUM` says the rest.
+  const keepRawRun = (t: string): boolean => {
+    const n = printRunFromToken(t);
+    return n !== undefined && (printRun === undefined || n !== printRun);
+  };
+  const merged: string[] = [];
+  const add = (t: string) => {
+    const trimmed = t.trim();
+    if (trimmed && !hasToken(merged, trimmed)) merged.push(trimmed);
+  };
+  let numbered = false;
+  for (const t of stored) {
+    if (printRunFromToken(t) !== undefined) {
+      numbered = true;
+      if (keepRawRun(t)) add(t);
+      continue;
+    }
+    add(t);
+  }
+  for (const t of incoming.attributes) {
+    if (printRunFromToken(t) !== undefined) {
+      numbered = true;
+      if (keepRawRun(t)) add(t);
+      continue;
+    }
+    add(t);
+  }
+  if (incoming.printRun !== undefined || incoming.printRunTokens.length > 0) {
+    numbered = true;
+    for (const t of incoming.printRunTokens) if (keepRawRun(t)) add(t);
+  }
+  if (callerPrintRun !== undefined) {
+    numbered = true;
+    if (printRun !== undefined && callerPrintRun !== printRun) {
+      add(`SN${callerPrintRun}`);
+    }
+  }
+  if (numbered) add("NUM");
+
+  // ── typed flags ────────────────────────────────────────────────────────
+  const isRookie = hasToken(merged, "RC") && row.isRookie !== true;
+  const isRelic = hasToken(merged, "RELIC") && row.isRelic !== true;
+
+  // ── features ───────────────────────────────────────────────────────────
+  const features: Record<string, string> = { ...(row.features ?? {}) };
+  let featuresChanged = false;
+  const observed = deriveCardObservedFeatures({ attributes: merged });
+  for (const key of ["shortPrint", "isRookie", "isRelic"] as const) {
+    const value = observed[key];
+    if (value !== undefined && featureIsEmpty(features[key])) {
+      features[key] = value;
+      featuresChanged = true;
+    }
+  }
+
+  let autographFormatted = false;
+  if (
+    opts.autographFormat !== undefined &&
+    isAutographFormat(opts.autographFormat) &&
+    carriesAutographToken(merged)
+  ) {
+    const current = features.autographed;
+    const answerable =
+      featureIsEmpty(current) ||
+      (opts.previousAutographFormat !== undefined &&
+        opts.previousAutographFormat !== "" &&
+        current === opts.previousAutographFormat);
+    if (answerable && current !== opts.autographFormat) {
+      features.autographed = opts.autographFormat;
+      featuresChanged = true;
+      autographFormatted = true;
+    }
+    // Seeded only by the write that made the card an autograph, like
+    // `setCardFeature`: an operator who later cleared Signed By on a card
+    // that was already formatted is not overruled by a re-run.
+    if (autographFormatted && featureIsEmpty(features.signedBy)) {
+      const signedBy = await signedByFromPlayers(ctx, row.playerIds);
+      if (signedBy) {
+        features.signedBy = signedBy;
+        featuresChanged = true;
+      }
+    }
+  }
+
+  // ── write, only what changed ───────────────────────────────────────────
+  const patch: Partial<Doc<"cardChecklist">> = {};
+  const attributesChanged =
+    merged.length !== stored.length ||
+    merged.some((t, i) => t !== stored[i]);
+  if (attributesChanged) patch.attributes = merged;
+  if (printRun !== row.printRun) patch.printRun = printRun;
+  if (isRookie) patch.isRookie = true;
+  if (isRelic) patch.isRelic = true;
+  if (featuresChanged) patch.features = features;
+
+  const wrote = Object.keys(patch).length > 0;
+  if (wrote) {
+    patch.lastUpdated = Date.now();
+    await ctx.db.patch(row._id, patch);
+  }
+  return { wrote, printRunDisagreement, autographFormatted };
+}
+
+/**
+ * NEO-345 — the leaf's operator-supplied autograph format, when the card
+ * carries AU and the leaf has one. One read, and only for an AU card.
+ */
+async function leafAutographFormatFor(
+  ctx: MutationCtx,
+  row: Doc<"cardChecklist">,
+  tokens: ReadonlyArray<string>,
+): Promise<"On Card" | "Sticker/Label" | undefined> {
+  const incoming = normalizeBscAttributeTokensDetailed(
+    boundBscAttributeTokens(tokens).tokens,
+  );
+  if (
+    !carriesAutographToken(incoming.attributes) &&
+    !carriesAutographToken(row.attributes)
+  ) {
+    return undefined;
+  }
+  const leaf = await ctx.db.get(row.selectorOptionId);
+  const format = leaf?.features?.autographFormat;
+  return isAutographFormat(format) ? format : undefined;
+}
+
 /**
  * NEO-90: apply the result of a BSC per-card team lookup
  * (`adapters/buysportscards.ts`'s `resolveBscCardTeam`) to a single
@@ -391,6 +645,15 @@ export const applyBscTeamResolution = internalMutation({
      * refuses that list rather than trimming it.
      */
     teamNames: v.array(v.string()),
+    /**
+     * NEO-345: the card's attribute tokens from the same answer (raw BSC
+     * tokens; normalised by `applyBscAttributeFill`). Optional so a queue
+     * call scheduled before this field existed still runs; absent fills
+     * nothing.
+     */
+    attributeTokens: v.optional(v.array(v.string())),
+    /** NEO-345: the print run those tokens carry, when they carry one. */
+    printRun: v.optional(v.number()),
   },
   returns: v.object({
     applied: v.boolean(),
@@ -410,6 +673,21 @@ export const applyBscTeamResolution = internalMutation({
     const row = await ctx.db.get(args.cardChecklistId);
     if (!row) return { applied: false, unmatched: false };
 
+    // NEO-345: every call here is an ANSWER from BSC, so its attribute tokens
+    // fill the card first — whatever the team branch below decides, and on
+    // the early returns too (a card that already has a team still gains its
+    // print run). Fill-empty, never overwrite; the team fields below are not
+    // touched by it. The leaf's operator-supplied autograph format, when it
+    // has one, formats an AU card; a marketplace's wording never does.
+    if (args.attributeTokens !== undefined || args.printRun !== undefined) {
+      const tokens = args.attributeTokens ?? [];
+      await applyBscAttributeFill(ctx, row, {
+        tokens,
+        ...(args.printRun !== undefined ? { printRun: args.printRun } : {}),
+        autographFormat: await leafAutographFormatFor(ctx, row, tokens),
+      });
+    }
+
     // NEO-102: an operator confirmed this card carries no team. A background
     // writer must never overturn that.
     //
@@ -425,14 +703,20 @@ export const applyBscTeamResolution = internalMutation({
     // also takes the row out of `enqueueBscTeamBackfill`'s scan.
     if (row.teamNoneConfirmedAt) {
       if (!row.teamCheckDoneAt) {
-        await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+        await ctx.db.patch(row._id, {
+          teamCheckDoneAt: Date.now(),
+          teamCheckOutcome: "answered",
+        });
       }
       return { applied: false, unmatched: false };
     }
 
     if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
       if (!row.teamCheckDoneAt) {
-        await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+        await ctx.db.patch(row._id, {
+          teamCheckDoneAt: Date.now(),
+          teamCheckOutcome: "answered",
+        });
       }
       return { applied: false, unmatched: false };
     }
@@ -458,7 +742,16 @@ export const applyBscTeamResolution = internalMutation({
     if (!rawTeamName && !splitOverCap && teamNames.length === 0) {
       // No team on file for this card (insert/subset cards like League
       // Leaders) — remember we checked so it's never re-enqueued.
-      await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+      //
+      // NEO-345: and clear any hint an EARLIER answer left. BSC now says it
+      // has no team, so a stale "The listing names …" from before (or from a
+      // value that was really the attribute label, "AU  SN1") would contradict
+      // the answer the operator is about to act on.
+      await ctx.db.patch(row._id, {
+        teamCheckDoneAt: Date.now(),
+        teamCheckOutcome: "answered",
+        bscTeamName: undefined,
+      });
       return { applied: false, unmatched: false };
     }
 
@@ -510,6 +803,7 @@ export const applyBscTeamResolution = internalMutation({
       // `unmatched` — "not a team" is an answer, not an unknown name.
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: Date.now(),
+        teamCheckOutcome: "answered",
         bscTeamName: undefined,
       });
       return { applied: false, unmatched: false };
@@ -588,6 +882,7 @@ export const applyBscTeamResolution = internalMutation({
         await ctx.db.patch(row._id, {
           teamOnCardIds: [wholeTeamId],
           teamCheckDoneAt: Date.now(),
+          teamCheckOutcome: "answered",
           // Same as the split path's success below: a resolved team leaves
           // the hint nothing to say.
           bscTeamName: undefined,
@@ -604,6 +899,7 @@ export const applyBscTeamResolution = internalMutation({
       if (wholeCandidates.length > 0) {
         await ctx.db.patch(row._id, {
           teamCheckDoneAt: Date.now(),
+          teamCheckOutcome: "answered",
           bscTeamName: hint || undefined,
         });
         return { applied: false, unmatched: true };
@@ -672,6 +968,7 @@ export const applyBscTeamResolution = internalMutation({
       // any part the operator skipped (`splitHint`).
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: Date.now(),
+        teamCheckOutcome: "answered",
         // No hint at all when there is nothing displayable to keep (the raw
         // string was over the adapter's cap AND the split was over
         // `MAX_CARD_TEAMS`): an empty "Marketplace says:" helps nobody.
@@ -683,6 +980,7 @@ export const applyBscTeamResolution = internalMutation({
     await ctx.db.patch(row._id, {
       teamOnCardIds: resolvedTeamIds,
       teamCheckDoneAt: Date.now(),
+      teamCheckOutcome: "answered",
       // A matched card has a real team now, so the hint has nothing left to
       // say — and a stale "Marketplace says: …" beside a resolved team reads
       // as a disagreement rather than as history.
@@ -719,42 +1017,123 @@ export const applyBscTeamResolution = internalMutation({
  * duplicate just no-ops once the other chain gets there first) but wastes a
  * real live HTTP call to BSC per duplicate. `estimatedDrainMs` below is that
  * lower bound — wait at least that long before calling again.
+ *
+ * NEO-345 — `mode: "reask"` re-asks BSC for the cards whose lookup finished
+ * WITHOUT an answer (gave up after its retries, or finished before the
+ * outcome was recorded), and `dryRun: true` reports each page's counts while
+ * writing and scheduling nothing. The drain rule above applies to both modes:
+ * a re-asked card's stamp is cleared when it is queued, so until the queue
+ * answers it an "unchecked" run would select it too. A re-ask run never
+ * selects it twice — it is no longer stamped.
  */
 export const enqueueBscTeamBackfill = internalMutation({
   args: {
-    /** Cap on rows enqueued per page. Defaults to 200. */
+    /**
+     * Cap on rows enqueued per page. Defaults to 200; anything above 1000
+     * (the page size) means the whole page.
+     */
     batchSize: v.optional(v.number()),
     /** Pagination cursor from a previous call's `continueCursor`. Omit/null to start from the beginning. */
     cursor: v.optional(v.union(v.string(), v.null())),
+    /**
+     * NEO-345 — which cards to ask BSC about.
+     *  - "unchecked" (default, the original behaviour): BSC-linked cards with
+     *    no team whose lookup never ran (`teamCheckDoneAt` unset).
+     *  - "reask": BSC-linked cards with no team whose lookup DID finish, but
+     *    either gave up after its retries (`teamCheckOutcome: "gaveUp"`) or
+     *    finished before the outcome was recorded (absent). Their stamp and
+     *    outcome are cleared and they are queued exactly as an unchecked card
+     *    is. A card BSC answered ("answered") is never re-asked: asking again
+     *    would only re-learn the same answer.
+     * Either way a card an operator settled (`teamNoneConfirmedAt`) or one
+     * with a team is never selected.
+     */
+    mode: v.optional(v.union(v.literal("unchecked"), v.literal("reask"))),
+    /**
+     * NEO-345 — write and schedule nothing; report what this page holds.
+     * Run it first: the counts say how many live BSC requests an armed run
+     * of either mode would spend.
+     */
+    dryRun: v.optional(v.boolean()),
   },
   returns: v.object({
+    /** Cards queued for a BSC lookup by THIS call. Always 0 on a dry run. */
     enqueued: v.number(),
+    /**
+     * NEO-345 — cards in this page the mode selected (up to batchSize):
+     * queued on an armed run, what WOULD be queued on a dry run.
+     */
+    selected: v.number(),
     /** Eligible rows in THIS page beyond batchSize — bump batchSize if nonzero. */
     remaining: v.number(),
     isDone: v.boolean(),
     continueCursor: v.string(),
     /** Minimum ms to wait before calling this again — see doc comment above. */
     estimatedDrainMs: v.number(),
+    dryRun: v.boolean(),
+    /**
+     * NEO-345 — this page's BSC-linked cards with no team and no operator
+     * "no team" ruling, by why they have none. Counted on every call, armed
+     * or dry, before any write.
+     */
+    counts: v.object({
+      /** Lookup finished before `teamCheckOutcome` existed. */
+      legacyNoOutcome: v.number(),
+      /** Every retry failed; the queue stopped asking. */
+      gaveUp: v.number(),
+      /** BSC answered and named no team. */
+      answeredNoTeam: v.number(),
+      /** BSC answered with a team NB could not link (a hint is kept). */
+      answeredHinted: v.number(),
+      /** The lookup never ran. */
+      unchecked: v.number(),
+    }),
   }),
   handler: async (ctx, args) => {
-    const batchSize = args.batchSize ?? 200;
     const PAGE_SIZE = 1000;
+    const requestedBatchSize = args.batchSize ?? 200;
+    if (!Number.isInteger(requestedBatchSize) || requestedBatchSize < 1) {
+      throw new ConvexError("batchSize must be a whole number of at least 1");
+    }
+    // A page holds at most PAGE_SIZE rows, so a larger cap is the page.
+    const batchSize = Math.min(requestedBatchSize, PAGE_SIZE);
+    const mode = args.mode ?? "unchecked";
+    const dryRun = args.dryRun === true;
     const page = await ctx.db
       .query("cardChecklist")
       .paginate({ cursor: args.cursor ?? null, numItems: PAGE_SIZE });
 
+    const counts = {
+      legacyNoOutcome: 0,
+      gaveUp: 0,
+      answeredNoTeam: 0,
+      answeredHinted: 0,
+      unchecked: 0,
+    };
     const candidateIds: Id<"cardChecklist">[] = [];
     let remaining = 0;
     for (const row of page.page) {
-      const needsCheck =
+      const teamless =
         !!row.platformData?.bsc &&
         (!row.teamOnCardIds || row.teamOnCardIds.length === 0) &&
-        !row.teamCheckDoneAt &&
         // NEO-102: never re-derive a team for a card an operator settled as
         // teamless. `applyBscTeamResolution` re-checks this too, so a row
         // enqueued before the confirmation still cannot be overwritten — this
         // clause is what stops the pointless live BSC request.
         !row.teamNoneConfirmedAt;
+      if (!teamless) continue;
+
+      if (!row.teamCheckDoneAt) counts.unchecked += 1;
+      else if (row.teamCheckOutcome === "gaveUp") counts.gaveUp += 1;
+      else if (row.teamCheckOutcome === "answered") {
+        if (row.bscTeamName) counts.answeredHinted += 1;
+        else counts.answeredNoTeam += 1;
+      } else counts.legacyNoOutcome += 1;
+
+      const needsCheck =
+        mode === "unchecked"
+          ? !row.teamCheckDoneAt
+          : !!row.teamCheckDoneAt && row.teamCheckOutcome !== "answered";
       if (!needsCheck) continue;
       if (candidateIds.length < batchSize) {
         candidateIds.push(row._id);
@@ -763,7 +1142,20 @@ export const enqueueBscTeamBackfill = internalMutation({
       }
     }
 
-    if (candidateIds.length > 0) {
+    if (!dryRun && candidateIds.length > 0) {
+      if (mode === "reask") {
+        // The lookup is owed again: clear the stamp and its outcome together,
+        // so `getForBscTeamCheck` lets the queue ask and the card reads as
+        // "waiting on the automatic answer" until it does. Nothing else on
+        // the row is touched — any team, hint or ruling stays as it was, and
+        // the queue's own guards re-check them on a fresh read.
+        for (const id of candidateIds) {
+          await ctx.db.patch(id, {
+            teamCheckDoneAt: undefined,
+            teamCheckOutcome: undefined,
+          });
+        }
+      }
       await ctx.scheduler.runAfter(
         0,
         internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
@@ -776,12 +1168,29 @@ export const enqueueBscTeamBackfill = internalMutation({
     // file are unsupported in Convex's bundler. Keep in sync with
     // BSC_TEAM_ENRICH_DELAY_MS there.
     const BSC_TEAM_ENRICH_DELAY_MS = 300;
+    const enqueued = dryRun ? 0 : candidateIds.length;
+    console.log(
+      JSON.stringify({
+        msg: "bsc_team_backfill_page",
+        platform: "bsc",
+        operation: "enqueueBscTeamBackfill",
+        mode,
+        dryRun,
+        selected: candidateIds.length,
+        enqueued,
+        remaining,
+        ...counts,
+      }),
+    );
     return {
-      enqueued: candidateIds.length,
+      enqueued,
+      selected: candidateIds.length,
       remaining,
       isDone: page.isDone,
       continueCursor: page.continueCursor,
-      estimatedDrainMs: candidateIds.length * BSC_TEAM_ENRICH_DELAY_MS,
+      estimatedDrainMs: enqueued * BSC_TEAM_ENRICH_DELAY_MS,
+      dryRun,
+      counts,
     };
   },
 });

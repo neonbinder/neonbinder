@@ -28,6 +28,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
+import { AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
@@ -247,6 +248,9 @@ export default function SetAttributesPanel({
   const setSelectorOptionListingShortName = useMutation(
     api.selectorOptions.setSelectorOptionListingShortName,
   );
+  // NEO-345 — the leaf's autograph format, through its own mutation: a save
+  // also carries the format onto the leaf's AU cards (server-side cascade).
+  const setAutographFormat = useMutation(api.autographFormat.setAutographFormat);
   const setSelectorOptionSetNamePrefix = useMutation(
     api.brandView.setSelectorOptionSetNamePrefix,
   );
@@ -282,6 +286,9 @@ export default function SetAttributesPanel({
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
+      // NEO-345 — rendered as its own row (`AUTOGRAPH_FORMAT_FEATURE`), saved
+      // through `setAutographFormat` so the leaf's AU cards follow it.
+      if (f.key === AUTOGRAPH_FORMAT_FEATURE.key) return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
@@ -464,6 +471,31 @@ export default function SetAttributesPanel({
       await setSelectorOptionListingShortName({
         id: selectorOptionId,
         listingShortName: trimmed,
+      });
+    } catch (e) {
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+    }
+  };
+
+  /**
+   * NEO-345 — the "Autograph format" row's save. `handleSaveFeature`'s shape
+   * (no-op on an unchanged value, optimistic toast, the server's own sentence
+   * on a refusal) through `setAutographFormat`, which also carries the format
+   * onto the leaf's AU cards. `""` clears the leaf's format and touches no
+   * card.
+   */
+  const handleSaveAutographFormat = async (value: string) => {
+    const label = AUTOGRAPH_FORMAT_FEATURE.label;
+    const trimmed = value.trim();
+    const clearing = trimmed.length === 0;
+    const current = features[AUTOGRAPH_FORMAT_FEATURE.key];
+    if (clearing ? current === undefined : current === trimmed) return;
+    if (!clearing && !(AUTOGRAPH_FORMATS as readonly string[]).includes(trimmed)) return;
+    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    try {
+      await setAutographFormat({
+        selectorOptionId,
+        value: trimmed as (typeof AUTOGRAPH_FORMATS)[number] | "",
       });
     } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
@@ -843,6 +875,15 @@ export default function SetAttributesPanel({
                 onSave={handleSaveListingShortName}
               />
             )}
+            {/* NEO-345: at the levels cards hang from — how this leaf's
+                autographs are signed. Its AU cards take it. */}
+            {showCardPrefixRow && (
+              <SetFeatureRow
+                feat={AUTOGRAPH_FORMAT_FEATURE}
+                value={features[AUTOGRAPH_FORMAT_FEATURE.key]}
+                onSave={handleSaveAutographFormat}
+              />
+            )}
             {otherFeatures.map((feat) => (
               <SetFeatureRow
                 key={feat.key}
@@ -1191,6 +1232,21 @@ function SlViaAllBrandsToggle({
     </div>
   );
 }
+
+/**
+ * NEO-345 — how a leaf's autographs are signed: NB data the operator
+ * supplies (no marketplace says), stored as the leaf's
+ * `features.autographFormat` and inherited by every card on the leaf that
+ * carries "AU". A select with "No value" to clear. The input is
+ * `Value for Autograph format`.
+ */
+const AUTOGRAPH_FORMAT_FEATURE: ExpectedFeature = {
+  key: "autographFormat",
+  label: "Autograph format", // COPY: placeholder
+  inputType: "select",
+  options: AUTOGRAPH_FORMATS,
+  hint: "How this set's autographs are signed. Its autographed cards take it.", // COPY: placeholder
+};
 
 /**
  * Editable feature row. Maestro targets `Value for {label}` — DO NOT rename.

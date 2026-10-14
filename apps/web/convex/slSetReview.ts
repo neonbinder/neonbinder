@@ -55,7 +55,10 @@ import {
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import {
+  deriveOwnLevelFeatures,
+  inheritableFeatures,
+} from "./features/deriveCardFeatures";
 import { matchKnownBrand } from "./knownBrands";
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { MAX_SLOT_LABEL_LENGTH, initialSlots, slotIds } from "./platformSlots";
@@ -994,7 +997,8 @@ export const createSlRowsUnderVariantType = internalMutation({
         sportlots: [{ id: entry.slId, label: entry.label }],
       });
       const features = {
-        ...(type.features ?? {}),
+        // NEO-345: never a node-only key (autographFormat).
+        ...inheritableFeatures(type.features),
         ...deriveOwnLevelFeatures("insert", named.value, flags),
       };
       const id = await ctx.db.insert("selectorOptions", {

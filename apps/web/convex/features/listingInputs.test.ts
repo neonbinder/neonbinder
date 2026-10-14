@@ -658,3 +658,68 @@ describe("NEO-335 — checkShortNameAnswer (the write paths' rule, without throw
     expect(checkShortNameAnswer("Upper\u200bDeck").error).toMatch(/invisible/);
   });
 });
+
+describe("NEO-345 — the leaf's autograph format, through mergeCardFeatures", () => {
+  const leaf = (format: string): ListingSetContext => ({
+    ...SET,
+    inheritedFeatures: { ...SET.inheritedFeatures, autographed: "None", autographFormat: format },
+  });
+
+  test.each(["On Card", "Sticker/Label"])(
+    "an AU card under a %s leaf is autographed with it, and the format is stripped",
+    (format) => {
+      const merged = mergeCardFeatures({ cardNumber: "1", attributes: ["AU"] }, leaf(format));
+      expect(merged.autographed).toBe(format);
+      expect(merged).not.toHaveProperty("autographFormat");
+    },
+  );
+
+  test("a card without AU stays None and loses the leaf's key too", () => {
+    const merged = mergeCardFeatures({ cardNumber: "1", attributes: ["RC"] }, leaf("On Card"));
+    expect(merged.autographed).toBe("None");
+    expect(merged).not.toHaveProperty("autographFormat");
+  });
+
+  test("fill-empty: a copy's own autographed (its base features) wins", () => {
+    const merged = mergeCardFeatures(
+      { cardNumber: "1", attributes: ["AU"], baseFeatures: { autographed: "On Card" } },
+      leaf("Sticker/Label"),
+    );
+    expect(merged.autographed).toBe("On Card");
+  });
+
+  test("a marketplace autographType is never the format", () => {
+    const merged = mergeCardFeatures(
+      { cardNumber: "1", attributes: ["AU"], autographType: "Unknown" },
+      { ...SET, inheritedFeatures: { ...SET.inheritedFeatures, autographed: "None" } },
+    );
+    expect(merged.autographed).toBe("None");
+  });
+
+  test("the pre-save title (draft answer on titleContext) and the insert agree: both say AUTO", () => {
+    const card: ListingCardFacts = { cardNumber: "7", attributes: ["AU"] };
+    // The UI puts the wizard's draft answer here before save; the commit
+    // writes it onto the leaf, so the insert reads the same key.
+    const set = leaf("On Card");
+    const preview = assessNewCardListing(card, set, { playerNames: ["Mike Trout"] });
+    const built = buildCardRowForInsert(
+      {
+        selectorOptionId: SELECTOR_ID,
+        cardNumber: "7",
+        cardName: "Mike Trout",
+        attributes: ["AU"],
+        platformData: {},
+        pendingPlayerNames: [],
+        pendingTeamNames: [],
+        sortOrder: 0,
+        playerNames: ["Mike Trout"],
+      } satisfies NewCardRow,
+      set,
+      NOW,
+    );
+    expect(preview.assessment.title).toMatch(/\bAUTO\b/);
+    expect(built.row.listingTitle).toBe(preview.assessment.title);
+    expect(built.row.features?.autographed).toBe("On Card");
+    expect(built.row.features?.signedBy).toBe("Mike Trout");
+  });
+});

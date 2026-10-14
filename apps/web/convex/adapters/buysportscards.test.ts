@@ -1,9 +1,18 @@
 import { describe, expect, test } from "vitest";
 import {
   isBscVariationRow,
+  normalizeBscAttributeTokens,
+  parsePlayerAttributeTokens,
   parsePlayersField,
   parseVariationDescription,
 } from "./buysportscards";
+import {
+  MAX_BSC_ATTRIBUTE_TOKENS,
+  MAX_BSC_ATTRIBUTE_TOKEN_LENGTH,
+  boundBscAttributeTokens,
+  isBscAttributeLabel,
+  normalizeBscAttributeTokensDetailed,
+} from "../lib/bscAttributeTokens";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 
@@ -366,5 +375,131 @@ describe("parseVariationDescription", () => {
       text: "VAR",
       isVariety: false,
     });
+  });
+});
+
+/**
+ * NEO-345 — BSC attribute tokens read into NB's vocabulary. The raw strings
+ * below are the exact `playerAttribute` values BSC's public card-listing
+ * endpoint returned when probed for autograph cards ("AU, SN1",
+ * "AU ,  SN50", "AU, MEM, SN49, EXCH", "FY, AU, RC").
+ */
+describe("normalizeBscAttributeTokens (NEO-345)", () => {
+  const norm = (raw: string) =>
+    normalizeBscAttributeTokens(parsePlayerAttributeTokens(raw));
+
+  test("SN<n> becomes NUM with the print run, replacing the raw token", () => {
+    expect(norm("AU, SN25")).toEqual({ attributes: ["AU", "NUM"], printRun: 25 });
+  });
+
+  test("odd spacing around BSC's comma still reads", () => {
+    expect(norm("AU ,  SN50")).toEqual({ attributes: ["AU", "NUM"], printRun: 50 });
+  });
+
+  test("1/1 and SN1 are both a print run of one", () => {
+    expect(norm("1/1")).toEqual({ attributes: ["NUM"], printRun: 1 });
+    expect(norm("AU, SN1")).toEqual({ attributes: ["AU", "NUM"], printRun: 1 });
+  });
+
+  test("memorabilia tokens become RELIC; unknown tokens are kept raw", () => {
+    expect(norm("AU, MEM, SN49, EXCH")).toEqual({
+      attributes: ["AU", "RELIC", "EXCH", "NUM"],
+      printRun: 49,
+    });
+    expect(norm("JSY").attributes).toEqual(["RELIC"]);
+    expect(norm("Patch, Jersey").attributes).toEqual(["RELIC"]);
+  });
+
+  test("case-folded: known tokens take their canonical spelling", () => {
+    expect(norm("au, rc, sn10")).toEqual({
+      attributes: ["AU", "RC", "NUM"],
+      printRun: 10,
+    });
+  });
+
+  test("RC, SP, SSP, VAR, UER and the descriptive tokens are kept, never dropped", () => {
+    expect(norm("FY, AU, RC").attributes).toEqual(["FY", "AU", "RC"]);
+    expect(norm("ASR, SP, VAR").attributes).toEqual(["ASR", "SP", "VAR"]);
+    expect(norm("SSP, UER, IA, BP, FBC, MGR, HC, PC").attributes).toEqual([
+      "SSP",
+      "UER",
+      "IA",
+      "BP",
+      "FBC",
+      "MGR",
+      "HC",
+      "PC",
+    ]);
+  });
+
+  test("an out-of-range serial is not a print run and is kept raw", () => {
+    expect(norm("SN0")).toEqual({ attributes: ["SN0"] });
+    expect(norm("SN1000001")).toEqual({ attributes: ["SN1000001"] });
+    expect(norm("SN1000000")).toEqual({ attributes: ["NUM"], printRun: 1_000_000 });
+  });
+
+  test("two different print runs on one card: NUM, no print run, BSC's tokens kept", () => {
+    expect(norm("SN25, SN50")).toEqual({ attributes: ["NUM", "SN25", "SN50"] });
+  });
+
+  test("idempotent: a normalised list normalises to itself", () => {
+    const once = norm("AU, MEM, SN49, RC");
+    expect(normalizeBscAttributeTokens(once.attributes)).toEqual({
+      attributes: once.attributes,
+    });
+  });
+
+  test("the detailed form names the raw tokens that carried the print run", () => {
+    expect(normalizeBscAttributeTokensDetailed(["AU", "SN25"])).toEqual({
+      attributes: ["AU", "NUM"],
+      printRun: 25,
+      printRunTokens: ["SN25"],
+    });
+  });
+
+  test("never decides an autograph format: AU is only AU", () => {
+    expect(norm("AU").attributes).toEqual(["AU"]);
+  });
+
+  test("VAR still marks a variation after normalising", () => {
+    const { attributes } = norm("SP, VAR");
+    expect(isBscVariationRow({ attributes })).toBe(true);
+  });
+});
+
+describe("boundBscAttributeTokens (NEO-345)", () => {
+  test("drops an over-long token, never truncates it", () => {
+    const long = "X".repeat(MAX_BSC_ATTRIBUTE_TOKEN_LENGTH + 1);
+    expect(boundBscAttributeTokens(["AU", long, "  "]).tokens).toEqual(["AU"]);
+  });
+
+  test("refuses an over-long list whole", () => {
+    const many = Array.from({ length: MAX_BSC_ATTRIBUTE_TOKENS + 1 }, (_, i) => `T${i}`);
+    expect(boundBscAttributeTokens(many)).toEqual({ tokens: [], refused: true });
+  });
+});
+
+describe("isBscAttributeLabel (NEO-345)", () => {
+  test("the live case: teamName 'AU  SN1' with no playerAttribute", () => {
+    expect(isBscAttributeLabel("AU  SN1", [])).toBe(true);
+  });
+
+  test("a value equal to the payload's own tokens is the label", () => {
+    expect(isBscAttributeLabel("AU SN25 XYZ", ["AU", "SN25", "XYZ"])).toBe(true);
+  });
+
+  test("a real team is never the label", () => {
+    expect(isBscAttributeLabel("Seattle Mariners", ["AU", "SN50"])).toBe(false);
+    expect(isBscAttributeLabel("New York Yankees", [])).toBe(false);
+    expect(isBscAttributeLabel("Korea, South", [])).toBe(false);
+  });
+
+  test("a team name that merely contains a token word is not the label", () => {
+    expect(isBscAttributeLabel("RC Lens", [])).toBe(false);
+  });
+
+  test("empty is not a label", () => {
+    expect(isBscAttributeLabel("", [])).toBe(false);
+    expect(isBscAttributeLabel("   ", ["AU"])).toBe(false);
   });
 });

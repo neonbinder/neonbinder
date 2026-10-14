@@ -108,6 +108,10 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelPromotionPreview: "spc.getParallelPromotionPreview",
       promoteParallelToSet: "spc.promoteParallelToSet",
     },
+    // NEO-345 — the Autograph format row's save, bound at render on every level.
+    autographFormat: {
+      setAutographFormat: "autographFormat.setAutographFormat",
+    },
     // NEO-306 — "Make insert of…", asking the server at render.
     setInsertConversion: {
       getMakeInsertEligibility: "sic.getMakeInsertEligibility",
@@ -133,6 +137,8 @@ const mockSetManufacturerSlViaAllBrands = vi.fn();
 const mockMoveSetToBrand = vi.fn();
 /** NEO-277 */
 const mockSetSelectorOptionTeams = vi.fn();
+/** NEO-345 */
+const mockSetAutographFormat = vi.fn();
 /**
  * NEO-277 — the Team row's two one-shot reads go through `useConvex().query`,
  * not `useQuery`; routed by the same string refs.
@@ -189,6 +195,7 @@ vi.mock("convex/react", () => ({
     if (mutation === "brandView.setManufacturerSlViaAllBrands")
       return mockSetManufacturerSlViaAllBrands;
     if (mutation === "brandView.moveSetToBrand") return mockMoveSetToBrand;
+    if (mutation === "autographFormat.setAutographFormat") return mockSetAutographFormat;
     return vi.fn();
   },
   useConvex: () => ({ query: mockConvexQuery }),
@@ -1561,6 +1568,129 @@ describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
     ];
     renderPanel();
     expect(field().placeholder).toBe("UD Collector's");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-345 — Autograph format row
+// ---------------------------------------------------------------------------
+
+describe("SetAttributesPanel — Autograph format row (NEO-345)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetAutographFormat.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const field = () =>
+    screen.getByLabelText("Value for Autograph format") as HTMLSelectElement;
+
+  it.each(["insert", "parallel"])("renders at level %s", (level) => {
+    currentRow = makeRow({ level, value: "Hologram" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(field()).toBeTruthy();
+  });
+
+  it("renders at the base variant type, not at another variant type", () => {
+    currentRow = makeRow({ level: "variantType", value: "Base" });
+    currentChain = makeChain("Baseball");
+    const { unmount } = renderPanel();
+    expect(field()).toBeTruthy();
+    unmount();
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    renderPanel();
+    expect(screen.queryByLabelText("Value for Autograph format")).toBeNull();
+  });
+
+  it.each(["sport", "year", "manufacturer", "setName"])("is absent at level %s", (level) => {
+    currentRow = makeRow({ level, value: "Topps" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.queryByLabelText("Value for Autograph format")).toBeNull();
+  });
+
+  it("offers exactly the two formats and a way to clear", () => {
+    currentRow = makeRow({ level: "insert", value: "Autographs" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const options = [...field().options].map((o) => o.value);
+    expect(options).toEqual(["", "On Card", "Sticker/Label"]);
+  });
+
+  it("shows the leaf's stored format", () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Autographs",
+      features: { autographFormat: "Sticker/Label" },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(field().value).toBe("Sticker/Label");
+  });
+
+  it("saves through setAutographFormat, never the generic feature write", async () => {
+    currentRow = makeRow({ level: "insert", value: "Autographs" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(field(), { target: { value: "On Card" } });
+    });
+    await waitFor(() => {
+      expect(mockSetAutographFormat).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        value: "On Card",
+      });
+    });
+    expect(mockSetSelectorOptionFeature).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByText("Saved Autograph format")).toBeTruthy();
+    });
+  });
+
+  it("clearing sends \"\" and says Cleared", async () => {
+    currentRow = makeRow({
+      level: "parallel",
+      value: "Gold",
+      features: { autographFormat: "On Card" },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(field(), { target: { value: "" } });
+    });
+    await waitFor(() => {
+      expect(mockSetAutographFormat).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        value: "",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Cleared Autograph format")).toBeTruthy();
+    });
+  });
+
+  it("a refusal shows the server's sentence", async () => {
+    mockSetAutographFormat.mockRejectedValueOnce(new ConvexError("Not a leaf with cards."));
+    currentRow = makeRow({ level: "insert", value: "Autographs" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(field(), { target: { value: "Sticker/Label" } });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Failed: Not a leaf with cards.")).toBeTruthy();
+    });
+  });
+
+  it("is never also rendered by the generic features grid", () => {
+    currentRow = makeRow({ level: "insert", value: "Autographs" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.getAllByLabelText("Value for Autograph format")).toHaveLength(1);
   });
 });
 

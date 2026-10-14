@@ -65,7 +65,10 @@ import type { QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import {
+  deriveOwnLevelFeatures,
+  inheritableFeatures,
+} from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import {
   allocateSlots,
@@ -717,7 +720,9 @@ export const convertSetToParallel = mutation({
       // (security audit, NEO-305): copy-down from the Parallel type first,
       // then what the operator had, then the row's own level derivation.
       const features = {
-        ...(targetType.features ?? {}),
+        // NEO-345: never the type's node-only keys (autographFormat); the
+        // moving row's own answer, in `sourceData`, comes with its cards.
+        ...inheritableFeatures(targetType.features),
         ...sourceData.features,
         ...deriveOwnLevelFeatures("insert", check.name, flags),
       };
