@@ -145,17 +145,13 @@ describe("when the step is asked", () => {
 });
 
 describe("the answer is required", () => {
-  it("focuses the first choice, and Next is held — focusable, says why, does nothing", () => {
+  it("focuses the first choice, and Next is held — focusable, does nothing", () => {
     const onAutographFormatChange = vi.fn();
     render(wizard({ onAutographFormatChange }));
     expect(document.activeElement).toBe(choice(ON_CARD));
     const button = next();
     expect(button.getAttribute("aria-disabled")).toBe("true");
     expect((button as HTMLButtonElement).disabled).toBe(false);
-    expect(button.getAttribute("title")).toBe(AUTOGRAPH_NEXT_BLOCKED);
-    expect(document.getElementById(button.getAttribute("aria-describedby") ?? "")?.textContent).toBe(
-      autographStepQuestion(1),
-    );
     fireEvent.click(button);
     fireEvent.keyDown(button, { key: "Enter" });
     expect(counter()).toBe("Step 1 of 2");
@@ -170,7 +166,6 @@ describe("the answer is required", () => {
     render(wizard({ onAutographFormatChange }));
     fireEvent.click(choice(STICKER));
     expect(next().getAttribute("aria-disabled")).toBeNull();
-    expect(next().getAttribute("title")).toBeNull();
     expect(onAutographFormatChange).toHaveBeenLastCalledWith("Sticker/Label");
     fireEvent.click(next());
     expect(counter()).toBe("Step 2 of 2");
@@ -196,6 +191,54 @@ describe("the answer is required", () => {
     expect(screen.getByText(SUBTITLE)).toBeTruthy();
     expect(choice(STICKER).getAttribute("aria-checked")).toBe("true");
     expect(document.activeElement).toBe(next());
+  });
+});
+
+/**
+ * a11y audit (merge-gating) — a held Next that does nothing silently is a
+ * dead end. A press says why in a polite status line under the tiles (mounted
+ * from the start, empty until then), Next is described by the question AND
+ * that line, and focus moves to the choice that needs making.
+ */
+describe("a press on the held Next says why", () => {
+  /** Next's description, id by id, as text. */
+  const describedBy = () =>
+    (next().getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .map((id) => document.getElementById(id));
+
+  it("the status line is mounted, empty, before anything is pressed; Next names it", () => {
+    render(wizard({ onAutographFormatChange: vi.fn() }));
+    const [lead, hint] = describedBy();
+    expect(lead?.textContent).toBe(autographStepQuestion(1));
+    expect(hint?.getAttribute("role")).toBe("status");
+    expect(hint?.textContent).toBe("");
+    expect(screen.queryByText(AUTOGRAPH_NEXT_BLOCKED)).toBeNull();
+  });
+
+  it("a click (and Space, which clicks) fills it and moves focus to the choice", () => {
+    render(wizard({ onAutographFormatChange: vi.fn() }));
+    act(() => next().focus());
+    expect(document.activeElement).toBe(next());
+    fireEvent.click(next());
+    const [, hint] = describedBy();
+    expect(hint?.textContent).toBe(AUTOGRAPH_NEXT_BLOCKED);
+    expect(document.activeElement).toBe(choice(ON_CARD));
+  });
+
+  it("Enter does the same", () => {
+    render(wizard({ onAutographFormatChange: vi.fn() }));
+    act(() => next().focus());
+    fireEvent.keyDown(next(), { key: "Enter" });
+    expect(describedBy()[1]?.textContent).toBe(AUTOGRAPH_NEXT_BLOCKED);
+    expect(document.activeElement).toBe(choice(ON_CARD));
+  });
+
+  it("goes quiet once a choice is made", () => {
+    render(wizard({ onAutographFormatChange: vi.fn() }));
+    fireEvent.click(next());
+    fireEvent.click(choice(STICKER));
+    expect(describedBy()[1]?.textContent).toBe("");
   });
 });
 

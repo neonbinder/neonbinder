@@ -521,7 +521,12 @@ left unsaved, and nothing reads it.
 (the target family made its own sets by "Keep all" on the BSC column
 filtered to its name), the insert's committed `cardChecklist` rows, and,
 only if the wizard opens, per-set `entityReviewSkips` for the names it
-skips. It creates no player,
+skips. NEO-345 adds, on the same Insert and the same single spec: the
+leaf's autograph format (answered in the wizard's `Autographed cards` step,
+then changed to Sticker, cleared and answered again from the checklist header,
+all from the operator's own controls) and the dual card's `autographed` /
+`signedBy` (hand-toggled once to None to reach the header prompt). It
+creates no player,
 team or league, and it renames, moves or deletes nothing. Fresh-only: a
 re-run on the same preview finds the Insert column saved and fails at the
 reconcile gate, by name.

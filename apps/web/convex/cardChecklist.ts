@@ -992,6 +992,17 @@ export const applyBscTeamResolution = internalMutation({
   },
 });
 
+/** NEO-345 — the token a live re-ask must carry. */
+const REASK_CONFIRM_TOKEN = "REASK";
+
+/** NEO-345 — the deployment-level arm for a live re-ask. */
+const REASK_ENV_FLAG = "ALLOW_BSC_TEAM_REASK";
+
+function reaskDeploymentIsArmed(): boolean {
+  const value = process.env[REASK_ENV_FLAG];
+  return value === "1" || value === "true";
+}
+
 /**
  * NEO-90: one-shot operator trigger to backfill team data for sets synced
  * BEFORE the BSC per-card enrichment queue existed. No index exists for
@@ -1021,7 +1032,16 @@ export const applyBscTeamResolution = internalMutation({
  * NEO-345 — `mode: "reask"` re-asks BSC for the cards whose lookup finished
  * WITHOUT an answer (gave up after its retries, or finished before the
  * outcome was recorded), and `dryRun: true` reports each page's counts while
- * writing and scheduling nothing. The drain rule above applies to both modes:
+ * writing and scheduling nothing. A re-ask is ARMED: it is a dry run by
+ * default, and runs live only with `confirm: "REASK"` on a deployment with
+ * `ALLOW_BSC_TEAM_REASK=1` (set it, run, remove it):
+ *
+ *   npx convex run cardChecklist:enqueueBscTeamBackfill '{"mode":"reask"}'
+ *   npx convex env set ALLOW_BSC_TEAM_REASK 1
+ *   npx convex run cardChecklist:enqueueBscTeamBackfill '{"mode":"reask","confirm":"REASK"}'
+ *   npx convex env remove ALLOW_BSC_TEAM_REASK
+ *
+ * The drain rule above applies to both modes:
  * a re-asked card's stamp is cleared when it is queued, so until the queue
  * answers it an "unchecked" run would select it too. A re-ask run never
  * selects it twice — it is no longer stamped.
@@ -1052,9 +1072,19 @@ export const enqueueBscTeamBackfill = internalMutation({
     /**
      * NEO-345 — write and schedule nothing; report what this page holds.
      * Run it first: the counts say how many live BSC requests an armed run
-     * of either mode would spend.
+     * of either mode would spend. Defaults to FALSE in "unchecked" mode (its
+     * original behaviour) and to TRUE in "reask" mode, which is armed (see
+     * `confirm`).
      */
     dryRun: v.optional(v.boolean()),
+    /**
+     * NEO-345 — "reask" only: a live re-ask clears stamps on finished cards
+     * and spends a live BSC request per card, so it takes two independent
+     * arms, as the house backfills do: this token (`"REASK"`) AND the
+     * deployment flag `ALLOW_BSC_TEAM_REASK=1`. Either one missing writes and
+     * schedules nothing. Ignored in "unchecked" mode.
+     */
+    confirm: v.optional(v.string()),
   },
   returns: v.object({
     /** Cards queued for a BSC lookup by THIS call. Always 0 on a dry run. */
@@ -1071,6 +1101,11 @@ export const enqueueBscTeamBackfill = internalMutation({
     /** Minimum ms to wait before calling this again — see doc comment above. */
     estimatedDrainMs: v.number(),
     dryRun: v.boolean(),
+    /**
+     * NEO-345 — a re-ask carried the confirm token on a deployment without
+     * `ALLOW_BSC_TEAM_REASK`, so it ran as a dry run instead.
+     */
+    refusedForFlag: v.boolean(),
     /**
      * NEO-345 — this page's BSC-linked cards with no team and no operator
      * "no team" ruling, by why they have none. Counted on every call, armed
@@ -1098,7 +1133,16 @@ export const enqueueBscTeamBackfill = internalMutation({
     // A page holds at most PAGE_SIZE rows, so a larger cap is the page.
     const batchSize = Math.min(requestedBatchSize, PAGE_SIZE);
     const mode = args.mode ?? "unchecked";
-    const dryRun = args.dryRun === true;
+    // NEO-345 — "unchecked" keeps its original contract (live unless asked
+    // otherwise). "reask" is dry unless BOTH arms are present.
+    let dryRun = args.dryRun === true;
+    let refusedForFlag = false;
+    if (mode === "reask") {
+      const intendsToWrite =
+        args.dryRun !== true && args.confirm === REASK_CONFIRM_TOKEN;
+      refusedForFlag = intendsToWrite && !reaskDeploymentIsArmed();
+      dryRun = !intendsToWrite || refusedForFlag;
+    }
     const page = await ctx.db
       .query("cardChecklist")
       .paginate({ cursor: args.cursor ?? null, numItems: PAGE_SIZE });
@@ -1176,6 +1220,7 @@ export const enqueueBscTeamBackfill = internalMutation({
         operation: "enqueueBscTeamBackfill",
         mode,
         dryRun,
+        refusedForFlag,
         selected: candidateIds.length,
         enqueued,
         remaining,
@@ -1190,6 +1235,7 @@ export const enqueueBscTeamBackfill = internalMutation({
       continueCursor: page.continueCursor,
       estimatedDrainMs: enqueued * BSC_TEAM_ENRICH_DELAY_MS,
       dryRun,
+      refusedForFlag,
       counts,
     };
   },

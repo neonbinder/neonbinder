@@ -1363,9 +1363,12 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
     ).toEqual(before);
   });
 
-  test("re-ask clears the stamp on given-up and legacy cards only, and queues exactly them", async () => {
+  test("re-ask with no arms writes and schedules nothing (dry by default)", async () => {
     const t = harness();
-    const ids = await seedEveryKind(t);
+    await seedEveryKind(t);
+    const before = await t.run(async (ctx) =>
+      ctx.db.query("cardChecklist").collect(),
+    );
 
     const result = await t.mutation(
       internal.cardChecklist.enqueueBscTeamBackfill,
@@ -1373,7 +1376,67 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
     );
 
     expect(result).toMatchObject({
+      dryRun: true,
+      refusedForFlag: false,
+      enqueued: 0,
+      selected: 2,
+    });
+    expect(await pendingScheduled(t)).toHaveLength(0);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("cardChecklist").collect()),
+    ).toEqual(before);
+  });
+
+  test("a confirmed re-ask on a deployment without the flag is refused: nothing written or scheduled", async () => {
+    const t = harness();
+    const ids = await seedEveryKind(t);
+    vi.stubEnv("ALLOW_BSC_TEAM_REASK", "");
+
+    const result = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { mode: "reask", confirm: "REASK" },
+    );
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      refusedForFlag: true,
+      enqueued: 0,
+    });
+    expect(await pendingScheduled(t)).toHaveLength(0);
+    expect((await getCard(t, ids.gaveUp))!.teamCheckOutcome).toBe("gaveUp");
+    vi.unstubAllEnvs();
+  });
+
+  test("the flag without the confirm token is not enough", async () => {
+    const t = harness();
+    const ids = await seedEveryKind(t);
+    vi.stubEnv("ALLOW_BSC_TEAM_REASK", "1");
+
+    const result = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { mode: "reask", confirm: "yes" },
+    );
+
+    expect(result).toMatchObject({ dryRun: true, enqueued: 0 });
+    expect(await pendingScheduled(t)).toHaveLength(0);
+    expect((await getCard(t, ids.legacy))!.teamCheckDoneAt).toBe(5);
+    vi.unstubAllEnvs();
+  });
+
+  test("an armed re-ask clears the stamp on given-up and legacy cards only, and queues exactly them", async () => {
+    const t = harness();
+    const ids = await seedEveryKind(t);
+    vi.stubEnv("ALLOW_BSC_TEAM_REASK", "1");
+
+    const result = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { mode: "reask", confirm: "REASK" },
+    );
+    vi.unstubAllEnvs();
+
+    expect(result).toMatchObject({
       dryRun: false,
+      refusedForFlag: false,
       enqueued: 2,
       selected: 2,
       counts: expectedCounts,
@@ -1399,7 +1462,12 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
   test("a second re-ask does not select the re-asked cards again", async () => {
     const t = harness();
     await seedEveryKind(t);
-    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { mode: "reask" });
+    vi.stubEnv("ALLOW_BSC_TEAM_REASK", "1");
+    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
+      mode: "reask",
+      confirm: "REASK",
+    });
+    vi.unstubAllEnvs();
 
     const again = await t.mutation(
       internal.cardChecklist.enqueueBscTeamBackfill,
@@ -1409,13 +1477,14 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
     expect(again.selected).toBe(0);
   });
 
-  test("the default mode is unchanged: only never-checked cards", async () => {
+  test("the default mode is unchanged: only never-checked cards, live with no arms", async () => {
     const t = harness();
     const ids = await seedEveryKind(t);
 
     const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {});
 
     expect(result.enqueued).toBe(1);
+    expect(result.dryRun).toBe(false);
     const pending = await pendingScheduled(t);
     expect(
       (pending[0].args[0] as { cardChecklistIds: string[] }).cardChecklistIds,

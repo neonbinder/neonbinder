@@ -25,5 +25,4 @@ appear live (`FY`, `EXCH`, `MEM`).
 **How to apply:** when a task says "probe BSC for a card with X", search a few
 pages with a relevant `q`, filter the results locally, then fetch
 card-listing for the ids you need. Read-only and unauthenticated; keep it to
-a handful of requests (see [[marketplaces-do-not-rate-limit-us]] — the limit
-is courtesy, not a quota).
+a handful of requests (the limit is courtesy, not a quota).

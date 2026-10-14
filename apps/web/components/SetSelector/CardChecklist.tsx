@@ -712,6 +712,12 @@ export default function CardChecklist({
     variantId: Id<"selectorOptions">;
     value: AutographFormat;
   } | null>(null);
+  // This sitting only: moving to another leaf drops the latch, so coming back
+  // never remounts a stale "saved" line (render-phase reset, the
+  // previous-render pattern).
+  if (autographSaved !== null && autographSaved.variantId !== variantId) {
+    setAutographSaved(null);
+  }
   const ancestorSport = ancestorChain?.find((c) => c.level === "sport")?.value;
   // NEO-96: the row ID, which is what teams/players now reference. The chain
   // already carried `_id` — this line is the only place it used to be thrown

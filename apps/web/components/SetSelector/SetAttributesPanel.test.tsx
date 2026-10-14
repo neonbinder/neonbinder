@@ -1621,6 +1621,22 @@ describe("SetAttributesPanel — Autograph format row (NEO-345)", () => {
     expect(options).toEqual(["", "On Card", "Sticker/Label"]);
   });
 
+  it("says the same words as the wizard's tiles, while storing the stored values", () => {
+    currentRow = makeRow({ level: "insert", value: "Autographs" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const labels = [...field().options].map((o) => o.textContent);
+    expect(labels).toEqual(["No value", "On card", "Sticker"]);
+  });
+
+  it("is described by its hint", () => {
+    currentRow = makeRow({ level: "insert", value: "Autographs" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const id = field().getAttribute("aria-describedby");
+    expect(document.getElementById(id ?? "")?.textContent).toMatch(/autograph/i);
+  });
+
   it("shows the leaf's stored format", () => {
     currentRow = makeRow({
       level: "insert",

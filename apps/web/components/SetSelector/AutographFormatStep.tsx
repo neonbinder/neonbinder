@@ -1,10 +1,22 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type Ref } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type Ref,
+  type RefObject,
+} from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import { AUTOGRAPH_FORMATS, type AutographFormat } from "./entity-review-steps";
+import {
+  AUTOGRAPH_CHOICE_LABEL,
+  AUTOGRAPH_FORMATS,
+  type AutographFormat,
+} from "./entity-review-steps";
 
 /**
  * NEO-345 — how a leaf's autographs are signed: on the card, or on a sticker.
@@ -37,13 +49,16 @@ export function autographStepQuestion(count: number): string {
     : `${count} of these cards are autographed. How are they signed?`;
 }
 
-/** The two choices' visible names, keyed by the stored value. */
-export const AUTOGRAPH_CHOICE_LABEL: Readonly<Record<AutographFormat, string>> = {
-  "On Card": "On card", // COPY: placeholder
-  "Sticker/Label": "Sticker", // COPY: placeholder
-};
+/**
+ * The two choices' visible names, keyed by the stored value. Lives in the
+ * pure step module so Set details' select shows the same words.
+ */
+export { AUTOGRAPH_CHOICE_LABEL };
 
-/** Hover/AT reason on the wizard's Next while nothing is picked. */
+/**
+ * Said (politely, under the tiles) when Next is pressed before a choice is
+ * made, and part of Next's description from then on.
+ */
 export const AUTOGRAPH_NEXT_BLOCKED = "Pick how they're signed first"; // COPY: placeholder
 
 /** The checklist header's one line, for a stored leaf. */
@@ -53,6 +68,9 @@ export function autographPromptLine(count: number): string {
     ? "1 autographed card — on card or sticker?"
     : `${count} autographed cards — on card or sticker?`;
 }
+
+/** Said politely while the header prompt's write is in flight. */
+export const AUTOGRAPH_PROMPT_SAVING = "Saving…"; // COPY: placeholder
 
 /** What the header line says once the answer is saved. */
 export function autographPromptSaved(value: AutographFormat): string {
@@ -102,6 +120,11 @@ function SignatureGlyph({ format }: { format: AutographFormat }) {
  *
  * `choiceRef` lands on the tab-stop choice, which is where the wizard puts
  * focus while nothing is picked.
+ *
+ * `hintId` / `showBlockedHint` — a polite status line under the tiles,
+ * mounted always (a live region must exist before it speaks) and empty until
+ * the wizard's held Next is pressed with nothing picked. The wizard describes
+ * Next by it, so the reason stays reachable after it has been said.
  */
 export default function AutographFormatStep({
   count,
@@ -111,6 +134,8 @@ export default function AutographFormatStep({
   disabled = false,
   headingId,
   choiceRef,
+  hintId,
+  showBlockedHint = false,
 }: {
   /** How many cards the answer applies to. */
   count: number;
@@ -122,6 +147,10 @@ export default function AutographFormatStep({
   /** The question's id, so the wizard's Next can be described by it. */
   headingId: string;
   choiceRef?: Ref<HTMLButtonElement>;
+  /** The blocked-Next hint's id, so the wizard's Next can be described by it. */
+  hintId?: string;
+  /** Next was pressed with nothing picked: say why it did nothing. */
+  showBlockedHint?: boolean;
 }) {
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
   const tabStop = value ?? AUTOGRAPH_FORMATS[0];
@@ -162,7 +191,9 @@ export default function AutographFormatStep({
         role="radiogroup"
         aria-labelledby={headingId}
         aria-required="true"
-        className="grid max-w-md grid-cols-2 gap-3"
+        // One column on the narrowest phones (two tiles at 320px overflow),
+        // side by side from 380px. DOM order is the same either way.
+        className="grid max-w-md grid-cols-1 gap-3 min-[380px]:grid-cols-2"
       >
         {AUTOGRAPH_FORMATS.map((format, index) => {
           const checked = value === format;
@@ -202,16 +233,33 @@ export default function AutographFormatStep({
           );
         })}
       </div>
+      <p id={hintId} role="status" className="text-xs text-gray-300">
+        {showBlockedHint && value === undefined ? AUTOGRAPH_NEXT_BLOCKED : null}
+      </p>
     </div>
   );
 }
 
-/** The prompt's slot once answered: says so, and holds focus for the button that went. */
-function SavedLine({ value }: { value: AutographFormat }) {
+/**
+ * The prompt's slot once answered: says so, and holds focus for the button
+ * that went. It takes focus ONLY when focus has nowhere else to be — on the
+ * page itself (the pressed button just unmounted) or still inside the prompt
+ * — never from a control the operator has moved to since, so a remount can
+ * never steal focus.
+ */
+function SavedLine({
+  value,
+  slotRef,
+}: {
+  value: AutographFormat;
+  slotRef: RefObject<HTMLDivElement | null>;
+}) {
   const ref = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
-    ref.current?.focus();
-  }, []);
+    const active = document.activeElement;
+    const homeless = active === null || active === document.body;
+    if (homeless || (active && slotRef.current?.contains(active))) ref.current?.focus();
+  }, [slotRef]);
   return (
     <p
       ref={ref}
@@ -248,6 +296,9 @@ export function AutographFormatPrompt({
   const setAutographFormat = useMutation(api.autographFormat.setAutographFormat);
   const [busy, setBusy] = useState<AutographFormat | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The slot both states render in, so the saved line can tell where focus is. */
+  const slotRef = useRef<HTMLDivElement>(null);
+  const errorId = useId();
 
   const choose = async (value: AutographFormat) => {
     if (busy) return;
@@ -263,10 +314,17 @@ export function AutographFormatPrompt({
     }
   };
 
-  if (saved) return <SavedLine value={saved} />;
+  if (saved) {
+    return (
+      <div ref={slotRef}>
+        <SavedLine value={saved} slotRef={slotRef} />
+      </div>
+    );
+  }
 
   return (
     <div
+      ref={slotRef}
       role="group"
       aria-labelledby="autograph-format-prompt"
       className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-[#00D558]/60 px-3 py-2"
@@ -284,17 +342,22 @@ export function AutographFormatPrompt({
             secondary
             aria-busy={busy === format || undefined}
             aria-disabled={busy !== null || undefined}
+            aria-describedby={error ? errorId : undefined}
             onClick={() => void choose(format)}
           >
             {AUTOGRAPH_CHOICE_LABEL[format]}
           </NeonButton>
         ))}
       </div>
-      {error && (
-        <p role="alert" className="basis-full text-xs text-[#FF2EB3]">
-          {error}
-        </p>
-      )}
+      {/* Both regions are mounted from the start — a live region that
+          appears at the moment it speaks is often not heard — and collapse
+          while empty. No whitespace inside: `empty:` needs no child nodes. */}
+      <p role="status" className="basis-full text-xs text-gray-300 empty:hidden">
+        {busy ? AUTOGRAPH_PROMPT_SAVING : null}
+      </p>
+      <p id={errorId} role="alert" className="basis-full text-xs text-[#FF2EB3] empty:hidden">
+        {error}
+      </p>
     </div>
   );
 }

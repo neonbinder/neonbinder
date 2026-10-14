@@ -341,10 +341,15 @@ Idioms:
   decided count plus one, so `Step 1 of N` is a batch with nothing decided and
   one decision reads `Step 2 of N`; y grows as staged steps arrive, so pin x,
   never y. "Every name is decided" is the footer state `Next (Enter)` or
-  `Confirm & Save`: past the names come `Cards with no team` and `Card titles`
-  (each only when needed, each with `Next (Enter)` and NO Confirm & Save),
-  then `Ready to save` (heading `Save N cards?`), always `Step y of y` and the
-  only step with Confirm & Save. A spec whose feature is a name decision calls
+  `Confirm & Save`: past the names come `Cards with no team`, `Autographed
+  cards` and `Card titles` (each only when needed, each with `Next (Enter)`
+  and NO Confirm & Save), then `Ready to save` (heading `Save N cards?`),
+  always `Step y of y` and the only step with Confirm & Save. `Autographed
+  cards` (NEO-345) is asked when a card the save will create carries BSC's AU
+  tag and the synced part has no autograph format; it is a radio group (`On
+  card` / `Sticker`, placeholder copy in `support/wizard.ts`) whose answer is
+  REQUIRED, so its Next is `aria-disabled` until one is picked and
+  `advanceToSave` picks `On card` for any spec that does not own the step. A spec whose feature is a name decision calls
   `advanceToSave` to reach Save (Next leaves every line on its default); a
   spec whose feature is the teams or titles step drives that step itself. A
   sync with no unknown names opens the wizard only when a post-name step is

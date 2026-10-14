@@ -73,7 +73,7 @@ import {
 } from "./card-titles";
 import type { TitleContext } from "../../convex/features/listingInputs";
 // NEO-345: the "Autographed cards" step, between teams and titles.
-import AutographFormatStep, { AUTOGRAPH_NEXT_BLOCKED } from "./AutographFormatStep";
+import AutographFormatStep from "./AutographFormatStep";
 import {
   autographCardIndexes,
   cardsForTeamsStep,
@@ -992,6 +992,13 @@ export default function EntityReviewWizard({
   const autographLeadId = useId();
   /** NEO-345 — the autograph step's tab-stop choice, focused while unanswered. */
   const autographChoiceRef = useRef<HTMLButtonElement>(null);
+  /**
+   * NEO-345 (a11y) — the step's status line under the tiles, and whether a
+   * press on the held Next has asked for it. A held button that does nothing
+   * silently is a dead end; the press says why and puts focus on the choice.
+   */
+  const autographHintId = useId();
+  const [autographBlockedPressed, setAutographBlockedPressed] = useState(false);
   /** NEO-335 Phase 2 — the post-review steps' forward button ("Next (Enter)"). */
   const nextStepButtonRef = useRef<HTMLButtonElement>(null);
   /**
@@ -3616,6 +3623,17 @@ export default function EntityReviewWizard({
   };
   /** NEO-345 — Next is held while saving, and on an unanswered autograph step. */
   const nextBlocked = saving || (postStep === "autograph" && autographUnanswered);
+  /**
+   * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
+   * autograph step is unanswered: say why in the step's status line and move
+   * focus to the choice that needs making. A press while SAVING stays silent,
+   * as it always has.
+   */
+  const pressBlockedNext = () => {
+    if (saving || postStep !== "autograph" || !autographUnanswered) return;
+    setAutographBlockedPressed(true);
+    autographChoiceRef.current?.focus();
+  };
   /** C7 — a long teams step under a node with no set-level team. */
   const showSetTeamHint = !hasSetTeam && teamsStepCards.length >= SET_TEAM_HINT_MIN_CARDS;
 
@@ -5197,6 +5215,8 @@ export default function EntityReviewWizard({
                 disabled={saving}
                 headingId={autographLeadId}
                 choiceRef={autographChoiceRef}
+                hintId={autographHintId}
+                showBlockedHint={autographBlockedPressed}
               />
             ) : postStep === "titles" ? (
               /*
@@ -5606,18 +5626,21 @@ export default function EntityReviewWizard({
                         postStep === "teams"
                           ? teamsIntroId
                           : postStep === "autograph"
-                            ? autographLeadId
+                            ? `${autographLeadId} ${autographHintId}`
                             : postStep === "titles"
                               ? titlesLeadId
                               : undefined
                       }
                       // NEO-345 — the autograph answer is required: Next is
                       // held (focusable, never native `disabled`) until a
-                      // choice is made, and says why on hover.
+                      // choice is made. A press on it says why, in the step's
+                      // status line, which also describes this button.
                       aria-disabled={nextBlocked || undefined}
-                      title={postStep === "autograph" && autographUnanswered ? AUTOGRAPH_NEXT_BLOCKED : undefined}
                       onClick={() => {
-                        if (nextBlocked) return;
+                        if (nextBlocked) {
+                          pressBlockedNext();
+                          return;
+                        }
                         goToNextStep();
                       }}
                       /*
@@ -5630,7 +5653,11 @@ export default function EntityReviewWizard({
                       onKeyDown={(e) => {
                         if (e.key !== "Enter") return;
                         e.preventDefault();
-                        if (e.repeat || nextBlocked) return;
+                        if (e.repeat) return;
+                        if (nextBlocked) {
+                          pressBlockedNext();
+                          return;
+                        }
                         goToNextStep();
                       }}
                     >

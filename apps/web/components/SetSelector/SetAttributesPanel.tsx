@@ -28,7 +28,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
-import { AUTOGRAPH_FORMATS } from "./entity-review-steps";
+import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
@@ -878,8 +878,7 @@ export default function SetAttributesPanel({
             {/* NEO-345: at the levels cards hang from — how this leaf's
                 autographs are signed. Its AU cards take it. */}
             {showCardPrefixRow && (
-              <SetFeatureRow
-                feat={AUTOGRAPH_FORMAT_FEATURE}
+              <AutographFormatRow
                 value={features[AUTOGRAPH_FORMAT_FEATURE.key]}
                 onSave={handleSaveAutographFormat}
               />
@@ -1247,6 +1246,75 @@ const AUTOGRAPH_FORMAT_FEATURE: ExpectedFeature = {
   options: AUTOGRAPH_FORMATS,
   hint: "How this set's autographs are signed. Its autographed cards take it.", // COPY: placeholder
 };
+
+/**
+ * NEO-345 — the Autograph format row: `SetFeatureRow`'s select chrome
+ * (wrapper `Set feature Autograph format`, select `Value for Autograph
+ * format`, the hint as its description), but each option SAYS the same words
+ * the wizard's tiles and the checklist prompt say (`AUTOGRAPH_CHOICE_LABEL`)
+ * while its value stays the stored one. `FeatureValueControl`'s select can
+ * only show the stored value, hence a row of its own.
+ *
+ * Never native `disabled` while saving (focus would drop to the page);
+ * `aria-busy` instead, and the save handler toasts the outcome.
+ */
+function AutographFormatRow({
+  value,
+  onSave,
+}: {
+  value: string | undefined;
+  onSave: (value: string) => Promise<unknown>;
+}) {
+  const label = AUTOGRAPH_FORMAT_FEATURE.label;
+  const fieldClass = useFieldTestClass();
+  const hintId = useId();
+  const [busy, setBusy] = useState(false);
+  const selected = (AUTOGRAPH_FORMATS as readonly string[]).includes(value ?? "") ? value! : "";
+  const handleChange = async (next: string) => {
+    if (next === selected || busy) return;
+    setBusy(true);
+    try {
+      await onSave(next);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <label
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      aria-label={`Set feature ${label}`}
+    >
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+        <span
+          title={AUTOGRAPH_FORMAT_FEATURE.hint}
+          className="cursor-help underline decoration-dotted decoration-gray-500"
+        >
+          {label}
+        </span>
+      </span>
+      <span id={hintId} className="sr-only">
+        {AUTOGRAPH_FORMAT_FEATURE.hint}
+      </span>
+      <select
+        value={selected}
+        data-feat-key={AUTOGRAPH_FORMAT_FEATURE.key}
+        aria-label={`Value for ${label}`}
+        aria-describedby={hintId}
+        aria-busy={busy || undefined}
+        onChange={(e) => void handleChange(e.target.value)}
+        className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+      >
+        {/* The house "No value" (NEO-217): selectable, and it clears. */}
+        <option value="">No value</option>
+        {AUTOGRAPH_FORMATS.map((format) => (
+          <option key={format} value={format}>
+            {AUTOGRAPH_CHOICE_LABEL[format]}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 /**
  * Editable feature row. Maestro targets `Value for {label}` — DO NOT rename.

@@ -24,6 +24,8 @@ vi.mock("convex/react", () => ({
 
 import AutographFormatStep, {
   AUTOGRAPH_CHOICE_LABEL,
+  AUTOGRAPH_NEXT_BLOCKED,
+  AUTOGRAPH_PROMPT_SAVING,
   AutographFormatPrompt,
   autographPromptLine,
   autographPromptSaved,
@@ -240,5 +242,100 @@ describe("AutographFormatPrompt — a stored leaf", () => {
     });
     expect(mockSetAutographFormat).toHaveBeenCalledTimes(1);
     await act(async () => resolve());
+  });
+});
+
+describe("AutographFormatStep — the blocked-Next line (a11y)", () => {
+  const hint = () => document.getElementById("autograph-hint");
+  const step = (props: { value?: AutographFormat; showBlockedHint?: boolean }) => (
+    <AutographFormatStep
+      count={2}
+      value={props.value}
+      onChange={vi.fn()}
+      headingId="q"
+      hintId="autograph-hint"
+      showBlockedHint={props.showBlockedHint}
+    />
+  );
+
+  it("is a status region mounted from the start, empty", () => {
+    render(step({}));
+    expect(hint()?.getAttribute("role")).toBe("status");
+    expect(hint()?.textContent).toBe("");
+  });
+
+  it("says why once Next has been pressed with nothing picked", () => {
+    const { rerender } = render(step({}));
+    rerender(step({ showBlockedHint: true }));
+    expect(hint()?.textContent).toBe(AUTOGRAPH_NEXT_BLOCKED);
+  });
+
+  it("is empty again once a choice is made", () => {
+    render(step({ showBlockedHint: true, value: "On Card" }));
+    expect(hint()?.textContent).toBe("");
+  });
+});
+
+describe("AutographFormatPrompt — live regions and focus (a11y)", () => {
+  function Host({ saved }: { saved?: AutographFormat }) {
+    return (
+      <AutographFormatPrompt selectorOptionId={LEAF} count={2} saved={saved} onSaved={vi.fn()} />
+    );
+  }
+
+  it("the alert and the saving status are mounted before anything is pressed, empty", () => {
+    render(<Host />);
+    expect(screen.getByRole("alert").textContent).toBe("");
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].textContent).toBe("");
+  });
+
+  it("says Saving… politely while the write is in flight", async () => {
+    let resolve: () => void = () => {};
+    mockSetAutographFormat.mockReturnValueOnce(new Promise<void>((r) => (resolve = r)));
+    render(<Host />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] }));
+    });
+    expect(screen.getByRole("status").textContent).toBe(AUTOGRAPH_PROMPT_SAVING);
+    await act(async () => resolve());
+  });
+
+  it("the buttons are described by the error while it shows, and only then", async () => {
+    mockSetAutographFormat.mockRejectedValueOnce(new ConvexError("That leaf has no cards."));
+    render(<Host />);
+    const onCard = () => screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] });
+    expect(onCard().getAttribute("aria-describedby")).toBeNull();
+    await act(async () => {
+      fireEvent.click(onCard());
+    });
+    const alert = screen.getByRole("alert");
+    await waitFor(() => expect(alert.textContent).toBe("That leaf has no cards."));
+    for (const format of ["On Card", "Sticker/Label"] as const) {
+      const button = screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL[format] });
+      expect(button.getAttribute("aria-describedby")).toBe(alert.id);
+    }
+  });
+
+  it("the saved line takes focus when focus fell to the page", () => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    render(<Host saved="On Card" />);
+    expect(document.activeElement).toBe(screen.getByRole("status"));
+  });
+
+  it("the saved line never takes focus from a control the operator is on", () => {
+    render(
+      <>
+        <button type="button">Somewhere else</button>
+        <Host />
+      </>,
+    );
+    const elsewhere = screen.getByRole("button", { name: "Somewhere else" });
+    act(() => elsewhere.focus());
+    // A remount of the saved line (another render of the host, a return to
+    // the leaf) must leave focus where the operator put it.
+    render(<Host saved="Sticker/Label" />);
+    expect(document.activeElement).toBe(elsewhere);
   });
 });

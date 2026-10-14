@@ -107,6 +107,16 @@ function isLive(step: PostReviewStep, live: PostReviewLive): boolean {
  */
 export { AUTOGRAPH_FORMATS, type AutographFormat };
 
+/**
+ * The two answers' display names, keyed by the stored value — the wizard's
+ * tiles, the checklist prompt's buttons and Set details' select all say
+ * these words (NEO-345 a11y: one name per answer everywhere).
+ */
+export const AUTOGRAPH_CHOICE_LABEL: Readonly<Record<AutographFormat, string>> = {
+  "On Card": "On card", // COPY: placeholder
+  "Sticker/Label": "Sticker", // COPY: placeholder
+};
+
 /** A stored value read back as one of the two answers (anything else is none). */
 export function asAutographFormat(value: string | undefined | null): AutographFormat | undefined {
   return isAutographFormat(value) ? value : undefined;

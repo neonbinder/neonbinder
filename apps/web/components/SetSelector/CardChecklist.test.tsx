@@ -6097,6 +6097,26 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
     expect(saved).toBeTruthy();
     expect(document.activeElement).toBe(saved);
   });
+  it("the saved line is for this sitting only: another leaf drops it, and coming back does not bring it back", async () => {
+    state.cards = [auto()];
+    const view = (variantId: typeof VARIANT_ID) => (
+      <CardChecklist variantId={variantId} sourceChips={{}} sourceLabelMaps={{ bsc: {}, sportlots: {} }} />
+    );
+    const { rerender } = render(view(VARIANT_ID));
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByRole("group", { name: PROMPT })).getByRole("button", { name: "On card" }),
+      );
+    });
+    state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+    await act(async () => rerender(view(VARIANT_ID)));
+    const savedLine = () =>
+      screen.queryAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
+    expect(savedLine()).toBeTruthy();
+    await act(async () => rerender(view(OTHER_VARIANT_ID)));
+    await act(async () => rerender(view(VARIANT_ID)));
+    expect(savedLine()).toBeUndefined();
+  });
 });
 
 describe("CardChecklist — stream readiness helpers", () => {

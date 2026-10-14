@@ -2092,9 +2092,12 @@ async function fetchBscCardTeamNameRaw(
       ...(printRun !== undefined ? { printRun } : {}),
     };
   } catch (error) {
+    // The error's NAME only (NEO-288 precedent): a JSON SyntaxError's message
+    // quotes the response body, which is marketplace bytes.
     console.warn(
-      `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId}:`,
-      error,
+      `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId} error=${
+        error instanceof Error ? error.name : "unknown"
+      }`,
     );
     return failed;
   }
@@ -2303,7 +2306,13 @@ export const processBscTeamEnrichmentQueue = internalAction({
           { cardChecklistId: head },
         );
       } catch (error) {
-        console.error(`[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed:`, error);
+        // Name only: a thrown mutation error can echo its arguments, which
+        // carry BSC's team value.
+        console.error(
+          `[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed error=${
+            error instanceof Error ? error.name : "unknown"
+          }`,
+        );
       }
       if (outcome === "failed") failedIds.push(head);
     }
@@ -2360,7 +2369,11 @@ export const processBscTeamEnrichmentQueue = internalAction({
           flagged++;
         }
       } catch (error) {
-        console.error(`[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed:`, error);
+        console.error(
+          `[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed error=${
+            error instanceof Error ? error.name : "unknown"
+          }`,
+        );
       }
     }
     console.warn(
