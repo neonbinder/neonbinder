@@ -508,7 +508,8 @@ export async function runSpec(
       (r) => {
         const moot =
           (r.outcome !== "open" && r.leftMoot?.length ? `; ${mootText(r.leftMoot)}` : "") +
-          (r.outcome !== "open" && r.leftUnasked ? `; ${unaskedText(r.leftUnasked)}` : "");
+          (r.outcome !== "open" && r.leftUnasked ? `; ${unaskedText(r.leftUnasked)}` : "") +
+          (r.outcome !== "open" && r.savedGrouped ? `; ${r.savedGrouped} already saved on grouped parallel(s)` : "");
         if (r.outcome === "saved") {
           counts.reconciled += r.stored;
           return { status: "done", detail: `${r.stored} stored (${r.mode})${r.specNotConsulted ? "; one marketplace returned rows, so no dialog — the spec's answers were not needed" : ""}${moot}` };

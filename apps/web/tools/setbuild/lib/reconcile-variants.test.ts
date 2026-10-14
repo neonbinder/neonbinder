@@ -42,7 +42,9 @@ const twoSided = (): Fetch => {
   };
 };
 
-function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedBsc?: string[]} = {}) {
+type Tree = Array<{ insert: ReturnType<typeof row>; parallels: ReturnType<typeof row>[] }>;
+
+function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedBsc?: string[]; tree?: Tree } = {}) {
   const fetch = opts.fetch ?? twoSided();
   return fakeNbClient({
     [LIST]: (a) => {
@@ -67,7 +69,7 @@ function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedB
       platformData: { sportlots: { s0: "884412" } },
       platformLabels: { sportlots: { s0: "Topps Chrome" } },
     }),
-    "selectorOptions:getInsertTreeByVariantType": () => [],
+    "selectorOptions:getInsertTreeByVariantType": () => opts.tree ?? [],
     "setParallelConversion:getBrandSlHolders": () => ({ rows: [], truncated: false }),
     "selectorOptions:getUsedInsertIdentifiersBySet": () => ({
       values: [],
@@ -292,6 +294,78 @@ describe("reconcileVariants: idempotency", () => {
     );
     expect(res).toMatchObject({ outcome: "skipped", reason: "unchanged" });
     expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+});
+
+describe("reconcileVariants: rows Group Parallels moved under an insert (NEO-339 re-run)", () => {
+  const ids = (b: string, s?: string) => ({ platformData: { bsc: { b0: b }, ...(s ? { sportlots: { s0: s } } : {}) } });
+  const fsRow = () => row("r1", "insert", "Future Stars", ids("fs", "9001"));
+  const smRow = () => row("r2", "insert", "Stars of MLB", ids("smlb", "9010"));
+  const cpPar = () => row("r3", "parallel", "Chrome Prospects", ids("cp"));
+
+  test("a grouped row carrying exactly an answer's ids is saved: skipped before any fetch", async () => {
+    const smGrouped = row("r2", "parallel", "Stars of MLB", ids("smlb", "9010"));
+    const client = world({ existing: [fsRow()], tree: [{ insert: fsRow(), parallels: [smGrouped, cpPar()] }] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(res).toMatchObject({ outcome: "skipped", reason: "already-saved", savedGrouped: 2 });
+    expect(client.callsTo(FETCH)).toHaveLength(0);
+    expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+
+  test("the claimed answers are not handed to the dialog; the rest of the spec saves as usual", async () => {
+    // Only "Chrome Prospects" (an own-set) was saved and grouped; the two pairs are new.
+    const client = world({ existing: [], tree: [{ insert: row("x", "insert", "Other", ids("other")), parallels: [cpPar()] }] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(res).toMatchObject({ outcome: "saved", mode: "dialog", sent: 2, savedGrouped: 1 });
+    const items = client.callsTo(STORE)[0].args.reconciledItems as Array<{ value: string }>;
+    expect(items.map((i) => i.value)).toEqual(["Future Stars", "Stars of MLB"]);
+  });
+
+  test("a grouped row holding only SOME of a pair's ids claims nothing: still the open id it was", async () => {
+    const partial = row("r2", "parallel", "Stars of MLB", ids("smlb", "9099"));
+    const client = world({ existing: [fsRow()], tree: [{ insert: fsRow(), parallels: [partial, cpPar()] }] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(res.outcome).toBe("open");
+    if (res.outcome !== "open") return;
+    expect(res.names).toContainEqual({ at: "steps[1].variants[0].sync.pairs[1].bsc", kind: "reconcile-id", name: "smlb", candidates: [] });
+    expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+
+  test("a grouped row and a top-level row carrying the same exact ids are a tie, asked once with both", async () => {
+    const twin = row("r9", "parallel", "Stars of MLB II", ids("smlb", "9010"));
+    const client = world({ existing: [fsRow(), smRow()], tree: [{ insert: fsRow(), parallels: [twin, cpPar()] }, { insert: smRow(), parallels: [] }] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(res.outcome).toBe("open");
+    if (res.outcome !== "open") return;
+    const at = "steps[1].variants[0].sync.pairs[1]";
+    expect(res.names.filter((n) => n.at === at || n.at.startsWith(`${at}.`))).toEqual([
+      {
+        at,
+        kind: "reconcile-pair",
+        name: "Stars of MLB",
+        candidates: [
+          { id: "r2", name: "Stars of MLB", detail: "insert" },
+          { id: "r9", name: "Stars of MLB II", detail: "parallel of Future Stars" },
+        ],
+      },
+    ]);
+    expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+
+  test("two grouped rows carrying the same exact ids are a tie too: no bare missing-id decision beside it", async () => {
+    const a = row("g1", "parallel", "Stars of MLB", ids("smlb", "9010"));
+    const b = row("g2", "parallel", "Stars of MLB Gold", ids("smlb", "9010"));
+    const client = world({ existing: [fsRow()], tree: [{ insert: fsRow(), parallels: [a, b, cpPar()] }] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(res.outcome).toBe("open");
+    if (res.outcome !== "open") return;
+    expect(res.names).toEqual([
+      expect.objectContaining({
+        at: "steps[1].variants[0].sync.pairs[1]",
+        kind: "reconcile-pair",
+        candidates: [expect.objectContaining({ id: "g1" }), expect.objectContaining({ id: "g2" })],
+      }),
+    ]);
   });
 });
 

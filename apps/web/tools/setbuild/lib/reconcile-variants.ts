@@ -58,7 +58,9 @@
  *
  * Idempotent: a variant type whose saved rows already carry every pair (same
  * name, same ids) and every own-set id is skipped before any marketplace call,
- * and a fetched result that would save nothing new is not saved.
+ * and a fetched result that would save nothing new is not saved. A row Group
+ * Parallels moved under an insert counts as saved when it carries exactly the
+ * answer's ids (`groupedClaims`), so a re-run after grouping asks nothing new.
  */
 
 import { api } from "../../../convex/_generated/api";
@@ -287,6 +289,8 @@ export type ReconcileOutcome =
       leftMoot?: MootLeave[];
       /** Unanswered sets Save left in Pending without asking (see the file comment). */
       leftUnasked?: LeftUnasked;
+      /** Pairs and own-sets a grouped row already carries (`groupedClaims`): saved, not sent. */
+      savedGrouped?: number;
     }
   | {
       outcome: "skipped";
@@ -294,6 +298,7 @@ export type ReconcileOutcome =
       pausedSides: PlatformSide[];
       leftMoot?: MootLeave[];
       leftUnasked?: LeftUnasked;
+      savedGrouped?: number;
     }
   | {
       outcome: "open";
@@ -357,30 +362,116 @@ const sameSet = (a: readonly string[], b: readonly string[]) => {
 };
 
 /**
+ * NEO-339 — the spec's answers a GROUPED row already carries.
+ *
+ * Group Parallels moves a row the sync saved under another insert of the type
+ * (`level=parallel`), keeping its `_id` and its slots. The dialog then holds
+ * its ids (NEO-300) and never shows them, so without this a re-run of the same
+ * spec asked for them again ("reconcile-id", no candidates) and blocked the
+ * sync. A pair (or an own-set) is already saved on a grouped row when that row
+ * carries EXACTLY its ids, and no other row of the type does:
+ *  - `pairs` / `pending`: claimed; not asked, not saved again. The name is not
+ *    compared: the dialog cannot rename a held row, and the row's name is NB's.
+ *  - `open`: a grouped row and another row of the type (top-level or grouped)
+ *    both carry exactly those ids. A tie is never given to either.
+ * A grouped row holding only SOME of a pair's ids claims nothing: the pair
+ * stays the open decision it was. Pure.
+ */
+export interface GroupedClaims {
+  pairs: Set<ReconcilePair>;
+  pending: Set<ReconcilePending>;
+  open: OpenName[];
+}
+
+export function groupedClaims(
+  existing: readonly SelectorRow[],
+  grouped: readonly HeldRow[],
+  sync: ReconcileSync,
+  at: string,
+): GroupedClaims {
+  const out: GroupedClaims = { pairs: new Set(), pending: new Set(), open: [] };
+  if (grouped.length === 0) return out;
+  const top = existing.map((r) => ({
+    id: String(r._id),
+    name: r.value,
+    bsc: slotIds(r, "bsc"),
+    sportlots: slotIds(r, "sportlots"),
+    detail: "insert",
+  }));
+  const nested = grouped.map((r) => ({
+    id: r.key,
+    name: r.name,
+    bsc: r.bsc,
+    sportlots: r.sportlots,
+    detail: r.parentName !== undefined ? `parallel of ${r.parentName}` : "parallel",
+  }));
+  /** `true` = claimed, `false` = not a grouped row's, an `OpenName` = a tie. */
+  const claim = (bsc: readonly string[], sportlots: readonly string[], where: string, kind: string, name: string) => {
+    if (bsc.length + sportlots.length === 0) return false;
+    const exact = (r: { bsc: string[]; sportlots: string[] }) => sameSet(r.bsc, bsc) && sameSet(r.sportlots, sportlots);
+    const inGroup = nested.filter(exact);
+    if (inGroup.length === 0) return false;
+    const holders = [...top.filter(exact), ...inGroup];
+    if (holders.length === 1) return true;
+    out.open.push({
+      at: where,
+      kind,
+      name,
+      candidates: holders.map((h) => ({ id: h.id, name: h.name, detail: h.detail })),
+    });
+    return false;
+  };
+  sync.pairs.forEach((p, i) => {
+    if (claim(p.bsc ?? [], p.sportlots ?? [], `${at}.sync.pairs[${i}]`, "reconcile-pair", p.name)) out.pairs.add(p);
+  });
+  sync.pending.forEach((p, i) => {
+    if (p.decision !== "own-set") return;
+    const ids = p.side === "bsc" ? { bsc: [p.id], sportlots: [] } : { bsc: [], sportlots: [p.id] };
+    if (claim(ids.bsc, ids.sportlots, `${at}.sync.pending[${i}]`, "reconcile-pending", p.id)) out.pending.add(p);
+  });
+  return out;
+}
+
+/** How many of the spec's answers a grouped row already carries. */
+function claimedCount(claims: GroupedClaims): number {
+  return claims.pairs.size + claims.pending.size;
+}
+
+/**
  * The saved rows already say everything the spec asks: every pair is a row
  * with that name and exactly those ids, every own-set id is a row holding
- * only that id. Needs at least one such answer (an all-"leave" spec proves
- * nothing without a fetch).
+ * only that id. An answer `claims` holds (a grouped row carries it, see
+ * `groupedClaims`) is saved too. Needs at least one such answer (an all-"leave"
+ * spec proves nothing without a fetch).
  */
-export function alreadySaved(existing: readonly SelectorRow[], sync: ReconcileSync): boolean {
+export function alreadySaved(
+  existing: readonly SelectorRow[],
+  sync: ReconcileSync,
+  claims?: Pick<GroupedClaims, "pairs" | "pending">,
+): boolean {
   const ownSets = sync.pending.filter((p) => p.decision === "own-set");
-  if (sync.pairs.length + ownSets.length === 0 || existing.length === 0) return false;
+  const claimed = (claims?.pairs.size ?? 0) + (claims?.pending.size ?? 0);
+  if (sync.pairs.length + ownSets.length === 0 || existing.length + claimed === 0) return false;
   const rows = existing.map((r) => ({
     value: r.value,
     bsc: slotIds(r, "bsc"),
     sportlots: slotIds(r, "sportlots"),
   }));
-  const pairsDone = sync.pairs.every((p) =>
-    rows.some(
-      (r) => r.value === p.name && sameSet(r.bsc, p.bsc ?? []) && sameSet(r.sportlots, p.sportlots ?? []),
-    ),
+  const pairsDone = sync.pairs.every(
+    (p) =>
+      claims?.pairs.has(p) ||
+      rows.some(
+        (r) => r.value === p.name && sameSet(r.bsc, p.bsc ?? []) && sameSet(r.sportlots, p.sportlots ?? []),
+      ),
   );
-  const ownDone = ownSets.every((p) =>
-    rows.some((r) =>
-      p.side === "bsc"
-        ? sameSet(r.bsc, [p.id]) && r.sportlots.length === 0
-        : sameSet(r.sportlots, [p.id]) && r.bsc.length === 0,
-    ),
+  const ownDone = ownSets.every(
+    (p) =>
+      claims?.pending.has(p) ||
+      rows.some((r) =>
+        p.side === "bsc"
+          ? sameSet(r.bsc, [p.id]) && r.sportlots.length === 0
+          : sameSet(r.sportlots, [p.id]) && r.bsc.length === 0,
+      ),
   );
   return pairsDone && ownDone;
 }
@@ -626,8 +717,11 @@ export async function reconcileVariants(
   const path = opts.path ?? String(setId);
   const ctx = await loadReconcileContext(client, setId, typeTitle, `${at}.type`);
 
-  if (alreadySaved(ctx.existingRows, sync)) {
-    return { outcome: "skipped", reason: "already-saved", pausedSides: [] };
+  // Answers a row Group Parallels moved under an insert already carries.
+  const claims = groupedClaims(ctx.existingRows, ctx.groupedParallels, sync, at);
+  const grouped = claimedCount(claims) > 0 ? { savedGrouped: claimedCount(claims) } : {};
+  if (claims.open.length === 0 && alreadySaved(ctx.existingRows, sync, claims)) {
+    return { outcome: "skipped", reason: "already-saved", pausedSides: [], ...grouped };
   }
 
   const result = await fetchVariantOptions(client, ctx);
@@ -723,7 +817,17 @@ export async function reconcileVariants(
       ...result.autoMatched.map((m) => m.sl.platformValue),
     ]),
   };
-  const split = splitMootLeaves(applyExplicitPairs(seed.state, sync.pairs, sync.pending, { fetched: fetchedIds }), fetchedIds);
+  // A claimed answer is saved already, on a row the dialog holds: it is not
+  // the dialog's to place, so it is not handed to it.
+  const split = splitMootLeaves(
+    applyExplicitPairs(
+      seed.state,
+      sync.pairs.filter((p) => !claims.pairs.has(p)),
+      sync.pending.filter((p) => !claims.pending.has(p)),
+      { fetched: fetchedIds },
+    ),
+    fetchedIds,
+  );
   const outcome = split.outcome;
   const leftMoot = split.moot.length > 0 ? { leftMoot: split.moot } : {};
 
@@ -743,6 +847,15 @@ export async function reconcileVariants(
       ? { pairedElsewhere: { bsc: new Set(opts.pairedElsewhere.bsc), sportlots: new Set(opts.pairedElsewhere.sportlots) } }
       : {}),
   });
+  // A tie on a grouped row is asked once, with every holder as a candidate,
+  // in place of whatever the dialog made of the same entry.
+  if (claims.open.length > 0) {
+    const tied = claims.open.map((o) => o.at);
+    decisions.names = [
+      ...decisions.names.filter((n) => !tied.some((t) => n.at === t || n.at.startsWith(`${t}.`))),
+      ...claims.open,
+    ];
+  }
   const unasked = leftUnaskedOf(decisions.left);
   const leftUnasked = unasked ? { leftUnasked: unasked } : {};
   const anyOpen =
@@ -755,7 +868,7 @@ export async function reconcileVariants(
 
   const items = buildReconciledItems(outcome.state.ready);
   if (!itemsChangeAnything(items, ctx.existingRows)) {
-    return { outcome: "skipped", reason: "unchanged", pausedSides, ...leftMoot, ...leftUnasked };
+    return { outcome: "skipped", reason: "unchanged", pausedSides, ...leftMoot, ...leftUnasked, ...grouped };
   }
   const covered = coveredSidesFromFetch(result.errors, skippedSidesOf(result));
   const storeItems = toStoreItems(items);
@@ -777,5 +890,6 @@ export async function reconcileVariants(
     pausedSides,
     ...leftMoot,
     ...leftUnasked,
+    ...grouped,
   };
 }

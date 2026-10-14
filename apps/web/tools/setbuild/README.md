@@ -153,6 +153,11 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
   matched pair, and a `conflicts` answer for an unlinked pair is refused at
   parse. The open decision and the fill-in both name the unlink option.
 - **Idempotent and resumable.** Every step checks state before it writes.
+  That includes rows the `group` step moved: a sync pair (or `own-set`) whose
+  ids a grouped row carries EXACTLY is already saved (`groupedClaims` in
+  `lib/reconcile-variants.ts`), so re-running a spec after Group Parallels
+  asks nothing new. Partial overlap stays an open decision, and a grouped row
+  tied with another row on the same ids is asked, never given to either.
 - **No marketplace name is ever a key.** Rows are addressed by NB path or by a
   marketplace id from a slot (a `group` ref may be `{ "bsc": id }` or
   `{ "sportlots": id }`, matched against the rows' platform slots).
