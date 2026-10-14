@@ -209,13 +209,13 @@ test(
     // BSC's value stays preselected: read on the name the row will be saved
     // with, which its Unlink carries.
     await expect(bscPill).toBeChecked();
-    await expect(dialog.getByRole("button", { name: `Unlink #442 ${bscName}`, exact: true })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: new RegExp(`^Unlink #442 ${escapeRe(bscName)}( · .+)?$`) })).toBeVisible();
 
     // Pick the other value, by the value it shows.
     await slPill.click();
     await expect(slPill).toBeChecked();
-    await expect(dialog.getByRole("button", { name: `Unlink #442 ${slName}`, exact: true })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: `Unlink #442 ${bscName}`, exact: true })).toBeHidden();
+    await expect(dialog.getByRole("button", { name: new RegExp(`^Unlink #442 ${escapeRe(slName)}( · .+)?$`) })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: new RegExp(`^Unlink #442 ${escapeRe(bscName)}( · .+)?$`) })).toBeHidden();
 
     // ── STEP 7: save. Nothing is kept: the unpaired cards are dropped and the
     // matched rows, #442 among them, are saved.
