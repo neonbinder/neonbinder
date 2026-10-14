@@ -71,3 +71,4 @@
 - [Pairing dialog columns need Matched collapsed](patterns_pairing_dialog_columns_need_matched_collapsed.md) — Matched opens expanded if the first stream had no unmatched; assert columns only after the Confirm gate; prove Keep all by footer arithmetic
 - [SL review filter is substring](patterns_sl_review_filter_is_substring.md) — "first row its own filter shows" covers every label CONTAINING it (`Best Top Prospects` above `Prospects`)
 - [Wizard implicit pin yields to a ready league](patterns_wizard_implicit_pin_yields_to_a_ready_league.md) — untouched ordinary player steps swap out (pick steps hold, NEO-339); staged teams settle in seconds
+- [Blank bootstrap = stale Vite dep cache](patterns_blank_bootstrap_is_a_stale_vite_dep_cache.md) — white page, 504 Outdated Optimize Dep in the trace console after a deps merge; the Vite owner restarts with --force

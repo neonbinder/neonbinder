@@ -38,7 +38,7 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
+import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard, skipHeldPickStep } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
@@ -190,6 +190,16 @@ test(
       // or every name is decided (a batch that staged teams and no player, or
       // none unknown), so the loop cannot exit on a blank or wedged dialog.
       await expect(person.or(namesDone).or(stepSkip)).toBeVisible();
+
+      // A SAME-NAME PICK STEP HOLDS ITS PLACE (NEO-339). If the wizard opened on
+      // one ("Which <name> is this?", inserted ready while every other name
+      // waited on its lookup), it is still on screen now, and it is a player
+      // row: the drain below would exit on it at once, check no team step, and
+      // "Skip remaining names" would then decide every team unseen, so (a)
+      // would pass without looking. Skip it first and the league and team steps
+      // come next. A no-op on any other step, a post-name step included. After
+      // the precondition, so the read lands on a presented step.
+      await skipHeldPickStep(page);
 
       // Every settled undecided team (and the league step staged ahead of a team
       // that needs one) is presented before any player, so "a player is

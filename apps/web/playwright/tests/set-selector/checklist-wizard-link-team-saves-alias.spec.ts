@@ -17,15 +17,26 @@
 // 200 new players + 8 new teams, 211 rows once every lookup settled (the 8
 // Venezuelan Professional Baseball League clubs, one staged league, two staged
 // career teams). The catalogue holds none of the eight clubs. Two of the 200
-// players are same-name rows (NEO-332) and open as pick steps; an untouched
-// pick step yields to the first settled team like any player row.
+// players are same-name rows (NEO-332) and open as pick steps, and the wizard
+// usually OPENS on one. Since NEO-339 a pick step HOLDS its place, touched or
+// not, so a walk started under it would answer no team at all (it is a player
+// row). Before PART 3 the spec skips a held pick step (`skipHeldPickStep`, a
+// no-op when the wizard is on a league or team); the other same-name row comes
+// up only after the teams, so it ends PART 3 like any player.
 //
 // THE ROW UNDER TEST IS NAMED, not "whichever comes first": the walk reads
 // each team/league step's heading, acts on the checklist club "Navegantes del
 // Magallanes" and skips every other step (a skip creates nothing, R7).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readStep, reviewWizard, stepCounter } from "../../support/wizard";
+import {
+  advanceToSave,
+  fetchOneMarketplaceSetChecklistToWizard,
+  readStep,
+  reviewWizard,
+  skipHeldPickStep,
+  stepCounter,
+} from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SET = "Line Up Venezuelan Winter League";
@@ -99,6 +110,9 @@ test(
     // live, the NEO-289 recording answers every lookup this batch makes, so
     // this stays the live-lane ceiling until a CI run measures the recorded one).
     await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: 180_000 });
+    // NEO-339: a pick step the wizard opened on is still on screen (it holds).
+    // Skip it so the league and team steps come next.
+    await skipHeldPickStep(page);
 
     const teamSkip = wizard.getByRole("button", { name: /^Skip .* — not a team$/ });
     const leagueSkip = wizard.getByRole("button", { name: /^Skip .* — this team has no league$/ });

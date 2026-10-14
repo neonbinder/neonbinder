@@ -1892,15 +1892,16 @@ is that assertion, ~1s after the batch starts. Measured on the PR preview,
 +0.5s, STEP 1 COMPLETED +1.1s, last player lookup started +13.3s, first team
 settled +14.1s, tail gone +44s (+26.7s without one late 502 retry).
 
-**Then the flow walks.** An untouched pick step yields to the first settled
-team or league (teams first, NEO-236), and the career teams above settle ~14-25s
-in, inside the window the Create new / Back to the list / link steps need. So
-after STEP 1 the flow runs `walkToPlayerRow`, which waits the
-batch out, answers each team and league step as a skip, and stops on the first
-player row: Shuya Yamada's pick step, because rows are inserted in card order
-and he is card #1. Every later count is read relative to those skips (K), and
-the link's read-back comes from `Back to previous decision` → `Decision for
-Shuya Yamada`, because the Decided list folds past five.
+**Then the spec waits, and walks nothing (NEO-339).** A pick step now HOLDS
+its place, touched or not: no team or league settling elsewhere takes it away.
+So after STEP 1 the spec waits the batch's lookups out (180 s, the live-Wikidata
+ceiling) and asserts the untouched pick step is still on screen at `Step 1 of
+N` (R2(b2)); Create new, Back to the list and the link need no drain. Nothing is
+decided before the link, so the counts are absolute: `Step 1` before it, `Step
+2` after. The link's read-back comes from `Back to previous decision` ->
+`Decision for Shuya Yamada` (the Decided list folds past five). It does NOT call
+`walkToPlayerRow`, which since NEO-339 skips a held pick step
+(`skipHeldPickStep`).
 
 **What a green CI run must show** (fill in from the first green run on the
 catalogue preview): in the flow's `maestro.log`, STEP 1's

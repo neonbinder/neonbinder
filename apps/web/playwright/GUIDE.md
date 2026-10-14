@@ -247,7 +247,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
   `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
-  `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
+  `discardResumedReviewBatch`, `personSkip`, `skipHeldPickStep`, `walkToPlayerRow`,
   `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
   contract is in its doc comment; see "The entity-review wizard" under Gotchas.
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's

@@ -71,3 +71,9 @@ Consequences for specs:
   nothing, and that footer control renders only with a presented row).
 
 Related: [[catalogue-seeded-wizard-staging]].
+
+Helper (NEO-339): `skipHeldPickStep(page)` in `support/wizard.ts` skips a held
+pick step (detected by the footer's `Create new`; one of Create new / Add as
+New Player / team-league Skip / Next (Enter) / Confirm & Save must be up) and
+proves x moved by one. `walkToPlayerRow` calls it once after its first lookup
+wait; a spec that wants to stay ON the pick step must not call the walk.
