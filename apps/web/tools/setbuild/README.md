@@ -141,6 +141,17 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
   template leaves an unanswered league's `level` as a `<…>` fill-in, and a
   team's `league` only ever LINKS a league (an existing one, or a New League
   step the batch answers first), never creates one by name.
+- **A card conflict is answered with a side, or unlinked.** A name or players
+  disagreement on a pair the server matched (on the number) is answered in
+  `pairing.conflicts` with `choose: "bsc" | "sportlots"`. When the pair is two
+  different cards that share a number (a checklist can list #482 twice),
+  `pairing.unlink: [{ "bsc": "<ref>", "sportlots": "<ref>" }]` is the Match
+  Cards dialog's Unlink: applied first, through the dialog's reducer, it puts
+  both cards back in their unmatched columns, each with its own name, roster
+  and marketplace ref, where `unmatchedBsc` / `unmatchedSportlots` decide them,
+  and the pair's conflicts are no longer asked. An unlink must name exactly one
+  matched pair, and a `conflicts` answer for an unlinked pair is refused at
+  parse. The open decision and the fill-in both name the unlink option.
 - **Idempotent and resumable.** Every step checks state before it writes.
 - **No marketplace name is ever a key.** Rows are addressed by NB path or by a
   marketplace id from a slot (a `group` ref may be `{ "bsc": id }` or
@@ -149,6 +160,19 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
   drives `lib/set-build/grouping.ts` (the reducer, tree builder and diff the
   modal imports) and `chunkGroupingPlan`; never re-implement a rule there. It
   takes no prefix suggestion: a row the spec does not name stays put.
+  `group.topLevel` is the dialog's ✕: a grouped row it names moves back out to
+  stand as its own set (a row named there and as a parallel is an open
+  decision).
+- **A parallel build that shares no card number with its source is not
+  done.** When a build copies 0 cards while the parallel's own listing returned
+  cards (the server's `extraOnMarketplace`), apply records a
+  `no-shared-numbers` open decision (in `openDecisions.grouping`) instead: the
+  row is probably its own insert that Group Parallels grouped by name. Like
+  every open decision it stops `stopAt: "first"` and is collected by `"end"`;
+  nothing waits on it. The answer is `group.topLevel` plus a row of its own. A
+  partial build (some cards copied) is an ordinary build, as is one whose
+  listing returned nothing; a spec that expects 0 cards for the row has
+  already accepted it empty.
 
 ## Tests and gates
 

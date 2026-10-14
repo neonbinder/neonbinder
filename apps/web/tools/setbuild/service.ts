@@ -253,12 +253,16 @@ export interface OpenConflict {
  * - `named-twice`: one row is named as a parallel more than once.
  * - `self`: a row is named as a parallel of itself.
  * - `refused`: the save was refused by the server; `detail` says what landed.
+ * - `no-shared-numbers`: a parallel build linked none of the parallel's own
+ *   marketplace cards to its source (built 0 while the listing returned
+ *   cards): probably its own insert. `at` is the build's entry; `detail` says
+ *   how to keep it its own set (`group.topLevel`).
  */
 export interface OpenGrouping {
   at: string;
   path: string;
   type: string;
-  problem: "parent-is-parallel" | "child-holds-parallels" | "chain" | "named-twice" | "self" | "refused";
+  problem: "parent-is-parallel" | "child-holds-parallels" | "chain" | "named-twice" | "self" | "refused" | "no-shared-numbers";
   /** The row's NB name (or, for `refused`, the variant type's). */
   name: string;
   detail: string;
@@ -382,9 +386,14 @@ export interface ReviewItemsReport {
 export interface BuildParallelReport {
   path: string;
   row: string;
-  /** "built" | "skipped" (already had cards and rebuild was not asked). */
-  outcome: "built" | "skipped";
+  /**
+   * "built" | "skipped" (already had cards and rebuild was not asked) |
+   * "no-shared-numbers" (built nothing: none of the row's marketplace cards
+   * share a number with Base; `detail` says so).
+   */
+  outcome: "built" | "skipped" | "no-shared-numbers";
   cards: number;
+  detail?: string;
   durationMs: number;
 }
 

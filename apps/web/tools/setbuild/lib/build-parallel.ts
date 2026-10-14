@@ -13,6 +13,14 @@
  * Idempotent: a row that already has cards is skipped unless the spec says
  * `rebuild: true`. A row the server would refuse (no marketplace id of its own,
  * or `blocked`) is reported, never sent.
+ *
+ * A build that copies nothing while the parallel's own marketplace listing
+ * returned cards (`extraOnMarketplace`: listed cards no source card matched)
+ * is `no-shared-numbers`: not one of its cards shares a number with the
+ * source, so it is probably its own insert, not a parallel. The caller makes
+ * that an open decision. A build that copies some cards (a short-print subset)
+ * is an ordinary build, and so is one whose listing returned nothing. A spec
+ * that expects 0 cards has already said the row stays empty.
  */
 
 import type { FunctionReturnType } from "convex/server";
@@ -45,13 +53,31 @@ export interface BuildParallelInput {
 
 export type BuildParallelOutcome =
   | { outcome: "skipped"; cards: number; detail: string }
-  | { outcome: "built"; built: number; cards: number; result: ParallelBuildResult };
+  | { outcome: "built"; built: number; cards: number; result: ParallelBuildResult }
+  | {
+      outcome: "no-shared-numbers";
+      cards: number;
+      /** The parallel's own marketplace cards no source card matched, per side fetched. */
+      listed: { bsc: number; sportlots: number };
+      /** The row it was built from (an insert, or Base), by NB name. */
+      source: string;
+      result: ParallelBuildResult;
+    };
+
+/**
+ * Cards the parallel's own listing returned that no source card matched, per
+ * side. Read defensively: an older server's result may not carry the field.
+ */
+export function listedOnlyCounts(result: Pick<ParallelBuildResult, "extraOnMarketplace">): { bsc: number; sportlots: number } {
+  const extra = result.extraOnMarketplace as Partial<ParallelBuildResult["extraOnMarketplace"]> | undefined;
+  return { bsc: extra?.bsc?.count ?? 0, sportlots: extra?.sportlots?.count ?? 0 };
+}
 
 /** What a build of `name` would do, without building (read-only). */
 export async function planParallelBuild(
   client: NbClient,
   input: BuildParallelInput,
-): Promise<{ status: "done" | "todo" | "blocked"; detail: string; parallelId?: Id<"selectorOptions"> }> {
+): Promise<{ status: "done" | "todo" | "blocked"; detail: string; parallelId?: Id<"selectorOptions">; source?: string }> {
   const plan = await client.query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: input.sourceId });
   const entry = pickExactlyOne(
     plan.parallels.map((p) => ({ ...p, _id: String(p._id) })),
@@ -73,6 +99,7 @@ export async function planParallelBuild(
     status: "todo",
     detail: `${entry.hasCards ? "rebuild" : "build"} ${entry.value} from ${plan.source.value}`,
     parallelId,
+    source: plan.source.value,
   };
 }
 
@@ -102,6 +129,11 @@ export async function buildParallel(client: NbClient, input: BuildParallelInput)
     );
   }
   const cards = await cardCount(client, parallelId);
+  const listed = listedOnlyCounts(result);
+  if (result.copied === 0 && listed.bsc + listed.sportlots > 0 && input.expectCards !== 0) {
+    // Before the count check: "expects 20, holds 0" would hide the reason.
+    return { outcome: "no-shared-numbers", cards, listed, source: planned.source ?? "its source", result };
+  }
   if (input.expectCards !== undefined && cards !== input.expectCards) {
     throw new BuildParallelError(
       `${input.at}: built ${result.copied} cards onto "${input.name}"; it now holds ${cards}, the spec expects ${input.expectCards}.`,

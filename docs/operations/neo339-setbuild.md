@@ -243,7 +243,10 @@ with the set's path; the draft comes back with:
   with several candidates and no pre-selection; a card disagreement; any
   player or team with an existing NB candidate, never linked by name; a
   checklist the draft could not preview), each as a `<…>` fill-in in the
-  template. A player name that only one side of an unanswered card
+  template. A card disagreement is answered with a side (`choose: "bsc"` or
+  `"sportlots"`), or, when the pair is two different cards that share a
+  number, by moving it to `pairing.unlink` (the Match Cards dialog's Unlink:
+  both cards are kept apart). A player name that only one side of an unanswered card
   disagreement carries (BSC "Alex Guerrero" vs SportLots "Alexander
   Guerrero") is never pre-filled: the review asks about it only if that side
   is chosen, so its fill-in names the conflict it rides on, and an answer for
@@ -326,8 +329,12 @@ other than the set's own listing (a NEO-189 extra), or any checklist on a set
 with no BSC listing; those checklists are open decisions. SportLots sets
 another set of the brand holds are read with the same walk the Reconcile
 dialog's held-id query makes. Group Parallels suggestions are drafted for
-Insert types only. A name is decided at the first checklist apply reaches it
-in; a later checklist does not repeat it.
+Insert types only, and they go by name: a suggested parallel that shares no
+card number with its insert (an autograph insert named after its set) is
+only found when apply builds it, and comes back as a `no-shared-numbers`
+open decision rather than an empty "done". Keep it its own set with
+`group.topLevel` and a row of its own. A name is decided at the first
+checklist apply reaches it in; a later checklist does not repeat it.
 
 **The live proof (`setbuild-oneshot` in `e2e.yml`).** After `seed`, in
 parallel with the runner pool, required by the `e2e` gate. Fixture: 2024

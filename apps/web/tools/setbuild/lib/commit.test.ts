@@ -94,6 +94,77 @@ describe("checklist step idempotence", () => {
   });
 });
 
+describe("Match Cards unlink on the apply path (NEO-339: #482 Henderson / Gwynn)", () => {
+  /** BSC lists Gwynn #482, SportLots Henderson #482; the server matched them on the number. */
+  const pair482 = {
+    _id: "c482",
+    cardNumber: "482",
+    cardName: "Tony Gwynn",
+    players: ["Tony Gwynn"],
+    platformData: { bsc: { ref: "b482" }, sportlots: { ref: "s482" } },
+    bucket: "matched",
+    confidence: 1,
+    nameConflict: { bsc: "Tony Gwynn", sportlots: "Rickey Henderson" },
+    playersConflict: { bsc: ["Tony Gwynn"], sportlots: ["Rickey Henderson"] },
+    stem: "482",
+    teamResolved: true,
+  };
+  function client482() {
+    let batch: string | undefined;
+    let cards = 0;
+    return fakeClient()
+      .on("selectorOptions:getSlotCardCounts", () => ({ bsc: {}, sportlots: {}, total: cards }))
+      .on("checklistCandidates:getReadyCandidates", () => ({ batchId: batch, total: batch ? 1 : 0, ready: 1, cards: batch ? [pair482] : [] }))
+      .on("selectorOptions:fetchCardChecklist", () => {
+        batch = "cb";
+        return { success: true, message: "", candidateCount: 1, attachedSides: ["bsc", "sportlots"], pausedSides: [] };
+      })
+      .on("selectorOptions:diffChecklistAgainstExisting", { cards: [], removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 }, conflicts: [], collisionInsertCount: 0 })
+      .on("selectorOptions:resolveChecklistEntities", { unknownPlayers: [], unknownTeams: [] })
+      .on("selectorOptions:commitCardChecklist", (args) => {
+        cards = (args.cards as unknown[]).length;
+        return { count: cards, conflicts: [] };
+      })
+      .on("checklistCandidates:discardCandidates", null);
+  }
+  const input = (pairing: Record<string, unknown>) => ({
+    rowId: "i1" as never,
+    sportId: "sp" as never,
+    checklist: { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep", ...pairing }, review: "none-expected", expectCards: 2 } as never,
+    at: "steps[0].variants[0].rows[0].checklist",
+    row: { type: "Insert", name: "All Time Rookie Reprints" },
+  });
+
+  test("without an answer the conflicts are open, the fill-in offers the unlink, and nothing is committed", async () => {
+    const client = client482();
+    const r = await runChecklistStep(client, input({}));
+    if (r.outcome !== "open") throw new Error(`expected open, got ${r.outcome}`);
+    expect(r.open.conflicts.map((c) => c.cardNumber)).toEqual(["482", "482"]);
+    expect(JSON.stringify(r.template)).toContain("pairing.unlink");
+    expect(client.callsTo("selectorOptions:commitCardChecklist")).toEqual([]);
+  });
+
+  test("an unlinked pair commits as two kept cards, each with its own marketplace ref; no conflict is open", async () => {
+    const client = client482();
+    const r = await runChecklistStep(client, input({ unlink: [{ bsc: "b482", sportlots: "s482" }] }));
+    if (r.outcome !== "committed") throw new Error(`expected committed, got ${JSON.stringify(r)}`);
+    expect(r).toMatchObject({ committed: 2, cards: 2, pairing: "0 matched (1 unlinked), 1 BSC-only kept, 1 SportLots-only kept, 0 dropped" });
+    const sent = client.callsTo("selectorOptions:commitCardChecklist")[0].args.cards as Array<Record<string, unknown>>;
+    expect(sent).toHaveLength(2);
+    expect(sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ cardNumber: "482", cardName: "Tony Gwynn", players: ["Tony Gwynn"], platformData: { bsc: { ref: "b482" } } }),
+        expect.objectContaining({ cardNumber: "482", cardName: "Rickey Henderson", players: ["Rickey Henderson"], platformData: { sportlots: { ref: "s482" } } }),
+      ]),
+    );
+    // Neither card carries the pair's disagreement any more.
+    for (const c of sent) {
+      expect(c.nameConflict).toBeUndefined();
+      expect(c.playersConflict).toBeUndefined();
+    }
+  });
+});
+
 describe("build-parallel", () => {
   const plan = (hasCards: boolean, sides = { bsc: true, sportlots: false }) => ({
     source: { id: "vtB", value: "Base", kind: "base", hasCards: true },
@@ -127,6 +198,22 @@ describe("build-parallel", () => {
     const client = fakeClient().on("parallelChecklistBuild:getParallelsForBuild", plan(false, { bsc: false, sportlots: false }));
     await expect(buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", at: "x" })).rejects.toBeInstanceOf(BuildParallelError);
     expect(client.writes()).toEqual([]);
+  });
+
+  test("built 0 while the parallel's own listing returned cards: no-shared-numbers, naming the source; expecting 0 accepts it empty", async () => {
+    const answer = {
+      status: "built",
+      copied: 0,
+      extraOnMarketplace: { bsc: { count: 5, cards: [] }, sportlots: { count: 0, cards: [] } },
+    };
+    const client = fakeClient()
+      .on("parallelChecklistBuild:getParallelsForBuild", plan(false))
+      .on("parallelChecklistBuild:buildParallelChecklist", answer)
+      .on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: 0 });
+    const r = await buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "x" });
+    expect(r).toMatchObject({ outcome: "no-shared-numbers", cards: 0, listed: { bsc: 5, sportlots: 0 }, source: "Base" });
+    const empty = await buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 0, at: "x" });
+    expect(empty).toMatchObject({ outcome: "built", built: 0, cards: 0 });
   });
 
   test("a count that misses the expectation fails loudly", async () => {

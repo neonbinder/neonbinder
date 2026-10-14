@@ -201,7 +201,8 @@ export const CardPairSchema = z
 /**
  * An answer to one auto-matched pair's disagreement (`nameConflict` /
  * `playersConflict`), the pair named by either side's card ref. A conflict the
- * spec does not answer is an open decision.
+ * spec does not answer is an open decision. When the two are not the same card
+ * at all, the answer is `pairing.unlink` instead, never a `choose`.
  */
 export const CardConflictSchema = z
   .object({
@@ -223,10 +224,41 @@ export const ChecklistSchema = z
         unmatchedBsc: z.enum(["keep", "drop"]),
         /** The dialog's "Keep all SportLots-only cards" (`keep`) or not (`drop`). */
         unmatchedSportlots: z.enum(["keep", "drop"]),
+        /**
+         * The dialog's Unlink: auto-matched pairs that are NOT one card (two
+         * cards sharing a number), each named by both card refs. Applied
+         * first, before `pairs` and `conflicts`: both halves go back to their
+         * unmatched columns and follow `unmatchedBsc` / `unmatchedSportlots`,
+         * and the pair's disagreements are no longer asked.
+         */
+        unlink: z.array(CardPairSchema).optional(),
         pairs: z.array(CardPairSchema).optional(),
         conflicts: z.array(CardConflictSchema).optional(),
       })
-      .strict(),
+      .strict()
+      .superRefine((p, ctx) => {
+        const unlink = p.unlink ?? [];
+        const seen = new Set<string>();
+        unlink.forEach((u, i) => {
+          const key = `${u.bsc}\u0000${u.sportlots}`;
+          if (seen.has(key)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["unlink", i], message: "This pair is already in unlink." });
+          }
+          seen.add(key);
+        });
+        (p.conflicts ?? []).forEach((c, i) => {
+          const hit = unlink.some(
+            (u) => (c.bsc === undefined || c.bsc === u.bsc) && (c.sportlots === undefined || c.sportlots === u.sportlots),
+          );
+          if (hit) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["conflicts", i],
+              message: "This conflict's pair is in unlink, so there is nothing to choose. Remove one of the two.",
+            });
+          }
+        });
+      }),
     /** `none-expected`: the commit must open no review; any review row is an open decision. */
     review: z.union([z.literal("none-expected"), ReviewAnswersSchema]),
     /** Cards the checklist must hold after the commit (asserted, never used to decide). */
@@ -418,11 +450,18 @@ export const GroupParentSchema = z
  * moved under it. A named insert that is itself a parallel, or a named
  * parallel that holds parallels of its own, is an open decision. A row the
  * spec does not name stays where it is: leaving is the default, never a
- * wildcard.
+ * wildcard. `topLevel` is the dialog's ✕ on a grouped row: it moves the row
+ * back out to stand as its own set.
  */
 export const GroupSchema = z
   .object({
     parents: z.array(GroupParentSchema),
+    /**
+     * Rows that must stand as their own set, not as a parallel: a grouped one
+     * is moved back to the top level, any other is left as it is. A row named
+     * here and as a parallel in `parents` is an open decision.
+     */
+    topLevel: z.array(RowRefSchema).optional(),
     /**
      * Top-level rows of the type that hold no parallels, after the grouping
      * (asserted, never used to decide).

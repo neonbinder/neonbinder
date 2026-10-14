@@ -28,6 +28,7 @@
  * | a variant type's sync       | that type's rows, grouping and parallels, and every LATER type's sync in the set (it reads the ids earlier types hold) |
  * | Group Parallels             | the type's rows' `parallels`                                 |
  * | a row's checklist           | that row's `parallels`                                       |
+ * | a parallel build that shares no card number with its source (`no-shared-numbers`) | nothing (a build is a leaf) |
  * | a name that does not resolve | everything below it (the step cannot find its row)          |
  *
  * A failure that is not a decision (a refused build, a wrong expected count)
@@ -579,7 +580,7 @@ export async function runSpec(
           waits(i, "build-parallel", path, action, on);
         } else {
           const input = { sourceId: type._id, name: spec.name, rebuild: spec.buildFromBase.rebuild, expectCards: spec.expectCards, at: rowAt };
-          await build(i, path, action, input);
+          await build(i, path, action, input, { type: vt.type });
         }
       } else if (!spec.checklist && spec.expectCards !== undefined) {
         await expectCards(i, path, label, row._id, spec.expectCards, `${rowAt}.expectCards`);
@@ -588,7 +589,7 @@ export async function runSpec(
         const on =
           groupWaits ?? (collecting && checklistStatus === "blocked" ? `the ${label} checklist (${rowAt}.checklist)` : undefined);
         for (let m = 0; m < spec.parallels.length; m++) {
-          await insertParallel(i, path, `${rowAt}.parallels[${m}]`, label, row._id, spec.parallels[m], on);
+          await insertParallel(i, path, `${rowAt}.parallels[${m}]`, label, row._id, spec.parallels[m], on, { type: vt.type, groupAt: `${at}.group` });
         }
       }
     }
@@ -662,6 +663,7 @@ export async function runSpec(
     insertId: RowId,
     p: InsertParallel,
     on: string | undefined,
+    fix: BuildFix,
   ): Promise<void> {
     const label = `${rowLabel} › ${p.name}`;
     const action = p.build ? `build ${label} from ${rowLabel}` : `find ${label}`;
@@ -671,7 +673,7 @@ export async function runSpec(
       return;
     }
     if (p.build) {
-      await build(i, path, action, { sourceId: insertId, name: p.name, rebuild: p.build.rebuild, expectCards: p.expectCards, at });
+      await build(i, path, action, { sourceId: insertId, name: p.name, rebuild: p.build.rebuild, expectCards: p.expectCards, at }, fix);
       return;
     }
     const par = await sub(i, "parallel", path, action, () => resolveChild(client, "parallel", insertId, p.name, `${at}.name`), () => ({ status: "done" }));
@@ -679,7 +681,7 @@ export async function runSpec(
   }
 
   /** One parallel build, from Base or from an insert (`input.sourceId`). */
-  async function build(i: number, path: string, action: string, input: BuildParallelInput): Promise<void> {
+  async function build(i: number, path: string, action: string, input: BuildParallelInput, fix: BuildFix): Promise<void> {
     if (readOnly) {
       const p = await planParallelBuild(client, input).catch((err) => {
         if (err instanceof ResolveError) return { status: "blocked" as const, detail: err.message };
@@ -693,6 +695,17 @@ export async function runSpec(
       r = await buildParallel(client, input);
     } catch (err) {
       failed(err, i, "build-parallel", path, action);
+      return;
+    }
+    if (r.outcome === "no-shared-numbers") {
+      // An open decision, like every other answer the spec owes: `first` stops
+      // here, `end` records it and carries on (nothing waits on a build).
+      const n = r.listed.bsc + r.listed.sportlots;
+      const what = noSharedNumbers(input.name, r.source, n, fix);
+      open.grouping.push({ at: input.at, path, type: fix.type, problem: "no-shared-numbers", name: input.name, detail: what.detail });
+      patch(fix.groupAt ? input.at : `${input.at}.buildFromBase`, what.fill);
+      record({ index: i, kind: "build-parallel", path, action, status: "blocked", detail: what.reason });
+      stop(i, what.reason);
       return;
     }
     if (r.outcome === "built") counts.built += r.built;
@@ -771,6 +784,46 @@ export async function runSpec(
 }
 
 type StepStatus = PlanStep["status"];
+
+/** Where a parallel build sits, for the answer a `no-shared-numbers` build asks for. */
+interface BuildFix {
+  /** The variant type's title as the spec names it. */
+  type: string;
+  /** An insert's parallel: where the type's Group Parallels answer goes (`steps[0].variants[1].group`). */
+  groupAt?: string;
+}
+
+/**
+ * The words for a parallel build that shared no card number with its source:
+ * the step's reason, the open decision's detail, and the template's fill-in.
+ */
+export function noSharedNumbers(
+  name: string,
+  source: string,
+  listed: number,
+  fix: BuildFix,
+): { reason: string; detail: string; fill: string } {
+  const reason = `"${name}" shares no card numbers with "${source}"`;
+  const share = listed === 1 ? "1 marketplace card and it shares no" : `${listed} marketplace cards and none share a`;
+  const lists = `"${name}" lists ${share} number with "${source}"`;
+  if (fix.groupAt) {
+    return {
+      reason,
+      detail:
+        `${lists}, so it is probably its own insert, not a parallel. ` +
+        `To keep it its own set: move it from ${fix.groupAt}.parents to ${fix.groupAt}.topLevel, ` +
+        `remove it from "${source}"'s parallels, and give it its own row.`,
+      fill: `<${reason}: probably its own insert. Remove this entry, move it to group.topLevel, and give it its own row>`,
+    };
+  }
+  return {
+    reason,
+    detail:
+      `${lists}, so it is probably an insert, not a parallel of "${source}". ` +
+      "Remove its buildFromBase; moving it to an insert type is done in the Set Builder.",
+    fill: `<${reason}: probably an insert. Remove buildFromBase>`,
+  };
+}
 
 /** Collecting: why a set's Base-dependent steps wait. */
 interface SetDeps {

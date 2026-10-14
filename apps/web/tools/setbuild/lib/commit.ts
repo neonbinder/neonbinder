@@ -148,10 +148,11 @@ export async function runChecklistStep(
     cards = paired.result.cards;
     conflictsByIndex = paired.result.conflictsByIndex;
     const s = paired.summary;
+    const unlinked = checklist.pairing.unlink?.length ?? 0;
     pairingNote =
       paired.mode === "solo"
         ? `one marketplace attached: kept all ${cards.length}`
-        : `${s.matched} matched, ${s.keptBsc} BSC-only kept, ${s.keptSportlots} SportLots-only kept, ${s.dropped} dropped`;
+        : `${s.matched} matched${unlinked ? ` (${unlinked} unlinked)` : ""}, ${s.keptBsc} BSC-only kept, ${s.keptSportlots} SportLots-only kept, ${s.dropped} dropped`;
   }
   await assertNoSyncReview(client, rowId, { cards, conflictsByIndex }, at);
 

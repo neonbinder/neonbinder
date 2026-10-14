@@ -152,6 +152,15 @@ export type PairingOutcome =
 /** Fill-in placeholder for a conflict's `choose`. */
 export const CHOOSE_PLACEHOLDER = '<"bsc" | "sportlots">';
 
+/** The other answer to a card conflict, as an open decision's detail says it. */
+export const UNLINK_HINT = "if these are two different cards, unlink them (pairing.unlink) instead";
+
+/** The other answer, as a conflict's fill-in says it: the exact entry to add. */
+function unlinkFill(card: { platformData: { bsc?: { ref: string }; sportlots?: { ref: string } } }): string {
+  const entry = JSON.stringify({ bsc: card.platformData.bsc?.ref, sportlots: card.platformData.sportlots?.ref });
+  return `two different cards? Remove its conflicts entries and add ${entry} to pairing.unlink`;
+}
+
 const refOf = (c: { platformData: { bsc?: { ref: string }; sportlots?: { ref: string } } }, side: ServedSide) =>
   side === "bsc" ? c.platformData.bsc?.ref : c.platformData.sportlots?.ref;
 
@@ -162,10 +171,12 @@ const refOf = (c: { platformData: { bsc?: { ref: string }; sportlots?: { ref: st
  * - One unpaused side attached and every row a single → the UI never shows
  *   the dialog and keeps everything (`handleSync`'s NEO-255 path); the spec's
  *   pairing answers are not consulted, exactly as no operator is.
- * - Otherwise: each `pairs` entry is a LINK of one unmatched BSC card with one
- *   unmatched SportLots card, by marketplace ref (never by number); every
- *   name/players disagreement on a matched pair needs exactly one `conflicts`
- *   answer, or it is an open decision; then "Keep all" per side.
+ * - Otherwise: each `unlink` entry is the dialog's UNLINK of one matched pair,
+ *   by both card refs; each `pairs` entry is a LINK of one unmatched BSC card
+ *   with one unmatched SportLots card, by marketplace ref (never by number);
+ *   every name/players disagreement on a pair still matched needs exactly one
+ *   `conflicts` answer (or an `unlink`), or it is an open decision; then
+ *   "Keep all" per side.
  */
 export function pairCandidates(
   live: ReadyCandidates,
@@ -201,6 +212,23 @@ export function pairCandidates(
   const fail = (message: string): never => {
     throw new ChecklistStepError(`${ctx.at}: ${message}`);
   };
+
+  // The dialog's Unlink, first: a pair the server matched (on the number) that
+  // is two different cards. Both halves go back to their unmatched columns,
+  // keep their own names and rosters (the reducer's NEO-189/251 split), and
+  // follow "Keep all" below; the pair's disagreements are no longer asked.
+  (pairing.unlink ?? []).forEach((pair, i) => {
+    const hits = state.matched
+      .map((m, index) => ({ m, index }))
+      .filter(({ m }) => refOf(m.card, "bsc") === pair.bsc && refOf(m.card, "sportlots") === pair.sportlots);
+    if (hits.length !== 1) {
+      fail(
+        `pairing.unlink[${i}]: no single matched pair is BSC card "${pair.bsc}" with SportLots card "${pair.sportlots}" ` +
+          `(${hits.length} found).`,
+      );
+    }
+    state = pairingReducer(state, { type: "UNLINK", index: hits[0].index });
+  });
 
   (pairing.pairs ?? []).forEach((pair, i) => {
     const bsc = state.unmatchedBsc.filter((c) => c.platformData.bsc?.ref === pair.bsc);
@@ -244,7 +272,7 @@ export function pairCandidates(
           at: `${ctx.at}.pairing.conflicts`,
           row: ctx.row,
           cardNumber: m.card.cardNumber,
-          detail: `${hits.length === 0 ? "unanswered" : `${hits.length} answers match`} — ${detail} ${refs}`,
+          detail: `${hits.length === 0 ? "unanswered" : `${hits.length} answers match`} — ${detail} ${refs}; ${UNLINK_HINT}`,
         });
         if (hits.length === 0) {
           fillIns.push({
@@ -253,7 +281,7 @@ export function pairCandidates(
             ...(refOf(m.card, "sportlots") ? { sportlots: refOf(m.card, "sportlots") } : {}),
             // The hint rides inside the placeholder: the spec is strict, so a
             // separate hint key would have to be deleted by hand after filling.
-            choose: `${CHOOSE_PLACEHOLDER} — #${m.card.cardNumber} ${detail}`,
+            choose: `${CHOOSE_PLACEHOLDER} — #${m.card.cardNumber} ${detail}; ${unlinkFill(m.card)}`,
           });
         }
         continue;

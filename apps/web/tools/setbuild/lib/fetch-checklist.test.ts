@@ -3,6 +3,7 @@ import { fakeClient } from "../runner/fake-client";
 import {
   CHOOSE_PLACEHOLDER,
   ChecklistStepError,
+  UNLINK_HINT,
   fetchCandidates,
   pairCandidates,
   teamLookupsSettled,
@@ -119,6 +120,86 @@ describe("pairCandidates", () => {
       { ...CTX, servedSides: [...CTX.servedSides] },
     );
     expect(out.ok).toBe(false);
+  });
+
+  /** #482 on the real checklist twice: BSC lists Gwynn, SportLots Henderson, and the server matched them on the number. */
+  const twoCards482 = () =>
+    cand("matched", "482", {
+      cardName: "Tony Gwynn",
+      players: ["Tony Gwynn"],
+      nameConflict: { bsc: "Tony Gwynn", sportlots: "Rickey Henderson" },
+      playersConflict: { bsc: ["Tony Gwynn"], sportlots: ["Rickey Henderson"] },
+    });
+
+  test("an unanswered conflict's open decision and fill-in both offer the unlink", () => {
+    const out = pairCandidates(batch([twoCards482()]), { unmatchedBsc: "keep", unmatchedSportlots: "keep" }, { ...CTX, servedSides: [...CTX.servedSides] });
+    if (out.ok) throw new Error("expected open");
+    expect(out.conflicts).toHaveLength(2);
+    for (const c of out.conflicts) expect(c.detail).toContain(UNLINK_HINT);
+    for (const f of out.template) {
+      expect(f.choose).toContain(CHOOSE_PLACEHOLDER);
+      expect(f.choose).toContain('add {"bsc":"b482","sportlots":"s482"} to pairing.unlink');
+    }
+  });
+
+  test("unlink is the dialog's Unlink: two kept cards, each with its own name, roster and marketplace ref; nothing left open", () => {
+    const live = batch([cand("matched", "1"), twoCards482()]);
+    const out = pairCandidates(
+      live,
+      { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink: [{ bsc: "b482", sportlots: "s482" }] },
+      { ...CTX, servedSides: [...CTX.servedSides] },
+    );
+    if (!out.ok) throw new Error(`expected ok, got ${JSON.stringify(out.conflicts)}`);
+    expect(out.summary).toEqual({ matched: 1, keptBsc: 1, keptSportlots: 1, dropped: 0 });
+    const by482 = out.result.cards.filter((c) => c.cardNumber === "482");
+    expect(by482).toHaveLength(2);
+    const bscCard = by482.find((c) => c.platformData.bsc)!;
+    const slCard = by482.find((c) => c.platformData.sportlots)!;
+    expect(bscCard).toMatchObject({ cardName: "Tony Gwynn", players: ["Tony Gwynn"], platformData: { bsc: { ref: "b482" } } });
+    expect(bscCard.platformData.sportlots).toBeUndefined();
+    expect(slCard).toMatchObject({ cardName: "Rickey Henderson", players: ["Rickey Henderson"], platformData: { sportlots: { ref: "s482" } } });
+    expect(slCard.platformData.bsc).toBeUndefined();
+    // Two kept singles carry no disagreement to the diff.
+    expect(out.result.conflictsByIndex).toEqual({});
+  });
+
+  test("an unlinked half follows its side's Keep all: drop discards it", () => {
+    const out = pairCandidates(
+      batch([twoCards482()]),
+      { unmatchedBsc: "keep", unmatchedSportlots: "drop", unlink: [{ bsc: "b482", sportlots: "s482" }] },
+      { ...CTX, servedSides: [...CTX.servedSides] },
+    );
+    if (!out.ok) throw new Error("expected ok");
+    expect(out.result.cards.map((c) => c.platformData)).toEqual([{ bsc: { ref: "b482" } }]);
+    expect(out.summary.dropped).toBe(1);
+  });
+
+  test("an unlinked half can be paired again by ref", () => {
+    const live = batch([twoCards482(), cand("slOnly", "483", { cardName: "Tony Gwynn" })]);
+    const out = pairCandidates(
+      live,
+      {
+        unmatchedBsc: "drop",
+        unmatchedSportlots: "keep",
+        unlink: [{ bsc: "b482", sportlots: "s482" }],
+        pairs: [{ bsc: "b482", sportlots: "s483" }],
+      },
+      { ...CTX, servedSides: [...CTX.servedSides] },
+    );
+    if (!out.ok) throw new Error("expected ok");
+    expect(out.result.cards.map((c) => c.platformData)).toEqual([
+      { bsc: { ref: "b482" }, sportlots: { ref: "s483" } },
+      { sportlots: { ref: "s482" } },
+    ]);
+  });
+
+  test("an unlink that names no matched pair is refused, never ignored", () => {
+    const live = batch([twoCards482(), cand("bscOnly", "7")]);
+    for (const unlink of [[{ bsc: "b482", sportlots: "s999" }], [{ bsc: "b7", sportlots: "s482" }]]) {
+      expect(() =>
+        pairCandidates(live, { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink }, { ...CTX, servedSides: [...CTX.servedSides] }),
+      ).toThrow(/pairing\.unlink\[0\]: no single matched pair/);
+    }
   });
 
   test("one marketplace attached and every row a single: the UI keeps everything with no dialog", () => {

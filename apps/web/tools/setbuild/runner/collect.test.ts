@@ -9,6 +9,7 @@ import { countOpenDecisions, specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
 import { DECISION_PLACEHOLDER } from "../lib/review";
 import { applySpec } from "./apply";
+import { noSharedNumbers } from "./engine";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { planSpec } from "./plan";
 
@@ -323,6 +324,145 @@ describe("Group Parallels and insert parallels through the engine", () => {
     expect(Object.fromEntries(ok.steps.map((s) => [s.action, s.status]))).toMatchObject({
       "build Insert › Youthquake › Youthquake Red from Insert › Youthquake": "todo",
     });
+  });
+});
+
+describe("a parallel build that shares no card number with its source (NEO-339: 1989 Topps Chrome Autographs)", () => {
+  /** Youthquake Red already sits under Youthquake (the group answer is in place); Sepia is built from Base. */
+  function spec() {
+    return {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        {
+          kind: "set",
+          path: PATH,
+          variantTypes: { sync: true },
+          variants: [
+            { type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] },
+            {
+              type: "Insert",
+              group: { parents: [{ insert: "Youthquake", parallels: ["Youthquake Red"] }] },
+              rows: [{ name: "Youthquake", checklist: checklist(20), parallels: [{ name: "Youthquake Red", build: {} }] }],
+            },
+          ],
+        },
+      ],
+    };
+  }
+  /** The server's answer for a build: `copied` cards linked, `listed` of the parallel's own cards matched nothing. */
+  const built = (copied: number, listed: { bsc?: number; sportlots?: number } = {}) => ({
+    status: "built",
+    copied,
+    extraOnMarketplace: {
+      bsc: { count: listed.bsc ?? 0, cards: [] },
+      sportlots: { count: listed.sportlots ?? 0, cards: [] },
+    },
+  });
+  /** `world`, with Youthquake Red's build answered by `answer`; every other build copies its source as before. */
+  function worldWith(answer: ReturnType<typeof built>) {
+    const cards = { ...WIDE(), vtB: 2 } as Record<string, number>;
+    const client = world(cards);
+    client.on("parallelChecklistBuild:buildParallelChecklist", (a) => {
+      const id = a.parallelId as string;
+      if (id === "yqR") {
+        cards.yqR = answer.copied;
+        return answer;
+      }
+      cards[id] = cards.vtB;
+      return built(cards[id]);
+    });
+    return client;
+  }
+  const RED = "build Insert › Youthquake › Youthquake Red from Insert › Youthquake";
+
+  test("zero overlap while the marketplace returned cards: an open decision, not done; the run carries on", async () => {
+    const raw = spec();
+    const client = worldWith(built(0, { bsc: 3, sportlots: 2 }));
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    const byAction = Object.fromEntries(r.steps.map((s) => [s.action, s]));
+    expect(byAction[RED]).toMatchObject({ status: "blocked", detail: '"Youthquake Red" shares no card numbers with "Youthquake"' });
+    expect(byAction["build Parallel › Sepia Refractors from Base"]).toMatchObject({ status: "done" });
+    expect(r.openDecisions.grouping).toEqual([
+      {
+        at: "steps[0].variants[1].rows[0].parallels[0]",
+        path: SCOPE,
+        type: "Insert",
+        problem: "no-shared-numbers",
+        name: "Youthquake Red",
+        detail:
+          '"Youthquake Red" lists 5 marketplace cards and none share a number with "Youthquake", so it is probably its own insert, not a parallel. ' +
+          "To keep it its own set: move it from steps[0].variants[1].group.parents to steps[0].variants[1].group.topLevel, " +
+          'remove it from "Youthquake"\'s parallels, and give it its own row.',
+      },
+    ]);
+    expect(countOpenDecisions(r.openDecisions)).toBe(1);
+    expect(r.stops).toEqual([{ step: 0, reason: '"Youthquake Red" shares no card numbers with "Youthquake"' }]);
+    expect(r.counts.built).toBe(2);
+    const tpl = r.template as { steps: Array<{ variants: Array<{ rows: Array<{ parallels: unknown[] }> }> }> };
+    expect(tpl.steps[0].variants[1].rows[0].parallels[0]).toMatch(/^<"Youthquake Red" shares no card numbers with "Youthquake": probably its own insert\./);
+  });
+
+  test("a one-card listing reads in the singular", () => {
+    expect(noSharedNumbers("Gold Auto", "Chrome", 1, { type: "Insert", groupAt: "g" }).detail).toMatch(
+      /^"Gold Auto" lists 1 marketplace card and it shares no number with "Chrome", so/,
+    );
+  });
+
+  test('stopAt "first" stops there, like every other open decision', async () => {
+    const raw = spec();
+    const client = worldWith(built(0, { sportlots: 5 }));
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "first" });
+    expect(r.stoppedAt).toEqual({ step: 0, reason: '"Youthquake Red" shares no card numbers with "Youthquake"' });
+    expect(r.openDecisions.grouping.map((g) => g.problem)).toEqual(["no-shared-numbers"]);
+  });
+
+  test("a spec that expects cards still gets the reason, not a count mismatch", async () => {
+    const raw = spec();
+    const insertRow = raw.steps[0].variants[1].rows[0] as { parallels: Array<Record<string, unknown>> };
+    insertRow.parallels = [{ name: "Youthquake Red", build: {}, expectCards: 20 }];
+    const client = worldWith(built(0, { bsc: 5 }));
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.openDecisions.grouping.map((g) => g.problem)).toEqual(["no-shared-numbers"]);
+  });
+
+  test("partial overlap is a real subset (a short-print parallel): done", async () => {
+    const raw = spec();
+    const client = worldWith(built(20, { bsc: 30 }));
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.stops).toBeUndefined();
+    expect(Object.fromEntries(r.steps.map((s) => [s.action, s]))[RED]).toMatchObject({ status: "done", detail: "built 20, holds 20" });
+    expect(countOpenDecisions(r.openDecisions)).toBe(0);
+  });
+
+  test("zero marketplace cards: unchanged, done with 0 built", async () => {
+    const raw = spec();
+    const client = worldWith(built(0));
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.stops).toBeUndefined();
+    expect(Object.fromEntries(r.steps.map((s) => [s.action, s]))[RED]).toMatchObject({ status: "done", detail: "built 0, holds 0" });
+  });
+
+  test("a parallel of Base that shares no number with Base is flagged too, its fill-in on buildFromBase", async () => {
+    const raw = spec();
+    const cards = { ...WIDE(), vtB: 2 } as Record<string, number>;
+    const client = world(cards);
+    client.on("parallelChecklistBuild:buildParallelChecklist", (a) => {
+      const id = a.parallelId as string;
+      if (id === "pS") return built(0, { bsc: 4 });
+      cards[id] = 20;
+      return built(20);
+    });
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.openDecisions.grouping).toMatchObject([
+      { at: "steps[0].variants[0].rows[0]", type: "Parallel", problem: "no-shared-numbers", name: "Sepia Refractors" },
+    ]);
+    expect(r.openDecisions.grouping[0].detail).toBe(
+      '"Sepia Refractors" lists 4 marketplace cards and none share a number with "Base", so it is probably an insert, not a parallel of "Base". ' +
+        "Remove its buildFromBase; moving it to an insert type is done in the Set Builder.",
+    );
+    const tpl = r.template as { steps: Array<{ variants: Array<{ rows: Array<{ buildFromBase: unknown }> }> }> };
+    expect(tpl.steps[0].variants[0].rows[0].buildFromBase).toBe('<"Sepia Refractors" shares no card numbers with "Base": probably an insert. Remove buildFromBase>');
   });
 });
 

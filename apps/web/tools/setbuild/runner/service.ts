@@ -46,7 +46,7 @@ import { openItemsOf, readReviewRows, runReview } from "../lib/review";
 import { applySlReview, openSlRows, readSlReview } from "../lib/sl-review";
 import { checkPausedPlatforms } from "../lib/sync-column";
 import { applySpec, publicApplyReport } from "./apply";
-import { emptyOpenDecisions, type RunOptions } from "./engine";
+import { emptyOpenDecisions, noSharedNumbers, type RunOptions } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
 import { draftSet } from "./draft";
@@ -176,6 +176,9 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
           row: name,
           outcome: r.outcome,
           cards: r.cards,
+          ...(r.outcome === "no-shared-numbers"
+            ? { detail: noSharedNumbers(name, r.source, r.listed.bsc + r.listed.sportlots, { type: types[0].value }).detail }
+            : {}),
           durationMs: (opts.now ?? Date.now)() - started,
         };
       },

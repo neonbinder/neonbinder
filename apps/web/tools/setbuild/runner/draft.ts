@@ -23,7 +23,7 @@
  * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
  * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash |
  * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types)  | a suggested parent whose name another row shares |
- * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair |
+ * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair (answered with a side, or `pairing.unlink` when it is two cards) |
  * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
  * | builds                  | Parallel rows from Base; an insert's grouped parallels from the insert | — |
@@ -156,15 +156,19 @@ export function isPlaceholder(v: unknown): v is string {
  * result equals `answers` exactly when the draft drafted everything the
  * answers hold besides those fill-ins. `credentials` is the one key taken
  * from `answers` wholesale: it sets up the run's account, not the set.
+ * A `pairing.unlink` in the answers is the other answer to a card conflict:
+ * it is taken, and the template's conflict fill-ins for the pairs it names
+ * are dropped (the answers file deletes them too).
  * Pure; a fill-in the answers do not reach stays a fill-in.
  */
 export function mergeDraftAnswers(template: unknown, answers: unknown): unknown {
-  const walk = (t: unknown, a: unknown): unknown => {
+  const walk = (t: unknown, a: unknown, key?: string): unknown => {
     if (isPlaceholder(t)) return a === undefined ? t : structuredClone(a);
     if (Array.isArray(t)) return t.map((v, i) => walk(v, Array.isArray(a) ? a[i] : undefined));
     if (t && typeof t === "object") {
       const ao = a && typeof a === "object" && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
-      return Object.fromEntries(Object.entries(t as Record<string, unknown>).map(([k, v]) => [k, walk(v, ao[k])]));
+      const to = key === "pairing" ? withUnlinkAnswers(t as Record<string, unknown>, ao) : (t as Record<string, unknown>);
+      return Object.fromEntries(Object.entries(to).map(([k, v]) => [k, walk(v, ao[k], k)]));
     }
     return t;
   };
@@ -172,6 +176,24 @@ export function mergeDraftAnswers(template: unknown, answers: unknown): unknown 
   const creds = answers && typeof answers === "object" ? (answers as Record<string, unknown>).credentials : undefined;
   if (creds !== undefined && merged && typeof merged === "object") return { ...merged, credentials: structuredClone(creds) };
   return merged;
+}
+
+/**
+ * A template `pairing` with the answers' `unlink` taken in: the list itself,
+ * less every conflict fill-in (an unanswered `choose`) on a pair it names.
+ */
+function withUnlinkAnswers(t: Record<string, unknown>, a: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(a.unlink) || a.unlink.length === 0) return t;
+  const unlink = a.unlink as Array<{ bsc?: unknown; sportlots?: unknown }>;
+  const out: Record<string, unknown> = { ...t, unlink: structuredClone(a.unlink) };
+  if (Array.isArray(t.conflicts)) {
+    const kept = (t.conflicts as Array<Record<string, unknown>>).filter(
+      (c) => !(isPlaceholder(c.choose) && unlink.some((u) => u.bsc === c.bsc && u.sportlots === c.sportlots)),
+    );
+    if (kept.length > 0 || Array.isArray(a.conflicts)) out.conflicts = kept;
+    else delete out.conflicts;
+  }
+  return out;
 }
 
 /** Every `<…>` fill-in left in a value, by path. */
@@ -1162,7 +1184,7 @@ export async function draftSet(
           }));
           const none = p.candidates.length === 0 && p.matchCount === 0;
           const known = none ? "no NB player has this name, so create is the usual answer" : candidateText(candidates, p.matchCount);
-          const when = `asked only if ${dependencyText(deps)} at ${at}.pairing.conflicts; otherwise it is not asked and any answer here is ignored`;
+          const when = `asked only if ${dependencyText(deps)} at ${at}.pairing.conflicts, or that pair is unlinked (pairing.unlink); otherwise it is not asked and any answer here is ignored`;
           const item = reviewItem(`${at}.review.players`, row, p.name, candidates, p.matchCount);
           open.review.players.push({ ...item, detail: `${when}; ${known}` });
           opens.players.push({

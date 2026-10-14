@@ -792,4 +792,36 @@ describe("pure helpers", () => {
     drifted.steps[0].variants![0].sync!.pairs.push({ name: "New Insert", bsc: ["new"] });
     expect(contentDigest(parseSpec(mergeDraftAnswers(r.template, drifted)))).not.toBe(contentDigest(parseSpec(drifted)));
   });
+
+  test("mergeDraftAnswers takes a pairing.unlink answer in place of that pair's conflict fill-ins", () => {
+    const spec = (pairing: Record<string, unknown>) => ({
+      version: 1,
+      scope: "Baseball/2014/Topps/Topps Chrome",
+      steps: [
+        {
+          kind: "set",
+          path: { sport: "Baseball", year: "2014", manufacturer: "Topps", set: "Topps Chrome" },
+          variantTypes: { sync: true },
+          base: {
+            map: { bsc: "bsc-chrome", whenPaused: "bsc-only" },
+            checklist: { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep", ...pairing }, review: "none-expected" },
+          },
+        },
+      ],
+    });
+    const fill = (field: string, n: string) => ({ field, bsc: `b${n}`, sportlots: `s${n}`, choose: `<"bsc" | "sportlots"> — #${n}` });
+    const template = spec({ conflicts: [fill("name", "482"), fill("players", "482"), fill("name", "9")] });
+    // The operator unlinks #482 (two cards) and answers #9 with a side.
+    const answers = spec({
+      unlink: [{ bsc: "b482", sportlots: "s482" }],
+      conflicts: [{ field: "name", bsc: "b9", sportlots: "s9", choose: "sportlots" }],
+    });
+    const merged = mergeDraftAnswers(template, answers);
+    expect(placeholdersIn(merged)).toEqual([]);
+    expect(contentDigest(parseSpec(merged))).toBe(contentDigest(parseSpec(answers)));
+    // Only an unlink: no conflicts key is left behind.
+    const onlyUnlink = spec({ unlink: [{ bsc: "b482", sportlots: "s482" }] });
+    const merged2 = mergeDraftAnswers(spec({ conflicts: [fill("name", "482")] }), onlyUnlink);
+    expect(contentDigest(parseSpec(merged2))).toBe(contentDigest(parseSpec(onlyUnlink)));
+  });
 });

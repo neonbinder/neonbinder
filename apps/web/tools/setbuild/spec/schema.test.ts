@@ -107,6 +107,59 @@ describe("SetBuildSpec", () => {
     expect(() => parseSpec(noRef)).toThrow(/card ref/);
   });
 
+  test("pairing.unlink takes a matched pair apart by both card refs; a conflict answer for the same pair is refused", () => {
+    const withPairing = (pairing: Record<string, unknown>) => {
+      const spec = structuredClone(minimal) as unknown as {
+        steps: Array<{ base?: { checklist: { pairing: Record<string, unknown> } } }>;
+      };
+      spec.steps[1].base!.checklist.pairing = { unmatchedBsc: "keep", unmatchedSportlots: "keep", ...pairing };
+      return spec;
+    };
+    const ok = parseSpec(withPairing({ unlink: [{ bsc: "b482", sportlots: "s482" }], conflicts: [{ field: "name", bsc: "b9", choose: "bsc" }] }));
+    const set = ok.steps[1];
+    if (set.kind !== "set") throw new Error("expected a set step");
+    expect(set.base?.checklist?.pairing.unlink).toEqual([{ bsc: "b482", sportlots: "s482" }]);
+
+    // Both refs, nothing else.
+    expect(() => parseSpec(withPairing({ unlink: [{ bsc: "b482" }] }))).toThrow(SpecError);
+    expect(() => parseSpec(withPairing({ unlink: [{ bsc: "b482", sportlots: " " }] }))).toThrow(SpecError);
+    expect(() => parseSpec(withPairing({ unlink: [{ bsc: "b482", sportlots: "s482", cardNumber: "482" }] }))).toThrow(SpecError);
+    // Named twice.
+    expect(() =>
+      parseSpec(withPairing({ unlink: [{ bsc: "b482", sportlots: "s482" }, { bsc: "b482", sportlots: "s482" }] })),
+    ).toThrow(/already in unlink/);
+    // Unlinked AND answered with a side: contradictory, by either ref.
+    for (const conflict of [
+      { field: "name", bsc: "b482", choose: "bsc" },
+      { field: "players", sportlots: "s482", choose: "sportlots" },
+    ]) {
+      try {
+        parseSpec(withPairing({ unlink: [{ bsc: "b482", sportlots: "s482" }], conflicts: [conflict] }));
+        throw new Error("expected SpecError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpecError);
+        expect((err as SpecError).issues).toContainEqual({
+          path: "steps[1].base.checklist.pairing.conflicts[0]",
+          message: "This conflict's pair is in unlink, so there is nothing to choose. Remove one of the two.",
+        });
+      }
+    }
+  });
+
+  test("group.topLevel takes row refs like parents do", () => {
+    const withGroup = (group: Record<string, unknown>) => {
+      const spec = structuredClone(minimal) as unknown as { steps: Array<{ variants?: Array<Record<string, unknown>> }> };
+      spec.steps[1].variants![0].group = group;
+      return spec;
+    };
+    const ok = parseSpec(withGroup({ parents: [], topLevel: ["1989 Topps Chrome Autographs", { bsc: "auto-slug" }, { sportlots: "77" }] }));
+    const set = ok.steps[1];
+    if (set.kind !== "set") throw new Error("expected a set step");
+    expect(set.variants?.[0].group?.topLevel).toHaveLength(3);
+    expect(() => parseSpec(withGroup({ parents: [], topLevel: [{ ebay: "x" }] }))).toThrow(SpecError);
+    expect(() => parseSpec(withGroup({ parents: [], topLevel: [""] }))).toThrow(SpecError);
+  });
+
   test("an SL decision is own-set or filed under a set's type, nothing in between", () => {
     const half = structuredClone(minimal) as unknown as {
       steps: Array<{ slReview?: { decisions: Array<Record<string, unknown>> } }>;

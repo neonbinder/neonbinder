@@ -19,7 +19,12 @@
  *  - a named insert that is itself a parallel (`parent-is-parallel`);
  *  - a named parallel that holds parallels of its own (`child-holds-parallels`);
  *  - a row named both as an insert and as a parallel (`chain`);
- *  - a row named as a parallel twice (`named-twice`), or of itself (`self`).
+ *  - a row named as a parallel twice, or as a parallel and in `topLevel`
+ *    (`named-twice`), or as a parallel of itself (`self`).
+ *
+ * `topLevel` rows are moved out from under their insert first (the dialog's
+ * ✕), so a row a parallel build showed to share no card numbers with its
+ * insert (`no-shared-numbers`, engine.ts) can be put back as its own set.
  *
  * Idempotent: a parallel already under its named insert is not moved, and a
  * diff with nothing in it writes nothing (`skipped`). A chunk the server
@@ -171,6 +176,10 @@ export async function planGrouping(
     parentAt: `${base}[${pi}].insert`,
     children: p.parallels.map((c, ci) => ({ id: resolve(c, `${base}[${pi}].parallels[${ci}]`), at: `${base}[${pi}].parallels[${ci}]` })),
   }));
+  const topLevel = (group.topLevel ?? []).map((ref, ti) => {
+    const at = `${ctx.at}.group.topLevel[${ti}]`;
+    return { id: resolve(ref, at), at };
+  });
   if (names.length > 0) return { outcome: "open", names, grouping: [], fills };
 
   // 2. Check the entries the way the dialog's rules would judge them.
@@ -204,11 +213,22 @@ export async function planGrouping(
       seenChild.add(id);
     }
   }
+  for (const t of topLevel) {
+    const id = t.id!;
+    if (namedAsChild.has(id)) {
+      problem(t.at, "named-twice", id, `"${init.rows.get(id)!.value}" is named as a parallel and in topLevel.`);
+    }
+  }
   if (grouping.length > 0) return { outcome: "open", names: [], grouping, fills };
 
-  // 3. The moves, through the dialog's reducer. A parallel already under its
-  //    named insert is not moved.
+  // 3. The moves, through the dialog's reducer. `topLevel` first: the
+  //    dialog's ✕ on a grouped row. A parallel already under its named insert
+  //    is not moved.
   let state = groupingReducer(emptyGroupingState, { type: "INIT", ...init });
+  const ungroup = [...new Set(topLevel.map((t) => t.id!))].filter((id) => state.placement.get(id)?.kind === "child");
+  if (ungroup.length > 0) {
+    state = groupingReducer(state, { type: "MOVE", rowIds: ungroup, placement: { kind: "ungrouped" }, fromSelection: false });
+  }
   for (const e of entries) {
     const parent = e.parent!;
     const rowIds = e.children

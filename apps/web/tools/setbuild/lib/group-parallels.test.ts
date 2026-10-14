@@ -94,6 +94,46 @@ describe("groupParallels", () => {
     expect(client.callsTo(APPLY)[0].args.promotions).toEqual([{ insertId: "gold", targetInsertId: "stars" }]);
   });
 
+  test("topLevel moves a grouped row back out as its own set (the dialog's ✕), by name or by marketplace id", async () => {
+    const auto = { platformData: { bsc: { b0: "auto-slug" } } };
+    for (const ref of ["1989 Topps Chrome Autographs", { bsc: "auto-slug" }] as const) {
+      const client = world(
+        [ins("chrome", "1989 Topps Chrome"), par("ref", "1989 Topps Chrome Refractors"), par("auto", "1989 Topps Chrome Autographs", auto)],
+        { ref: "chrome", auto: "chrome" },
+      );
+      const group: Group = { parents: [{ insert: "1989 Topps Chrome", parallels: ["1989 Topps Chrome Refractors"] }], topLevel: [ref] };
+      const r = await groupParallels(client, "vt" as never, group, CTX);
+      expect(r).toEqual({ outcome: "grouped", moved: 1, saves: 1, ungrouped: 1 });
+      expect(client.callsTo(APPLY).map((c) => c.args)).toEqual([
+        { variantTypeId: "vt", promotions: [], demotions: [{ parallelId: "auto" }], reparentings: [] },
+      ]);
+      // Done: a re-run sends nothing.
+      expect((await groupParallels(client, "vt" as never, group, CTX)).outcome).toBe("skipped");
+    }
+  });
+
+  test("topLevel naming a row that is already top level moves nothing", async () => {
+    const client = world([ins("chrome", "Chrome"), ins("auto", "Chrome Autographs")], {});
+    const r = await groupParallels(client, "vt" as never, { parents: [], topLevel: ["Chrome Autographs"] }, CTX);
+    expect(r).toEqual({ outcome: "skipped", ungrouped: 2 });
+    expect(client.callsTo(APPLY)).toEqual([]);
+  });
+
+  test("a row named in topLevel and as a parallel is an open decision; nothing is sent", async () => {
+    const client = world([ins("chrome", "Chrome"), par("auto", "Chrome Autographs")], { auto: "chrome" });
+    const r = await groupParallels(
+      client,
+      "vt" as never,
+      { parents: [{ insert: "Chrome", parallels: ["Chrome Autographs"] }], topLevel: ["Chrome Autographs"] },
+      CTX,
+    );
+    expect(r).toMatchObject({
+      outcome: "open",
+      grouping: [{ problem: "named-twice", name: "Chrome Autographs", at: "steps[0].variants[1].group.topLevel[0]" }],
+    });
+    expect(client.callsTo(APPLY)).toEqual([]);
+  });
+
   test("an insert named as the parent that is itself a parallel is an open decision; nothing is sent", async () => {
     const client = world([ins("chrome", "Chrome"), par("red", "Chrome Red"), ins("redgold", "Chrome Red Gold")], {
       red: "chrome",

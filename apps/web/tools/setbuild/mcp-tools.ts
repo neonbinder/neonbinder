@@ -335,7 +335,10 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "(names matching zero or several rows, Base candidates, reconcile pairs, Group Parallels entries — a " +
         "named insert that is itself a parallel, a named parallel holding parallels, a row named twice — " +
         "entity-review players / teams / leagues, SportLots review rows, card-number conflicts) with marketplace " +
-        "ids and candidates; a fill-in template; and confirmPhrase, the exact string nb_apply needs. It reports " +
+        "ids and candidates; a fill-in template; and confirmPhrase, the exact string nb_apply needs. A card " +
+        'conflict is answered in pairing.conflicts with choose "bsc" or "sportlots", or, when the matched pair is ' +
+        "two different cards sharing a number, by listing it in pairing.unlink (both cards are then kept apart). " +
+        "Group Parallels' group.topLevel moves a grouped row back out as its own set. It reports " +
         "the moves a variant type's group would make and each insert's parallels to build. Wizard rows for a " +
         "checklist that has not been fetched yet cannot be planned; they appear when nb_apply runs. " +
         WORKFLOW,
@@ -372,7 +375,8 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "Match Cards answers and entity-review proposals, and every parallel build. Returns template (the spec with a " +
         "<…> fill-in per open decision) while anything is open, else spec; proposals (what was filled and why); " +
         "openDecisions (what the operator must answer: Base candidates when there is no sole or pre-selected one, card " +
-        "conflicts, any name with existing NB candidates, a review name that rides on an unanswered card conflict, a " +
+        "conflicts (a side, or pairing.unlink when the pair is two different cards), any name with existing NB " +
+        "candidates, a review name that rides on an unanswered card conflict, a " +
         "checklist the draft could not preview); leftUnasked; notes; marketplaceCalls; and confirmPhrase only when " +
         "nothing is open. Each variant type's sync.pending lists every marketplace set nobody pairs as an explicit " +
         "\"leave\" with the marketplace's name for it, so sets that belong together can be paired from the draft " +
@@ -440,7 +444,9 @@ export function registerWriteTools(
         "step whose state already matches, so a re-run is safe. Requires confirm to equal the confirmPhrase " +
         "nb_plan returned for the same spec; call nb_plan first and let the operator see it. stopAt \"end\" " +
         "(the default) runs every step that does not depend on an unanswered decision and returns ALL of them " +
-        "(stops, openDecisions, one template); stopAt \"first\" stops at the first. Take the decisions to the " +
+        "(stops, openDecisions, one template); stopAt \"first\" stops at the first. A parallel build that " +
+        "shares no card number with its insert comes back as an open decision (no-shared-numbers): it is probably " +
+        "its own insert, and group.topLevel keeps it its own set. Take the decisions to the " +
         "operator, put the answers in the spec, plan and apply again.",
       inputSchema: {
         ...specInputShape,
