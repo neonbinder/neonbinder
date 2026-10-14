@@ -29,6 +29,7 @@
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Read-only marketplace measurement](reference_read_only_marketplace_measurement.md) — SL adapter actions + pure routeSlSets + discarded candidate fetches pick fixtures without writing NB rows
 - [Virtual-chain previews](reference_virtual_chain_previews.md) — previews share the read half over a virtual chain; unconfirmed SL ids on a node count as set linkage
+- [Action promise races its subscription](reference_action_promise_races_subscription.md) — action resolves before useQuery sees its runMutation writes; last-chunk team loss; empty is never a diff claim
 - [Action stubs pin old return shapes](reference_action_stubs_pin_old_return_shapes.md) — tests vi.mock adapter actions with their own returns validator; a return-shape change must update every stub
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — `node` is the nvm default in agent Bash; prefix PATH with the .nvmrc version for every gate call
 - [Store working copies hide renames from db guards](reference_store_working_copies_hide_renames_from_db_guards.md) — stores patch in a final pass; a mid-loop ctx.db read misses same-call renames; suggestions apply patches in-loop
@@ -36,3 +37,4 @@
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)
 - [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
 - [Convex field names are ASCII only](reference_convex_field_names_are_ascii_only.md) — a v.record keyed by a name fails the whole call on one accent; return [{ key, value }]; convex-test hides it, use convexToJson
+- [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot

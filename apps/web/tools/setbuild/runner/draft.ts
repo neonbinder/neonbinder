@@ -145,7 +145,7 @@ export function isPlaceholder(v: unknown): v is string {
 
 /**
  * The draft's `template` with every `<…>` fill-in replaced by the value at
- * the same place in `answers` (a complete spec, e.g. `.maestro/seed/
+ * the same place in `answers` (a complete spec, e.g. `playwright/seed/
  * oneshot.spec.json`). Everything else comes from the template, so the
  * result equals `answers` exactly when the draft drafted everything the
  * answers hold besides those fill-ins. `credentials` is the one key taken

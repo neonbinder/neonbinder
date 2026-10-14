@@ -74,7 +74,7 @@ npm run test:unit:watch   # watch mode while developing
 ```
 
 These run on **every PR** via the `CI` GitHub Actions workflow (`.github/workflows/ci.yml`),
-in parallel with the slower Maestro E2E suite — the unit lane is the quick gate, E2E is the full one.
+in parallel with the slower Playwright E2E suite — the unit lane is the quick gate, E2E is the full one.
 
 > `tsc --noEmit` is not yet a CI gate (main has pre-existing type errors); run it manually for now.
 
@@ -92,9 +92,9 @@ npm run test:unit
 `link-deps.sh` symlinks `node_modules` to the primary checkout when `package-lock.json` matches,
 and refuses (telling you to `npm ci`) when dependencies have drifted.
 
-### End-to-end tests (Maestro)
+### End-to-end tests (Playwright)
 
-See `CLAUDE.md` (E2E Testing section) and `run-e2e-smoke.sh` for the Maestro flow suite.
+See `playwright/GUIDE.md` (authoring and running) and the root `CLAUDE.md` (E2E Testing section). `npm run test:e2e:list` lists the specs; run only the ones covering your change, against a PR preview.
 
 ## Learn more
 

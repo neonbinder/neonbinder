@@ -114,26 +114,29 @@ npm run setbuild -- whoami --auth testing --app-url http://localhost:3000 \
 ### 2.1 Locally (the seed)
 
 ```bash
-npm run e2e:local            # start the harness (or just have Vite + a Convex backend up)
-npm run e2e:local:seed       # = ./e2e-seed.sh = ./run-e2e-smoke.sh setup
+# a Vite wired to the target deployment must be running (APP_URL)
+CONVEX_NAME=<deployment slug> APP_URL=http://localhost:3002 \
+  npm run test:e2e:seed      # = ./e2e-seed.sh
 ```
 
-`e2e-seed.sh` derives the deployment from the harness's own
-`CONVEX_SITE_URL` (not from `CONVEX_DEPLOYMENT`, which can name a different
-deployment), runs the scripted reset against it, then `setbuild apply` of
-`.maestro/seed/baseline.spec.json` with `--app-url` set to the local Vite
-(`APP_URL`, default `http://localhost:3000`). `TESTING_ENDPOINT_SECRET` and
+`e2e-seed.sh` takes the deployment from `CONVEX_NAME` (required; never from
+`CONVEX_DEPLOYMENT`, which can name a different deployment), runs the
+scripted reset against it (`./e2e-seed-reset.sh`; with `NB_REFERENCE_BUNDLE`
+set, also the NEO-330 catalogue load), then `setbuild apply` of
+`playwright/seed/baseline.spec.json` and of `playwright/seed/parallel.spec.json`
+(the one seeded base parallel, which CI builds through `mcp-smoke`) with
+`--app-url` set to the local Vite (`APP_URL`, default `http://localhost:3000`). `TESTING_ENDPOINT_SECRET` and
 `VITE_CLERK_PUBLISHABLE_KEY` come from `.env.local` (`--env-file`) and must be
 the values the running Vite uses. Set `PAUSED_PLATFORMS` to match the target's
 `NEONBINDER_PAUSED_PLATFORMS` (the runner fails loudly if they disagree).
 
 The dev deployment is shared by every Claude session on the laptop; a reset
 looks exactly like a product bug to another session. Prefer a PR preview
-(`CLAUDE.md`, "Debugging a red flow against the PR's own services").
+(`CLAUDE.md`, "Debugging a red spec against the PR's own services").
 
 ### 2.2 In CI
 
-`e2e.yml`'s `seed` job, after the log capture, the paused-platform mirror and
+`e2e.yml`'s `seed` job (and, identically, `seed-mobile` before the mobile pass), after the log capture, the paused-platform mirror and
 the enrichment-fixtures flag:
 
 1. `setup-node` (`apps/web/.nvmrc`, npm cache) and `npm ci`.
@@ -154,8 +157,8 @@ the enrichment-fixtures flag:
 3. Compute both confirm phrases offline with `setbuild confirm-phrase` (for
    `baseline.spec.json` and `parallel.spec.json`). A spec that does not parse
    fails here, before the reset.
-4. `./e2e-reset-for-seed.sh --deployment "$CONVEX_NAME"` against the PR's
-   preview (the shape-checked `$CONVEX_NAME`): `e2e-baseline.sh reset`, and,
+4. `./e2e-seed-reset.sh` against the PR's preview (the shape-checked
+   `$CONVEX_NAME`, exported to the step): `e2e-baseline.sh reset`, and,
    with the downloaded bundle in `NB_REFERENCE_BUNDLE`, the NEO-330
    reference-catalogue import (check → scoped reset → `convex import
    --replace`; `docs/operations/neo330-reference-seed.md` §4). The apply
@@ -163,22 +166,25 @@ the enrichment-fixtures flag:
    stages only names the catalogue lacks and same-name players (the pick
    step, `Which <name> is this?`), and the spec's answers for every other name
    are moot no-ops.
-5. `setbuild apply --spec .maestro/seed/baseline.spec.json --auth testing
+5. `setbuild apply --spec playwright/seed/baseline.spec.json --auth testing
    --app-url <preview> --convex-url https://<slug>.convex.cloud --worker 0
    --paused-platforms "$PAUSED_PLATFORMS" --confirm "$base_phrase"
    --report setbuild-seed-report.json`.
-6. `setbuild mcp-smoke --spec .maestro/seed/parallel.spec.json --expect
-   .maestro/seed/mcp-smoke.expect.json --paused-platforms "$PAUSED_PLATFORMS"
+6. `setbuild mcp-smoke --spec playwright/seed/parallel.spec.json --expect
+   playwright/seed/mcp-smoke.expect.json --paused-platforms "$PAUSED_PLATFORMS"
    --confirm "$par_phrase"`: builds the one seeded parallel through the MCP
    server and checks the result. Its `nb_plan` must return exactly
    `$par_phrase`, which proves the server and the CLI bind the same host,
    scope and spec digest.
 7. Counts and duration go to the job summary; the reports are the
-   `setbuild-seed` artifact (kept on failure). Every report file, and every
+   `setbuild-seed` / `setbuild-seed-mobile` artifacts (kept on failure). Every report file, and every
    CLI error, goes through the same scrub as the MCP results (secret
    environment values and anything JWT-shaped).
 
-The enrichment coverage report and the queue enqueue run after, unchanged.
+The enrichment coverage report runs after, unchanged. There is no Playwright
+project in the seed (main's `setup` project, the UI port of the retired
+`setup.yaml`, is replaced by this step); the shards' `bootstrap` project
+still seeds each shard's own account.
 
 ### 2.3 The MCP server
 
@@ -292,7 +298,7 @@ in; a later checklist does not repeat it.
 
 **The live proof (`setbuild-oneshot` in `e2e.yml`).** After `seed`, in
 parallel with the runner pool, required by the `e2e` gate. Fixture: 2024
-Topps Chrome Black (`.maestro/seed/oneshot.spec.json`, the committed spec;
+Topps Chrome Black (`apps/web/playwright/seed/oneshot.spec.json`, the committed spec;
 `oneshot.expect.json`, its expectations). `setbuild oneshot-smoke` drafts it,
 requires **no** open decision (the draft settles the whole fixture itself),
 merges the draft with the committed spec (any `<…>` from the committed file,
@@ -335,7 +341,7 @@ Measuring the fixture (once the server previews are on the PR preview):
    apply: teams a bare `create` as the baseline answers them, a league
    `create` with its `level`, never a `skip`), put them on every checklist
    whose player stages them, add the `credentials` block the baseline spec
-   uses, and commit it as `.maestro/seed/oneshot.spec.json`.
+   uses, and commit it as `playwright/seed/oneshot.spec.json`.
 3. `plan` it against the same preview; then `apply --collect` on a throwaway
    preview run to read the counts, and commit `oneshot.expect.json`:
    `{ "measured": true, "path", "apply": { "counts": { "reconciled",
@@ -403,11 +409,11 @@ the candidate rows with their marketplace ids, and the JSON fragment to add.
 2. Decide it (this is the human part: which candidate is right, keep or skip).
    Never pick the first candidate to make it green; a tie is left for the
    operator on purpose (CLAUDE.md invariant 7).
-3. Add the answer to `.maestro/seed/baseline.spec.json` (or `parallel.spec.json`),
+3. Add the answer to `playwright/seed/baseline.spec.json` (or `parallel.spec.json`),
    naming the row by its marketplace id where the template offers one.
 4. Validate it against the same preview without waiting for CI:
    ```bash
-   npm run setbuild -- plan --spec .maestro/seed/baseline.spec.json \
+   npm run setbuild -- plan --spec playwright/seed/baseline.spec.json \
      --auth testing --app-url <preview URL> --convex-url https://<slug>.convex.cloud
    ```
    (With the two secrets exported, see §2.2 for where CI gets them.) `plan` is

@@ -897,10 +897,10 @@ function Pane({
           <h3 className="text-sm font-semibold text-gray-200 truncate">
             {title}
           </h3>
-          <span className="text-xs text-gray-500 shrink-0">{count}</span>
+          <span className="text-xs text-gray-400 shrink-0">{count}</span>
         </div>
         {subtitle && (
-          <p className="text-[11px] text-gray-500 mt-0.5">{subtitle}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>
         )}
         {breadcrumb && <div className="mt-1.5">{breadcrumb}</div>}
       </header>
@@ -938,7 +938,7 @@ function Pane({
           </li>
         )}
         {!paused && loading && (
-          <li className="text-xs text-gray-500 italic px-2 py-1">Loading…</li>
+          <li className="text-xs text-gray-400 italic px-2 py-1">Loading…</li>
         )}
         {!paused && !loading && error && (
           // Surfaced per pane, not merged into one dialog-level message: before
@@ -1078,7 +1078,7 @@ function CandidateRow({
           <span className="mt-0.5 shrink-0">
             <span
               aria-hidden="true"
-              className="text-[10px] uppercase tracking-wide text-gray-500"
+              className="text-[10px] uppercase tracking-wide text-gray-400"
             >
               attached
             </span>
@@ -1103,7 +1103,7 @@ function CandidateRow({
               </>
             )}
           </div>
-          <div className="text-[10px] text-gray-500 truncate">
+          <div className="text-[10px] text-gray-400 truncate">
             id: {candidate.platformValue}
           </div>
           {remap && !attached && (

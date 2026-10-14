@@ -2520,6 +2520,75 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
         .disabled,
     ).toBe(false);
   });
+
+  /*
+   * NEO-341 — CI: "Skip remaining names (11)" was pressed with ten lookups
+   * still out. One landed mid-walk and staged "New Team: Kia Tigers" for a
+   * player just skipped; the walk now skips such a step with its player
+   * (`skipStagedStepsOf`), and the skipped rows' lookups never settle
+   * (`applyLookupResult` drops an answer for a decided row).
+   */
+  it("reaches Confirm & Save after a skip-all whose late lookup staged a team, and stops saying names are being looked up", async () => {
+    const players = Array.from({ length: 11 }, (_, i) =>
+      makeRow({ name: `Skipped ${i}`, status: i === 0 ? "ready" : "pending" }),
+    );
+    currentRows = players;
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip remaining names (11)" }));
+    await waitFor(() => expect(mockRecordAllRemainingAsSkip).toHaveBeenCalled());
+
+    // What getBatch returns once the walk has landed: every player skipped —
+    // ten still `pending`, for good — and the late Kia Tigers step skipped
+    // with the player it was staged for.
+    const skip = { action: "skip" as const };
+    currentRows = [
+      makeCareerTeamRow(players[0]._id, "Kia Tigers", { decision: skip }),
+      ...players.map((p) => ({ ...p, decision: skip })),
+    ];
+    rerenderWizard(rerender);
+
+    expect(
+      await screen.findByRole("button", { name: /Confirm & Save/ }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /New Team: Kia Tigers/ })).toBeNull();
+    // NEO-335 Phase 2: twelve rows + Save, and the walk is ON Save — every
+    // row, the skipped Kia Tigers step included, counted as done.
+    expect(progressText()).toBe("Step 13 of 13");
+    // The ten skipped rows still `pending` are not lookups anyone waits on:
+    // the footer's lookup line is gone, and so is the body's.
+    expect(footerStatusText()).toBe("");
+    expect(screen.queryByText(/still looking up/)).toBeNull();
+    expect(screen.queryByText(/Looking up \d+ more/)).toBeNull();
+  });
+
+  it("still presents a staged team that a player who is NOT skipped needs", () => {
+    const skipped = makeRow({
+      name: "Patrick Wisdom",
+      status: "pending",
+      decision: { action: "skip" },
+    });
+    currentRows = [
+      makeCareerTeamRow(skipped._id, "Kia Tigers"),
+      skipped,
+      makeRow({
+        name: "Mel Rojas Jr.",
+        status: "ready",
+        enrichment: { careerTeams: [{ name: "Kia Tigers", fromYear: 2025 }] },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: /New Team: Kia Tigers/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Confirm & Save/ })).toBeNull();
+    // NEO-335 Phase 2: three rows + Save, the skipped player already done, so
+    // the staged team on screen is step 2 — it is counted, not dropped with
+    // the skipped player.
+    expect(progressText()).toBe("Step 2 of 4");
+    // The skipped row's lookup is not something the operator waits on.
+    expect(footerStatusText()).toBe("");
+    expect(screen.queryByText(/still looking up/)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -6892,6 +6961,156 @@ describe("EntityReviewWizard — a started row is not taken away", () => {
   });
 });
 
+describe("EntityReviewWizard — NEO-341: an open control holds the row", () => {
+  /**
+   * CI, on a phone: the operator opened "Sport for this name" to pick
+   * Football, a lookup settled elsewhere in the batch, the walk jumped to a
+   * New League step, and the list unmounted under the pointer — the pick was
+   * lost. An open list, search or form on the presented row now holds it;
+   * closing that control lets the held yield land.
+   */
+  const SET_SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+  const FOOTBALL_ID = "selopt-sport-9" as unknown as Id<"selectorOptions">;
+
+  beforeEach(() => {
+    currentSports = [
+      { _id: SET_SPORT_ID, value: "Baseball" },
+      { _id: FOOTBALL_ID, value: "Football" },
+    ];
+    currentNearMatches = [];
+  });
+
+  function onePlayer(over: Partial<Row> = {}) {
+    return makeRow({
+      kind: "player",
+      name: "Bo Jackson",
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+      ...over,
+    });
+  }
+  /** A league staged by some OTHER row's lookup: presentable at once. */
+  const lateLeague = () =>
+    makeRow({ kind: "league", name: "National Football League", status: "pending" });
+
+  const chooser = () => screen.queryByRole("listbox", { name: "Choose a sport" });
+
+  it("keeps the player and the open sport chooser when a league step arrives", async () => {
+    const player = onePlayer();
+    currentRows = [player];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Sport for this name: Baseball"));
+    expect(chooser()).toBeTruthy();
+
+    currentRows = [lateLeague(), player];
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bo Jackson" })).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "New League: National Football League" }),
+    ).toBeNull();
+    expect(chooser()).toBeTruthy();
+
+    // And the pick the operator was making still lands.
+    fireEvent.click(within(chooser()!).getByRole("option", { name: "Football" }));
+    expect(mockSwitchRowSport).toHaveBeenCalledWith({
+      rowId: player._id,
+      sportId: FOOTBALL_ID,
+    });
+  });
+
+  it("yields to the league as before once the chooser closes without a pick", async () => {
+    const player = onePlayer();
+    currentRows = [player];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Sport for this name: Baseball"));
+    currentRows = [lateLeague(), player];
+    rerenderWizard(rerender);
+    expect(screen.getByRole("heading", { level: 3, name: "Bo Jackson" })).toBeTruthy();
+
+    fireEvent.keyDown(chooser()!, { key: "Escape" });
+    expect(chooser()).toBeNull();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New League: National Football League" }),
+      ).toBeTruthy(),
+    );
+    expect(mockSwitchRowSport).not.toHaveBeenCalled();
+  });
+
+  it("yields to a league on an untouched player, chooser never opened", async () => {
+    const player = onePlayer();
+    currentRows = [player];
+    const { rerender } = renderWizard();
+
+    currentRows = [lateLeague(), player];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New League: National Football League" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("holds against the player's OWN staged team while the chooser is open", async () => {
+    // The yield `pinnedRowHasEdits` alone never holds: staged steps under the
+    // row. Deferred while the list is open, landed once it closes.
+    const player = onePlayer({
+      enrichment: {
+        careerTeams: [{ name: "Kansas City Royals", fromYear: 1986, toYear: 1990 }],
+      },
+    });
+    currentRows = [player];
+    currentResolvedNames = [{ name: "Kansas City Royals" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Sport for this name: Baseball"));
+    currentRows = [makeCareerTeamRow(player._id, "Kansas City Royals"), player];
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bo Jackson" })).toBeTruthy();
+    expect(chooser()).toBeTruthy();
+
+    fireEvent.keyDown(chooser()!, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Kansas City Royals" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("holds while an Add years form is open, and yields once it is cancelled", async () => {
+    const player = onePlayer({
+      enrichment: { undatedCareerTeams: ["Auburn Tigers"] },
+    });
+    currentRows = [player];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add years for Auburn Tigers" }));
+    fireEvent.change(screen.getByLabelText("From year for Auburn Tigers"), {
+      target: { value: "1982" },
+    });
+    currentRows = [lateLeague(), player];
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bo Jackson" })).toBeTruthy();
+    expect(
+      (screen.getByLabelText("From year for Auburn Tigers") as HTMLInputElement).value,
+    ).toBe("1982");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel years for Auburn Tigers" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New League: National Football League" }),
+      ).toBeTruthy(),
+    );
+  });
+});
+
 describe("EntityReviewWizard — a CHECKLIST team row answers a career chip", () => {
   /**
    * Jason, on the Canadiens: the batch held a plain team row for "Montreal
@@ -7609,6 +7828,65 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
           reviewRowId: league._id,
           action: "create",
           createLeague: { name: "National Hockey League", level: "major" },
+        }),
+      );
+    });
+  });
+
+  it("keeps a pressed level when the lookup lands, and still lets the lookup fill the fields nobody touched", async () => {
+    // The step is on screen before its Wikidata lookup answers (NEO-307) and
+    // promises "wait and they'll fill in". Level is the one required tap, so a
+    // quick operator presses it first. The lookup landing afterwards must keep
+    // that choice AND still fill the empty fields — pressing a level used to
+    // freeze the whole draft, so the years and QID never arrived.
+    const league = seedLookingUpLeague("ready");
+    const { rerender } = renderWizard();
+    pressWizardLevel("Other");
+
+    // The operator also corrects the name before the lookup lands: an edit is
+    // theirs, and enrichment never overwrites it.
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "NHL proper" },
+    });
+
+    currentRows = currentRows.map((r) =>
+      r._id === league._id
+        ? {
+            ...r,
+            enrichment: {
+              wikidataId: "Q1215892",
+              abbreviation: "NHL",
+              yearsActive: { from: 1917 },
+            },
+          }
+        : r,
+    );
+    rerenderWizard(rerender);
+
+    const other = within(screen.getByRole("radiogroup", { name: "Level" })).getByRole(
+      "radio",
+      { name: "Other" },
+    );
+    expect(other.getAttribute("aria-checked")).toBe("true");
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
+    expect((screen.getByLabelText("New league name") as HTMLInputElement).value).toBe(
+      "NHL proper",
+    );
+
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: league._id,
+          action: "create",
+          createLeague: {
+            name: "NHL proper",
+            level: "other",
+            abbreviation: "NHL",
+            yearsActive: { from: 1917 },
+            wikidataId: "Q1215892",
+          },
         }),
       );
     });

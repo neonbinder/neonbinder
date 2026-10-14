@@ -297,6 +297,21 @@ describe("EntityLinkSearch — results", () => {
     expect(screen.getByRole("listbox", { name: "Search existing teams" })).toBeTruthy();
   });
 
+  it("owns only options in its listbox: the search box and Cancel sit outside it (NEO-341)", () => {
+    // axe aria-required-children: a listbox may own only options.
+    currentPlayers = [makeCandidate("p1", "Mike Trout")];
+    renderSearch({ kind: "player" });
+    typeAndSettle("Search existing players", "Trout");
+
+    const listbox = screen.getByRole("listbox", { name: "Search existing players" });
+    expect(listbox.contains(screen.getByRole("textbox", { name: "Search existing players" }))).toBe(false);
+    expect(listbox.contains(screen.getByRole("button", { name: "Cancel linking" }))).toBe(false);
+    expect(listbox.children.length).toBeGreaterThan(0);
+    for (const child of Array.from(listbox.children)) {
+      expect(child.getAttribute("role")).toBe("option");
+    }
+  });
+
   it("ranks prefix matches above non-prefix matches for the typed query", () => {
     // The search index orders by relevance; "starts with what I typed" is what
     // a typeahead user expects to see first, so the component re-sorts.

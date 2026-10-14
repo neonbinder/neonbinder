@@ -9,11 +9,13 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
  * Test-only entry into the real scan-upload path (NEO-170).
  *
  * ## Why this page exists
- * maestro-web cannot drive a file input. There is no working `addMedia` on the
- * web platform — the command is a silent no-op stub, so a flow that "attaches" a
- * file passes every step and uploads nothing. That leaves the entire streaming
- * intake untestable end to end, which is the half of the pipeline most likely to
- * break silently.
+ * It was built because the retired maestro-web driver could not drive a file
+ * input (its `addMedia` was a silent no-op on web, so a flow that "attached" a
+ * file passed every step and uploaded nothing), which left the streaming
+ * intake untestable end to end. The Playwright placeholder specs still enter
+ * through it: the page fetches an allowlisted fixture set from `public/` and
+ * frees the caller's active-job slots first (below), neither of which a spec
+ * driving the real picker would get.
  *
  * So the file PICKER is bypassed and nothing else is. The fixtures are fetched
  * from the app's own `public/` directory, then pushed through
@@ -241,7 +243,7 @@ function TestingSeedPlaceholderUploadContent() {
       {/* Per-file lines, so a flow that fails mid-upload says WHICH fixture and
           why instead of only "redirect never happened". */}
       {progress.length > 0 && (
-        <ul className="font-mono text-xs text-slate-500">
+        <ul className="font-mono text-xs text-slate-400">
           {progress.map((row) => (
             <li key={row.position}>
               {row.name}: {row.state}

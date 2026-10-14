@@ -50,6 +50,13 @@ export const clerkNeonAppearance = {
     colorDanger: "#FF2E9A", // neon-pink
     colorSuccess: "#00D558", // neon-green
     colorWarning: "#FFE600", // neon-yellow
+    // Clerk derives an alpha scale from this for ghost/outline controls: the
+    // text of the <APIKeys/> expiry select ("Select date", "1 Day"), hovered
+    // rows, menu items. Its default is black, which Clerk's docs say to flip
+    // to white on a dark theme; left unset, that select rendered black at 62%
+    // over #0a0a0a, ~1.03:1 (WCAG 1.4.3 failure, NEO-341). Same name in
+    // clerk-js 5 and 6.
+    colorNeutral: "#ededed",
     // clerk-js 5 names for the same roles
     colorText: "#ededed",
     colorTextSecondary: "#94a3b8",

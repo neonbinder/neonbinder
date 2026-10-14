@@ -22,7 +22,7 @@ Worked out on NEO-327 (review-grid side captions, "Front · <filename>").
 - `text-balance` makes a short `Front · scan-01.jpg` break after the dot
   ("Front ·" / "scan-01.jpg") instead of at the hyphen ("scan-" / "01.jpg").
 - Keep the caption ONE string expression (`{sideCaption(...)}`), not
-  `Front · {name}` in JSX, which is two text nodes; see
-  [[reference_maestro_web_text_is_direct_text_nodes_only]].
+  `Front · {name}` in JSX, which is two text nodes (a text-node split can
+  defeat an exact `getByText` match in the E2E suite).
 
 Checked with [[reference_static_markup_visual_check]] at 375 and 1024 wide.

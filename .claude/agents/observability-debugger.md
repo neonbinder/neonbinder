@@ -40,7 +40,7 @@ Traces sample at 10% in production and 100% in development; replay at 10% of
 sessions and 100% of sessions with an error; the release is
 `VITE_APP_VERSION`. **Sentry is disabled entirely when
 `VITE_CLERK_TESTING_ENABLED === "true"`**: the Replay integration spawns Web
-Workers and same-origin iframes that Maestro's driver latches onto and never
+Workers and same-origin iframes that the browser-automation driver latches onto and never
 releases (NEO-13). Never remove that guard to get Sentry data from a test run.
 
 **PostHog** is the product-analytics and feature-flag layer on both sides:

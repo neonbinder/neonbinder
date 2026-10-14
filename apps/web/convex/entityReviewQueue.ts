@@ -1659,9 +1659,10 @@ async function stageLeagueRowsImpl(
    */
   if (teamRow.kind !== "team") return [];
   /*
-   * NEO-330 — nor does a team the operator SKIPPED: "not a team" makes no
-   * team, so it has no league to ask about. Same reasoning, and the same
-   * no-extra-read cost, as the guard in `stageCareerTeamRowsImpl`.
+   * NEO-330 / NEO-341 — nor does a team the operator SKIPPED: "not a team"
+   * makes no team, so it has no league to ask about. The twin of the
+   * skipped-player rule in `stageCareerTeamRowsImpl`, at the same no-extra-read
+   * cost.
    */
   if (teamRow.decision?.action === "skip") return [];
 
@@ -1941,20 +1942,22 @@ async function stageCareerTeamRowsImpl(
    */
   if (playerLookupAwaitsCreateNew(playerRow)) return [];
   /*
-   * NEO-330 — a player the operator SKIPPED stages nothing.
+   * NEO-330 / NEO-341 — a player the operator SKIPPED stages nothing.
    *
    * "Not a person" makes no player, so it has no career and no New Team
    * step to answer. A step staged under one is an undecided row the operator
-   * never asked for: it hides Confirm & Save and asks them to create a team
-   * for a name they have just dismissed. `applyLookupResult` already drops a
-   * result for any decided row; this covers every other caller — the
+   * never asked for: after a "Skip remaining names" it is the one row
+   * standing between the operator and Confirm & Save, asking them to create a
+   * team for a name they have just dismissed. `applyLookupResult` already
+   * drops a result for any decided row; this covers every other caller — the
    * wizard's belt-and-braces pass racing a "Skip remaining names", and any
-   * future one. Reads the row already in hand, so it adds nothing to any
-   * caller's read set.
+   * future one — and is what lets `skipStagedStepsOf` be race-free. Reads the
+   * row already in hand, so it adds nothing to any caller's read set.
    *
-   * `link` is deliberately NOT refused here: whether a player linked to one
-   * we hold should still raise career-team steps is an open question, and
-   * this guard does not answer it.
+   * A CREATE decision still stages: the bulk create decides a player before
+   * its teams are asked. `link` is deliberately NOT refused here: whether a
+   * player linked to one we hold should still raise career-team steps is an
+   * open question, and this guard does not answer it.
    */
   if (playerRow.decision?.action === "skip") return [];
 
@@ -3280,6 +3283,9 @@ function playerNeedsCareerTeam(
   child: Doc<"entityReviewQueue">,
 ): { wikidataId?: string } | null {
   if (player.kind !== "player" || player.sportId !== child.sportId) return null;
+  // NEO-341 — a skipped player is not being made and needs no career team;
+  // handing it one would leave an undecided step that answers nothing.
+  if (player.decision?.action === "skip") return null;
   const key = child.nameNormalized ?? normalizeTeamName(child.name);
   if (!key) return null;
   const keyOf = (name: string) => normalizeTeamName(name.trim().replace(/\s+/g, " "));
@@ -3309,6 +3315,8 @@ function teamNeedsLeague(
   league: Doc<"entityReviewQueue">,
 ): { wikidataId?: string } | null {
   if (team.kind !== "team" || team.sportId !== league.sportId) return null;
+  // NEO-341 — likewise a skipped team needs no league.
+  if (team.decision?.action === "skip") return null;
   const key = league.nameNormalized ?? normalizeLeagueName(league.name);
   const leagueQid = league.source?.kind === "leagueOf" ? league.source.wikidataId : undefined;
   const teamQid = team.enrichment?.leagueWikidataId;
@@ -3789,7 +3797,12 @@ export const switchRowSport = mutation({
  * rather than thirty-one.
  *
  * `skip` decides as many rows as it scans: a skip costs a patch and nothing
- * else, so there is no second thing to bound.
+ * else, so there is no second thing to bound. NEO-341 added one index range
+ * per SETTLED row (its own staged steps, `skipStagedStepsOf`) plus a read and
+ * at most a patch per step found. Every staged step has exactly one parent,
+ * so across a whole walk that is each staged row read once: on the largest
+ * batch seen (754 rows, staged steps included) the extra reads total fewer
+ * than its rows, and a pending row — most of what a skip takes — adds none.
  *
  * Keyed by the decision's own `action` so a page size cannot drift away from
  * the path it bounds, and exported so a test can build a deliberately
@@ -3866,8 +3879,9 @@ export type BulkDecideResult = {
  * `_creationTime` of now, so they sort after everything already in the batch
  * and a later page of the same run scans them. They are team rows, so create
  * skips each for the price of one read. Rows a LOOKUP stages mid-walk sort the
- * same way; a skip's last page re-reads from its cursor so the walk does not
- * end on one (NEO-330, `runBulkDecidePage`).
+ * same way; on skip, a row staged under one of the page's own rows after the
+ * page was chosen is skipped with its parent in the same transaction, so the
+ * walk cannot end on one (NEO-330 / NEO-341, `skipStagedStepsOf`).
  *
  * `hasMore` is true when the decision budget ran out mid-page, or when a FULL
  * scan came back — the reset batches' convention (`{ deleted, hasMore:
@@ -4079,7 +4093,10 @@ export const listBulkCandidates = internalQuery({
  * point reads, the only reads are the name/alias lookups `isBulkCandidate`
  * makes for a player and — on create — the player's OWN staged rows
  * (`by_source_player`, keyed on that player's id) plus the per-name dedupe and
- * team resolution `stageCareerTeamRowsImpl` performs. A lookup landing on some
+ * team resolution `stageCareerTeamRowsImpl` performs. On skip (NEO-341) a
+ * settled row's own staged steps are read the same way — `by_source_player`
+ * or `by_source_team`, keyed on its id — so they can be skipped with it (see
+ * `skipStagedStepsOf`). A lookup landing on some
  * OTHER row of the batch therefore no longer conflicts with this transaction;
  * only a write to one of these very rows can, and then a retry re-reads a
  * handful of documents rather than a 200-row window. Pinned structurally in
@@ -4137,10 +4154,18 @@ export async function decideRowsByIdsImpl(
   // arithmetic harder to read.
   const now = Date.now();
   let count = 0;
+  /**
+   * NEO-341 — rows this call has already skipped as a staged step of an
+   * earlier row of the page (`skipStagedStepsOf`). `rows` were fetched before
+   * any write, so such a row still reads undecided here and would otherwise be
+   * patched and counted twice.
+   */
+  const skippedHere = new Set<Id<"entityReviewQueue">>();
   for (const row of rows) {
     if (row.selectorOptionId !== args.selectorOptionId || row.batchId !== args.batchId) {
       continue;
     }
+    if (skippedHere.has(row._id)) continue;
     // NEO-221 / NEO-236 / NEO-254 — asked again, LIVE; see `isBulkCandidate`.
     if (!(await isBulkCandidate(ctx, row, args.action))) continue;
     // Each row is patched with its OWN fresh object literal, never a shared
@@ -4232,8 +4257,92 @@ export async function decideRowsByIdsImpl(
         decision: { action: "skip" },
         lastTouchedAt: now,
       });
+      skippedHere.add(row._id);
+      count += await skipStagedStepsOf(ctx, row, now, args.callerId, skippedHere);
     }
     count++;
+  }
+  return count;
+}
+
+/**
+ * NEO-341 — a bulk skip also skips the undecided steps its rows staged: a
+ * player's career teams (`by_source_player`) and a team's leagues
+ * (`by_source_team`, one level further for each staged team it skips).
+ *
+ * ## The race this closes
+ *
+ * The bulk walk chooses its page in a query and writes it in a mutation
+ * (NEO-301). A lookup that lands in between finds its row still undecided, so
+ * `applyLookupResult` settles it AND stages that row's New Team (or New
+ * League) step. The page never saw the new step, the walk's last page has
+ * already been chosen, and the step is left the only undecided row in the
+ * batch: "Skip remaining names" stops one row short of Confirm & Save, on a
+ * "New Team: Kia Tigers — Needed by: Patrick Wisdom" for a player the
+ * operator has just skipped (CI caught exactly that on a phone).
+ *
+ * Skipping the step here is what the walk would have done had the step
+ * existed when its page was read — "Skip remaining" rules on every undecided
+ * row, staged ones included — so this changes no outcome, only the timing.
+ * A step another row also needs (staging dedupes a club across the batch) is
+ * no exception, for the same reason: any page that saw it would skip it too.
+ *
+ * ## Why it is race-free rather than narrower
+ *
+ * The read is inside the same transaction as the skip, and Convex mutations
+ * are serializable. Either the lookup committed first, and its step is in the
+ * range read here; or it commits after, finds the row decided, and stages
+ * nothing (`applyLookupResult` returns on a decided row, and
+ * `stageCareerTeamRowsImpl` / `stageLeagueRowsImpl` refuse a skipped parent).
+ *
+ * A DECIDED step keeps its decision — the operator ruled on it, exactly as
+ * `releaseStagedSteps` keeps one under `keepDecided`.
+ *
+ * ## Cost, and why a pending row reads nothing
+ *
+ * Only a lookup landing stages a step, and it lands on a row that is pending
+ * until that same transaction settles it. So a row still pending here has
+ * nothing staged under it, and the range read is skipped — which is most of a
+ * bulk skip's rows (it is the one bulk action that takes rows whose lookup is
+ * still out). A settled row costs one index range keyed on its OWN id plus
+ * the steps it staged, never a range over the batch: the NEO-301 read-set
+ * rule `entityReviewQueue.bulkReadSet.test.ts` pins.
+ */
+async function skipStagedStepsOf(
+  ctx: MutationCtx,
+  parent: Doc<"entityReviewQueue">,
+  now: number,
+  callerId: string,
+  skippedHere: Set<Id<"entityReviewQueue">>,
+): Promise<number> {
+  if (parent.status === "pending") return 0;
+  const steps =
+    parent.kind === "player"
+      ? await ctx.db
+          .query("entityReviewQueue")
+          .withIndex("by_source_player", (q) => q.eq("source.playerRowId", parent._id))
+          .collect()
+      : parent.kind === "team"
+        ? await ctx.db
+            .query("entityReviewQueue")
+            .withIndex("by_source_team", (q) => q.eq("source.teamRowId", parent._id))
+            .collect()
+        : [];
+  let count = 0;
+  for (const step of steps) {
+    if (step.selectorOptionId !== parent.selectorOptionId || step.batchId !== parent.batchId) {
+      continue;
+    }
+    if (step.decision !== undefined || skippedHere.has(step._id)) continue;
+    // Staging stamps the batch owner on every step, so this cannot fail for a
+    // page the caller owns; it is the same refusal the page itself gets.
+    assertOwnsRow(step, callerId);
+    await ctx.db.patch(step._id, { decision: { action: "skip" }, lastTouchedAt: now });
+    skippedHere.add(step._id);
+    count++;
+    // A staged TEAM may have staged a league of its own. The chain is two deep
+    // by construction (a league stages nothing), so this recursion is too.
+    count += await skipStagedStepsOf(ctx, step, now, callerId, skippedHere);
   }
   return count;
 }
@@ -4267,30 +4376,22 @@ export const decideRowsByIds = internalMutation({
  * then handed to both internal halves, which enforce row ownership with it.
  * An empty page skips the mutation entirely.
  *
- * ## NEO-330 — a SKIP's last page looks again before it says "done"
+ * ## NEO-330 / NEO-341 — a lookup landing between the query and the write
  *
  * The page is chosen by a query and written by a mutation, and lookups keep
  * landing between the two. A player whose lookup lands in that window is
  * still undecided when it lands, so `applyLookupResult` stages its career
- * teams (and a team's lookup its league) — new undecided rows, inserted at
- * the batch tail, that the page's id list cannot contain. The mutation then
- * skips the player, and if this was the last page the walk ends with the new
- * step left open: Confirm & Save never appears and the operator is asked to
- * create a team for a name they have just said is not a person (CI, NEO-330:
- * "New Team: Columbus Chill — Needed by: Glen Lang").
+ * teams (and a team's lookup its league) — new undecided rows the page's id
+ * list cannot contain (CI, NEO-330: "New Team: Columbus Chill — Needed by:
+ * Glen Lang"). The skip's own mutation closes that, not a second look from
+ * here: `decideRowsByIdsImpl` skips each settled row's staged steps in the
+ * same transaction (`skipStagedStepsOf`), and a lookup that commits after it
+ * finds its parent decided and stages nothing (`applyLookupResult` drops a
+ * decided row's result; both staging impls refuse a skipped parent). One
+ * mechanism, so the walk's page count is the query's alone.
  *
- * On a page that is not the last, the next page's query already sees those
- * rows — they sort after the cursor. So only the LAST page re-reads the batch
- * from its cursor once the decisions have committed, and reports `hasMore`
- * when anything undecided turned up; the client's walk already loops on that.
- * This converges: once a row is decided nothing stages under it again
- * (`applyLookupResult` drops a decided row's result, and both staging impls
- * refuse a skipped parent), so each extra page can only find rows staged
- * before its own decide committed, and the chain is at most two deep
- * (player → team → league).
- *
- * Skip only. The create walk refuses team rows anyway, and the wizard re-arms
- * it as lookups land.
+ * Exported for `entityReviewQueue.skipStaging.test.ts`, which drives it with
+ * a ctx that lands the lookup inside that window.
  */
 export async function runBulkDecidePage(
   ctx: ActionCtx,
@@ -4322,26 +4423,6 @@ export async function runBulkDecidePage(
           action,
           callerId,
         });
-  if (action === "skip" && !page.hasMore) {
-    // NEO-330 — see above. Resume from where this page stopped; a page that
-    // examined nothing stopped where it started.
-    const resumeAt = page.cursor ?? args.cursor;
-    const late: BulkCandidatePage = await ctx.runQuery(
-      internal.entityReviewQueue.listBulkCandidates,
-      {
-        selectorOptionId: args.selectorOptionId,
-        batchId: args.batchId,
-        ...(resumeAt !== undefined ? { cursor: resumeAt } : {}),
-        action,
-        callerId,
-      },
-    );
-    if (late.ids.length > 0) {
-      // 0 is "the head of the batch": a first call that found an empty batch
-      // has no cursor to hand back, and `null` would stop the client's walk.
-      return { decided, hasMore: true, cursor: resumeAt ?? 0 };
-    }
-  }
   return { decided, hasMore: page.hasMore, cursor: page.cursor };
 }
 

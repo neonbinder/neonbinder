@@ -2,10 +2,21 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/* NeonBinder is a dark-only app. Radix renders the root `<Theme
+ * appearance="dark">` as `.radix-themes.dark`, and index.html puts `dark` on
+ * <html> so portals to <body> are covered too. Tailwind's `dark:` variant keys
+ * off that class, NOT the OS `prefers-color-scheme` (Tailwind v4's default):
+ * under a light OS the default rendered every `bg-white dark:bg-gray-800` /
+ * `text-slate-600 dark:text-slate-400` pair as its light half on a dark page,
+ * e.g. near-white header text on white (NEO-341 axe). Never reintroduce a
+ * `prefers-color-scheme` rule; the light halves of existing pairs are dead. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --foreground: #ededed;
   --font-sans: 'Lexend', Arial, Helvetica, sans-serif;
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -14,27 +25,44 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 /* Reserve space for the sticky binder-header (~80px tall) so any
- * Element.scrollIntoView() call (and Maestro's headless scroll
- * implementation, which uses the same primitive) lands the target
+ * Element.scrollIntoView() call (including the scroll Playwright does
+ * before an action, which uses the same primitive) lands the target
  * BELOW the sticky header instead of underneath it. Without this,
  * scrolled-into-view buttons end up occluded by the header and any
- * coordinate-based click hits the header instead of the button. */
-html {
-  scroll-padding-top: 80px;
+ * coordinate-based click hits the header instead of the button.
+ *
+ * From `sm` (40rem) up only: below it the header is not sticky (NEO-341,
+ * see binder-header.tsx), so there is nothing to clear. Code that reads
+ * this value (PlayerManagement's headingInView) follows it automatically. */
+@media (min-width: 40rem) {
+  html {
+    scroll-padding-top: 80px;
+  }
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
   font-family: var(--font-sans);
+}
+
+/* Paper is white. Labels, sheets and QR codes print from their own isolated
+ * documents (lib/print/print-html.ts, the QR popup), which pin black on white
+ * themselves and never load this file. This block covers the page itself being
+ * printed (Ctrl+P): the dark-only base above would otherwise put #ededed body
+ * text on paper, under a dark colour scheme. The selectors are weighted on
+ * purpose: Radix's stylesheet loads after this one and sets `color-scheme:
+ * dark` on `:root` (via `:has()`) and on `.radix-themes:where(.dark)`, so a
+ * bare `:root` here loses; `html:root` and `:root .radix-themes` win. */
+@media print {
+  html:root,
+  :root .radix-themes {
+    color-scheme: light;
+    --background: #fff;
+    --foreground: #000;
+    --color-background: #fff;
+  }
 }
 
 @font-face {
@@ -386,6 +414,41 @@ body {
 }
 .binder-tab-glow-teal {
   box-shadow: 0 0 12px 2px rgba(0, 229, 192, 0.4), inset 0 0 8px rgba(0, 229, 192, 0.1);
+}
+
+/* Dark ink on Radix's solid pink and blue. Radix ships white
+ * (`--pink-contrast` / `--blue-contrast` on `:root`), which is 3.9:1 on its
+ * dark pink-9 and 3.2:1 on its dark blue-9, under SC 1.4.3's 4.5:1. Black is
+ * 5.1:1 and 6.4:1, and the same ink NeonButton puts on our own neon fills.
+ * `:root.dark` outweighs Radix's `:root`; `.dark` covers the Theme root and
+ * its portals, which carry the class themselves. */
+:root.dark,
+.dark,
+.dark-theme {
+  --pink-contrast: #000000;
+  --blue-contrast: #000000;
+}
+
+/* A neon sign that breathes instead of fading: Tailwind's `animate-pulse`
+ * dims text to 50% opacity, which drops neon pink on black to ~3:1 at the
+ * trough (axe caught #c62478 mid-fade). The glow pulses; the letters keep
+ * full colour. One soft 12px halo, no more: axe composites a blurred shadow
+ * into the background (alpha 0.185 / (blur/font-size + 0.4)), and two stacked
+ * halos tinted the ground enough to drop pink to 4.4:1; one 12px halo on 18px
+ * text keeps it above 4.5:1 at the peak. Still under reduced motion. */
+@keyframes neon-glow-pulse {
+  0%, 100% { text-shadow: 0 0 12px transparent; }
+  50%      { text-shadow: 0 0 12px currentColor; }
+}
+
+.animate-neon-glow {
+  animation: neon-glow-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-neon-glow {
+    animation: none;
+  }
 }
 
 /* Mobile nav slide-in */

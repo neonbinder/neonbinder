@@ -1,7 +1,7 @@
 - [Set subtree shape is not fixed](set-subtree-shape-is-not-fixed.md) — mixed levels under setName, ~300 leaves; walk children generically, page reads
 - [Hand-kept validator copies of schema shapes](hand-kept-validator-copies-of-schema-shapes.md) — a new teams/entityReviewQueue field must also land in teamDocValidator and the decision/enrichment copies or every screen fails at runtime
 - [FE-imported convex modules stay env-free](fe-imported-convex-modules-stay-env-free.md) — marketplaceResolvability/selectorSyncStore are bundled by Vite; thread flags in as options
-- [E2E branches on operator flags via -e, not visibility](e2e-branches-on-operator-flags-via-env-not-visibility.md) — `when: true:` on a runner var; `when: visible:` polls 7 s every run (R10)
+- [E2E branches on operator flags via env, not visibility](e2e-branches-on-operator-flags-via-env-not-visibility.md) — `if (env.SL_PAUSED)`; branching on the visible notice polls every run (R10)
 - [External lookup determinism for E2E](external-lookup-determinism-for-e2e.md) — record at the lookup-input boundary, double-gated; never bulk-decide no-match rows (NEO-289)
 - [Per-row editable facts live in SetAttributesPanel](per-row-editable-facts-live-in-set-attributes-panel.md) — "Value for {label}" row + narrow mutation; role flags derive at creation, never checkboxes
 - [Marketplace sentinel options get adapter predicates](marketplace-sentinel-options-get-adapter-predicates.md) — SL All Brands / BSC base: id predicate in an env-free module + NB flag on the row; keep the id in returnedIds; selectorOptions.ts is single-owner
@@ -12,8 +12,11 @@
 - [Telemetry awaited in a worker holds the slot](telemetry-awaited-in-a-workpool-worker-holds-the-slot.md) — PostHog via awaited runAction per attempt; plan it as runAfter(0)
 - [Image metadata must survive every re-encode](image-metadata-must-survive-every-re-encode-on-the-intake-path.md) — raw-buffer/sharp re-encodes drop density and blind scan_meta; check `scan_meta:` log ratio
 - [Seeded roster is the read-only fixture for name matching](seeded-roster-is-the-read-only-fixture-for-name-matching.md) — probe setup.yaml's roster via the Players add form's `Open <name>` demotion; never mint a multi-token name (NEO-322)
-- [ARIA ids rewrite Maestro handles; height above bottom-anchored controls is free](aria-ids-change-maestro-handles-and-max-scroll-geometry.md) — activedescendant ids break `id: "<aria-label>"` flows; put new cascade chrome BELOW the columns
+- [Names and roles are the spec handles](aria-names-and-roles-are-the-spec-handles.md) — a rename/relabel/re-role moves the Playwright specs; plan them in the same PR; new cascade chrome goes BELOW the columns
+- [Maestro-green / PW-red = mid-transition assert](maestro-green-playwright-red-means-a-mid-transition-assert.md) — PW helpers wait for the settle; fix the product status overwrite, never the spec (NEO-341)
+- [Convex table removal does not fail the push](convex-table-removal-does-not-fail-the-push.md) — only unlisted tables go unvalidated; field removal on a kept table is the hazard
 - [Wizard chrome strings are suite-wide E2E gates](wizard-chrome-strings-are-suite-wide-e2e-gates.md) — title/counter/"All reviewed" gate ~20 flows + setup.yaml; fix strings in the plan, rewrite setup.yaml first
 - [Listing title inputs are server-assembled](listing-title-inputs-are-server-assembled.md) — assessListingTitle is browser-safe, its inputs are not; extract a pure input builder + ship context on the resolve result
 - [Optional→required is two merges](optional-to-required-is-two-merges.md) — deploy validates existing rows; writers+backfill first, schema flip second; one PR only if prod is hand-cleaned and rechecked (NEO-331)
 - [Old scripts title builder is the title-rule reference](old-scripts-title-builder-is-the-title-rule-reference.md) — insert/parallel names are core; per-leaf short set name rescues overflow; RC-before-short-name is the open disagreement
+- [Public admin functions are the scripting API](public-admin-functions-are-the-scripting-api.md) — a headless caller with a real Clerk JWT drives the requireAdmin functions; *FromCli armed internals only for destructive work; decision assembly lives in env-free lib modules (NEO-339)

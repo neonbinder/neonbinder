@@ -1,6 +1,6 @@
 ---
 name: gates-in-a-shared-worktree
-description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay
+description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay; plain rm not git rm; npm install -D can prune unrelated lock entries
 metadata:
   type: feedback
 ---
@@ -68,7 +68,28 @@ Things that look like failures during the apps/web fast gates but are not.
    you edit, and before reporting grep each file for a marker of your change
    (`grep -c <newSymbol> file`) and re-apply from your scripts if it is gone.
 
-8. **The Bash tool's shell is zsh, which does not word-split `$VAR`.**
+8. **Delete with plain `rm`, never `git rm`, in a shared worktree.** `git rm`
+   STAGES the deletion, and the coordinator's next commit (for any other
+   agent's work) sweeps it in, split from your paired edits. NEO-341: a staged
+   `convex/e2eQueue.ts` deletion landed in a docs commit while `http.ts` still
+   called `api.e2eQueue.*` unstaged, so that commit does not typecheck alone.
+   Leave everything unstaged; the coordinator stages by path.
+9. **`npm install -D <pkg>` can rewrite unrelated lock entries.** NEO-341: npm
+   11.19 pruned ~500 lines of `"peer": true` esbuild entries (vite's optional
+   peer) along with adding the plugin, AND deleted `node_modules/esbuild` from
+   the shared install. Back up the lock first; if the diff is not just your
+   package, restore it and hand-insert the new `packages` entries (copy them
+   from npm's version), then check `npm ci --dry-run`. Restore anything npm
+   pruned from `node_modules` by extracting the locked tarballs (`npm pack
+   <pkg>@<ver>`, verify the sha512 against the lock's `integrity`).
+   When the new package's own dependencies are ALREADY in the lock (e.g.
+   `@axe-core/playwright` -> `axe-core`, NEO-341), skip `npm install`
+   entirely: add the devDependency to both package.json and the lock root,
+   hand-write one `node_modules/<pkg>` entry from `npm view <pkg>@<ver>
+   dist.integrity dependencies peerDependencies license`, `npm ci --dry-run`,
+   then `npm pack` + sha512 check + `tar -xzf --strip-components=1` into
+   `node_modules/<pkg>`. Lock diff is exactly the new lines.
+10. **The Bash tool's shell is zsh, which does not word-split `$VAR`.**
    `FILES=$(grep -l … ); npx vitest run $FILES` hands vitest ONE argument
    (the whole space-joined list) and it answers "No test files found,
    exiting with code 1" — looks like a project/glob problem, is not. Use

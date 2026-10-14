@@ -362,6 +362,17 @@ type State = {
    * be one more thing to keep in sync with `ABSORB`.
    */
   seedMatchedKeys: Set<string>;
+  /**
+   * NEO-341 — has an `ABSORB` carried the parent's word that this fetch's
+   * whole batch, with every team lookup landed, has reached the client?
+   *
+   * Latched (once true it stays true for this instance, which is one per
+   * fetch) and carried HERE rather than read off the prop at click time, so it
+   * can only turn true in the same dispatch that folds in the teams it vouches
+   * for: Confirm can never read a state that has the flag but not the last
+   * chunk's teams.
+   */
+  streamSettled: boolean;
 };
 
 type Action =
@@ -438,6 +449,8 @@ type Action =
       autoMatched: MatchedPair[]; // already through `seedMatched`
       unmatchedBsc: PairingCard[];
       unmatchedSl: PairingCard[];
+      /** NEO-341 — the parent has seen this fetch end; see `State.streamSettled`. */
+      settled: boolean;
     };
 
 /**
@@ -675,6 +688,8 @@ function seedState(initialData: PairingInitialData): State {
     keptBsc: [],
     keptSl: [],
     seedMatchedKeys: new Set(matched.map((m) => candidateKey(m.card))),
+    // NEO-341: only an ABSORB may say so — see `State.streamSettled`.
+    streamSettled: false,
   });
 }
 
@@ -845,15 +860,24 @@ function baseReducer(state: State, action: Action): State {
       const keptBsc = state.keptBsc.map(enrich);
       const keptSl = state.keptSl.map(enrich);
 
+      const streamSettled = state.streamSettled || action.settled;
+
       // Nothing arrived and nothing changed — return the SAME state object so
       // the render this dispatch would otherwise cause does not happen. The
       // stream fires this on every reactive update of a 900-row batch.
-      if (!newMatched.length && !newBsc.length && !newSl.length && !enriched) {
+      if (
+        !newMatched.length &&
+        !newBsc.length &&
+        !newSl.length &&
+        !enriched &&
+        streamSettled === state.streamSettled
+      ) {
         return state;
       }
 
       return {
         ...state,
+        streamSettled,
         matched: [...matched, ...newMatched],
         unmatchedBsc: [...unmatchedBsc, ...newBsc],
         unmatchedSl: [...unmatchedSl, ...newSl],

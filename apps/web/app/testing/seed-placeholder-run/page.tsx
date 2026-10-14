@@ -3,12 +3,12 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 
-// Test-only "give me a run to abort" landing page (NEO-170). A Maestro flow
+// Test-only "give me a run to abort" landing page (NEO-170). An E2E spec
 // signs in via /testing/sign-in, visits
 // /testing/seed-placeholder-run?redirect=/pipeline-runs, and lands on the
 // operator view with exactly one non-terminal run waiting for it.
 //
-// It exists for the same reason /testing/needs-reauth does: the state the flow
+// It exists for the same reason /testing/needs-reauth does: the state the spec
 // asserts against is unreachable from the UI in test time. A genuine
 // "collecting" run means opening a scanner session and pushing a real image
 // through GCS and Cloud Run — minutes of work, real spend, and none of it what
@@ -16,9 +16,9 @@ import { api } from "@/convex/_generated/api";
 // instead (see convex/testing.ts), owned by the CALLER, with no images behind
 // it.
 //
-// The seeded run is the newest, and /pipeline-runs is newest-first, so the flow
+// The seeded run is the newest, and /pipeline-runs is newest-first, so the spec
 // can act on the FIRST row without needing to carry an id around. The short id
-// is still printed below for a flow that would rather `copyTextFrom` it.
+// is still printed below for a spec that would rather read it.
 //
 // RESET FIRST, like /testing/seed-placeholder-upload: this page also leaves a
 // `collecting` job behind (that IS its output — the abort flow's fixture), so

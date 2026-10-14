@@ -103,7 +103,7 @@ export default function PlaceholderSheetsPage() {
   return (
     <div className="space-y-12 py-8 px-4">
       <div className="text-center">
-        <Squares2X2Icon className="w-16 h-16 text-neon-purple mx-auto mb-4" />
+        <Squares2X2Icon className="w-16 h-16 text-neon-purple-text mx-auto mb-4" />
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-2">Placeholder Sheets</h2>
         <p className="text-gray-400 max-w-xl mx-auto">

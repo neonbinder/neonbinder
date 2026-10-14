@@ -420,6 +420,17 @@ describe("EntitySelector — combobox highlight (NEO-224)", () => {
 
     expect(combo().getAttribute("aria-expanded")).toBe("false");
     expect(screen.getByText(/No years available/)).not.toBeNull();
+    // NEO-341: no listbox, so nothing to point at — never a dangling id.
+    expect(combo().getAttribute("aria-controls")).toBeNull();
+  });
+
+  it("points aria-controls at the listbox itself once rows land (axe exempts a combobox popup)", () => {
+    state.items = YEARS;
+    render(column());
+
+    const id = combo().getAttribute("aria-controls");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)).toBe(screen.getByRole("listbox"));
   });
 
   // -------------------------------------------------------------------------

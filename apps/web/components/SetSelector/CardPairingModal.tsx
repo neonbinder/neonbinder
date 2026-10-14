@@ -557,6 +557,7 @@ export default function CardPairingModal({
   setLabel,
   initialData,
   isStreaming,
+  streamSettled,
   streamProgress,
   teamsLateNotice,
   restoreFocusRef,
@@ -575,12 +576,23 @@ export default function CardPairingModal({
    * that had not arrived yet. Early review is the point; early commit is a bug.
    */
   isStreaming?: boolean;
+  /**
+   * NEO-341 — the parent has SEEN this fetch's whole batch with every team
+   * lookup landed (`streamedBatchSettled`). Confirm stays blocked until it
+   * has, even after `isStreaming` goes false: the fetch action's promise
+   * resolves before the client necessarily has its last team writes, and a
+   * card confirmed without its team skips the entity-review wizard.
+   *
+   * Omitted means "nothing to wait for" — a caller that does not stream.
+   */
+  streamSettled?: boolean;
   /** Progress for the streaming banner: cards released / cards found so far. */
   streamProgress?: { ready: number; total: number };
   /**
-   * NEO-330 — what to say when the stream has ENDED with some teams still
-   * out (`streamProgress.ready < total` once `isStreaming` is false: exactly
-   * the owner's "teams late" condition). The owner passes its
+   * NEO-330 — what to say when the wait has ENDED with some teams still
+   * out (`streamProgress.ready < total` once Confirm is no longer blocked —
+   * `isStreaming` false and, NEO-341, `streamSettled` latched: exactly the
+   * owner's "teams late" condition). The owner passes its
    * `TEAMS_LATE_NOTICE`, so the sync banner behind this modal and the line in
    * its footer say one sentence from one source. The line shows only while it
    * is true — a team that lands afterwards takes it away, the same rule the
@@ -723,8 +735,17 @@ export default function CardPairingModal({
       autoMatched: seedMatched(initialData.autoMatched),
       unmatchedBsc: initialData.unmatchedBsc,
       unmatchedSl: initialData.unmatchedSl,
+      settled: streamSettled === true,
     });
-  }, [initialData]);
+  }, [initialData, streamSettled]);
+  /**
+   * NEO-195 / NEO-341 — Confirm is blocked while the fetch runs AND until the
+   * reducer holds the end of its team lookups. Everything that used to read
+   * `isStreaming` for the gate reads this.
+   */
+  const confirmBlocked =
+    isStreaming === true ||
+    (streamSettled !== undefined && !state.streamSettled);
   // Everything paired and nothing set aside: the columns and keep shelf have
   // nothing to show and only add noise. Derived from CURRENT state, not the
   // initial snapshot, so unlinking a pair brings the columns straight back.
@@ -1017,7 +1038,8 @@ export default function CardPairingModal({
     if (confirming) return;
     // NEO-195: never commit a partial checklist. The button is disabled while
     // streaming; this is the guard for a keyboard or programmatic path.
-    if (isStreaming) return;
+    // NEO-341: nor one whose last team lookups have not reached us yet.
+    if (confirmBlocked) return;
     setConfirming(true);
     try {
       // NEO-339: the payload is built in lib/set-build/pairing.ts — the same
@@ -1026,7 +1048,7 @@ export default function CardPairingModal({
     } finally {
       setConfirming(false);
     }
-  }, [confirming, isStreaming, onConfirm, state]);
+  }, [confirming, confirmBlocked, onConfirm, state]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -1079,9 +1101,13 @@ export default function CardPairingModal({
   const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamReady = streamProgress?.ready ?? 0;
   const streamTotal = streamProgress?.total ?? 0;
-  /** The stream ended with teams still out — see `teamsLateNotice`. */
+  /**
+   * The wait ended with teams still out — see `teamsLateNotice`. NEO-341:
+   * "ended" is Confirm unblocking (`confirmBlocked`), which outlasts
+   * `isStreaming` until this run's teams have landed or the owner gave up.
+   */
   const teamsLate =
-    !!teamsLateNotice && !isStreaming && streamTotal > 0 && streamReady < streamTotal;
+    !!teamsLateNotice && !confirmBlocked && streamTotal > 0 && streamReady < streamTotal;
   useEffect(() => {
     const say = (text: string, delay = 0) => {
       if (liveTimerRef.current !== null) clearTimeout(liveTimerRef.current);
@@ -1100,7 +1126,10 @@ export default function CardPairingModal({
     const seen = streamAnnounceRef.current;
     const quarter =
       streamTotal > 0 ? Math.min(3, Math.floor((streamReady / streamTotal) * 4)) : 0;
-    if (isStreaming) {
+    // NEO-341 — the stream is "on" for as long as Confirm is blocked, so
+    // "Confirm is ready" is said when it is, not when the fetch's promise
+    // resolved with teams still on their way.
+    if (confirmBlocked) {
       if (!seen.streaming) {
         streamAnnounceRef.current = { streaming: true, quarter };
         say(
@@ -1130,7 +1159,7 @@ export default function CardPairingModal({
         }
       }, PAIRING_STREAM_DONE_CLEAR_MS);
     }
-  }, [isOpen, isStreaming, streamReady, streamTotal, teamsLate, teamsLateNotice]);
+  }, [isOpen, confirmBlocked, streamReady, streamTotal, teamsLate, teamsLateNotice]);
   useEffect(
     () => () => {
       if (liveTimerRef.current !== null) clearTimeout(liveTimerRef.current);
@@ -1212,8 +1241,10 @@ export default function CardPairingModal({
                 disabled Confirm looks broken rather than deliberate.
                 NEO-330 a11y: the sentence is static (Confirm's description
                 points at it); the coarse announcements go through the
-                always-mounted status region beside it. */}
-            {isStreaming && (
+                always-mounted status region beside it. NEO-341: shown for as
+                long as Confirm is blocked, which outlasts the fetch itself
+                until this run's teams have landed (`confirmBlocked`). */}
+            {confirmBlocked && (
               <p id="pairing-streaming-status" className="text-xs text-[#00B7FF] mt-1">
                 {pairingStreamingSentence(streamProgress)}
               </p>
@@ -1883,7 +1914,7 @@ export default function CardPairingModal({
                   screen — the columns are what "the other column" means. */}
               {(state.unmatchedBsc.length > 0 ||
                 state.unmatchedSl.length > 0) && (
-                <p className="text-xs text-gray-500 mb-2">
+                <p className="text-xs text-gray-400 mb-2">
                   Drag a card onto its match in the other column to link them
                   (or click one, then click its match).
                 </p>
@@ -2175,16 +2206,16 @@ export default function CardPairingModal({
                 // isn't doing anything, and `title` tooltips aren't reliably
                 // announced by screen readers and can't be triggered by
                 // keyboard on an unfocusable control either way. aria-disabled
-                // keeps it reachable; handleConfirm's own isStreaming guard
+                // keeps it reachable; handleConfirm's own confirmBlocked guard
                 // (above) makes activating it a no-op, so this is safe.
                 disabled={confirming}
-                aria-disabled={isStreaming || undefined}
+                aria-disabled={confirmBlocked || undefined}
                 // Ties the reason to the control itself so it's available the
                 // moment Confirm receives focus, rather than depending on the
                 // operator having caught the coarse status announcements
                 // (NEO-330: the sentence itself is no longer live).
                 aria-describedby={
-                  isStreaming
+                  confirmBlocked
                     ? "pairing-streaming-status"
                     : teamsLate
                       ? "pairing-teams-late"
@@ -2192,14 +2223,14 @@ export default function CardPairingModal({
                 }
                 aria-label="Confirm card matches"
                 title={
-                  isStreaming
+                  confirmBlocked
                     ? "Still loading teams…"
                     : undefined
                 }
               >
                 {confirming
                   ? "Saving…"
-                  : isStreaming
+                  : confirmBlocked
                     ? "Loading…"
                     : "Confirm"}
               </NeonButton>

@@ -242,7 +242,7 @@ describe("SetBuildSpec", () => {
   });
 
   test("every committed seed spec still parses, unchanged by the new keys", () => {
-    const dir = join(__dirname, "../../../.maestro/seed");
+    const dir = join(__dirname, "../../../playwright/seed");
     for (const file of ["baseline.spec.json", "parallel.spec.json"]) {
       const raw = JSON.parse(readFileSync(join(dir, file), "utf8"));
       const spec = parseSpec(raw);

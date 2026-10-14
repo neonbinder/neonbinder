@@ -204,6 +204,13 @@ const HIGHLIGHT_TINT =
  * (the same treatment the reconciler's mapped chips give it).
  */
 const TWIN_SUFFIX = "text-xs font-normal tabular-nums opacity-75";
+/**
+ * NEO-341 (axe color-contrast) — a row's secondary line, in every row state.
+ * It was gray-400, which measured under 4.5:1 on the highlight tint (#184b3f,
+ * the green /20 over the dark card) and is no better on the selected `*-900`
+ * fills or the idle gray-700 row (~4:1). gray-300 clears 6.5:1 on all of them.
+ */
+const DESCRIPTION_TONE = "text-sm text-gray-600 dark:text-gray-300";
 const ROW_IDLE =
   "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600";
 
@@ -259,12 +266,13 @@ function EntitySelector({
   // rules). Hover deliberately does NOT move it: a pointer resting over the
   // list would otherwise retarget Enter under the operator's typing.
   const baseId = useId();
-  // The DOM id `aria-controls` points at. It sits on a wrapper around the
-  // listbox, NOT the listbox itself: maestro-web reports an element's
-  // resource-id as `node.id || node.ariaLabel`, so an id on the listbox would
-  // hide its `aria-label` (the column title) from every `id: "<Title>"`
-  // selector — the NEO-313 failure, where a `useId` on a listbox for exactly
-  // this attribute turned two flows red.
+  // The DOM id `aria-controls` points at: the listbox itself, as the APG
+  // combobox has it. NEO-341 moved it there from a classless wrapper. The
+  // wrapper existed only because maestro-web read an element's id ahead of its
+  // aria-label (NEO-313), and Maestro is gone. It also hid the combobox
+  // relationship from axe, so the scrollable listbox (its rows are never Tab
+  // stops) failed `scrollable-region-focusable`: axe exempts a scrollable
+  // popup only when a combobox's `aria-controls` names it.
   const popupId = `${baseId}-popup`;
   const optionDomId = (key: string) => `${popupId}-${key}`;
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -684,7 +692,9 @@ function EntitySelector({
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={!loading && rows.length > 0}
-        aria-controls={loading ? undefined : popupId}
+        // Only while the listbox exists: an empty column renders none, and
+        // a dangling reference is worse than no reference.
+        aria-controls={!loading && rows.length > 0 ? popupId : undefined}
         aria-activedescendant={
           highlighted !== null && !loading ? optionDomId(highlighted) : undefined
         }
@@ -758,18 +768,9 @@ function EntitySelector({
           <div className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700" />
         </div>
       ) : (
-        // The `aria-controls` target (see `popupId`): a plain wrapper with no
-        // class and no name, always rendered once the column has loaded so the
-        // reference never dangles.
-        //
-        // A DELIBERATE departure from the APG combobox, which points
-        // `aria-controls` at the listbox itself. maestro-web reports an
-        // element's resource-id as `node.id || node.ariaLabel`, so a DOM id on
-        // the listbox would shadow its aria-label (the column title) and break
-        // every `id: "<Title>"` selector (NEO-313). The wrapper holds the
-        // listbox and only the listbox (or the empty line), so the reference
-        // still lands on the popup.
-        <div id={popupId}>
+        // NEO-341: no wrapper any more. The listbox carries `popupId` itself
+        // (see there), so the combobox's `aria-controls` names the popup.
+        <>
           {rows.length === 0 ? (
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
@@ -779,6 +780,7 @@ function EntitySelector({
           ) : (
             <div
               ref={listRef}
+              id={popupId}
               // The list of choices IS a listbox, named with the column title
               // (the same string the <h2> above already shows). Same class
               // string as before NEO-224: Maestro reads a view hierarchy off
@@ -865,12 +867,12 @@ function EntitySelector({
                       )}
                     </div>
                     {pinned?.description && (
-                      <div className="text-sm text-gray-600 dark:text-gray-400">
+                      <div className={DESCRIPTION_TONE}>
                         {pinned.description}
                       </div>
                     )}
                     {!pinned && getDescription && getDescription(item) && (
-                      <div className="text-sm text-gray-600 dark:text-gray-400">
+                      <div className={DESCRIPTION_TONE}>
                         {getDescription(item)}
                       </div>
                     )}
@@ -879,7 +881,7 @@ function EntitySelector({
               })}
             </div>
           )}
-        </div>
+        </>
       )}
       {!loading && rows.length > 0 && filteredItems.length === 0 && (
         // Pinned entries only: the view is listed, the data rows are not.

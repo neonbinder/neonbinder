@@ -14403,9 +14403,11 @@ export const fetchCardChecklist = action({
      * `ready` only ever grows within a batch (rows go `pending` → `ready`,
      * never back), so once the subscription shows this batch with
      * `ready >= readyAfterTeams` it is at or past the last team write. It is
-     * the count the server SAW, not `total`: rows that arrived with a team
-     * already parsed stay `pending` forever (see `startCandidateBatch`), and a
-     * gate on `ready === total` would hang on exactly those sets.
+     * the count the server SAW at its last write. Rows that arrived with a
+     * team already parsed are written `ready` (`teamPending: false`), so
+     * `ready` reaches `total` once every lookup lands; the client gates on
+     * both this fence and `ready === total`, the latter also covering the one
+     * `resolveCandidateTeams` retry that can land after this action returns.
      *
      * Both are absent on a failed run and on the early exit before any batch
      * is written; the client never reads them when `candidateCount` is 0 (it
@@ -14519,25 +14521,29 @@ export const fetchCardChecklist = action({
       const needsTeamLookup = out.filter(
         (c) => !c.teams?.length && !c.team && c.platformData.bsc?.ref,
       );
-      // NEO-330 — which rows are waiting on that lookup, by identity: the
-      // candidates below are built from the same `ReconciledCard` objects.
-      const awaitingLookup = new Set<ReconciledCard>(needsTeamLookup);
+      // NEO-330 / NEO-341 — exactly these rows are written `pending`; every
+      // other row is `ready` the moment it lands (its team came from the
+      // parse, or it has no BSC ref to look one up by). So `ready === total` on the client's
+      // subscription is the observed marker that EVERY lookup this fetch owes
+      // has been written — the signal the pairing dialog's Confirm and the
+      // one-marketplace auto-keep both wait for. They cannot wait on this
+      // action's promise instead: an action resolves on its own response, not
+      // when the client's subscription has caught up with the `runMutation`
+      // writes it made, so the last chunk's teams could land after Confirm.
+      // By identity, not by ref: these are the same objects `toCandidate` is
+      // handed below.
+      const awaitingTeam = new Set<ReconciledCard>(needsTeamLookup);
 
       // NEO-195 — publish the reconciled candidates NOW, before the team
       // lookup, so the modal can start filling in at ~6s instead of ~80s.
       //
-      // A row goes in as `pending` only when a lookup for THAT row is
-      // outstanding; the chunk loop below flips each to `ready` as its team
-      // lands, and every other row is `ready` from the start (NEO-330 — the
-      // batch-wide `pending` left rows nothing would ever flip, so `ready`
-      // could not say "the teams are in"). `status` reports enrichment
-      // progress, it does not gate visibility — pairing needs card numbers
-      // and descriptions, not teams, and Confirm is separately blocked until
-      // the whole fetch finishes (see checklistCandidates.ts). The
-      // one-marketplace auto-keep path, which commits with no operator, DOES
-      // wait on it: this action resolves before the client's subscription
-      // shows the last chunk's patch, so `ready === total` is the only signal
-      // that the teams it is about to hand to entity resolution have arrived.
+      // A row whose lookup is outstanding goes in as `pending` and the chunk
+      // loop below flips it to `ready` as its team lands; every other row is
+      // `ready` from the start (NEO-330 / NEO-341). `status` reports enrichment
+      // progress, it does not gate visibility — pairing needs card numbers and
+      // descriptions, not teams. It DOES gate Confirm: the client holds it
+      // until its subscription shows `ready === total` for this batch (see
+      // `awaitingTeam` above and checklistCandidates.ts).
       //
       // This is the ONLY copy that reaches the client. The action used to
       // return the same three buckets again at the end; that second wire is
@@ -14559,7 +14565,8 @@ export const fetchCardChecklist = action({
         ...checklistCandidateFields(card),
         bucket,
         confidence,
-        awaitsTeamLookup: awaitingLookup.has(card),
+        // NEO-341 — see `awaitingTeam` above.
+        teamPending: awaitingTeam.has(card),
       });
       await ctx.runMutation(
         internal.checklistCandidates.startCandidateBatch,
@@ -18855,6 +18862,18 @@ export const commitCardChecklistChunk = internalMutation({
         for (const field of NB_CONTENT_FIELDS) {
           if (!accepted.has(field)) continue;
           if (sameContentValue(existing[field], incoming[field])) continue;
+          // An empty incoming team list never clears a stored one, even when
+          // a decision names the field: absence of a marketplace team is not a
+          // claim (see `diffChecklistAgainstExisting`, which no longer offers
+          // that row). Guarded here as well because the wire card is the
+          // client's, and this is the transaction that writes.
+          if (
+            field === "teamOnCardIds" &&
+            !(Array.isArray(incoming.teamOnCardIds) &&
+              incoming.teamOnCardIds.length > 0)
+          ) {
+            continue;
+          }
           contentPatch[field] = incoming[field];
         }
         /*
@@ -20609,8 +20628,25 @@ export const diffChecklistAgainstExisting = query({
         },
       ];
 
+      /**
+       * A missing marketplace team is not a claim that the card has none.
+       *
+       * The incoming team list is empty for reasons that say nothing about the
+       * card: BSC's per-card lookup timed out or answered non-2xx (the batch
+       * lookup folds a failure and "no team on file" into the same absent
+       * entry), or the pairing dialog was confirmed before the last lookup
+       * chunk's teams reached the client (the action's promise resolves
+       * independently of the subscription that carries those patches). Diffed
+       * as a value, every one of those offered a tier-1 "Team: Toronto Blue
+       * Jays → —" row: a proposal to clear NB data on the strength of a lookup
+       * that never returned. NB owns the team; only an explicit marketplace
+       * team that differs is a suggestion worth an operator's time.
+       */
       const fields = comparisons
         .filter(({ name }) => !settledConflictFields.has(name))
+        .filter(
+          ({ name }) => name !== "teamOnCardIds" || incomingTeams.length > 0,
+        )
         .filter(
           ({ stored, incoming, compare }) =>
             !sameContentValue(stored, incoming, compare),

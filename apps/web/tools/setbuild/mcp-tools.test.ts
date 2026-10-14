@@ -230,8 +230,8 @@ describe("read tools", () => {
     const f = fakeService();
     const readSpecFile = vi.fn(async () => JSON.stringify(SPEC));
     const client = await connect(f.service, { secrets: [SECRET], cwd: "/repo/root", readSpecFile });
-    await callTool(client, "nb_plan", { specPath: "apps/web/.maestro/seed/parallel.spec.json" });
-    expect(readSpecFile).toHaveBeenCalledWith("/repo/root/apps/web/.maestro/seed/parallel.spec.json");
+    await callTool(client, "nb_plan", { specPath: "apps/web/playwright/seed/parallel.spec.json" });
+    expect(readSpecFile).toHaveBeenCalledWith("/repo/root/apps/web/playwright/seed/parallel.spec.json");
     await callTool(client, "nb_plan", { specPath: "/abs/parallel.spec.json" });
     expect(readSpecFile).toHaveBeenLastCalledWith("/abs/parallel.spec.json");
   });

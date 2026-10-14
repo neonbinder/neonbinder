@@ -8,27 +8,25 @@ import {
 /**
  * NEO-44 — the app's shared text input.
  *
- * Every raw `<input>` re-solved the same three problems independently: the
- * dark-neon styling, Maestro `inputText` targeting, and (for reactive rows) the
- * controlled-input race. This primitive bakes all three in so a new field is
- * correct by default and no per-field work is needed.
+ * Every raw `<input>` re-solved the same problems independently: the
+ * dark-neon styling and (for reactive rows) the controlled-input race. This
+ * primitive bakes both in so a new field is correct by default and no
+ * per-field work is needed.
  *
- * ## Maestro targeting (the reason for the auto class)
- * maestro-web's `inputText` reads `document.activeElement`, re-finds it via
- * `createXPathFromElement` (unique `id` → `class` → positional), then sends
- * keys. Inputs sharing an identical Tailwind `className` produce a non-unique
- * XPath, so Selenium types into the FIRST match rather than the field the test
- * tapped. Every input rendered here gets a document-unique marker class from
- * {@link useFieldTestClass}, which makes that XPath resolve exactly.
+ * ## The auto marker class (legacy)
+ * Every input rendered here gets a document-unique marker class from
+ * {@link useFieldTestClass}. It was added for the retired Maestro web driver,
+ * whose `inputText` re-found the focused field by an XPath built from
+ * `id` → `class` → position and typed into the first of several identical
+ * inputs. The Playwright suite locates fields by role and accessible name and
+ * does not read the class.
  *
  * ## This component NEVER emits an `id` of its own
- * Maestro builds `resource-id = node.id || node.ariaLabel || …`, so an
- * auto-generated `id` would clobber the aria-label and break every
- * `tapOn id: "<aria-label>"` selector in `.maestro/flows/`. Uniqueness comes
- * from a **class**; an `id` appears only when the caller passes one
- * (`PublicProfileEditor` passes one per field so its visible `<label>`s can use
- * `htmlFor` — label wiring, NOT a test handle: NEO-260 moved both profile flows
- * onto the visible label text, and no flow targets a DOM id anywhere). Label association therefore
+ * An `id` appears only when the caller passes one (`PublicProfileEditor`
+ * passes one per field so its visible `<label>`s can use `htmlFor` — label
+ * wiring, NOT a test handle: E2E specs locate fields by their accessible name,
+ * never by a DOM id). The rule began with Maestro, which used a field's `id`
+ * in place of its aria-label as the selector handle. Label association therefore
  * uses `htmlFor` when the caller supplies an `id`, and a wrapping `<label>`
  * (implicit association) when it does not — accessible either way, without
  * inventing an id.
@@ -47,7 +45,7 @@ import {
  * - **bare** — renders the lone `<input>` with no wrapper/label/helper chrome
  *   and no geometry classes. Use this when dropping into existing markup: keep
  *   the layout classes that were already on the element and delete only the
- *   colour ones, so the DOM stays what it was and no `.maestro` flow changes.
+ *   colour ones, so the DOM stays what it was and no E2E locator changes.
  * - **reactive** — pass {@link ReactiveFieldOptions} and the field becomes
  *   uncontrolled with the NEO-39 focus-guard (external reactive pushes are
  *   dropped while focused/saving; commit reads the live DOM). Supersedes the
@@ -92,13 +90,13 @@ export interface InputProps extends NativeInputProps {
 
 /**
  * Visual identity. The text colour is hardcoded rather than `text-foreground`
- * on purpose: `--foreground` flips to #171717 under a light-mode OS (see
- * globals.css), and this surface is always `bg-slate-900`, so the themed token
- * would render near-black text on a near-black field for anyone whose system is
- * not in dark mode. A hardcoded surface needs a hardcoded foreground.
+ * on purpose: this surface is always `bg-slate-900`, and a hardcoded surface
+ * needs a hardcoded foreground. (`--foreground` used to flip to #171717 under a
+ * light-mode OS; since NEO-341 globals.css pins it dark, but the field should
+ * not depend on the page token either way.)
  */
 const BASE_INPUT =
-  "border border-slate-700 rounded-md bg-slate-900 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
+  "border border-slate-700 rounded-md bg-slate-900 text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
 
 const SIZE_CLASSES: Record<NonNullable<InputProps["inputSize"]>, string> = {
   default: "px-3 py-2 text-base",
@@ -169,11 +167,10 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
      * focus (WCAG 2.2 SC 1.3.1 / 3.3.2), and `aria-invalid` marks the field
      * itself as errored (SC 3.3.1) so it is reachable by an "errors" rotor.
      *
-     * The id goes on the `<p>`, never on the `<input>` — Maestro derives
-     * `resource-id` from `node.id || node.ariaLabel`, so an id on the field
-     * would clobber every `tapOn id: "<aria-label>"` selector in the suite (see
-     * the header note). `useId` is stable across renders and unique per
-     * instance, which is all the association needs.
+     * The id goes on the `<p>`, never on the `<input>`, which keeps the
+     * "never emits an id of its own" rule in the header note. `useId` is
+     * stable across renders and unique per instance, which is all the
+     * association needs.
      *
      * Bare mode renders no message at all, so it gets neither attribute: its
      * contract is "the lone <input>, markup unchanged".

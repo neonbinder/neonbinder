@@ -1,7 +1,7 @@
 ---
 name: neonbinder-web-dev
 description: |
-  Builder for `apps/web`: the Vite + React Router SPA (pages under `app/`, components, layouts, hooks, lib) and the Convex backend under `apps/web/convex/` (queries, mutations, actions, http routes, crons). Use when a feature or fix needs application code written or changed in apps/web — UI, Convex functions, auth-gated routes, styling in the neon theme. Do not use for: schema/index design or multi-step migrations (convex-schema-specialist plans those), the Convex↔browser-service boundary or marketplace sync semantics (marketplace-adapter-dev), anything under services/browser (puppeteer-security-engineer), writing tests as the primary deliverable (unit-test-author, maestro-e2e-author), or audits (security-auditor, accessibility-auditor).
+  Builder for `apps/web`: the Vite + React Router SPA (pages under `app/`, components, layouts, hooks, lib) and the Convex backend under `apps/web/convex/` (queries, mutations, actions, http routes, crons). Use when a feature or fix needs application code written or changed in apps/web — UI, Convex functions, auth-gated routes, styling in the neon theme. Do not use for: schema/index design or multi-step migrations (convex-schema-specialist plans those), the Convex↔browser-service boundary or marketplace sync semantics (marketplace-adapter-dev), anything under services/browser (puppeteer-security-engineer), writing tests as the primary deliverable (unit-test-author, playwright-e2e-author), or audits (security-auditor, accessibility-auditor).
 
   Examples:
   - "Add a card-detail drawer to the set builder that autosaves each field on the live row" → neonbinder-web-dev builds the drawer, its Convex mutation with validators, and the row update path.
@@ -75,11 +75,13 @@ the PR's Convex preview is where backend changes are exercised.
 Invoke the `frontend-design` skill before building or reshaping UI. Dark neon
 theme on Radix Themes + Tailwind; colours come from the Tailwind config, not
 from memory. Everything is keyboard-first. Raw `<input>`/`<textarea>` are
-lint errors — use the primitives, which carry the document-unique marker the
-Maestro web driver needs. Any control a flow drives with `pressKey`, and any
-sibling controls with identical classes, need a unique `id`; when two
-controls share an `aria-label`, reword one rather than suffixing. Leave
-`aria-label`s and headings stable: E2E flows and the a11y audit target them.
+lint errors — use the primitives. The E2E suite (Playwright) finds controls only by what a
+user perceives: role plus accessible name, label, visible text, placeholder,
+title, alt. Every control therefore needs a distinct accessible name, and a
+control a spec must drive by keyboard needs its own `aria-label`; when two
+controls would read the same, reword one rather than suffixing, and never add
+an `id` or test id for a test. Leave `aria-label`s, roles and headings
+stable: E2E specs and the a11y audit target them.
 No `"use client"` (delete it when you touch a file that still has one), no
 `next/*` imports. Copy is user-facing: draft it in the brand voice and flag
 every new string in your report for sign-off.

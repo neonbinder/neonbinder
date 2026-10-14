@@ -1628,3 +1628,155 @@ describe("NEO-307: a stint never links to a team's past — it gets its step", (
     expect(await stagedRows(t)).toEqual([]);
   });
 });
+
+// ===========================================================================
+// NEO-341 — "Skip remaining names" and a lookup that lands mid-walk
+// ===========================================================================
+
+describe("NEO-341: a bulk skip takes the steps its rows staged, however late they landed", () => {
+  /**
+   * The bulk walk reads its page in a query and writes it in a mutation
+   * (NEO-301). CI caught a player's lookup landing in between: the row was
+   * still undecided, so the lookup settled it and staged "New Team: Kia
+   * Tigers" for him — a row the page never saw. The player was skipped, the
+   * step was not, and Confirm & Save never appeared.
+   */
+  async function skipPage(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    ids: Array<Id<"entityReviewQueue">>,
+  ): Promise<number> {
+    return t.mutation(internal.entityReviewQueue.decideRowsByIds, {
+      ids,
+      selectorOptionId: sportId,
+      batchId: BATCH,
+      action: "skip",
+      callerId: ADMIN_IDENTITY.subject,
+    });
+  }
+
+  async function skipCandidates(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ): Promise<Array<Id<"entityReviewQueue">>> {
+    const page = await t.query(internal.entityReviewQueue.listBulkCandidates, {
+      selectorOptionId: sportId,
+      batchId: BATCH,
+      action: "skip",
+      callerId: ADMIN_IDENTITY.subject,
+    });
+    return page.ids;
+  }
+
+  async function allRows(t: ReturnType<typeof convexTest>) {
+    return t.run((ctx) => ctx.db.query("entityReviewQueue").collect());
+  }
+
+  test("a career team (and its league) staged between the page read and the write is skipped with the player", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const wisdom = await insertRow(t, { sportId, kind: "player", name: "Patrick Wisdom" });
+    await insertRow(t, { sportId, kind: "player", name: "Still Looking" });
+
+    // The page is chosen while both players are still being looked up.
+    const ids = await skipCandidates(t, sportId);
+    expect(ids).toHaveLength(2);
+
+    // …and Wisdom's lookup lands before the write: it stages Kia Tigers, whose
+    // own lookup lands too and stages its league.
+    await landLookup(t, wisdom, [{ name: "Kia Tigers", fromYear: 2025 }]);
+    const kia = (await stagedRows(t)).find((r) => r.name === "Kia Tigers");
+    expect(kia).toBeDefined();
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: kia!._id as Id<"entityReviewQueue">,
+      status: "ready",
+      enrichment: { league: "KBO League" },
+    });
+    expect((await allRows(t)).map((r) => r.name).sort()).toEqual(
+      ["KBO League", "Kia Tigers", "Patrick Wisdom", "Still Looking"].sort(),
+    );
+
+    const decided = await skipPage(t, sportId, ids);
+
+    // Nothing is left undecided, so the wizard's summary is reachable.
+    const rows = await allRows(t);
+    expect(rows.filter((r) => !r.decision).map((r) => r.name)).toEqual([]);
+    for (const row of rows) expect(row.decision).toEqual({ action: "skip" });
+    // Counted once each: the two page rows and the two steps under them.
+    expect(decided).toBe(4);
+  });
+
+  test("a step the operator already answered keeps its answer", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const wisdom = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Patrick Wisdom",
+      status: "ready",
+    });
+    const kia = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Kia Tigers",
+      status: "ready",
+      source: { kind: "careerTeamOf", playerRowId: wisdom },
+      decision: { action: "create", create: { location: "Gwangju", name: "Kia Tigers" } },
+    });
+
+    const decided = await skipPage(t, sportId, [wisdom]);
+
+    expect(decided).toBe(1);
+    const kept = await t.run((ctx) => ctx.db.get(kia));
+    expect(kept!.decision).toMatchObject({ action: "create" });
+  });
+
+  test("a step staged for ANOTHER player who is not in the skip is left alone", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const skipped = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Patrick Wisdom",
+      status: "ready",
+    });
+    const kept = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Seiya Suzuki",
+      status: "ready",
+    });
+    const step = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Hiroshima Toyo Carp",
+      status: "ready",
+      source: { kind: "careerTeamOf", playerRowId: kept },
+    });
+
+    await skipPage(t, sportId, [skipped]);
+
+    expect((await t.run((ctx) => ctx.db.get(step)))!.decision).toBeUndefined();
+    expect((await t.run((ctx) => ctx.db.get(kept)))!.decision).toBeUndefined();
+  });
+
+  test("a lookup landing AFTER the skip stages nothing, and the wizard's re-stage call stages nothing either", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const wisdom = await insertRow(t, { sportId, kind: "player", name: "Patrick Wisdom" });
+
+    await skipPage(t, sportId, await skipCandidates(t, sportId));
+    await landLookup(t, wisdom, [{ name: "Kia Tigers", fromYear: 2025 }]);
+    // The wizard's belt-and-braces pass sends the row id alone (its career
+    // teams are read server-side). Typed names on a skipped row are refused
+    // outright instead (NEO-330, `entityReviewQueue.skipStaging.test.ts`).
+    const added = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: wisdom,
+      });
+
+    expect(added).toBe(0);
+    expect(await stagedRows(t)).toEqual([]);
+  });
+});

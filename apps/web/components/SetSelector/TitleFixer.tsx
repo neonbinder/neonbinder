@@ -166,7 +166,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               aria-describedby={
                 preview.confirming ? `${uid}-regen-confirm` : undefined
               }
-              className="rounded px-1 uppercase tracking-wide text-[#00B7FF] underline decoration-dotted focus:outline-none focus:ring-1 focus:ring-[#00B7FF] hover:text-white"
+              // a11y (2.5.8): min-h-6 lifts the 15px label line to a 24px
+              // target; the 10px caption type stays as it was.
+              className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#00B7FF] underline decoration-dotted focus:outline-none focus:ring-1 focus:ring-[#00B7FF] hover:text-white"
             >
               {preview.loading
                 ? "Rebuilding…"

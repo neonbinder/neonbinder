@@ -18,6 +18,18 @@
         "VITE_CLERK_PUBLISHABLE_KEY": "${VITE_CLERK_PUBLISHABLE_KEY:-}",
         "PAUSED_PLATFORMS": "${PAUSED_PLATFORMS:-}"
       }
+    },
+    "playwright-test": {
+      "command": "npx",
+      "args": [
+        "--no",
+        "--prefix",
+        "apps/web",
+        "playwright",
+        "run-test-mcp-server",
+        "-c",
+        "apps/web/playwright.config.ts"
+      ]
     }
   }
 }

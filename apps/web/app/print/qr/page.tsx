@@ -215,7 +215,7 @@ export default function QrCodePage() {
             />
           </div>
 
-          <p className="text-xs text-gray-500 break-all max-w-xs text-center">
+          <p className="text-xs text-gray-400 break-all max-w-xs text-center">
             {generatedUrl}
           </p>
 

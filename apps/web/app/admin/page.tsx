@@ -46,7 +46,7 @@ const TOOL_DETAILS: Record<
     description:
       "Resolve team colors, confirm ambiguous matches, and correct team details by hand.",
     icon: UserGroupIcon,
-    accent: "text-neon-purple group-hover:border-neon-purple/50",
+    accent: "text-neon-purple-text group-hover:border-neon-purple/50",
   },
   "/admin/franchises": {
     description:
@@ -54,7 +54,7 @@ const TOOL_DETAILS: Record<
     icon: BuildingOffice2Icon,
     // Deliberately the SAME accent as Teams. Franchises are not a fifth kind
     // of entity; they are a lens on team rows, and the shared colour says so.
-    accent: "text-neon-purple group-hover:border-neon-purple/50",
+    accent: "text-neon-purple-text group-hover:border-neon-purple/50",
   },
   "/admin/leagues": {
     description:

@@ -1535,30 +1535,18 @@ NeonBinder blends a **90s hobby-shop neon aesthetic** with **modern minimalism**
 - [ ] Use **Lexend** + **NeonBinder tokens** only (no hard-coded colors).  
 
 # E2E Testing
-- All plans should include everything needed to build
-- Plans should always include a Maestro test file to validate the functionality
-- When writing code we should only ever update the Maestro file if the text on the screen is slightly different that it would require us to udpate a matcher. 
-- If flow changes while writing code and it breaks a test only update it with permission from the user and an explination of why it broke
-- No code change should be considered finished without running `npm run test:e2e:single` for each test associated with this code change and `npm run test:e2e:smoke` once to validate no regression
+The suite is Playwright, in `apps/web/playwright/`; `apps/web/playwright/GUIDE.md` is the authoring and running guide and governs everything below.
 
-## Flow ordering: there isn't any
+- All plans should include everything needed to build.
+- **Every PR gets a spec that proves the feature live** (a new or extended `*.spec.ts` under `playwright/tests/`). Plans name it. "Unit tests plus a manual check" is not the proof.
+- **A coverage audit runs in every PR's audit round** (the `test-coverage-auditor` agent checks the diff against the suite); specs are authored or repaired by `playwright-e2e-author`.
+- When writing code, only update an existing spec if the text on screen is slightly different in a way that needs a locator updated. If a behaviour change breaks a spec, update it only with the user's permission and an explanation of why it broke. Retiring a spec requires replacement coverage first.
+- No code change is finished without running the specs that cover it locally, against the PR's Convex preview (see `GUIDE.md` -> Running), and `npm run test:e2e:typecheck`. Do not run the full suite locally; CI runs it on every push.
 
-**Write every flow self-contained.** It creates and uses its own per-worker data, or it reads the seeded baseline without mutating it. There is no way to say "run me after that other flow" — CI's work queue (`run-e2e-queue.sh`, NEO-49) hands flows to a homogeneous runner pool in no particular order, and the local runner distributes them across workers. A flow that only passes when some other flow ran first is a broken flow.
+## Spec ordering: there isn't any
 
-The one ordering that exists is the seed: `run-e2e-smoke.sh setup` runs `e2e-baseline.sh reset` then the scripted seed (`npm run setbuild`, `docs/operations/neo339-setbuild.md`) — a bulk load, not a flow; NEO-339 retired `flows/setup.yaml`. CI does it in the pre-matrix `seed` job; locally you run `npm run test:e2e -- setup` yourself.
+**Write every spec self-contained.** It creates and uses its own per-worker data, or it reads the seeded baseline without mutating it. CI splits spec files across 8 shards in no guaranteed order, one test account per shard. A spec that only passes when some other spec ran first is a broken spec.
 
-> NEO-260 deleted the `requires:` / `provides:` dependency graph that used to live in `run-e2e-smoke.sh`. No flow had carried one since NEO-49 replaced the model with the work queue. Don't add those tags to a new flow — nothing reads them.
+The one ordering that exists is the seed: the scripted `e2e-baseline.sh reset`, then the scripted baseline (NEO-339: `setbuild apply` of `playwright/seed/baseline.spec.json`, a bulk load through the set-building API, not a spec; `docs/operations/neo339-setbuild.md`), then each shard's `bootstrap` project. CI does it in the pre-shard seed jobs; locally run `npm run test:e2e:seed` (`./e2e-seed.sh`, needs `CONVEX_NAME`) yourself against a PR preview, never shared dev.
 
-## Serialisation tags (`run-e2e-smoke.sh`, local only)
-
-Two tags in a flow's top-level `tags:` block still put it on a dedicated serial worker in the **local** runner. No flow carries either today; reach for one only if your flow genuinely has the conflict described.
-
-| Tag | When to use it | Effect |
-|---|---|---|
-| `isolated:true` | Your flow wipes or rewrites global tables (`selectorOptions` / `cardChecklist` / `players` / `teams`) and assumes a fresh DB. | Flow runs alone, serially, on a dedicated worker. |
-| `serial-marketplace` | Your flow saves or tests BSC / SportLots credentials, hitting `/login/bsc` or `/login/sportlots` on the browser service. | Flow serializes with other marketplace flows on a dedicated worker (the browser service 503s under concurrent marketplace logins). Runs concurrently with everything else. |
-| (neither) | Your flow is parallel-safe — it touches only the per-worker test user's own state and doesn't depend on global data. | Distributed across workers in parallel. This is what you want. |
-
-`serial-global` is a legacy alias for `isolated:true` and is still recognized for backwards compat. Prefer `isolated:true`.
-
-Neither tag has any effect in CI: the work queue does not read them. A flow that needs one is a flow CI cannot schedule safely, so treat it as a design problem first.
+Mutating shared data (a real, marketplace-backed set) is limited to registered sole-writer specs; everything else writes to a per-worker hand-made set. See `GUIDE.md` (R7, R7a) and `playwright/SET-REGISTRY.md`.

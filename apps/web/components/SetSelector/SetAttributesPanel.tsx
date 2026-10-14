@@ -611,7 +611,13 @@ export default function SetAttributesPanel({
               onDeleted={onDeleted}
             />
           </div>
-          <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
+          {/* NEO-341: `relative` so this line's `truncate` clips the team's
+              `sr-only` "Team:" too. Unpositioned, that absolute span took
+              binder-layout's wrapper as its containing block, escaped the
+              clip at the end of the nowrap team name, and widened a 412px
+              page by ~50px, sliding the whole page (and the card drawer)
+              sideways on a phone. */}
+          <p className="relative text-xs text-gray-400 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
             {/* NEO-277: the set's team, said the way a collector says it —
                 "Bulls", in Durham Bulls blue — on the collapsed summary bar,
@@ -740,7 +746,7 @@ export default function SetAttributesPanel({
         // while the panel is collapsed is still seen. (The header control that
         // first needed this, "Mark as base set", went with NEO-334.)
         <div
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
           role="status"
           aria-live="polite"
         >

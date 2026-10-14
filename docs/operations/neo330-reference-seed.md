@@ -144,12 +144,14 @@ failure you see the exit code and the first error line, cut off at
 
 ## 4. How CI uses it
 
-The E2E seed job downloads `$NEONBINDER_REFERENCE_SEED_URI` to the runner's
-temp directory and exports its path as `NB_REFERENCE_BUNDLE`. The seed
-step's reset, `e2e-reset-for-seed.sh --deployment "$CONVEX_NAME"` (shared with
-the local `npm run test:e2e -- setup`, NEO-339), then runs these steps against
-the PR's preview, before the scripted seed's `setbuild apply`
-(`docs/operations/neo339-setbuild.md`):
+Both E2E seed jobs (`seed` for the desktop pass, `seed-mobile` for the mobile
+pass; each reset wipes the earlier pass's data) download
+`$NEONBINDER_REFERENCE_SEED_URI` to the runner's temp directory and export its
+path as `NB_REFERENCE_BUNDLE`. `apps/web/e2e-seed-reset.sh` (also behind
+`npm run test:e2e:seed`, `./e2e-seed.sh`) then runs these steps against the
+PR's preview, before the scripted seed's `setbuild apply` of
+`playwright/seed/baseline.spec.json` (NEO-339,
+`docs/operations/neo339-setbuild.md`):
 
 1. `cli.mjs check "$NB_REFERENCE_BUNDLE"`, before anything is touched.
 2. `e2e-baseline.sh reset --except-reference-seed`. This is the scripted
@@ -226,7 +228,7 @@ tokens sorted: "Wayne Gretzky" → `gretzky wayne`) on `players` /
 `playerAliases` / `teams` with the `by_name_normalized_and_sport_id` index.
 
 **4. Compare against what each flow needs** (each flow's header and
-`apps/web/.maestro/SET-REGISTRY.md` carry the full reasoning):
+`apps/web/playwright/SET-REGISTRY.md` carry the full reasoning):
 
 | Flow | Fixture | Needs, at least |
 |---|---|---|
@@ -237,7 +239,7 @@ tokens sorted: "Wayne Gretzky" → `gretzky wayne`) on `players` /
 | `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League | team steps for both "Navegantes del Magallanes" and "Tigres de Aragua"; exactly one Baseball team "Pittsburgh Crawfords" with no aliases; lookups settling well inside the flow's 180 s ceiling (measured ~144 s) |
 | `checklist-wizard-career-team-entry`, `-link-to-existing-player`, `-back-to-matching-resumes-decisions` | Baseball 2024 Topps Big League | the player rows and link target each header names |
 | `admin/player-live-wikidata-enrichment` | — | its live-proof name absent from `players` and `playerAliases` (README, "Enrichment fixtures") |
-| the scripted seed (`.maestro/seed/baseline.spec.json`) | Baseball 2024 Topps Chrome | `setbuild apply` finishes with no open decision: every name its review stages (an unknown name, or a same-name player's pick step) has a spec answer. Read-only check first: `npm run setbuild -- draft-set --path "Baseball/2024/Topps/Topps Chrome" …` against the preview (`docs/operations/neo339-setbuild.md` §2.4) drafts every review name the catalogue lacks as `create` and every same-name player as a fill-in; each must match `baseline.spec.json`'s answer. The same goes for 2024 Topps Chrome Black and `oneshot.spec.json` (the `setbuild-oneshot` job checks it every run) |
+| the scripted seed (`playwright/seed/baseline.spec.json`) | Baseball 2024 Topps Chrome | `setbuild apply` finishes with no open decision: every name its review stages (an unknown name, or a same-name player's pick step) has a spec answer. Read-only check first: `npm run setbuild -- draft-set --path "Baseball/2024/Topps/Topps Chrome" …` against the preview (`docs/operations/neo339-setbuild.md` §2.4) drafts every review name the catalogue lacks as `create` and every same-name player as a fill-in; each must match `baseline.spec.json`'s answer. The same goes for 2024 Topps Chrome Black and `oneshot.spec.json` (the `setbuild-oneshot` job checks it every run) |
 
 **5. Fix what drained.** A fixture that no longer raises what its flow needs
 gets a new set, and a new real set needs the owner's approval

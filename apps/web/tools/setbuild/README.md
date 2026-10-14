@@ -154,15 +154,17 @@ value is a `${VAR}` reference.
 
 ## CI
 
-`e2e.yml` `seed` job: compute both phrases with `confirm-phrase`, reset,
-`apply --spec .maestro/seed/baseline.spec.json`, `mcp-smoke --spec
-.maestro/seed/parallel.spec.json --expect .maestro/seed/mcp-smoke.expect.json`
+`e2e.yml` `seed` and `seed-mobile` jobs (one per pass): compute both phrases with `confirm-phrase`, reset,
+`apply --spec playwright/seed/baseline.spec.json`, `mcp-smoke --spec
+playwright/seed/parallel.spec.json --expect playwright/seed/mcp-smoke.expect.json`
 (its `--confirm` must equal `nb_plan`'s phrase). `e2e-seed.sh` computes its
-phrase the same way. The reports upload as the `setbuild-seed` artifact.
+phrase the same way (it applies `parallel.spec.json` instead of the MCP
+smoke). The reports upload as the `setbuild-seed` / `setbuild-seed-mobile`
+artifacts.
 
-`e2e.yml` `setbuild-oneshot` job (after `seed`, beside the runners, required
-by the gate): `oneshot-smoke --answers .maestro/seed/oneshot.spec.json
---expect .maestro/seed/oneshot.expect.json` drafts 2024 Topps Chrome Black,
+`e2e.yml` `setbuild-oneshot` job (after `seed`, beside the desktop shards, once
+per run, required by the gate; `seed-mobile` waits for it): `oneshot-smoke --answers playwright/seed/oneshot.spec.json
+--expect playwright/seed/oneshot.expect.json` drafts 2024 Topps Chrome Black,
 checks the draft merged with the committed answers has the committed spec's
 digest (`mergeDraftAnswers`), then plans, applies (`stopAt: "end"`) and
 inspects. The draft's only open decisions may be card conflicts and review

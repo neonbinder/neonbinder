@@ -1,89 +1,90 @@
 #!/bin/bash
 # ─── Seed the canonical E2E data (NEO-339: scripted reset + setbuild) ────────
-# Scripted reset (NEO-214 — no more "Reset Set Builder Data" button; see
-# ./e2e-baseline.sh) THEN `npm run setbuild -- apply` of the declarative
-# baseline spec (.maestro/seed/baseline.spec.json). There is no Maestro flow in
-# the seed any more (flows/setup.yaml is gone): setbuild signs in as the
-# worker-0 test admin and drives the same public admin Convex functions the Set
-# Builder UI calls. This is a never-shared-dev, destructive reset, not an
-# incremental seed. After it completes the deployment holds the baseline the
-# spec describes (2024 Topps Chrome Base + Insert + Parallel, Big League,
-# 2026 Bowman, ...). See ./e2e-baseline.sh --help for confirmation knobs
-# (E2E_BASELINE_CONFIRM) and docs/operations/neo339-setbuild.md for the tool.
+# The local twin of e2e.yml's `seed` / `seed-mobile` jobs:
+#   1. ./e2e-seed-reset.sh — `e2e-baseline.sh reset` (NEO-214), plus, with
+#      NB_REFERENCE_BUNDLE set, the NEO-330 reference-catalogue load;
+#   2. `npm run setbuild -- apply` of the declarative baseline spec
+#      (playwright/seed/baseline.spec.json): setbuild signs in as the worker-0
+#      test admin and drives the same public admin Convex functions the Set
+#      Builder UI calls (2024 Topps Chrome Base + Insert + Parallel, Big
+#      League, 2026 Bowman's SportLots review, ...);
+#   3. `setbuild apply` of playwright/seed/parallel.spec.json — the one base
+#      parallel the baseline builds from Base (CI builds it through
+#      `setbuild mcp-smoke`, which needs the MCP server; same row, same
+#      server path).
+# There is no Playwright project in the seed: the specs read what this builds.
+# Destructive: the reset empties its target. Never point it at shared dev
+# while other sessions use it (CLAUDE.md, Local E2E rule 3); prefer a PR
+# preview. See docs/operations/neo339-setbuild.md for the tool.
 #
-# The reset AND the apply are both passed the deployment derived from THIS
-# harness's own CONVEX_SITE_URL (below) rather than left to their own default
-# resolution (CONVEX_DEPLOYMENT in .env.local/.env.convex) — those are normally
-# the same deployment, but not guaranteed: this repo's own worktree setup
-# (CLAUDE.md) has a maintainer re-point VITE_CONVEX_URL (which e2e-local-up.sh
-# derives CONVEX_SITE_URL from) at a PR's Convex preview while
-# CONVEX_DEPLOYMENT in .env.local still names dev (F5). An unqualified reset in
-# that shape would silently wipe the WRONG deployment — the one the harness
-# ISN'T running against.
+# Target: CONVEX_NAME (the deployment slug, e.g. a PR preview's) is REQUIRED,
+# and both the reset and the apply are given exactly that deployment, never
+# left to their own default resolution (.env.local's CONVEX_DEPLOYMENT may
+# still name dev while your Vite points at a preview).
 #
-# Auth: `--auth testing` against the local Vite at $APP_URL (default
-# http://localhost:3000). TESTING_ENDPOINT_SECRET and VITE_CLERK_PUBLISHABLE_KEY
-# are read from .env.local (--env-file; values already in your environment win)
-# and must be the ones the running Vite uses. The confirm phrase is computed
-# offline by `setbuild confirm-phrase` for the harness's own deployment and
-# this spec's content (BUILD <host> <scope> <digest>): the apply cannot land
-# anywhere else, nor run a spec other than the one the phrase was made for.
+# Auth: `--auth testing` against the Vite at $APP_URL (default
+# http://localhost:3000), which must be wired to the same deployment.
+# TESTING_ENDPOINT_SECRET and VITE_CLERK_PUBLISHABLE_KEY are read from
+# .env.local (--env-file; values already in your environment win) and must be
+# the ones the running Vite uses. The confirm phrase is computed offline by
+# `setbuild confirm-phrase` for that deployment and that spec's content
+# (BUILD <host> <scope> <digest>): the apply cannot land anywhere else, nor
+# run a spec other than the one the phrase was made for.
 #
-# Prereq: the harness must be up (./e2e-local-up.sh or `npm run e2e:local`) —
-# this reads .e2e-local/env that the harness writes. Without a harness, export
-# CONVEX_SITE_URL yourself (https://<deployment>.convex.site).
-#
-# Usage:  npm run e2e:local:seed       (or)   ./e2e-seed.sh
-#         ./run-e2e-smoke.sh setup     (same thing)
+# Usage:  CONVEX_NAME=<slug> APP_URL=http://localhost:3002 npm run test:e2e:seed
 # Knobs:  APP_URL, PAUSED_PLATFORMS (match the target's NEONBINDER_PAUSED_PLATFORMS),
-#         E2E_SEED_SPEC (default .maestro/seed/baseline.spec.json),
-#         NB_REFERENCE_BUNDLE (a local reference-seed bundle zip: load prod's
-#         catalogue before the apply, as CI does — NEO-330, see
-#         ./e2e-reset-for-seed.sh and docs/operations/neo330-reference-seed.md)
+#         E2E_SEED_SPEC (default playwright/seed/baseline.spec.json),
+#         NB_REFERENCE_BUNDLE (load prod's catalogue after the reset, as CI
+#         does — ./e2e-seed-reset.sh, docs/operations/neo330-reference-seed.md)
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
-if [ -f .e2e-local/env ]; then
-  # shellcheck disable=SC1091
-  . .e2e-local/env
-elif [ -z "${CONVEX_SITE_URL:-}" ]; then
-  echo "✗ harness not running — start it first: npm run e2e:local (or export CONVEX_SITE_URL)" >&2
-  exit 1
-fi
+[ -n "${CONVEX_NAME:-}" ] \
+  || { echo "✗ CONVEX_NAME is required: the deployment slug to reset and seed (e.g. the PR preview's)." >&2; exit 1; }
+export CONVEX_NAME
 
-CONVEX_SLUG="${CONVEX_SITE_URL#https://}"; CONVEX_SLUG="${CONVEX_SLUG%.convex.site}"
-[ -n "$CONVEX_SLUG" ] && [ "$CONVEX_SLUG" != "$CONVEX_SITE_URL" ] \
-  || { echo "✗ could not derive a deployment slug from CONVEX_SITE_URL='${CONVEX_SITE_URL:-}'" >&2; exit 1; }
-
-SPEC="${E2E_SEED_SPEC:-.maestro/seed/baseline.spec.json}"
-[ -f "$SPEC" ] || { echo "✗ spec not found: $SPEC" >&2; exit 1; }
-CONVEX_URL="https://${CONVEX_SLUG}.convex.cloud"
+SPEC="${E2E_SEED_SPEC:-playwright/seed/baseline.spec.json}"
+PARALLEL_SPEC="playwright/seed/parallel.spec.json"
+for f in "$SPEC" "$PARALLEL_SPEC"; do
+  [ -f "$f" ] || { echo "✗ spec not found: $f" >&2; exit 1; }
+done
+CONVEX_URL="https://${CONVEX_NAME}.convex.cloud"
 # Offline: parses the spec and hashes it; no network, no sign-in. A spec that
 # does not parse stops here, before the reset.
 PHRASE="$(npm run --silent setbuild -- confirm-phrase --spec "$SPEC" --convex-url "$CONVEX_URL")" \
   || { echo "✗ could not compute the confirm phrase for $SPEC (see above)." >&2; exit 1; }
+PAR_PHRASE="$(npm run --silent setbuild -- confirm-phrase --spec "$PARALLEL_SPEC" --convex-url "$CONVEX_URL")" \
+  || { echo "✗ could not compute the confirm phrase for $PARALLEL_SPEC (see above)." >&2; exit 1; }
 APP_URL="${APP_URL:-http://localhost:3000}"
 ENV_FILE_ARGS=()
 [ -f .env.local ] && ENV_FILE_ARGS=(--env-file .env.local)
 
 # The reset (and, with NB_REFERENCE_BUNDLE set, the NEO-330 reference
-# catalogue load) is e2e-reset-for-seed.sh's job, shared with CI's seed job.
-./e2e-reset-for-seed.sh --deployment "$CONVEX_SLUG" || { echo "✗ reset failed — aborting seed." >&2; exit 1; }
+# catalogue load) is e2e-seed-reset.sh's job, shared with CI's seed jobs.
+./e2e-seed-reset.sh || { echo "✗ reset failed — aborting seed." >&2; exit 1; }
 
-echo "── seeding canonical data (setbuild apply $SPEC → $CONVEX_SLUG, app $APP_URL) ──"
-if npm run setbuild -- apply \
-    --spec "$SPEC" \
+apply() {  # spec phrase report
+  npm run setbuild -- apply \
+    --spec "$1" \
     --auth testing \
     --app-url "$APP_URL" \
     --convex-url "$CONVEX_URL" \
     --worker 0 \
     --paused-platforms "${PAUSED_PLATFORMS:-}" \
-    --confirm "$PHRASE" \
-    --report setbuild-seed-report.json \
-    ${ENV_FILE_ARGS[@]+"${ENV_FILE_ARGS[@]}"}; then
-  echo "✅ canonical data seeded (report: setbuild-seed-report.json)."
-else
+    --confirm "$2" \
+    --report "$3" \
+    ${ENV_FILE_ARGS[@]+"${ENV_FILE_ARGS[@]}"}
+}
+
+echo "── seeding canonical data (setbuild apply $SPEC → $CONVEX_NAME, app $APP_URL) ──"
+if ! apply "$SPEC" "$PHRASE" setbuild-seed-report.json; then
   echo "✗ setbuild apply did not finish — aborting seed." >&2
   echo "  An open decision prints as a fill-in template above; see docs/operations/neo339-setbuild.md." >&2
   exit 1
 fi
+echo "── building the seeded base parallel (setbuild apply $PARALLEL_SPEC) ──"
+if ! apply "$PARALLEL_SPEC" "$PAR_PHRASE" setbuild-parallel-report.json; then
+  echo "✗ the seeded parallel did not build — aborting seed." >&2
+  exit 1
+fi
+echo "✅ canonical data seeded (reports: setbuild-seed-report.json, setbuild-parallel-report.json)."

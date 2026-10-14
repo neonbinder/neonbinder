@@ -1648,7 +1648,7 @@ export default function EntityColumn({
       // a11y: -1 keeps it out of the tab order while still being a valid
       // programmatic focus target for the park above.
       tabIndex={-1}
-      className="min-w-[260px] max-w-[340px] flex-shrink-0 flex flex-col gap-4 focus:outline-none"
+      className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4 focus:outline-none"
     >
       {selector}
       {useEnsureSync
@@ -1703,7 +1703,7 @@ export default function EntityColumn({
         // because a background sync can land while this column is scrolled well
         // off-screen and an in-flow banner would announce to nobody.
         <div
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-amber-400/60 rounded text-xs text-amber-300 shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-amber-400/60 rounded text-xs text-amber-300 shadow-lg"
           role="status"
           aria-live="polite"
         >

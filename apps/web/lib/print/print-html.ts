@@ -115,7 +115,19 @@ export function imageBodyHtml(options: ImageBodyHtmlOptions): string {
   return `<img src="${escapeHtml(src)}" alt="" style="width:${widthIn}in;height:${heightIn}in;display:block">`;
 }
 
-function buildDocument(options: PrintHtmlDocumentOptions): string {
+/**
+ * The print iframe's whole document. Exported for its unit test only.
+ *
+ * ## Why it pins a light scheme and black text
+ * The app around the iframe is dark-only (`color-scheme: dark` on `:root`,
+ * `#ededed` body text, NEO-341). None of that crosses into a `srcdoc`
+ * document, but the iframe ELEMENT inherits the dark scheme, and an embedded
+ * document's `prefers-color-scheme` follows its embedder. A label printed on
+ * white paper must never pick up either, so the document declares
+ * `color-scheme: light` and black text itself instead of relying on browser
+ * defaults. Label CSS still sets its own colours on top.
+ */
+export function buildDocument(options: PrintHtmlDocumentOptions): string {
   const { title, bodyHtml, css, page } = options;
   return `<!doctype html>
 <html>
@@ -129,10 +141,14 @@ function buildDocument(options: PrintHtmlDocumentOptions): string {
         size: ${page.widthIn}in ${page.heightIn}in;
         margin: 0;
       }
+      :root {
+        color-scheme: light;
+      }
       html, body {
         margin: 0;
         padding: 0;
         background: #fff;
+        color: #000;
       }
       /* Keep backgrounds/borders when the browser would otherwise drop them. */
       * {

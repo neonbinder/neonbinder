@@ -6,26 +6,17 @@ import { useId } from "react";
  * element's `className`. Pass a short `key` to disambiguate multiple fields that
  * live in the same component; omit it for a single-field component.
  *
- * ## Why this exists (NEO-39)
- * Maestro's `--platform web` driver implements `inputText` by reading
- * `document.activeElement`, then RE-FINDING that element via
- * `findElement(By.xpath( window.maestro.createXPathFromElement(activeElement) ))`
- * before `sendKeys`. `createXPathFromElement` builds the XPath from a unique
- * `id` if present, else from the element's `class`, else positional index.
+ * ## Legacy (NEO-39): kept for the primitives, not used by the E2E suite
+ * This marker class was built for the retired Maestro web driver, whose
+ * `inputText` re-found the focused field by an XPath built from its unique
+ * `id`, else its `class`, else its position. Our inputs share identical
+ * Tailwind classes and carry no `id`, so keystrokes landed in the FIRST
+ * matching field (mobile-dev-inc/maestro#1083, closed "not planned"). A unique
+ * class per field made that XPath resolve to the right element.
  *
- * Our editable inputs have no `id` and frequently share an identical Tailwind
- * `className`, so the generated XPath (`input[@class="…"]`) matches EVERY such
- * input and Selenium types into the FIRST match instead of the field the test
- * tapped — i.e. a metadata edit lands in a feature field, etc. This is the
- * upstream issue mobile-dev-inc/maestro#1083 (closed "not planned"), so the fix
- * has to live on our side.
- *
- * A unique class per field makes that XPath resolve to the exact element, so
- * `inputText` lands where a human tapped. We use a **class** (not an `id`)
- * deliberately: Maestro's hierarchy sets `resource-id = node.id || node.ariaLabel
- * || …`, so adding an `id` would override the aria-label and break every
- * `tapOn id: "<aria-label>"` selector. A class never touches `resource-id`, so
- * selection and accessibility are unaffected.
+ * The Playwright suite locates fields by role and accessible name and never
+ * reads this class. The hook stays because the primitives and their unit tests
+ * still emit and assert it; removing it is a separate cleanup.
  *
  * `useId()` gives a value that is stable across re-renders and unique per
  * component instance (so two instances, or two rows in a list, never collide);

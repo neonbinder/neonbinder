@@ -339,7 +339,7 @@ export default function MultiSourcePanel({
             {/* NEO-312: shared with copy that points the operator here. */}
             {MULTI_SOURCE_HEADING}
           </h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-gray-400 mt-0.5">
             Cards fetched for this variant come from every attached BSC and
             SportLots set. Users can filter the checklist by source.
           </p>
@@ -551,7 +551,7 @@ function SideColumn({
                 title={`Attached before sources were labelled — re-attach it from “${ATTACH_MORE_LABEL}” to say which set it is.`}
               >
                 {u.label}{" "}
-                <span className="text-[10px] text-gray-500 break-all">
+                <span className="text-[10px] text-gray-400 break-all">
                   {u.id}
                 </span>
               </li>
@@ -810,7 +810,7 @@ function Chip({
           · {chip.qualifier}
         </span>
       )}
-      <span className="text-[10px] text-gray-500 break-all" aria-hidden>
+      <span className="text-[10px] text-gray-400 break-all" aria-hidden>
         {chip.id}
       </span>
       {chip.facet && (

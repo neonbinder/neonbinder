@@ -75,3 +75,4 @@
 - [Patterns neo334 title is kind](patterns_neo334_title_is_kind.md) — title-as-kind door enumeration; id-less intra-batch twins bypass the sameName twin count; exactly-one readers
 - [Patterns neo333 split raw and report](patterns_neo333_split_raw_and_report.md) — raw-beside-split must be bounded at each consumer; read-only report = internalQuery page + budgeted action; uncapped budget/uncaught page error lose all output
 - [Patterns neo331 context-id side channel](patterns_neo331_context_id_side_channel.md) — signed-in query ranking by an admin-gated row leaks it via tier/order; old public query left live and unclamped after a client move
+- [Playwright report exposure](patterns_playwright_report_exposure.md) — blob/HTML reports embed error-context (ARIA snapshot, password values in plaintext); results/ glob is not a scope; .playwright-mcp; host guard

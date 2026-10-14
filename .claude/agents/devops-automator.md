@@ -59,7 +59,7 @@ does a thing before adding a new way to do it.
 ## Workflows (`.github/workflows/`)
 
 `pr-pipeline.yml` (every PR; `ci-gate` is the single required check),
-`e2e.yml` (reusable Maestro work-queue), `release.yml` (the **only**
+`e2e.yml` (reusable sharded Playwright E2E), `release.yml` (the **only**
 push-to-`main` deploy driver), `browser.yml` and `preprocess.yml` (area CI +
 per-PR `pr-<N>` no-traffic previews), `browser-deploy.yml` and
 `preprocess-deploy.yml` (blue/green lanes, `workflow_call`), `preview-cleanup.yml`,
