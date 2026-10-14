@@ -103,6 +103,9 @@ export function confirmSaveButton(page: Page): Locator {
  */
 export const AUTOGRAPH_STEP_SUBTITLE = "Autographed cards"; // COPY: placeholder, mirrors STEP_SUBTITLE.autograph
 
+/** What the step says when its held Next is pressed with nothing picked (placeholder). */
+export const AUTOGRAPH_BLOCKED_HINT = "Pick how they're signed first"; // COPY: placeholder, mirrors AUTOGRAPH_NEXT_BLOCKED
+
 /** The step's two answers, as the tiles read ("On card" / "Sticker"; placeholder). */
 export type AutographChoice = "On card" | "Sticker";
 

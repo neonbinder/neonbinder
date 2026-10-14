@@ -293,6 +293,34 @@ export async function drillToBaseVariant(
   await expect(syncChecklistButton(page)).toBeVisible();
 }
 
+/** A live two-sided (BSC + SportLots) insert-level fetch on data nothing synced yet: the flows' 240 s. */
+export const INSERT_FETCH = 240_000;
+
+/**
+ * Bowman Draft's Insert column is reconciled by more than one spec (each its
+ * own insert, never the same row), in whichever order the shards run them. So
+ * after the `Insert` type is clicked the Reconcile Inserts dialog is reached
+ * one of two ways, and this takes either:
+ *  - the column was EMPTY: selecting the type fires its own two-sided sync,
+ *    which opens the dialog by itself (a cold fetch, `INSERT_FETCH`);
+ *  - another spec already saved the column: it lists its sets (its "Inserts"
+ *    listbox renders only once it holds a row) and the dialog opens from
+ *    "Sync Inserts".
+ *
+ * Contract: ENTRY the `Insert` variant type was just clicked. EXIT the dialog
+ * is open (returned, not axe-checked: the caller names what it is about).
+ * Never presses Sync Inserts on an empty column, so the cold path is unchanged.
+ */
+export async function openInsertsReconcile(page: Page): Promise<Locator> {
+  const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
+  await expect(reconcile.or(page.getByRole("listbox", { name: "Inserts" })).first()).toBeVisible({
+    timeout: INSERT_FETCH,
+  });
+  if (!(await reconcile.isVisible())) await page.getByRole("button", { name: "Sync Inserts" }).click();
+  await expect(reconcile).toBeVisible({ timeout: INSERT_FETCH });
+  return reconcile;
+}
+
 /** A never-synced level pays a cold marketplace sync (the flow's 150 s). */
 export const COLD_SYNC = 150_000;
 
