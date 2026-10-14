@@ -7,7 +7,9 @@
 // is how it is reached. What a query matches is lib/cards/card-search.ts's rule
 // (unit-tested there and in CardChecklist.search.test.tsx); this spec proves
 // the control on a real committed checklist: the field, its count, its clear
-// button, its empty state.
+// button, its empty state, and the platform keywords (`bsc`, `sl`), which read
+// whether a card's marketplace slot is filled and nothing else, and AND with
+// the other terms.
 //
 // FIXTURE: 2024 Topps Chrome > Insert > Future Stars, provisioned by the seed
 // (`#FS-1` … `#FS-20`). READ-ONLY (SET-REGISTRY.md -> "Read-only consumers of
@@ -76,6 +78,57 @@ test(
     // More than one row again (the list is virtualised, so only the rows in
     // view are counted; two prove the narrowing is gone).
     await expect(cardRows.nth(1)).toBeVisible();
+
+    // ── Platform keywords. A term that IS a platform's code matches whether
+    // that marketplace slot is filled on the card (never text, so "sl" cannot
+    // find "Islanders"), and ANDs with the other terms. The count carries the
+    // list's real size, read from the "FS-5" search above.
+    const countOf = (found: number) => page.getByText(new RegExp(`^${found} of ${total} cards?$`));
+
+    // `bsc`: every card is BSC-linked, so the whole list.
+    await search.fill("bsc");
+    await expect(countOf(total)).toBeVisible();
+    await expect(cardRows.first()).toBeVisible();
+    await expect(cardRows.nth(1)).toBeVisible();
+
+    // The spelled-out name is the same keyword.
+    await search.fill("buysportscards");
+    await expect(countOf(total)).toBeVisible();
+    await expect(cardRows.first()).toBeVisible();
+
+    // `FS-5 bsc`: the keyword ANDs with a term, leaving the one card.
+    await search.fill("FS-5 bsc");
+    await expect(countOf(1)).toBeVisible();
+    await expect(editCardButton(page, "FS-5")).toBeVisible();
+    await expect(cardRows).toHaveCount(1);
+
+    // `bsc zzqxnomatch`: the keyword holds, the other term finds nothing, so
+    // the AND is empty (the keyword does not rescue it).
+    await search.fill("bsc zzqxnomatch");
+    await expect(page.getByText('No cards match "bsc zzqxnomatch".')).toBeVisible();
+    await expect(countOf(0)).toBeVisible();
+    await expect(cardRows).toHaveCount(0);
+    await expectAccessible(page, { label: "Future Stars checklist, platform keyword with no match" });
+
+    // `sl`: SportLots linkage. Live, every card is paired and all of them
+    // answer; paused, no card has a SportLots id and none does.
+    await search.fill("sl");
+    if (env.SL_PAUSED) {
+      await expect(page.getByText('No cards match "sl".')).toBeVisible();
+      await expect(countOf(0)).toBeVisible();
+      await expect(cardRows).toHaveCount(0);
+      await search.fill("FS-5 sl");
+      await expect(page.getByText('No cards match "FS-5 sl".')).toBeVisible();
+      await expect(cardRows).toHaveCount(0);
+    } else {
+      await expect(countOf(total)).toBeVisible();
+      await expect(cardRows.first()).toBeVisible();
+      await expect(cardRows.nth(1)).toBeVisible();
+      await search.fill("FS-5 sl");
+      await expect(countOf(1)).toBeVisible();
+      await expect(editCardButton(page, "FS-5")).toBeVisible();
+      await expect(cardRows).toHaveCount(1);
+    }
 
     // ── A query that matches nothing says so, by the query, and lists no row.
     await search.fill("zzqxnomatch");
