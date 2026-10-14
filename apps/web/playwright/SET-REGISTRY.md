@@ -562,8 +562,9 @@ took the one-marketplace path.
 
 Proposed 2026-10-13 for NEO-343 (BSC's "<Team> TL" team-leader cards) and
 NEO-344 (bare conflict values, and the picked value is the one saved).
-Approved by Jason the same day, with the flow's full shape: the fetch, no
-team-leader conflicts, then the pick, the save and the read-back.
+Approved by Jason the same day, with the spec's full shape: the fetch, no
+team-leader conflicts, then the pick, the save and the read-back. The spec is
+`tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts`.
 
 **Why this set.** BSC writes a team-leader card as `<Team> TL` only on Topps'
 flagship football bases (2013, 2014, 2015) and their 2013 Mini / 2015
@@ -588,9 +589,9 @@ the app).**
 | pre-fix header (prod, 2026-10-13) | 40 name conflicts, 38 player conflicts |
 | expected natural conflicts after the fix | a handful (#72 Perry Riley / Riley Jr., #247 Robert Griffin III / Robert Griffin, #257 Super Bowl XLVIII / Seattle Seahawks Sb Champions, #405 George Atkinson III / George Atkinson, by name comparison) |
 
-**What the flow relies on, to pin on its first run:** the dialog's matched
+**What the spec relies on, to pin on its first run:** the dialog's matched
 list opens on `#1a … #6a` with #6a (New England Patriots) the sixth row and
-matched; `#442` is BSC-only; at least one SportLots-only card heads the
+matched; `#442` is BSC-only (reached in the dialog through `Filter BSC cards`); at least one SportLots-only card heads the
 SportLots column; both counts land under 32; the picker's first-ranked
 candidate on each side is this set's Base (`2014 Topps Base Set` on
 SportLots); what the review wizard stages (up to 32 team names reported as
@@ -601,12 +602,14 @@ and the wall-clock here.
 Variant Types ~15 s, Base picker ~10 s (`checklist-one-marketplace-…`'s
 measured cold path), a 554 + 447 card two-sided fetch ~60–90 s (Topps Big
 League's 310 cards took ~40 s), the dialog steps ~40 s, the commit with a
-skipped wizard ~20–60 s, the re-entry and read-back ~30 s: **~4–5 minutes**,
-inside the 600 s kill but among the suite's longest flows.
+skipped wizard ~20–60 s, the re-entry and the two checklist-search read-backs
+~30 s: **~4–5 minutes**, among the suite's longest specs (`timings.json`
+carries a placeholder of 270 s per project until CI refreshes it).
 
-**Sole writer of Football → 2014.** No other flow opens the year. The flow
+**Sole writer of Football → 2014.** No other spec opens the year. The spec
 commits a deliberately mis-paired card (#442), so nothing else may read this
-set's cards.
+set's cards. FRESH-ONLY: a second run on the same seed finds the checklist
+committed and fails at its empty-checklist assert; re-seed first.
 
 ### The one sanctioned read-only visitor
 
@@ -2422,6 +2425,7 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/base-mapping-cancel-recovers.spec.ts`
 - `tests/set-selector/checklist-bsc-team-enrichment.spec.ts`
 - `tests/set-selector/checklist-renders-rich-fields.spec.ts`
+- `tests/set-selector/checklist-search-narrows-and-clears.spec.ts` (NEO-343 — Insert › Future Stars; types into the checklist search and clears it; writes nothing)
 - `tests/set-selector/drill-restores-from-url.spec.ts` (NEO-224 — picks rows and goes Back; writes nothing)
 - `tests/set-selector/keyboard-only-drill.spec.ts` (NEO-224 — picks rows by keyboard; writes nothing)
 - `tests/set-selector/multi-source-panel-opens-dialog.spec.ts` (NEO-325: also reads the Attach dialog's SportLots pane; ticks nothing)
