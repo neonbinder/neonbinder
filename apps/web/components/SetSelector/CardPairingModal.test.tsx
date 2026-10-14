@@ -3480,120 +3480,64 @@ describe("CardPairingModal — drag-and-drop linking (NEO-189 follow-up)", () =>
 });
 
 /**
- * NEO-189 operator feedback — the Matched toggle sticks to the top of the
- * dialog's scroll body, so the collapse control is reachable from anywhere in
- * a 220-row list.
+ * NEO-189 operator feedback, revised by NEO-343 — the Matched toggle stays in
+ * reach however long the list is, by living ABOVE the scroller instead of
+ * sticking inside it.
  *
- * WHAT IS TESTABLE HERE, AND WHY IT IS ONLY THIS. `position: sticky` is a pure
- * layout behaviour and jsdom implements no layout at all: every box is 0×0,
- * nothing scrolls, and `getComputedStyle` returns the declared value whether
- * or not the element could ever stick. So a test that "scrolled" and asserted
- * the bar stayed put would pass on markup that is broken in a real browser —
- * worse than no test.
- *
- * What CAN be pinned is the set of conditions sticky needs, all of which are
- * structural:
- *   - the declaration is present, on a full-width opaque container rather than
- *     on the button (which is only as wide as its text);
- *   - it is inside the <section> that owns the matched list, which is what
- *     makes the bar un-stick at the list's end instead of hovering over the
- *     unmatched columns;
- *   - nothing between that container and the scroll container introduces its
- *     own overflow, transform, filter or containment — any one of those
- *     silently retargets the containing block and kills sticky. This is the
- *     failure mode a future wrapper div would introduce, and it is invisible
- *     in review;
- *   - the scroller carries scroll-padding-top, which is what stops the
- *     focus-driven auto-scroll after a link from parking the merged row
- *     underneath the bar.
+ * Why not sticky: a sticky bar paints over whatever row is under it, so at
+ * most scroll positions a row's own button is half hidden behind the toggle
+ * (axe-core target-size: "partially obscured", and only at some scrollTops).
+ * jsdom has no layout, so what can be pinned is the structure that rules the
+ * overlap out: the bar is not a descendant of the scroller, it is not sticky,
+ * and it comes before the scroller in DOM (and so tab) order.
  */
-describe("CardPairingModal — the Matched header sticks (NEO-189 follow-up)", () => {
-  const stickyBar = () =>
+describe("CardPairingModal — the Matched header sits above the scroller (NEO-343)", () => {
+  const matchedBar = () =>
     screen.getByLabelText(/^(Collapse|Expand) matched cards/)
       .parentElement as HTMLElement;
+  const scrollerOf = () =>
+    screen.getByLabelText("Unlink #1 Griffey").closest(".overflow-y-auto") as HTMLElement;
 
-  test("the toggle sits in a sticky, opaque, full-width bar", () => {
+  test("the toggle's bar is outside the scroll container, opaque and not sticky", () => {
     renderModal({
       autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
     });
 
-    const bar = stickyBar();
-    expect(bar.className).toContain("sticky");
-    expect(bar.className).toContain("top-0");
-    // Opaque, and the same colour as the dialog body — rows must disappear
-    // under it, not show through it.
-    expect(bar.className).toContain("bg-gray-900");
-    // Above the static matched rows and the draggable unmatched ones; dnd-kit's
-    // DragOverlay is fixed at z-999 and still passes over the top.
-    expect(bar.className).toContain("z-20");
-    // Full-bleed across the scroll container's padding, so no row edge is
-    // visible beside the bar.
-    expect(bar.className).toContain("-mx-4");
-  });
-
-  /**
-   * The bar leaked once already: with `pt-4` on the SCROLLER, the stuck bar sat
-   * 16px below the scrollport's top edge and rows slid up through the gap and
-   * were visible above it. The fix is that the bar owns that padding instead,
-   * so there is no band between the scrollport top and the bar for anything to
-   * show through — which means the two halves have to stay in sync, and a
-   * later "tidy `px-4 pb-4` back into `p-4`" silently reopens the gap.
-   *
-   * This is the one pairing jsdom CAN speak to. It cannot tell us the bar is
-   * flush (no layout), but it can tell us the invariant that makes it flush is
-   * still declared in both places.
-   */
-  test("the scroller has no top padding and the bar owns it instead", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
-    });
-
-    const bar = stickyBar();
-    const scroller = bar.closest(".overflow-y-auto") as HTMLElement;
-
-    // `p-4` would reintroduce the 16px see-through band above the stuck bar.
-    expect(scroller.className).not.toMatch(/(^|\s)p-4(\s|$)/);
-    expect(scroller.className).not.toMatch(/(^|\s)pt-\d/);
-    // The same 16px, now inside the bar's opaque box.
-    expect(bar.className).toContain("pt-4");
-    // And it still reads as a header rows travel under, not a clip edge.
-    expect(bar.className).toMatch(/border-b|shadow-/);
-  });
-
-  test("the sticky bar's containing block is the section that owns the list", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
-    });
-
-    const section = stickyBar().closest("section") as HTMLElement;
-    // Same <section> holds the row list, so the bar un-sticks when the matched
-    // list ends rather than following the operator into the columns below.
-    expect(section.contains(screen.getByLabelText("Unlink #1 Griffey"))).toBe(
-      true,
-    );
-  });
-
-  test("nothing between the bar and the scroll container can defeat sticky", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
-    });
-
-    const bar = stickyBar();
-    const scroller = bar.closest(".overflow-y-auto") as HTMLElement;
+    const bar = matchedBar();
+    const scroller = scrollerOf();
     expect(scroller).toBeTruthy();
 
-    // Any overflow, transform, filter or containment on an ancestor below the
-    // scroller re-roots the sticky element's containing block and it stops
-    // sticking — with no error and no visual clue in review.
-    const hostile = /(^|\s)(overflow-|transform|filter|contain-|backdrop-)/;
-    for (let el = bar.parentElement; el && el !== scroller; el = el.parentElement) {
-      expect(el.className).not.toMatch(hostile);
-    }
+    // Not inside the scroller: rows can only be clipped by its edge, never
+    // covered by a control.
+    expect(scroller.contains(bar)).toBe(false);
+    expect(bar.className).not.toMatch(/(^|\s)(sticky|fixed|absolute)(\s|$)/);
+    // A non-scrolling flex child, opaque and the dialog body's colour.
+    expect(bar.className).toContain("flex-none");
+    expect(bar.className).toContain("bg-gray-900");
+    // Its own edge is what reads as the header of the list below.
+    expect(bar.className).toContain("border-b");
+  });
 
-    // The other scroll cause Jason named: linking a pair focuses the merged
-    // row, and the browser scrolls it into view by itself. Without
-    // scroll-padding on the scroller it lands under the bar.
-    expect(scroller.className).toMatch(/(^|\s)scroll-pt-/);
+  test("the toggle precedes the rows in document and tab order", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+
+    const toggle = screen.getByLabelText(/^(Collapse|Expand) matched cards/);
+    const unlink = screen.getByLabelText("Unlink #1 Griffey");
+    expect(
+      toggle.compareDocumentPosition(unlink) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  test("the scroller carries no sticky-bar workarounds", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+
+    // `scroll-pt-*` only existed to keep a focus-driven scroll from parking a
+    // row under the sticky bar; the scroller now starts below the bar.
+    expect(scrollerOf().className).not.toMatch(/(^|\s)scroll-pt-/);
   });
 
   test("the toggle keeps its accessible name and its ref-driven focus", () => {
@@ -3609,9 +3553,8 @@ describe("CardPairingModal — the Matched header sticks (NEO-189 follow-up)", (
       "Collapse matched cards, 1 with a name conflict",
     );
     expect(toggle.tagName).toBe("BUTTON");
-    // Wrapping it changed nothing about focusability or tab order — the
-    // wrapper is an unfocusable div.
-    expect(stickyBar().getAttribute("tabindex")).toBeNull();
+    // The wrapper is an unfocusable div.
+    expect(matchedBar().getAttribute("tabindex")).toBeNull();
     toggle.focus();
     expect(document.activeElement).toBe(toggle);
 

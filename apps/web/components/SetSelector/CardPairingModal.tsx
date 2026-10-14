@@ -2573,131 +2573,86 @@ export default function CardPairingModal({
             />
           </header>
 
-          {/* TWO deliberate details on this scroller, both in service of the
-              sticky Matched header below.
+          {/* NEO-189 operator feedback: the collapse control stays in reach
+              however long the matched list is.
 
-              `px-4 pb-4` and NOT `p-4`. The top padding used to live here, and
-              OBSERVED (Jason's screenshot): the stuck bar sat 16px below the
-              scrollport's top edge and rows slid up through the strip between
-              the dialog header and the bar, visible ABOVE it — "it looks funny
-              with the list scrolling behind it". The 16px is the scroller's own
-              `pt-4`. Rather than cancel it with a negative `top` — which
-              depends on exactly where `top: 0` resolves against a padded
-              scrollport, and over-shoots into a clipped bar if that assumption
-              is wrong — the padding is MOVED INTO the bar as its own `pt-4`.
-              With no top padding on the scroller there is no band between the
-              scrollport top and the bar for anything to show through: the 16px
-              is now opaque bar. That holds however the offset resolves, which
-              is why it is the fix rather than a tuned constant. Spacing at rest
-              is unchanged, because the matched section is this scroller's first
-              child and the 16px simply moved inside it.
+              Jason: "when I scroll the matched line should lock to the
+              top... that will allow somebody to quickly collapse again."
+              With 220 matched rows the toggle is the only way back to the
+              columns.
 
-              `scroll-pt-12` is what makes the bar safe for the OTHER way this
-              list scrolls. Linking a pair calls `refocusSelectedRadio`, and
-              `.focus()` makes the browser scroll the merged row into view on
-              its own — with a sticky bar and no scroll-padding that lands the
-              row UNDER the bar, so the operator is sent to a decision they
-              cannot see. `scroll-padding-top` on the scroller is honoured by
-              focus-driven scrolling as well as by `scrollIntoView`, so it
-              covers both of Jason's causes (manual scroll, and the auto-scroll
-              after a drag or click link) with one declaration rather than a
-              scroll-margin on every row. 48px clears the bar's ~43px (pt-4 +
-              text-sm line box + py-1.5 + border). */}
-          <div className="flex-1 overflow-y-auto scroll-pt-12 px-4 pb-4 flex flex-col gap-4">
+              It is a sibling ABOVE the scroller, not a `position: sticky`
+              bar inside it. It used to be sticky, and a sticky bar paints
+              over whatever row happens to be under it: at most scroll
+              positions a row's own button (Edit name, Unlink) sits half
+              under the bar, so the operator sees a sliver of a control they
+              cannot hit until they scroll again. axe-core's target-size rule
+              measures exactly that (the row's button partly covered by the
+              toggle, leaving a 5px strip; NEO-343, PR #335 CI) and, worse,
+              whether it fires depends on the exact scrollTop. Outside the
+              scroller nothing overlaps: rows are clipped by the scroller's
+              edge and never covered by a control. It also removes the two
+              workarounds the sticky bar needed (the scroller's top padding
+              moved into the bar, and `scroll-pt-12` so a focus-driven scroll
+              did not park the linked row under the bar): the browser scrolls
+              within the scroller, which now begins below the bar.
+
+              Opaque and flush with the dialog body (`bg-gray-900`), so at
+              rest it reads as the section heading it always was. */}
+          <div className="flex-none px-4 pt-4 bg-gray-900 border-b border-gray-700/60">
+            <button
+              type="button"
+              ref={matchedToggleRef}
+              className="text-sm font-semibold text-gray-200 px-2 py-1.5"
+              onClick={() => setMatchedCollapsed((v) => !v)}
+              // The count is appended ONLY when there is a conflict: an
+              // aria-label overrides the button's own text for assistive
+              // tech, so a silent label would hide the very thing the
+              // visible badge exists to announce.
+              // NEO-251 adds a SECOND clause rather than replacing the
+              // first, and puts it BEFORE the name-conflict clause: the
+              // Maestro flow addresses this label with the full-match regex
+              // `Collapse matched cards, .* with a name conflict`, so the
+              // name-conflict wording must stay the LAST thing in the
+              // string (PR #236 run 1 failed on exactly that). A row with no
+              // roster conflict still produces the string it always did.
+              aria-label={
+                `${matchedCollapsed ? "Expand" : "Collapse"} matched cards` +
+                (playersConflictCount > 0
+                  ? `, ${playersConflictCount} with a player conflict`
+                  : "") +
+                (nameConflictCount > 0
+                  ? `, ${nameConflictCount} with a name conflict`
+                  : "")
+              }
+            >
+              {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
+              {nameConflictCount > 0 && (
+                <span className="text-[#FF2EB3] ml-2">
+                  {/* The glyph is decorative — "name conflict(s)" already
+                      carries the meaning in words, so AT shouldn't also be
+                      made to announce "warning sign" on top of that. */}
+                  <span aria-hidden="true">⚠</span> {nameConflictCount} name
+                  conflict
+                  {nameConflictCount === 1 ? "" : "s"}
+                </span>
+              )}
+              {/* NEO-251: its OWN line, not a second clause on the name
+                  badge. The two counts are two different kinds of work, and
+                  "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
+                  one line reads as one number the eye has to parse apart. */}
+              {playersConflictCount > 0 && (
+                <span className="block text-[#FF2EB3]">
+                  <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
+                  player conflict
+                  {playersConflictCount === 1 ? "" : "s"}
+                </span>
+              )}
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pt-2 pb-4 flex flex-col gap-4">
             {/* Matched */}
             <section>
-              {/* NEO-189 operator feedback — the collapse control follows you
-                  down the list.
-
-                  Jason: "when I scroll the matched line should lock to the
-                  top… that will allow somebody to quickly collapse again."
-                  With 220 matched rows the toggle is the only way back to the
-                  columns, and it scrolled off after the first screenful, so
-                  collapsing meant scrolling all the way back up first.
-
-                  Sticky, not fixed: the containing block is this <section>, so
-                  the bar un-sticks when the matched list's end scrolls past
-                  and does NOT hover over the unmatched columns below — the
-                  default behaviour is the wanted behaviour, which is why the
-                  section is the right place for it and nothing between here
-                  and the scroll container may introduce its own overflow,
-                  transform or containment.
-
-                  A WRAPPER rather than the button itself: the bar has to be
-                  an opaque box spanning the WHOLE scrollport for rows to read
-                  as passing under it, and the button is only as wide as its
-                  text and as tall as its own line. So the wrapper owns every
-                  edge a row could show through:
-                    - `-mx-4 px-4` bleeds it across the scroller's horizontal
-                      padding, so nothing peeks at the sides;
-                    - `pt-4` is the scroller's former `pt-4`, moved here so
-                      nothing peeks above it either (see the note on the
-                      scroller);
-                    - `bg-gray-900` matches the dialog body exactly, so at rest
-                      the bar is invisible and only its border reads.
-                  `z-20` puts it over the static rows and the draggable
-                  unmatched rows, and under dnd-kit's DragOverlay (fixed,
-                  z-999) so a dragged card still passes over the top. The
-                  shadow is what makes a row read as travelling UNDER the bar
-                  rather than being clipped by it — Tailwind's own `shadow-*`
-                  are tuned for light backgrounds and are invisible on
-                  gray-900, hence the explicit value.
-
-                  It never covers the first row: sticky keeps the element in
-                  flow, so at scroll-top the bar occupies its own space and
-                  offsets only once the section scrolls — collapsed or short,
-                  there is nothing to cover. */}
-              <div className="sticky top-0 z-20 -mx-4 px-4 pt-4 mb-2 bg-gray-900 border-b border-gray-700/60 shadow-[0_6px_8px_-6px_rgba(0,0,0,0.8)]">
-              <button
-                type="button"
-                ref={matchedToggleRef}
-                className="text-sm font-semibold text-gray-200 px-2 py-1.5"
-                onClick={() => setMatchedCollapsed((v) => !v)}
-                // The count is appended ONLY when there is a conflict: an
-                // aria-label overrides the button's own text for assistive
-                // tech, so a silent label would hide the very thing the
-                // visible badge exists to announce.
-                // NEO-251 adds a SECOND clause rather than replacing the
-                // first, and puts it BEFORE the name-conflict clause: the
-                // Maestro flow addresses this label with the full-match regex
-                // `Collapse matched cards, .* with a name conflict`, so the
-                // name-conflict wording must stay the LAST thing in the
-                // string (PR #236 run 1 failed on exactly that). A row with no
-                // roster conflict still produces the string it always did.
-                aria-label={
-                  `${matchedCollapsed ? "Expand" : "Collapse"} matched cards` +
-                  (playersConflictCount > 0
-                    ? `, ${playersConflictCount} with a player conflict`
-                    : "") +
-                  (nameConflictCount > 0
-                    ? `, ${nameConflictCount} with a name conflict`
-                    : "")
-                }
-              >
-                {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
-                {nameConflictCount > 0 && (
-                  <span className="text-[#FF2EB3] ml-2">
-                    {/* The glyph is decorative — "name conflict(s)" already
-                        carries the meaning in words, so AT shouldn't also be
-                        made to announce "warning sign" on top of that. */}
-                    <span aria-hidden="true">⚠</span> {nameConflictCount} name
-                    conflict
-                    {nameConflictCount === 1 ? "" : "s"}
-                  </span>
-                )}
-                {/* NEO-251: its OWN line, not a second clause on the name
-                    badge. The two counts are two different kinds of work, and
-                    "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
-                    one line reads as one number the eye has to parse apart. */}
-                {playersConflictCount > 0 && (
-                  <span className="block text-[#FF2EB3]">
-                    <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
-                    player conflict
-                    {playersConflictCount === 1 ? "" : "s"}
-                  </span>
-                )}
-              </button>
-              </div>
               {!matchedCollapsed && (
                 <ul className="flex flex-col gap-1">
                   {state.matched.map((m, i) => {
