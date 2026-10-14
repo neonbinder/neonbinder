@@ -913,6 +913,44 @@ describe("convertToInsert — the landings", () => {
 // Refusals write nothing
 // ───────────────────────────────────────────────────────────────────────────
 
+describe("convertToInsert never copies a node-only autographFormat down (NEO-345)", () => {
+  /** Put the operator's per-part answer on a parent, beside a key that does inherit. */
+  async function answer(t: T, id: RowId, features: Record<string, string>) {
+    await t.run((ctx) => ctx.db.patch(id, { features }));
+  }
+
+  test("a new insert under an answered Insert type keeps the type's season and starts unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await answer(t, ids.insertTypeId, { season: "2026", autographFormat: "On Card" });
+    const { setId } = await slSet(t, ids.brandId, "Bowman Stars", [
+      { id: "SL-STARS", label: "Bowman Stars" },
+    ]);
+
+    const result = await convert(t, setId, ids.insertTypeId, { kind: "newInsert" });
+    const dest = (await get(t, result.path[2]._id))!;
+    expect(dest.features?.season).toBe("2026");
+    expect(dest.features).not.toHaveProperty("autographFormat");
+  });
+
+  test("a new parallel under an answered insert keeps the insert's season and starts unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await answer(t, ids.autosId, { season: "2026", cardType: "Insert", autographFormat: "Sticker/Label" });
+    const redInk = await slRow(t, ids.parallelTypeId, "All-America Game Autos Red Ink", [
+      { id: "SL-RED-INK", label: "Bowman All-America Game Autos Red Ink" },
+    ]);
+
+    const result = await convert(t, redInk, ids.insertTypeId, {
+      kind: "newParallel",
+      insertId: ids.autosId,
+    });
+    const dest = (await get(t, result.path[3]._id))!;
+    expect(dest.features?.season).toBe("2026");
+    expect(dest.features).not.toHaveProperty("autographFormat");
+  });
+});
+
 describe("convertToInsert — refusals", () => {
   test("a caller who is not an admin", async () => {
     const t = convexTest(schema, modules);

@@ -833,3 +833,40 @@ describe("renamePlatformLabel", () => {
     ).rejects.toThrow(/Cannot rename label for unattached slot/);
   });
 });
+
+// ===========================================================================
+// NEO-345: a node-only autographFormat never copies down to a created row
+// ===========================================================================
+
+describe("storeReconciledOptions never copies a node-only autographFormat down (NEO-345)", () => {
+  test("a row created under an answered parent keeps the parent's season and starts unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const parentId = await insertParent(t);
+    await t.run((ctx) =>
+      ctx.db.patch(parentId, {
+        features: { season: "2026", autographFormat: "On Card" },
+      }),
+    );
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "variantType",
+      parentId,
+      reconciledItems: [
+        { value: "Chrome", platformData: { bsc: "bsc-variant-345" }, metadata: {} },
+      ],
+    });
+
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "variantType").eq("parentId", parentId),
+        )
+        .collect(),
+    );
+    const chrome = rows.find((r) => r.value === "Chrome");
+    expect(chrome).toBeDefined();
+    expect(chrome!.features?.season).toBe("2026");
+    expect(chrome!.features).not.toHaveProperty("autographFormat");
+  });
+});
