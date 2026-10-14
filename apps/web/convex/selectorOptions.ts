@@ -59,6 +59,7 @@ import {
   suggestVariationPairings,
 } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
+import { decideDuplicateNumberPairs } from "./lib/duplicateNumberPairing";
 // NEO-212: the SINGLE career-timeline ordering, shared with `enrichPlayer` in
 // convex/adapters/wikidata.ts. Both write `players.teamYears`, and a player
 // can be created by either, so they must not disagree about the order.
@@ -13785,6 +13786,10 @@ async function fetchAndMatchChecklist(
       //
       // A bare BSC number means the base card, so that is what this index
       // must return. Variations are paired to variations separately below.
+      //
+      // NEO-339: "first non-variation row" is only an answer when there is
+      // ONE. A number carrying two (or two BSC cards on one number) is
+      // settled by `decideDuplicateNumberPairs` below and never read here.
       const prev = slByNumber.get(c.cardNumber);
       if (!prev || (prev.isVariation && !c.isVariation)) {
         slByNumber.set(c.cardNumber, c);
@@ -13968,37 +13973,73 @@ async function fetchAndMatchChecklist(
     const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
       c.platformRef ?? `#${c.cardNumber}`;
 
-    // 1. Walk BSC, attach matching SL data
-    for (const bsc of bscCards) {
-      const stripped = cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
+    const strippedNumberOf = (bsc: (typeof bscCards)[number]) =>
+      cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
         ? bsc.cardNumber.slice(cardNumberPrefix.length)
         : bsc.cardNumber;
-
+    // Everything that outranks the number lookup, in rank order. One function
+    // so the duplicate-number pass below and the walk agree on which BSC cards
+    // ever reach the number at all.
+    const shortCircuitSl = (
+      bsc: (typeof bscCards)[number],
+    ): (typeof slCards)[number] | undefined => {
       // Operator's stored answer first — it outranks every heuristic.
       const storedSlRef = bsc.platformRef
         ? storedSlRefByBscRef.get(bsc.platformRef)
         : undefined;
-      let sl: typeof slCards[0] | undefined =
-        (storedSlRef && slByPlatformRef.get(storedSlRef))
-        || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+      return (
+        (storedSlRef ? slByPlatformRef.get(storedSlRef) : undefined)
+        || (bsc.sportlotsRef ? slByRef.get(bsc.sportlotsRef) : undefined)
         // NEO-189: a variation's counterpart, matched by label above. Ranks
         // below the operator's stored answer and BSC's own cross-reference,
         // and above the number lookups — which cannot resolve a suffixed
         // number against SportLots at all.
         || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
-        || slByNumber.get(bsc.cardNumber)
-        || slByNumber.get(stripped);
+      );
+    };
+    // NEO-339 — a card number printed twice (2014 Topps Chrome #482 is both
+    // Rickey Henderson and Tony Gwynn). Where either side carries more than
+    // one non-variation card under a number, the number alone no longer names
+    // a card: pair by player when exactly one pairing fits both ways, and leave
+    // the rest unmatched for the operator (invariants 7 and 8). Unambiguous
+    // numbers are untouched. See convex/lib/duplicateNumberPairing.ts.
+    const duplicateNumbers = decideDuplicateNumberPairs({
+      bscCards,
+      slCards,
+      numberKeysOf: (bsc) => [bsc.cardNumber, strippedNumberOf(bsc)],
+      shortCircuit: shortCircuitSl,
+    });
+
+    // 1. Walk BSC, attach matching SL data
+    for (const bsc of bscCards) {
+      const stripped = strippedNumberOf(bsc);
+
+      const storedSlRef = bsc.platformRef
+        ? storedSlRefByBscRef.get(bsc.platformRef)
+        : undefined;
+      // `undefined`: the number is unambiguous, look it up as always.
+      // `null`: an ambiguous number with no single player match — unmatched.
+      const numberDecision = duplicateNumbers.decided.get(bsc);
+      let sl: typeof slCards[0] | undefined =
+        shortCircuitSl(bsc)
+        || (numberDecision !== undefined
+          ? (numberDecision ?? undefined)
+          : (slByNumber.get(bsc.cardNumber) || slByNumber.get(stripped)));
       const fromStoredPairing =
         storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
 
       // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
       //    name is most similar to BSC's first player. Threshold 0.92.
+      //    NEO-339: never for a card on an ambiguous number, and never onto a
+      //    SportLots row on one — a best-score pick whose ties go to the first
+      //    candidate is the guess the duplicate-number rule refuses to make.
       let fuzzyScore: number | undefined;
-      if (!sl && bsc.players?.[0]) {
+      if (!sl && numberDecision === undefined && bsc.players?.[0]) {
         const target = normalizeName(bsc.players[0]);
         let best: { card: typeof slCards[0]; score: number } | null = null;
         for (const candidate of slCards) {
           if (claimedSlRefs.has(slClaimKey(candidate))) continue;
+          if (duplicateNumbers.fuzzyExcluded.has(candidate)) continue;
           const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
           if (!candName) continue;
           const score = jaroWinkler(target, candName);
