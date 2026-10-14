@@ -28,6 +28,30 @@
 // It mints no player, team or league: every name step the wizard stages is
 // skipped. The per-project run only differs in the signed-in worker.
 //
+// NOT PROVED HERE (no existing fixture can prove it live; unit/component tests
+// are the proof, named so a reader can find them):
+//  * the missing-team fixer's case line ("We couldn't get a team ..." / "The
+//    listing has no team ..."): it needs a synced BSC card whose team check
+//    ANSWERED with no hint (or gave up after three live failures), and no
+//    registered fixture yields a card the walker can be pinned to. The walker
+//    opens on the lowest-numbered flagged card, and BSC names a team (so a hint)
+//    for every card of every set the suite commits, bar a handful on the Line
+//    Up Venezuelan set (#279, #292, #296 ...) that the sole-writer alias spec
+//    leaves among hundreds of hinted flagged cards. Covered by
+//    components/SetSelector/MissingTeamFixer.test.tsx (outcomeHeading and the
+//    rendered line), convex/cardChecklist.bscTeamEnrichment.test.ts,
+//    convex/bscTeamEnrichmentQueue.test.ts and convex/fetchBscCardTeamNames.test.ts
+//    (the outcome stamps).
+//  * a BSC attribute label read as a team ("AU  SN1") and RELIC/MEM/JSY tokens:
+//    none of the fixtures' cards carries one live (public catalogue, 2026-10-14).
+//    Covered by convex/adapters/buysportscards.test.ts,
+//    convex/fetchBscCardTeamNames.test.ts and convex/backfillBscAttributeFeatures.test.ts.
+//    The RC token IS carried by the seeded Topps Chrome Base: its drawer flag is
+//    asserted in checklist-renders-rich-fields.
+//  * the cascade's skips (an operator's own autographed value is left alone) and
+//    the armed backfill: convex/autographFormat.test.ts and
+//    convex/backfillBscAttributeFeatures.test.ts.
+//
 // ALL NEO-345 copy (subtitle, question, tiles, hint, row, prompt) is
 // PLACEHOLDER wording, matched here as it reads today (`support/wizard.ts`
 // holds the wizard's) and it WILL change: update the strings, not the asserts.
@@ -209,6 +233,11 @@ test(
     await expect(onCard).not.toBeChecked();
     await expect(sticker).not.toBeChecked();
     await expect(next).toBeDisabled();
+    // Reachable on a phone too: each tile and the way on can be brought into view.
+    for (const control of [onCard, sticker, next]) {
+      await control.scrollIntoViewIfNeeded();
+      await expect(control).toBeInViewport();
+    }
     await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard, Autographed cards step" });
 
     // Pressing the held Next does nothing but explain: the line appears and
@@ -308,7 +337,12 @@ test(
 
     const prompt = page.getByRole("group", { name: "1 autographed card — on card or sticker?", exact: true });
     await expect(prompt).toBeVisible();
-    await expect(prompt.getByRole("button", { name: "Sticker", exact: true })).toBeVisible();
+    // Reachable on a phone too: both answers can be brought into view.
+    for (const answer of ["On card", "Sticker"]) {
+      const button = prompt.getByRole("button", { name: answer, exact: true });
+      await button.scrollIntoViewIfNeeded();
+      await expect(button).toBeInViewport();
+    }
     await expectAccessible(page, { within: prompt, label: "Checklist header, autograph format prompt" });
     await prompt.getByRole("button", { name: "On card", exact: true }).click();
     // The answer is saved in place: the prompt says so and the part's row holds it.
