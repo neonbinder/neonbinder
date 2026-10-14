@@ -561,7 +561,12 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
 const ATTENTION_ANNOUNCE_DEBOUNCE_MS = 1500;
 
 /** NEO-343: matches no term; never reached (every card has a haystack). */
-const NO_HAYSTACK: CardSearchHaystack = { number: "", text: "", platforms: [] };
+const NO_HAYSTACK: CardSearchHaystack = {
+  number: "",
+  text: "",
+  platforms: [],
+  attention: false,
+};
 
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;

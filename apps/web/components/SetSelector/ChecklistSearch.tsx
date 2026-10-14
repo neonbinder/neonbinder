@@ -44,7 +44,9 @@ export const SEARCH_COUNT_DEBOUNCE_MS = 400;
 
 export const SEARCH_INPUT_LABEL = "Search cards";
 export const SEARCH_CLEAR_LABEL = "Clear card search";
-export const SEARCH_PLACEHOLDER = "Number, name, team, feature or marketplace";
+// Fits the field at a 320px viewport. Marketplace codes ("bsc", "sl") still
+// work as terms; the placeholder names only what most searches are for.
+export const SEARCH_PLACEHOLDER = "Number, name, team or feature";
 
 export function searchCountText(matched: number, total: number): string {
   return `${matched} of ${total} ${total === 1 ? "card" : "cards"}`;
@@ -102,7 +104,7 @@ export default function ChecklistSearch({
           aria-hidden="true"
           viewBox="0 0 16 16"
           fill="none"
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400"
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 dark:text-gray-400"
         >
           <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
           <path
@@ -112,8 +114,13 @@ export default function ChecklistSearch({
             strokeLinecap="round"
           />
         </svg>
+        {/* surface="panel": the field follows the checklist card it sits in
+            (`bg-white dark:bg-gray-800`) rather than the primitive's
+            always-dark default, which read as a navy hole in the light card.
+            The colours and their contrast live in the primitive. */}
         <Input
           bare
+          surface="panel"
           ref={inputRef}
           type="search"
           value={query}
@@ -144,7 +151,10 @@ export default function ChecklistSearch({
             // 28px: past the 24px floor (SC 2.5.8) with room to spare inside
             // the field's right padding. No `title` — a tooltip saying less
             // than the name is a second, drifting label.
-            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            // Colours follow the field's panel surface: gray-600 is 7.6:1 on
+            // white, gray-400 7.0:1 on the dark well; the ring swaps the same
+            // way the field's own does (sky-700 on white, neon in dark).
+            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-700 dark:focus-visible:ring-[#00C2FF]"
           >
             <span aria-hidden="true" className="text-base leading-none">
               ×

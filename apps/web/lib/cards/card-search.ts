@@ -41,6 +41,13 @@
  *              A term that exactly equals one of those four (after "#" and
  *              case folding) matches this field ONLY, so "sl" never finds
  *              "Islanders".
+ * - attention — whether the card needs a person, by the one rule the
+ *              checklist's "N need you" pill and its walker count with
+ *              (`needsAttention`, `convex/features/cardAttention.ts`). Read
+ *              only by the exact term "attention", which, like the platform
+ *              keywords, matches this flag and nothing else and ANDs with the
+ *              other terms ("attention bills"). Deliberately unadvertised: no
+ *              placeholder, help text or empty state names it.
  *
  * Deliberately NOT read: `bscTeamName`. It is a marketplace's hint, never NB
  * data (CLAUDE.md product invariant), and the row does not render it.
@@ -56,10 +63,19 @@
  * caller resolved.
  */
 
+import {
+  needsAttention,
+  type AttentionCardRow,
+} from "../../convex/features/cardAttention";
 import { foldDiacritics } from "../entities/normalize-name";
 
-/** The parts of a checklist row the search reads. Structural, so any row shape fits. */
-export type SearchableCard = {
+/**
+ * The parts of a checklist row the search reads. Structural, so any row shape
+ * fits. Includes every field the attention rule reads (`AttentionCardRow`), so
+ * the "attention" keyword asks the same question of the same row the "need
+ * you" pill does.
+ */
+export type SearchableCard = Omit<AttentionCardRow, "platformData"> & {
   cardNumber: string;
   cardName: string;
   playerIds?: readonly string[];
@@ -76,7 +92,7 @@ export type SearchableCard = {
   printRun?: number;
   cardVariation?: string;
   features?: Record<string, string>;
-  platformData: { bsc?: unknown; sportlots?: unknown };
+  platformData: NonNullable<AttentionCardRow["platformData"]>;
   isCrossListed?: boolean;
   homeSetLabel?: string;
 };
@@ -223,6 +239,8 @@ export type CardSearchHaystack = {
   text: string;
   /** The platform aliases of the filled slots, folded ("bsc", "sl", …). */
   platforms: readonly string[];
+  /** `needsAttention(card)` — what the "attention" keyword reads. */
+  attention: boolean;
 };
 
 /**
@@ -237,6 +255,13 @@ const PLATFORM_ALIASES: ReadonlySet<string> = new Set([
   "sl",
   "sportlots",
 ]);
+
+/**
+ * The term that reads as "needs a person" and nothing else — a keyword, like
+ * the platform aliases, so a card name containing "attention" is not found by
+ * it. Compared after the same folding (`parseCardSearchTerms`).
+ */
+const ATTENTION_KEYWORD = "attention";
 
 export function cardSearchHaystack(
   card: SearchableCard,
@@ -254,23 +279,25 @@ export function cardSearchHaystack(
       ].join("\n"),
     ),
     platforms: fields.platforms.map(foldSearchText),
+    attention: needsAttention(card),
   };
 }
 
 /**
- * Every term matches. A platform alias matches the platform field only;
- * any other term matches the start of the card number or somewhere in the
- * other fields. No terms matches everything.
+ * Every term matches. A platform alias matches the platform field only, and
+ * "attention" the attention flag only; any other term matches the start of
+ * the card number or somewhere in the other fields. No terms matches
+ * everything.
  */
 export function haystackMatches(
   haystack: CardSearchHaystack,
   terms: readonly string[],
 ): boolean {
-  return terms.every((term) =>
-    PLATFORM_ALIASES.has(term)
-      ? haystack.platforms.includes(term)
-      : haystack.number.startsWith(term) || haystack.text.includes(term),
-  );
+  return terms.every((term) => {
+    if (term === ATTENTION_KEYWORD) return haystack.attention;
+    if (PLATFORM_ALIASES.has(term)) return haystack.platforms.includes(term);
+    return haystack.number.startsWith(term) || haystack.text.includes(term);
+  });
 }
 
 /** Convenience for one card: does `query` find it? */

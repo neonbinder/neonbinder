@@ -1,7 +1,7 @@
 /**
  * NEO-343 — the checklist search matcher. Each field, the AND-across-terms /
  * OR-across-fields rule, the "#" prefix, case and accent folding, the platform
- * aliases, and the no-match case.
+ * aliases, the "attention" keyword, and the no-match case.
  *
  * The component half (typing filters the rows, the count, the empty state, and
  * that every badge the REAL row renders is findable) is in
@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { needsAttention } from "../../convex/features/cardAttention";
 import {
   cardMatchesSearch,
   cardSearchFields,
@@ -318,6 +319,95 @@ describe("terms combine: AND across terms, OR across fields", () => {
   test("no terms matches every card", () => {
     expect(cardMatchesSearch(c, "")).toBe(true);
     expect(haystackMatches(cardSearchHaystack(c), [])).toBe(true);
+  });
+});
+
+describe("the 'attention' keyword", () => {
+  // Teamed and settled: nothing for a person to do.
+  const settled = card({ cardNumber: "1", cardName: "Josh Allen", teamOnCardIds: ["team-buf"] });
+  // No team and no automatic source for one: `missingTeam`.
+  const teamless = card({ cardNumber: "2", cardName: "Stefon Diggs" });
+  const teamlessBills = card({
+    cardNumber: "3",
+    cardName: "Von Miller",
+    playerIds: ["player-vm"],
+    teamOnCardIds: [],
+    pendingTeamNames: [],
+  });
+  const settledBills = card({ cardNumber: "4", cardName: "Bills Mafia", teamOnCardIds: ["team-buf"] });
+  const withBills: CardSearchLookups = {
+    teamNames: new Map([["team-buf", "Buffalo Bills"]]),
+    playerNames: new Map([["player-vm", "Von Miller"]]),
+  };
+
+  test("finds a card that needs a person, and not one that does not", () => {
+    expect(cardMatchesSearch(teamless, "attention")).toBe(true);
+    expect(cardMatchesSearch(settled, "attention")).toBe(false);
+  });
+
+  test("is folded like the platform keywords: case and a leading '#'", () => {
+    for (const query of ["Attention", "ATTENTION", "#attention", "  attention  "]) {
+      expect(cardMatchesSearch(teamless, query)).toBe(true);
+      expect(cardMatchesSearch(settled, query)).toBe(false);
+    }
+  });
+
+  test("reads the flag only: a card whose own text says 'attention' is not found by it", () => {
+    const named = card({
+      cardName: "Attention Grabbers",
+      cardVariation: "Pay Attention",
+      teamOnCardIds: ["team-buf"],
+    });
+    expect(cardMatchesSearch(named, "attention")).toBe(false);
+    // Any other spelling is an ordinary substring term again.
+    expect(cardMatchesSearch(named, "attentio")).toBe(true);
+    expect(cardMatchesSearch(named, "grabbers")).toBe(true);
+  });
+
+  test("ANDs with the other terms: 'attention bills'", () => {
+    const query = "attention bills";
+    // Needs a person but is not a Bills card (no team at all).
+    expect(cardMatchesSearch(teamless, query, withBills)).toBe(false);
+    // A Bills card that is settled.
+    expect(cardMatchesSearch(settledBills, query, withBills)).toBe(false);
+    // Needs a person and matches the other term (its name, here).
+    const flaggedBills = card({
+      cardName: "Bills Team Card",
+      listingTitle: "x".repeat(200),
+      teamOnCardIds: ["team-buf"],
+    });
+    expect(cardMatchesSearch(flaggedBills, query, withBills)).toBe(true);
+    expect(cardMatchesSearch(flaggedBills, "bills attention", withBills)).toBe(true);
+    expect(cardMatchesSearch(teamlessBills, "attention von", withBills)).toBe(true);
+  });
+
+  test("is the checklist's own rule, needsAttention, for every shape it covers", () => {
+    const shapes: SearchableCard[] = [
+      settled,
+      teamless,
+      // A BSC card still waiting on its team lookup is not flagged yet…
+      card({ platformData: { bsc: { ref: "b1" } } }),
+      // …and is once the lookup has been and gone with no team.
+      card({ platformData: { bsc: { ref: "b1" } }, teamCheckDoneAt: 1 }),
+      // The operator said "no team on this card".
+      card({ teamNoneConfirmedAt: 1 }),
+      // A typed team name counts as a team; a typed player name that links
+      // to nobody is a name to link.
+      card({ pendingTeamNames: ["Wisconsin Badgers"] }),
+      card({ teamOnCardIds: ["team-buf"], pendingPlayerNames: ["Nobody Yet"] }),
+      // Title and variation-text limits.
+      card({ teamOnCardIds: ["team-buf"], listingTitle: "x".repeat(81) }),
+      card({ teamOnCardIds: ["team-buf"], listingTitleTruncated: true }),
+      card({ teamOnCardIds: ["team-buf"], cardVariation: "v".repeat(66) }),
+    ];
+    const flags = shapes.map((c) => needsAttention(c));
+    // The fixture spans both answers, or this proves nothing.
+    expect(flags).toContain(true);
+    expect(flags).toContain(false);
+    shapes.forEach((c, i) => {
+      expect(cardSearchHaystack(c).attention).toBe(flags[i]);
+      expect(cardMatchesSearch(c, "attention")).toBe(flags[i]);
+    });
   });
 });
 

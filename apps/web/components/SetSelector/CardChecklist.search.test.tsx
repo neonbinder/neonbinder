@@ -9,8 +9,9 @@
  * cross-release toggle, variations, the scroll back to the top, and that every
  * badge and sub-line string the REAL row prints is findable.
  *
- * The matcher's own rule (each field, AND/OR, "#", accents, platform aliases)
- * is pinned in lib/cards/card-search.test.ts.
+ * The matcher's own rule (each field, AND/OR, "#", accents, platform aliases,
+ * the "attention" keyword) is pinned in lib/cards/card-search.test.ts. Here,
+ * "attention" is pinned against the checklist's own "N need you" pill.
  *
  * The REAL `CardChecklistItem` renders the rows, so its per-row team read
  * (`teams.getManyByIds`) goes through the same mock — which honours its `ids`
@@ -274,6 +275,44 @@ describe("CardChecklist — search (NEO-343)", () => {
     expect(screen.queryByText("No cards in this checklist yet.")).toBeNull();
   });
 
+  it("'attention' lists exactly the cards the 'need you' pill counts, and ANDs with other terms", async () => {
+    state.cards = [
+      card("1", "Fernando Tatís Jr."),
+      card("6", "Manny Machado"),
+      // No team on file and no automatic source for one: the pill's rule
+      // (`needsAttention`) flags both.
+      card("16a", "Yu Darvish", { teamOnCardIds: [] }),
+      card("60", "Rob Gronkowski", { teamOnCardIds: [] }),
+      // Its own text says "attention"; it needs nobody.
+      card("70", "Attention Grabbers"),
+    ];
+    render(ui());
+    // The set-level pill counts the same two.
+    expect(screen.getByRole("button", { name: "2 need you" })).toBeTruthy();
+
+    type("Attention");
+    expect(shownNumbers()).toEqual(["16a", "60"]);
+    expect(await screen.findByText("2 of 5 cards")).toBe(status());
+
+    type("attention gronk");
+    expect(shownNumbers()).toEqual(["60"]);
+
+    // A card that needs attention but does not match the other term.
+    type("attention machado");
+    expect(shownNumbers()).toEqual([]);
+    expect(screen.getByText('No cards match "attention machado".')).toBeTruthy();
+  });
+
+  it("'attention' on a set where nothing needs a person is the empty state", async () => {
+    render(ui());
+    // Every fixture card is teamed and settled: no pill.
+    expect(screen.queryByRole("button", { name: /need(s)? you$/ })).toBeNull();
+    type("attention");
+    expect(screen.queryByTestId("virtuoso")).toBeNull();
+    expect(screen.getByText('No cards match "attention".')).toBeTruthy();
+    expect(await screen.findByText("0 of 6 cards")).toBe(status());
+  });
+
   it("singular total: '1 of 1 card'", async () => {
     state.cards = [card("1", "Fernando Tatís Jr.")];
     render(ui());
@@ -390,6 +429,17 @@ describe("CardChecklist — search (NEO-343)", () => {
     type("");
     expect(panel()).toBeNull();
     expect(document.activeElement).toBe(searchBox());
+  });
+
+  it("the field is the panel-surface field, with the agreed placeholder", () => {
+    render(ui());
+    const box = searchBox() as HTMLInputElement;
+    expect(box.placeholder).toBe("Number, name, team or feature");
+    // Follows the checklist card (`bg-white dark:bg-gray-800`), not the
+    // primitive's always-dark default.
+    expect(box.classList.contains("bg-white")).toBe(true);
+    expect(box.classList.contains("dark:bg-gray-900")).toBe(true);
+    expect(box.classList.contains("bg-slate-900")).toBe(false);
   });
 
   it("sits in a search landmark; the clear button has no tooltip to drift from its name", () => {
