@@ -2902,7 +2902,10 @@ export default function CardPairingModal({
                               // editor closes; keyed like `data-name-conflict`
                               // and for the same reason.
                               data-card-title={domKey(m.card)}
-                              className="text-left border-b border-dotted border-gray-600 hover:border-[#00B7FF] hover:text-white"
+                              // inline-block + min-h-6: the text-sm line alone
+                              // is a ~20px target; SC 2.5.8 needs 24px (axe
+                              // target-size).
+                              className="inline-block min-h-6 text-left border-b border-dotted border-gray-600 hover:border-[#00B7FF] hover:text-white"
                               onClick={() => {
                                 // Prefilled with `cardName` ALONE — not
                                 // `label()`. The number and the variation
