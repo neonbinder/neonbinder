@@ -122,6 +122,22 @@ describe("decideVariationPairs (NEO-189, NEO-339)", () => {
     expect(res.unmatched).toEqual([]);
   });
 
+  test("one variation left on each side pairs on the number, even when the players differ", () => {
+    // Live 2024 Topps Chrome: SportLots misspells #300's variation.
+    const res = run(
+      [
+        card("b300", "300", "Julio Rodriguez"),
+        card("b300b", "300b", "Julio Rodriguez", { isVariation: true }),
+      ],
+      [
+        card("s300", "300", "Julio Rodriguez"),
+        card("sV", "300", "Julio Rodrfguez", { isVariation: true }),
+      ],
+    );
+    expect(res.pairs).toEqual({ b300b: "sV" });
+    expect(res.unmatched).toEqual([]);
+  });
+
   test("a player tie pairs nothing and keeps the SL row from the fuzzy fallback", () => {
     const res = run(
       [

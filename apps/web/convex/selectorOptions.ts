@@ -13819,6 +13819,7 @@ async function fetchAndMatchChecklist(
           bscVariations: variationPairs.stats.bscVariations,
           slVariations: variationPairs.stats.slVariations,
           paired: variationPairs.pairs.size,
+          byNumber: variationPairs.stats.byNumber,
           byPlayer: variationPairs.stats.byPlayer,
           unmatched: variationPairs.unmatched.size,
         }),

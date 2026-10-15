@@ -180,7 +180,7 @@ export type VariationDecisions<B, S> = {
   /** SportLots variations that were contended for: never offered to the fuzzy fallback. */
   fuzzyExcluded: Set<S>;
   /** For the `variation_pairing` log line. */
-  stats: { bscVariations: number; slVariations: number; byLabel: number; byPlayer: number };
+  stats: { bscVariations: number; slVariations: number; byLabel: number; byNumber: number; byPlayer: number };
 };
 
 /**
@@ -252,7 +252,7 @@ export function decideVariationPairs<
   const pairs = new Map<B, S>();
   const unmatched = new Set<B>();
   const fuzzyExcluded = new Set<S>();
-  const stats = { bscVariations: 0, slVariations: 0, byLabel: 0, byPlayer: 0 };
+  const stats = { bscVariations: 0, slVariations: 0, byLabel: 0, byNumber: 0, byPlayer: 0 };
   for (const list of bscByStem.values()) stats.bscVariations += list.length;
   for (const list of slByStem.values()) stats.slVariations += list.length;
 
@@ -277,6 +277,15 @@ export function decideVariationPairs<
     if (bscLeft.length === 0 || slLeft.length === 0) continue;
 
     for (const s of slLeft) fuzzyExcluded.add(s);
+    // Exactly one variation left on each side: the number alone is an
+    // exactly-one match (invariant 7), so they pair and any name or roster
+    // difference surfaces as a conflict, as it does for a base card. SL's
+    // "#300 Julio Rodrfguez [ VAR ]" against BSC's 300b "Julio Rodriguez".
+    if (bscLeft.length === 1 && slLeft.length === 1) {
+      pairs.set(bscLeft[0], slLeft[0]);
+      stats.byNumber++;
+      continue;
+    }
     const byPlayer = pairExactlyOneByPlayer(bscLeft, slLeft);
     for (const b of bscLeft) {
       const s = byPlayer.get(b);

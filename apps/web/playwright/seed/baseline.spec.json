@@ -27,7 +27,9 @@
               {"field": "name", "bsc": "c6efbbe447fe6053d85fa2f8dc2a2f88", "choose": "bsc"},
               {"field": "players", "bsc": "c6efbbe447fe6053d85fa2f8dc2a2f88", "choose": "bsc"},
               {"field": "name", "bsc": "78389eaab6f15fb70942daebe340f33e", "choose": "bsc"},
-              {"field": "players", "bsc": "78389eaab6f15fb70942daebe340f33e", "choose": "bsc"}
+              {"field": "players", "bsc": "78389eaab6f15fb70942daebe340f33e", "choose": "bsc"},
+              {"field": "name", "bsc": "f5ab3807c7a57ebadc32372226195cdb", "choose": "bsc"},
+              {"field": "players", "bsc": "f5ab3807c7a57ebadc32372226195cdb", "choose": "bsc"}
             ]
           },
           "review": {
