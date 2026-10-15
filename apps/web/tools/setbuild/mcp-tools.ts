@@ -480,7 +480,7 @@ export function registerWriteTools(
         "WRITES. Answers the entity review a checklist is waiting on (see nb_review_items): for each player, " +
         'team or league by its exact name, "create", "skip", or {"link": "<existing NB name>"}. A player link may ' +
         'add "birthYear" to pick one of several NB players sharing the name. Teams may carry ' +
-        "location and league; a league \"create\" must carry its level (major, minor, college, international, " +
+        "location (the place or sponsor the name begins with) and league; a league \"create\" must carry its level (major, minor, college, international, " +
         "independent or other). row names the checklist (variant type + row name); omit it for the Base row. Only " +
         "answers the operator gave; an unanswered item stays open. confirm is BUILD <convex host> " +
         "<sport>/<year>/<manufacturer>/<set> <digest>, the digest binding it to these exact answers; a call " +

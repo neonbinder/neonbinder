@@ -10,7 +10,8 @@
  * | NB_SETBUILD_CONVEX_URL            | target (or --convex-url)                   |
  * | NB_SETBUILD_AUTH                  | machine \| testing (or --auth)             |
  * | NB_SETBUILD_API_KEY               | machine: Clerk API key (secret)            |
- * | NB_SETBUILD_APP_URL               | testing: SPA origin (or --app-url)         |
+ * | NB_SETBUILD_APP_URL               | testing: SPA origin (or --app-url); both   |
+ * |                                   | modes: origin of the Set Builder links     |
  * | TESTING_ENDPOINT_SECRET           | testing: x-testing-auth (secret)           |
  * | VITE_CLERK_PUBLISHABLE_KEY        | testing: FAPI origin (or --publishable-key)|
  * | VERCEL_AUTOMATION_BYPASS_SECRET   | testing: protected preview (secret)        |
@@ -73,6 +74,26 @@ function pick(flag: string | undefined, env: string | undefined): string | undef
   return v === undefined || v.trim() === "" ? undefined : v.trim();
 }
 
+/**
+ * The origin Set Builder links are printed on: the app URL's origin, or
+ * undefined (links stay root-relative). Testing auth has already refused a bad
+ * app URL by the time this runs; under machine auth it only shapes links, so
+ * any http(s) URL will do.
+ */
+function linkOrigin(appUrl: string | undefined): string | undefined {
+  if (appUrl === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(appUrl);
+  } catch {
+    throw new ConfigError("The app URL (--app-url or NB_SETBUILD_APP_URL) is not a URL.");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new ConfigError("The app URL (--app-url or NB_SETBUILD_APP_URL) must be http(s)://.");
+  }
+  return url.origin;
+}
+
 export function resolveConnection(
   flags: ConnectionFlags,
   env: NodeJS.ProcessEnv = process.env,
@@ -95,19 +116,20 @@ export function resolveConnection(
     throw new ConfigError("Pick an auth mode: --auth machine|testing, or set NB_SETBUILD_AUTH.");
   }
 
+  const appUrl = pick(flags.appUrl, env.NB_SETBUILD_APP_URL);
+
   if (authRaw === "machine") {
     const apiKey = env.NB_SETBUILD_API_KEY;
     if (!apiKey) throw new ConfigError("--auth machine needs NB_SETBUILD_API_KEY in the environment.");
     assertSiteIsTwin(target);
     return {
-      target,
+      target: withAppOrigin(target, linkOrigin(appUrl)),
       auth: "machine",
       transport,
       tokens: machineTokenSource({ convexSite: target.convexSite, apiKey, fetchFn: deps.fetchFn }),
     };
   }
 
-  const appUrl = pick(flags.appUrl, env.NB_SETBUILD_APP_URL);
   const testingSecret = env.TESTING_ENDPOINT_SECRET;
   const publishableKey = pick(flags.publishableKey, env.VITE_CLERK_PUBLISHABLE_KEY);
   const missing = [
@@ -123,17 +145,23 @@ export function resolveConnection(
   if (!Number.isInteger(worker) || worker < 0 || worker > 31) {
     throw new ConfigError("--worker must be an integer from 0 to 31.");
   }
+  // The token source checks the app URL first (the testing secret is sent to it).
+  const tokens = testingTokenSource({
+    appUrl: appUrl!,
+    testingSecret: testingSecret!,
+    bypassSecret: env.VERCEL_AUTOMATION_BYPASS_SECRET || undefined,
+    worker,
+    publishableKey: publishableKey!,
+    fetchFn: deps.fetchFn,
+  });
   return {
-    target,
+    target: withAppOrigin(target, linkOrigin(appUrl)),
     auth: "testing",
     transport,
-    tokens: testingTokenSource({
-      appUrl: appUrl!,
-      testingSecret: testingSecret!,
-      bypassSecret: env.VERCEL_AUTOMATION_BYPASS_SECRET || undefined,
-      worker,
-      publishableKey: publishableKey!,
-      fetchFn: deps.fetchFn,
-    }),
+    tokens,
   };
+}
+
+function withAppOrigin(target: Target, appOrigin: string | undefined): Target {
+  return appOrigin === undefined ? target : { ...target, appOrigin };
 }

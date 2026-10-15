@@ -20,9 +20,6 @@
           "pairing": {
             "unmatchedBsc": "keep",
             "unmatchedSportlots": "keep",
-            "pairs": [
-              {"bsc": "40f32556babd5ca7c2a0876e77bd24a2", "sportlots": "2024 Topps Chrome #122 Wyatt Langford\r\n    [ VAR ]"}
-            ],
             "conflicts": [
               {"field": "name", "bsc": "c6efbbe447fe6053d85fa2f8dc2a2f88", "choose": "bsc"},
               {"field": "players", "bsc": "c6efbbe447fe6053d85fa2f8dc2a2f88", "choose": "bsc"},
@@ -459,7 +456,7 @@
               {"name": "Atlantic Coast Conference", "decision": "create", "level": "other"}
             ]
           },
-          "expectCards": 335
+          "expectCards": 336
         }
       },
       "variants": [

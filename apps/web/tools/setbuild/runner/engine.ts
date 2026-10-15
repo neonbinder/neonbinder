@@ -66,6 +66,7 @@ import { applySlReview } from "../lib/sl-review";
 import { cardCount, checklistDone, runChecklistStep, type ReviewSession } from "../lib/commit";
 import { buildParallel, planParallelBuild, type BuildParallelInput } from "../lib/build-parallel";
 import { groupParallels, planGrouping, type GroupOpen } from "../lib/group-parallels";
+import { setBuilderLink } from "../lib/set-builder-link";
 import { api } from "../../../convex/_generated/api";
 import { PlanWouldWrite } from "./read-only-client";
 
@@ -702,7 +703,9 @@ export async function runSpec(
       // An open decision, like every other answer the spec owes: `first` stops
       // here, `end` records it and carries on (nothing waits on a build).
       const n = r.listed.bsc + r.listed.sportlots;
-      const what = noSharedNumbers(input.name, r.source, n, fix);
+      // Only a parallel of Base is sent to the Set Builder; an insert's is answered in the spec.
+      const link = fix.groupAt ? undefined : await setBuilderLink(client, r.parallelId);
+      const what = noSharedNumbers(input.name, r.source, n, { ...fix, link });
       open.grouping.push({ at: input.at, path, type: fix.type, problem: "no-shared-numbers", name: input.name, detail: what.detail });
       patch(fix.groupAt ? input.at : `${input.at}.buildFromBase`, what.fill);
       record({ index: i, kind: "build-parallel", path, action, status: "blocked", detail: what.reason });
@@ -792,6 +795,8 @@ interface BuildFix {
   type: string;
   /** An insert's parallel: where the type's Group Parallels answer goes (`steps[0].variants[1].group`). */
   groupAt?: string;
+  /** A parallel of Base: the Set Builder link to the row, where it is moved to an insert type. */
+  link?: string;
 }
 
 /**
@@ -821,7 +826,8 @@ export function noSharedNumbers(
     reason,
     detail:
       `${lists}, so it is probably an insert, not a parallel of "${source}". ` +
-      "Remove its buildFromBase; moving it to an insert type is done in the Set Builder.",
+      "Remove its buildFromBase; moving it to an insert type is done in the Set Builder" +
+      (fix.link ? `: ${fix.link}` : "."),
     fill: `<${reason}: probably an insert. Remove buildFromBase>`,
   };
 }

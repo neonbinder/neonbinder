@@ -403,6 +403,13 @@ describe("a parallel build that shares no card number with its source (NEO-339: 
     expect(tpl.steps[0].variants[1].rows[0].parallels[0]).toMatch(/^<"Youthquake Red" shares no card numbers with "Youthquake": probably its own insert\./);
   });
 
+  test("a parallel of Base: the link is appended to the Set Builder sentence; with none the sentence ends as before", () => {
+    const link = "https://app.example.test/admin/set-builder?sport=sp&year=yr&brand=mf&set=st&type=vtP&insert=pS";
+    const detail = noSharedNumbers("Sepia", "Base", 2, { type: "Parallel", link }).detail;
+    expect(detail.slice(detail.indexOf("done in the Set Builder"))).toBe(`done in the Set Builder: ${link}`);
+    expect(noSharedNumbers("Sepia", "Base", 2, { type: "Parallel" }).detail).toMatch(/done in the Set Builder\.$/);
+  });
+
   test("a one-card listing reads in the singular", () => {
     expect(noSharedNumbers("Gold Auto", "Chrome", 1, { type: "Insert", groupAt: "g" }).detail).toMatch(
       /^"Gold Auto" lists 1 marketplace card and it shares no number with "Chrome", so/,
@@ -453,13 +460,18 @@ describe("a parallel build that shares no card number with its source (NEO-339: 
       cards[id] = 20;
       return built(20);
     });
+    const SET_CHAIN = [sel("sp", "sport", "Baseball"), sel("yr", "year", "2024"), sel("mf", "manufacturer", "Topps"), sel("st", "setName", "Topps Chrome")];
+    client.on("selectorOptions:getAncestorChain", (a) =>
+      a.id === "pS" ? [...SET_CHAIN, sel("vtP", "variantType", "Parallel"), sel("pS", "insert", "Sepia Refractors")] : SET_CHAIN,
+    );
     const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
     expect(r.openDecisions.grouping).toMatchObject([
       { at: "steps[0].variants[0].rows[0]", type: "Parallel", problem: "no-shared-numbers", name: "Sepia Refractors" },
     ]);
     expect(r.openDecisions.grouping[0].detail).toBe(
       '"Sepia Refractors" lists 4 marketplace cards and none share a number with "Base", so it is probably an insert, not a parallel of "Base". ' +
-        "Remove its buildFromBase; moving it to an insert type is done in the Set Builder.",
+        "Remove its buildFromBase; moving it to an insert type is done in the Set Builder: " +
+        "/admin/set-builder?sport=sp&year=yr&brand=mf&set=st&type=vtP&insert=pS",
     );
     const tpl = r.template as { steps: Array<{ variants: Array<{ rows: Array<{ buildFromBase: unknown }> }> }> };
     expect(tpl.steps[0].variants[0].rows[0].buildFromBase).toBe('<"Sepia Refractors" shares no card numbers with "Base": probably an insert. Remove buildFromBase>');

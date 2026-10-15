@@ -61,6 +61,8 @@ export type BuildParallelOutcome =
       listed: { bsc: number; sportlots: number };
       /** The row it was built from (an insert, or Base), by NB name. */
       source: string;
+      /** The parallel row itself, for the Set Builder link the open decision carries. */
+      parallelId: Id<"selectorOptions">;
       result: ParallelBuildResult;
     };
 
@@ -132,7 +134,7 @@ export async function buildParallel(client: NbClient, input: BuildParallelInput)
   const listed = listedOnlyCounts(result);
   if (result.copied === 0 && listed.bsc + listed.sportlots > 0 && input.expectCards !== 0) {
     // Before the count check: "expects 20, holds 0" would hide the reason.
-    return { outcome: "no-shared-numbers", cards, listed, source: planned.source ?? "its source", result };
+    return { outcome: "no-shared-numbers", cards, listed, source: planned.source ?? "its source", parallelId, result };
   }
   if (input.expectCards !== undefined && cards !== input.expectCards) {
     throw new BuildParallelError(

@@ -38,6 +38,7 @@ import {
 import { WaitTimeout, type NbClient } from "../client/convex-client";
 import type { Checklist, CardConflict } from "../spec/schema";
 import type { OpenConflict, RowRef } from "../service";
+import { setBuilderLink } from "./set-builder-link";
 
 export type ReadyCandidates = FunctionReturnType<typeof api.checklistCandidates.getReadyCandidates>;
 export type ReadyCandidate = ReadyCandidates["cards"][number];
@@ -360,10 +361,11 @@ export async function assertNoSyncReview(
   });
   if (needsSyncReview(diff)) {
     const changed = diff.cards.filter((c) => c.bucket === "formattingOnly" || c.bucket === "contentChanges").length;
+    const link = await setBuilderLink(client, rowId);
     throw new ChecklistStepError(
       `${at}: this checklist already holds cards that differ from the fetch (${changed} changed, ` +
         `${diff.removedUpstream.fullyOrphaned.length} no longer listed, ${diff.conflicts.length} conflicts). ` +
-        "The set-build tool builds checklists; it does not re-sync them. Review it in the Set Builder.",
+        `The set-build tool builds checklists; it does not re-sync them. Review it in the Set Builder: ${link}`,
     );
   }
 }

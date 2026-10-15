@@ -318,9 +318,10 @@ export function untouchedLeagueCreate(
 
 /**
  * The New Team step's Location + Name. Untouched = `teamCreatePrefill`. A spec
- * `location` must be a whole-word prefix of the row's name (the split the
- * operator would type), or `""` for "no location"; anything else is refused
- * rather than guessed.
+ * `location` is the place or sponsor the name begins with ("Wisconsin" for
+ * "Wisconsin Badgers", "Hanwha" for "Hanwha Eagles"): a whole-word prefix of
+ * the row's name (the split the operator would type), or `""` for "no
+ * location"; anything else is refused rather than guessed.
  */
 export function teamLocationAndName(
   row: ReviewRow,
@@ -336,7 +337,8 @@ export function teamLocationAndName(
   if (!split) {
     throw new ChecklistStepError(
       `${at}: location "${location}" is not the start of the team name "${row.name}"; ` +
-        "give the place the name begins with, or leave location out to take the step's pre-fill.",
+        'give the place or sponsor the name begins with (e.g. "Hanwha" for "Hanwha Eagles"), ' +
+        "or leave location out to take the step's pre-fill.",
     );
   }
   return { location: split.location, name: split.name };

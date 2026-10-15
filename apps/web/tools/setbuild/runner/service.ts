@@ -51,6 +51,7 @@ import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
 import { draftSet } from "./draft";
 import { queryOnlyClient } from "./read-only-client";
+import { setBuilderLink } from "../lib/set-builder-link";
 
 /** A write that could not go on because it needs answers it was not given. */
 export class OpenDecisionsError extends Error {
@@ -177,7 +178,12 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
           outcome: r.outcome,
           cards: r.cards,
           ...(r.outcome === "no-shared-numbers"
-            ? { detail: noSharedNumbers(name, r.source, r.listed.bsc + r.listed.sportlots, { type: types[0].value }).detail }
+            ? {
+                detail: noSharedNumbers(name, r.source, r.listed.bsc + r.listed.sportlots, {
+                  type: types[0].value,
+                  link: await setBuilderLink(client, r.parallelId),
+                }).detail,
+              }
             : {}),
           durationMs: (opts.now ?? Date.now)() - started,
         };

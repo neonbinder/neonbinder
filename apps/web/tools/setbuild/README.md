@@ -75,7 +75,7 @@ table at the top of `runner/engine.ts`. The confirm phrase does not cover
 |---|---|---|
 | `--convex-url` | `NB_SETBUILD_CONVEX_URL` | The target. There is no fallback to `VITE_CONVEX_URL`. |
 | `--auth machine\|testing` | `NB_SETBUILD_AUTH` | Token source. |
-| `--app-url` | `NB_SETBUILD_APP_URL` | `testing`: origin serving `/api/auth/testing`. |
+| `--app-url` | `NB_SETBUILD_APP_URL` | `testing`: origin serving `/api/auth/testing`. Both modes: the web app the Set Builder links are printed on (set it under `--auth machine` too, or the links are root-relative `/admin/set-builder?…`). |
 | `--worker` | `NB_SETBUILD_WORKER` | `testing`: per-worker test account (default 0). |
 | `--publishable-key` | `VITE_CLERK_PUBLISHABLE_KEY` | `testing`: derives the Clerk FAPI origin. |
 | `--transport ws\|http` | `NB_SETBUILD_TRANSPORT` | Default `ws` (`ConvexClient`); `http` is the fallback. |
@@ -133,7 +133,8 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
   by a shared name stops the same way. A draft (and an apply template) offers
   that form for a same-name player and lists each candidate's birth year. A
   team may add
-  `location` and `league` (the New Team step's fields). A league `"create"`
+  `location` and `league` (the New Team step's fields; `location` is the
+  place or sponsor the name begins with, e.g. `"Hanwha"` for "Hanwha Eagles"). A league `"create"`
   must carry `level`, one of the schema's `leagues.level` values (`major`,
   `minor`, `college`, `international`, `independent`, `other`): NEO-331 made
   the level required and the New League step pre-picks none, so the spec says

@@ -72,7 +72,8 @@ export const GLOBAL_OPTIONS = {
 const GLOBAL_USAGE = `Connection flags (or env):
   --convex-url <url>        NB_SETBUILD_CONVEX_URL   https://<deployment>.convex.cloud
   --auth machine|testing    NB_SETBUILD_AUTH
-  --app-url <url>           NB_SETBUILD_APP_URL      testing: SPA serving /api/auth/testing
+  --app-url <url>           NB_SETBUILD_APP_URL      testing: SPA serving /api/auth/testing;
+                                                     any auth: origin of Set Builder links
   --worker <n>              testing: per-worker test account (default 0)
   --publishable-key <pk>    VITE_CLERK_PUBLISHABLE_KEY
   --transport ws|http       default ws

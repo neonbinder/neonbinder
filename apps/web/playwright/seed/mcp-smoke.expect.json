@@ -2,7 +2,7 @@
   "before": [
     {
       "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome"},
-      "base": {"cards": 335, "linked": {"buysportscards": true, "sportlots": true}},
+      "base": {"cards": 336, "linked": {"buysportscards": true, "sportlots": true}},
       "rows": [
         {"type": "Insert", "name": "Future Stars", "cards": 20},
         {"type": "Parallel", "name": "Sepia Refractors", "cards": 0},
@@ -24,7 +24,7 @@
   "after": [
     {
       "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome"},
-      "base": {"cards": 335},
+      "base": {"cards": 336},
       "rows": [
         {"type": "Parallel", "name": "Refractors", "cards": 300},
         {"type": "Parallel", "name": "Sepia Refractors", "cards": 0},

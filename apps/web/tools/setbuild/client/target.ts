@@ -19,6 +19,13 @@ export interface Target {
   convexSite: string;
   /** `<deployment>.convex.cloud` — the host the confirm phrase names. */
   host: string;
+  /**
+   * The web app serving this deployment (`--app-url` / `NB_SETBUILD_APP_URL`),
+   * origin only. Set Builder links the tool prints are absolute on it; without
+   * it they are root-relative (`/admin/set-builder?…`). Never part of the
+   * confirm phrase.
+   */
+  appOrigin?: string;
 }
 
 export class TargetError extends Error {

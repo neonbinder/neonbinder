@@ -87,9 +87,17 @@ describe("checklist step idempotence", () => {
         conflicts: [],
         collisionInsertCount: 0,
       });
+    client.on("selectorOptions:getAncestorChain", [
+      { _id: "sp", level: "sport" },
+      { _id: "yr", level: "year" },
+      { _id: "mf", level: "manufacturer" },
+      { _id: "st", level: "setName" },
+      { _id: "vtB", level: "variantType" },
+    ]);
     await expect(
       runChecklistStep(client, { rowId: "vtB" as never, sportId: "sp" as never, checklist: { ...CHECKLIST, expectCards: undefined }, at: "a", row: null }),
-    ).rejects.toThrow(/does not re-sync/);
+    ).rejects.toThrow(/does not re-sync them\. Review it in the Set Builder: \/admin\/set-builder\?sport=sp&year=yr&brand=mf&set=st&type=vtB$/);
+    expect(client.callsTo("selectorOptions:getAncestorChain").map((c) => c.args)).toEqual([{ id: "vtB" }]);
     expect(client.callsTo("selectorOptions:resolveChecklistEntities")).toEqual([]);
   });
 });

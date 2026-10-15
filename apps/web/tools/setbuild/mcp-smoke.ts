@@ -25,7 +25,7 @@
  *   {
  *     "before": [
  *       { "path": { "sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome" },
- *         "base": { "cards": 335 },
+ *         "base": { "cards": 336 },
  *         "rows": [{ "type": "Insert", "name": "Future Stars", "cards": 20 }],
  *         "rowCounts": [{ "type": "Parallel", "count": 41 }] },
  *       { "path": { "sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Big League" },

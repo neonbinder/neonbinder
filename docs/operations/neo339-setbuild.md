@@ -82,6 +82,11 @@ the machine).
 | `testing` | Previews and local dev. Mints a session for the worker-N test admin through `POST <app-url>/api/auth/testing`, redeems the sign-in ticket with Clerk, mints the `convex` JWT template. | `TESTING_ENDPOINT_SECRET`, `VITE_CLERK_PUBLISHABLE_KEY` (or `--publishable-key`), `--app-url`, optionally `VERCEL_AUTOMATION_BYPASS_SECRET` for a protected preview. |
 | `machine` | Production, and any deployment where the testing endpoint is off. A user-scoped API key. | `NB_SETBUILD_API_KEY`, `NB_SETBUILD_CONVEX_URL`. |
 
+Under either mode, `--app-url` / `NB_SETBUILD_APP_URL` is also the web app the
+tool's Set Builder links open on (a message that sends the operator to the Set
+Builder carries a link to the row it is about). Set it with `--auth machine`
+too; without it the links are root-relative (`/admin/set-builder?sport=…`).
+
 Each credential goes only where the confirm phrase's host binds it:
 
 - **machine:** the API key is posted to the Convex **site** URL, which must be
