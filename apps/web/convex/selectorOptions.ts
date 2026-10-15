@@ -53,7 +53,10 @@ import {
 import { generateSku } from "./sku";
 import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
-import { resolveVariationParents } from "../lib/cards/variations";
+import {
+  attachCrossMarketplaceVariations,
+  resolveVariationParents,
+} from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
 import {
   decideDuplicateNumberPairs,
@@ -22239,6 +22242,24 @@ export const commitCardChecklist = action({
       // sets is two separate groups needing review, and collapsing them would
       // understate the work.
       variationLinks.unresolvedStems.push(...resolved.unresolvedStems);
+    }
+    // NEO-339: a variation only one marketplace lists, whose base card both
+    // list, has no parent in its own partition (the base sits in BSC's). Give
+    // it the one non-variation card of the same marketplace set whose number
+    // is its stem, or leave it as it is. See `attachCrossMarketplaceVariations`.
+    const crossMarketplace = attachCrossMarketplaceVariations(
+      args.cards.map((c) => ({
+        cardNumber: c.cardNumber,
+        isVariation: !!c.isVariation,
+        sourceSetIds: {
+          bsc: c.platformData?.bsc?.setId,
+          sportlots: c.platformData?.sportlots?.setId,
+        },
+      })),
+      variationLinks.parentByIndex,
+    );
+    for (const [child, parent] of crossMarketplace) {
+      variationLinks.parentByIndex.set(child, parent);
     }
     const links: Array<{
       childId: Id<"cardChecklist">;

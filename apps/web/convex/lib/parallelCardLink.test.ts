@@ -369,3 +369,26 @@ describe("linkCardsToSide — the guard (invariant 7)", () => {
     expect(result.none).toBe(1);
   });
 });
+
+describe("linkCardsToSide — 2024 Topps Chrome #122 and SportLots' bare VAR (NEO-339)", () => {
+  const WYATT = { cardName: "Wyatt Langford", namesOnCard: ["Wyatt Langford"] };
+  const parallel122 = [fetched({ ref: "r122", cardNumber: "122", cardName: "Wyatt Langford", players: ["Wyatt Langford"] })];
+
+  test("with the VAR parented (a variation), base #122 is the one candidate and links", () => {
+    const nbCards = [
+      nb({ id: "base", cardNumber: "122", ...WYATT }),
+      nb({ id: "var", cardNumber: "122", ...WYATT, isVariation: true }),
+      nb({ id: "b", cardNumber: "122b", ...WYATT, isVariation: true }),
+    ];
+    const result = linkCardsToSide(nbCards, parallel122);
+    expect(result.outcomes.get("base")).toEqual({ kind: "linked", card: parallel122[0], via: "key" });
+    expect(result.outcomes.get("var")).toEqual({ kind: "none" });
+  });
+
+  test("the shape the commit fix prevents: an unparented VAR is a second plain #122 and neither links", () => {
+    const nbCards = [nb({ id: "base", cardNumber: "122", ...WYATT }), nb({ id: "var", cardNumber: "122", ...WYATT })];
+    const result = linkCardsToSide(nbCards, parallel122);
+    expect(result.outcomes.get("base")).toEqual({ kind: "ambiguous" });
+    expect(result.outcomes.get("var")).toEqual({ kind: "ambiguous" });
+  });
+});
