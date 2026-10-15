@@ -53,13 +53,12 @@ import {
 import { generateSku } from "./sku";
 import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
-import {
-  cardNumberStem,
-  resolveVariationParents,
-  suggestVariationPairings,
-} from "../lib/cards/variations";
+import { resolveVariationParents } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
-import { decideDuplicateNumberPairs } from "./lib/duplicateNumberPairing";
+import {
+  decideDuplicateNumberPairs,
+  decideVariationPairs,
+} from "./lib/duplicateNumberPairing";
 // NEO-212: the SINGLE career-timeline ordering, shared with `enrichPlayer` in
 // convex/adapters/wikidata.ts. Both write `players.teamYears`, and a player
 // can be created by either, so they must not disagree about the order.
@@ -13807,56 +13806,23 @@ async function fetchAndMatchChecklist(
     // BSC-only column. A real 2025 Topps sync put 393 of them there.
     //
     // Grouped by card-number STEM — the one thing both sides agree on — and
-    // matched on the variation label via suggestVariationPairings: exact
-    // wording first, then containment ("Action" in "Action Image"). Anything
-    // it will not pair confidently is left for the operator rather than
-    // guessed, which is the same rule the commit-time parent resolution
-    // follows.
-    const slVariationPairByBscRef = new Map<string, typeof slCards[0]>();
-    {
-      const bscVarsByStem = new Map<string, typeof bscCards>();
-      for (const c of bscCards) {
-        if (!c.isVariation) continue;
-        const stem = cardNumberStem(c.cardNumber);
-        const b = bscVarsByStem.get(stem);
-        if (b) b.push(c);
-        else bscVarsByStem.set(stem, [c]);
-      }
-      const slVarsByStem = new Map<string, typeof slCards>();
-      for (const c of slCards) {
-        if (!c.isVariation) continue;
-        const stem = cardNumberStem(c.cardNumber);
-        const b = slVarsByStem.get(stem);
-        if (b) b.push(c);
-        else slVarsByStem.set(stem, [c]);
-      }
-      let paired = 0;
-      for (const [stem, bscVars] of bscVarsByStem) {
-        const slVars = slVarsByStem.get(stem);
-        if (!slVars?.length) continue;
-        const { pairs } = suggestVariationPairings(
-          bscVars.map((c) => c.cardVariation ?? ""),
-          slVars.map((c) => c.cardVariation ?? ""),
-        );
-        for (const pair of pairs) {
-          const bscRef = bscVars[pair.leftIndex]?.platformRef;
-          const slCard = slVars[pair.rightIndex];
-          if (bscRef && slCard) {
-            slVariationPairByBscRef.set(bscRef, slCard);
-            paired++;
-          }
-        }
-      }
-      if (bscVarsByStem.size > 0) {
-        console.log(
-          JSON.stringify({
-            msg: "variation_pairing",
-            bscVariations: [...bscVarsByStem.values()].reduce((n, v) => n + v.length, 0),
-            slVariations: [...slVarsByStem.values()].reduce((n, v) => n + v.length, 0),
-            paired,
-          }),
-        );
-      }
+    // matched on the variation label (exact, then containment), then by
+    // player for what the labels leave, exactly one both ways (NEO-339: a
+    // bare `[ VAR ]` has no label). Anything it will not pair confidently is
+    // left for the operator rather than guessed, which is the same rule the
+    // commit-time parent resolution follows. See decideVariationPairs.
+    const variationPairs = decideVariationPairs({ bscCards, slCards });
+    if (variationPairs.stats.bscVariations > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "variation_pairing",
+          bscVariations: variationPairs.stats.bscVariations,
+          slVariations: variationPairs.stats.slVariations,
+          paired: variationPairs.pairs.size,
+          byPlayer: variationPairs.stats.byPlayer,
+          unmatched: variationPairs.unmatched.size,
+        }),
+      );
     }
 
     // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
@@ -13990,11 +13956,11 @@ async function fetchAndMatchChecklist(
       return (
         (storedSlRef ? slByPlatformRef.get(storedSlRef) : undefined)
         || (bsc.sportlotsRef ? slByRef.get(bsc.sportlotsRef) : undefined)
-        // NEO-189: a variation's counterpart, matched by label above. Ranks
-        // below the operator's stored answer and BSC's own cross-reference,
-        // and above the number lookups — which cannot resolve a suffixed
-        // number against SportLots at all.
-        || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
+        // NEO-189: a variation's counterpart, matched by label (or, NEO-339,
+        // by player) above. Ranks below the operator's stored answer and
+        // BSC's own cross-reference, and above the number lookups — which
+        // cannot resolve a suffixed number against SportLots at all.
+        || variationPairs.pairs.get(bsc)
       );
     };
     // NEO-339 — a card number printed twice (2014 Topps Chrome #482 is both
@@ -14018,8 +13984,12 @@ async function fetchAndMatchChecklist(
         ? storedSlRefByBscRef.get(bsc.platformRef)
         : undefined;
       // `undefined`: the number is unambiguous, look it up as always.
-      // `null`: an ambiguous number with no single player match — unmatched.
-      const numberDecision = duplicateNumbers.decided.get(bsc);
+      // `null`: an ambiguous number with no single player match, or a
+      // variation that lost its contest for the stem's SportLots variations —
+      // unmatched either way.
+      const numberDecision = variationPairs.unmatched.has(bsc)
+        ? null
+        : duplicateNumbers.decided.get(bsc);
       let sl: typeof slCards[0] | undefined =
         shortCircuitSl(bsc)
         || (numberDecision !== undefined
@@ -14040,6 +14010,7 @@ async function fetchAndMatchChecklist(
         for (const candidate of slCards) {
           if (claimedSlRefs.has(slClaimKey(candidate))) continue;
           if (duplicateNumbers.fuzzyExcluded.has(candidate)) continue;
+          if (variationPairs.fuzzyExcluded.has(candidate)) continue;
           const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
           if (!candName) continue;
           const score = jaroWinkler(target, candName);

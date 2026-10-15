@@ -21,6 +21,10 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// The real parsers, not the mocked action: SportLots rows below are built from
+// the exact live descriptions, so these tests cover the adapter's reading of
+// "[ VAR ]" as well as the pairing.
+import { parseSlSubjects, parseSlVariationMarker } from "./adapters/sportlots";
 
 type Card = {
   cardNumber: string;
@@ -399,3 +403,114 @@ describe("fetchCardChecklist — a card number printed twice (NEO-339)", () => {
     ]);
   });
 });
+
+/**
+ * A SportLots row as the adapter parses it from a live description, e.g.
+ * `slRow("16", "Pete Crow-Armstrong [ VAR ]")`.
+ */
+function slRow(cardNumber: string, description: string): Card {
+  const { isVariation, variationLabel, residual } =
+    parseSlVariationMarker(description);
+  const { players } = parseSlSubjects(residual);
+  return {
+    cardNumber,
+    cardName: residual,
+    ...(players ? { players } : {}),
+    ...(isVariation ? { isVariation: true } : {}),
+    ...(variationLabel ? { cardVariation: variationLabel } : {}),
+    platformRef: `2024 Topps Chrome #${cardNumber} ${description}`,
+    sportlotsRef: cardNumber,
+    sourceSlSetId: "189991",
+  };
+}
+
+function bscRow(cardNumber: string, name: string, extra: Partial<Card> = {}): Card {
+  return {
+    cardNumber,
+    cardName: name,
+    players: [name],
+    platformRef: `bsc-${cardNumber}`,
+    sourceBscSetSlug: "base",
+    ...extra,
+  };
+}
+
+describe("fetchCardChecklist — an unlabelled SportLots [ VAR ] under the base number (NEO-339, 2024 Topps Chrome)", () => {
+  for (const flagged of [true, false]) {
+    test(`BSC 16 + 16b against SL #16 + #16 [ VAR ]: two pairs, no conflict (BSC ${flagged ? "flags" : "does not flag"} 16b)`, async () => {
+      mockState.bscCards = [
+        bscRow("16", "Pete Crow-Armstrong"),
+        bscRow("16b", "Pete Crow-Armstrong", flagged ? { isVariation: true } : {}),
+      ];
+      mockState.slCards = [
+        slRow("16", "Pete Crow-Armstrong"),
+        slRow("16", "Pete Crow-Armstrong [ VAR ]"),
+      ];
+
+      const res = await fetchAndBucket();
+
+      expect(pairs(res)).toEqual({
+        "bsc-16": "2024 Topps Chrome #16 Pete Crow-Armstrong",
+        "bsc-16b": "2024 Topps Chrome #16 Pete Crow-Armstrong [ VAR ]",
+      });
+      expect(res.bscOnly).toHaveLength(0);
+      expect(res.slOnly).toHaveLength(0);
+      for (const m of res.matched) {
+        expect(m).not.toHaveProperty("nameConflict");
+        expect(m).not.toHaveProperty("playersConflict");
+      }
+    });
+
+    test(`BSC 122b + 122c (both Langford) against one SL #122 [ VAR ]: a tie, all three unmatched (BSC ${flagged ? "flags" : "does not flag"} them)`, async () => {
+      const v = flagged ? { isVariation: true } : {};
+      mockState.bscCards = [
+        bscRow("122", "Wyatt Langford"),
+        bscRow("122b", "Wyatt Langford", v),
+        bscRow("122c", "Wyatt Langford", v),
+      ];
+      mockState.slCards = [
+        slRow("122", "Wyatt Langford"),
+        slRow("122", "Wyatt Langford [ VAR ]"),
+      ];
+
+      const res = await fetchAndBucket();
+
+      // The base pairs by number; neither variation is given the VAR row.
+      expect(pairs(res)).toEqual({
+        "bsc-122": "2024 Topps Chrome #122 Wyatt Langford",
+      });
+      expect(bscRefs(res.bscOnly)).toEqual(["bsc-122b", "bsc-122c"]);
+      expect(slRefs(res.slOnly)).toEqual([
+        "2024 Topps Chrome #122 Wyatt Langford [ VAR ]",
+      ]);
+    });
+  }
+
+  test("BSC 122b + 122c (flagged, no base listed) against SL #122 [ VAR ] alone: all unmatched", async () => {
+    mockState.bscCards = [
+      bscRow("122b", "Wyatt Langford", { isVariation: true }),
+      bscRow("122c", "Wyatt Langford", { isVariation: true }),
+    ];
+    mockState.slCards = [slRow("122", "Wyatt Langford [ VAR ]")];
+
+    const res = await fetchAndBucket();
+
+    expect(res.matched).toHaveLength(0);
+    expect(res.bscOnly).toHaveLength(2);
+    expect(res.slOnly).toHaveLength(1);
+  });
+
+  test("a set that suffixes its BASE cards (1a, no bare #1 on BSC) is not read as variations", async () => {
+    // 2021 Topps ships 1a as the base. With no bare BSC #1 beside it, 1a is
+    // not a variation and keeps its old route to SL's base row.
+    mockState.bscCards = [bscRow("1a", "Fernando Tatis Jr.")];
+    mockState.slCards = [slRow("1", "Fernando Tatis Jr.")];
+
+    const res = await fetchAndBucket();
+
+    expect(pairs(res)).toEqual({
+      "bsc-1a": "2024 Topps Chrome #1 Fernando Tatis Jr.",
+    });
+  });
+});
+

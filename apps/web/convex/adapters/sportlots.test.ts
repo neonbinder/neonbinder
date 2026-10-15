@@ -96,6 +96,20 @@ describe("parseSlVariationMarker", () => {
     ).toBe("Sombrero Photo");
   });
 
+  test("a bare [ VAR ] is a variation with no label, and leaves the name clean (NEO-339)", () => {
+    // 2024 Topps Chrome: "#16 Pete Crow-Armstrong [ VAR ]" beside the base
+    // "#16 Pete Crow-Armstrong". It used to parse as a second non-variation
+    // #16 whose name still carried "[ VAR ]".
+    expect(parseSlVariationMarker("Pete Crow-Armstrong [ VAR ]")).toEqual({
+      isVariation: true,
+      residual: "Pete Crow-Armstrong",
+    });
+    expect(parseSlVariationMarker("Wyatt Langford [var]")).toEqual({
+      isVariation: true,
+      residual: "Wyatt Langford",
+    });
+  });
+
   test("a bracket that is not a VAR marker is left alone", () => {
     const desc = "2021 Topps Heritage #7 Brandon Belt [ SP ]";
     expect(parseSlVariationMarker(desc)).toEqual({

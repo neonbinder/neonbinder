@@ -39,3 +39,4 @@
 - [Convex field names are ASCII only](reference_convex_field_names_are_ascii_only.md) — a v.record keyed by a name fails the whole call on one accent; return [{ key, value }]; convex-test hides it, use convexToJson
 - [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
+- [Build SL fixtures through the parsers](reference_build_sl_fixtures_through_the_parsers.md) — hand-set isVariation hid that a bare "[ VAR ]" parsed as a non-variation; reproduce live shapes via parseSlVariationMarker

@@ -34,17 +34,26 @@
  * number-matched, and the SportLots rows they take are not offered to anyone
  * else on the number.
  *
+ * Variations have their own pass, `decideVariationPairs` below, and the same
+ * exactly-one rule ends it: a variation that its label cannot pair is paired
+ * by player only when that fits both ways.
+ *
  * Pure: no Convex imports, so it is tested directly as well as through the
  * action.
  */
 
 import { playersKey } from "../../lib/cards/card-name";
+import {
+  cardNumberStem,
+  suggestVariationPairings,
+} from "../../lib/cards/variations";
 
 export type NumberPairingCard = {
   cardNumber: string;
   cardName?: string;
   players?: string[];
   isVariation?: boolean;
+  cardVariation?: string;
 };
 
 export type DuplicateNumberDecisions<B, S> = {
@@ -73,6 +82,25 @@ function rosterKey(card: NumberPairingCard): string {
 function playersAgree(a: NumberPairingCard, b: NumberPairingCard): boolean {
   const ka = rosterKey(a);
   return ka !== "" && ka === rosterKey(b);
+}
+
+/**
+ * The pairs where a left card's players match exactly one right card AND that
+ * right card's players match exactly one left card. Anything else (no match,
+ * or a tie on either side) is not paired: invariant 8.
+ */
+export function pairExactlyOneByPlayer<
+  L extends NumberPairingCard,
+  R extends NumberPairingCard,
+>(left: readonly L[], right: readonly R[]): Map<L, R> {
+  const out = new Map<L, R>();
+  for (const l of left) {
+    const mine = right.filter((r) => playersAgree(l, r));
+    if (mine.length !== 1) continue;
+    const claimants = left.filter((other) => playersAgree(other, mine[0]));
+    if (claimants.length === 1) out.set(l, mine[0]);
+  }
+  return out;
 }
 
 export function decideDuplicateNumberPairs<
@@ -129,26 +157,137 @@ export function decideDuplicateNumberPairs<
     for (const s of slRaw) fuzzyExcluded.add(s);
     const slOpen = slRaw.filter((s) => !takenByShortCircuit.has(s));
     const bscOpen = bscHere.filter((b) => !shortCircuit(b));
-    const bscContenders = bscOpen.filter((b) => !b.isVariation);
-
-    for (const b of bscOpen) {
-      // A BSC variation that fell through to the number is not one of the
-      // cards the number names; on an ambiguous number it gets no guess.
-      if (b.isVariation) {
-        decided.set(b, null);
-        continue;
-      }
-      const mine = slOpen.filter((s) => playersAgree(b, s));
-      if (mine.length !== 1) {
-        decided.set(b, null);
-        continue;
-      }
-      const claimants = bscContenders.filter((other) =>
-        playersAgree(other, mine[0]),
-      );
-      decided.set(b, claimants.length === 1 ? mine[0] : null);
-    }
+    // A BSC variation that fell through to the number is not one of the cards
+    // the number names; on an ambiguous number it gets no guess.
+    const byPlayer = pairExactlyOneByPlayer(
+      bscOpen.filter((b) => !b.isVariation),
+      slOpen,
+    );
+    for (const b of bscOpen) decided.set(b, byPlayer.get(b) ?? null);
   }
 
   return { decided, fuzzyExcluded };
+}
+
+export type VariationDecisions<B, S> = {
+  /** BSC variation → the SportLots variation it pairs with. */
+  pairs: Map<B, S>;
+  /**
+   * BSC variations that had SportLots variations to contend for and won none
+   * of them: unmatched, with no number lookup and no fuzzy guess.
+   */
+  unmatched: Set<B>;
+  /** SportLots variations that were contended for: never offered to the fuzzy fallback. */
+  fuzzyExcluded: Set<S>;
+  /** For the `variation_pairing` log line. */
+  stats: { bscVariations: number; slVariations: number; byLabel: number; byPlayer: number };
+};
+
+/**
+ * NEO-189 + NEO-339 — pair BSC variations to SportLots variations of the same
+ * card.
+ *
+ * Neither side's number can do this on its own: BSC suffixes a variation
+ * (`16b`), SportLots reuses the parent's number and tags the description
+ * (`#16 … [ VAR ]`). So both sides are grouped by card-number STEM, the one
+ * thing they agree on.
+ *
+ * Within a stem:
+ *  1. Label first, via `suggestVariationPairings`: exact wording, then
+ *     containment ("Action" in "Action Image").
+ *  2. Then by player for what the labels left (a bare `[ VAR ]` has no label
+ *     at all), exactly one both ways. 16b Pete Crow-Armstrong against the one
+ *     unlabelled #16 VAR pairs; 122b and 122c, both Wyatt Langford, against
+ *     one #122 VAR are a tie and all three stay unmatched (invariant 8).
+ *  3. A BSC variation still unpaired while its stem HAD SportLots variations
+ *     to contend for is decided unmatched: it must not fall back to the base
+ *     row's number or to the fuzzy name match, which hands a tie to the first
+ *     candidate. With no SportLots variation on the stem at all, nothing is
+ *     decided and the card takes the ordinary path as before.
+ *
+ * A BSC variation is a row BSC flags (`isVariation`), or a suffixed number
+ * whose bare stem BSC also lists ("16b" beside "16") when SportLots does not
+ * list the suffixed number itself. The second reading is the stem rule in
+ * `resolveVariationParents`: a group's bare-numbered row is the parent. It is
+ * not applied without the bare sibling, because some sets suffix their BASE
+ * cards (2021 Topps ships 1a, 1b, 1c and no #1).
+ */
+export function decideVariationPairs<
+  B extends NumberPairingCard,
+  S extends NumberPairingCard,
+>(args: {
+  bscCards: readonly B[];
+  slCards: readonly S[];
+}): VariationDecisions<B, S> {
+  const { bscCards, slCards } = args;
+  const slNumbers = new Set(slCards.map((c) => c.cardNumber));
+  const bscNumbers = new Set(bscCards.map((c) => c.cardNumber));
+  const isBscVariation = (c: B): boolean => {
+    if (c.isVariation) return true;
+    const stem = cardNumberStem(c.cardNumber);
+    return (
+      stem !== c.cardNumber.trim() &&
+      bscNumbers.has(stem) &&
+      !slNumbers.has(c.cardNumber)
+    );
+  };
+
+  const group = <T extends NumberPairingCard>(
+    cards: readonly T[],
+    keep: (c: T) => boolean,
+  ) => {
+    const out = new Map<string, T[]>();
+    for (const c of cards) {
+      if (!keep(c)) continue;
+      const stem = cardNumberStem(c.cardNumber);
+      const list = out.get(stem);
+      if (list) list.push(c);
+      else out.set(stem, [c]);
+    }
+    return out;
+  };
+  const bscByStem = group(bscCards, isBscVariation);
+  const slByStem = group(slCards, (c) => !!c.isVariation);
+
+  const pairs = new Map<B, S>();
+  const unmatched = new Set<B>();
+  const fuzzyExcluded = new Set<S>();
+  const stats = { bscVariations: 0, slVariations: 0, byLabel: 0, byPlayer: 0 };
+  for (const list of bscByStem.values()) stats.bscVariations += list.length;
+  for (const list of slByStem.values()) stats.slVariations += list.length;
+
+  for (const [stem, bscVars] of bscByStem) {
+    const slVars = slByStem.get(stem);
+    if (!slVars?.length) continue;
+    const byLabel = suggestVariationPairings(
+      bscVars.map((c) => c.cardVariation ?? ""),
+      slVars.map((c) => c.cardVariation ?? ""),
+    );
+    for (const pair of byLabel.pairs) {
+      const b = bscVars[pair.leftIndex];
+      const s = slVars[pair.rightIndex];
+      if (b && s) {
+        pairs.set(b, s);
+        stats.byLabel++;
+      }
+    }
+    const bscLeft = bscVars.filter((b) => !pairs.has(b));
+    const taken = new Set(pairs.values());
+    const slLeft = slVars.filter((s) => !taken.has(s));
+    if (bscLeft.length === 0 || slLeft.length === 0) continue;
+
+    for (const s of slLeft) fuzzyExcluded.add(s);
+    const byPlayer = pairExactlyOneByPlayer(bscLeft, slLeft);
+    for (const b of bscLeft) {
+      const s = byPlayer.get(b);
+      if (s) {
+        pairs.set(b, s);
+        stats.byPlayer++;
+      } else {
+        unmatched.add(b);
+      }
+    }
+  }
+
+  return { pairs, unmatched, fuzzyExcluded, stats };
 }

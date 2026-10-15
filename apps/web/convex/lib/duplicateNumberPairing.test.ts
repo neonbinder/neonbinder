@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   decideDuplicateNumberPairs,
+  decideVariationPairs,
   type NumberPairingCard,
 } from "./duplicateNumberPairing";
 
@@ -93,3 +94,63 @@ describe("decideDuplicateNumberPairs (NEO-339)", () => {
     expect(res.decided).toEqual({ b0: null });
   });
 });
+
+describe("decideVariationPairs (NEO-189, NEO-339)", () => {
+  const run = (bscCards: C[], slCards: C[]) => {
+    const res = decideVariationPairs({ bscCards, slCards });
+    return {
+      pairs: Object.fromEntries([...res.pairs].map(([b, s]) => [b.id, s.id])),
+      unmatched: [...res.unmatched].map((b) => b.id).sort(),
+      fuzzyExcluded: [...res.fuzzyExcluded].map((s) => s.id).sort(),
+    };
+  };
+
+  test("a label pairs first; the unlabelled leftover pairs by player", () => {
+    const res = run(
+      [
+        card("b11", "11", "Alec Bohm"),
+        card("b11b", "11b", "Alec Bohm", { isVariation: true, cardVariation: "Action" }),
+        card("b11c", "11c", "Alec Bohm", { isVariation: true }),
+      ],
+      [
+        card("s11", "11", "Alec Bohm"),
+        card("sA", "11", "Alec Bohm", { isVariation: true, cardVariation: "Action Image" }),
+        card("sV", "11", "Alec Bohm", { isVariation: true }),
+      ],
+    );
+    expect(res.pairs).toEqual({ b11b: "sA", b11c: "sV" });
+    expect(res.unmatched).toEqual([]);
+  });
+
+  test("a player tie pairs nothing and keeps the SL row from the fuzzy fallback", () => {
+    const res = run(
+      [
+        card("b122", "122", "Wyatt Langford"),
+        card("b122b", "122b", "Wyatt Langford"),
+        card("b122c", "122c", "Wyatt Langford"),
+      ],
+      [card("s122", "122", "Wyatt Langford"), card("sV", "122", "Wyatt Langford", { isVariation: true })],
+    );
+    expect(res.pairs).toEqual({});
+    expect(res.unmatched).toEqual(["b122b", "b122c"]);
+    expect(res.fuzzyExcluded).toEqual(["sV"]);
+  });
+
+  test("with no SportLots variation on the stem nothing is decided", () => {
+    const res = run(
+      [card("b5", "5", "A"), card("b5b", "5b", "A", { isVariation: true })],
+      [card("s5", "5", "A")],
+    );
+    expect(res).toEqual({ pairs: {}, unmatched: [], fuzzyExcluded: [] });
+  });
+
+  test("a suffixed number SportLots lists itself is not a variation by suffix", () => {
+    const res = run(
+      [card("b7", "7", "A"), card("b7b", "7b", "B")],
+      [card("s7b", "7b", "B"), card("sV", "7", "A", { isVariation: true })],
+    );
+    expect(res.pairs).toEqual({});
+    expect(res.unmatched).toEqual([]);
+  });
+});
+

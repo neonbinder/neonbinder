@@ -1133,10 +1133,20 @@ async function fetchSetNames(
  * Returns SL's RAW label. It is not translated: which NeonBinder name it and
  * BSC's wording both mean is settled when the two are paired, not guessed by
  * an adapter.
+ *
+ * ## A bare `[ VAR ]` is a variation with no label
+ *
+ * NEO-339: 2024 Topps Chrome lists "#16 Pete Crow-Armstrong [ VAR ]" beside
+ * "#16 Pete Crow-Armstrong" (BSC files it as 16b). `VAR` used to sit in the
+ * attribute-token set below, so the row parsed as a SECOND non-variation #16
+ * carrying "[ VAR ]" in its name: the number looked printed twice, and the
+ * name disagreed with BSC's on every pair. It is the plainest variation marker
+ * SportLots writes; it just names no variation, so `variationLabel` is absent.
  */
 /**
  * Bracket contents that describe the card rather than name a variation of it.
  * Mirrors the tokens `tokenizeSlDescription` already lifts into attributes.
+ * (`VAR` is not one of them: see the note above.)
  */
 const SL_BRACKET_ATTRIBUTE_TOKENS = new Set([
   "SP",
@@ -1145,7 +1155,6 @@ const SL_BRACKET_ATTRIBUTE_TOKENS = new Set([
   "AU",
   "RELIC",
   "MEM",
-  "VAR",
 ]);
 
 export function parseSlVariationMarker(desc: string): {
@@ -1166,6 +1175,8 @@ export function parseSlVariationMarker(desc: string): {
   const residual = (desc.slice(0, m.index) + desc.slice(m.index! + m[0].length))
     .replace(/\s+/g, " ")
     .trim();
+  // A bare `[ VAR ]`: a variation that names no variation.
+  if (inner.toUpperCase() === "VAR") return { isVariation: true, residual };
   return {
     isVariation: true,
     variationLabel: displayVariationLabel(inner),
