@@ -30,14 +30,16 @@
 //
 // MEASURED on PR #335 run 38501127928 (Football 2014 Topps Base, live): the
 // dialog opens on "Matched (554)" with 8 name conflicts and 7 player
-// conflicts, "BSC only (0)" and "SportLots only (2)": #28 Vernon David ·
+// conflicts, "BSC only (0)" and "SportLots only (2)" (NEO-339 re-measured
+// PR #323: 552 matched, 10 name and 9 player conflicts, BSC 9a/9b and SL's two
+// #9 Julius Thomas variations unmatched as a same-player tie): #28 Vernon David ·
 // Jumping and #35 Navarro Bowman · Celebrating. EVERY BSC card matched, #442
 // included, so #442 is NOT BSC-only (an earlier draft assumed it was and
 // failed to find its row in the BSC column).
 //
 // The conflict is MANUFACTURED from the real fetched halves (as
 // checklist-pairing-dialog-cancel's is): #442 is found in the Matched list,
-// UNLINKED (its BSC half lands in BSC only: 0 -> 1), and linked to the first
+// UNLINKED (its BSC half lands in BSC only: n -> n+1), and linked to the first
 // SportLots-only card, a different person, so a name conflict is guaranteed.
 // Both names are read off the screen; nothing is hardcoded but the card
 // numbers.
@@ -147,10 +149,15 @@ test(
     // from STEP 5. The measured shape (R2): every BSC card matched, so BSC
     // only is empty and #442 sits in the Matched list. Unlink it (the button
     // carries its label, `Unlink #442 <name>`); its BSC half lands in BSC only.
+    // The count it starts from is read, not assumed: NEO-339 leaves a
+    // same-player tie unmatched (BSC 9a/9b against SportLots' two #9 Julius
+    // Thomas variations), so BSC only is not always empty.
+    const bscOnlyAny = dialog.getByRole("heading", { name: /^BSC only \(\d+\)$/ });
+    await expect(bscOnlyAny).toBeVisible();
+    const bscOnlyBefore = Number(/\((\d+)\)/.exec((await bscOnlyAny.textContent()) ?? "")?.[1]);
     const bscOnly = (n: number) => dialog.getByRole("heading", { name: `BSC only (${n})`, exact: true });
-    await expect(bscOnly(0)).toBeVisible();
     await dialog.getByRole("button", { name: /^Unlink #442 / }).click();
-    await expect(bscOnly(1)).toBeVisible();
+    await expect(bscOnly(bscOnlyBefore + 1)).toBeVisible();
     // Collapse Matched so the columns are the dialog's working area again.
     await collapseMatched.click();
     await expect(expandMatched).toBeVisible();
