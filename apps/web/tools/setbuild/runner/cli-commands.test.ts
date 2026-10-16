@@ -179,12 +179,14 @@ describe("setbuild apply", () => {
     const a = io(TESTING_ENV);
     expect(await main(["apply", "--spec", spec, "--confirm", PHRASE, "--report", report], a)).toBe(1);
     const written = [await readFile(report, "utf8"), await readFile(join(dirname(spec), "report.md"), "utf8")];
-    for (const text of [...written, a.err.join("\n")]) {
+    for (const text of [...written, a.err.join("\n"), a.out.join("\n")]) {
       expect(text).not.toContain(jwt);
       expect(text).not.toContain("tes_secret_value_123");
     }
     // The failure is still reported, with the token replaced, not dropped.
     expect(JSON.parse(written[0]).stoppedAt.reason).toMatch(/^failed: .*\[redacted-token\]/);
+    // The report so far is printed too, not only written to --report.
+    expect(a.out.join("\n")).toMatch(/failed: .*\[redacted-token\]/);
   });
 
   test("a missing --spec is a usage error", async () => {

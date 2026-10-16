@@ -29,12 +29,14 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { planParallelBuildOrder } from "../../../lib/set-build/parallel-build";
 import type { NbClient } from "../client/convex-client";
 import { pickExactlyOne } from "../spec/resolve";
+import { StepCheckError } from "./step-check";
 import { cardCount } from "./commit";
 
 export type ParallelBuildResult = FunctionReturnType<typeof api.parallelChecklistBuild.buildParallelChecklist>;
 export type ParallelsPlan = FunctionReturnType<typeof api.parallelChecklistBuild.getParallelsForBuild>;
 
-export class BuildParallelError extends Error {
+/** A build the spec cannot have as written, or the server refused. A spec check (see `StepCheckError`). */
+export class BuildParallelError extends StepCheckError {
   constructor(message: string) {
     super(message);
     this.name = "BuildParallelError";

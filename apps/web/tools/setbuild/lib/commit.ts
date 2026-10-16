@@ -148,11 +148,13 @@ export async function runChecklistStep(
     cards = paired.result.cards;
     conflictsByIndex = paired.result.conflictsByIndex;
     const s = paired.summary;
-    const unlinked = checklist.pairing.unlink?.length ?? 0;
+    const apart = paired.alreadyApart?.length ?? 0;
+    const unlinked = (checklist.pairing.unlink?.length ?? 0) - apart;
+    const unlinkNote = [unlinked ? `${unlinked} unlinked` : "", apart ? `${apart} already apart` : ""].filter(Boolean).join(", ");
     pairingNote =
       paired.mode === "solo"
         ? `one marketplace attached: kept all ${cards.length}`
-        : `${s.matched} matched${unlinked ? ` (${unlinked} unlinked)` : ""}, ${s.keptBsc} BSC-only kept, ${s.keptSportlots} SportLots-only kept, ${s.dropped} dropped`;
+        : `${s.matched} matched${unlinkNote ? ` (${unlinkNote})` : ""}, ${s.keptBsc} BSC-only kept, ${s.keptSportlots} SportLots-only kept, ${s.dropped} dropped`;
   }
   await assertNoSyncReview(client, rowId, { cards, conflictsByIndex }, at);
 
@@ -216,6 +218,7 @@ export async function runChecklistStep(
   if (checklist.expectCards !== undefined && after !== checklist.expectCards) {
     throw new ChecklistStepError(
       `${at}: saved ${result.count} cards; the row now holds ${after}, the spec expects ${checklist.expectCards}.`,
+      { committed: result.count, progress: pairingNote },
     );
   }
   return { outcome: "committed", committed: result.count, cards: after, review, pairing: pairingNote, notes };

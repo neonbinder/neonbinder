@@ -30,6 +30,7 @@ import {
   type SetBuildService,
 } from "./service";
 import { parseSpec } from "./spec/schema";
+import { RunFailed } from "./runner/engine";
 
 const TARGET = parseTarget("https://happy-otter-123.convex.cloud");
 const HOST = "happy-otter-123.convex.cloud";
@@ -489,6 +490,33 @@ describe("write tools: the confirm phrase", () => {
     const r = await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply });
     expect(r.isError).toBe(true);
     expect(r.json()).toMatchObject({ error: "confirm_mismatch", expected: "BUILD other scope" });
+  });
+});
+
+describe("nb_apply on a run that failed", () => {
+  test("an error that is not a spec check returns isError with the cause and report, the steps done before it", async () => {
+    const f = fakeService();
+    const partial = {
+      target: { convexUrl: TARGET.convexUrl, host: HOST },
+      scope: "e2e-baseline",
+      confirmPhrase: PHRASE.apply,
+      steps: [{ index: 0, kind: "checklist", path: "Baseball/2024/Topps/Topps Chrome", action: "fetch and commit the Base checklist", status: "done", detail: "saved 245 (holds 245); 240 matched" }],
+      openDecisions: { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [], grouping: [] },
+      template: null,
+      counts: { built: 0, committed: 245, skipped: 0 },
+      durationMs: 5,
+      sessions: [{ selectorOptionId: "x" }],
+    };
+    const cause = Object.assign(new Error(`Timed out after 60.0s waiting for the fetch ${JWT}`), { name: "WaitTimeout" });
+    f.write.apply.mockRejectedValueOnce(new RunFailed(cause.message, partial as never, cause));
+    const client = await connect(f.service);
+    const r = await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply });
+    expect(r.isError).toBe(true);
+    const body = r.json();
+    expect(body).toMatchObject({ error: "timeout", report: { counts: { committed: 245 }, steps: [{ status: "done", detail: "saved 245 (holds 245); 240 matched" }] } });
+    expect((body.report as Record<string, unknown>).sessions).toBeUndefined();
+    // Scrubbed like every other result.
+    expect(r.text).not.toContain(JWT);
   });
 });
 

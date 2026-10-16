@@ -64,6 +64,18 @@ one and returns them all, with one fill-in template. What waits on what is the
 table at the top of `runner/engine.ts`. The confirm phrase does not cover
 `stopAt`: it changes how far a run goes, never what the spec allows.
 
+A spec check that fails during apply stops its step the same way. That
+covers an expected count (`expectCards`, `expectRows`,
+`group.expectUngrouped`), a Match Cards answer naming a card the fetch does
+not hold, or a build the server refused: every `StepCheckError`
+(`lib/step-check.ts`). The step is recorded `blocked` with the reason, what
+depends on it waits, and the run returns its report with every step done so
+far. Many of these checks can only run during apply, because the rows they
+read do not exist before it. Only an error that is not a spec check (network,
+auth, a marketplace fetch, a server fault) ends the run as `RunFailed`. That
+error still carries the report so far: the CLI prints it (and writes it to
+`--report`), and `nb_apply` returns `isError` with it as `report`.
+
 `plan`, `apply` and `decisions-template` take `--paused-platforms <keys>`
 (default: env `PAUSED_PLATFORMS`; an explicit `""` means nothing is paused).
 `mcp-smoke` passes it to the server it spawns, and the MCP server reads
@@ -150,9 +162,12 @@ mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
   Cards dialog's Unlink: applied first, through the dialog's reducer, it puts
   both cards back in their unmatched columns, each with its own name, roster
   and marketplace ref, where `unmatchedBsc` / `unmatchedSportlots` decide them,
-  and the pair's conflicts are no longer asked. An unlink must name exactly one
-  matched pair, and a `conflicts` answer for an unlinked pair is refused at
-  parse. The open decision and the fill-in both name the unlink option.
+  and the pair's conflicts are no longer asked. An unlink names one matched
+  pair. If both cards are in the fetch but are not paired to each other, the
+  entry is already met: the step reports it "already apart". If either card is
+  not in the fetch, or several pairs fit, the step stops. A `conflicts` answer
+  for an unlinked pair is refused at parse. The open decision and the fill-in
+  both name the unlink option.
 - **Idempotent and resumable.** Every step checks state before it writes.
   That includes rows the `group` step moved: a sync pair (or `own-set`) whose
   ids a grouped row carries EXACTLY is already saved (`groupedClaims` in

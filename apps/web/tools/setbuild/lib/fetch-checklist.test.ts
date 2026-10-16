@@ -193,13 +193,57 @@ describe("pairCandidates", () => {
     ]);
   });
 
-  test("an unlink that names no matched pair is refused, never ignored", () => {
+  test("an unlink naming a card the fetch does not hold is refused, never ignored", () => {
     const live = batch([twoCards482(), cand("bscOnly", "7")]);
-    for (const unlink of [[{ bsc: "b482", sportlots: "s999" }], [{ bsc: "b7", sportlots: "s482" }]]) {
-      expect(() =>
-        pairCandidates(live, { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink }, { ...CTX, servedSides: [...CTX.servedSides] }),
-      ).toThrow(/pairing\.unlink\[0\]: no single matched pair/);
+    const cases: Array<[{ bsc: string; sportlots: string }, RegExp]> = [
+      [{ bsc: "b482", sportlots: "s999" }, /the SportLots card is not in this fetch\.$/],
+      [{ bsc: "b999", sportlots: "s482" }, /the BSC card is not in this fetch\.$/],
+      [{ bsc: "b998", sportlots: "s999" }, /neither card is in this fetch\.$/],
+    ];
+    for (const [pair, message] of cases) {
+      let caught: unknown;
+      try {
+        pairCandidates(live, { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink: [pair] }, { ...CTX, servedSides: [...CTX.servedSides] });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(ChecklistStepError);
+      expect((caught as Error).message).toMatch(/^steps\[1\]\.base\.checklist: pairing\.unlink\[0\]: BSC card "b\d+" and SportLots card "s\d+" cannot be unlinked: /);
+      expect((caught as Error).message).toMatch(message);
     }
+  });
+
+  test("an unlink whose two cards are both fetched but not paired to each other is already apart: met, not refused", () => {
+    // b7 is BSC-only; s482 is paired with b482. Neither is paired with the other.
+    const live = batch([cand("matched", "1"), twoCards482(), cand("bscOnly", "7")]);
+    const out = pairCandidates(
+      live,
+      { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink: [{ bsc: "b7", sportlots: "s482" }], conflicts: [
+        { field: "name", bsc: "b482", choose: "bsc" },
+        { field: "players", bsc: "b482", choose: "bsc" },
+      ] },
+      { ...CTX, servedSides: [...CTX.servedSides] },
+    );
+    if (!out.ok) throw new Error(`expected ok, got ${JSON.stringify(out.conflicts)}`);
+    expect(out.alreadyApart).toEqual([0]);
+    // Nothing was unlinked: #482 is still one matched card, b7 still kept on its own.
+    expect(out.summary).toEqual({ matched: 2, keptBsc: 1, keptSportlots: 0, dropped: 0 });
+  });
+
+  test("a real unlink beside an already-apart one: only the real one unlinks", () => {
+    const live = batch([twoCards482(), cand("bscOnly", "7")]);
+    const out = pairCandidates(
+      live,
+      {
+        unmatchedBsc: "keep",
+        unmatchedSportlots: "keep",
+        unlink: [{ bsc: "b482", sportlots: "s482" }, { bsc: "b7", sportlots: "s482" }],
+      },
+      { ...CTX, servedSides: [...CTX.servedSides] },
+    );
+    if (!out.ok) throw new Error("expected ok");
+    expect(out.alreadyApart).toEqual([1]);
+    expect(out.summary).toEqual({ matched: 0, keptBsc: 2, keptSportlots: 1, dropped: 0 });
   });
 
   test("one marketplace attached and every row a single: the UI keeps everything with no dialog", () => {

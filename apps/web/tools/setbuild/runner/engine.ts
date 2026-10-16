@@ -30,9 +30,16 @@
  * | a row's checklist           | that row's `parallels`                                       |
  * | a parallel build that shares no card number with its source (`no-shared-numbers`) | nothing (a build is a leaf) |
  * | a name that does not resolve | everything below it (the step cannot find its row)          |
+ * | a failed spec check (below) | what the same step's open decision holds: a checklist's or a sync's dependents as above; `expectRows`, that type's grouping and rows; `group.expectUngrouped`, the type's rows' `parallels`; a build or `expectCards`, nothing |
  *
- * A failure that is not a decision (a refused build, a wrong expected count)
- * still ends the run in either mode.
+ * A failed spec check (`StepCheckError`, lib/step-check.ts: a count the spec
+ * expects, a Match Cards answer naming no card in the fetch, a build the
+ * server refused, …) is a stop like an open decision: the step is recorded
+ * blocked with the reason, `first` ends the run there and `end` carries on
+ * past it, and either way the run RETURNS its report. Many of these checks can
+ * only run during apply, after earlier steps have written. Only an error that
+ * is not a spec check (network, auth, a marketplace fetch, a server fault)
+ * ends the run with `RunFailed`, which carries the report so far.
  *
  * Never writes to stdout: the MCP server's protocol runs over it.
  */
@@ -67,6 +74,8 @@ import { cardCount, checklistDone, runChecklistStep, type ReviewSession } from "
 import { buildParallel, planParallelBuild, type BuildParallelInput } from "../lib/build-parallel";
 import { groupParallels, planGrouping, type GroupOpen } from "../lib/group-parallels";
 import { setBuilderLink } from "../lib/set-builder-link";
+import { StepCheckError } from "../lib/step-check";
+import { ChecklistStepError } from "../lib/fetch-checklist";
 import { api } from "../../../convex/_generated/api";
 import { PlanWouldWrite } from "./read-only-client";
 
@@ -268,7 +277,11 @@ export async function runSpec(
   const isOpen = (v: { outcome: string } | undefined): boolean =>
     v === undefined ? lastFailed === "open" : v.outcome === "open";
 
-  /** `PlanWouldWrite` = todo; `ResolveError` = an open name (apply stops); anything else is thrown. */
+  /**
+   * `PlanWouldWrite` = todo; `ResolveError` = an open name (apply stops); a
+   * `StepCheckError` = a failed spec check (the step is blocked and the run
+   * stops there, as at an open decision); anything else is thrown.
+   */
   function failed(err: unknown, index: number, kind: string, path: string, action: string): undefined {
     if (err instanceof PlanWouldWrite) {
       lastFailed = "todo";
@@ -276,6 +289,13 @@ export async function runSpec(
       return undefined;
     }
     lastFailed = "open";
+    if (err instanceof StepCheckError) {
+      // A check that failed after the step had already saved cards: they stay saved, so count them.
+      if (err instanceof ChecklistStepError && err.committed) counts.committed += err.committed;
+      record({ index, kind, path, action, status: "blocked", detail: err.progress ? `${err.message} (${err.progress})` : err.message });
+      stop(index, err.message);
+      return undefined;
+    }
     if (err instanceof ResolveError) {
       open.names.push({ at: err.at ?? `steps[${index}]`, kind: err.kind, name: err.query, candidates: err.candidates });
       if (err.at) patch(err.at, PICK(err.candidates.map((c) => c.name)));
@@ -322,8 +342,15 @@ export async function runSpec(
 
     for (let i = 0; i < spec.steps.length; i++) {
       const step = spec.steps[i];
-      if (step.kind === "brand-year") await brandYear(i, step);
-      else await setStep(i, step);
+      try {
+        if (step.kind === "brand-year") await brandYear(i, step);
+        else await setStep(i, step);
+      } catch (err) {
+        // A spec check thrown outside a sub-step's own handling still stops
+        // only this step: the rest of the report is kept.
+        if (!(err instanceof StepCheckError)) throw err;
+        failed(err, i, step.kind, formatPath(step.path), "the rest of the step");
+      }
     }
   } catch (err) {
     if (err instanceof StopRun) {
@@ -454,8 +481,15 @@ export async function runSpec(
           waits(i, "checklist", path, action, deps.baseMap);
           deps.baseChecklist = deps.baseMap;
         } else {
-          const baseRow = await findBaseVariantType(client, set.setId);
-          const status = await checklist(i, path, `${at}.base.checklist`, baseRow._id, sportId, base.checklist, null, "Base");
+          let baseRow: Awaited<ReturnType<typeof findBaseVariantType>> | undefined;
+          try {
+            baseRow = await findBaseVariantType(client, set.setId);
+          } catch (err) {
+            failed(err, i, "checklist", path, action);
+          }
+          const status = baseRow
+            ? await checklist(i, path, `${at}.base.checklist`, baseRow._id, sportId, base.checklist, null, "Base")
+            : "blocked";
           if (collecting && status === "blocked") deps.baseChecklist = `the Base checklist (${at}.base.checklist)`;
         }
       }
@@ -558,7 +592,12 @@ export async function runSpec(
       const n = tree.reduce((sum, t) => sum + 1 + t.parallels.length, 0);
       const ok = n === vt.expectRows;
       record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
-      if (!ok && !readOnly) throw new Error(`${at}.expectRows: ${vt.type} holds ${n} rows; the spec expects ${vt.expectRows}.`);
+      if (!ok && !readOnly) {
+        stop(i, `${at}.expectRows: ${vt.type} holds ${n} rows; the spec expects ${vt.expectRows}.`);
+        // Collecting: the type's grouping and rows rest on the spec's view of its rows.
+        waits(i, "row", path, `${vt.type} rows`, `${at}.expectRows`);
+        return;
+      }
     }
 
     /** Why this type's rows' `parallels` wait (collecting), or are not checked yet (plan). */
@@ -613,15 +652,19 @@ export async function runSpec(
       for (const f of o.fills) patch(f.at, f.value);
       return `${vt.type}: ${o.names.length + o.grouping.length} Group Parallels decision(s) need an answer`;
     };
-    /** `n` top-level rows holding no parallels: now, or (plan) once the moves land. */
-    const expect = (n: number, projected: boolean) => {
-      if (group.expectUngrouped === undefined) return;
+    /**
+     * `n` top-level rows holding no parallels: now, or (plan) once the moves
+     * land. Apply: a mismatch stops here (a failed spec check) and returns why
+     * the rows' `parallels` wait; otherwise undefined.
+     */
+    const expect = (n: number, projected: boolean): string | undefined => {
+      if (group.expectUngrouped === undefined) return undefined;
       const ok = n === group.expectUngrouped;
       const what = `${vt.type} leaves ${group.expectUngrouped} rows ungrouped`;
       record({ index: i, kind: "expect-ungrouped", path, action: what, status: ok ? "done" : "blocked", detail: `${n} ${projected ? "after the grouping" : "now"}` });
-      if (!ok && !readOnly) {
-        throw new Error(`${at}.group.expectUngrouped: ${vt.type} leaves ${n} rows ungrouped; the spec expects ${group.expectUngrouped}.`);
-      }
+      if (ok || readOnly) return undefined;
+      stop(i, `${at}.group.expectUngrouped: ${vt.type} leaves ${n} rows ungrouped; the spec expects ${group.expectUngrouped}.`);
+      return `${at}.group.expectUngrouped`;
     };
 
     if (readOnly) {
@@ -651,8 +694,7 @@ export async function runSpec(
       return { status: "done", detail: `moved ${r.moved} row(s) in ${r.saves} save(s)` };
     });
     if (r === undefined || r.outcome === "open") return collecting ? `Group Parallels for ${vt.type} (${at}.group)` : undefined;
-    expect(r.ungrouped, false);
-    return undefined;
+    return expect(r.ungrouped, false);
   }
 
   // ---------------------------------------------------------------------
@@ -686,7 +728,7 @@ export async function runSpec(
   async function build(i: number, path: string, action: string, input: BuildParallelInput, fix: BuildFix): Promise<void> {
     if (readOnly) {
       const p = await planParallelBuild(client, input).catch((err) => {
-        if (err instanceof ResolveError) return { status: "blocked" as const, detail: err.message };
+        if (err instanceof ResolveError || err instanceof StepCheckError) return { status: "blocked" as const, detail: err.message };
         throw err;
       });
       record({ index: i, kind: "build-parallel", path, action, status: p.status, detail: p.detail });
@@ -722,7 +764,8 @@ export async function runSpec(
     const n = await cardCount(client, rowId);
     const ok = n === want;
     record({ index: i, kind: "expect-cards", path, action: `${label} holds ${want} cards`, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
-    if (!ok && !readOnly) throw new Error(`${at}: ${label} holds ${n} cards; the spec expects ${want}.`);
+    // A failed spec check: stops here like an open decision; nothing waits on a count.
+    if (!ok && !readOnly) stop(i, `${at}: ${label} holds ${n} cards; the spec expects ${want}.`);
   }
 
   // ---------------------------------------------------------------------

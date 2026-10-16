@@ -47,6 +47,7 @@ import { secretValues } from "./client/connect";
 import { assertPhrase, ConfirmMismatch, type Target } from "./client/target";
 import { parseSpec } from "./spec/schema";
 import { compactDraftReport } from "./runner/draft";
+import { RunFailed } from "./runner/engine";
 import {
   buildParallelConfirmPhrase,
   decideConfirmPhrase,
@@ -95,8 +96,19 @@ function cleanMessage(err: unknown): string {
   return msg.length > MAX_ERROR_CHARS ? `${msg.slice(0, MAX_ERROR_CHARS)}…` : msg;
 }
 
-/** The structured body of a tool error. Never carries a stack. */
+/**
+ * The structured body of a tool error. Never carries a stack.
+ *
+ * A run that ended on an error that is not a spec check (`RunFailed`: network,
+ * auth, a marketplace fetch, a server fault) is described by its cause, plus
+ * `report`: every step the run had done before it, as `nb_apply` returns them.
+ */
 export function describeError(err: unknown): Record<string, unknown> {
+  if (err instanceof RunFailed) {
+    const { sessions: _sessions, ...report } = err.report as RunFailed["report"] & { sessions?: unknown };
+    void _sessions;
+    return { ...describeError(err.cause), report };
+  }
   const message = cleanMessage(err);
   if (err instanceof ConfirmMismatch) {
     return {
@@ -446,7 +458,10 @@ export function registerWriteTools(
         "(the default) runs every step that does not depend on an unanswered decision and returns ALL of them " +
         "(stops, openDecisions, one template); stopAt \"first\" stops at the first. A parallel build that " +
         "shares no card number with its insert comes back as an open decision (no-shared-numbers): it is probably " +
-        "its own insert, and group.topLevel keeps it its own set. Take the decisions to the " +
+        "its own insert, and group.topLevel keeps it its own set. A spec check that fails mid-run (an expected " +
+        "count, a Match Cards answer naming no card in the fetch, a refused build) stops that step the same way: " +
+        "it is blocked with the reason and the result still lists every step done. An error that is not a spec " +
+        "check returns isError with report, the steps done before it. Take the decisions to the " +
         "operator, put the answers in the spec, plan and apply again.",
       inputSchema: {
         ...specInputShape,

@@ -39,6 +39,7 @@ import { WaitTimeout, type NbClient } from "../client/convex-client";
 import type { Checklist, CardConflict } from "../spec/schema";
 import type { OpenConflict, RowRef } from "../service";
 import { setBuilderLink } from "./set-builder-link";
+import { StepCheckError } from "./step-check";
 
 export type ReadyCandidates = FunctionReturnType<typeof api.checklistCandidates.getReadyCandidates>;
 export type ReadyCandidate = ReadyCandidates["cards"][number];
@@ -46,11 +47,14 @@ export type FetchResult = FunctionReturnType<typeof api.selectorOptions.fetchCar
 export type SyncDiff = FunctionReturnType<typeof api.selectorOptions.diffChecklistAgainstExisting>;
 export type ServedSide = "bsc" | "sportlots";
 
-/** A checklist step that cannot go on; the message is the operator's. */
-export class ChecklistStepError extends Error {
-  constructor(message: string) {
-    super(message);
+/** A checklist step that cannot go on; the message is the operator's. A spec check (see `StepCheckError`). */
+export class ChecklistStepError extends StepCheckError {
+  /** Cards the step had already saved when the check failed (a count checked after the commit). */
+  readonly committed?: number;
+  constructor(message: string, opts: { progress?: string; committed?: number } = {}) {
+    super(message, opts);
     this.name = "ChecklistStepError";
+    if (opts.committed !== undefined) this.committed = opts.committed;
   }
 }
 
@@ -142,6 +146,12 @@ export type PairingOutcome =
       /** "dialog" = the Match Cards answers were applied; "solo" = the UI's no-dialog keep-all. */
       mode: "dialog" | "solo";
       summary: { matched: number; keptBsc: number; keptSportlots: number; dropped: number };
+      /**
+       * `pairing.unlink` entries (by index) whose two cards are both in the
+       * fetch and were not paired to each other: the operator's intent already
+       * holds, so there was nothing to unlink. Absent when there are none.
+       */
+      alreadyApart?: number[];
     }
   | {
       ok: false;
@@ -173,7 +183,9 @@ const refOf = (c: { platformData: { bsc?: { ref: string }; sportlots?: { ref: st
  *   the dialog and keeps everything (`handleSync`'s NEO-255 path); the spec's
  *   pairing answers are not consulted, exactly as no operator is.
  * - Otherwise: each `unlink` entry is the dialog's UNLINK of one matched pair,
- *   by both card refs; each `pairs` entry is a LINK of one unmatched BSC card
+ *   by both card refs. When both cards are in the fetch but not paired to each
+ *   other, the entry is already met ("already apart"); when either card is not
+ *   in the fetch, or several pairs fit, it fails the step. Each `pairs` entry is a LINK of one unmatched BSC card
  *   with one unmatched SportLots card, by marketplace ref (never by number);
  *   every name/players disagreement on a pair still matched needs exactly one
  *   `conflicts` answer (or an `unlink`), or it is an open decision; then
@@ -218,17 +230,38 @@ export function pairCandidates(
   // is two different cards. Both halves go back to their unmatched columns,
   // keep their own names and rosters (the reducer's NEO-189/251 split), and
   // follow "Keep all" below; the pair's disagreements are no longer asked.
+  const alreadyApart: number[] = [];
+  const inFetch = (side: ServedSide, ref: string) => live.cards.some((c) => refOf(c, side) === ref);
   (pairing.unlink ?? []).forEach((pair, i) => {
     const hits = state.matched
       .map((m, index) => ({ m, index }))
       .filter(({ m }) => refOf(m.card, "bsc") === pair.bsc && refOf(m.card, "sportlots") === pair.sportlots);
-    if (hits.length !== 1) {
+    if (hits.length === 1) {
+      state = pairingReducer(state, { type: "UNLINK", index: hits[0].index });
+      return;
+    }
+    if (hits.length > 1) {
       fail(
         `pairing.unlink[${i}]: no single matched pair is BSC card "${pair.bsc}" with SportLots card "${pair.sportlots}" ` +
           `(${hits.length} found).`,
       );
     }
-    state = pairingReducer(state, { type: "UNLINK", index: hits[0].index });
+    // Not paired to each other. If both cards were fetched, they are already
+    // apart, which is what the entry asks for. A card the fetch does not hold
+    // is a wrong ref, never a guess.
+    const bscThere = inFetch("bsc", pair.bsc);
+    const slThere = inFetch("sportlots", pair.sportlots);
+    if (bscThere && slThere) {
+      alreadyApart.push(i);
+      return;
+    }
+    const missing =
+      !bscThere && !slThere
+        ? "neither card is in this fetch"
+        : !bscThere
+          ? "the BSC card is not in this fetch"
+          : "the SportLots card is not in this fetch";
+    fail(`pairing.unlink[${i}]: BSC card "${pair.bsc}" and SportLots card "${pair.sportlots}" cannot be unlinked: ${missing}.`);
   });
 
   (pairing.pairs ?? []).forEach((pair, i) => {
@@ -323,6 +356,7 @@ export function pairCandidates(
       keptSportlots: state.keptSl.length + (keepSl ? state.unmatchedSl.length : 0),
       dropped: (keepBsc ? 0 : state.unmatchedBsc.length) + (keepSl ? 0 : state.unmatchedSl.length),
     },
+    ...(alreadyApart.length > 0 ? { alreadyApart } : {}),
   };
 }
 

@@ -33,6 +33,7 @@ import type { OpenBaseCandidates } from "../service";
 import { childrenOf, ResolveError, type RowId, type SelectorRow } from "../spec/resolve";
 import type { BaseMap } from "../spec/schema";
 import { assertPausedSidesDeclared, errorCode, type PausedContext } from "./sync-column";
+import { StepCheckError } from "./step-check";
 
 export type AncestorRow = FunctionReturnType<typeof api.selectorOptions.getAncestorChain>[number];
 export type RawOptions = FunctionReturnType<typeof api.setReconciliation.fetchRawOptions>;
@@ -41,7 +42,7 @@ export type RawOptions = FunctionReturnType<typeof api.setReconciliation.fetchRa
  * The set has no variant type titled Base (run Sync Variant Types first), or
  * more than one. NEO-334: a variant type's title is its kind.
  */
-export class NoBaseVariantType extends Error {
+export class NoBaseVariantType extends StepCheckError {
   readonly setId: RowId;
   constructor(setId: RowId, count: number) {
     super(
@@ -236,7 +237,7 @@ export function plannedSides(
   if (map.whenPaused === "skip") return { skip: hit };
   // bsc-only: the SportLots half is dropped; a paused BSC cannot be mapped at all.
   if (hit.includes("bsc")) {
-    throw new Error(
+    throw new StepCheckError(
       "The spec maps the Base on BSC with whenPaused \"bsc-only\", but BSC itself is paused. " +
         "Use whenPaused \"skip\" for a run where BSC is paused.",
     );

@@ -239,20 +239,19 @@ export const applyCommand: CommandSpec = {
         }
         return 0;
       } catch (err) {
-        if (err instanceof RunFailed && out) {
-          // The report so far, so the CI artifact shows how far the run got.
+        if (err instanceof RunFailed) {
+          // The report so far, so the operator (and the CI artifact) sees how
+          // far the run got before the error, which is then reported as usual.
           const { sessions: _sessions, ...partial } = err.report as typeof err.report & { sessions?: unknown };
           void _sessions;
-          await writeReportFiles(
-            out,
-            {
-              ...partial,
-              counts: partial.counts ?? { built: 0, committed: 0, skipped: 0 },
-              durationMs: partial.durationMs ?? 0,
-              stoppedAt: { step: -1, reason: `failed: ${err.message}` },
-            },
-            secretsOf(ctx),
-          );
+          const report = {
+            ...partial,
+            counts: partial.counts ?? { built: 0, committed: 0, skipped: 0 },
+            durationMs: partial.durationMs ?? 0,
+            stoppedAt: { step: -1, reason: `failed: ${err.message}` },
+          };
+          if (out) await writeReportFiles(out, report, secretsOf(ctx));
+          printReport(ctx, report);
         }
         throw err;
       } finally {

@@ -9,7 +9,7 @@ import { countOpenDecisions, specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
 import { DECISION_PLACEHOLDER } from "../lib/review";
 import { applySpec } from "./apply";
-import { noSharedNumbers } from "./engine";
+import { noSharedNumbers, RunFailed } from "./engine";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { planSpec } from "./plan";
 
@@ -788,5 +788,133 @@ describe("draft → apply drift (NEO-339 live measurement)", () => {
       detail: "waits: the Insert sync (steps[0].variants[0].sync)",
     });
     expect(client.callsTo("setReconciliation:fetchRawOptions").map((c) => c.args.parentId)).toEqual(["vtI"]);
+  });
+});
+
+/**
+ * A spec check that fails mid-apply (an expected count, a Match Cards answer
+ * naming no fetched card) stops ITS step like an open decision, and the run
+ * returns its report: every step done before it, with its counts. Only an
+ * error that is not a spec check throws, as RunFailed carrying the report.
+ */
+describe("a failed spec check stops its step and the run returns its report", () => {
+  /** The Insert type grouped (Youthquake Red already under Youthquake) and its one row, after a Sepia build from Base. */
+  function groupedSpec(expectUngrouped: number) {
+    return {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        {
+          kind: "set",
+          path: PATH,
+          variantTypes: { sync: true },
+          variants: [
+            { type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] },
+            {
+              type: "Insert",
+              group: { parents: [{ insert: "Youthquake", parallels: ["Youthquake Red"] }], expectUngrouped },
+              rows: [{ name: "Youthquake", checklist: checklist(20), parallels: [{ name: "Youthquake Red", build: {} }] }],
+            },
+          ],
+        },
+      ],
+    };
+  }
+  const UNGROUPED = "steps[0].variants[1].group.expectUngrouped: Insert leaves 0 rows ungrouped; the spec expects 1.";
+
+  test('group.expectUngrouped, stopAt "first": a report, not a throw, with the steps done before it', async () => {
+    const raw = groupedSpec(1);
+    const client = world({ ...WIDE(), vtB: 2 });
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "first" });
+    expect(r.stoppedAt).toEqual({ step: 0, reason: UNGROUPED });
+    const byAction = Object.fromEntries(r.steps.map((s) => [s.action, s]));
+    expect(byAction["build Parallel › Sepia Refractors from Base"]).toMatchObject({ status: "done", detail: "built 2, holds 2" });
+    expect(byAction["group Insert parallels (1 insert)"]).toMatchObject({ status: "done" });
+    expect(byAction["Insert leaves 1 rows ungrouped"]).toMatchObject({ status: "blocked", detail: "0 now" });
+    expect(r.counts.built).toBe(2);
+    // Nothing after the stop ran.
+    expect(client.callsTo("parallelChecklistBuild:buildParallelChecklist").map((c) => c.args)).toEqual([{ parallelId: "pS" }]);
+  });
+
+  test('group.expectUngrouped, stopAt "end": the rows\' parallels wait on it; the rows\' checklists carry on', async () => {
+    const raw = groupedSpec(1);
+    const client = world({ ...WIDE(), vtB: 2 });
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.stops).toEqual([{ step: 0, reason: UNGROUPED }]);
+    const byAction = Object.fromEntries(r.steps.map((s) => [s.action, s]));
+    expect(byAction["fetch and commit the Insert › Youthquake checklist"]).toMatchObject({ status: "done" });
+    expect(byAction["build Insert › Youthquake › Youthquake Red from Insert › Youthquake"]).toMatchObject({
+      status: "blocked",
+      detail: "waits: steps[0].variants[1].group.expectUngrouped",
+    });
+  });
+
+  test("expectRows: the type's grouping and rows wait on it", async () => {
+    const raw = groupedSpec(0);
+    (raw.steps[0].variants[1] as Record<string, unknown>).expectRows = 9;
+    const r = await applySpec(world({ ...WIDE(), vtB: 2 }), FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.stops).toEqual([{ step: 0, reason: "steps[0].variants[1].expectRows: Insert holds 4 rows; the spec expects 9." }]);
+    const byAction = Object.fromEntries(r.steps.map((s) => [s.action, s]));
+    expect(byAction["Insert rows"]).toMatchObject({ status: "blocked", detail: "waits: steps[0].variants[1].expectRows" });
+    expect(byAction["group Insert parallels (1 insert)"]).toBeUndefined();
+    // The other type ran.
+    expect(byAction["build Parallel › Sepia Refractors from Base"]).toMatchObject({ status: "done" });
+  });
+
+  test("a checklist's Match Cards answer naming no fetched card blocks that checklist; its parallels wait, siblings carry on", async () => {
+    const raw = {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        {
+          kind: "set",
+          path: PATH,
+          variantTypes: { sync: true },
+          variants: [
+            {
+              type: "Insert",
+              rows: [
+                {
+                  name: "Future Stars",
+                  checklist: {
+                    ...checklist(),
+                    pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink: [{ bsc: "b-gone", sportlots: "s-iFS" }] },
+                  },
+                  parallels: [{ name: "Future Stars Gold", build: {} }],
+                },
+                { name: "Youthquake", checklist: checklist(20), parallels: [{ name: "Youthquake Red", build: {} }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const client = world(WIDE());
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    const reason =
+      'steps[0].variants[0].rows[0].checklist: pairing.unlink[0]: BSC card "b-gone" and SportLots card "s-iFS" cannot be unlinked: ' +
+      "the BSC card is not in this fetch.";
+    expect(r.stops).toEqual([{ step: 0, reason }]);
+    const byAction = Object.fromEntries(r.steps.map((s) => [s.action, s]));
+    expect(byAction["fetch and commit the Insert › Future Stars checklist"]).toMatchObject({ status: "blocked", detail: reason });
+    expect(byAction["build Insert › Future Stars › Future Stars Gold from Insert › Future Stars"]).toMatchObject({
+      status: "blocked",
+      detail: "waits: the Insert › Future Stars checklist (steps[0].variants[0].rows[0].checklist)",
+    });
+    expect(byAction["build Insert › Youthquake › Youthquake Red from Insert › Youthquake"]).toMatchObject({ status: "done" });
+    expect(client.callsTo("selectorOptions:commitCardChecklist")).toEqual([]);
+  });
+
+  test("an error that is not a spec check still throws RunFailed, carrying the steps done before it", async () => {
+    const raw = groupedSpec(0);
+    const client = world({ ...WIDE(), vtB: 2 });
+    client.on("selectorOptions:getInsertTreeByVariantType", () => {
+      throw new Error("network down");
+    });
+    const err = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunFailed);
+    const report = (err as RunFailed).report;
+    expect(report.steps.find((s) => s.action === "build Parallel › Sepia Refractors from Base")).toMatchObject({ status: "done" });
+    expect(report.counts?.built).toBe(2);
   });
 });

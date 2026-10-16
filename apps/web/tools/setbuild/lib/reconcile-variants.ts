@@ -111,6 +111,7 @@ import type { OpenName, OpenReconcile } from "../service";
 import { childrenOf, resolveVariantType, type RowId, type SelectorRow } from "../spec/resolve";
 import type { ReconcilePair, ReconcilePending, ReconcileSync } from "../spec/schema";
 import { assertPausedSidesDeclared, type PausedContext } from "./sync-column";
+import { StepCheckError } from "./step-check";
 
 export type RawOptions = FunctionReturnType<typeof api.setReconciliation.fetchRawOptions>;
 type AncestorRow = FunctionReturnType<typeof api.selectorOptions.getAncestorChain>[number];
@@ -173,7 +174,7 @@ export async function loadReconcileContext(
 ): Promise<ReconcileContext> {
   const variantType = await resolveVariantType(client, setId, typeTitle, at);
   if (variantTypeKind(variantType) === "base") {
-    throw new Error(
+    throw new StepCheckError(
       `"${variantType.value}" is the set's Base; it has no rows to sync (map it with base.map instead).`,
     );
   }

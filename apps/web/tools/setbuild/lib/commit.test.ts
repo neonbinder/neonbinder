@@ -117,15 +117,21 @@ describe("Match Cards unlink on the apply path (NEO-339: #482 Henderson / Gwynn)
     stem: "482",
     teamResolved: true,
   };
-  function client482() {
+  function client482(extra: Array<Record<string, unknown>> = []) {
     let batch: string | undefined;
     let cards = 0;
+    const live = [pair482, ...extra];
     return fakeClient()
       .on("selectorOptions:getSlotCardCounts", () => ({ bsc: {}, sportlots: {}, total: cards }))
-      .on("checklistCandidates:getReadyCandidates", () => ({ batchId: batch, total: batch ? 1 : 0, ready: 1, cards: batch ? [pair482] : [] }))
+      .on("checklistCandidates:getReadyCandidates", () => ({
+        batchId: batch,
+        total: batch ? live.length : 0,
+        ready: live.length,
+        cards: batch ? live : [],
+      }))
       .on("selectorOptions:fetchCardChecklist", () => {
         batch = "cb";
-        return { success: true, message: "", candidateCount: 1, attachedSides: ["bsc", "sportlots"], pausedSides: [] };
+        return { success: true, message: "", candidateCount: live.length, attachedSides: ["bsc", "sportlots"], pausedSides: [] };
       })
       .on("selectorOptions:diffChecklistAgainstExisting", { cards: [], removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 }, conflicts: [], collisionInsertCount: 0 })
       .on("selectorOptions:resolveChecklistEntities", { unknownPlayers: [], unknownTeams: [] })
@@ -170,6 +176,50 @@ describe("Match Cards unlink on the apply path (NEO-339: #482 Henderson / Gwynn)
       expect(c.nameConflict).toBeUndefined();
       expect(c.playersConflict).toBeUndefined();
     }
+  });
+
+  test("an unlink whose two cards are fetched but not paired to each other is met: the summary says already apart", async () => {
+    const card7 = {
+      _id: "c7",
+      cardNumber: "7",
+      cardName: "Someone",
+      platformData: { bsc: { ref: "b7" } },
+      bucket: "bscOnly",
+      stem: "7",
+      teamResolved: true,
+    };
+    const client = client482([card7]);
+    const r = await runChecklistStep(
+      client,
+      {
+        ...input({ unlink: [{ bsc: "b482", sportlots: "s482" }, { bsc: "b7", sportlots: "s482" }] }),
+        checklist: {
+          pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink: [{ bsc: "b482", sportlots: "s482" }, { bsc: "b7", sportlots: "s482" }] },
+          review: "none-expected",
+          expectCards: 3,
+        } as never,
+      },
+    );
+    if (r.outcome !== "committed") throw new Error(`expected committed, got ${JSON.stringify(r)}`);
+    expect(r.pairing).toBe("0 matched (1 unlinked, 1 already apart), 2 BSC-only kept, 1 SportLots-only kept, 0 dropped");
+  });
+
+  test("a count checked after the commit fails the step and carries what it saved", async () => {
+    const client = client482();
+    const err = await runChecklistStep(client, {
+      ...input({}),
+      checklist: {
+        pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep", unlink: [{ bsc: "b482", sportlots: "s482" }] },
+        review: "none-expected",
+        expectCards: 3,
+      } as never,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ChecklistStepError);
+    expect(err).toMatchObject({
+      message: "steps[0].variants[0].rows[0].checklist: saved 2 cards; the row now holds 2, the spec expects 3.",
+      committed: 2,
+      progress: "0 matched (1 unlinked), 1 BSC-only kept, 1 SportLots-only kept, 0 dropped",
+    });
   });
 });
 

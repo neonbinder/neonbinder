@@ -41,6 +41,7 @@ import {
   type SelectorRow,
 } from "../spec/resolve";
 import type { BrandYearPath, ManufacturerPolicy, SetPath } from "../spec/schema";
+import { StepCheckError } from "./step-check";
 
 // ---------------------------------------------------------------------------
 // Paused platforms
@@ -266,7 +267,7 @@ export async function syncVariantTypes(
 // ---------------------------------------------------------------------------
 
 /** `addCustomSelectorOption` refused the value (invalid, shared, or exists elsewhere). */
-export class AddRowRefused extends Error {
+export class AddRowRefused extends StepCheckError {
   readonly code: string;
   readonly data: unknown;
   constructor(code: string, value: string, data: unknown) {

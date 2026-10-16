@@ -46,7 +46,7 @@ import { openItemsOf, readReviewRows, runReview } from "../lib/review";
 import { applySlReview, openSlRows, readSlReview } from "../lib/sl-review";
 import { checkPausedPlatforms } from "../lib/sync-column";
 import { applySpec, publicApplyReport } from "./apply";
-import { emptyOpenDecisions, noSharedNumbers, type RunOptions } from "./engine";
+import { emptyOpenDecisions, noSharedNumbers, RunFailed, type RunOptions, type RunResult } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
 import { draftSet } from "./draft";
@@ -120,7 +120,16 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
     },
     write: {
       async apply(spec, confirm, o) {
-        const result = await applySpec(client, target, spec, confirm, { ...runOpts(), ...(o?.stopAt ? { stopAt: o.stopAt } : {}) });
+        let result: Awaited<ReturnType<typeof applySpec>>;
+        try {
+          result = await applySpec(client, target, spec, confirm, { ...runOpts(), ...(o?.stopAt ? { stopAt: o.stopAt } : {}) });
+        } catch (err) {
+          // The run failed on something that is not a spec check: keep any
+          // review it had already left open, so decide can still answer it.
+          const sessionsSoFar = err instanceof RunFailed ? (err.report as { sessions?: RunResult["sessions"] }).sessions : undefined;
+          if (sessionsSoFar) remember(sessionsSoFar);
+          throw err;
+        }
         remember(result.sessions);
         return publicApplyReport(result);
       },
