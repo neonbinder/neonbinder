@@ -31,7 +31,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -2017,6 +2017,84 @@ describe("NEO-325: the Base match probe is admin-gated, its adapter halves inter
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = internalAction({`);
     expect(src).not.toContain(`export const ${fn} = action({`);
+  });
+});
+
+/**
+ * NEO-339 — the three read-only previews `nb_draft_set` drafts a set from.
+ * All public (the setbuild tool calls them as a real admin), all
+ * `requireAdmin` before anything else: two of them spend the caller's
+ * marketplace session, and all three read catalogue and roster data.
+ *
+ * Each refusal is asserted by its message, so an argument-validation failure
+ * cannot pass for the gate: "Not authenticated" for a signed-out caller,
+ * "Admin access required" for a signed-in non-admin. Every marketplace call
+ * leaves through `fetch` (the browser service, the marketplaces' APIs), so a
+ * stubbed `fetch` that records nothing proves no adapter was reached. The
+ * admin control passes the gate and stops on a refusal that comes after it,
+ * still contacting nothing.
+ */
+describe("NEO-339: the set-build previews are admin-gated and contact nothing when refused", () => {
+  const fetchSpy = vi.fn(async () => new Response("refused in this test", { status: 500 }));
+  beforeEach(() => {
+    fetchSpy.mockClear();
+    vi.stubGlobal("fetch", fetchSpy);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  type Call = (tt: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) => Promise<unknown>;
+  const cases: Array<[string, Call, RegExp | null]> = [
+    [
+      "setReconciliation.previewSetStructure",
+      // A sport row: the admin control stops at "not a set", after the gate.
+      (tt, sportId) => tt.action(api.setReconciliation.previewSetStructure, { setId: sportId }),
+      /not a set/,
+    ],
+    [
+      "selectorOptions.previewCardChecklist",
+      // Neither form: the admin control stops at "exactly one", after the gate.
+      (tt) => tt.action(api.selectorOptions.previewCardChecklist, {}),
+      /exactly one of selectorOptionId or cold/,
+    ],
+    [
+      "selectorOptions.previewChecklistEntities",
+      (tt, sportId) =>
+        tt.query(api.selectorOptions.previewChecklistEntities, { sportId, players: [], teams: [] }),
+      null,
+    ],
+  ];
+
+  test.each(cases)("%s refuses a signed-out caller and a signed-in non-admin, reaching no adapter", async (_name, call, adminRefusal) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t, sportId)).rejects.toThrow(/Not authenticated/);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow(/Admin access required/);
+    // Control: an admin passes the gate.
+    if (adminRefusal) {
+      await expect(call(t.withIdentity(ADMIN), sportId)).rejects.toThrow(adminRefusal);
+    } else {
+      await expect(call(t.withIdentity(ADMIN), sportId)).resolves.toMatchObject({ players: [], teams: [] });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["setReconciliation.ts", "previewSetStructure", "action"],
+    ["selectorOptions.ts", "previewCardChecklist", "action"],
+    ["selectorOptions.ts", "previewChecklistEntities", "query"],
+  ])("%s :: %s awaits requireAdmin before anything else", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    const start = src.indexOf(`export const ${fn} = ${keyword}({`);
+    expect(start).toBeGreaterThan(-1);
+    const handler = src.slice(src.indexOf("handler:", start));
+    const gate = handler.indexOf("await requireAdmin(ctx)");
+    expect(gate).toBeGreaterThan(-1);
+    for (const later of ["ctx.db", "ctx.runQuery", "ctx.runAction", "fetchRawOptionsForChain"]) {
+      const at = handler.indexOf(later);
+      if (at > -1) expect(gate).toBeLessThan(at);
+    }
   });
 });
 

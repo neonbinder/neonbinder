@@ -21,8 +21,10 @@
  *   miss. A name outside the recording still goes live, so the fixture is
  *   never a ceiling on what the wizard can do.
  * - `captureFromCli` / `coverageReportFromCli` (`convex/enrichmentFixtures.ts`)
- *   produce and audit the file. They share `fixtureKey` with the reader:
- *   there is ONE normaliser, and it lives here.
+ *   produce and audit the file, and `scripts/merge-enrichment-capture.ts`
+ *   (logic in `enrichmentFixtureMerge.ts`) folds a capture into it. They
+ *   share `fixtureKey` with the reader: there is ONE normaliser, and it
+ *   lives here.
  *
  * ## Why production cannot read it
  *
@@ -193,16 +195,55 @@ export const captureSkipValidator = v.object({
   reason: v.string(),
 });
 
-export const fixtureFileValidator = v.object({
-  version: v.literal(1),
+export const FIXTURE_VERSION = 1 as const;
+
+/**
+ * One recorded entry carried WITH its key, the shape every function that
+ * hands entries across the Convex boundary uses (`runCaptureLookups`,
+ * `captureFromCli`).
+ *
+ * Never an object keyed by fixture key on that boundary: the key embeds the
+ * normalised NAME, and Convex refuses any field name outside printable ASCII
+ * in a function's arguments or return value, so one accented name ("Ciego de
+ * Ávila") failed a whole capture page (NEO-346). The keyed object is built on
+ * the laptop by the merge tool (`enrichmentFixtureMerge.ts`), which writes
+ * the file with `\uXXXX` escapes.
+ */
+export const capturedEntryValidator = v.object({ key: v.string(), entry: fixtureEntryValidator });
+
+/** What `captureFromCli` returns as `fixture`: the file's header plus a key-sorted entry list. */
+export const capturedFixtureValidator = v.object({
+  version: v.literal(FIXTURE_VERSION),
   capturedAt: v.string(),
   sportQid: v.string(),
-  entries: v.record(v.string(), fixtureEntryValidator),
+  entries: v.array(capturedEntryValidator),
 });
 
-export type EnrichmentFixtureFile = Infer<typeof fixtureFileValidator>;
+export type CapturedFixture = Infer<typeof capturedFixtureValidator>;
 
-export const FIXTURE_VERSION = 1 as const;
+/**
+ * The committed file's shape (and the reader's in-memory form). A plain type
+ * on purpose, not a Convex validator: its `entries` are keyed by name, so a
+ * `v.record` of them could never legally cross a function boundary (see
+ * `capturedEntryValidator`).
+ */
+export type EnrichmentFixtureFile = {
+  version: typeof FIXTURE_VERSION;
+  capturedAt: string;
+  sportQid: string;
+  entries: Record<string, EnrichmentFixtureEntry>;
+};
+
+/**
+ * The order entries are kept in, in a capture and in the committed file:
+ * plain string comparison (UTF-16 code units), which is what
+ * `enrichmentFixtureFile.test.ts` pins. For keys inside the Basic
+ * Multilingual Plane, i.e. every name recorded so far, it is the same order
+ * as Python's `sorted()`.
+ */
+export function compareFixtureKeys(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 // ---------------------------------------------------------------------------
 // Loading the committed file

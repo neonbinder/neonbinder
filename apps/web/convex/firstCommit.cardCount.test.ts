@@ -1,8 +1,10 @@
 /**
  * NEO-239 — the seed's FIRST Base checklist commit, replayed end to end.
  *
- * `.maestro/flows/setup.yaml` asserts an exact card count for 2024 Topps
- * Chrome's Base checklist on an empty preview, and CI reported 334 where main
+ * The E2E seed asserts an exact card count for 2024 Topps Chrome's Base
+ * checklist on an empty preview (then `.maestro/flows/setup.yaml`; since
+ * NEO-339 the scripted seed, `npm run setbuild`,
+ * docs/operations/neo339-setbuild.md), and CI reported 334 where main
  * saves 335. A count assertion is the only kind of E2E check that can catch a
  * silently-lost card, and it caught one — but it cannot say WHERE, and the
  * pipeline it covers is four hops long:

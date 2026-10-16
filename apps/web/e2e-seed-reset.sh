@@ -1,7 +1,9 @@
 #!/bin/bash
 # The reset half of the E2E seed (NEO-214, NEO-330). `npm run test:e2e:seed`
-# and the CI `seed` / `seed-mobile` jobs run this, then the Playwright `setup`
-# project. Ported from the retired run-e2e-smoke.sh `setup` slot.
+# (./e2e-seed.sh) and the CI `seed` / `seed-mobile` jobs run this, then the
+# scripted baseline (NEO-339: `setbuild apply` of
+# playwright/seed/baseline.spec.json). Ported from the retired
+# run-e2e-smoke.sh `setup` slot.
 #
 # Unset NB_REFERENCE_BUNDLE: exactly `./e2e-baseline.sh reset`.
 #
@@ -68,7 +70,7 @@ if [ -z "${NB_REFERENCE_BUNDLE:-}" ]; then
   exec ./e2e-baseline.sh reset "$@"
 fi
 
-echo "-- seed reset: reference seed before the setup project (NEO-330) --"
+echo "-- seed reset: reference seed before the scripted seed (NEO-330) --"
 # Check everything BEFORE the reset, so a missing or bad bundle, or a missing
 # target, fails with the deployment untouched.
 if [ ! -f "$NB_REFERENCE_BUNDLE" ]; then

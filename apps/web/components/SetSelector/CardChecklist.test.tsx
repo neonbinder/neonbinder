@@ -2834,8 +2834,10 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
  * `useMutation`'s only resolves once the client's subscribed queries reflect
  * the mutation's writes. So the message that used to be safe to paint right
  * after the commit now races `getCardChecklist`'s repaint — and
- * .maestro/flows/setup.yaml waits for "Saved 335 cards" and then IMMEDIATELY
- * asserts a "#NNN" card row is visible.
+ * a flow that waits for "Saved N cards" and then IMMEDIATELY asserts a "#NNN"
+ * card row is visible (the retired `setup.yaml` did this for 335 cards; since
+ * NEO-339 the Base commit is the scripted seed, `npm run setbuild`, and the
+ * Maestro flows that commit a checklist still read the message).
  *
  * The fix is ordering, not a new sync primitive: `discardCandidates` is still
  * a mutation, and its resolution guarantees the client reflects every write

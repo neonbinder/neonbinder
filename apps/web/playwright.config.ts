@@ -9,7 +9,10 @@
  * not translated step by step.
  *
  * Project chain:
- *   setup     — tests/setup.spec.ts, the seed track. Seed job only, worker 0.
+ *   (no seed project) — the global baseline is seeded by script, not by a
+ *               spec (NEO-339): e2e-seed-reset.sh, then `setbuild apply` of
+ *               playwright/seed/baseline.spec.json (./e2e-seed.sh locally,
+ *               the seed jobs in e2e.yml).
  *   bootstrap — tests/profile/worker-bootstrap.spec.ts. `e2e` depends on it,
  *               so every shard first resets + seeds ITS account.
  *   e2e       — everything else, desktop (1024x629). CI hands each shard an
@@ -22,7 +25,7 @@
  * so a spec's desktop and mobile runs happen one after the other on the same
  * account, never at the same time (sole-writer specs stay sole writers).
  * Minted names carry a d/m project marker (support/env.ts) so the two runs
- * never share a row. setup and bootstrap stay single, desktop.
+ * never share a row. bootstrap stays single, desktop.
  *
  * Project names are load-bearing: shard-plan.mjs (PROJECTS) and e2e.yml's
  * gate read the same two names.
@@ -40,7 +43,6 @@ const REPORT_DIR = process.env.PW_REPORT_DIR ?? "playwright/report";
 
 const UX_BUDGET = 7_000;
 
-const SETUP = /tests[\\/]setup\.spec\.ts$/;
 const BOOTSTRAP = /tests[\\/]profile[\\/]worker-bootstrap\.spec\.ts$/;
 
 export default defineConfig({
@@ -74,11 +76,10 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "setup", testMatch: SETUP, timeout: 1_500_000 },
     { name: "bootstrap", testMatch: BOOTSTRAP },
     {
       name: "e2e",
-      testIgnore: [SETUP, BOOTSTRAP],
+      testIgnore: [BOOTSTRAP],
       dependencies: ["bootstrap"],
     },
     {
@@ -86,7 +87,7 @@ export default defineConfig({
       // phone viewport, touch, isMobile and a mobile user agent; it replaces
       // the desktop viewport above for this project.
       name: "e2e-mobile",
-      testIgnore: [SETUP, BOOTSTRAP],
+      testIgnore: [BOOTSTRAP],
       dependencies: ["bootstrap"],
       use: { ...devices["Pixel 7"] },
     },

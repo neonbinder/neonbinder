@@ -38,10 +38,9 @@ import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 // NEO-236: the one form a team is created from, shared with NewTeamDialog.
 import NewTeamForm, {
   draftFullName,
-  newTeamPrefill,
   type NewTeamDraft,
 } from "./NewTeamForm";
-import { focusLevelChoice, type LeagueLevel } from "../admin/AddLeagueForm";
+import { focusLevelChoice } from "../admin/AddLeagueForm";
 import NewLeagueForm, {
   leagueDraftError,
   newLeaguePrefill,
@@ -54,6 +53,14 @@ import SameNamePlayerPanel, {
 } from "./SameNamePlayerPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
+// NEO-339: what the wizard sends and stages, shared with the set-building tool.
+import {
+  buildCreateDecision,
+  buildLinkDecision,
+  planStaging,
+  teamCreatePrefill,
+  type CreateDecisionPayload,
+} from "@/lib/set-build/review";
 // NEO-335: the cards that would save with no team, on their own step.
 import TeamsOnCardsSection from "./TeamsOnCardsSection";
 // NEO-335 Phase 2: the shared "Tidy up this set" header and the step model.
@@ -242,37 +249,9 @@ const PLAYER_ADD_SET_SPORT_FIELD_ID = "entity-review-player-add-set-sport";
 const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
 const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
 
-/**
- * NEO-236 — what the Location + Name pair shows for a team row before the
- * operator touches it.
- *
- * Location is pre-filled ONLY from an ESPN location the lookup actually
- * returned, and only when `splitTeamName` finds it as a whole-word prefix of
- * the reviewed name: "San Diego" off "San Diego Padres" splits, "Anaheim" off
- * "Los Angeles Angels" does not, and neither does "Sa". Everything else starts
- * with a blank Location and the whole reviewed name in Name — byte-for-byte
- * how these rows were created before the split existed, and the operator's cue
- * to split it themselves. A blank Location is the FINAL answer only for a name
- * that carries no place at all ("Athletics", "Orix Buffaloes"); a college
- * side's location is its school ("San Diego State" / "Aztecs").
- *
- * There is no first-token heuristic here and there must never be one: NB has
- * no code path that guesses a location without a source. The operator is the
- * fallback.
- *
- * Mirrored server-side by `prefilledTeamCreate` in convex/entityReviewQueue.ts,
- * which is what "Add All Remaining as New" writes for a team row — so
- * confirming one row and confirming the batch mean the same thing.
- */
-export function teamCreatePrefill(row: {
-  name: string;
-  enrichment?: { location?: string } | null;
-}): NewTeamDraft {
-  return newTeamPrefill({
-    name: row.name,
-    ...(row.enrichment?.location ? { location: row.enrichment.location } : {}),
-  });
-}
+// NEO-339: moved to lib/set-build/review.ts with the other decision builders;
+// re-exported so every existing import keeps working.
+export { teamCreatePrefill } from "@/lib/set-build/review";
 /** NEO-307 — the "no team holds this name as an alias" answer, one stable
  *  reference; see `nameAliasHolders`. */
 const NO_ALIAS_HOLDERS: ReadonlyArray<never> = [];
@@ -1270,6 +1249,14 @@ export default function EntityReviewWizard({
    * guard on the footer primary. See `CREATE_NEW_DOUBLE_CLICK_MS`.
    */
   const createNewPressedAtRef = useRef<Record<string, number>>({});
+  /**
+   * NEO-332 — the row whose EXPLICIT pin "Back to the list" made, if any (see
+   * `leaveCreateNew`). Pressing Create new again hands that pin back to the
+   * walk, so the New Player step behaves exactly as it did the first time:
+   * its own staged New Team steps still come before it (NEO-236). A pin the
+   * operator made some other way (Back, Change decision) is left alone.
+   */
+  const backPinnedRowRef = useRef<string | null>(null);
 
   /** Rows already decided "link" — their TARGET's canonical name is what the
    *  batch will actually use, so both the staging list and the decided list
@@ -1662,6 +1649,11 @@ export default function EntityReviewWizard({
 
   useEffect(() => {
     navRef.current = nav;
+    // NEO-332 — "Back to the list"'s pin is forgotten once the walk or the
+    // operator moves anywhere else (see `backPinnedRowRef`).
+    if (!nav.explicit || nav.rowId !== backPinnedRowRef.current) {
+      backPinnedRowRef.current = null;
+    }
   }, [nav]);
 
   /**
@@ -1731,17 +1723,40 @@ export default function EntityReviewWizard({
     pinnedEditsRef.current = pinnedRowHasEdits;
   }, [pinnedRowHasEdits]);
 
+  /**
+   * NEO-339 — a pick step holds its place, touched or not.
+   *
+   * The teams-first yield in `resolveNav` swaps an untouched player step for
+   * any team or league that becomes presentable. That yield exists for one
+   * reason, in Jason's words: "if you create a team that needs a new league or
+   * player that needs a new team it needs to show that first before saving the
+   * original card. As long as that still works then yes I'd rather not jump
+   * the line". A "Which {name} is this?" step is neither. It asks which of the
+   * players we already hold is on this card, and none of its answers needs a
+   * team first: a link points at a player we have, a skip needs nothing, and
+   * Create new is itself an edit that holds the row and then stages that
+   * player's own teams. So a league or team settling elsewhere in the batch
+   * while the operator reads the candidates must not take the step away.
+   *
+   * Passed to the yield gate only. `pinnedRowHasEdits` keeps its own meaning
+   * ("there is work on this row to lose"), which the armed auto-add timer also
+   * reads, and the dependency surfacing is untouched: a player waiting on its
+   * own staged teams, and a team waiting on its own staged league, still move
+   * the walk (those clauses of `resolveNav` are not gated by this).
+   */
+  const holdPresentedRow = pinnedRowHasEdits || pickStep;
+
   useEffect(() => {
     if (!rows) return;
     const next = resolveNav(rows, nav, {
-      pinnedRowHasEdits,
+      pinnedRowHasEdits: holdPresentedRow,
       interactionOpen: rowInteractionOpen,
     });
     if (next === nav) return;
     navRef.current = next;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the presented row follows the batch; the rule that decides when is pure and tested in entity-review-nav.test.tsx
     setNav(next);
-  }, [rows, nav, pinnedRowHasEdits, rowInteractionOpen]);
+  }, [rows, nav, holdPresentedRow, rowInteractionOpen]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
@@ -1797,9 +1812,7 @@ export default function EntityReviewWizard({
    * all read "needs a team decision".
    */
   useEffect(() => {
-    if (!current || current.kind !== "player") return;
-    if (current.decision) return;
-    if ((current.enrichment?.careerTeams?.length ?? 0) === 0) return;
+    if (!current) return;
     /*
      * NEO-332 — never while the row is on its PICK step.
      *
@@ -1819,10 +1832,14 @@ export default function EntityReviewWizard({
      * round trip is the whole cost, on a pass that is belt-and-braces anyway.
      */
     if (pickStep || !sameNameEvidenceLoaded) return;
-    if (stagedPlayersRef.current.has(current._id)) return;
+    // NEO-339: the rule lives in lib/set-build/review.ts (`planStaging`).
+    const [stage] = planStaging(current, {
+      alreadyStaged: stagedPlayersRef.current,
+    });
+    if (stage?.mutation !== "stageCareerTeamRows") return;
     stagedPlayersRef.current.add(current._id);
     const stagedRowId = current._id;
-    void stageCareerTeams({ reviewRowId: stagedRowId })
+    void stageCareerTeams(stage.args)
       .then((added) => {
         if (added === 0) return;
         // The same two lines `resumeWalking` runs — written out because that
@@ -2213,6 +2230,7 @@ export default function EntityReviewWizard({
       // NEO-332 — the row is answered (or its answer cleared), so the next
       // time it is live it opens on its pick step again.
       clearCreateNew(rowId);
+      if (backPinnedRowRef.current === rowId) backPinnedRowRef.current = null;
       setHistory((prev) => {
         const without = prev.filter((id) => id !== rowId);
         return historyMode === "push" ? [...without, rowId] : without;
@@ -2260,54 +2278,16 @@ export default function EntityReviewWizard({
    *
    * `manualCareerTeams` carries FULL names, because that is what the prelude
    * looks up against `teams`.
+   *
+   * NEO-339: the arguments are built in lib/set-build/review.ts, shared with
+   * the set-building tool.
    */
   const handleCreate = async (
     reviewRowId: Id<"entityReviewQueue">,
-    payload: {
-      manualCareerTeams?: CareerTeamDraft[];
-      excludedCareerTeamNames?: string[];
-      create?: {
-        location?: string;
-        name: string;
-        leagueId?: Id<"leagues"> | null;
-        leagueName?: string;
-        // NEO-254 — see `teamCreateValidator`.
-        yearsActive?: { from: number; to?: number };
-        // NEO-284 — the other names, already parsed. See `NewTeamDraft`.
-        aliases?: string[];
-      };
-      // NEO-254 — league-kind only. See `NewLeagueForm`.
-      createLeague?: {
-        name: string;
-        abbreviation?: string;
-        // NEO-331 — required, as on every league create.
-        level: LeagueLevel;
-        yearsActive?: { from: number; to?: number };
-        aliases?: string[];
-        wikidataId?: string;
-      };
-      // NEO-313 — player rows only. See `addSetSportByRow`.
-      addSetSport?: boolean;
-    } = {},
+    payload: CreateDecisionPayload = {},
   ) =>
     decide(reviewRowId, () =>
-      recordDecision({
-        reviewRowId,
-        action: "create",
-        manualCareerTeams: payload.manualCareerTeams?.length
-          ? payload.manualCareerTeams.map((ct) => ({
-              name: teamFullName(ct),
-              fromYear: ct.fromYear,
-              ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
-            }))
-          : undefined,
-        excludedCareerTeamNames: payload.excludedCareerTeamNames?.length
-          ? payload.excludedCareerTeamNames
-          : undefined,
-        create: payload.create,
-        createLeague: payload.createLeague,
-        ...(payload.addSetSport ? { addSetSport: true } : {}),
-      }),
+      recordDecision(buildCreateDecision(reviewRowId, payload)),
     );
   const handleLink = async (
     reviewRowId: Id<"entityReviewQueue">,
@@ -2323,20 +2303,7 @@ export default function EntityReviewWizard({
     options: { saveAsAlias?: boolean; addSetSport?: boolean } = {},
   ) =>
     decide(reviewRowId, () =>
-      recordDecision({
-        reviewRowId,
-        action: "link",
-        linkedPlayerId: kind === "player" ? (linkedId as Id<"players">) : undefined,
-        linkedTeamId: kind === "team" ? (linkedId as Id<"teams">) : undefined,
-        // NEO-254 — every team in the batch that named this league then uses
-        // the linked row rather than creating anything.
-        linkedLeagueId: kind === "league" ? (linkedId as Id<"leagues">) : undefined,
-        ...(kind === "team" && options.saveAsAlias !== undefined
-          ? { saveAsAlias: options.saveAsAlias }
-          : {}),
-        // NEO-313 — only ever `true`, and only for a player.
-        ...(kind === "player" && options.addSetSport ? { addSetSport: true } : {}),
-      }),
+      recordDecision(buildLinkDecision(reviewRowId, kind, linkedId, options)),
     );
   const handleSkip = async (reviewRowId: Id<"entityReviewQueue">) =>
     decide(reviewRowId, () => recordDecision({ reviewRowId, action: "skip" }));
@@ -2441,6 +2408,20 @@ export default function EntityReviewWizard({
       console.warn("Failed to request the player lookup:", error);
     });
     createNewPressedAtRef.current[rowId] = pressedAt;
+    // NEO-332 — the pin "Back to the list" made goes back to the walk; the
+    // flag set below holds the row against a settled team exactly as before.
+    if (
+      backPinnedRowRef.current === rowId &&
+      navRef.current.rowId === rowId &&
+      navRef.current.explicit
+    ) {
+      // NEO-330 W6 — any return stack (and `returned`) rides along: handing
+      // the pin back to the walk is not abandoning a detour.
+      const next: NavState = { ...navRef.current, explicit: false };
+      navRef.current = next;
+      setNav(next);
+    }
+    backPinnedRowRef.current = null;
     // a11y S4 — the focus move is armed only when the flag is really added.
     // A repeat press would otherwise leave "heading" waiting in the ref for
     // the NEXT unrelated `createNewByRow` change to act on.
@@ -2463,6 +2444,22 @@ export default function EntityReviewWizard({
    */
   const leaveCreateNew = (rowId: Id<"entityReviewQueue">) => {
     if (createNewByRow[rowId] === undefined) return;
+    /*
+     * Pinned EXPLICITLY, like every other Back. Dropping the flag also drops
+     * `pinnedRowHasEdits`, and a team or league that settled while the New
+     * Player step was open would otherwise take the walk the moment the
+     * operator came back (CI run 38283279709: a staged league did) — landing
+     * them on a step they never asked for, with the focus move below aimed at
+     * THAT step's primary. Answering the pick step (`decide`) resumes the walk.
+     */
+    if (navRef.current.rowId === rowId && !navRef.current.explicit) {
+      // NEO-330 W6 — keep the return stack: Back to the list stays on this
+      // row, so the detour it was part of is still in progress.
+      const next: NavState = { ...navRef.current, explicit: true };
+      navRef.current = next;
+      backPinnedRowRef.current = rowId;
+      setNav(next);
+    }
     pendingStepFocusRef.current = "primary";
     clearCreateNew(rowId);
     const count = sameNameScanCapped
@@ -4855,11 +4852,12 @@ export default function EntityReviewWizard({
                                * the commit still resolves the name, it just
                                * does not get the fuller record.
                                */
-                              if (patch.leagueName?.trim()) {
-                                void stageLeagueRows({
-                                  reviewRowId: current._id,
-                                  leagueName: patch.leagueName,
-                                }).catch(() => {});
+                              for (const call of planStaging(current, {
+                                leagueName: patch.leagueName,
+                              })) {
+                                if (call.mutation === "stageLeagueRows") {
+                                  void stageLeagueRows(call.args).catch(() => {});
+                                }
                               }
                             }}
                             leagueSuggestion={current.enrichment?.league}

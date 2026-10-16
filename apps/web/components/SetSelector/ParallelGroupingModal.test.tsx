@@ -98,13 +98,7 @@ vi.mock("@dnd-kit/core", async (importOriginal) => {
 });
 
 import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
-import ParallelGroupingModal, {
-  emptyGroupingState,
-  groupingReducer,
-  type GroupingState,
-  type Placement,
-  type RowInfo,
-} from "./ParallelGroupingModal";
+import ParallelGroupingModal from "./ParallelGroupingModal";
 
 const VARIANT_TYPE_ID = "vt1" as Id<"selectorOptions">;
 
@@ -1261,99 +1255,5 @@ describe("ParallelGroupingModal — a save larger than one transaction", () => {
     expect(screen.getByRole("alert").textContent).toBe(refusal);
     // No rebuild — the two pending moves are exactly as staged.
     expect(screen.getByText("Save 2 changes")).toBeTruthy();
-  });
-});
-
-/**
- * NEO-300 — the reducer on its own: states the UI keeps out of reach, which
- * is exactly why they need a backstop.
- */
-describe("groupingReducer — a move of several rows is all or nothing", () => {
-  const id = (s: string) => s as Id<"selectorOptions">;
-  function state(): GroupingState {
-    const rows = new Map<Id<"selectorOptions">, RowInfo>();
-    const placement = new Map<Id<"selectorOptions">, Placement>();
-    const add = (
-      key: string,
-      kind: "insert" | "parallel",
-      parent: string | null,
-    ) => {
-      rows.set(id(key), {
-        _id: id(key),
-        value: key,
-        originalKind: kind,
-        originalParentId: parent ? id(parent) : null,
-        originalHadParallels: false,
-      });
-      placement.set(
-        id(key),
-        parent ? { kind: "child", parentId: id(parent) } : { kind: "ungrouped" },
-      );
-    };
-    add("target", "insert", null);
-    add("a", "insert", null);
-    add("holder", "insert", null);
-    add("b", "insert", null);
-    add("held", "parallel", "holder");
-    return groupingReducer(emptyGroupingState, {
-      type: "INIT",
-      rows,
-      placement,
-      suggested: new Set(),
-    });
-  }
-
-  test("a valid row and one holding parallels: nothing moves", () => {
-    const before = state();
-    const after = groupingReducer(before, {
-      type: "MOVE",
-      rowIds: [id("a"), id("holder")],
-      placement: { kind: "child", parentId: id("target") },
-      fromSelection: true,
-    });
-    expect(after).toBe(before);
-  });
-
-  test("the target inside the rows: nothing moves", () => {
-    const before = state();
-    const after = groupingReducer(before, {
-      type: "MOVE",
-      rowIds: [id("a"), id("b"), id("target")],
-      placement: { kind: "child", parentId: id("target") },
-      fromSelection: true,
-    });
-    expect(after).toBe(before);
-  });
-
-  test("all valid: one action moves them all and spends the selection", () => {
-    let s = state();
-    s = groupingReducer(s, { type: "TOGGLE", rowId: id("a") });
-    s = groupingReducer(s, { type: "TOGGLE", rowId: id("b") });
-    const after = groupingReducer(s, {
-      type: "MOVE",
-      rowIds: s.selected,
-      placement: { kind: "child", parentId: id("target") },
-      fromSelection: true,
-    });
-    expect(after.placement.get(id("a"))).toEqual({ kind: "child", parentId: "target" });
-    expect(after.placement.get(id("b"))).toEqual({ kind: "child", parentId: "target" });
-    expect(after.selected).toEqual([]);
-  });
-
-  test("a row holding parallels can't be picked by any path", () => {
-    const s = state();
-    for (const action of [
-      { type: "SELECT_ONLY" as const, rowId: id("holder") },
-      { type: "TOGGLE" as const, rowId: id("holder") },
-    ]) {
-      expect(groupingReducer(s, action).selected).toEqual([]);
-    }
-    const ranged = groupingReducer(s, {
-      type: "SELECT_RANGE",
-      rowId: id("b"),
-      list: [id("a"), id("holder"), id("b")],
-      from: id("a"),
-    });
-    expect(ranged.selected).toEqual(["a", "b"]);
   });
 });

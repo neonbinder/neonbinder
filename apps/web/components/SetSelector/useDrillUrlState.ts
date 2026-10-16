@@ -55,33 +55,12 @@ import { useQuery } from "convex/react";
 import { useSearchParams } from "react-router";
 import { api } from "../../convex/_generated/api";
 import { ALL_BRANDS_VIEW, type ManufacturerSelection } from "./all-brands-view";
+import { DRILL_LEVELS, DRILL_PARAMS, serializeDrillPath } from "./drill-url";
 import type { SelectorLevel } from "./selector-sync-feedback";
 
-/**
- * The cascade's levels, root first. Keep in step with `DRILL_LEVELS` in
- * `convex/drillPath.ts`: the resolver checks position n against level n, so
- * the two lists must agree.
- */
-export const DRILL_LEVELS: readonly SelectorLevel[] = [
-  "sport",
-  "year",
-  "manufacturer",
-  "setName",
-  "variantType",
-  "insert",
-  "parallel",
-];
-
-/** The query-string key for each level. Short, because people read URLs. */
-export const DRILL_PARAMS: Readonly<Record<SelectorLevel, string>> = {
-  sport: "sport",
-  year: "year",
-  manufacturer: "brand",
-  setName: "set",
-  variantType: "type",
-  insert: "insert",
-  parallel: "parallel",
-};
+// The level table and its serializer live in `drill-url.ts` (pure, so the
+// set-build tool can build Set Builder links without loading this hook).
+export { DRILL_LEVELS, DRILL_PARAMS, serializeDrillPath };
 
 /**
  * `brand=all` — the NEO-237 All Brands VIEW. Not an id, never sent to the
@@ -136,23 +115,6 @@ export function canonicalPrefix(raw: ReadonlyArray<string | null>): {
   }
   const present = raw.filter((value) => value !== null && value !== undefined);
   return { path, dropped: present.length > path.length };
-}
-
-/**
- * The params for `path`, in canonical order. Params that are not the drill's
- * (anything else a link carries) are kept as they were; the drill's own keys
- * are rewritten from scratch, so a stale deeper level can never survive.
- */
-export function serializeDrillPath(
-  path: readonly string[],
-  base?: URLSearchParams,
-): URLSearchParams {
-  const next = new URLSearchParams(base);
-  for (const level of DRILL_LEVELS) next.delete(DRILL_PARAMS[level]);
-  path.forEach((value, i) => {
-    if (i < DRILL_LEVELS.length) next.append(DRILL_PARAMS[DRILL_LEVELS[i]], value);
-  });
-  return next;
 }
 
 /** The trust key for position `i` of `path`: depth, parent, id. */

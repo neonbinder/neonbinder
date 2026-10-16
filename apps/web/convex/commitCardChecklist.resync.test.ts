@@ -633,3 +633,86 @@ describe("commitCardChecklist — variations resolved per source set", () => {
     await cancelScheduled(t);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case 14 — a variation only one marketplace lists finds its parent across
+// marketplaces (NEO-339: 2024 Topps Chrome #122, BSC 122b/122c and SportLots'
+// one bare `[ VAR ]` left unpaired by Jason's call).
+// ---------------------------------------------------------------------------
+
+describe("commitCardChecklist — a one-marketplace variation's parent across marketplaces", () => {
+  const BSC_SET = "topps-chrome";
+  const SL_SET = "309098";
+  const base122 = card({
+    cardNumber: "122",
+    cardName: "Wyatt Langford",
+    bscRef: "bsc-122",
+    bscSetId: BSC_SET,
+    slRef: "2024 Topps Chrome #122 Wyatt Langford",
+    slSetId: SL_SET,
+  });
+  const bscVar = (n: string) =>
+    card({ cardNumber: n, cardName: "Wyatt Langford", bscRef: `bsc-${n}`, bscSetId: BSC_SET, isVariation: true });
+  const slVar = (opts: { setId?: string; label?: string } = {}) =>
+    card({
+      cardNumber: "122",
+      cardName: "Wyatt Langford",
+      slRef: "2024 Topps Chrome #122 Wyatt Langford [ VAR ]",
+      slSetId: opts.setId ?? SL_SET,
+      isVariation: true,
+      ...(opts.label ? { cardVariation: opts.label } : {}),
+    });
+
+  async function commit(cards: ReturnType<typeof card>[]) {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards,
+    });
+    const rows = await storedRows(t, leafId);
+    await drainScheduled(t);
+    await cancelScheduled(t);
+    const bySl = (ref: string) => rows.find((r) => r.platformData?.sportlots?.ref === ref);
+    const byBsc = (ref: string) => rows.find((r) => r.platformData?.bsc?.ref === ref);
+    return { rows, bySl, byBsc };
+  }
+
+  test("exactly one: SportLots' bare VAR becomes a variation of the matched base #122, beside 122b and 122c", async () => {
+    const { rows, bySl, byBsc } = await commit([base122, bscVar("122b"), bscVar("122c"), slVar()]);
+    expect(rows).toHaveLength(4);
+    const base = byBsc("bsc-122")!;
+    const vVar = bySl("2024 Topps Chrome #122 Wyatt Langford [ VAR ]")!;
+    expect(vVar.variationOfCardId).toBe(base._id);
+    expect(vVar.cardVariation).toBeUndefined();
+    expect(byBsc("bsc-122b")!.variationOfCardId).toBe(base._id);
+    expect(byBsc("bsc-122c")!.variationOfCardId).toBe(base._id);
+    expect(base.variationOfCardId).toBeUndefined();
+  });
+
+  test("a labelled one gets the same parent and keeps its label", async () => {
+    const { bySl, byBsc } = await commit([base122, slVar({ label: "Action Image" })]);
+    const vVar = bySl("2024 Topps Chrome #122 Wyatt Langford [ VAR ]")!;
+    expect(vVar.variationOfCardId).toBe(byBsc("bsc-122")!._id);
+    expect(vVar.cardVariation).toBe("Action Image");
+  });
+
+  test("zero: a base of another SportLots set is not its parent", async () => {
+    const { bySl } = await commit([base122, slVar({ setId: "another-sl-set" })]);
+    expect(bySl("2024 Topps Chrome #122 Wyatt Langford [ VAR ]")!.variationOfCardId).toBeUndefined();
+  });
+
+  test("multiple: two non-variation #122s of that set leave it unlinked (invariant 7)", async () => {
+    const second = card({
+      cardNumber: "122",
+      cardName: "Someone Else",
+      bscRef: "bsc-122-other",
+      bscSetId: BSC_SET,
+      slRef: "2024 Topps Chrome #122 Someone Else",
+      slSetId: SL_SET,
+    });
+    const { bySl } = await commit([base122, second, slVar()]);
+    expect(bySl("2024 Topps Chrome #122 Wyatt Langford [ VAR ]")!.variationOfCardId).toBeUndefined();
+  });
+});

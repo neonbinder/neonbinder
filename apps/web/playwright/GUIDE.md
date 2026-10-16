@@ -13,13 +13,13 @@ Layout:
 | `support/` | shared helpers (see "Support") |
 | `SET-REGISTRY.md` | every real set the suite touches, who provisions it, who may write |
 | `shard-plan.mjs`, `timings.json` | how CI splits files across shards |
-| `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e` (desktop), `e2e-mobile` (phone); 7 s budget; no retries |
+| `../playwright.config.ts` | projects `bootstrap`, `e2e` (desktop), `e2e-mobile` (phone); 7 s budget; no retries |
+| `seed/` | the scripted seed's specs (NEO-339): `baseline.spec.json` (the global baseline), `parallel.spec.json` + `mcp-smoke.expect.json` (the one seeded base parallel), `oneshot.*.json` (the `setbuild-oneshot` CI job). Read by `npm run setbuild`, never by a spec |
 
 Reference specs that show the patterns below:
 
 | Spec | Shows |
 |---|---|
-| `tests/setup.spec.ts` | the seed: dialogs, app-state branches, a bounded loop, paused-SportLots branches |
 | `tests/profile/worker-bootstrap.spec.ts` | the `bootstrap` project; an optional sub-step |
 | `tests/home/landing-smoke.spec.ts` | signed-out page, reachability as the assertion |
 | `tests/set-selector/admin-missing-both-shows-warning.spec.ts` | dedicated `account=`, role-scoped asserts, `toBeHidden` |
@@ -55,10 +55,11 @@ Reference specs that show the patterns below:
    and commented at the site with which exception it is:
    - a step that directly drives a live BSC/SportLots round trip on data that
      is not pre-synced;
-   - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
-     data-loading track, and its ceilings are the measured COLD-path values.
-     A measurement means nothing until you know which branch, warm or cold,
-     it came from);
+   - a cold sync a spec pays itself on data the seed does not provision
+     (its ceiling is the measured COLD-path value; a measurement means
+     nothing until you know which branch, warm or cold, it came from). The
+     seed itself is a script (NEO-339), not a spec, so it has no budgets
+     here;
    - the post-sign-in launch gate (`LAUNCH_GATE`, 45 s);
    - the one live Wikidata proof (`player-live-wikidata-enrichment`);
    - a ceiling Jason has signed off, with the date, the measurement and what
@@ -122,7 +123,7 @@ later assertion runs at 7 s.
 **R7 - No destructive data actions.** Never clear credentials without
 restoring them, never delete or overwrite shared data, never wipe. The global
 reset is not a test step: it is the scripted `./e2e-baseline.sh reset` the CI
-seed job (and `npm run test:e2e:seed`) runs before the `setup` project. A
+seed jobs (and `npm run test:e2e:seed`) run before the scripted seed. A
 spec that leaves a worker's state degraded poisons every later spec that
 worker runs.
 
@@ -246,7 +247,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
   `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
-  `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
+  `discardResumedReviewBatch`, `personSkip`, `skipHeldPickStep`, `walkToPlayerRow`,
   `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
   contract is in its doc comment; see "The entity-review wizard" under Gotchas.
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
@@ -371,14 +372,14 @@ Every spec runs twice: on `e2e` (desktop Chromium, 1024x629) and on
 `e2e-mobile` (Chromium with the Pixel 7 descriptor: 412x839, touch,
 `isMobile`, a mobile user agent). CI runs them as two passes, each on a
 freshly seeded preview: the desktop pass (seed, 8 shards on `--project=e2e`),
-then a re-seed (reset + the `setup` project again), then the mobile pass (8
+then a re-seed (reset + the scripted seed again), then the mobile pass (8
 shards on `--project=e2e-mobile`). A spec that is fresh-only or the sole
 writer of a real marketplace set passes once per seed, so each project
 gets its own; a spec never runs on both projects in one seed. Mobile starts
 only after every desktop shard finished (the reset wipes the shared
 preview), and still runs when desktop has reds. The `e2e` gate needs a
-passing result for every planned spec on BOTH projects and a passing seed
-for each pass, and a skipped test counts as a failure.
+passing result for every planned spec on BOTH projects and a successful
+seed job for each pass, and a skipped test counts as a failure.
 
 - **Write one spec for both.** Role, label and text locators do not care
   about the viewport, and `click()` scrolls by itself. Most specs need no
@@ -408,7 +409,7 @@ for each pass, and a skipped test counts as a failure.
 - **Local runs** pass the project you are debugging; to run both, re-seed
   between them, because a fresh-only or sole-writer spec passes once per
   seed: `npx playwright test --project=e2e --no-deps <spec>`, then
-  `./e2e-baseline.sh reset --deployment <preview>` and the `setup` project,
+  `CONVEX_NAME=<preview> APP_URL=<your Vite> npm run test:e2e:seed`,
   then `npx playwright test --project=e2e-mobile --no-deps <spec>`.
 
 ## Accessibility checks
@@ -471,12 +472,19 @@ live-region assertions and with the accessibility-auditor's review.
 
 ## Worker-state seeding
 
-The **seed** is `e2e-baseline.sh reset` (a scripted global wipe) followed by
-the `setup` project (`tests/setup.spec.ts`: credential save, drill to 2024
-Topps Chrome, Variant Types sync, the real sets in `SET-REGISTRY.md`). It
-runs once per run, deliberately, on worker 0, never as one thread among many.
-Neither step seeds a team or a player: those tables stay empty until a spec
-makes its own per-worker rows. Then the `bootstrap` project
+The **seed** is `e2e-seed-reset.sh` (`e2e-baseline.sh reset`, a scripted
+global wipe, plus on CI the NEO-330 reference catalogue) followed by the
+scripted baseline (NEO-339): `npm run setbuild -- apply` of
+`playwright/seed/baseline.spec.json`, which signs in as worker 0's test admin
+and drives the same public admin Convex functions the Set Builder UI calls
+(credential save, 2024 Topps Chrome's Base, Insert and Parallel, Big League,
+2026 Bowman's SportLots review: the real sets marked **seed** in
+`SET-REGISTRY.md`), then the one seeded base parallel (`parallel.spec.json`).
+Runbook: `docs/operations/neo339-setbuild.md`. It runs once per pass,
+deliberately, never as one thread among many, and it is not a spec: a UI
+behaviour is proved by a spec, never by the seed. Players are those the
+baseline's reviews create (on a catalogue preview only the names the
+catalogue lacks); a spec still makes its own per-worker rows. Then the `bootstrap` project
 (`tests/profile/worker-bootstrap.spec.ts`) resets and seeds ITS shard's
 account (public profile, marketplace credentials), and `e2e` depends on it.
 Nothing schedules around the seed: run it first (`npm run test:e2e:seed`),
@@ -613,14 +621,12 @@ before seeding, every run, and production has neither. A name not in the
 recording still goes live, so the fixture is a cache in front of the adapter,
 never a stub of it. What that changes:
 
-- **`setup.spec.ts` no longer proves the live lane.** Its wizard drain
-  (the names-done footer, 240 s) is now an upper bound over a fixture-backed hit:
-  seconds when the recording covers the seed, network time only for names it
-  does not. The 240 s stays (the seed's sanctioned cold-path ceiling, and the
-  miss path is still live), but a seed that needs it with the recording in
-  place is a coverage gap, not a slow Wikidata. CI prints the coverage report
-  to the seed job summary after the seed; read it before reading anything
-  into a slow drain.
+- **The seed no longer proves the live lane.** Its Base review's lookups
+  are fixture-backed hits when the recording covers them, network time only
+  for names it does not; a slow seed with the recording in place is a
+  coverage gap, not a slow Wikidata. CI prints the coverage report to the
+  seed job summary after the seed; read it before reading anything into a
+  slow seed.
 - **The live lane is proved by ONE spec:**
   `tests/admin/player-live-wikidata-enrichment.spec.ts`. It adds a real Hall
   of Famer by hand on `/admin/players` (a name absent from the recording and
@@ -660,7 +666,7 @@ All commands run from `apps/web`.
 | `npm run test:e2e` | `playwright test`: everything (CI's job; not for your laptop) |
 | `npm run test:e2e:list` | list tests; `-- --project=e2e` to check a new spec is listed once |
 | `npm run test:e2e:typecheck` | `tsc -p playwright/tsconfig.json` |
-| `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
+| `npm run test:e2e:seed` | `./e2e-seed.sh`: reset, then `setbuild apply` of `playwright/seed/baseline.spec.json` and `parallel.spec.json`; seeds `CONVEX_NAME` (required) through the Vite at `APP_URL` |
 | `npx eslint playwright` | lint the suite |
 
 **Locally: only the specs covering your change, against the PR preview,
@@ -673,11 +679,11 @@ port wired to the PR's Convex preview, and point Playwright at it:
 VITE_CONVEX_URL=<the PR's Convex preview URL> VITE_DEV_DISABLE_HTTPS=1 \
   npx vite --port 3002 --strictPort
 # shell 2: seed once, then one spec at a time
-./e2e-baseline.sh reset --deployment <the preview's deployment name>
-APP_URL=http://localhost:3002 npx playwright test --project=setup
+CONVEX_NAME=<the preview's deployment name> APP_URL=http://localhost:3002 \
+  npm run test:e2e:seed
 APP_URL=http://localhost:3002 WORKER_INDEX=0 \
   npx playwright test --project=e2e --no-deps <path-substring>
-# for the phone project, re-seed first (reset + setup), then:
+# for the phone project, re-seed first (npm run test:e2e:seed), then:
 #   ... npx playwright test --project=e2e-mobile --no-deps <path-substring>
 ```
 
@@ -696,12 +702,17 @@ PR in two passes, each on a freshly seeded preview:
 
 ```
 setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate) -> report
+              \-> setbuild-oneshot (once) --/
 ```
 
-`seed` is the scripted reset plus the `setup` project (worker 0); the desktop
-shards run `--project=e2e`. `seed-mobile` needs every desktop shard (the reset
-wipes the shared preview), runs even when desktop has reds, and repeats the
-same Convex env steps, reset and `setup` project; the mobile shards run
+`seed` is the scripted reset plus the scripted seed (`setbuild apply` +
+`setbuild mcp-smoke`, worker 0; no browser); the desktop shards run
+`--project=e2e`. `setbuild-oneshot` (NEO-339, worker 8) runs once, beside the
+desktop shards: the MCP one-shot build of a set no spec touches, checked
+against `seed/oneshot.expect.json`. `seed-mobile` needs every desktop shard
+and `setbuild-oneshot` (the reset wipes the shared preview), runs even when
+desktop has reds, and repeats the same Convex env steps, reset and scripted
+seed; the mobile shards run
 `--project=e2e-mobile`. Each shard gets an explicit file list from
 `node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
 (longest-processing-time-first over that project's entry in `timings.json`,
@@ -709,8 +720,8 @@ not `--shard`) and runs the `bootstrap` project for its own account first, so
 each pass re-bootstraps its workers after its reset (workers 0-7 are used;
 accounts 0-11 exist). Expected wall clock is about 20 minutes: seed ~4 min,
 longest shard ~5 min (the longest spec), twice. The `e2e` gate fails on any
-failed spec, any missing result on either project, a pass whose seed did not
-pass, or a shard that died before reporting. A `report` job publishes the
+failed spec, any missing result on either project, a seed job or
+`setbuild-oneshot` that did not succeed, or a shard that died before reporting. A `report` job publishes the
 "Playwright E2E" check and a sticky PR comment. `e2e-repeat.yml` runs the
 suite N times (flake sampling); `refresh-flow-timings.yml` refreshes
 `timings.json` from CI. Refresh by hand from a run's merged results with

@@ -1607,30 +1607,61 @@ export const resolveNameForReview = internalQuery({
     narrowedByCardYear: v.optional(v.boolean()),
   }),
   handler: async (ctx, args) => {
-    const normalized = normalizePlayerName(args.name);
-    // A name that normalizes to nothing (punctuation only) can never match a
-    // stored key. Reported as no match, so it goes to review rather than being
-    // silently treated as resolved.
-    if (!normalized) return { matchCount: 0 };
-    const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
-    // Only when it is unambiguous. Handing back one id out of several is the
-    // exact thing this query was written to stop.
-    if (candidates.length === 1) {
-      return { matchCount: 1, playerId: candidates[0]._id };
-    }
-    if (candidates.length < 2) return { matchCount: candidates.length };
-    const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
-      cardYear: args.cardYear,
-      cardTeamNames: args.cardTeamNames,
-    });
+    const { matchCount, playerId, narrowedByCardYear } =
+      await resolvePlayerNameForReview(ctx, args);
     return {
-      matchCount: candidates.length,
-      ...(narrowed.playerId
-        ? { playerId: narrowed.playerId, narrowedByCardYear: true }
-        : {}),
+      matchCount,
+      ...(playerId ? { playerId } : {}),
+      ...(narrowedByCardYear ? { narrowedByCardYear } : {}),
     };
   },
 });
+
+/**
+ * NEO-339 — `resolveNameForReview`'s rule as a plain function, so a QUERY can
+ * apply it without a `ctx.runQuery` hop: `selectorOptions.previewChecklistEntities`
+ * classifies a draft's names with exactly the rule the review gate uses.
+ * Also hands back the same-name rows it read (`candidates`), which the
+ * internal query drops from its result.
+ */
+export async function resolvePlayerNameForReview(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    name: string;
+    sportId: Id<"selectorOptions">;
+    cardYear?: number;
+    cardTeamNames?: string[];
+  },
+): Promise<{
+  matchCount: number;
+  playerId?: Id<"players">;
+  narrowedByCardYear?: boolean;
+  candidates: Array<Doc<"players">>;
+}> {
+  const normalized = normalizePlayerName(args.name);
+  // A name that normalizes to nothing (punctuation only) can never match a
+  // stored key. Reported as no match, so it goes to review rather than being
+  // silently treated as resolved.
+  if (!normalized) return { matchCount: 0, candidates: [] };
+  const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
+  // Only when it is unambiguous. Handing back one id out of several is the
+  // exact thing this query was written to stop.
+  if (candidates.length === 1) {
+    return { matchCount: 1, playerId: candidates[0]._id, candidates };
+  }
+  if (candidates.length < 2) return { matchCount: candidates.length, candidates };
+  const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+    cardYear: args.cardYear,
+    cardTeamNames: args.cardTeamNames,
+  });
+  return {
+    matchCount: candidates.length,
+    ...(narrowed.playerId
+      ? { playerId: narrowed.playerId, narrowedByCardYear: true }
+      : {}),
+    candidates,
+  };
+}
 
 /**
  * NEO-254 — the NB rows already filed under this name, shaped for the review

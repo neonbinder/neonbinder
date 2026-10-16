@@ -1,0 +1,25 @@
+{
+  /* NEO-339: typechecks the set-build CLI/MCP tool (Node, not the browser, not
+   * the Convex runtime). It imports convex/_generated/api, which pulls the
+   * Convex modules into this program, so the options mirror
+   * convex/tsconfig.json; `types: ["node"]` is the one addition. Tests are
+   * included on purpose: unlike convex-test files they type cleanly here. */
+  "compilerOptions": {
+    "allowJs": true,
+    "strict": true,
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "target": "ESNext",
+    "lib": ["ES2023", "dom"],
+    "types": ["node"],
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

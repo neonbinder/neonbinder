@@ -32,6 +32,10 @@ import {
   type ClashReadySet,
 } from "./ready-title-clashes";
 import { MAX_SELECTOR_VALUE_LENGTH } from "../../convex/selectorSyncMatch";
+import {
+  MAX_REVIEW_DECISIONS,
+  buildSlReviewDecisions,
+} from "@/lib/set-build/sl-review";
 
 /**
  * NEO-306 — the SportLots-only review: "Sort SportLots sets for {brand}".
@@ -173,8 +177,9 @@ export type SlSetReviewResult = {
   incomplete: boolean;
 };
 
-/** The server's cap on one save (`MAX_REVIEW_DECISIONS`). */
-export const MAX_REVIEW_DECISIONS = 200;
+// NEO-339: the cap and the Save payload live in lib/set-build/sl-review.ts;
+// the cap is re-exported so every existing import of it keeps working.
+export { MAX_REVIEW_DECISIONS } from "@/lib/set-build/sl-review";
 
 /** A clash line's marketplace items: none matter among own-set lines. */
 const NO_ITEMS: ReadonlyArray<{ platformValue: string }> = [];
@@ -1622,19 +1627,15 @@ export default function SlSetReviewModal({
   const handleSave = async () => {
     if (busy || saveBlocked || !liveReview) return;
     const snapshot = liveReview;
-    const payload = snapshot.entries.slice(0, MAX_REVIEW_DECISIONS).map((e) => {
+    // NEO-339: the payload is built in lib/set-build/sl-review.ts, shared with
+    // the set-building tool. The name field's text goes only when the line
+    // shows one.
+    const payload = buildSlReviewDecisions(snapshot.entries, (e) => {
       const d = decisionOf(e.slId);
-      const field = nameFieldOf(e, d);
-      // NEO-325 — the operator's name, only when it says something the
-      // server's default would not (an untouched own-set field is the
-      // default; blank is never sent).
-      const typed = field ? names[e.slId]?.trim() : undefined;
-      const name =
-        typed && (d.setId || typed !== (e.defaultName ?? e.label)) ? typed : undefined;
       return {
-        slId: e.slId,
-        ...(d.setId && d.typeId ? { variantTypeId: d.typeId } : {}),
-        ...(name ? { name } : {}),
+        setId: d.setId,
+        typeId: d.typeId,
+        typedName: nameFieldOf(e, d) ? names[e.slId] : undefined,
       };
     });
     setSaveSnapshot(snapshot);

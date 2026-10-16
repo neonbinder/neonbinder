@@ -226,10 +226,13 @@ describe("CardPairingModal", () => {
   });
 
   /**
-   * setup.yaml depends on this: a real set that simply is not on the other
-   * marketplace produces an entire column of legitimate unmatched cards, and
-   * without "Keep all" the discard-by-default rule would silently narrow the
-   * provisioned checklist and break its strict card counts.
+   * This is the ONLY coverage of Keep all: no Topps Chrome insert has a
+   * one-sided card, so no Maestro flow can press it live (NEO-339,
+   * SET-REGISTRY.md; the retired setup.yaml pressed it only behind a guard).
+   * A real set that simply is not on the other marketplace produces an entire
+   * column of legitimate unmatched cards, and without "Keep all" the
+   * discard-by-default rule would silently narrow the checklist and break its
+   * strict card counts.
    */
   test("Keep all saves every card in a column", async () => {
     const { onConfirm } = renderModal({

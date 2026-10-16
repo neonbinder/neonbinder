@@ -1,0 +1,172 @@
+import { describe, expect, test } from "vitest";
+import {
+  decideDuplicateNumberPairs,
+  decideVariationPairs,
+  type NumberPairingCard,
+} from "./duplicateNumberPairing";
+
+type C = NumberPairingCard & { id: string };
+
+const card = (id: string, cardNumber: string, name: string, extra: Partial<C> = {}): C => ({
+  id,
+  cardNumber,
+  cardName: name,
+  players: [name],
+  ...extra,
+});
+
+function decide(
+  bscCards: C[],
+  slCards: C[],
+  opts: { shortCircuit?: Record<string, C>; prefix?: string } = {},
+) {
+  const res = decideDuplicateNumberPairs({
+    bscCards,
+    slCards,
+    numberKeysOf: (b) =>
+      opts.prefix && b.cardNumber.startsWith(opts.prefix)
+        ? [b.cardNumber, b.cardNumber.slice(opts.prefix.length)]
+        : [b.cardNumber],
+    shortCircuit: (b) => opts.shortCircuit?.[b.id],
+  });
+  const decided = Object.fromEntries(
+    [...res.decided].map(([b, s]) => [b.id, s ? s.id : null]),
+  );
+  return { decided, fuzzyExcluded: [...res.fuzzyExcluded].map((s) => s.id).sort() };
+}
+
+describe("decideDuplicateNumberPairs (NEO-339)", () => {
+  test("an unambiguous number is left to the ordinary lookup", () => {
+    const res = decide(
+      [card("b1", "1", "A"), card("b2", "2", "B")],
+      [card("s1", "1", "Z"), card("s2", "2", "B")],
+    );
+    expect(res.decided).toEqual({});
+    expect(res.fuzzyExcluded).toEqual([]);
+  });
+
+  test("pairs by player on a duplicated number, folding spelling the way the merge does", () => {
+    const res = decide(
+      [card("bH", "482", "Rickey Henderson"), card("bG", "482", "Tony Gwynn")],
+      [
+        card("sG", "482", "tony gwynn", { players: undefined }),
+        card("sH", "482", "Henderson, Rickey"),
+      ],
+    );
+    expect(res.decided).toEqual({ bH: "sH", bG: "sG" });
+    expect(res.fuzzyExcluded).toEqual(["sG", "sH"]);
+  });
+
+  test("a SportLots row taken by a higher-ranked rule is not offered on the number", () => {
+    // The operator's stored pairing gave BSC Henderson to SL Henderson; BSC
+    // Gwynn must not fall back onto it.
+    const sH = card("sH", "482", "Rickey Henderson");
+    const res = decide(
+      [card("bH", "482", "Rickey Henderson"), card("bG", "482", "Tony Gwynn")],
+      [sH],
+      { shortCircuit: { bH: sH } },
+    );
+    expect(res.decided).toEqual({ bG: null });
+  });
+
+  test("a BSC variation reaching an ambiguous number gets no guess", () => {
+    const res = decide(
+      [card("bV", "482", "Tony Gwynn", { isVariation: true })],
+      [card("sH", "482", "Rickey Henderson"), card("sG", "482", "Tony Gwynn")],
+    );
+    expect(res.decided).toEqual({ bV: null });
+  });
+
+  test("a prefixed BSC number lands on the stripped SportLots number, as the lookup does", () => {
+    const res = decide(
+      [card("bH", "ATR-482", "Rickey Henderson"), card("bG", "ATR-482", "Tony Gwynn")],
+      [card("sH", "482", "Rickey Henderson"), card("sG", "482", "Tony Gwynn")],
+      { prefix: "ATR-" },
+    );
+    expect(res.decided).toEqual({ bH: "sH", bG: "sG" });
+  });
+
+  test("a card with no name at all matches nothing", () => {
+    const res = decide(
+      [card("b0", "482", "", { players: [] })],
+      [card("sH", "482", "Rickey Henderson"), card("s0", "482", "", { players: [] })],
+    );
+    expect(res.decided).toEqual({ b0: null });
+  });
+});
+
+describe("decideVariationPairs (NEO-189, NEO-339)", () => {
+  const run = (bscCards: C[], slCards: C[]) => {
+    const res = decideVariationPairs({ bscCards, slCards });
+    return {
+      pairs: Object.fromEntries([...res.pairs].map(([b, s]) => [b.id, s.id])),
+      unmatched: [...res.unmatched].map((b) => b.id).sort(),
+      fuzzyExcluded: [...res.fuzzyExcluded].map((s) => s.id).sort(),
+    };
+  };
+
+  test("a label pairs first; the unlabelled leftover pairs by player", () => {
+    const res = run(
+      [
+        card("b11", "11", "Alec Bohm"),
+        card("b11b", "11b", "Alec Bohm", { isVariation: true, cardVariation: "Action" }),
+        card("b11c", "11c", "Alec Bohm", { isVariation: true }),
+      ],
+      [
+        card("s11", "11", "Alec Bohm"),
+        card("sA", "11", "Alec Bohm", { isVariation: true, cardVariation: "Action Image" }),
+        card("sV", "11", "Alec Bohm", { isVariation: true }),
+      ],
+    );
+    expect(res.pairs).toEqual({ b11b: "sA", b11c: "sV" });
+    expect(res.unmatched).toEqual([]);
+  });
+
+  test("one variation left on each side pairs on the number, even when the players differ", () => {
+    // Live 2024 Topps Chrome: SportLots misspells #300's variation.
+    const res = run(
+      [
+        card("b300", "300", "Julio Rodriguez"),
+        card("b300b", "300b", "Julio Rodriguez", { isVariation: true }),
+      ],
+      [
+        card("s300", "300", "Julio Rodriguez"),
+        card("sV", "300", "Julio Rodrfguez", { isVariation: true }),
+      ],
+    );
+    expect(res.pairs).toEqual({ b300b: "sV" });
+    expect(res.unmatched).toEqual([]);
+  });
+
+  test("a player tie pairs nothing and keeps the SL row from the fuzzy fallback", () => {
+    const res = run(
+      [
+        card("b122", "122", "Wyatt Langford"),
+        card("b122b", "122b", "Wyatt Langford"),
+        card("b122c", "122c", "Wyatt Langford"),
+      ],
+      [card("s122", "122", "Wyatt Langford"), card("sV", "122", "Wyatt Langford", { isVariation: true })],
+    );
+    expect(res.pairs).toEqual({});
+    expect(res.unmatched).toEqual(["b122b", "b122c"]);
+    expect(res.fuzzyExcluded).toEqual(["sV"]);
+  });
+
+  test("with no SportLots variation on the stem nothing is decided", () => {
+    const res = run(
+      [card("b5", "5", "A"), card("b5b", "5b", "A", { isVariation: true })],
+      [card("s5", "5", "A")],
+    );
+    expect(res).toEqual({ pairs: {}, unmatched: [], fuzzyExcluded: [] });
+  });
+
+  test("a suffixed number SportLots lists itself is not a variation by suffix", () => {
+    const res = run(
+      [card("b7", "7", "A"), card("b7b", "7b", "B")],
+      [card("s7b", "7b", "B"), card("sV", "7", "A", { isVariation: true })],
+    );
+    expect(res.pairs).toEqual({});
+    expect(res.unmatched).toEqual([]);
+  });
+});
+

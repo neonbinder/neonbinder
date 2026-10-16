@@ -8608,6 +8608,83 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     );
   });
 
+  // CI run 38283279709: a team settled (and staged its league) while the
+  // operator was on the New Player step. "Create new" held the walk still;
+  // "Back to the list" dropped that flag and the walk yielded the player to
+  // the league, so the operator landed on a step they never asked for — with
+  // focus sent to ITS primary ("Add as New League"). Back is the operator's
+  // own navigation and pins the row explicitly, like every other Back.
+  it("Back to the list stays on the pick step when a team settled meanwhile", async () => {
+    const rowA = ambiguousRow();
+    const team = makeRow({ kind: "team", name: "JR East Baseball Team", status: "pending" });
+    currentRows = [rowA, team];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+    clickCreateNew();
+
+    currentRows = [rowA, { ...team, status: "ready" }];
+    rerenderWizard(rerender);
+    // Create new is work on the row: the settled team waits.
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+    rerenderWizard(rerender);
+
+    expect(pickHeading()).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "New Team: JR East Baseball Team" }),
+    ).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Create new" }),
+      ),
+    );
+    expect(screen.getByText("Back at the list. 2 on file.")).toBeTruthy();
+
+    // Answering the pick step hands the walk back: the team comes next.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+    );
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "link", linkedPlayerId: "player-young" }),
+      ),
+    );
+    currentRows = [
+      { ...rowA, decision: { action: "link", linkedPlayerId: "player-young" } },
+      { ...team, status: "ready" },
+    ];
+    rerenderWizard(rerender);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: JR East Baseball Team" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  // The pin Back made is handed back by a second Create new, so the New Player
+  // step behaves as it did the first time: the player's own staged New Team
+  // steps still come before it (NEO-236).
+  it("Create new again after Back still yields to the player's own staged teams", () => {
+    const rowA = ambiguousRow();
+    currentRows = [rowA];
+    const { rerender } = renderWizard();
+    clickCreateNew();
+    fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+    rerenderWizard(rerender);
+    expect(pickHeading()).toBeTruthy();
+
+    clickCreateNew();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    // The lookup Create new asked for lands and stages one of his clubs.
+    currentRows = [makeCareerTeamRow(rowA._id, "Sydney Blue Sox"), rowA];
+    rerenderWizard(rerender);
+
+    expect(
+      screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+    ).toBeTruthy();
+  });
+
   it("Escape on the New Player step goes back to the pick step without a discard confirm", () => {
     // A decided row makes a plain Escape ask "Discard 1 decision?", so the
     // absence of that dialog is the one-level-at-a-time rule, not an empty batch.
@@ -9665,5 +9742,186 @@ describe("EntityReviewWizard — NEO-330 W6 × NEO-332 pick step", () => {
 
     expect(heading("Other Guy")).toBeNull();
     expect(screen.getByRole("heading", { name: "Which Dan Brown is this?" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-339 — a pick step holds its place; the dependency order still surfaces
+//
+// Jason, 2026-10-13, on the teams-first yield: "if you create a team that
+// needs a new league or player that needs a new team it needs to show that
+// first before saving the original card. As long as that still works then yes
+// I'd rather not jump the line". So a "Which {name} is this?" step no longer
+// gives way to a league or team that settles elsewhere in the batch, while a
+// row's OWN prerequisites (a New Player's new team, a New Team's new league)
+// still come up ahead of it.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — NEO-339 a pick step does not jump the line", () => {
+  const ALLEN = "row-allen" as unknown as Id<"entityReviewQueue">;
+  const CANDIDATES = [
+    { playerId: "player-old", name: "Bob Allen", birthYear: 1867, careerSummary: "Phillies 1890–1894" },
+    { playerId: "player-young", name: "Bob Allen", birthYear: 1937, careerSummary: "Padres 1961–present" },
+  ];
+  const allen = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: ALLEN,
+      name: "Bob Allen",
+      enrichment: { existingCandidates: CANDIDATES },
+      ...over,
+    });
+  /** An unrelated checklist team, its lookup still out when the wizard opens. */
+  const canucks = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-canucks" as unknown as Id<"entityReviewQueue">,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "pending",
+      ...over,
+    });
+  /** The league the Canucks' lookup stages: `ready`, so presentable at once. */
+  const nhl = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-nhl" as unknown as Id<"entityReviewQueue">,
+      kind: "league",
+      name: "National Hockey League",
+      status: "ready",
+      source: { kind: "leagueOf", teamRowId: "row-canucks" },
+      ...over,
+    });
+  const heading = (name: string) => screen.queryByRole("heading", { level: 3, name });
+  const pickHeading = () => screen.queryByRole("heading", { name: "Which Bob Allen is this?" });
+
+  it("an untouched pick step holds when a league becomes presentable mid-step", async () => {
+    currentRows = [canucks(), allen()];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+
+    // The Canucks' lookup lands elsewhere in the batch and stages its league.
+    currentRows = [nhl(), canucks({ status: "ready" }), allen()];
+    rerenderWizard(rerender);
+
+    expect(pickHeading()).toBeTruthy();
+    expect(heading("New League: National Hockey League")).toBeNull();
+    expect(heading("New Team: Vancouver Canucks")).toBeNull();
+    expect(screen.getByRole("button", { name: "Create new" })).toBeTruthy();
+
+    // Answering the pick step hands the walk back: the league comes next.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+    );
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "link", linkedPlayerId: "player-young" }),
+      ),
+    );
+    currentRows = [
+      nhl(),
+      canucks({ status: "ready" }),
+      allen({ decision: { action: "link", linkedPlayerId: "player-young" } }),
+    ];
+    rerenderWizard(rerender);
+    await waitFor(() =>
+      expect(heading("New League: National Hockey League")).toBeTruthy(),
+    );
+  });
+
+  it("an untouched pick step holds when an unrelated team settles mid-step", () => {
+    currentRows = [canucks(), allen()];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+
+    currentRows = [canucks({ status: "ready" }), allen()];
+    rerenderWizard(rerender);
+
+    expect(pickHeading()).toBeTruthy();
+    expect(heading("New Team: Vancouver Canucks")).toBeNull();
+  });
+
+  it("Create new still shows the new player's new team, then that team's new league, before either is saved", async () => {
+    currentRows = [allen()];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create new" }));
+    expect(screen.getByRole("heading", { name: "New Player: Bob Allen" })).toBeTruthy();
+
+    // New Player → new Team: the lookup Create new asked for lands and stages
+    // one of his clubs, which the batch has to create.
+    const royals = (over: Partial<Row> = {}) =>
+      makeCareerTeamRow(ALLEN, "Kansas City Royals", {
+        _id: "row-royals" as unknown as Id<"entityReviewQueue">,
+        ...over,
+      });
+    const lookedUp = allen({
+      enrichment: {
+        existingCandidates: CANDIDATES,
+        wikidataId: "Q1",
+        careerTeams: [{ name: "Kansas City Royals", fromYear: 1969 }],
+      },
+    });
+    currentRows = [royals(), lookedUp];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("New Team: Kansas City Royals")).toBeTruthy());
+
+    // New Team → new League: the Royals' own lookup stages a league the
+    // batch has to create, and it comes up ahead of the team.
+    const al = (over: Partial<Row> = {}) =>
+      makeRow({
+        _id: "row-al" as unknown as Id<"entityReviewQueue">,
+        kind: "league",
+        name: "American League",
+        status: "ready",
+        source: { kind: "leagueOf", teamRowId: "row-royals" },
+        ...over,
+      });
+    currentRows = [al(), royals(), lookedUp];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("New League: American League")).toBeTruthy());
+    expect(heading("New Team: Kansas City Royals")).toBeNull();
+    // Nothing has been saved on the way: each prerequisite was put in front.
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+
+    // League answered → the team; team answered → back to the player.
+    currentRows = [al({ decision: { action: "create" } }), royals(), lookedUp];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("New Team: Kansas City Royals")).toBeTruthy());
+
+    currentRows = [
+      al({ decision: { action: "create" } }),
+      royals({ decision: { action: "create", create: { location: "Kansas City", name: "Royals" } } }),
+      lookedUp,
+    ];
+    rerenderWizard(rerender);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "New Player: Bob Allen" })).toBeTruthy(),
+    );
+  });
+
+  it("a plain New Team step still gives way to its own staged league", async () => {
+    const lincoln = makeRow({
+      _id: "row-lincoln" as unknown as Id<"entityReviewQueue">,
+      kind: "team",
+      name: "Lincoln Stars",
+      status: "ready",
+    });
+    currentRows = [lincoln];
+    currentNearMatches = [];
+    const { rerender } = renderWizard();
+    expect(heading("New Team: Lincoln Stars")).toBeTruthy();
+
+    const ushl = makeRow({
+      kind: "league",
+      name: "United States Hockey League",
+      status: "pending",
+      source: { kind: "leagueOf", teamRowId: "row-lincoln" },
+    });
+    currentRows = [ushl, lincoln];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(heading("New League: United States Hockey League")).toBeTruthy(),
+    );
+    expect(heading("New Team: Lincoln Stars")).toBeNull();
   });
 });

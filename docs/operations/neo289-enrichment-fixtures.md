@@ -156,7 +156,7 @@ the next reset. The calls, each with the `since` of the pass it describes
 (the start of that pass's seed, recorded in the seed job and passed on as a
 job output):
 
-1. `seed`: after the desktop seed (the `setup` project's lookups).
+1. `seed`: after the desktop seed (the scripted seed's lookups, NEO-339).
 2. `seed-mobile`, first step: after the desktop shards drained, before the
    mobile reset, with the desktop seed's `since`. This is the call that sees
    what the desktop specs looked up.
@@ -176,13 +176,15 @@ and never against prod. Each team/league row's `externalIds.wikidataId`, and
 each staged row's Wikidata id, is passed through as `knownQid`.
 
 ```bash
-# Arm on the DEPLOYMENT (a shell env var never reaches the Convex runtime):
+# From apps/web. Arm on the DEPLOYMENT (a shell env var never reaches the Convex runtime):
 npx convex env set ALLOW_ENRICHMENT_FIXTURE_CAPTURE true --deployment <this PR's preview>
 npx convex run \
   enrichmentFixtures:captureFromCli \
   '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
   --deployment <this PR's preview> > capture.json
 npx convex env remove ALLOW_ENRICHMENT_FIXTURE_CAPTURE --deployment <this PR's preview>
+# Fold it into the committed file (additions only; see step 1 below):
+npx tsx scripts/merge-enrichment-capture.ts capture.json
 ```
 
 Run **without** `--identity` — capture is an internal action armed by the
@@ -195,17 +197,38 @@ Capture **refuses** when the name list is truncated (more than 2,000 rows in
 one source since the boundary). The error names the source and the boundary.
 Past that size the list is no longer one run's names. Pass `"since"` set to
 the start of the run you mean to capture. `offset`/`limit` page a long list,
-and `since` is accepted alongside them.
+and `since` is accepted alongside them. Capture each page to its own file
+(`'{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES","offset":300,"limit":100}'`
+→ `capture-300.json`) and pass every page file to one merge run.
+
+`fixture.entries` in a capture is a **list** of `{ key, entry }` sorted by
+key, not the file's keyed object. A key embeds the looked-up name, and Convex
+refuses a field name outside printable ASCII in a function's return value, so
+before NEO-346 one accented name (`Ciego de Ávila`) failed its whole page. The
+merge script builds the keyed object on the laptop.
 
 Then:
 
 1. **Merge, never overwrite.** `capture.json`'s `fixture.entries` hold one
    run's names, and the committed
    `apps/web/convex/adapters/__fixtures__/enrichment-lookups.json` holds every
-   recorded batch. Merge as §4a step 5 does, except that a re-capture
-   **replaces** the keys it captured (that is the point of re-capturing) and
-   leaves every other key alone. Writing `fixture` over the file would drop
-   every batch recorded on another run.
+   recorded batch. Writing `fixture` over the file would drop every batch
+   recorded on another run. Merge with one command, from `apps/web`:
+   ```bash
+   npx tsx scripts/merge-enrichment-capture.ts capture.json [capture-100.json …]
+   ```
+   It validates every captured entry the way the runtime validates the file
+   (the key is `fixtureKey(kind, sportQid, name)`, ids are QIDs), refuses a
+   capture for another sport, adds only the keys the file lacks, re-sorts,
+   and writes the file in its committed format (Python
+   `json.dumps(indent=2, ensure_ascii=True)`, `\uXXXX` escapes), so the diff
+   is additions only. A key the file already holds with a **different**
+   answer keeps the committed answer and is listed; re-run with `--replace`
+   when you mean to re-capture those (that is the point of re-capturing).
+   `--dry-run` reports without writing. It also prints the capture's
+   `skippedTransport` names, which were not recorded. Logic and tests:
+   `apps/web/convex/adapters/enrichmentFixtureMerge.ts`,
+   `apps/web/convex/enrichmentFixtureMerge.test.ts`.
 2. **Review the diff** against the committed file before committing. Player
    search is `LIMIT 1` over an unordered join (`wikidata.ts:571-583`), so a
    capture freezes *an* answer for an ambiguous name. That's the intended
@@ -263,6 +286,10 @@ those (§3).
    never change an existing entry, and re-sort the keys. Python's
    `json.dumps(data, indent=2, ensure_ascii=True) + "\n"` reproduces the
    committed file byte for byte, so the diff shows only the new entries.
+   The simplest way is to have the script write its entries as a capture
+   file (`{"fixture":{"version":1,"capturedAt":"…","sportQid":"Q5369",
+   "entries":[{"key":…,"entry":…}, …]}}`) and run §4 step 1's merge command
+   on it, which does exactly this.
    `apps/web/convex/enrichmentFixtureFile.test.ts` pins the key format, the
    entry shape and the sort, and keeps the live-proof player (§6) out.
 6. **Review the new entries** as §4 step 1 says: player search is `LIMIT 1`,
@@ -274,7 +301,10 @@ because the JSON is imported at build time: the next push to the PR.
 ## 5. When to re-capture
 
 - The seed's fixture set changes (a different set, brand, or card range gets
-  added to the `setup` spec's (`apps/web/playwright/tests/setup.spec.ts`) Base/Future Stars/Gold Wave coverage).
+  added to the scripted seed's spec, `apps/web/playwright/seed/baseline.spec.json`
+  (`npm run setbuild`, docs/operations/neo339-setbuild.md; before NEO-339 this
+  was the UI seed's Base/Future Stars/Gold Wave coverage, `setup.yaml`, then
+  `playwright/tests/setup.spec.ts`).
 - A recorded flow fixture changes: a different set, or a different batch on
   the same set, for `checklist-wizard-link-team-saves-alias.spec.ts`. Redo §4a
   for the new batch.

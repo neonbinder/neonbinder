@@ -32,8 +32,7 @@
 // with a legacy `projects` array (seconds summed over several projects) is
 // divided back to a per-project figure. A spec with no timing at all (a new
 // spec, or no timings.json) gets the median of the known timings, or 1s when
-// there are none. setup.spec.ts (the seed jobs) and
-// profile/worker-bootstrap.spec.ts (every shard's `bootstrap` project
+// there are none. profile/worker-bootstrap.spec.ts (every shard's `bootstrap` project
 // dependency) are never planned.
 //
 // An empty shard prints nothing: the caller must then run nothing, because
@@ -46,7 +45,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
 const TESTS = path.join(HERE, "tests");
 const TIMINGS_JSON = path.join(HERE, "timings.json");
-const EXCLUDED = new Set(["setup.spec.ts", "profile/worker-bootstrap.spec.ts"]);
+const EXCLUDED = new Set(["profile/worker-bootstrap.spec.ts"]);
 // Must match the spec projects in playwright.config.ts.
 export const PROJECTS = ["e2e", "e2e-mobile"];
 
@@ -98,8 +97,8 @@ function plan(n, project) {
 // One figure per spec per project in PROJECTS: `seconds` is the desktop
 // (PROJECTS[0]) run, `byProject` carries the others. A spec that reported on
 // only some projects (a pass died) keeps the other projects' committed value
-// via the planner's desktop fallback. Projects outside PROJECTS (setup,
-// bootstrap) are ignored.
+// via the planner's desktop fallback. Projects outside PROJECTS (bootstrap)
+// are ignored.
 function fromResults(file) {
   const report = JSON.parse(fs.readFileSync(file, "utf8"));
   const perProject = Object.fromEntries(PROJECTS.map((p) => [p, {}])); // project -> spec -> seconds

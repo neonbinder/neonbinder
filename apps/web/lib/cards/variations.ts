@@ -156,6 +156,76 @@ export function resolveVariationParents(
   return { parentByIndex, unresolvedStems };
 }
 
+/** A row for `attachCrossMarketplaceVariations`: the candidate and where it came from. */
+export interface SourcedVariationCandidate extends VariationCandidate {
+  /**
+   * The marketplace set the row was fetched from, per marketplace
+   * (`platformData.<side>.setId`). A card both marketplaces list carries both;
+   * a card only one lists carries one.
+   */
+  sourceSetIds: Readonly<Partial<Record<string, string>>>;
+}
+
+/**
+ * NEO-339 — the variations `resolveVariationParents` cannot see a parent for
+ * because the parent came from the OTHER marketplace too.
+ *
+ * The commit runs `resolveVariationParents` once per source set, keyed by the
+ * card's BSC set when it has one (NEO-203). A card both marketplaces list is
+ * therefore grouped with BSC's set, and a variation only SportLots lists is
+ * grouped with SportLots' set on its own, where its base card is missing.
+ * 2024 Topps Chrome: SportLots' one `#122 Wyatt Langford [ VAR ]` pairs with
+ * neither of BSC's 122b / 122c (a tie, left unmatched), while base #122 is a
+ * matched card. Without this pass the VAR lands as a second plain
+ * "#122 Wyatt Langford", indistinguishable from the base card: it shows as a
+ * card rather than a variation, and every parallel built from Base finds two
+ * #122s and links neither.
+ *
+ * The rule, for each variation the first pass left without a parent: take
+ * the non-variation rows on the variation's stem that came from the same
+ * marketplace set on at least one side. When there is exactly ONE and its card
+ * number IS the stem, it is the parent (product invariant 7: exactly one, or
+ * nothing). Counting the whole stem, not only the exact number, keeps a group
+ * the first pass refused as ambiguous (a #1 and a #1a beside a 1b) refused
+ * here too. The shared set keeps the
+ * per-source scoping `resolveVariationParents` depends on — two source sets
+ * of one fan-out never lend each other a parent (the Bonham/Garcia #29 case).
+ * Zero or several candidates leave the row exactly as the first pass did. A
+ * row with no source set is never attached. Names are never read.
+ *
+ * Returns only the NEW links (variation index → parent index).
+ */
+export function attachCrossMarketplaceVariations(
+  rows: readonly SourcedVariationCandidate[],
+  parentByIndex: ReadonlyMap<number, number>,
+): Map<number, number> {
+  const parentsByStem = new Map<string, number[]>();
+  rows.forEach((row, i) => {
+    if (row.isVariation) return;
+    const stem = cardNumberStem(row.cardNumber);
+    const bucket = parentsByStem.get(stem);
+    if (bucket) bucket.push(i);
+    else parentsByStem.set(stem, [i]);
+  });
+
+  const out = new Map<number, number>();
+  rows.forEach((row, i) => {
+    if (!row.isVariation || parentByIndex.has(i)) return;
+    const sides = Object.entries(row.sourceSetIds).filter(
+      (entry): entry is [string, string] => !!entry[1],
+    );
+    if (sides.length === 0) return;
+    const stem = cardNumberStem(row.cardNumber);
+    const candidates = (parentsByStem.get(stem) ?? []).filter(
+      (j) => j !== i && sides.some(([side, setId]) => rows[j].sourceSetIds[side] === setId),
+    );
+    if (candidates.length === 1 && rows[candidates[0]].cardNumber.trim() === stem) {
+      out.set(i, candidates[0]);
+    }
+  });
+  return out;
+}
+
 /**
  * ## Variation names are per-card, not a vocabulary
  *

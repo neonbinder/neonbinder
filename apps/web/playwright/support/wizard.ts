@@ -355,6 +355,57 @@ export async function answerStepAsNew(
 }
 
 /**
+ * util-wizard-skip-held-pick-step.yaml (NEO-339): skip the same-name pick step
+ * the wizard is HOLDING, so its league and team steps come next.
+ *
+ * Since NEO-339 a "Which <name> is this?" step (NEO-332) holds its place,
+ * touched or not, until the operator answers it; no league or team settling
+ * elsewhere takes it away. A same-name row is inserted ready (no lookup) while
+ * every other name waits on one, so the wizard usually OPENS on the pick step
+ * and is still on it once the batch settles. It is a player row, so a team
+ * drain started under it would exit at once and answer no team. This is what
+ * an operator who is not here for that player does: skip it. Answering it
+ * hands control back to the walk (leagues -> teams -> players); any OTHER
+ * same-name row comes up only after the teams, so one call before a drain is
+ * enough. Dependency surfacing still comes first (a new player's new team, a
+ * new team's new league), so a held pick step is the only player row that can
+ * be presented ahead of a settled team.
+ *
+ * Detection is perceivable only: a pick step's footer offers "Create new"
+ * where any other player step offers "Add as New Player" (or "... anyway"); a
+ * team or league step offers its own "Skip <name> — not a team" / "— this
+ * team has no league"; past the names the footer is "Next (Enter)" or
+ * Confirm & Save. One of them MUST be up (7 s), so a blank or wedged dialog
+ * fails here by name; only "Create new" leads to the skip.
+ *
+ * The skip is proved by the counter: x (decided count plus one on a name step)
+ * moves by exactly one, whichever step comes next. Nothing races it: a held
+ * step stays put, and a pick row has no lookup of its own to stage steps.
+ *
+ * Contract: ENTRY the wizard is open and the caller has waited its lookups
+ * out. EXIT the wizard is NOT on a pick step it was holding; returns whether
+ * it skipped one.
+ */
+export async function skipHeldPickStep(page: Page): Promise<boolean> {
+  const wizard = reviewWizard(page);
+  const createNew = wizard.getByRole("button", { name: "Create new", exact: true });
+  const presented = createNew
+    .or(wizard.getByRole("button", { name: /^Add as New Player( anyway)?$/ }))
+    .or(wizard.getByRole("button", { name: /^Skip .* — (not a team|this team has no league)$/ }))
+    .or(nextStepButton(page))
+    .or(confirmSaveButton(page));
+  await expect(presented.first(), "the wizard presents a step (pick, player, team, league or post-name)").toBeVisible();
+  if (!(await createNew.isVisible())) return false;
+
+  const { x } = await readStep(page);
+  await wizard.getByRole("button", { name: /^Skip .* — not a person$/ }).click();
+  await expect(stepCounter(page), "skipping the held pick step records exactly one decision").toHaveText(
+    new RegExp(`^Step ${x + 1} of [0-9]+$`),
+  );
+  return true;
+}
+
+/**
  * util-wizard-walk-to-player-row(-creating-teams).yaml: move the wizard past
  * every team/league step to the first player row. `creatingTeams: false`
  * skips each team/league step (a skip creates nothing); `true` adds each as
@@ -368,6 +419,11 @@ export async function answerStepAsNew(
  * a player at any time. This walks past each held player as a SKIP (creates
  * nothing; never by unticking the chip) until it stands on a player whose
  * create is live. Link/skip callers leave it off.
+ *
+ * NEO-339: after the first lookup wait it skips a same-name pick step the
+ * wizard is holding (`skipHeldPickStep`), one more "Skipped" decision, so
+ * callers read counts relative to where the walk left them. A spec that wants
+ * to stay ON a pick step does not call this.
  *
  * Contract: ENTRY the wizard is open on a name step. EXIT a player row is
  * presented (its "Skip ... - not a person" is up), lookups drained, and with
@@ -390,6 +446,10 @@ export async function walkToPlayerRow(
   // rows behind them settle only once the earlier steps are decided.
   for (let pass = 0; pass < 2; pass++) {
     await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+    // NEO-339: a held same-name pick step would end the drain before a single
+    // team step (it is a player row), so it is skipped first. Once only: after
+    // the teams the walk reaches players in batch order, as it always did.
+    if (pass === 0) await skipHeldPickStep(page);
     for (let i = 0; i < 200; i++) {
       await expect(person.or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
       if (await person.isVisible()) break;

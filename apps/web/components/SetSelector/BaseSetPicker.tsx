@@ -10,6 +10,26 @@ import {
   itemLabel,
   itemLabelParts,
 } from "./marketplace-item-label";
+// NEO-339: the scoring and pre-select rules live in
+// lib/set-build/base-candidates.ts, shared with the set-building tool.
+import {
+  LIKELY_MATCH_SCORE,
+  buildBscBaseCandidates,
+  preselectedBscKey,
+  rankSlBaseOptions,
+  soleExactMatch,
+  type Candidate,
+} from "@/lib/set-build/base-candidates";
+// Re-exported so every existing import of these from here keeps working.
+export {
+  EXACT_MANUFACTURER_SCORE,
+  EXACT_SET_NAME_SCORE,
+  LIKELY_MATCH_SCORE,
+  PREFIX_STRIPPED_SCORE,
+  preselectScore,
+  scoreBaseSetMatch,
+  soleExactMatch,
+} from "@/lib/set-build/base-candidates";
 
 /** Which job this dialog is doing — see `remapNotice`. */
 export type BaseSetPickerMode = "initial" | "remap";
@@ -86,141 +106,6 @@ type BaseSetPickerProps = {
    * not even the set listing — and the other side carries the confirm alone.
    */
   pausedSides?: readonly string[];
-};
-
-/**
- * An EXACT match on the set's own name, or on the set name with the
- * manufacturer prefix stripped. These two are the only scores this dialog
- * pre-selects from — see `preselectScore`.
- */
-export const EXACT_SET_NAME_SCORE = 1000;
-export const PREFIX_STRIPPED_SCORE = 950;
-
-/**
- * A bare manufacturer row ("Topps" under set "Topps Chrome").
- *
- * NEO-219 decision 7: this used to score 1000 — the SAME tier as an exact set
- * name — which made "Topps" outrank "Topps Chrome" whenever the sort was
- * stable-by-input-order, and auto-selected the brand's catch-all row as a set's
- * base. A brand name is the weakest real signal here, not the strongest: it is
- * demoted BELOW the generic "Base"/"Base Set" rows, which at least claim to be
- * a base set.
- */
-export const EXACT_MANUFACTURER_SCORE = 600;
-
-/**
- * At or above this score a row shows the "likely match" pill.
- *
- * Deliberately LOWER than the pre-select threshold, and unchanged from before
- * NEO-219: the generic "Base" / "Base Set" rows still say "likely match"
- * (`.maestro/flows/set-selector/sets-base.yaml` asserts the pill), they are
- * just no longer pre-selected on the operator's behalf.
- */
-export const LIKELY_MATCH_SCORE = 795;
-
-/**
- * The one rule for "safe to pre-select".
- *
- * Pre-selection is a claim that a human need not look. Only an exact name match
- * earns that: everything below 950 is a guess, and a guess that is pre-selected
- * gets confirmed by reflex. Exported (with `scoreBaseSetMatch`) so the scoring
- * table can be tested without rendering the dialog.
- */
-export function preselectScore(score: number): boolean {
-  return score >= PREFIX_STRIPPED_SCORE;
-}
-
-/**
- * NEO-325 — the candidate to pre-select, or `null`: the ONE candidate whose
- * score clears `preselectScore`, and only when it is the only one.
- *
- * SportLots lists distinct sets under one name, so two rows can both be an
- * exact match for the set. Picking the first of them would be a guess wearing
- * a pre-selection, and Enter would link it. Two or more exact matches select
- * nothing; the operator chooses (CLAUDE.md invariant 7, exactly-one-match).
- * The same holds for one exact and one prefix-stripped exact match: both
- * clear the bar, so neither is "the" match. Exported so the rule can be
- * tested without rendering the dialog.
- */
-export function soleExactMatch<T>(
-  candidates: readonly T[],
-  scoreOf: (candidate: T) => number | null,
-): T | null {
-  let found: T | null = null;
-  for (const candidate of candidates) {
-    const score = scoreOf(candidate);
-    if (score === null || !preselectScore(score)) continue;
-    if (found !== null) return null;
-    found = candidate;
-  }
-  return found;
-}
-
-// Returns a score indicating how likely `slValue` is the base set.
-// Tiers (higher = more likely):
-//   1000 — exact match on the set name
-//    950 — exact match on the set name with the manufacturer prefix stripped
-//    900-885 — "<setName> Base Set" / "<setName> Base"
-//    800/795 — trailing "Base Set" / "Base" (generic base row)
-//    600 — exact match on the MANUFACTURER (NEO-219: below generic)
-//    <600 — weaker fuzzy signals
-export function scoreBaseSetMatch(
-  slValue: string,
-  setName: string,
-  manufacturer: string,
-): number {
-  const norm = slValue.toLowerCase().trim();
-  const setNorm = setName.toLowerCase().trim();
-  const mfgNorm = manufacturer.toLowerCase().trim();
-
-  // Tier 1: exact match on set name
-  if (setNorm && norm === setNorm) return EXACT_SET_NAME_SCORE;
-
-  // Tier 2: exact match on set name with manufacturer prefix stripped
-  // (e.g., setName "Topps Opening Day", mfg "Topps" → match "Opening Day")
-  const stripped =
-    mfgNorm && setNorm.startsWith(`${mfgNorm} `)
-      ? setNorm.slice(mfgNorm.length + 1).trim()
-      : "";
-  if (stripped && norm === stripped) return PREFIX_STRIPPED_SCORE;
-
-  // Tier 3: set name + "Base Set"/"Base" appended
-  if (setNorm) {
-    if (norm === `${setNorm} base set`) return 900;
-    if (norm === `${setNorm} base`) return 895;
-  }
-  if (stripped) {
-    if (norm === `${stripped} base set`) return 890;
-    if (norm === `${stripped} base`) return 885;
-  }
-
-  // Tier 4: generic "Base Set" / "Base" row
-  if (norm === "base set") return 800;
-  if (norm === "base") return LIKELY_MATCH_SCORE;
-
-  // Tier 5 (NEO-219): a bare manufacturer row. Below every tier above.
-  if (mfgNorm && norm === mfgNorm) return EXACT_MANUFACTURER_SCORE;
-
-  // Weaker fuzzy signals below
-  if (setNorm && norm.startsWith(setNorm)) {
-    const suffix = norm.slice(setNorm.length).trim();
-    return 500 - suffix.length;
-  }
-  if (setNorm && norm.includes(setNorm)) return 300;
-
-  return 0;
-}
-
-/** One row in either list, already scored and labelled. */
-type Candidate = {
-  /** Stable identity for selection state — the set listing needs its own. */
-  key: string;
-  item: PlatformItem;
-  /** Visible row text. */
-  label: string;
-  /** `null` for the set-listing row, which is never scored (see below). */
-  score: number | null;
-  isSetListing: boolean;
 };
 
 /**
@@ -316,48 +201,25 @@ export default function BaseSetPicker({
 
   const sortedSlOptions = useMemo(() => {
     if (slPaused) return [];
-    const scored = slOptions.map((opt) => ({
-      ...opt,
-      score: scoreBaseSetMatch(opt.value, setName, manufacturer),
-    }));
-    scored.sort((a, b) => b.score - a.score);
-    return scored;
+    return rankSlBaseOptions(slOptions, setName, manufacturer);
   }, [slOptions, setName, manufacturer, slPaused]);
 
   /**
-   * BSC candidates = the marketplace's own rows, plus the set-listing row.
-   *
-   * The set listing is deliberately UNSCORED (`score: null`). Scoring it would
-   * hand it `EXACT_SET_NAME_SCORE` (its label IS the set name) and it would
-   * pre-select itself over every real BSC row — which is precisely the silent
-   * substitution NEO-219 removed. Its one pre-selection rule lives below.
+   * BSC candidates = the marketplace's own rows, plus the set-listing row,
+   * unscored — see `buildBscBaseCandidates` (lib/set-build/base-candidates.ts).
    */
   const bscCandidates = useMemo<Candidate[]>(() => {
     // A paused side offers nothing — the set listing included. It is the
     // row's own BSC slug, not a fetched row, but confirming it would link a
     // marketplace the operator has switched off, behind a pane that says so.
     if (bscPaused) return [];
-    const scored: Candidate[] = bscOptions
-      .map((opt) => ({
-        key: `bsc:${opt.platformValue}:${opt.value}`,
-        item: opt,
-        // NEO-325: a BSC name two candidates share carries its slug, the same
-        // rule the SportLots list follows. A unique name is unchanged.
-        label: itemLabel(opt, "bsc", bscDups),
-        score: scoreBaseSetMatch(opt.value, setName, manufacturer),
-        isSetListing: false,
-      }))
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-    if (setListing) {
-      scored.push({
-        key: "bsc:set-listing",
-        item: setListing,
-        label: `${setName} — set listing (BSC)`,
-        score: null,
-        isSetListing: true,
-      });
-    }
-    return scored;
+    return buildBscBaseCandidates({
+      bscOptions,
+      setListing,
+      setName,
+      manufacturer,
+      dups: bscDups,
+    });
   }, [bscOptions, setListing, setName, manufacturer, bscPaused, bscDups]);
 
   useEffect(() => {
@@ -371,17 +233,10 @@ export default function BaseSetPicker({
 
   useEffect(() => {
     if (userPickedBsc) return;
-    // Decision 4: the set listing is pre-selected only when it is the SOLE
-    // BSC candidate — there is nothing else it could be, and making the
-    // operator pick the only row on offer is ceremony, not safety.
-    if (bscCandidates.length === 1 && bscCandidates[0].isSetListing) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- sole-candidate pre-select; latched by userPickedBsc
-      setSelectedBscKey(bscCandidates[0].key);
-      return;
-    }
-    // The set listing is unscored (`score: null`), so it never counts here.
-    const sole = soleExactMatch(bscCandidates, (c) => c.score);
-    setSelectedBscKey(sole ? sole.key : null);
+    // Decision 4 (the set listing only as the SOLE candidate) and the sole
+    // exact match, in `preselectedBscKey` (lib/set-build/base-candidates.ts).
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sole-candidate pre-select; latched by userPickedBsc
+    setSelectedBscKey(preselectedBscKey(bscCandidates));
   }, [bscCandidates, userPickedBsc]);
 
   const filteredSlOptions = useMemo(() => {

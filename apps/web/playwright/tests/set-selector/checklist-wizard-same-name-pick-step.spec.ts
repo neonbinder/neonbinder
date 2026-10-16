@@ -3,7 +3,8 @@
 // wizard opens on a PICK step ("Which <name> is this?") instead of offering
 // "Add as New Player". "Create new" opens the New Player step, "Back to the
 // list" returns with nothing decided, and taking a candidate records a link to
-// THAT player.
+// THAT player. Untouched, the step HOLDS its place while the rest of the
+// batch settles (NEO-339): no team or league settling elsewhere takes it away.
 //
 // The ambiguity is made through the product. The NEO-330 reference catalogue (a
 // prod snapshot) already holds a "Shuya Yamada" (Hanshin Tigers from 2026, no
@@ -20,13 +21,14 @@
 // The name is a REAL two-token checklist name, not a minted one (the exception
 // to single-token names; SET-REGISTRY.md "Topps Chrome NPB"). Sole owner of that
 // set; READ-ONLY on it: the spec leaves through Cancel and Discard. Re-runs are
-// idempotent (an existing b. 1851 row is adopted). The decided count is read
-// relative to K, the walk's skips, and only the counter's x is asserted (on a
-// name step x is the decided count plus one; y grows while lookups land).
+// idempotent (an existing b. 1851 row is adopted). Nothing is walked, so the
+// counts are absolute: "Step 1" (nothing decided) before the link and "Step 2"
+// after it. Only the counter's x is asserted (on a name step x is the decided
+// count plus one; y grows while lookups land).
 // NEO-335: the header's one counter is "Step x of y" (it was "N of M reviewed").
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, emptyListAndPickSport, PLAYERS_MATCHES, playersCounter } from "../../support/players";
-import { fetchChecklistToWizard, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { fetchChecklistToWizard, reviewWizard, stepCounter } from "../../support/wizard";
 
 const SET = "Topps Chrome NPB";
 const NAME = "Shuya Yamada";
@@ -106,16 +108,24 @@ test(
     await expect(wizard.getByRole("button", { name: `Skip ${NAME} — not a person` })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, same-name pick step" });
 
-    // THE WALK, so the pick step holds still for STEPS 2-4: an UNTOUCHED pick
-    // step yields to the first settled team or league (NEO-236), and the career
-    // teams settle ~14-25 s into the batch. The walk waits the batch out, SKIPS
-    // every team/league step, and stops on the first player row: this pick step
-    // (rows are inserted in card order and he is card #1). Its skips are K
-    // decisions, so every count below is read against K.
-    await walkToPlayerRow(page);
+    // ── R2(b2), NEO-339: THE BATCH SETTLES AND THE PICK STEP IS STILL HERE ──
+    // No walk: since NEO-339 a pick step holds its place, touched or not, so
+    // STEPS 2-3 need nothing drained (walkToPlayerRow now SKIPS a held pick
+    // step, so it is not for this spec). The batch's lookups are still waited
+    // out, for two reasons: the step must still be on screen once everything
+    // has settled (the claim bites because this batch stages career teams and
+    // a league, measured 2026-10-11), and STEP 4's read-back needs a settled
+    // row for the link to hand control to, whose footer carries "Back to
+    // previous decision". Marketplace-class wait (R5): one live Wikidata
+    // round trip per unknown name (20 NPB players, then the career teams they
+    // stage), the 180 s ceiling the wizard helpers give it.
+    await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: 180_000 });
+    // Still the untouched pick step, and still nothing decided (the negative
+    // above is paired with these positives).
     await expect(question).toBeVisible();
-    // x is the decided count plus one on a name step; only x is ever pinned.
-    const { x: step } = await readStep(page);
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, pick step held after the batch settled" });
+    const step = 1;
 
     // ── STEP 2: Create new opens the New Player step, without the list ──
     await wizard.getByRole("button", { name: "Create new" }).click();
@@ -134,7 +144,7 @@ test(
     await expect(link1851).toBeVisible();
     await expect(linkCatalogue).toBeVisible();
     await expect(wizard.getByText("Back at the list. 2 on file.")).toBeVisible();
-    // Nothing was recorded: x has not moved (Create new started this row's own lookup).
+    // Nothing was recorded: still "Step 1" (Create new started this row's own lookup).
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step} of [0-9]+$`));
 
     // ── STEP 4: take one, and the read-back says which ──
@@ -142,8 +152,9 @@ test(
     // Exactly one decision: the link.
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step + 1} of [0-9]+$`));
     await expect(question).toBeHidden();
-    // The read-back names WHICH man. Not the Decided list (it folds past five and
-    // the walk's skips usually put it there): the link moved the walk on, and the
+    // The read-back names WHICH man. Not the Decided list (it folds past five
+    // once the batch settles rows): the link handed control back to the walk,
+    // which presents the next settled row (leagues -> teams -> players), and the
     // footer's "Back to previous decision" reopens this row read-only, in a panel
     // named for the row. Neither a create, a skip nor a link to the catalogue's
     // undated Shuya Yamada can produce this text.
