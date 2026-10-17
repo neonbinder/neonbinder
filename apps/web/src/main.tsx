@@ -58,6 +58,7 @@ import PrintLabelHistory from "@/app/print/labels/page";
 import PrintPlaceholders from "@/app/print/placeholders/page";
 import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
+import PrintBlackoutLabel from "@/app/print/shipping/blackout/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
 import Inventory from "@/app/inventory/page";
@@ -173,6 +174,11 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/print" element={<PrintLayout />}>
                 <Route index element={<PrintHub />} />
                 <Route path="shipping" element={<PrintShipping />} />
+                {/* NEO-349 — a solid black 4x6 label to cover the old label on a
+                    reused mailer. Nested under shipping in the URL because it
+                    goes on the same roll; a sibling route, not a child, so it
+                    renders in PrintLayout's Outlet like every other tool. */}
+                <Route path="shipping/blackout" element={<PrintBlackoutLabel />} />
                 {/* NEO-213 — reprint a label already bought on /print/shipping.
                     Note the legacy top-level /labels below is the SHIPPING
                     redirect and predates this route; they are different pages
