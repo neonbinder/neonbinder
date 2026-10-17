@@ -42,6 +42,7 @@ function renderAt(path: string) {
         <Route path="/print" element={<PrintLayout />}>
           <Route index element={<PrintHub />} />
           <Route path="shipping" element={<div>shipping tool</div>} />
+          <Route path="shipping/blackout" element={<div>blackout tool</div>} />
           <Route path="labels" element={<div>label history tool</div>} />
           <Route path="qr" element={<div>qr tool</div>} />
           <Route path="placeholders" element={<div>placeholders tool</div>} />
@@ -63,6 +64,8 @@ describe("PrintLayout", () => {
       ]),
     ).toEqual([
       ["Shipping", "/print/shipping"],
+      // Directly after Shipping: cover the old label, then ship (NEO-349).
+      ["Blackout Label", "/print/shipping/blackout"],
       // Directly after Shipping: it is where a label bought there ends up.
       ["Label History", "/print/labels"],
       ["QR Code", "/print/qr"],
@@ -73,6 +76,9 @@ describe("PrintLayout", () => {
 
   it.each([
     ["/print/shipping", "Shipping"],
+    // NEO-349 — a path UNDER /print/shipping. Without NavLink's `end` the
+    // Shipping tab matched here too, so this row also pins that it does not.
+    ["/print/shipping/blackout", "Blackout Label"],
     ["/print/labels", "Label History"],
     ["/print/qr", "QR Code"],
     ["/print/placeholders", "Placeholders"],
@@ -85,6 +91,15 @@ describe("PrintLayout", () => {
     ).toBe("page");
     // Exactly one — two current tools is as wrong as none.
     expect(nav.querySelectorAll("[aria-current='page']").length).toBe(1);
+  });
+
+  it("does not mark Shipping current on the blackout label beneath it", () => {
+    renderAt("/print/shipping/blackout");
+    expect(
+      screen.getByRole("link", { name: "Shipping" }).getAttribute("aria-current"),
+    ).toBeNull();
+    expect(screen.queryByText("blackout tool")).not.toBeNull();
+    expect(screen.queryByText("shipping tool")).toBeNull();
   });
 
   it("heads the section with the one h1 on the page", () => {
@@ -145,5 +160,6 @@ describe("PrintHub", () => {
     renderAt("/print");
     expect(screen.getByText(/4″ × 6″ label/)).toBeTruthy();
     expect(screen.getByText(/in-person sale/)).toBeTruthy();
+    expect(screen.getByText(/reused mailer/)).toBeTruthy();
   });
 });

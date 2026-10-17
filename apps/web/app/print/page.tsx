@@ -2,6 +2,7 @@ import { Link } from "react-router";
 import {
   BookOpenIcon,
   ClockIcon,
+  EyeSlashIcon,
   QrCodeIcon,
   Squares2X2Icon,
   TagIcon,
@@ -34,6 +35,12 @@ const TOOL_DETAILS: Record<
       "Address a package and print a 4″ × 6″ label with your return address filled in.",
     icon: TagIcon,
     accent: "text-neon-teal group-hover:border-neon-teal/50",
+  },
+  "/print/shipping/blackout": {
+    description:
+      "Cover the old address and barcode on a reused mailer with a solid black 4″ × 6″ blackout label.",
+    icon: EyeSlashIcon,
+    accent: "text-neon-yellow group-hover:border-neon-yellow/50",
   },
   "/print/labels": {
     description:

@@ -26,6 +26,10 @@ import { api } from "@/convex/_generated/api";
 
 export const SECTIONS = [
   { label: "Shipping", path: "/print/shipping" },
+  // Directly after Shipping because it is the other half of shipping a reused
+  // mailer: cover the old label with this, then stick the new one on top. Its
+  // URL sits under /print/shipping for the same reason (NEO-349).
+  { label: "Blackout Label", path: "/print/shipping/blackout" },
   // Directly after Shipping because it is where a label bought there ends up —
   // the two are one flow read left to right (NEO-213).
   { label: "Label History", path: "/print/labels" },
@@ -56,6 +60,7 @@ function useWarmPrintQueries() {
   // are demand-driven — `players.search` is skipped until the user types, and
   // `teams.getManyByIds` needs a selected player — so neither paints a spinner
   // on arrival and there is nothing to keep warm.
+  // Blackout Label (NEO-349) has no query at all — it prints a fixed sheet.
 }
 
 export default function PrintLayout() {
@@ -77,8 +82,13 @@ export default function PrintLayout() {
         <ul className="flex flex-wrap gap-x-6 gap-y-2">
           {SECTIONS.map((section) => (
             <li key={section.path}>
+              {/* `end`: match the path exactly. Blackout Label lives at
+                  /print/shipping/blackout, and without it the Shipping tab
+                  would ALSO read as current there — two aria-current="page"
+                  links, one of them wrong (NEO-349). */}
               <NavLink
                 to={section.path}
+                end
                 className={({ isActive }) =>
                   "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm " +
                   (isActive
