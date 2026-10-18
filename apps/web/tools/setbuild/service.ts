@@ -309,9 +309,27 @@ export interface PlanStep {
   detail?: string;
 }
 
+/** A set a run reached, and where to open it in the Set Builder. */
+export interface SetLink {
+  /** `formatPath` of the set. */
+  path: string;
+  /**
+   * The Set Builder opened on the set: absolute on the app origin
+   * (`--app-url` / `NB_SETBUILD_APP_URL`) when the tool has one, else
+   * root-relative (`/admin/set-builder?sport=…&set=…`).
+   */
+  link: string;
+}
+
 export interface PlanReport {
   target: Pick<Target, "convexUrl" | "host">;
   scope: string;
+  /**
+   * Every set the run resolved to an existing NB row (built, touched, or
+   * skipped as already done), once each, in spec order. A set that never
+   * resolved has no entry. Always present on plan and apply reports.
+   */
+  setLinks?: SetLink[];
   /** The exact string `apply` must be confirmed with. */
   confirmPhrase: string;
   steps: PlanStep[];
@@ -358,6 +376,8 @@ export interface InspectRow {
   cards: number;
   isBase: boolean;
   links: MarketplaceLinks;
+  /** The Set Builder opened on this row (see `SetLink.link`). */
+  link: string;
   /** An insert row's parallels (the `parallel` level under it); absent when it has none. */
   parallels?: InspectRow[];
 }
@@ -368,12 +388,14 @@ export interface InspectReport {
   /** `formatPath(path)`. */
   pathText: string;
   found: boolean;
+  /** The Set Builder opened on the node (the brand-year, or the set); absent when not found. */
+  link?: string;
   /** Brand-year path: the sets under it. */
-  sets?: Array<{ name: string; links: MarketplaceLinks }>;
+  sets?: Array<{ name: string; links: MarketplaceLinks; link: string }>;
   /** Set path: the Base row (also listed under its variant type), null when none. */
   base?: InspectRow | null;
   /** Set path: every variant type and its rows. */
-  variantTypes?: Array<{ type: string; rows: InspectRow[] }>;
+  variantTypes?: Array<{ type: string; link: string; rows: InspectRow[] }>;
 }
 
 export interface ReviewItemsReport {

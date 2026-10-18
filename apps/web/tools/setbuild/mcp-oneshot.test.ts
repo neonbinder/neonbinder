@@ -57,21 +57,23 @@ const built: InspectReport = {
   path: PATH,
   pathText: SCOPE,
   found: true,
-  base: { name: "Base", cards: 100, isBase: true, links: { buysportscards: ["b"], sportlots: ["s"] } },
+  base: { name: "Base", cards: 100, isBase: true, links: { buysportscards: ["b"], sportlots: ["s"] }, link: "/admin/set-builder" },
   variantTypes: [
     {
       type: "Insert",
+      link: "/admin/set-builder",
       rows: [
         {
           name: "Future Stars",
           cards: 10,
           isBase: false,
           links: { buysportscards: ["fs"], sportlots: [] },
-          parallels: [{ name: "Future Stars Gold", cards: 10, isBase: false, links: { buysportscards: ["fsg"], sportlots: [] } }],
+          link: "/admin/set-builder",
+          parallels: [{ name: "Future Stars Gold", cards: 10, isBase: false, links: { buysportscards: ["fsg"], sportlots: [] }, link: "/admin/set-builder" }],
         },
       ],
     },
-    { type: "Parallel", rows: [{ name: "Gold", cards: 100, isBase: false, links: { buysportscards: ["g"], sportlots: [] } }] },
+    { type: "Parallel", link: "/admin/set-builder", rows: [{ name: "Gold", cards: 100, isBase: false, links: { buysportscards: ["g"], sportlots: [] }, link: "/admin/set-builder" }] },
   ],
 };
 

@@ -916,5 +916,7 @@ describe("a failed spec check stops its step and the run returns its report", ()
     const report = (err as RunFailed).report;
     expect(report.steps.find((s) => s.action === "build Parallel › Sepia Refractors from Base")).toMatchObject({ status: "done" });
     expect(report.counts?.built).toBe(2);
+    // The set had resolved before the error, so the partial report carries its link.
+    expect(report.setLinks).toEqual([{ path: SCOPE, link: "/admin/set-builder?sport=sp&year=yr&brand=mf&set=st" }]);
   });
 });

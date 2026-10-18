@@ -44,7 +44,17 @@ export function drillPathOf(chain: ReadonlyArray<ChainRow>): string[] {
 
 /** The Set Builder URL for a chain: absolute on `appOrigin`, else root-relative. */
 export function setBuilderUrl(chain: ReadonlyArray<ChainRow>, appOrigin?: string): string {
-  const query = serializeDrillPath(drillPathOf(chain)).toString();
+  return setBuilderUrlForPath(drillPathOf(chain), appOrigin);
+}
+
+/**
+ * The Set Builder URL for a drill path the caller already holds: NB ids root
+ * first (sport, year, brand, set, then type, insert, parallel as deep as the
+ * row is). No query, so a report can link every row it lists without one
+ * `getAncestorChain` per row.
+ */
+export function setBuilderUrlForPath(ids: readonly string[], appOrigin?: string): string {
+  const query = serializeDrillPath(ids.map(String)).toString();
   const path = query ? `${SET_BUILDER_ROUTE}?${query}` : SET_BUILDER_ROUTE;
   return appOrigin ? new URL(path, appOrigin).toString() : path;
 }

@@ -317,7 +317,9 @@ const WORKFLOW =
   "can and returns every decision that only appears once it writes (checklist reviews, lookup-staged teams " +
   "and leagues, card conflicts) together with one fill-in template: take them all to the operator at once, " +
   "put the answers in the spec, plan and apply again (a re-run skips what is done). Never guess a decision " +
-  "or pick a candidate by position; ambiguity comes back as candidates for the operator to choose from.";
+  "or pick a candidate by position; ambiguity comes back as candidates for the operator to choose from. " +
+  "After every nb_apply, give the operator each setLinks link so they can inspect the set in the Set Builder. " +
+  "Links are absolute when the server has NB_SETBUILD_APP_URL, otherwise root-relative (/admin/set-builder?…).";
 
 /** The four read tools. Receives `read` only: no path to a write exists here. */
 export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ctx): void {
@@ -328,8 +330,8 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
       description:
         "Read-only. Shows what NeonBinder holds at a node. For a set path: every variant type with its rows, " +
         "card counts and attached marketplace ids, plus the Base row. For a brand-year path (no set): the sets " +
-        "under it. Names must match NB rows exactly; an unknown or ambiguous name returns an error listing " +
-        "candidates. " +
+        "under it. Every node, variant type and row carries link, its Set Builder link. Names must match NB rows " +
+        "exactly; an unknown or ambiguous name returns an error listing candidates. " +
         WORKFLOW,
       inputSchema: { path: nodePathSchema },
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -352,7 +354,8 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "two different cards sharing a number, by listing it in pairing.unlink (both cards are then kept apart). " +
         "Group Parallels' group.topLevel moves a grouped row back out as its own set. It reports " +
         "the moves a variant type's group would make and each insert's parallels to build. Wizard rows for a " +
-        "checklist that has not been fetched yet cannot be planned; they appear when nb_apply runs. " +
+        "checklist that has not been fetched yet cannot be planned; they appear when nb_apply runs. setLinks " +
+        "gives the Set Builder link of every set that already exists. " +
         WORKFLOW,
       inputSchema: specInputShape,
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -451,7 +454,8 @@ export function registerWriteTools(
     {
       title: "Apply a set-build spec (writes)",
       description:
-        "WRITES to NeonBinder. Runs a set-build spec: syncs, maps Base, reconciles variants, groups parallels, " +
+        "WRITES to NeonBinder. The result carries setLinks, right after target and scope: the Set Builder link " +
+        "of every set the run reached, done, blocked or skipped alike; give them to the operator. Runs a set-build spec: syncs, maps Base, reconciles variants, groups parallels, " +
         "fetches, commits and builds (from Base, and each insert's parallels from the insert), skipping every " +
         "step whose state already matches, so a re-run is safe. Requires confirm to equal the confirmPhrase " +
         "nb_plan returned for the same spec; call nb_plan first and let the operator see it. stopAt \"end\" " +

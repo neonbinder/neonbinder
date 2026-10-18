@@ -294,6 +294,87 @@ describe("apply — idempotent and resumable", () => {
   });
 });
 
+describe("Set Builder links (Jason: every build gives the operator the link to inspect it)", () => {
+  const ORIGIN_TARGET = { ...FAKE_TARGET, appOrigin: "https://app.example.test" };
+  const SET_LINK = "https://app.example.test/admin/set-builder?sport=sp&year=yr&brand=mf&set=st";
+  const RELATIVE = "/admin/set-builder?sport=sp&year=yr&brand=mf&set=st";
+
+  test("a finished run that built: the set's link, absolute on the app origin, at the top of the report", async () => {
+    const r = await applySpec(world({ ...done(), sepiaCards: 0 }), ORIGIN_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    expect(r.counts.built).toBe(2);
+    expect(r.stoppedAt).toBeUndefined();
+    expect(r.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+    expect(Object.keys(r).slice(0, 3)).toEqual(["target", "scope", "setLinks"]);
+  });
+
+  test("a re-run where every step was skipped still gives the link", async () => {
+    const client = world(done());
+    const r = await applySpec(client, ORIGIN_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    expect(client.writes()).toEqual([]);
+    expect(r.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+  });
+
+  test("a blocked run gives the link too; with no app origin it is root-relative", async () => {
+    const r = await applySpec(world({ ...done(), baseCards: 0, sepiaCards: 0, reviewRows: [ohtaniRow()] }), FAKE_TARGET, spec(), CONFIRM, {
+      pausedPlatforms: "",
+    });
+    expect(r.stoppedAt).toMatchObject({ step: 0 });
+    expect(r.setLinks).toEqual([{ path: SCOPE, link: RELATIVE }]);
+  });
+
+  test("a set that never resolves gets no link, never an invented one", async () => {
+    const raw = { ...spec(), scope: "Baseball/2024/Topps/Nope" };
+    raw.steps = [{ ...raw.steps[0], path: { ...PATH, set: "Nope" } }];
+    const r = await applySpec(world(done()), ORIGIN_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.openDecisions.names.map((n) => n.name)).toEqual(["Nope"]);
+    expect(r.setLinks).toEqual([]);
+  });
+
+  test("a set two steps name is listed once, and the link costs no query", async () => {
+    const one = world(done());
+    await applySpec(one, ORIGIN_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    const raw = spec();
+    raw.steps = [raw.steps[0], raw.steps[0]];
+    const client = world(done());
+    const r = await applySpec(client, ORIGIN_TARGET, raw, confirmFor(raw), { pausedPlatforms: "" });
+    expect(r.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+    // The only chain reads are the Base mapping's own, one per step: none for the link.
+    expect(one.callsTo("selectorOptions:getAncestorChain")).toHaveLength(1);
+    expect(client.callsTo("selectorOptions:getAncestorChain")).toHaveLength(2);
+  });
+
+  test("plan: the link once the set resolves to an existing row; none on a tree that has not synced it yet", async () => {
+    const ok = await planSpec(world({ ...done(), baseCards: 0, sepiaCards: 0 }), ORIGIN_TARGET, spec(), { pausedPlatforms: "" });
+    expect(ok.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+    const unsynced = await planSpec(world({ synced: false, baseCards: 0, sepiaCards: 0, reviewRows: [] }), ORIGIN_TARGET, spec(), {
+      pausedPlatforms: "",
+    });
+    expect(unsynced.setLinks).toEqual([]);
+  });
+
+  test("inspect: the set, every variant type and every row carry a link built from the ids it already holds", async () => {
+    const client = world(done());
+    const svc = createSetBuildService(client, ORIGIN_TARGET, { pausedPlatforms: "" });
+    const r = await svc.read.inspect(PATH);
+    expect(r.link).toBe(SET_LINK);
+    expect(r.variantTypes!.map((t) => [t.type, t.link])).toEqual([
+      ["Base", `${SET_LINK}&type=vtB`],
+      ["Parallel", `${SET_LINK}&type=vtP`],
+    ]);
+    expect(r.base!.link).toBe(`${SET_LINK}&type=vtB`);
+    expect(r.variantTypes![1].rows.map((row) => [row.name, row.link])).toEqual([["Sepia Refractors", `${SET_LINK}&type=vtP&insert=pS`]]);
+    expect(client.callsTo("selectorOptions:getAncestorChain")).toEqual([]);
+
+    const brand = await svc.read.inspect({ sport: "Baseball", year: "2024", manufacturer: "Topps" });
+    expect(brand.link).toBe("https://app.example.test/admin/set-builder?sport=sp&year=yr&brand=mf");
+    expect(brand.sets).toEqual([{ name: "Topps Chrome", links: { buysportscards: [], sportlots: [] }, link: SET_LINK }]);
+
+    const missing = await svc.read.inspect({ ...PATH, set: "Nope" });
+    expect(missing.found).toBe(false);
+    expect(missing.link).toBeUndefined();
+  });
+});
+
 describe("plan — read-only", () => {
   test("never sends a mutation, nor an action other than the marketplace candidate read", async () => {
     for (const w of [

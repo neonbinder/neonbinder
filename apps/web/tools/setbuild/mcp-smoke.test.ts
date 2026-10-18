@@ -29,6 +29,7 @@ const row = (name: string, cards: number, extra: Partial<InspectRow> = {}): Insp
   cards,
   isBase: false,
   links: linked,
+  link: "/admin/set-builder",
   ...extra,
 });
 
@@ -41,10 +42,11 @@ function chrome(builtCards: number): InspectReport {
     found: true,
     base,
     variantTypes: [
-      { type: "Base", rows: [base] },
-      { type: "Insert", rows: [row("Future Stars", 20)] },
+      { type: "Base", link: "/admin/set-builder", rows: [base] },
+      { type: "Insert", link: "/admin/set-builder", rows: [row("Future Stars", 20)] },
       {
         type: "Parallel",
+        link: "/admin/set-builder",
         rows: Array.from({ length: 41 }, (_, i) =>
           i === 40 ? row("Seed Built Refractors", builtCards) : row(`Parallel ${i}`, 0),
         ),
@@ -59,7 +61,7 @@ const bigLeague: InspectReport = {
   pathText: "Baseball/2024/Topps/Big League",
   found: true,
   base: row("Base", 0, { isBase: true }),
-  variantTypes: [{ type: "Base", rows: [row("Base", 0, { isBase: true })] }],
+  variantTypes: [{ type: "Base", link: "/admin/set-builder", rows: [row("Base", 0, { isBase: true })] }],
 };
 
 function none(): OpenDecisions {

@@ -53,6 +53,10 @@ export function reportMarkdown(r: PlanReport | ApplyReport): string {
   out.push(`## setbuild ${apply ? "apply" : "plan"}: ${r.scope}`);
   out.push("");
   out.push(`Target \`${r.target.host}\` · confirm with \`${r.confirmPhrase}\``);
+  if (r.setLinks?.length) {
+    out.push("");
+    for (const s of r.setLinks) out.push(`Open ${s.path} in the Set Builder: ${s.link}`);
+  }
   if (apply) {
     out.push("");
     const counts = Object.entries(r.counts)

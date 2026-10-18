@@ -54,10 +54,11 @@ import {
   type OpenDecisions,
   type PlanReport,
   type PlanStep,
+  type SetLink,
   type StopAt,
 } from "../service";
 import type { BrandYearStep, InsertParallel, SetBuildSpec, SetStep, VariantTypeStep } from "../spec/schema";
-import { resolveChild, resolveVariantRow, resolveVariantType, type RowId } from "../spec/resolve";
+import { resolveChild, resolveSetPath, resolveVariantRow, resolveVariantType, type ResolvedSet, type RowId } from "../spec/resolve";
 import { ensureCredentials } from "../lib/credentials";
 import {
   checkPausedPlatforms,
@@ -73,7 +74,7 @@ import { applySlReview } from "../lib/sl-review";
 import { cardCount, checklistDone, runChecklistStep, type ReviewSession } from "../lib/commit";
 import { buildParallel, planParallelBuild, type BuildParallelInput } from "../lib/build-parallel";
 import { groupParallels, planGrouping, type GroupOpen } from "../lib/group-parallels";
-import { setBuilderLink } from "../lib/set-builder-link";
+import { setBuilderLink, setBuilderUrlForPath } from "../lib/set-builder-link";
 import { StepCheckError } from "../lib/step-check";
 import { ChecklistStepError } from "../lib/fetch-checklist";
 import { api } from "../../../convex/_generated/api";
@@ -234,6 +235,20 @@ export async function runSpec(
 
   const record = (s: PlanStep) => steps.push(s);
 
+  /**
+   * Every set the walk resolved to an NB row, by set id (a set two steps name
+   * is listed once), with its Set Builder link. Built from the ids the
+   * resolve already holds: no query.
+   */
+  const setLinks = new Map<string, SetLink>();
+  const linkSet = (path: string, set: Pick<ResolvedSet, "sportId" | "yearId" | "manufacturerId" | "setId">): void => {
+    if (setLinks.has(set.setId)) return;
+    setLinks.set(set.setId, {
+      path,
+      link: setBuilderUrlForPath([set.sportId, set.yearId, set.manufacturerId, set.setId], target.appOrigin),
+    });
+  };
+
   /** Record an open decision: plan collects it, apply stops — or, collecting, records the stop and goes on. */
   const stop = (index: number, reason: string): void => {
     if (mode === "plan") return;
@@ -367,6 +382,7 @@ export async function runSpec(
     return {
       target: { convexUrl: target.convexUrl, host: target.host },
       scope: spec.scope,
+      setLinks: [...setLinks.values()],
       confirmPhrase: phrase,
       steps,
       openDecisions: open,
@@ -447,9 +463,18 @@ export async function runSpec(
       return { status: "done", detail: vt ? `${vt.rows.length} variant types${vt.outcome === "skipped" ? " (already synced)" : ""}` : undefined };
     });
     if (!set) {
+      // The step stopped before the set (a plan whose columns still need a
+      // sync, an open name, …). If the set row exists anyway, it gets its
+      // link; a set that does not resolve gets none.
+      try {
+        linkSet(path, await resolveSetPath(client, step.path));
+      } catch {
+        // Never resolved: no link.
+      }
       blocked(i, "set", path, "everything below the set", "the set path does not resolve yet");
       return;
     }
+    linkSet(path, set);
     const sportId = set.sportId;
     /** Collecting: why the Base's dependents wait, when they do (shared by every step naming this set). */
     const key = setKey(step.path);

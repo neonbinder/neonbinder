@@ -64,6 +64,17 @@ one and returns them all, with one fill-in template. What waits on what is the
 table at the top of `runner/engine.ts`. The confirm phrase does not cover
 `stopAt`: it changes how far a run goes, never what the spec allows.
 
+Every plan and apply report starts with `setLinks`: one `{ path, link }` for
+each set the run resolved to an NB row (built, touched, blocked or skipped),
+in spec order. A set that never resolved has no entry. `inspect` gives a
+`link` for the node it shows and for every variant type, row and parallel it
+lists. A link is the Set Builder's own drill URL, built from the NB ids the
+walk already holds, so it costs no query. It is absolute on `--app-url` /
+`NB_SETBUILD_APP_URL` when that is set, and root-relative
+(`/admin/set-builder?sport=…&set=…`) otherwise. The CLI prints the set links
+under the report's target line, and `inspect` prints the node's link under
+its path.
+
 A spec check that fails during apply stops its step the same way. That
 covers an expected count (`expectCards`, `expectRows`,
 `group.expectUngrouped`), a Match Cards answer naming a card the fetch does

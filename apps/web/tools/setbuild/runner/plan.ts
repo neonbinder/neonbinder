@@ -23,6 +23,7 @@ export async function planSpec(
   return {
     target: r.target,
     scope: r.scope,
+    setLinks: r.setLinks,
     confirmPhrase: r.confirmPhrase,
     steps: r.steps,
     openDecisions: r.openDecisions,

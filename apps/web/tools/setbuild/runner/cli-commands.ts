@@ -142,6 +142,7 @@ export const inspectCommand: CommandSpec = {
       const links = (l: { buysportscards: string[]; sportlots: string[] }) =>
         `BSC ${l.buysportscards.length ? l.buysportscards.join(",") : "-"} · SL ${l.sportlots.length ? l.sportlots.join(",") : "-"}`;
       ctx.io.stdout(report.pathText);
+      if (report.link) ctx.io.stdout(`  Set Builder: ${report.link}`);
       for (const s of report.sets ?? []) ctx.io.stdout(`  ${s.name}  (${links(s.links)})`);
       for (const t of report.variantTypes ?? []) {
         ctx.io.stdout(`  ${t.type}${t.rows.length === 1 && t.rows[0].isBase ? "" : ` — ${t.rows.length} rows`}`);

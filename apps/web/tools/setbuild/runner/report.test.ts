@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { fakeJwt } from "../auth/test-helpers";
 import type { ApplyReport } from "../service";
-import { writeReportFiles } from "./report";
+import { reportMarkdown, writeReportFiles } from "./report";
 
 const SECRET = "tes_secret_value_0123456789";
 const JWT = fakeJwt({ sub: "user_abc", aud: "convex", exp: 1_900_000_000 });
@@ -38,5 +38,17 @@ describe("writeReportFiles (security audit item 3)", () => {
     }
     // Still a valid report.
     expect(JSON.parse(files[0]).stoppedAt.reason).toBe("failed: upstream said [redacted] with Bearer [redacted-token]");
+  });
+});
+
+describe("reportMarkdown", () => {
+  test("opens with each set's Set Builder link, under the target line", () => {
+    const md = reportMarkdown({
+      ...report("x"),
+      setLinks: [{ path: "Baseball/2014/Topps/Topps Chrome", link: "https://app.example.test/admin/set-builder?sport=a&year=b&brand=c&set=d" }],
+    });
+    const lines = md.split("\n");
+    expect(lines.indexOf("Open Baseball/2014/Topps/Topps Chrome in the Set Builder: https://app.example.test/admin/set-builder?sport=a&year=b&brand=c&set=d")).toBe(4);
+    expect(reportMarkdown(report("x"))).not.toContain("in the Set Builder");
   });
 });
