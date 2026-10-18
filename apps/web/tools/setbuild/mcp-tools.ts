@@ -1,7 +1,7 @@
 /**
  * NEO-339 — the set-build MCP tools.
  *
- * Eight tools over `SetBuildService` (service.ts):
+ * Ten tools over `SetBuildService` (service.ts):
  *
  * | tool                | kind  | service call               |
  * |---------------------|-------|----------------------------|
@@ -9,10 +9,12 @@
  * | nb_plan             | read  | read.plan                  |
  * | nb_review_items     | read  | read.reviewItems           |
  * | nb_draft_set        | read  | read.draftSet              |
+ * | nb_attention        | read  | read.attention             |
  * | nb_apply            | write | write.apply                |
  * | nb_decide           | write | write.decide               |
  * | nb_build_parallel   | write | write.buildParallel        |
  * | nb_sl_review_apply  | write | write.slReviewApply        |
+ * | nb_fix              | write | write.fix                  |
  *
  * Safety, in order of what it relies on:
  *
@@ -48,9 +50,13 @@ import { assertPhrase, ConfirmMismatch, type Target } from "./client/target";
 import { parseSpec } from "./spec/schema";
 import { compactDraftReport } from "./runner/draft";
 import { RunFailed } from "./runner/engine";
+import { FixInputError } from "./runner/attention";
+import { CardAnswerError, CardFixAborted } from "./lib/attention-answers";
+import { FixAnswersSchema } from "./lib/fix-answers";
 import {
   buildParallelConfirmPhrase,
   decideConfirmPhrase,
+  fixConfirmPhrase,
   MAX_TEAM_LOOKUP_BUDGET,
   ResolveError,
   slReviewConfirmPhrase,
@@ -63,8 +69,8 @@ import {
   type SetBuildWrite,
 } from "./service";
 
-export const READ_TOOLS = ["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set"] as const;
-export const WRITE_TOOLS = ["nb_apply", "nb_decide", "nb_build_parallel", "nb_sl_review_apply"] as const;
+export const READ_TOOLS = ["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set", "nb_attention"] as const;
+export const WRITE_TOOLS = ["nb_apply", "nb_decide", "nb_build_parallel", "nb_sl_review_apply", "nb_fix"] as const;
 export type ToolName = (typeof READ_TOOLS)[number] | (typeof WRITE_TOOLS)[number];
 
 export interface RegisterToolsOptions {
@@ -139,6 +145,10 @@ export function describeError(err: unknown): Record<string, unknown> {
     return { error: "auth", message, stage: e.stage, status: e.status, code: e.code };
   }
   if (name === "WaitTimeout") return { error: "timeout", message };
+  if (err instanceof FixInputError) return { error: "input", message };
+  if (err instanceof CardAnswerError) return { error: "input", message, at: err.at };
+  // A failure part-way through nb_fix's card writes: what was written is never unreported.
+  if (err instanceof CardFixAborted) return { ...describeError(err.cause), message, results: err.results };
   return { error: "failed", message };
 }
 
@@ -319,9 +329,13 @@ const WORKFLOW =
   "put the answers in the spec, plan and apply again (a re-run skips what is done). Never guess a decision " +
   "or pick a candidate by position; ambiguity comes back as candidates for the operator to choose from. " +
   "After every nb_apply, give the operator each setLinks link so they can inspect the set in the Set Builder. " +
-  "Links are absolute when the server has NB_SETBUILD_APP_URL, otherwise root-relative (/admin/set-builder?…).";
+  "Links are absolute when the server has NB_SETBUILD_APP_URL, otherwise root-relative (/admin/set-builder?…). " +
+  "A build is done only when nothing needs a person: nb_apply ends with attentionLine and each setLinks entry's " +
+  "attention. When it is not all clear, call nb_attention on the set, take every item to the operator with the " +
+  "facts and answers it lists (cards that need a team, a linked name or a title; names to check), and answer " +
+  "the ones the operator decides with nb_fix and its confirm phrase. Never answer an item the operator did not.";
 
-/** The four read tools. Receives `read` only: no path to a write exists here. */
+/** The five read tools. Receives `read` only: no path to a write exists here. */
 export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ctx): void {
   server.registerTool(
     "nb_inspect",
@@ -331,12 +345,17 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "Read-only. Shows what NeonBinder holds at a node. For a set path: every variant type with its rows, " +
         "card counts and attached marketplace ids, plus the Base row. For a brand-year path (no set): the sets " +
         "under it. Every node, variant type and row carries link, its Set Builder link. Names must match NB rows " +
-        "exactly; an unknown or ambiguous name returns an error listing candidates. " +
+        "exactly; an unknown or ambiguous name returns an error listing candidates. attention true adds what the " +
+        "node still needs from a person (nb_attention's totals and summary line); it reads every card, so it is slower. " +
         WORKFLOW,
-      inputSchema: { path: nodePathSchema },
+      inputSchema: {
+        path: nodePathSchema,
+        attention: z.boolean().optional().describe("Add attention: the totals and summary line nb_attention leads with."),
+      },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ path }) => run(ctx.secrets, () => read.inspect(toPath(path))),
+    async ({ path, attention }) =>
+      run(ctx.secrets, () => (attention === undefined ? read.inspect(toPath(path)) : read.inspect(toPath(path), { attention }))),
   );
 
   server.registerTool(
@@ -440,9 +459,38 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         { indent: 0 },
       ),
   );
+
+  server.registerTool(
+    "nb_attention",
+    {
+      title: "List what still needs a person",
+      description:
+        "Read-only. Everything on a set (or brand-year) still waiting on a person, as the Set Builder shows it: " +
+        "cards, the checklist header's \"N need you\" (no team, a name not linked to a player or team, a title over 80 " +
+        "characters or cut short, a variation over 65), each with the facts the fixer shows (players, the teams the " +
+        "listing names and the NB teams that name could mean, career teams, the team the Set Builder would preselect " +
+        "as suggested, the generated title) and the answers it takes; names, the \"N names to check\" rename " +
+        "suggestions on the set's own row and every row under it (accept takes the marketplace's name, decline keeps " +
+        "NB's); slReview, the brand's SportLots sets to sort (answer with nb_sl_review_apply on the brand-year); " +
+        "review, an entity review left open (answer with nb_decide); notices, sync notices (read-only). totals and " +
+        "summary lead. awaitingTeamLookup counts cards whose team lookup has not finished: more may appear. A re-sync " +
+        "diff is never listed (nb_apply refuses a re-sync that needs review). Answer with nb_fix. " +
+        WORKFLOW,
+      inputSchema: {
+        path: nodePathSchema,
+        detail: z
+          .enum(["summary", "full"])
+          .optional()
+          .describe('"summary" (default): every item, per-card facts trimmed past the first few. "full": every fact.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ path, detail }) =>
+      run(ctx.secrets, () => (detail === undefined ? read.attention(toPath(path)) : read.attention(toPath(path), { detail }))),
+  );
 }
 
-/** The four write tools. Each checks the confirm phrase before touching `write`. */
+/** The five write tools. Each checks the confirm phrase before touching `write`. */
 export function registerWriteTools(
   server: McpServer,
   write: SetBuildWrite,
@@ -579,9 +627,41 @@ export function registerWriteTools(
         return write.slReviewApply(byPath, decisions, given);
       }),
   );
+
+  server.registerTool(
+    "nb_fix",
+    {
+      title: "Answer what needs a person (writes)",
+      description:
+        "WRITES. Answers items nb_attention listed, through the same saves the Set Builder's fixers and its names " +
+        "dialog make. cards (set path only): each names its row (omit for Base) and cardNumber, plus cardId when " +
+        "that number is on more than one card in the row, and one answer: teams (exact NB team names, an era, or a " +
+        "new team with its location and name), noTeam, players and teams for a name not linked, or title (the exact " +
+        "text, at most 80 characters) with an optional variation. names: each names its row (omit for the path's own " +
+        "row), the side, accept or decline, and the label as nb_attention showed it; a label that changed since is " +
+        "refused, not accepted. An answer whose item is gone is reported moot; nothing is guessed. confirm is BUILD " +
+        "<convex host> <path> <digest>, the digest binding it to these exact answers; a call without it returns the " +
+        "exact phrase to show the operator with the answers. results lists one outcome per answer; remaining and " +
+        "summary say what is still left.",
+      inputSchema: {
+        path: nodePathSchema,
+        cards: FixAnswersSchema.shape.cards,
+        names: FixAnswersSchema.shape.names,
+        confirm,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ path, cards, names, confirm: given }) =>
+      run(ctx.secrets, async () => {
+        const byPath = toPath(path);
+        const answers = { ...(cards !== undefined ? { cards } : {}), ...(names !== undefined ? { names } : {}) };
+        assertPhrase(fixConfirmPhrase(getTarget(), byPath, answers), given);
+        return write.fix(byPath, answers, given);
+      }),
+  );
 }
 
-/** Register all eight tools. */
+/** Register all ten tools. */
 export function registerTools(server: McpServer, service: SetBuildService, opts: RegisterToolsOptions = {}): void {
   const ctx: Ctx = {
     secrets: opts.secrets ?? secretValues(process.env),

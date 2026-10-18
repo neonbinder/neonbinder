@@ -4,7 +4,7 @@ import { Theme } from "@radix-ui/themes";
 import type { Id } from "../../convex/_generated/dataModel";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 import NeonButton from "../modules/NeonButton";
-import { deriveCardAttention } from "./card-attention";
+import { deriveCardAttention, walkDoneLine } from "./card-attention";
 import WizardChrome from "./WizardChrome";
 import {
   AttentionSportContext,
@@ -28,23 +28,9 @@ export {
   type CardChecklistRow,
 } from "./cardAttentionRegistry";
 
-/**
- * NEO-335 — the line the walker ends on. "All clear" when nothing is left; when
- * cards are still waiting on the automatic team lookup (see
- * `isAwaitingTeamLookup`), it says so, because those can still join the walk
- * after the operator has finished it.
- *
- * Phase 2 wording (Jason-approved): "All clear for now. Still looking up teams
- * for K cards." The singular keeps "teams" — a card can carry more than one.
- */
-export function walkDoneLine(awaitingLookup: number): string {
-  if (awaitingLookup <= 0) {
-    return "All clear — nothing on this checklist needs attention.";
-  }
-  return `All clear for now. Still looking up teams for ${awaitingLookup} ${
-    awaitingLookup === 1 ? "card" : "cards"
-  }.`;
-}
+// NEO-339: `walkDoneLine` lives in the pure `card-attention.ts` so the set-build
+// tool can say the walker's own sentence; re-exported for existing importers.
+export { walkDoneLine } from "./card-attention";
 
 /**
  * NEO-335 Phase 2 (D9) — "Step x of y" for the walker.

@@ -34,11 +34,21 @@
  *      expected count matches (`reconciled`, `grouped`, `committed`, `built`);
  *   6. `nb_inspect`: an insert holds at least one built parallel, every row of
  *      the Parallel type built from Base holds cards, and every `after`
- *      expectation holds.
+ *      expectation holds;
+ *   7. `attention` (when the expect file has it): `nb_attention` on the set,
+ *      polled (bounded by `lookupWaitMs`) until no card is still waiting on
+ *      the BSC team lookup, must show exactly the measured `totals`; then
+ *      `nb_fix` with the committed `fix` answers (its phrase taken from the
+ *      tool's own refusal, as an agent does) must apply every one, and a
+ *      second `nb_attention` must show exactly those items gone. The apply's
+ *      own `attentionLine` must agree with what the set holds.
  *
  * The fixture files are measured on a PR preview after the server previews
  * deploy. Until then they carry `"measured": false` and the smoke FAILS
- * ("fixture not measured yet"): it never passes vacuously.
+ * ("fixture not measured yet"): it never passes vacuously. The `attention`
+ * block has its own `"measured": false`: the smoke then lists the set, fails,
+ * and prints what it measured (the totals and every item's address) so the
+ * block can be filled in from the run.
  *
  * Output never names the deployment: the host is redacted with the secrets.
  */
@@ -53,7 +63,20 @@ import { secretValues } from "./client/connect";
 import { canonicalJson, contentDigest } from "./client/target";
 import { APPLY_TIMEOUT_MS, connectToSpawnedServer, inspectExpectSchema, inspectMismatches } from "./mcp-smoke";
 import { mergeDraftAnswers, placeholdersIn } from "./runner/draft";
-import { countOpenDecisions, type ApplyReport, type DraftReport, type InspectReport, type PlanReport, type SetPath } from "./service";
+import {
+  countOpenDecisions,
+  type ApplyReport,
+  type AttentionReport,
+  type AttentionSummary,
+  type CardAttentionItem,
+  type DraftReport,
+  type FixReport,
+  type InspectReport,
+  type NameSuggestionItem,
+  type PlanReport,
+  type SetPath,
+} from "./service";
+import { FixAnswersSchema } from "./lib/fix-answers";
 import { parseSpec } from "./spec/schema";
 
 /** A draft previews every checklist of the set: minutes, not seconds. */
@@ -84,9 +107,39 @@ export const oneshotExpectSchema = z
     /** The Parallel type's title whose rows are built from Base (all must hold cards). */
     builtFromBaseType: z.string().min(1).default("Parallel"),
     after: z.array(inspectExpectSchema).default([]),
+    /**
+     * What the built set still needs from a person, and the answers the
+     * smoke gives. `{ "measured": false }` until measured on the PR preview:
+     * the smoke then lists, fails, and prints what it found.
+     */
+    attention: z
+      .union([
+        z.object({ measured: z.literal(false) }).passthrough(),
+        z
+          .object({
+            measured: z.literal(true),
+            /** How long to wait for the BSC team lookup to finish before listing. */
+            lookupWaitMs: z.number().int().min(0).max(30 * 60_000).default(10 * 60_000),
+            totals: z
+              .object({
+                cards: z.number().int().min(0),
+                byKind: z.record(z.string(), z.number().int().min(0)),
+                namesToCheck: z.number().int().min(0),
+              })
+              .strict(),
+            /** The answers nb_fix gives (nb_fix's own shape); each must apply, and its item must be gone after. */
+            fix: FixAnswersSchema,
+          })
+          .strict(),
+      ])
+      .optional(),
   })
   .strict();
 export type OneshotExpect = z.infer<typeof oneshotExpectSchema>;
+type MeasuredAttention = Extract<NonNullable<OneshotExpect["attention"]>, { measured: true }>;
+
+/** How often the smoke re-lists while the team lookup drains. */
+const LOOKUP_POLL_MS = 15_000;
 
 export interface OneshotCheck {
   ok: boolean;
@@ -299,6 +352,37 @@ export function insertWithBuiltParallel(report: InspectReport): string | undefin
 
 class ToolCallFailed extends Error {}
 
+type FixAnswerSet = MeasuredAttention["fix"];
+const isBaseRef = (row: { type?: string; name?: string; parallel?: string } | undefined) =>
+  !row || (row.type === undefined && row.name === undefined && row.parallel === undefined);
+
+/** The listed card an answer addresses (row + number, `cardId` on a tie). Pure. */
+export function cardsAnswered(listing: readonly CardAttentionItem[], answer: NonNullable<FixAnswerSet["cards"]>[number]): CardAttentionItem[] {
+  return listing.filter((c) => {
+    if (c.cardNumber !== answer.cardNumber) return false;
+    if (answer.cardId !== undefined && c.cardId !== answer.cardId) return false;
+    // Base is the one checklist listed by its type alone.
+    if (isBaseRef(answer.row)) return c.row.name === undefined && c.row.parallel === undefined;
+    return c.row.type === answer.row!.type && c.row.name === answer.row!.name && c.row.parallel === answer.row!.parallel;
+  });
+}
+
+/** The listed name side an answer addresses. Pure. */
+export function namesAnswered(listing: readonly NameSuggestionItem[], answer: NonNullable<FixAnswerSet["names"]>[number]): string[] {
+  const want = canonicalJson(answer.row ?? {});
+  return listing
+    .filter((n) => canonicalJson(n.row) === want && n.sides.some((x) => x.side === answer.side))
+    .map((n) => `${n.rowId}:${answer.side}`);
+}
+
+/** Every item's address, for a person filling the fixture in from a run. */
+function attentionInventory(r: AttentionReport): string {
+  const cards = r.cards.map((c) => `${c.rowLabel} #${c.cardNumber} (${c.kinds.join("+")})`);
+  const names = r.names.flatMap((n) => n.sides.map((x) => `${n.where} ${x.side} “${x.label}”`));
+  const short = (xs: string[]) => (xs.length > 20 ? [...xs.slice(0, 20), `+${xs.length - 20} more`] : xs).join("; ");
+  return `cards: ${short(cards) || "none"} | names: ${short(names) || "none"}`;
+}
+
 async function call<T>(client: Client, tool: string, args: Record<string, unknown>, timeout: number): Promise<T> {
   const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout });
   const content = Array.isArray(result.content) ? result.content : [];
@@ -313,7 +397,15 @@ async function call<T>(client: Client, tool: string, args: Record<string, unknow
 
 export async function runOneshotSequence(
   client: Client,
-  o: { answersPath: string; answers: unknown; expect: OneshotExpect; confirm: string; onCheck?: (c: OneshotCheck) => void },
+  o: {
+    answersPath: string;
+    answers: unknown;
+    expect: OneshotExpect;
+    confirm: string;
+    onCheck?: (c: OneshotCheck) => void;
+    /** Injectable for tests: how the attention step waits between listings. */
+    sleep?: (ms: number) => Promise<void>;
+  },
 ): Promise<OneshotCheck[]> {
   const checks: OneshotCheck[] = [];
   const record = (ok: boolean, label: string, detail: string) => {
@@ -416,6 +508,8 @@ export async function runOneshotSequence(
   if (!planned || !phrase) return checks;
 
   // 5. apply, collecting
+  let applyLine: string | undefined;
+  let applyAttention: AttentionSummary | undefined;
   const applied = await attempt("nb_apply", async () => {
     const report = await call<ApplyReport>(client, "nb_apply", { specPath: o.answersPath, confirm: phrase, stopAt: "end" }, APPLY_TIMEOUT_MS);
     const problems: string[] = [];
@@ -430,9 +524,16 @@ export async function runOneshotSequence(
       if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}`);
     }
     const shown = Object.keys(o.expect.apply.counts).map((k) => `${k} ${report.counts?.[k]}`).join(", ");
+    applyLine = report.attentionLine;
+    applyAttention = report.setLinks?.find((l) => l.attention)?.attention;
     return record(problems.length === 0, "nb_apply", problems.length === 0 ? `${shown} in ${Math.round((report.durationMs ?? 0) / 1000)}s` : problems.join("; "));
   });
   if (!applied) return checks;
+  record(
+    !!applyLine && !!applyAttention,
+    "nb_apply attention",
+    applyLine ? `${applyLine}${applyAttention ? "" : " (no set carried attention)"}` : "the report has no attentionLine",
+  );
 
   // 6. inspect
   await attempt("nb_inspect", async () => {
@@ -453,7 +554,97 @@ export async function runOneshotSequence(
     }
     return true;
   });
+
+  // 7. attention
+  if (o.expect.attention) await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep);
   return checks;
+}
+
+/** Step 7 (see the file comment). */
+async function attentionSequence(
+  client: Client,
+  path: SetPath,
+  expect: NonNullable<OneshotExpect["attention"]>,
+  record: (ok: boolean, label: string, detail: string) => boolean,
+  attempt: (label: string, fn: () => Promise<boolean>) => Promise<boolean>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+  const waitMs = expect.measured === true ? expect.lookupWaitMs : 10 * 60_000;
+  let before: AttentionReport | undefined;
+  const listed = await attempt("nb_attention", async () => {
+    const started = Date.now();
+    for (;;) {
+      before = await call<AttentionReport>(client, "nb_attention", { path }, READ_TIMEOUT_MS);
+      if (before.totals.awaitingTeamLookup === 0 || Date.now() - started >= waitMs) break;
+      await sleep(LOOKUP_POLL_MS);
+    }
+    const t = before.totals;
+    const seen = `cards ${t.cards}, byKind ${canonicalJson(t.byKind)}, namesToCheck ${t.namesToCheck}, awaitingTeamLookup ${t.awaitingTeamLookup}`;
+    if (t.awaitingTeamLookup > 0) return record(false, "nb_attention", `the team lookup did not finish in ${Math.round(waitMs / 1000)}s: ${seen}`);
+    if (expect.measured !== true) {
+      return record(false, "nb_attention", `attention ${NOT_MEASURED}; measured ${seen}. ${attentionInventory(before)}`);
+    }
+    const want = expect.totals;
+    const nonzero = (m: Record<string, number>) => canonicalJson(Object.fromEntries(Object.entries(m).filter(([, n]) => n > 0)));
+    const ok = t.cards === want.cards && t.namesToCheck === want.namesToCheck && nonzero(t.byKind) === nonzero(want.byKind);
+    return record(ok, "nb_attention", ok ? `${seen}: ${before.summary}` : `${seen}; expected cards ${want.cards}, byKind ${canonicalJson(want.byKind)}, namesToCheck ${want.namesToCheck}. ${attentionInventory(before)}`);
+  });
+  if (!listed || !before || expect.measured !== true) return;
+  const fix = expect.fix;
+
+  // What each answer addresses, before: it must be listed, once.
+  const goneCards = new Set<string>();
+  const goneNames = new Set<string>();
+  const addressed = await attempt("nb_fix answers", async () => {
+    const problems: string[] = [];
+    (fix.cards ?? []).forEach((a, i) => {
+      const hit = cardsAnswered(before!.cards, a);
+      if (hit.length !== 1) problems.push(`cards[${i}] #${a.cardNumber} addresses ${hit.length} listed cards`);
+      else goneCards.add(hit[0].cardId);
+    });
+    (fix.names ?? []).forEach((a, i) => {
+      const hit = namesAnswered(before!.names, a);
+      if (hit.length !== 1) problems.push(`names[${i}] addresses ${hit.length} listed names`);
+      else goneNames.add(hit[0]);
+    });
+    return record(problems.length === 0, "nb_fix answers", problems.length === 0 ? `${goneCards.size} cards, ${goneNames.size} names, each listed once` : problems.join("; "));
+  });
+  if (!addressed) return;
+
+  const fixed = await attempt("nb_fix", async () => {
+    const args = { path, ...fix };
+    // The phrase comes from the tool's own refusal, as an agent gets it.
+    const refusal = await client.callTool({ name: "nb_fix", arguments: args }, undefined, { timeout: READ_TIMEOUT_MS });
+    const text = (Array.isArray(refusal.content) ? refusal.content : []).map((c) => (c && c.type === "text" ? c.text : "")).join("");
+    const expected = refusal.isError ? (JSON.parse(text) as { expected?: string }).expected : undefined;
+    if (!expected) return record(false, "nb_fix", "a call without confirm did not return the phrase");
+    const report = await call<FixReport>(client, "nb_fix", { ...args, confirm: expected }, APPLY_TIMEOUT_MS);
+    const notApplied = report.results.filter((r) => r.outcome !== "applied");
+    return record(
+      notApplied.length === 0,
+      "nb_fix",
+      notApplied.length === 0
+        ? `${report.results.length} answers applied; ${report.summary}`
+        : notApplied.map((r) => `${r.at} ${r.outcome}: ${r.detail}`).join("; "),
+    );
+  });
+  if (!fixed) return;
+
+  await attempt("nb_attention after nb_fix", async () => {
+    const after = await call<AttentionReport>(client, "nb_attention", { path }, READ_TIMEOUT_MS);
+    const cardIds = new Set(after.cards.map((c) => c.cardId));
+    const nameKeys = new Set(after.names.flatMap((n) => n.sides.map((x) => `${n.rowId}:${x.side}`)));
+    const stillThere = [...goneCards].filter((id) => cardIds.has(id)).length + [...goneNames].filter((k) => nameKeys.has(k)).length;
+    const beforeCards = new Set(before!.cards.map((c) => c.cardId));
+    const beforeNames = new Set(before!.names.flatMap((n) => n.sides.map((x) => `${n.rowId}:${x.side}`)));
+    const appeared = after.cards.filter((c) => !beforeCards.has(c.cardId)).length + [...nameKeys].filter((k) => !beforeNames.has(k)).length;
+    const ok = stillThere === 0 && appeared === 0 && after.totals.cards === before!.totals.cards - goneCards.size && after.totals.namesToCheck === before!.totals.namesToCheck - goneNames.size;
+    return record(
+      ok,
+      "nb_attention after nb_fix",
+      ok ? after.summary : `${stillThere} answered item(s) still listed, ${appeared} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}`,
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------

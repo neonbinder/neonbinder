@@ -82,7 +82,16 @@ const EXPECT: SmokeExpect = smokeExpectSchema.parse({
   after: [{ path: CHROME, rows: [{ type: "Parallel", name: "Seed Built Refractors", cards: 300 }] }],
 });
 
-function fakeService(o: { open?: OpenDecisions; built?: number } = {}) {
+const ATTENTION = {
+  pathText: SCOPE,
+  totals: { cards: 1, byKind: { missingTeam: 1 }, awaitingTeamLookup: 0, namesToCheck: 2, slSetsToSort: 0 },
+  summary: "1 card needs you on Topps Chrome; 2 names to check.",
+  cards: [{ cardNumber: "1" }],
+  names: [{ sides: [{ side: "bsc", label: "Chrome", foldEqual: false }, { side: "sportlots", label: "Chrome!", foldEqual: false }] }],
+  notices: [],
+};
+
+function fakeService(o: { open?: OpenDecisions; built?: number; attention?: unknown; noAttentionLine?: boolean } = {}) {
   let applied = false;
   const service = {
     target: TARGET,
@@ -90,15 +99,22 @@ function fakeService(o: { open?: OpenDecisions; built?: number } = {}) {
       inspect: vi.fn(async (p: { set?: string }) => (p.set === "Big League" ? bigLeague : chrome(applied ? 300 : 0))),
       plan: vi.fn(async () => ({ scope: SCOPE, confirmPhrase: PHRASE, steps: [{}], openDecisions: o.open ?? none() })),
       reviewItems: vi.fn(),
+      attention: vi.fn(async () => o.attention ?? ATTENTION),
     },
     write: {
       apply: vi.fn(async () => {
         applied = true;
-        return { counts: { built: o.built ?? 300, committed: 0, skipped: 3 }, durationMs: 4200 };
+        return {
+          counts: { built: o.built ?? 300, committed: 0, skipped: 3 },
+          durationMs: 4200,
+          setLinks: [{ path: SCOPE, link: "/admin/set-builder" }],
+          ...(o.noAttentionLine ? {} : { attentionLine: "Built and all clear." }),
+        };
       }),
       decide: vi.fn(),
       buildParallel: vi.fn(),
       slReviewApply: vi.fn(),
+      fix: vi.fn(),
     },
   };
   return service;
@@ -144,9 +160,31 @@ describe("runSmokeSequence", () => {
       "nb_plan",
       "nb_apply",
       `after nb_inspect ${SCOPE}`,
+      `nb_attention ${SCOPE}`,
     ]);
     expect(service.write.apply).toHaveBeenCalledTimes(1);
     expect(service.write.apply.mock.calls[0]).toContain(PHRASE);
+    // Listing only: the seed's sets have many readers.
+    expect(service.write.fix).not.toHaveBeenCalled();
+    expect(checks.at(-1)!.detail).toBe(ATTENTION.summary);
+  });
+
+  test("nb_attention: totals that disagree with the lists fail; an apply with no attentionLine fails", async () => {
+    const lying = { ...ATTENTION, totals: { ...ATTENTION.totals, namesToCheck: 5 } };
+    const checks = await runSmokeSequence(await connect(fakeService({ attention: lying })), {
+      specPath: "/seed/parallel.spec.json",
+      expect: EXPECT,
+      confirm: PHRASE,
+    });
+    expect(checks.at(-1)).toMatchObject({ ok: false, label: `nb_attention ${SCOPE}` });
+    expect(checks.at(-1)!.detail).toMatch(/2 name sides listed, totals.namesToCheck says 5/);
+
+    const quiet = await runSmokeSequence(await connect(fakeService({ noAttentionLine: true })), {
+      specPath: "/seed/parallel.spec.json",
+      expect: EXPECT,
+      confirm: PHRASE,
+    });
+    expect(quiet.find((c) => c.label === "nb_apply")).toMatchObject({ ok: false, detail: "the report has no attentionLine" });
   });
 
   test("stops before applying when --confirm is not the plan's phrase", async () => {

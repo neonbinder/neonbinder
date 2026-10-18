@@ -23,6 +23,7 @@ import {
 import {
   buildParallelConfirmPhrase,
   decideConfirmPhrase,
+  fixConfirmPhrase,
   ResolveError,
   slReviewConfirmPhrase,
   specConfirmPhrase,
@@ -46,6 +47,10 @@ const DECIDE_ARGS = {
   players: [{ name: "Shohei Ohtani", decision: "create" as const }],
 };
 const SL_DECISIONS = [{ slId: "sl-123", placement: "own-set" as const }];
+const FIX_ARGS = {
+  cards: [{ cardNumber: "103b", answer: { title: "2014 Topps Chrome #103b Jose Fernandez Marlins" } }],
+  names: [{ row: { type: "Insert", name: "Future Stars" }, side: "bsc" as const, action: "decline" as const, label: "Future Stars Inserts" }],
+};
 
 /** Each write's phrase, from the same helpers the server and the runner use. */
 const PHRASE = {
@@ -53,6 +58,7 @@ const PHRASE = {
   decide: decideConfirmPhrase(TARGET, TOPPS_CHROME, DECIDE_ARGS),
   buildParallel: buildParallelConfirmPhrase(TARGET, TOPPS_CHROME, "Gold Wave Refractors", {}),
   slReview: slReviewConfirmPhrase(TARGET, BOWMAN, SL_DECISIONS),
+  fix: fixConfirmPhrase(TARGET, TOPPS_CHROME, FIX_ARGS),
 };
 
 function noDecisions(): OpenDecisions {
@@ -73,12 +79,14 @@ function fakeService() {
     plan: vi.fn(async () => ({ confirmPhrase: PHRASE.apply, openDecisions: noDecisions(), steps: [] })),
     reviewItems: vi.fn(async () => ({ review: noDecisions().review, slReview: [] })),
     draftSet: vi.fn(async () => ({ status: "drafted", openCount: 0, confirmPhrase: null as string | null, openDecisions: noDecisions() })),
+    attention: vi.fn(async () => ({ pathText: "x", summary: "All clear — nothing on this checklist needs attention.", cards: [], names: [] })),
   };
   const write = {
     apply: vi.fn(async () => ({ counts: { built: 300, committed: 0, skipped: 0 } })),
     decide: vi.fn(async () => ({ applied: { players: 1, teams: 0, leagues: 0 } })),
     buildParallel: vi.fn(async () => ({ outcome: "built", cards: 300 })),
     slReviewApply: vi.fn(async () => ({ applied: 1, remaining: 0 })),
+    fix: vi.fn(async () => ({ applied: { cards: 1, names: 1 }, results: [] })),
   };
   const spies = [...Object.values(read), ...Object.values(write)];
   const service = { read, write, target: TARGET } as unknown as SetBuildService;
@@ -133,16 +141,23 @@ const WRITE_CALLS: Record<(typeof WRITE_TOOLS)[number], { args: Record<string, u
     phrase: PHRASE.slReview,
     spy: "slReviewApply",
   },
+  nb_fix: {
+    args: { path: TOPPS_CHROME, ...FIX_ARGS },
+    phrase: PHRASE.fix,
+    spy: "fix",
+  },
 };
 
 describe("tool list", () => {
-  test("exactly eight tools: four read-only, four writes taking an optional confirm", async () => {
+  test("exactly ten tools: five read-only, five writes taking an optional confirm", async () => {
     const client = await connect(fakeService().service);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOLS, ...WRITE_TOOLS].sort());
-    expect(tools).toHaveLength(8);
-    expect([...READ_TOOLS]).toEqual(["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set"]);
+    expect(tools).toHaveLength(10);
+    expect([...READ_TOOLS]).toEqual(["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set", "nb_attention"]);
     expect(WRITE_TOOLS as readonly string[]).not.toContain("nb_draft_set");
+    expect(WRITE_TOOLS as readonly string[]).toContain("nb_fix");
+    expect(WRITE_TOOLS as readonly string[]).not.toContain("nb_attention");
     for (const t of tools) {
       const isWrite = (WRITE_TOOLS as readonly string[]).includes(t.name);
       expect(t.annotations?.readOnlyHint, t.name).toBe(!isWrite);
@@ -198,6 +213,57 @@ describe("read tools", () => {
     expect(f.read.reviewItems).toHaveBeenCalledWith(TOPPS_CHROME);
 
     for (const spy of Object.values(f.write)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("nb_attention calls read.attention with the path (and detail when given), and never a write", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    expect((await callTool(client, "nb_attention", { path: TOPPS_CHROME })).isError).toBe(false);
+    expect(f.read.attention).toHaveBeenLastCalledWith(TOPPS_CHROME);
+    expect((await callTool(client, "nb_attention", { path: { ...BOWMAN, year: 2025 }, detail: "full" })).isError).toBe(false);
+    expect(f.read.attention).toHaveBeenLastCalledWith(BOWMAN, { detail: "full" });
+    expect((await callTool(client, "nb_attention", { path: TOPPS_CHROME, detail: "everything" })).isError).toBe(true);
+    expect(f.read.attention).toHaveBeenCalledTimes(2);
+    for (const spy of Object.values(f.write)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("nb_inspect passes attention through only when asked", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    await callTool(client, "nb_inspect", { path: TOPPS_CHROME, attention: true });
+    expect(f.read.inspect).toHaveBeenLastCalledWith(TOPPS_CHROME, { attention: true });
+  });
+
+  test("nb_fix refuses an answer shape the fixers do not take, before the service", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const bad = [
+      { cards: [{ cardNumber: "1", answer: { teams: [], noTeam: true } }] },
+      { cards: [{ cardNumber: "1", answer: { noTeam: false } }] },
+      { cards: [{ cardNumber: "1", answer: {} }] },
+      { names: [{ side: "ebay", action: "accept", label: "x" }] },
+      { names: [{ side: "bsc", action: "accept" }] },
+      { names: [{ side: "bsc", action: "rename", label: "x" }] },
+    ];
+    for (const args of bad) {
+      const r = await callTool(client, "nb_fix", { path: TOPPS_CHROME, ...args, confirm: PHRASE.fix });
+      expect(r.isError, JSON.stringify(args)).toBe(true);
+    }
+    expect(f.write.fix).not.toHaveBeenCalled();
+  });
+
+  test("nb_fix's phrase binds the answers' text: an edited title needs a new phrase", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const edited = { cards: [{ cardNumber: "103b", answer: { title: "2014 Topps Chrome #103b Jose Fernandez" } }], names: FIX_ARGS.names };
+    const r = await callTool(client, "nb_fix", { path: TOPPS_CHROME, ...edited, confirm: PHRASE.fix });
+    expect(r.isError).toBe(true);
+    expect(r.json().error).toBe("confirm_mismatch");
+    expect(r.json().expected).toBe(fixConfirmPhrase(TARGET, TOPPS_CHROME, edited));
+    expect(f.write.fix).not.toHaveBeenCalled();
+    const ok = await callTool(client, "nb_fix", { path: TOPPS_CHROME, ...FIX_ARGS, confirm: PHRASE.fix });
+    expect(ok.isError).toBe(false);
+    expect(f.write.fix).toHaveBeenCalledWith(TOPPS_CHROME, FIX_ARGS, PHRASE.fix);
   });
 
   test("nb_draft_set calls read.draftSet once with the path and options, and never a write", async () => {

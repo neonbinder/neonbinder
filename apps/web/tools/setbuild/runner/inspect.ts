@@ -6,15 +6,29 @@
  *
  * Every node and row it lists carries its Set Builder link, built from the ids
  * the walk already holds (`setBuilderUrlForPath`): no query per link.
+ *
+ * `attention: true` adds what the node still needs from a person (the totals
+ * and line `nb_attention` leads with). Opt-in: it reads every card of every
+ * row and each column's name suggestions.
  */
 
 import { variantTypeKind } from "../../../convex/variantRole";
 import type { NbClient } from "../client/convex-client";
 import type { Target } from "../client/target";
-import { formatPath, isSetPath, ResolveError, type InspectReport, type InspectRow, type MarketplaceLinks, type NodePath } from "../service";
+import {
+  formatPath,
+  isSetPath,
+  ResolveError,
+  type InspectOptions,
+  type InspectReport,
+  type InspectRow,
+  type MarketplaceLinks,
+  type NodePath,
+} from "../service";
 import { childrenOf, resolveBrandYear, resolveSetPath, type SelectorRow } from "../spec/resolve";
 import { cardCount } from "../lib/commit";
 import { setBuilderUrlForPath } from "../lib/set-builder-link";
+import { attentionSummaryOf } from "./attention";
 
 /** The marketplace ids in a row's platform slots, per side. */
 export function linksOf(row: Pick<SelectorRow, "platformData">): MarketplaceLinks {
@@ -37,6 +51,7 @@ export async function inspectPath(
   client: NbClient,
   target: Pick<Target, "convexUrl" | "host" | "appOrigin">,
   path: NodePath,
+  opts: InspectOptions = {},
 ): Promise<InspectReport> {
   const pathText = formatPath(path);
   const head = { target: { convexUrl: target.convexUrl, host: target.host }, path, pathText };
@@ -51,6 +66,7 @@ export async function inspectPath(
         found: true,
         link: linkTo(at),
         sets: sets.map((s) => ({ name: s.value, links: linksOf(s), link: linkTo([...at, s._id]) })),
+        ...(opts.attention ? { attention: await attentionSummaryOf(client, path, brand) } : {}),
       };
     }
     const set = await resolveSetPath(client, path);
@@ -79,7 +95,14 @@ export async function inspectPath(
       }
       variantTypes.push({ type: t.value, link: linkTo(typeIds), rows: out });
     }
-    return { ...head, found: true, link: linkTo(setIds), base, variantTypes };
+    return {
+      ...head,
+      found: true,
+      link: linkTo(setIds),
+      base,
+      variantTypes,
+      ...(opts.attention ? { attention: await attentionSummaryOf(client, path, set) } : {}),
+    };
   } catch (err) {
     if (err instanceof ResolveError) return { ...head, found: false };
     throw err;

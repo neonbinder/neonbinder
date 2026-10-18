@@ -1,6 +1,7 @@
 /**
  * NEO-339 — the runner's CLI commands: inspect, plan, apply,
- * decisions-template, schema, confirm-phrase, draft-set, build-set.
+ * decisions-template, schema, confirm-phrase, draft-set, build-set,
+ * attention, fix.
  * Registered in `cli.ts`'s `COMMANDS`.
  *
  * Exit codes (beside cli.ts's 0 / 1 / 2): `apply` exits 3 when it stopped at a
@@ -19,9 +20,10 @@ import type { CommandContext, CommandSpec } from "../cli";
 import { scrub } from "../auth/token-source";
 import { secretValues } from "../client/connect";
 import { makeClient, type NbClient } from "../client/convex-client";
-import { contentDigest, parseTarget } from "../client/target";
+import { assertPhrase, contentDigest, parseTarget } from "../client/target";
 import {
   countOpenDecisions,
+  fixConfirmPhrase,
   isSetPath,
   MAX_TEAM_LOOKUP_BUDGET,
   specConfirmPhrase,
@@ -39,7 +41,9 @@ import { compactDraftReport, draftSet, placeholdersIn, type CompactDraftReport, 
 import { RunFailed } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
-import { reportJson, reportMarkdown, writeReportFiles } from "./report";
+import { attentionMarkdown, fixMarkdown, reportJson, reportMarkdown, writeReportFiles } from "./report";
+import { attentionOf, fixAttention } from "./attention";
+import { parseFixAnswers } from "../lib/fix-answers";
 
 /** Exit code: apply stopped at an open decision. */
 export const EXIT_STOPPED = 3;
@@ -123,14 +127,18 @@ const PAUSED_OPTION = { "paused-platforms": { type: "string" } } as const;
 // ---------------------------------------------------------------------------
 
 export const inspectCommand: CommandSpec = {
-  summary: "Show what a path holds: sets under a brand-year, or a set's Base and variant rows with card counts.",
-  usage: "setbuild inspect <Sport/Year/Manufacturer[/Set]> [--json] [connection flags]",
+  summary:
+    "Show what a path holds: sets under a brand-year, or a set's Base and variant rows with card counts. --attention adds what still needs a person.",
+  usage: "setbuild inspect <Sport/Year/Manufacturer[/Set]> [--attention] [--json] [connection flags]",
+  options: { attention: { type: "boolean" } },
   run: (ctx) =>
     usageGuard(ctx, async () => {
       const raw = ctx.positionals[0];
       if (!raw) throw new UsageError("inspect needs a path, e.g. Baseball/2024/Topps/Topps Chrome.");
       const path = parsePathArg(raw);
-      const report = await withClient(ctx, (client, conn) => inspectPath(client, conn.target, path));
+      const report = await withClient(ctx, (client, conn) =>
+        inspectPath(client, conn.target, path, ctx.values.attention === true ? { attention: true } : {}),
+      );
       if (ctx.json) {
         ctx.io.stdout(JSON.stringify(report, null, 2));
         return report.found ? 0 : 1;
@@ -151,6 +159,7 @@ export const inspectCommand: CommandSpec = {
           for (const p of r.parallels ?? []) ctx.io.stdout(`      ↳ ${p.name}: ${p.cards} cards (${links(p.links)})`);
         }
       }
+      if (report.attention) ctx.io.stdout(`  ${report.attention.summary}`);
       return 0;
     }),
 };
@@ -524,6 +533,93 @@ function formatSlug(p: SetPath): string {
   return [p.sport, p.year, p.manufacturer, p.set].join("-").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
 }
 
+// ---------------------------------------------------------------------------
+// attention / fix
+// ---------------------------------------------------------------------------
+
+export const attentionCommand: CommandSpec = {
+  summary:
+    "Read-only: everything on a set or brand-year still waiting on a person (cards that need you, names to check, SportLots sets to sort, sync notices), with the answers fix takes.",
+  usage: "setbuild attention <Sport/Year/Manufacturer[/Set]> [--detail summary|full] [--json] [connection flags]",
+  options: { detail: { type: "string" } },
+  run: (ctx) =>
+    usageGuard(ctx, async () => {
+      const raw = ctx.positionals[0];
+      if (!raw) throw new UsageError("attention needs a path, e.g. Baseball/2024/Topps/Topps Chrome.");
+      const path = parsePathArg(raw);
+      const detail = draftDetail(ctx);
+      const report = await withClient(ctx, (client, conn) => attentionOf(client, conn.target, path, { detail }));
+      ctx.io.stdout(scrub(ctx.json ? JSON.stringify(report, null, 2) : attentionMarkdown(report).trimEnd(), secretsOf(ctx)));
+      return 0;
+    }),
+};
+
+async function readAnswersFile(path: string | undefined): Promise<unknown> {
+  if (!path) throw new UsageError("Pass --answers <file.json> ({ \"cards\": [...], \"names\": [...] }).");
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    throw new UsageError(`Could not read --answers ${path}.`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new UsageError(`--answers ${path} is not JSON (${err instanceof Error ? err.message : String(err)}).`);
+  }
+}
+
+/** `fix --auth machine` without a terminal: the same rule as apply. */
+export const FIX_MACHINE_NEEDS_TTY =
+  "fix with --auth machine (production) runs only in an interactive terminal: it ignores --confirm and asks for " +
+  "the confirm phrase at a prompt. Otherwise use the MCP tool nb_fix, which asks the operator on every call.";
+
+export const fixCommand: CommandSpec = {
+  summary:
+    'WRITES: answer what attention listed, through the Set Builder\'s own saves. Needs --confirm "BUILD <host> <path> <digest>" (a run without it prints the phrase); with --auth machine, a terminal prompt instead.',
+  usage:
+    'setbuild fix --path <Sport/Year/Manufacturer[/Set]> --answers <file.json> --confirm "BUILD <host> <path> <digest>" [--json] [connection flags]',
+  options: { path: { type: "string" }, answers: { type: "string" }, confirm: { type: "string" } },
+  run: (ctx) =>
+    usageGuard(ctx, async () => {
+      const rawPath = str(ctx.values.path);
+      if (!rawPath) throw new UsageError("Pass --path Sport/Year/Manufacturer[/Set].");
+      const path = parsePathArg(rawPath);
+      let answers;
+      try {
+        answers = parseFixAnswers(await readAnswersFile(str(ctx.values.answers)));
+      } catch (err) {
+        if (err instanceof UsageError) throw err;
+        throw new UsageError(`--answers: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const conn = ctx.connect();
+      const expected = fixConfirmPhrase(conn.target, path, answers);
+      let confirm: string | undefined;
+      if (conn.auth === "machine") {
+        if (str(ctx.values.confirm) !== undefined) {
+          ctx.io.stderr("setbuild: --confirm is ignored with --auth machine; the phrase is typed at the prompt.");
+        }
+        if (!ctx.io.prompt) throw new UsageError(FIX_MACHINE_NEEDS_TTY);
+        confirm = await promptConfirm(ctx, expected, conn.target.host);
+      } else {
+        confirm = str(ctx.values.confirm);
+        if (confirm === undefined) confirm = await promptConfirm(ctx, expected, conn.target.host);
+        if (confirm === undefined) throw new UsageError(`fix writes; pass --confirm "${expected}".`);
+      }
+      // Checked before the client exists: creating it starts the token mint.
+      assertPhrase(expected, confirm);
+      const client = makeClient(conn.target, conn.tokens, { transport: conn.transport });
+      try {
+        const report = await fixAttention(client, conn.target, path, answers, confirm);
+        ctx.io.stdout(scrub(ctx.json ? JSON.stringify(report, null, 2) : fixMarkdown(report).trimEnd(), secretsOf(ctx)));
+        // A refused answer is left for the operator, like an apply stop.
+        return report.results.some((r) => r.outcome === "refused") ? EXIT_STOPPED : 0;
+      } finally {
+        await client.close();
+      }
+    }),
+};
+
 export const RUNNER_COMMANDS: Record<string, CommandSpec> = {
   inspect: inspectCommand,
   plan: planCommand,
@@ -533,4 +629,6 @@ export const RUNNER_COMMANDS: Record<string, CommandSpec> = {
   "confirm-phrase": confirmPhraseCommand,
   "draft-set": draftSetCommand,
   "build-set": buildSetCommand,
+  attention: attentionCommand,
+  fix: fixCommand,
 };

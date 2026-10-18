@@ -20,9 +20,9 @@ vi.mock("convex/browser", () => {
 import { fakeJwt, publishableKeyFor } from "../auth/test-helpers";
 import { main, type CliIO } from "../cli";
 import { parseTarget } from "../client/target";
-import { specConfirmPhrase } from "../service";
+import { fixConfirmPhrase, specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
-import { BUILD_SET_NEEDS_TTY, draftMarkdown, MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
+import { BUILD_SET_NEEDS_TTY, draftMarkdown, FIX_MACHINE_NEEDS_TTY, MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
 import { compactDraftReport } from "./draft";
 import type { DraftedReport } from "../service";
 
@@ -336,5 +336,49 @@ describe("draftMarkdown", () => {
     expect(full).toContain("build row 11");
     expect(full).toContain("Heritage 969");
     expect(full).not.toContain('detail "full"');
+  });
+});
+
+describe("setbuild fix", () => {
+  const PATH_ARG = "Baseball/2014/Topps/Topps Chrome";
+  const ANSWERS = { cards: [{ cardNumber: "103b", answer: { title: "2014 Topps Chrome #103b Jose Fernandez" } }] };
+  const FIX_PHRASE = fixConfirmPhrase(parseTarget("https://happy-otter-123.convex.cloud"), parsePathArg(PATH_ARG), ANSWERS);
+
+  async function answersFile(content: unknown = ANSWERS): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "setbuild-fix-"));
+    const p = join(dir, "answers.json");
+    await writeFile(p, JSON.stringify(content));
+    return p;
+  }
+
+  test("without --confirm (no TTY) names the phrase over these answers and exits 2 before any network call", async () => {
+    const a = io(TESTING_ENV);
+    expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile()], a)).toBe(2);
+    expect(a.err.join("\n")).toContain(`--confirm "${FIX_PHRASE}"`);
+    expect(FIX_PHRASE).toMatch(/^BUILD happy-otter-123\.convex\.cloud Baseball\/2014\/Topps\/Topps Chrome [0-9a-f]{8}$/);
+    expect(sent()).toBe(0);
+  });
+
+  test("a phrase for other answers is refused before any network call", async () => {
+    const a = io(TESTING_ENV);
+    const other = { cards: [{ cardNumber: "103b", answer: { noTeam: true } }] };
+    expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile(other), "--confirm", FIX_PHRASE], a)).toBe(1);
+    expect(a.err.join("\n")).toMatch(/ConfirmMismatch/);
+    expect(sent()).toBe(0);
+  });
+
+  test("machine auth without a terminal refuses, before any network call", async () => {
+    const a = io(ENV);
+    expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile(), "--confirm", FIX_PHRASE], a)).toBe(2);
+    expect(a.err.join("\n")).toContain(FIX_MACHINE_NEEDS_TTY);
+    expect(sent()).toBe(0);
+  });
+
+  test("an answers file the fixers do not take is a usage error", async () => {
+    const a = io(TESTING_ENV);
+    const bad = { cards: [{ cardNumber: "1", answer: { teams: ["Padres"], title: "x" } }] };
+    expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile(bad)], a)).toBe(2);
+    expect(a.err.join("\n")).toMatch(/--answers/);
+    expect(sent()).toBe(0);
   });
 });

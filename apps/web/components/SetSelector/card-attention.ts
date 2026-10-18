@@ -55,3 +55,25 @@ export const ATTENTION_LABELS: Record<AttentionKind, string> = {
 export function attentionItemLabel(item: { kind: string }): string {
   return ATTENTION_LABELS[item.kind as AttentionKind] ?? "needs a look";
 }
+
+/**
+ * NEO-335 — the line the walker ends on. "All clear" when nothing is left; when
+ * cards are still waiting on the automatic team lookup (see
+ * `isAwaitingTeamLookup`), it says so, because those can still join the walk
+ * after the operator has finished it.
+ *
+ * Phase 2 wording (Jason-approved): "All clear for now. Still looking up teams
+ * for K cards." The singular keeps "teams" — a card can carry more than one.
+ *
+ * NEO-339: moved here from `CardAttentionWalker.tsx` (which re-exports it) so
+ * the set-build tool's attention listing ends on the walker's own sentence
+ * without importing a React component.
+ */
+export function walkDoneLine(awaitingLookup: number): string {
+  if (awaitingLookup <= 0) {
+    return "All clear — nothing on this checklist needs attention.";
+  }
+  return `All clear for now. Still looking up teams for ${awaitingLookup} ${
+    awaitingLookup === 1 ? "card" : "cards"
+  }.`;
+}

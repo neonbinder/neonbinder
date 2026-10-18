@@ -12,7 +12,10 @@
  *      proves the server and the CLI bind the same host, scope and spec
  *      digest;
  *   4. nb_apply with that phrase: no stop, and every expected count matches;
- *   5. nb_inspect for each `after` expectation.
+ *   5. nb_inspect for each `after` expectation;
+ *   6. nb_attention on each `after` set: listing only (it writes nothing on
+ *      the shared seed): it returns, with totals and a summary line, and the
+ *      apply's own `attentionLine` was there.
  *
  * Exits 0 when every check passed, 1 on any mismatch. Prints one line per
  * check. The server's stderr is captured and shown (redacted) only on failure;
@@ -53,6 +56,7 @@ import {
   countOpenDecisions,
   formatPath,
   type ApplyReport,
+  type AttentionReport,
   type InspectReport,
   type InspectRow,
   type NodePath,
@@ -271,6 +275,8 @@ export async function runSmokeSequence(
       const got = report.counts?.[key];
       if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}`);
     }
+    // A build always ends by saying what is left for a person.
+    if ((report.setLinks?.length ?? 0) > 0 && !report.attentionLine) problems.push("the report has no attentionLine");
     const shown = Object.keys(o.expect.apply.counts)
       .map((k) => `${k} ${report.counts?.[k]}`)
       .join(", ");
@@ -284,7 +290,38 @@ export async function runSmokeSequence(
 
   // 5. after
   await inspectAll("after", o.expect.after);
+
+  // 6. attention: listing only. The seed's sets have many readers, so this
+  // never answers anything; it proves the tool returns what it promises.
+  for (const exp of o.expect.after) {
+    const path = exp.path as NodePath;
+    if (!("set" in path) || !path.set) continue;
+    const label = `nb_attention ${formatPath(path)}`;
+    await attempt(label, async () => {
+      const report = await call<AttentionReport>(client, "nb_attention", { path }, READ_TIMEOUT_MS);
+      const problems = attentionShapeProblems(report);
+      return record(problems.length === 0, label, problems.length === 0 ? report.summary : problems.join("; "));
+    });
+  }
   return checks;
+}
+
+/** What an nb_attention result must carry, whatever the set holds. Pure. */
+export function attentionShapeProblems(r: AttentionReport): string[] {
+  const problems: string[] = [];
+  const t = r.totals;
+  for (const k of ["cards", "awaitingTeamLookup", "namesToCheck", "slSetsToSort"] as const) {
+    if (typeof t?.[k] !== "number") problems.push(`totals.${k} is missing`);
+  }
+  if (!t?.byKind || typeof t.byKind !== "object") problems.push("totals.byKind is missing");
+  if (typeof r.summary !== "string" || r.summary === "") problems.push("summary is missing");
+  if (!Array.isArray(r.cards) || !Array.isArray(r.names) || !Array.isArray(r.notices)) problems.push("cards, names or notices is not a list");
+  else {
+    if (r.cards.length !== t.cards) problems.push(`${r.cards.length} cards listed, totals.cards says ${t.cards}`);
+    const sides = r.names.reduce((n, x) => n + x.sides.length, 0);
+    if (sides !== t.namesToCheck) problems.push(`${sides} name sides listed, totals.namesToCheck says ${t.namesToCheck}`);
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------

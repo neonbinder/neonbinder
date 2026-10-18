@@ -17,6 +17,8 @@ npm run setbuild -- whoami|inspect|plan|apply|decisions-template|schema|mcp-smok
 npm run setbuild -- draft-set --path "Sport/Year/Manufacturer/Set" --out draft.json   # read-only draft
 npm run setbuild -- build-set --path "Sport/Year/Manufacturer/Set"                    # terminal only: draft → approve → apply
 npm run --silent setbuild -- confirm-phrase --spec <file.json> --convex-url <url>   # offline
+npm run setbuild -- attention "Sport/Year/Manufacturer[/Set]" [--detail full]       # read-only: what still needs a person
+npm run setbuild -- fix --path "Sport/Year/Manufacturer/Set" --answers answers.json  # writes: answer it
 npm run setbuild:mcp          # MCP server over stdio (repo-root .mcp.json: nb-setbuild)
 ```
 
@@ -75,6 +77,27 @@ walk already holds, so it costs no query. It is absolute on `--app-url` /
 under the report's target line, and `inspect` prints the node's link under
 its path.
 
+**A build is not done while the set still needs a person.** Every apply
+ends by reading, per set in `setLinks`, what the Set Builder would still
+show (`runner/attention.ts`, queries only): the cards the checklist header's
+"N need you" pill counts (`lib/attention.ts`, over `deriveCardAttention`),
+the "N names to check" suggestions on the set and every row under it
+(`lib/name-suggestions.ts`), and the brand's SportLots sets to sort. Each
+link gains `attention` (totals and one line) and the report gains
+`attentionLine`: "Built and all clear." only when nothing on any set is
+waiting, lookups included. A failed read is said in the line, never a lost
+report. `nb_attention` / `attention` lists every item with the facts its
+fixer shows and the answers it takes; `nb_fix` / `fix` answers them through
+the fixers' own mutations (`lib/attention-answers.ts`: `updateCard`,
+`confirmCardNoTeam`, the pickers' `findOrCreate`) and the names dialog's
+(`applySelectorSyncSuggestions`, `baseVersion` read at fix time, the label
+checked against a fresh read, 200 decisions per call). The answer shapes are
+one zod schema (`lib/fix-answers.ts`) shared by the tool and the CLI's
+`--answers` file, so both compute the same phrase. Sync notices are listed
+read-only; the SportLots review and an open entity review point at
+`nb_sl_review_apply` and `nb_decide`. `nb_inspect` takes `attention: true`
+(CLI `--attention`) for the totals alone.
+
 A spec check that fails during apply stops its step the same way. That
 covers an expected count (`expectCards`, `expectRows`,
 `group.expectUngrouped`), a Match Cards answer naming a card the fetch does
@@ -126,19 +149,19 @@ spec/      the zod spec schema and loader
 lib/       one module per operation (credentials, sync, map base, reconcile, group parallels, review, commit, parallel build)
 runner/    plan, apply and draft: ordering, idempotency, stopAt (first / collect), open-decision templates
 service.ts the seam the CLI and the MCP tools both call (read vs write halves)
-mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
+mcp*.ts    the MCP server, its ten tools, mcp-smoke and oneshot-smoke
 ```
 
 ## Rules to keep
 
 - **Read and write are separate objects** in `service.ts`. Read tools hold no
-  reference to the write half, and `inspect` / `reviewItems` run on
+  reference to the write half, and `inspect` / `reviewItems` / `attention` run on
   `queryOnlyClient` (a mutation or action throws before it is sent); `plan`
   runs on `readOnlyClient`, which also allows the marketplace candidate read.
 - **The confirm phrase is `BUILD <host> <scope> <digest>`**, the digest being
   8 hex of SHA-256 over canonical JSON (`client/target.ts`) of the parsed spec
   or the write's arguments. One helper per write in `service.ts`
-  (`specConfirmPhrase`, `decideConfirmPhrase`, …) is used by both the MCP tool
+  (`specConfirmPhrase`, `decideConfirmPhrase`, `fixConfirmPhrase`, …) is used by both the MCP tool
   and the service, so the two cannot drift. Never compose a phrase elsewhere.
 - **Writes check the phrase twice**: in the MCP tool and in the service. On
   the CLI, `--auth testing` takes `--confirm` (or a TTY prompt); `--auth
@@ -233,7 +256,9 @@ per run, required by the gate; `seed-mobile` waits for it): `oneshot-smoke --ans
 --expect playwright/seed/oneshot.expect.json` drafts 2024 Topps Chrome Black,
 checks the draft merged with the committed answers has the committed spec's
 digest (`mergeDraftAnswers`), then plans, applies (`stopAt: "end"`) and
-inspects. The draft's only open decisions may be card conflicts and review
+inspects, then (the expect file's `attention` block) lists what the built set
+still needs, answers it with the committed `fix` answers through `nb_fix`, and
+checks exactly those items are gone. The draft's only open decisions may be card conflicts and review
 names, answered by the committed spec; its leaves and review answers must be
 subsets of the committed spec's, and everything else must match exactly. Placeholder fixture files (`"measured": false`) fail it on purpose.
 Neither job prints the deployment: the host is masked and redacted.

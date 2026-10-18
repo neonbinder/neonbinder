@@ -45,7 +45,9 @@ vi.mock("convex/react", () => ({
 // Deliberately NOT a kind any current registry entry claims — see the note
 // above. If a future ticket ever registers a fixer for `somethingFromTheFuture`
 // (it should not), change this string, not the assertions.
-vi.mock("./card-attention", () => ({
+vi.mock("./card-attention", async (importOriginal) => ({
+  // NEO-339: the walker's done line moved into this module; keep the real one.
+  walkDoneLine: (await importOriginal<typeof import("./card-attention")>()).walkDoneLine,
   deriveCardAttention: () => [{ kind: "somethingFromTheFuture" }],
   needsAttention: () => true,
   attentionItemLabel: () => "needs something this app version cannot do",

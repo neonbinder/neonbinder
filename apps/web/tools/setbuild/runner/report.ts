@@ -11,7 +11,14 @@
 
 import { writeFile } from "node:fs/promises";
 import { scrub } from "../auth/token-source";
-import { countOpenDecisions, type ApplyReport, type OpenDecisions, type PlanReport } from "../service";
+import {
+  countOpenDecisions,
+  type ApplyReport,
+  type AttentionReport,
+  type FixReport,
+  type OpenDecisions,
+  type PlanReport,
+} from "../service";
 
 export function isApplyReport(r: PlanReport | ApplyReport): r is ApplyReport {
   return "counts" in r;
@@ -55,7 +62,10 @@ export function reportMarkdown(r: PlanReport | ApplyReport): string {
   out.push(`Target \`${r.target.host}\` · confirm with \`${r.confirmPhrase}\``);
   if (r.setLinks?.length) {
     out.push("");
-    for (const s of r.setLinks) out.push(`Open ${s.path} in the Set Builder: ${s.link}`);
+    for (const s of r.setLinks) {
+      out.push(`Open ${s.path} in the Set Builder: ${s.link}`);
+      if (s.attention) out.push(`- ${s.attention.summary}`);
+    }
   }
   if (apply) {
     out.push("");
@@ -87,6 +97,63 @@ export function reportMarkdown(r: PlanReport | ApplyReport): string {
     out.push("");
     out.push("Fill in the template (JSON report, `template`) and run again.");
   }
+  // The run's last word: a build that leaves something for a person never reads as done.
+  if (apply && r.attentionLine) {
+    out.push("");
+    out.push(`**${r.attentionLine}**`);
+  }
+  return `${out.join("\n")}\n`;
+}
+
+const rowWords = (row: { type?: string; name?: string; parallel?: string } | null | undefined): string =>
+  [row?.type, row?.name, row?.parallel].filter((s): s is string => typeof s === "string" && s !== "").join(" › ") || "Base";
+
+/** `setbuild attention` for a person: the line first, then every item with its link. */
+export function attentionMarkdown(r: AttentionReport): string {
+  const out: string[] = [`## setbuild attention: ${r.pathText}`, "", r.summary, "", `Open it in the Set Builder: ${r.link}`];
+  if (r.cards.length > 0) {
+    out.push("", `### ${r.totals.cards} card${r.totals.cards === 1 ? "" : "s"}`, "");
+    for (const c of r.cards) {
+      const reasons = c.reasons.length ? ` — ${c.reasons.join("; ")}` : "";
+      out.push(`- ${c.rowLabel} #${c.cardNumber} ${c.cardName}${reasons} (${c.link})`);
+    }
+  }
+  if (r.names.length > 0) {
+    out.push("", `### ${r.totals.namesToCheck} name${r.totals.namesToCheck === 1 ? "" : "s"} to check`, "");
+    for (const n of r.names) {
+      const sides = n.sides.map((x) => `${x.side === "bsc" ? "BSC" : "SportLots"} calls it “${x.label}”${x.foldEqual ? " (style only)" : ""}`);
+      out.push(`- ${n.where}: NB says “${n.currentValue}”; ${sides.join("; ")} (${n.link})`);
+    }
+  }
+  if (r.slReview) {
+    out.push("", `### ${r.slReview.pending} SportLots set${r.slReview.pending === 1 ? "" : "s"} to sort`, "");
+    for (const row of r.slReview.rows?.rows ?? []) out.push(`- ${row.slId} “${row.name}”${row.suggestion ? ` (maybe ${row.suggestion})` : ""}`);
+    out.push(`Answer with ${r.slReview.answerWith} on the brand-year.`);
+  }
+  if (r.review) {
+    out.push("", "### Entity review open", "");
+    for (const row of r.review.rows) out.push(`- ${rowWords(row)}`);
+    out.push(`Answer with ${r.review.answerWith}.`);
+  }
+  if (r.notices.length > 0) {
+    out.push("", "### Sync notices", "");
+    for (const n of r.notices) {
+      const bits = [n.status, n.unlinked ? `${n.unlinked} unlinked` : "", n.twinsLeft ? `${n.twinsLeft} twins left` : "", n.message ?? ""].filter(Boolean);
+      out.push(`- ${n.where}: ${bits.join("; ")} (${n.link})`);
+    }
+  }
+  return `${out.join("\n")}\n`;
+}
+
+/** `setbuild fix` for a person. */
+export function fixMarkdown(r: FixReport): string {
+  const out: string[] = [`## setbuild fix: ${r.path}`, ""];
+  out.push(`Applied ${r.applied.cards} card answer${r.applied.cards === 1 ? "" : "s"} and ${r.applied.names} name answer${r.applied.names === 1 ? "" : "s"}.`, "");
+  for (const x of r.results) {
+    const warning = "warning" in x && x.warning ? ` (${x.warning})` : "";
+    out.push(`- \`${x.at}\` ${x.outcome}: ${x.detail}${warning}`);
+  }
+  out.push("", `Still: ${r.summary}`);
   return `${out.join("\n")}\n`;
 }
 

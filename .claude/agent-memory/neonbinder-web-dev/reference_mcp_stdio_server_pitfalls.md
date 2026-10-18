@@ -34,4 +34,14 @@ Things that bit or nearly bit while building `tools/setbuild/mcp*.ts` on
   specifier to a scratch stub, passed via `NODE_OPTIONS=--import=<abs>` — it
   propagates into the spawned server child. Keep hook + stub in the scratchpad.
 
+- **A new service method is wired in four places, not one:** `runner/service.ts`,
+  `mcp.ts`'s `lazyService` (which must forward EVERY argument; it once dropped
+  `stopAt`, and dropped `inspect`'s options until NEO-339 attention) and
+  `unavailableService`, plus the fake services in `mcp-allowlist.test.ts`,
+  `mcp-tools.test.ts`, `mcp-smoke.test.ts`, `mcp-oneshot.test.ts`. Pass a
+  trailing option only when given: `toHaveBeenCalledWith(path)` fails on
+  `(path, undefined)`.
+- `eslint .` ignores `tools/setbuild`; its gates are the setbuild tsconfig
+  (inside `npm run typecheck`) and vitest.
+
 Related: [[reference-vitest-components-project-only-tsx]], [[gates-in-a-shared-worktree]].

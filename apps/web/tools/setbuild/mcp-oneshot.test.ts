@@ -82,7 +82,44 @@ const EXPECT: OneshotExpect = oneshotExpectSchema.parse({
   apply: { counts: { reconciled: 2, grouped: 1, committed: 110, built: 110 } },
 });
 
-function fakeService(o: { spec?: unknown; open?: OpenDecisions; counts?: Record<string, number> } = {}) {
+const SUMMARY = { cards: 0, byKind: {}, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, summary: "All clear — nothing on this checklist needs attention." };
+
+/** A built set with one missing-team card and one name to check, then (after nb_fix) neither. */
+function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refused" } = {}) {
+  let fixed = false;
+  const awaiting = [...(o.awaiting ?? [0])];
+  const before = () => ({
+    pathText: SCOPE,
+    totals: { cards: 1, byKind: { missingTeam: 1 }, awaitingTeamLookup: awaiting.length > 1 ? awaiting.shift()! : awaiting[0], namesToCheck: 1, slSetsToSort: 0 },
+    summary: "1 card needs you on Topps Chrome Black; 1 name to check.",
+    cards: [{ row: { type: "Base" }, rowLabel: "Base", cardNumber: "7", cardName: "Card 7", cardId: "card-7", kinds: ["missingTeam"] }],
+    names: [{ path: PATH, row: {}, where: SCOPE, rowId: "set-1", sides: [{ side: "sportlots", label: "Chrome Black", foldEqual: false }] }],
+    notices: [],
+  });
+  const after = () => ({ ...before(), totals: { ...before().totals, cards: 0, byKind: {}, namesToCheck: 0 }, summary: SUMMARY.summary, cards: [], names: [] });
+  return {
+    attention: vi.fn(async () => (fixed ? after() : before())),
+    fix: vi.fn(async (_p: unknown, a: { cards?: unknown[]; names?: unknown[] }) => {
+      fixed = o.fixOutcome !== "refused";
+      const n = (a.cards?.length ?? 0) + (a.names?.length ?? 0);
+      return {
+        results: Array.from({ length: n }, (_, i) => ({ at: `x[${i}]`, outcome: o.fixOutcome ?? "applied", detail: "d" })),
+        summary: SUMMARY.summary,
+      };
+    }),
+  };
+}
+
+const FIX = {
+  cards: [{ cardNumber: "7", answer: { noTeam: true } }],
+  names: [{ side: "sportlots", action: "decline", label: "Chrome Black" }],
+};
+const MEASURED = { measured: true, totals: { cards: 1, byKind: { missingTeam: 1 }, namesToCheck: 1 }, fix: FIX };
+
+function fakeService(
+  o: { spec?: unknown; open?: OpenDecisions; counts?: Record<string, number>; attention?: ReturnType<typeof attentionWorld> } = {},
+) {
+  const att = o.attention ?? attentionWorld();
   return {
     target: TARGET,
     read: {
@@ -98,12 +135,19 @@ function fakeService(o: { spec?: unknown; open?: OpenDecisions; counts?: Record<
         marketplaceCalls: 12,
         durationMs: 3000,
       })),
+      attention: att.attention,
     },
     write: {
-      apply: vi.fn(async () => ({ counts: o.counts ?? { reconciled: 2, grouped: 1, committed: 110, built: 110, skipped: 0 }, durationMs: 9000 })),
+      apply: vi.fn(async () => ({
+        counts: o.counts ?? { reconciled: 2, grouped: 1, committed: 110, built: 110, skipped: 0 },
+        durationMs: 9000,
+        setLinks: [{ path: SCOPE, link: "/admin/set-builder", attention: SUMMARY }],
+        attentionLine: "Built and all clear.",
+      })),
       decide: vi.fn(),
       buildParallel: vi.fn(),
       slReviewApply: vi.fn(),
+      fix: att.fix,
     },
   };
 }
@@ -134,7 +178,7 @@ async function connect(service: unknown) {
 
 const run = (service: ReturnType<typeof fakeService>, expect: OneshotExpect = EXPECT) =>
   connect(service).then((client) =>
-    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: ANSWERS, expect, confirm: PHRASE }),
+    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: ANSWERS, expect, confirm: PHRASE, sleep: async () => {} }),
   );
 
 describe("runOneshotSequence", () => {
@@ -150,9 +194,12 @@ describe("runOneshotSequence", () => {
       "review answers",
       "nb_plan",
       "nb_apply",
+      "nb_apply attention",
       "insert with a built parallel",
       "Parallel rows built from Base",
     ]);
+    // No attention block: nothing is listed or answered.
+    expect(service.read.attention).not.toHaveBeenCalled();
     expect(service.read.draftSet).toHaveBeenCalledWith(PATH, {});
     expect(service.write.apply).toHaveBeenCalledTimes(1);
     expect(service.write.apply.mock.calls[0]).toEqual([ANSWERS, PHRASE, { stopAt: "end" }]);
@@ -334,5 +381,43 @@ describe("compareDraft: review answers", () => {
     const bad = await runOneshotSequence(await connect(fail), { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE });
     expect(bad.find((c) => c.label === "review answers")!.ok).toBe(false);
     expect(fail.write.apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("runOneshotSequence — attention (step 7)", () => {
+  test("an unmeasured block lists, FAILS, and prints what it measured; nothing is answered", async () => {
+    const service = fakeService();
+    const checks = await run(service, oneshotExpectSchema.parse({ ...EXPECT, attention: { measured: false } }));
+    const att = checks.find((c) => c.label === "nb_attention")!;
+    expect(att.ok).toBe(false);
+    expect(att.detail).toContain(NOT_MEASURED);
+    expect(att.detail).toContain('cards 1, byKind {"missingTeam":1}, namesToCheck 1');
+    expect(att.detail).toContain("Base #7 (missingTeam)");
+    expect(att.detail).toContain("sportlots “Chrome Black”");
+    expect(service.write.fix).not.toHaveBeenCalled();
+  });
+
+  test("measured: waits out the team lookup, matches the totals, fixes, and sees exactly those gone", async () => {
+    const att = attentionWorld({ awaiting: [3, 1, 0] });
+    const service = fakeService({ attention: att });
+    const checks = await run(service, oneshotExpectSchema.parse({ ...EXPECT, attention: MEASURED }));
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    expect(checks.slice(-4).map((c) => c.label)).toEqual(["nb_attention", "nb_fix answers", "nb_fix", "nb_attention after nb_fix"]);
+    expect(att.attention.mock.calls.length).toBeGreaterThanOrEqual(4);
+    // One refused call (no phrase), then one with the tool's own phrase.
+    expect(att.fix).toHaveBeenCalledTimes(1);
+  });
+
+  test("totals that drift from the measured block fail before any answer", async () => {
+    const service = fakeService();
+    const checks = await run(service, oneshotExpectSchema.parse({ ...EXPECT, attention: { ...MEASURED, totals: { ...MEASURED.totals, cards: 2 } } }));
+    expect(checks.at(-1)).toMatchObject({ ok: false, label: "nb_attention" });
+    expect(service.write.fix).not.toHaveBeenCalled();
+  });
+
+  test("an answer that is refused fails nb_fix and stops there", async () => {
+    const service = fakeService({ attention: attentionWorld({ fixOutcome: "refused" }) });
+    const checks = await run(service, oneshotExpectSchema.parse({ ...EXPECT, attention: MEASURED }));
+    expect(checks.at(-1)).toMatchObject({ ok: false, label: "nb_fix" });
   });
 });

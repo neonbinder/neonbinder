@@ -4,7 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ConfirmMismatch } from "../client/target";
 import { READ_TOOLS, registerTools } from "../mcp-tools";
-import { countOpenDecisions, decideConfirmPhrase, specConfirmPhrase } from "../service";
+import { countOpenDecisions, decideConfirmPhrase, fixConfirmPhrase, specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
 import { DECISION_PLACEHOLDER } from "../lib/review";
 import { applySpec } from "./apply";
@@ -43,6 +43,10 @@ interface World {
   baseCards: number;
   sepiaCards: number;
   reviewRows: Array<Record<string, unknown>>;
+  /** `getCardChecklist` rows on Base, for the attention reads. */
+  attentionCards?: Array<Record<string, unknown>>;
+  /** `getSelectorSyncSuggestions` by `level:parentId`. */
+  suggestions?: Record<string, unknown[]>;
 }
 
 const sel = (id: string, level: string, value: string, extra: Record<string, unknown> = {}) => ({
@@ -153,7 +157,13 @@ function world(w: World): FakeClient {
         droppedPendingNameCount: 0,
       };
     })
-    .on("checklistCandidates:discardCandidates", { deleted: 2, hasMore: false });
+    .on("checklistCandidates:discardCandidates", { deleted: 2, hasMore: false })
+    // What attention reads (the end of every apply, nb_attention, inspect --attention).
+    .on("selectorOptions:getCardChecklist", (a) => (a.selectorOptionId === "vtB" ? w.attentionCards ?? [] : []))
+    .on("selectorOptions:getSelectorSyncSuggestions", (a) => w.suggestions?.[`${a.level}:${a.parentId ?? ""}`] ?? [])
+    .on("selectorOptions:getSelectorSyncStatus", null)
+    .on("slSetReview:getSlSetReviewSummary", null)
+    .on("slSetReview:getSlSetReview", null);
 }
 
 const ohtaniRow = () => ({
@@ -294,6 +304,9 @@ describe("apply — idempotent and resumable", () => {
   });
 });
 
+/** A set link without its `attention` (the attention tests below cover that). */
+const linksOnly = (l: Array<{ path: string; link: string }> | undefined) => l?.map(({ path, link }) => ({ path, link }));
+
 describe("Set Builder links (Jason: every build gives the operator the link to inspect it)", () => {
   const ORIGIN_TARGET = { ...FAKE_TARGET, appOrigin: "https://app.example.test" };
   const SET_LINK = "https://app.example.test/admin/set-builder?sport=sp&year=yr&brand=mf&set=st";
@@ -303,7 +316,7 @@ describe("Set Builder links (Jason: every build gives the operator the link to i
     const r = await applySpec(world({ ...done(), sepiaCards: 0 }), ORIGIN_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
     expect(r.counts.built).toBe(2);
     expect(r.stoppedAt).toBeUndefined();
-    expect(r.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+    expect(linksOnly(r.setLinks)).toEqual([{ path: SCOPE, link: SET_LINK }]);
     expect(Object.keys(r).slice(0, 3)).toEqual(["target", "scope", "setLinks"]);
   });
 
@@ -311,7 +324,7 @@ describe("Set Builder links (Jason: every build gives the operator the link to i
     const client = world(done());
     const r = await applySpec(client, ORIGIN_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
     expect(client.writes()).toEqual([]);
-    expect(r.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+    expect(linksOnly(r.setLinks)).toEqual([{ path: SCOPE, link: SET_LINK }]);
   });
 
   test("a blocked run gives the link too; with no app origin it is root-relative", async () => {
@@ -319,7 +332,7 @@ describe("Set Builder links (Jason: every build gives the operator the link to i
       pausedPlatforms: "",
     });
     expect(r.stoppedAt).toMatchObject({ step: 0 });
-    expect(r.setLinks).toEqual([{ path: SCOPE, link: RELATIVE }]);
+    expect(linksOnly(r.setLinks)).toEqual([{ path: SCOPE, link: RELATIVE }]);
   });
 
   test("a set that never resolves gets no link, never an invented one", async () => {
@@ -337,7 +350,7 @@ describe("Set Builder links (Jason: every build gives the operator the link to i
     raw.steps = [raw.steps[0], raw.steps[0]];
     const client = world(done());
     const r = await applySpec(client, ORIGIN_TARGET, raw, confirmFor(raw), { pausedPlatforms: "" });
-    expect(r.setLinks).toEqual([{ path: SCOPE, link: SET_LINK }]);
+    expect(linksOnly(r.setLinks)).toEqual([{ path: SCOPE, link: SET_LINK }]);
     // The only chain reads are the Base mapping's own, one per step: none for the link.
     expect(one.callsTo("selectorOptions:getAncestorChain")).toHaveLength(1);
     expect(client.callsTo("selectorOptions:getAncestorChain")).toHaveLength(2);
@@ -461,15 +474,18 @@ describe("MCP read tools — structurally read-only (security audit item 2)", ()
     const { mcp, close } = await connect(client);
     try {
       const calls: Record<Exclude<(typeof READ_TOOLS)[number], "nb_draft_set">, Record<string, unknown>> = {
-        nb_inspect: { path: PATH },
+        nb_inspect: { path: PATH, attention: true },
         nb_plan: { spec: spec() },
         nb_review_items: { path: PATH },
+        nb_attention: { path: PATH, detail: "full" },
       };
       // nb_draft_set reads marketplaces through the preview actions; its own
       // test below holds it to exactly those.
       for (const tool of READ_TOOLS.filter((t) => t !== "nb_draft_set") as Array<keyof typeof calls>) {
         const r = await mcp.callTool({ name: tool, arguments: calls[tool] });
         const text = (r.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("");
+        // nb_attention names a set that does not resolve (yet) with candidates, as every tool but inspect does.
+        if (tool === "nb_attention" && r.isError && JSON.parse(text).error === "resolve") continue;
         expect(r.isError, `${tool}: ${text}`).not.toBe(true);
       }
       // The brand-year forms too (the world may not model every read they make;
@@ -477,6 +493,7 @@ describe("MCP read tools — structurally read-only (security audit item 2)", ()
       const brandYear = { sport: "Baseball", year: "2024", manufacturer: "Topps" };
       await mcp.callTool({ name: "nb_inspect", arguments: { path: brandYear } });
       await mcp.callTool({ name: "nb_review_items", arguments: { path: brandYear } });
+      await mcp.callTool({ name: "nb_attention", arguments: { path: brandYear } });
       expect(attempts).toEqual([]);
       expect(client.calls.filter((c) => c.kind === "mutation" || c.kind === "action")).toEqual([]);
     } finally {
@@ -514,5 +531,124 @@ describe("MCP read tools — structurally read-only (security audit item 2)", ()
     );
     await qo.query(api.selectorOptions.getSelectorOptions, { level: "sport" });
     expect(inner.calls.map((c) => `${c.kind} ${c.fn}`)).toEqual(["query selectorOptions:getSelectorOptions"]);
+  });
+});
+
+describe("attention: a build that leaves something for a person never reads as done", () => {
+  /** A Base card with no team and no lookup pending: the walker's missingTeam. */
+  const teamless = (n: string) => ({
+    _id: `card-${n}`,
+    _creationTime: 1,
+    cardNumber: n,
+    cardName: `Player ${n}`,
+    selectorOptionId: "vtB",
+    playerIds: ["pl1"],
+    teamOnCardIds: [],
+    platformData: {},
+  });
+  const nameToCheck = {
+    "setName:mf": [
+      { existingId: "st", currentValue: "Topps Chrome", suggestions: [{ side: "sportlots", label: "Chrome", foldEqual: false }], baseVersion: 4 },
+    ],
+  };
+
+  /** The per-card fixer reads `nb_attention` makes; the end of an apply and inspect make none. */
+  const FIXER_READS = [
+    "cardChecklist:suggestedTeamsForCard",
+    "players:getManyByIds",
+    "teams:getManyByIds",
+    "teams:erasByNameAndSport",
+    "selectorOptions:previewListingTitle",
+  ];
+  const fixerReads = (client: ReturnType<typeof world>) => client.calls.filter((c) => FIXER_READS.includes(c.fn));
+
+  test("apply: each set link carries attention, and the last line says what is left", async () => {
+    const client = world({ ...done(), attentionCards: [teamless("7")], suggestions: nameToCheck });
+    const r = await applySpec(client, FAKE_TARGET, spec(), CONFIRM, {
+      pausedPlatforms: "",
+    });
+    // Totals only: the checklist walk and the rule, no per-card fixer read.
+    expect(fixerReads(client)).toEqual([]);
+    expect(r.setLinks?.[0].attention).toMatchObject({ cards: 1, byKind: { missingTeam: 1 }, namesToCheck: 1, slSetsToSort: 0 });
+    expect(r.setLinks?.[0].attention?.summary).toBe("1 card needs you on Topps Chrome; 1 name to check.");
+    expect(r.attentionLine).toBe("Built, but not done: 1 card needs you on Topps Chrome; 1 name to check. Run nb_attention to walk them.");
+  });
+
+  test("apply: all clear only when nothing is waiting", async () => {
+    const r = await applySpec(world(done()), FAKE_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    expect(r.attentionLine).toBe("Built and all clear.");
+    expect(r.setLinks?.[0].attention?.summary).toBe("All clear — nothing on this checklist needs attention.");
+  });
+
+  test("apply: the attention read is queries only, and its failure costs the report nothing", async () => {
+    const client = world(done());
+    await applySpec(client, FAKE_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    const before = client.writes().length;
+    client.on("selectorOptions:getCardChecklist", () => {
+      throw new Error("Convex is down");
+    });
+    const r = await applySpec(client, FAKE_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    expect(client.writes().length).toBe(before);
+    expect(r.setLinks?.[0].attention).toBeUndefined();
+    expect(r.attentionLine).toMatch(/^Built, but not done: could not read what still needs you on Baseball\/2024\/Topps\/Topps Chrome \(Convex is down\)/);
+  });
+
+  test("service.attention lists on queries only; inspect adds the summary only when asked", async () => {
+    const client = world({ ...done(), attentionCards: [teamless("7"), teamless("12")], suggestions: nameToCheck });
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const a = await svc.read.attention(PATH);
+    expect(a.totals).toMatchObject({ cards: 2, namesToCheck: 1, awaitingTeamLookup: 0 });
+    expect(a.cards.map((c) => c.cardNumber)).toEqual(["7", "12"]);
+    expect(a.names[0]).toMatchObject({ where: SCOPE, currentValue: "Topps Chrome", answers: ["accept", "decline"] });
+    expect(a.slReview).toBeNull();
+    expect(a.review).toBeNull();
+    expect(a.summary).toBe("2 cards need you on Topps Chrome; 1 name to check.");
+    expect(client.writes()).toEqual([]);
+
+    expect((await svc.read.inspect(PATH)).attention).toBeUndefined();
+    const readsBefore = fixerReads(client).length;
+    expect((await svc.read.inspect(PATH, { attention: true })).attention?.summary).toBe(a.summary);
+    // inspect --attention is totals only: no per-card fixer read.
+    expect(fixerReads(client).length).toBe(readsBefore);
+    expect(client.writes()).toEqual([]);
+  });
+
+  test("service.fix checks its phrase before any call, and the phrase binds the answers", async () => {
+    const client = world({ ...done(), suggestions: nameToCheck });
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const answers = { names: [{ side: "sportlots" as const, action: "decline" as const, label: "Chrome" }] };
+    const phrase = fixConfirmPhrase(FAKE_TARGET, PATH, answers);
+    const calls = client.calls.length;
+    await expect(svc.write.fix(PATH, answers, undefined)).rejects.toBeInstanceOf(ConfirmMismatch);
+    await expect(
+      svc.write.fix(PATH, { names: [{ ...answers.names[0], action: "accept" }] }, phrase),
+    ).rejects.toBeInstanceOf(ConfirmMismatch);
+    expect(client.calls.length).toBe(calls);
+
+    let declined = false;
+    client.on("selectorOptions:getSelectorSyncSuggestions", (a) => (a.level === "setName" && !declined ? nameToCheck["setName:mf"] : []));
+    client.on("selectorOptions:applySelectorSyncSuggestions", () => {
+      declined = true;
+      return { applied: 0, declined: 1, stale: 0, clashed: 0, skipped: 0 };
+    });
+    const r = await svc.write.fix(PATH, answers, phrase);
+    expect(client.callsTo("selectorOptions:applySelectorSyncSuggestions")[0].args).toEqual({
+      level: "setName",
+      parentId: "mf",
+      decisions: [{ existingId: "st", baseVersion: 4, side: "sportlots", action: "decline" }],
+    });
+    expect(r.applied).toEqual({ cards: 0, names: 1 });
+    expect(r.remaining.namesToCheck).toBe(0);
+    expect(r.summary).toBe("All clear — nothing on this checklist needs attention.");
+  });
+
+  test("service.fix refuses card answers on a brand-year path, before any call", async () => {
+    const client = world(done());
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const brand = { sport: "Baseball", year: "2024", manufacturer: "Topps" };
+    const answers = { cards: [{ cardNumber: "7", answer: { noTeam: true as const } }] };
+    const calls = client.calls.length;
+    await expect(svc.write.fix(brand, answers, fixConfirmPhrase(FAKE_TARGET, brand, answers))).rejects.toThrow(/brand-year/);
+    expect(client.calls.length).toBe(calls);
   });
 });

@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import TeamPicker from "./TeamPicker";
+import { careerHeading, marketplaceHeading, playedHere } from "./attention-rules";
 import { MAX_CARD_TEAMS } from "./card-attention";
 import {
   useAttentionContextOptionId,
@@ -80,59 +81,10 @@ type TeamChip = {
   inSetYear: boolean;
 };
 
-/**
- * "Jimmie Foxx played here" / "Johnny Bench & Pete Rose played here" /
- * "A, B & C played here" — the provenance a chip carries. Full names, never a
- * derived surname: "Ken Griffey Jr." has no safe one.
- */
-export function playedHere(playerNames: string[]): string {
-  const names =
-    playerNames.length <= 2
-      ? playerNames.join(" & ")
-      : `${playerNames.slice(0, -1).join(", ")} & ${playerNames[playerNames.length - 1]}`;
-  return `${names} played here`;
-}
-
-/**
- * The line over the listing's chips. Exported for the copy test. Never names
- * the marketplace (Jason, 2026-10-11) — "the listing".
- *
- *   agreed   — a set-year stint is one of the listing's rows, so it is
- *              preselected and focus is on Save
- *   several  — the name is held in several eras: pick the one on the card
- *   one      — one row: offered, not assumed (the background lookup already
- *              links a lone row whose era fits, so reaching here means it
- *              did not)
- */
-export function marketplaceHeading(listingName: string, rowCount: number, agreed: boolean): string {
-  if (agreed) return `The listing names “${listingName}” and the career agrees — Enter accepts it.`;
-  if (rowCount > 1) {
-    return `The listing names “${listingName}” — ${rowCount} teams share that name. Pick the one on the card.`;
-  }
-  return `The listing names “${listingName}” — pick it if it matches the card.`;
-}
-
-/**
- * The line over the career chips. Exported for the copy test.
- *
- * `uncoveredSetYear` is the set's year when the server fell back to the whole
- * career because no stint covers it; undefined when the set has no year.
- */
-export function careerHeading(
-  inSetYear: boolean,
-  listingDisagrees: boolean,
-  uncoveredSetYear?: number,
-): string {
-  if (!inSetYear) {
-    return uncoveredSetYear !== undefined
-      ? `No ${uncoveredSetYear} team on file — here’s the whole career. Pick the one on the card.`
-      : "No year on this set — here’s the whole career. Pick the one on the card.";
-  }
-  if (listingDisagrees) {
-    return "From the career — the listing names a different team, so pick the one on the card.";
-  }
-  return "Suggested from career history — Enter accepts these.";
-}
+// NEO-339: the chip provenance and the two headings live in the pure
+// `attention-rules.ts`, so the set-build tool says the same words; re-exported
+// here for existing importers.
+export { careerHeading, marketplaceHeading, playedHere } from "./attention-rules";
 
 /**
  * "Ctrl+Enter", or "Cmd+Enter" on a Mac — the save-from-anywhere shortcut as

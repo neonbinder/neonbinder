@@ -13,6 +13,9 @@
  *   batch except by re-running the checklist, so the batch is remembered here
  *   for the life of the process (the MCP server); a later `apply` resumes the
  *   same batch with every decision already recorded.
+ * - `attention` lists on `queryOnlyClient` too (runner/attention.ts) and points
+ *   at any entity review this process holds open for the set; `fix` checks
+ *   its phrase before any call.
  * - The client belongs to the caller (`mcp.ts` closes it).
  * - Nothing here writes to stdout.
  */
@@ -48,6 +51,7 @@ import { checkPausedPlatforms } from "../lib/sync-column";
 import { applySpec, publicApplyReport } from "./apply";
 import { emptyOpenDecisions, noSharedNumbers, RunFailed, type RunOptions, type RunResult } from "./engine";
 import { inspectPath } from "./inspect";
+import { attentionOf, fixAttention } from "./attention";
 import { planSpec } from "./plan";
 import { draftSet } from "./draft";
 import { queryOnlyClient } from "./read-only-client";
@@ -89,7 +93,12 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
   return {
     target,
     read: {
-      inspect: (path) => inspectPath(reads, target, path),
+      inspect: (path, o) => inspectPath(reads, target, path, o),
+      attention: (path, o) =>
+        attentionOf(reads, target, path, {
+          ...(o ?? {}),
+          openReviews: (pathText) => [...sessions.values()].filter((s) => s.path === pathText).map((s) => s.row ?? null),
+        }),
       plan: (spec) => planSpec(client, target, spec, runOpts()),
       // Read-only on NB data: drafts on `draftClient` (runner/draft.ts).
       draftSet: (path, o) => draftSet(client, target, path, { ...(o ?? {}), ...(opts.now ? { now: opts.now } : {}) }),
@@ -197,6 +206,8 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
           durationMs: (opts.now ?? Date.now)() - started,
         };
       },
+
+      fix: (path, answers, confirm) => fixAttention(client, target, path, answers, confirm),
 
       async slReviewApply(path: BrandYearPath, decisions: SlDecision[], confirm): Promise<SlReviewApplyReport> {
         const pathText = formatPath(path);

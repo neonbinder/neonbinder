@@ -75,10 +75,12 @@ export function lazyService(
   const service: SetBuildService = {
     target: conn.target,
     read: {
-      inspect: (path) => get().read.inspect(path),
+      // Options pass through (inspect's `attention`, like apply's `stopAt`).
+      inspect: (path, opts) => get().read.inspect(path, opts),
       plan: (spec) => get().read.plan(spec),
       reviewItems: (path) => get().read.reviewItems(path),
       draftSet: (path, opts) => get().read.draftSet(path, opts),
+      attention: (path, opts) => get().read.attention(path, opts),
     },
     write: {
       // Pass the options through: `stopAt` must reach the runner (nb_apply's
@@ -87,6 +89,7 @@ export function lazyService(
       decide: (path, decisions, confirm) => get().write.decide(path, decisions, confirm),
       buildParallel: (path, name, opts, confirm) => get().write.buildParallel(path, name, opts, confirm),
       slReviewApply: (path, decisions, confirm) => get().write.slReviewApply(path, decisions, confirm),
+      fix: (path, answers, confirm) => get().write.fix(path, answers, confirm),
     },
   };
   return { service, close: async () => client?.close() };
@@ -101,8 +104,8 @@ export function unavailableService(err: unknown): SetBuildService {
     get target(): Target {
       throw err;
     },
-    read: { inspect: fail, plan: fail, reviewItems: fail, draftSet: fail },
-    write: { apply: fail, decide: fail, buildParallel: fail, slReviewApply: fail },
+    read: { inspect: fail, plan: fail, reviewItems: fail, draftSet: fail, attention: fail },
+    write: { apply: fail, decide: fail, buildParallel: fail, slReviewApply: fail, fix: fail },
   };
 }
 

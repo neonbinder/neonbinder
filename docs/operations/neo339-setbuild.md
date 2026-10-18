@@ -35,6 +35,8 @@ explicit answer for every operator decision) and:
 | `mcp-smoke` | **yes** | Spawns the MCP server over stdio and runs inspect, plan, apply, inspect against an expectations file. CI only. |
 | `oneshot-smoke` | **yes** | Spawns the MCP server and proves the one-shot build: draft, merge with the committed answers, plan, apply, inspect. CI only (§2.4). |
 | `confirm-phrase` | no | Offline (no network, no sign-in): prints the confirm phrase `apply` and `nb_apply` need for a spec on a deployment. |
+| `attention` | no | Everything on a set or brand-year still waiting on a person: cards that need you, names to check, SportLots sets to sort, sync notices (§2.5). |
+| `fix` | **yes** | Answers what `attention` listed, through the Set Builder's own saves, from an answers file (§2.5). |
 
 Writes (`apply`, and the MCP write tools) require the **confirm phrase**, bound
 to the target AND to the content being written:
@@ -47,7 +49,7 @@ BUILD <convex host> <scope> <digest>
 - `<scope>` is the `scope` field of the spec: the set path for a one-set spec,
   or a declared name such as `e2e-baseline`. For `nb_decide` and
   `nb_build_parallel` it is the set path, for `nb_sl_review_apply` the
-  brand-year path.
+  brand-year path, for `nb_fix` the path it was given (set or brand-year).
 - `<digest>` is the first 8 hex characters of the SHA-256 of the content as
   canonical JSON (keys sorted, after validation): the parsed spec for
   `apply` / `nb_apply`, the call's own arguments for the other write tools.
@@ -195,9 +197,9 @@ still seeds each shard's own account.
 
 `npm run setbuild:mcp` (stdio). The repo-root `.mcp.json` registers it as
 `nb-setbuild`; it carries environment variable **names** only, expanded from
-your shell. Eight tools: `nb_inspect`, `nb_plan`, `nb_review_items`,
-`nb_draft_set` (read-only on NB data) and `nb_apply`, `nb_decide`,
-`nb_build_parallel`, `nb_sl_review_apply` (write). Each
+your shell. Ten tools: `nb_inspect`, `nb_plan`, `nb_review_items`,
+`nb_draft_set`, `nb_attention` (read-only on NB data) and `nb_apply`,
+`nb_decide`, `nb_build_parallel`, `nb_sl_review_apply`, `nb_fix` (write). Each
 write tool checks the confirm phrase (bound to that call's content) before the
 service is touched and returns the expected phrase on a mismatch. The write
 tools are on no permission allowlist, so Claude Code asks you for each call.
@@ -407,6 +409,95 @@ Until both files are measured they are placeholders (`"measured": false`) and
 the job fails with "fixture not measured yet". A rerun of the oneshot job alone
 (without the seed's reset) drafts an already-built set and will not match;
 rerun the whole workflow.
+
+The expect file's `attention` block is measured on its own. While it reads
+`{ "measured": false }` the job builds and inspects as above, then lists the
+set with `nb_attention` (after waiting, up to 10 minutes, for the BSC team
+lookup to finish), FAILS with "attention fixture not measured yet", and prints
+what it measured: the totals and every item's address. Fill it in from that
+line:
+
+```json
+"attention": {
+  "measured": true,
+  "totals": { "cards": 3, "byKind": { "missingTeam": 3 }, "namesToCheck": 1 },
+  "fix": {
+    "cards": [{ "cardNumber": "<n>", "answer": { "noTeam": true } }],
+    "names": [{ "side": "sportlots", "action": "decline", "label": "<as listed>" }]
+  }
+}
+```
+
+The smoke then requires those totals, sends the `fix` answers through
+`nb_fix` (taking the phrase from the tool's own refusal, as an agent does),
+requires every answer to come back `applied`, and requires a second listing to
+show exactly those items gone. Pick answers that need no judgement (a
+`noTeam` on a card that truly shows none, a `decline` that keeps NB's name, a
+title rewrite of the generated title): the set is rebuilt from a reset each
+run, so the answers are the same every time. `lookupWaitMs` (default 600000)
+bounds the wait.
+
+### 2.5 What still needs a person (`nb_attention`, `nb_fix`)
+
+A build is not done while the set still shows "N need you" or "N names to
+check" in the Set Builder. Every `nb_apply` result ends with
+`attentionLine` ("Built and all clear.", or "Built, but not done: … Run
+nb_attention to walk them.") and each `setLinks` entry carries `attention`
+(the totals and one line). `nb_inspect` with `attention: true` (CLI
+`inspect --attention`) adds the same; it reads every card of every row, so it
+is opt-in.
+
+`nb_attention` (CLI `attention <path>`) lists, for a set:
+
+- `cards`: every card the checklist header's amber pill counts, in the
+  walker's order (missing team, then a name not linked, then titles), each with
+  its row, number, name, `cardId`, Set Builder link, reasons (the Set
+  Builder's own words), the answers it takes, and the facts its fixer shows:
+  the players, the team the listing names and the NB teams that name could
+  mean, career teams, `suggested` (exactly what the Set Builder would
+  preselect; never written unasked), the title with its meter band and the
+  generated title. `detail: "summary"` (default) reads those facts for the
+  first 25 cards; `"full"` for all;
+- `names`: every "name to check" on the set's own row and every row under it
+  (what BSC or SportLots calls the row, when it differs from NB's name);
+- `slReview`: the brand's "SportLots sets to sort" count (answered with
+  `nb_sl_review_apply` on the brand-year, whose `nb_attention` lists the lines);
+- `review`: an entity review this server's `nb_apply` left open (answered with
+  `nb_decide`);
+- `notices`: sync notices the set's columns still show (read-only);
+- `totals.awaitingTeamLookup`: cards whose BSC team lookup has not finished.
+  More cards may join the list as it drains; list again later.
+
+`nb_fix` (CLI `fix --path <path> --answers <file.json>`) answers them through
+the exact saves the fixers and the names dialog make, under one confirm phrase
+over the exact answers:
+
+```json
+{
+  "cards": [
+    { "cardNumber": "12", "answer": { "teams": ["San Diego Padres"] } },
+    { "row": { "type": "Inserts", "name": "Future Stars" }, "cardNumber": "FS-3", "answer": { "noTeam": true } },
+    { "cardNumber": "103b", "answer": { "title": "<the title text>", "variation": "<shorter variation>" } },
+    { "cardNumber": "44", "answer": { "players": [{ "link": "Jose Rodriguez", "birthYear": 2001 }], "teams": [{ "create": { "location": "Wisconsin", "name": "Badgers" } }] } }
+  ],
+  "names": [
+    { "row": { "type": "Inserts", "name": "Future Stars" }, "side": "bsc", "action": "accept", "label": "Future Stars Inserts" },
+    { "side": "sportlots", "action": "decline", "label": "Chrome" }
+  ]
+}
+```
+
+- A card is named by its row (omitted = Base) and number; add `cardId` when
+  the number is on two cards in the row (the listing prints it). A name that
+  is not exactly one row, team or player stops the whole call before anything
+  is written, with the candidates.
+- A title over 80 characters is refused; a variation over 65 is saved with a
+  warning, as the Set Builder allows. A name answer must repeat the label the
+  listing showed; a label that changed since is refused, never accepted unseen.
+- An answer whose item is already gone is reported `moot`; one the save
+  refuses is `refused` with the reason. `remaining` and `summary` say what is
+  still left. CLI `fix` exits 3 when an answer was refused.
+- `--auth machine` takes the phrase at a prompt only, as `apply` does.
 
 ## 3. Production usage
 

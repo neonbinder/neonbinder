@@ -20,6 +20,7 @@
  * | decide          | `decideConfirmPhrase`         | `formatPath(path)` (set) | path + row + the answers     |
  * | buildParallel   | `buildParallelConfirmPhrase`  | `formatPath(path)` (set) | path + row name + rebuild    |
  * | slReviewApply   | `slReviewConfirmPhrase`       | `formatPath(path)` (b-y) | path + the decisions         |
+ * | fix             | `fixConfirmPhrase`            | `formatPath(path)`       | path + card + name answers   |
  *
  * The MCP layer checks the same phrase itself before calling (so a wrong
  * phrase costs zero service calls); the service's own check is the second
@@ -117,6 +118,15 @@ export function buildParallelConfirmPhrase(t: Target, path: SetPath, name: strin
 export function slReviewConfirmPhrase(t: Target, path: BrandYearPath, decisions: SlDecision[]): string {
   const scope = formatPath(path);
   return confirmPhrase(t, scope, contentDigest({ write: "slReviewApply", path: scope, decisions }));
+}
+
+/**
+ * `fix` / `nb_fix`: the answers exactly as given (a title's text, a team's
+ * name, a label accepted). Absent lists count as empty.
+ */
+export function fixConfirmPhrase(t: Target, path: NodePath, a: FixAnswers): string {
+  const scope = formatPath(path);
+  return confirmPhrase(t, scope, contentDigest({ write: "fix", path: scope, cards: a.cards ?? [], names: a.names ?? [] }));
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +329,12 @@ export interface SetLink {
    * root-relative (`/admin/set-builder?sport=…&set=…`).
    */
   link: string;
+  /**
+   * Apply only: what the set still needs from a person once the run is over
+   * (`nb_attention`'s totals and summary line). Absent on a plan, and when it
+   * could not be read (`ApplyReport.attentionLine` says so).
+   */
+  attention?: AttentionSummary;
 }
 
 export interface PlanReport {
@@ -369,6 +385,13 @@ export interface ApplyReport extends PlanReport {
   stops?: Array<{ step: number; reason: string }>;
   counts: ApplyCounts;
   durationMs: number;
+  /**
+   * The run's last word, from every set's `attention`: "Built and all
+   * clear." only when nothing on any set it reached needs a person; otherwise
+   * what is left and that `nb_attention` walks it. Absent when the run had no
+   * set to read.
+   */
+  attentionLine?: string;
 }
 
 export interface InspectRow {
@@ -396,6 +419,16 @@ export interface InspectReport {
   base?: InspectRow | null;
   /** Set path: every variant type and its rows. */
   variantTypes?: Array<{ type: string; link: string; rows: InspectRow[] }>;
+  /** Only with `attention: true`: what the node still needs from a person (`nb_attention`'s totals). */
+  attention?: AttentionSummary;
+}
+
+export interface InspectOptions {
+  /**
+   * Add `attention`: reads every card of every row (one `getCardChecklist`
+   * per row) plus each column's name suggestions, so it is opt-in.
+   */
+  attention?: boolean;
 }
 
 export interface ReviewItemsReport {
@@ -434,16 +467,126 @@ export interface SlReviewApplyReport {
 }
 
 // ---------------------------------------------------------------------------
+// Attention (nb_attention / nb_fix / setbuild attention|fix)
+// ---------------------------------------------------------------------------
+// What a set still needs from a person once it is built: the cards the
+// checklist header's "N need you" pill counts (lib/attention.ts, over
+// `deriveCardAttention`), the "N names to check" rename suggestions on the
+// set's rows (lib/name-suggestions.ts), the brand's "N SportLots sets to sort"
+// count, the sync notices its columns still show, and any entity review this
+// process left open. Derived from stored rows on every read: nothing is staged.
+
+/** The counts `nb_attention` leads with, and every apply / inspect summary carries. */
+export interface AttentionTotals {
+  /** Cards the header pill counts (each once, whatever it is flagged for). */
+  cards: number;
+  /** Flags per kind (a card may carry more than one). */
+  byKind: Record<string, number>;
+  /** Cards with no team yet whose BSC team lookup has not finished: more may land as `missingTeam`. */
+  awaitingTeamLookup: number;
+  /** Sides with a marketplace name that differs from NB's (one row may have two). */
+  namesToCheck: number;
+  /** The brand's SportLots sets waiting to be sorted (answered with nb_sl_review_apply). */
+  slSetsToSort: number;
+}
+
+export interface AttentionSummary extends AttentionTotals {
+  /** One line for a person: "1 card needs you on Topps Chrome; 13 names to check." or the walker's all-clear. */
+  summary: string;
+}
+
+/** A column's sync notice (read-only: the fix is a reconcile or attach in a spec, and dismissing is not a decision). */
+export interface AttentionNotice {
+  /** The column, in NB names: `Baseball/2024/Topps/Topps Chrome › Inserts`. */
+  where: string;
+  level: string;
+  status: "syncing" | "error" | "done";
+  /** The server's message, as the column shows it. */
+  message?: string;
+  /** Marketplace sets this sync left unlinked. */
+  unlinked?: number;
+  /** Names twinned on a marketplace that the sync left for the operator. */
+  twinsLeft?: number;
+  link: string;
+}
+
+export interface AttentionOptions {
+  /**
+   * "summary" (default): every item, with the per-card facts trimmed past the
+   * first few (lib/attention.ts). "full": every fact on every card.
+   */
+  detail?: "summary" | "full";
+}
+
+export interface AttentionReport {
+  target: Pick<Target, "convexUrl" | "host">;
+  path: NodePath;
+  pathText: string;
+  /** The Set Builder opened on the node. */
+  link: string;
+  totals: AttentionTotals;
+  /** `AttentionSummary.summary`: the line to give the operator first. */
+  summary: string;
+  /** Set path: every card that needs a person, in the walker's order. Empty on a brand-year. */
+  cards: CardAttentionItem[];
+  /** Set path: how many cards carry their fixer's facts (`detail: "summary"` reads the first few). */
+  enrichment?: { enriched: number; of: number };
+  /** Every name to check, on the node's own row and every row under it. */
+  names: NameSuggestionItem[];
+  /** The brand's SportLots review. On a brand-year path, `rows` lists each waiting line. */
+  slReview: { pending: number; partial: boolean; moreNextSync: number; answerWith: "nb_sl_review_apply"; rows?: OpenSlReview } | null;
+  /** An entity review this process's nb_apply left open on the set, by checklist (null = Base). */
+  review: { rows: Array<RowRef | null>; answerWith: "nb_decide" } | null;
+  notices: AttentionNotice[];
+}
+
+/** What `fix` takes. Every answer is explicit text or an explicit NB name; nothing is derived. */
+export interface FixAnswers {
+  /** Set path only. */
+  cards?: CardFixAnswer[];
+  names?: NameFixAnswer[];
+}
+
+/**
+ * One answer's outcome: `cards[i]` (lib/attention-answers.ts, with the card,
+ * the fixer it went through, any `warning`, any row `created`, and what the
+ * card still needs) or `names[i]` (lib/name-suggestions.ts).
+ */
+export type FixResult = CardFixResult | NameFixResult;
+
+export interface FixReport {
+  path: string;
+  applied: { cards: number; names: number };
+  /** One per answer, in answer order: cards first, then names. */
+  results: FixResult[];
+  /** The rename mutation's own counts, summed over its calls. */
+  nameCounts: { applied: number; declined: number; stale: number; clashed: number; skipped: number };
+  /** What the node still needs after these answers. */
+  remaining: AttentionTotals;
+  summary: string;
+}
+
+// The card item and answer shapes are lib/attention.ts's; the name shapes are lib/name-suggestions.ts's.
+import type { CardAttentionItem, CardFixAnswer } from "./lib/attention";
+import type { CardFixResult } from "./lib/attention-answers";
+import type { NameFixAnswer, NameFixResult, NameSuggestionItem } from "./lib/name-suggestions";
+export type { CardFixResult } from "./lib/attention-answers";
+export type { CardAttentionItem, CardFixAnswer } from "./lib/attention";
+export type { NameFixAnswer, NameFixResult, NameRowRef, NameSuggestionItem } from "./lib/name-suggestions";
+
+// ---------------------------------------------------------------------------
 // The service
 // ---------------------------------------------------------------------------
 
 export interface SetBuildRead {
-  inspect(path: NodePath): Promise<InspectReport>;
+  inspect(path: NodePath, opts?: InspectOptions): Promise<InspectReport>;
   /** Read-only on NB data. */
   plan(spec: SetBuildSpecInput): Promise<PlanReport>;
   reviewItems(path: NodePath): Promise<ReviewItemsReport>;
   /** Read-only on NB data: draft a whole set's spec from the server previews (runner/draft.ts). */
   draftSet(path: SetPath, opts?: DraftOptions): Promise<DraftReport>;
+  /** Read-only: everything on a set or brand-year that is waiting on a person (runner/attention.ts). */
+  attention(path: NodePath, opts?: AttentionOptions): Promise<AttentionReport>;
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +738,8 @@ export interface SetBuildWrite {
     confirm: string | undefined,
   ): Promise<BuildParallelReport>;
   slReviewApply(path: BrandYearPath, decisions: SlDecision[], confirm: string | undefined): Promise<SlReviewApplyReport>;
+  /** Answer `attention` items: cards on a set, names on a set or brand-year. */
+  fix(path: NodePath, answers: FixAnswers, confirm: string | undefined): Promise<FixReport>;
 }
 
 export interface SetBuildService {
