@@ -674,6 +674,9 @@ describe("commitCardChecklist — a one-marketplace variation's parent across ma
     const rows = await storedRows(t, leafId);
     await drainScheduled(t);
     await cancelScheduled(t);
+    // A hop already in progress when the rest were cancelled is not cancellable
+    // and would reach fetch after this test's stub is gone (NEO-188): settle it.
+    await drainScheduled(t);
     const bySl = (ref: string) => rows.find((r) => r.platformData?.sportlots?.ref === ref);
     const byBsc = (ref: string) => rows.find((r) => r.platformData?.bsc?.ref === ref);
     return { rows, bySl, byBsc };
