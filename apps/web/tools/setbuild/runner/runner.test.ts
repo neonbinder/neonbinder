@@ -12,6 +12,8 @@ import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { planSpec } from "./plan";
 import { DRAFT_READ_ACTIONS, PlanWouldWrite, queryOnlyClient, ReadOnlyViolation, readOnlyClient } from "./read-only-client";
 import { createSetBuildService } from "./service";
+import { FixAborted } from "./attention";
+import { parseFixAnswers } from "../lib/fix-answers";
 
 const PATH = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: "Topps Chrome" };
 const SCOPE = "Baseball/2024/Topps/Topps Chrome";
@@ -640,6 +642,84 @@ describe("attention: a build that leaves something for a person never reads as d
     expect(r.applied).toEqual({ cards: 0, names: 1 });
     expect(r.remaining.namesToCheck).toBe(0);
     expect(r.summary).toBe("All clear — nothing on this checklist needs attention.");
+  });
+
+  describe("a fix that stops part-way never loses what it wrote (security audit)", () => {
+    const answers = {
+      cards: [{ cardNumber: "7", answer: { noTeam: true as const } }],
+      names: [{ side: "sportlots" as const, action: "decline" as const, label: "Chrome" }],
+    };
+    const setup = () => {
+      const client = world({ ...done(), attentionCards: [teamless("7")], suggestions: nameToCheck });
+      client.on("cardChecklist:confirmCardNoTeam", { confirmed: true, stamped: true });
+      return { client, svc: createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" }), phrase: fixConfirmPhrase(FAKE_TARGET, PATH, answers) };
+    };
+
+    test("a names-phase failure after a card was written throws FixAborted with the card result and the unconfirmed name", async () => {
+      const { client, svc, phrase } = setup();
+      client.on("selectorOptions:applySelectorSyncSuggestions", () => {
+        throw new Error("socket closed");
+      });
+      const err = (await svc.write.fix(PATH, answers, phrase).catch((e) => e)) as FixAborted;
+      expect(err).toBeInstanceOf(FixAborted);
+      expect(err.results.map((r) => [r.at, r.outcome])).toEqual([["cards[0]", "applied"]]);
+      expect(err.unconfirmed).toEqual(["names[0]"]);
+      expect(err.message).toBe(
+        "fix stopped part-way (socket closed). The answers it settled are listed; list attention again before answering the rest.",
+      );
+      expect((err.cause as Error).message).toBe("socket closed");
+      expect(client.callsTo("cardChecklist:confirmCardNoTeam")).toHaveLength(1);
+    });
+
+    test("a card-phase failure throws FixAborted with the cards settled before it", async () => {
+      const { client, svc } = setup();
+      const two = { cards: [...answers.cards, { cardNumber: "12", answer: { noTeam: true as const } }] };
+      client.on("selectorOptions:getCardChecklist", (a) => (a.selectorOptionId === "vtB" ? [teamless("7"), teamless("12")] : []));
+      client.on("cardChecklist:confirmCardNoTeam", (a) => {
+        if (a.cardId === "card-12") throw new Error("socket closed");
+        return { confirmed: true, stamped: true };
+      });
+      const err = (await svc.write.fix(PATH, two, fixConfirmPhrase(FAKE_TARGET, PATH, two)).catch((e) => e)) as FixAborted;
+      expect(err).toBeInstanceOf(FixAborted);
+      expect(err.results.map((r) => r.at)).toEqual(["cards[0]"]);
+      expect(err.unconfirmed).toEqual([]);
+    });
+
+    test("the closing re-read failing after the writes still returns every result", async () => {
+      const { client, svc, phrase } = setup();
+      let written = false;
+      client.on("selectorOptions:applySelectorSyncSuggestions", () => {
+        written = true;
+        return { applied: 0, declined: 1, stale: 0, clashed: 0, skipped: 0 };
+      });
+      client.on("selectorOptions:getSelectorSyncSuggestions", (a) => {
+        if (written && a.level === "variantType") throw new Error("Convex is down");
+        return a.level === "setName" && !written ? nameToCheck["setName:mf"] : [];
+      });
+      const err = (await svc.write.fix(PATH, answers, phrase).catch((e) => e)) as FixAborted;
+      expect(err).toBeInstanceOf(FixAborted);
+      expect(err.results.map((r) => [r.at, r.outcome])).toEqual([
+        ["cards[0]", "applied"],
+        ["names[0]", "applied"],
+      ]);
+    });
+  });
+
+  test("a batch is capped: 100 card answers and 200 name answers per call, refused before any call", async () => {
+    const client = world(done());
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const cards = Array.from({ length: 101 }, (_, i) => ({ cardNumber: String(i + 1), answer: { noTeam: true as const } }));
+    const names = Array.from({ length: 201 }, () => ({ side: "bsc" as const, action: "decline" as const, label: "X" }));
+    const calls = client.calls.length;
+    await expect(svc.write.fix(PATH, { cards }, fixConfirmPhrase(FAKE_TARGET, PATH, { cards }))).rejects.toThrow(
+      "cards: At most 100 card answers per call; split the batch and confirm each part.",
+    );
+    await expect(svc.write.fix(PATH, { names }, fixConfirmPhrase(FAKE_TARGET, PATH, { names }))).rejects.toThrow(
+      "names: At most 200 name answers per call; split the batch and confirm each part.",
+    );
+    expect(client.calls.length).toBe(calls);
+    // The caps themselves are accepted.
+    expect(() => parseFixAnswers({ cards: cards.slice(0, 100), names: names.slice(0, 200) })).not.toThrow();
   });
 
   test("service.fix refuses card answers on a brand-year path, before any call", async () => {

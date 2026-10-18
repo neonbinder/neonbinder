@@ -52,6 +52,23 @@ describe("resolveConnection", () => {
     expect(() => resolveConnection({ auth: "machine", appUrl: "ftp://app.example.test" }, env)).toThrow(ConfigError);
   });
 
+  test("machine auth holds the app URL to testing auth's rule: https, or plain http on loopback only", () => {
+    const env = { NB_SETBUILD_CONVEX_URL: CONVEX, NB_SETBUILD_API_KEY: "ak_key_value_123" };
+    for (const appUrl of ["http://app.example.test", "http://10.0.0.5:3000", "http://neonbinder.io"]) {
+      expect(() => resolveConnection({ auth: "machine", appUrl }, env)).toThrow(
+        "The app URL (--app-url or NB_SETBUILD_APP_URL) must be https:// (plain http is allowed only for localhost).",
+      );
+    }
+    for (const [appUrl, origin] of [
+      ["https://app.example.test/x", "https://app.example.test"],
+      ["http://localhost:3000", "http://localhost:3000"],
+      ["http://127.0.0.1:3001", "http://127.0.0.1:3001"],
+      ["http://[::1]:3000", "http://[::1]:3000"],
+    ]) {
+      expect(resolveConnection({ auth: "machine", appUrl }, env).target.appOrigin).toBe(origin);
+    }
+  });
+
   test("flags win over env", () => {
     const conn = resolveConnection(
       { auth: "machine", convexUrl: "https://other-9.convex.cloud", transport: "http" },

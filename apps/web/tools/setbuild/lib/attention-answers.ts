@@ -35,8 +35,13 @@
  *
  * `create` answers mint global rows through the pickers' own "+ Create"
  * (`teams.findOrCreate`, `players.findOrCreate`), only once the card's gate
- * has passed; each one is reported in `created`, with whether it found an
- * existing row instead.
+ * has passed; each one is reported in `created`. A create only ever CREATES:
+ * both mutations are find-or-create, and would quietly hand back an existing
+ * row (one same-name player, whatever the birthYear; a player born that year;
+ * a team holding that name or alias). Every such answer is refused while
+ * resolving, with the existing rows as candidates, so linking one is always
+ * the operator's explicit `link` / team-name answer. Should the server still
+ * return a row that was on file, the card is not written.
  */
 
 import { ConvexError } from "convex/values";
@@ -76,13 +81,11 @@ import { PLAYER_LINK_SCAN_LIMIT, birthYearsText, pickPlayerByBirthYear } from ".
 // Result shapes
 // ---------------------------------------------------------------------------
 
-/** A team or player a `create` answer minted, or found already there. */
+/** A team or player a `create` answer minted. */
 export interface CreatedRow {
   kind: "team" | "player";
   name: string;
   id: string;
-  /** The create found an existing row (find-or-create) instead of minting one. */
-  existed: boolean;
 }
 
 export interface CardFixResult {
@@ -161,45 +164,6 @@ export function answerShape(answer: CardAnswer, at: string): AnswerShape {
   return "links";
 }
 
-function normTeam(t: TeamAnswer): unknown {
-  if (typeof t === "string") return t;
-  if (isObj(t) && "create" in t) {
-    const c = t.create;
-    return { create: { location: c.location ?? null, name: c.name, league: c.league ?? null } };
-  }
-  return { name: t.name, from: t.from ?? null, id: t.id ?? null };
-}
-
-function normPlayer(p: PlayerAnswer): unknown {
-  if (typeof p === "string") return p;
-  if ("create" in p) return { create: p.create, birthYear: p.birthYear ?? null };
-  return { link: p.link, birthYear: p.birthYear ?? null };
-}
-
-/**
- * The answers as the confirm phrase digests them: every field present (null
- * when left out), in one order, the text exactly as given. Pure. What the
- * operator confirmed is therefore what is written.
- */
-export function cardAnswersForDigest(answers: readonly CardFixAnswer[]): unknown[] {
-  return answers.map((a) => {
-    const ans = a.answer as Record<string, unknown>;
-    let answer: unknown;
-    if (ans && ans.noTeam === true) answer = { noTeam: true };
-    else if (ans && typeof ans.title === "string") answer = { title: ans.title, variation: (ans.variation as string | undefined) ?? null };
-    else {
-      const l = a.answer as { players?: PlayerAnswer[]; teams?: TeamAnswer[] };
-      answer = { players: l.players ? l.players.map(normPlayer) : null, teams: l.teams ? l.teams.map(normTeam) : null };
-    }
-    return {
-      row: a.row ? { type: a.row.type ?? null, name: a.row.name ?? null, parallel: a.row.parallel ?? null } : null,
-      cardNumber: a.cardNumber,
-      cardId: a.cardId ?? null,
-      answer,
-    };
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Resolution (reads only)
 // ---------------------------------------------------------------------------
@@ -249,11 +213,11 @@ export function pickCard(cards: readonly ChecklistCard[], cardNumber: string, ca
 
 type TeamPlan =
   | { kind: "link"; id: Id<"teams">; name: string }
-  | { kind: "create"; name: string; location?: string; league?: string; fullName: string };
+  | { kind: "create"; name: string; location?: string; league?: string; fullName: string; onFile: string[] };
 
 type PlayerPlan =
   | { kind: "link"; id: Id<"players">; name: string }
-  | { kind: "create"; name: string; birthYear?: number; sameName: string[] };
+  | { kind: "create"; name: string; birthYear?: number; onFile: string[] };
 
 interface TeamOption {
   id: Id<"teams">;
@@ -300,17 +264,34 @@ export async function resolveTeamAnswer(client: NbClient, sportId: Id<"selectorO
     const location = typeof c.location === "string" && c.location.trim() !== "" ? c.location.trim() : undefined;
     const league = typeof c.league === "string" && c.league.trim() !== "" ? c.league.trim() : undefined;
     const fullName = teamFullName({ name, location });
+    // `teams.findOrCreate` returns the row it finds: one era under the name
+    // (an undated row overlaps any), or a team that answers to it as an alias.
+    // A create must never link, so any team already holding the name refuses.
     const eras = await client.query(api.teams.erasByNameAndSport, { name: fullName, sportId });
-    if (eras.length > 1) {
+    if (eras.length > 0) {
       throw new ResolveError({
         kind: "team",
         query: fullName,
         at,
         candidates: eras.map((e) => ({ id: String(e._id), name: e.label, detail: eraText(e.yearsActive) })),
-        message: `"${fullName}" already names ${eras.length} teams in this sport; answer with { "name", "from" } for the one on the card instead of creating one.`,
+        message:
+          eras.length === 1
+            ? `"${fullName}" is already a team in this sport; answer with "${fullName}" to put that team on the card instead of creating one.`
+            : `"${fullName}" already names ${eras.length} teams in this sport; answer with { "name", "from" } for the one on the card instead of creating one.`,
       });
     }
-    return { kind: "create", name, fullName, ...(location ? { location } : {}), ...(league ? { league } : {}) };
+    const hits = await client.query(api.teams.nearMatches, { name: fullName, sportId, limit: 25 });
+    const aliasOf = hits.filter((h) => h.confidence === "exact");
+    if (aliasOf.length > 0) {
+      throw new ResolveError({
+        kind: "team",
+        query: fullName,
+        at,
+        candidates: aliasOf.map((h) => ({ id: String(h._id), name: h.name, detail: h.matchedAlias ? `also known as "${h.matchedAlias}"` : eraText(h.yearsActive) })),
+        message: `"${fullName}" is already a name of ${aliasOf.length === 1 ? "a team" : `${aliasOf.length} teams`} in this sport; answer with that team instead of creating one.`,
+      });
+    }
+    return { kind: "create", name, fullName, onFile: [], ...(location ? { location } : {}), ...(league ? { league } : {}) };
   }
   const ref = typeof answer === "string" ? { name: answer } : isObj(answer) ? answer : undefined;
   const name = typeof ref?.name === "string" ? ref.name.trim() : "";
@@ -350,16 +331,37 @@ export async function resolvePlayerAnswer(client: NbClient, sportId: Id<"selecto
     if (name === "") throw new CardAnswerError(at, 'a player "create" is the name: { "create": "Wyatt Langford" }.');
     const hits = await client.query(api.players.nearMatches, { name, sportId, limit: PLAYER_LINK_SCAN_LIMIT });
     const exact = hits.filter((h) => h.confidence === "exact");
-    if (exact.length > 1 && answer.birthYear === undefined) {
-      throw new ResolveError({
-        kind: "player",
-        query: name,
-        at,
-        candidates: exact.map(playerCandidate),
-        message: `"${name}" already names ${exact.length} players; link one with { "link", "birthYear" } (born ${birthYearsText(exact)}), or add the new player's birthYear.`,
-      });
+    const birthYear = answer.birthYear;
+    // `players.findOrCreate` LINKS rather than creates when exactly one player
+    // has the name (whatever birthYear says), or when one of several was born
+    // in birthYear; it refuses when several share it and birthYear is absent
+    // or an undated one could be the same man. A create must never link, so
+    // every one of those is refused here, with the players on file.
+    const refuse = (message: string): never => {
+      throw new ResolveError({ kind: "player", query: name, at, candidates: exact.map(playerCandidate), message });
+    };
+    if (exact.length === 1) {
+      refuse(`"${name}" is already a player in this sport; link that player with { "link": "${name}" } instead of creating one.`);
     }
-    return { kind: "create", name, ...(answer.birthYear !== undefined ? { birthYear: answer.birthYear } : {}), sameName: exact.map((h) => String(h._id)) };
+    if (exact.length > 1) {
+      if (birthYear === undefined) {
+        refuse(
+          `"${name}" already names ${exact.length} players; link one with { "link", "birthYear" } (born ${birthYearsText(exact)}), or add the new player's birthYear.`,
+        );
+      }
+      if (exact.length >= PLAYER_LINK_SCAN_LIMIT) {
+        refuse(`"${name}" matches ${exact.length} or more players, too many to check birthYear ${birthYear} against all of them.`);
+      }
+      if (exact.some((h) => h.birthYear === birthYear)) {
+        refuse(`A player named "${name}" born ${birthYear} is already on file; link that player with { "link", "birthYear" } instead of creating one.`);
+      }
+      if (exact.some((h) => h.birthYear === undefined)) {
+        refuse(
+          `"${name}" already names ${exact.length} players and one has no birth year on file, so a new one cannot be told apart from it; link one with { "link", "birthYear" }.`,
+        );
+      }
+    }
+    return { kind: "create", name, ...(birthYear !== undefined ? { birthYear } : {}), onFile: exact.map((h) => String(h._id)) };
   }
   const link = typeof answer === "string" ? answer.trim() : isObj(answer) && typeof answer.link === "string" ? answer.link.trim() : "";
   if (link === "") throw new CardAnswerError(at, 'a player is a name, { "link", "birthYear" }, or { "create": "<name>" }.');
@@ -642,7 +644,9 @@ async function teamIdsOf(client: NbClient, set: ResolvedSet, plans: readonly Tea
       ids.push(p.id);
       continue;
     }
-    const before = await client.query(api.teams.erasByNameAndSport, { name: p.fullName, sportId: set.sportId });
+    // Re-read at write time: a team created since the answer resolved would
+    // be handed back by find-or-create instead of a new one.
+    const before = (await client.query(api.teams.erasByNameAndSport, { name: p.fullName, sportId: set.sportId })).map((e) => String(e._id));
     let id: Id<"teams">;
     try {
       id = await client.mutation(api.teams.findOrCreate, {
@@ -655,7 +659,10 @@ async function teamIdsOf(client: NbClient, set: ResolvedSet, plans: readonly Tea
       if (isRefusal(err)) throw new Refused(refusalText(err, p.fullName));
       throw err;
     }
-    created.push({ kind: "team", name: p.fullName, id: String(id), existed: before.some((e) => String(e._id) === String(id)) });
+    if (before.includes(String(id)) || p.onFile.includes(String(id))) {
+      throw new Refused(`"${p.fullName}" is already a team in this sport; answer with that team instead of creating one.`);
+    }
+    created.push({ kind: "team", name: p.fullName, id: String(id) });
     ids.push(id);
   }
   return ids;
@@ -679,7 +686,12 @@ async function playerIdsOf(client: NbClient, set: ResolvedSet, plans: readonly P
       if (isRefusal(err)) throw new Refused(refusalText(err, p.name));
       throw err;
     }
-    created.push({ kind: "player", name: p.name, id: String(id), existed: p.sameName.includes(String(id)) });
+    if (p.onFile.includes(String(id))) {
+      // find-or-create handed back a player that was on file: nothing was
+      // created, and the card is not linked to a row nobody named.
+      throw new Refused(`"${p.name}" is already a player in this sport; link that player with { "link", "birthYear" } instead of creating one.`);
+    }
+    created.push({ kind: "player", name: p.name, id: String(id) });
     ids.push(id);
   }
   return ids;

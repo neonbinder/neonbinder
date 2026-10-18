@@ -24,6 +24,7 @@ import { assertPhrase, contentDigest, parseTarget } from "../client/target";
 import {
   countOpenDecisions,
   fixConfirmPhrase,
+  formatPath,
   isSetPath,
   MAX_TEAM_LOOKUP_BUDGET,
   specConfirmPhrase,
@@ -42,7 +43,8 @@ import { RunFailed } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
 import { attentionMarkdown, fixMarkdown, reportJson, reportMarkdown, writeReportFiles } from "./report";
-import { attentionOf, fixAttention } from "./attention";
+import { FixAborted, attentionOf, fixAttention } from "./attention";
+import { CardFixAborted } from "../lib/attention-answers";
 import { parseFixAnswers } from "../lib/fix-answers";
 
 /** Exit code: apply stopped at an open decision. */
@@ -139,27 +141,31 @@ export const inspectCommand: CommandSpec = {
       const report = await withClient(ctx, (client, conn) =>
         inspectPath(client, conn.target, path, ctx.values.attention === true ? { attention: true } : {}),
       );
+      // Every line through scrub, like every other output path: a row name or
+      // a marketplace id is data a secret must never ride out in.
+      const secrets = secretsOf(ctx);
+      const say = (line: string) => ctx.io.stdout(scrub(line, secrets));
       if (ctx.json) {
-        ctx.io.stdout(JSON.stringify(report, null, 2));
+        say(JSON.stringify(report, null, 2));
         return report.found ? 0 : 1;
       }
       if (!report.found) {
-        ctx.io.stdout(`${report.pathText}: not found`);
+        say(`${report.pathText}: not found`);
         return 1;
       }
       const links = (l: { buysportscards: string[]; sportlots: string[] }) =>
         `BSC ${l.buysportscards.length ? l.buysportscards.join(",") : "-"} · SL ${l.sportlots.length ? l.sportlots.join(",") : "-"}`;
-      ctx.io.stdout(report.pathText);
-      if (report.link) ctx.io.stdout(`  Set Builder: ${report.link}`);
-      for (const s of report.sets ?? []) ctx.io.stdout(`  ${s.name}  (${links(s.links)})`);
+      say(report.pathText);
+      if (report.link) say(`  Set Builder: ${report.link}`);
+      for (const s of report.sets ?? []) say(`  ${s.name}  (${links(s.links)})`);
       for (const t of report.variantTypes ?? []) {
-        ctx.io.stdout(`  ${t.type}${t.rows.length === 1 && t.rows[0].isBase ? "" : ` — ${t.rows.length} rows`}`);
+        say(`  ${t.type}${t.rows.length === 1 && t.rows[0].isBase ? "" : ` — ${t.rows.length} rows`}`);
         for (const r of t.rows) {
-          ctx.io.stdout(`    ${r.isBase ? "[Base] " : ""}${r.name}: ${r.cards} cards (${links(r.links)})`);
-          for (const p of r.parallels ?? []) ctx.io.stdout(`      ↳ ${p.name}: ${p.cards} cards (${links(p.links)})`);
+          say(`    ${r.isBase ? "[Base] " : ""}${r.name}: ${r.cards} cards (${links(r.links)})`);
+          for (const p of r.parallels ?? []) say(`      ↳ ${p.name}: ${p.cards} cards (${links(p.links)})`);
         }
       }
-      if (report.attention) ctx.io.stdout(`  ${report.attention.summary}`);
+      if (report.attention) say(`  ${report.attention.summary}`);
       return 0;
     }),
 };
@@ -569,6 +575,19 @@ async function readAnswersFile(path: string | undefined): Promise<unknown> {
   }
 }
 
+/** The answers a `fix` that stopped part-way settled, for the terminal. */
+export function fixPartialMarkdown(p: {
+  path: string;
+  stopped: string;
+  results: ReadonlyArray<{ at: string; outcome: string; detail: string; warning?: string }>;
+  unconfirmed: readonly string[];
+}): string {
+  const out = [`## setbuild fix: ${p.path} (stopped)`, "", p.stopped, ""];
+  for (const x of p.results) out.push(`- \`${x.at}\` ${x.outcome}: ${x.detail}${x.warning ? ` (${x.warning})` : ""}`);
+  for (const at of p.unconfirmed) out.push(`- \`${at}\` sent, not confirmed: list attention again to see whether it was saved.`);
+  return out.join("\n");
+}
+
 /** `fix --auth machine` without a terminal: the same rule as apply. */
 export const FIX_MACHINE_NEEDS_TTY =
   "fix with --auth machine (production) runs only in an interactive terminal: it ignores --confirm and asks for " +
@@ -614,6 +633,20 @@ export const fixCommand: CommandSpec = {
         ctx.io.stdout(scrub(ctx.json ? JSON.stringify(report, null, 2) : fixMarkdown(report).trimEnd(), secretsOf(ctx)));
         // A refused answer is left for the operator, like an apply stop.
         return report.results.some((r) => r.outcome === "refused") ? EXIT_STOPPED : 0;
+      } catch (err) {
+        // Stopped part-way after it may have written: print what it settled
+        // (scrubbed) before the error is reported as usual, the way apply
+        // prints a RunFailed partial report.
+        if (err instanceof FixAborted || err instanceof CardFixAborted) {
+          const partial = {
+            path: formatPath(path),
+            stopped: err.message,
+            results: err.results,
+            unconfirmed: err instanceof FixAborted ? err.unconfirmed : [],
+          };
+          ctx.io.stdout(scrub(ctx.json ? JSON.stringify(partial, null, 2) : fixPartialMarkdown(partial), secretsOf(ctx)));
+        }
+        throw err;
       } finally {
         await client.close();
       }

@@ -4,6 +4,7 @@
  * carried on; and `stopAt: "first"` exactly as before. Also the new Group
  * Parallels and insert-parallels steps through the engine.
  */
+import { ConvexError } from "convex/values";
 import { describe, expect, test } from "vitest";
 import { countOpenDecisions, specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
@@ -51,7 +52,7 @@ const NAME: Record<string, string> = {
  * count per row; a fetched checklist's one player is always unknown, so its
  * review opens unless the spec answers it.
  */
-function world(cards: Record<string, number>): FakeClient {
+function world(cards: Record<string, number>, tweak?: (tree: Record<string, unknown[]>) => void): FakeClient {
   const tree: Record<string, unknown[]> = {
     "sport:": [sel("sp", "sport", "Baseball")],
     "year:sp": [sel("yr", "year", "2024")],
@@ -72,6 +73,7 @@ function world(cards: Record<string, number>): FakeClient {
     "parallel:iFS": [sel("fsG", "parallel", "Future Stars Gold", { platformData: { bsc: { b0: "future-stars-gold" } } })],
     "parallel:iYQ": [sel("yqR", "parallel", "Youthquake Red", { platformData: { bsc: { b0: "youthquake-red" } } })],
   };
+  tweak?.(tree);
   const parallelsOf: Record<string, string[]> = { vtP: ["pS"], iFS: ["fsG"], iYQ: ["yqR"] };
   const sourceOf: Record<string, string> = { pS: "vtB", fsG: "iFS", yqR: "iYQ" };
   const candidates = new Map<string, { batchId: string; cards: unknown[] }>();
@@ -475,6 +477,42 @@ describe("a parallel build that shares no card number with its source (NEO-339: 
     );
     const tpl = r.template as { steps: Array<{ variants: Array<{ rows: Array<{ buildFromBase: unknown }> }> }> };
     expect(tpl.steps[0].variants[0].rows[0].buildFromBase).toBe('<"Sepia Refractors" shares no card numbers with "Base": probably an insert. Remove buildFromBase>');
+  });
+
+  test("the link belongs to a parallel of Base only: an insert's parallel carries none and costs no ancestor read", async () => {
+    const raw = spec();
+    const cards = { ...WIDE(), vtB: 2 } as Record<string, number>;
+    const client = world(cards);
+    // Both the parallel of Base (Sepia) and the insert's parallel (Youthquake Red) share no number with their sources.
+    client.on("parallelChecklistBuild:buildParallelChecklist", (a) => {
+      cards[a.parallelId as string] = 0;
+      return built(0, { bsc: a.parallelId === "pS" ? 4 : 3 });
+    });
+    const SET_CHAIN = [sel("sp", "sport", "Baseball"), sel("yr", "year", "2024"), sel("mf", "manufacturer", "Topps"), sel("st", "setName", "Topps Chrome")];
+    client.on("selectorOptions:getAncestorChain", (a) =>
+      a.id === "pS"
+        ? [...SET_CHAIN, sel("vtP", "variantType", "Parallel"), sel("pS", "insert", "Sepia Refractors")]
+        : a.id === "yqR"
+          ? [...SET_CHAIN, sel("vtI", "variantType", "Insert"), sel("iYQ", "insert", "Youthquake"), sel("yqR", "parallel", "Youthquake Red")]
+          : SET_CHAIN,
+    );
+    // The tool was given the app origin: a link is absolute on it.
+    Object.assign(client, { target: { ...FAKE_TARGET, appOrigin: "https://app.example.test" } });
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+
+    const grouping = Object.fromEntries(r.openDecisions.grouping.map((g) => [g.name, g]));
+    expect(Object.keys(grouping).sort()).toEqual(["Sepia Refractors", "Youthquake Red"]);
+    // Base's parallel: the sentence ends on its own, absolute, Set Builder link (root-first ids through the parallel's row).
+    expect(grouping["Sepia Refractors"].detail).toMatch(
+      /done in the Set Builder: https:\/\/app\.example\.test\/admin\/set-builder\?sport=sp&year=yr&brand=mf&set=st&type=vtP&insert=pS$/,
+    );
+    // The insert's: answered in the spec, so no link and no mention of the Set Builder.
+    expect(grouping["Youthquake Red"].detail).not.toMatch(/set-builder|Set Builder|https?:/);
+    // The link cost exactly one ancestor read, for the parallel of Base.
+    const ancestorReads = client.callsTo("selectorOptions:getAncestorChain").map((c) => c.args.id);
+    expect(ancestorReads.filter((id) => id === "pS")).toHaveLength(1);
+    expect(ancestorReads).not.toContain("yqR");
+    expect(r.openDecisions.grouping).toHaveLength(2);
   });
 });
 
@@ -919,4 +957,160 @@ describe("a failed spec check stops its step and the run returns its report", ()
     // The set had resolved before the error, so the partial report carries its link.
     expect(report.setLinks).toEqual([{ path: SCOPE, link: "/admin/set-builder?sport=sp&year=yr&brand=mf&set=st" }]);
   });
+});
+
+/**
+ * A spec check that fails MID-APPLY (every class extends `StepCheckError`):
+ * the step is recorded blocked with the check's own message, the run does not
+ * throw, the report comes back, and with `stopAt: "end"` the work that does
+ * not depend on the failed step still runs.
+ */
+describe("a StepCheckError raised mid-apply", () => {
+  const MAPPED = { map: { bsc: "bsc-chrome", sportlots: "sl-chrome", whenPaused: "bsc-only" } };
+  const SEPIA = "build Parallel › Sepia Refractors from Base";
+  const RED = "build Insert › Youthquake › Youthquake Red from Insert › Youthquake";
+  const byAction = (r: Awaited<ReturnType<typeof applySpec>>) => Object.fromEntries(r.steps.map((s) => [s.action, s]));
+  const go = (raw: unknown, client: FakeClient) => applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+  /** The healthy tail every case ends with: an Insert's checklist and its parallel's build. */
+  const TAIL = { type: "Insert", rows: [{ name: "Youthquake", checklist: checklist(20), parallels: [{ name: "Youthquake Red", build: {} }] }] };
+  const expectTailRan = (r: Awaited<ReturnType<typeof applySpec>>, client: FakeClient) => {
+    expect(byAction(r)[RED]).toMatchObject({ status: "done" });
+    expect(client.callsTo("parallelChecklistBuild:buildParallelChecklist").map((c) => c.args.parallelId)).toContain("yqR");
+  };
+
+  test("AddRowRefused: a manufacturer the server refuses blocks its brand-year step; the set below still runs", async () => {
+    const raw = {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        { kind: "brand-year", path: { sport: "Baseball", year: "2024", manufacturer: "Panini!" }, manufacturer: { whenMissing: "create" }, syncSets: true },
+        { kind: "set", path: PATH, variantTypes: { sync: true }, base: MAPPED, variants: [TAIL] },
+      ],
+    };
+    const client = world({ ...WIDE(), vtB: 2 });
+    client.on("selectorOptions:addCustomSelectorOption", () => {
+      throw new ConvexError({ code: "CUSTOM_VALUE_INVALID" });
+    });
+    const r = await go(raw, client);
+    expect(r.steps.find((s) => s.index === 0 && s.status === "blocked")).toMatchObject({
+      kind: "brand-year",
+      status: "blocked",
+      detail: '"Panini!" is not a valid name here.',
+    });
+    expect(r.stops).toEqual([{ step: 0, reason: '"Panini!" is not a valid name here.' }]);
+    expect(r.confirmPhrase).toBe(confirmFor(raw));
+    expect(client.callsTo("selectorOptions:addCustomSelectorOption")).toHaveLength(1);
+    expectTailRan(r, client);
+  });
+
+  /** The set's variant types without its Base (a Base deleted or renamed under the run). */
+  const withoutBase = (tree: Record<string, unknown[]>) => {
+    tree["variantType:st"] = (tree["variantType:st"] as Array<{ _id: string }>).filter((t) => t._id !== "vtB");
+  };
+  const NO_BASE = "The set st has no Base variant type yet; sync its variant types first.";
+  const TWO_STEPS = (base: Record<string, unknown>) => ({
+    version: 1,
+    scope: SCOPE,
+    steps: [
+      { kind: "set", path: PATH, variantTypes: { sync: true }, base, variants: [{ type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] }] },
+      { kind: "brand-year", path: { sport: "Baseball", year: "2024", manufacturer: "Topps" }, syncSets: true },
+    ],
+  });
+
+  test("NoBaseVariantType at the Base mapping: the step is blocked, the Base checklist and the build from Base wait, the next step runs", async () => {
+    const raw = TWO_STEPS({ ...MAPPED, checklist: checklist() });
+    const client = world({ ...WIDE(), vtB: 2 }, withoutBase);
+    const r = await go(raw, client);
+    const steps = byAction(r);
+    expect(steps["map Base to BSC bsc-chrome + SportLots sl-chrome"]).toMatchObject({ status: "blocked", detail: NO_BASE });
+    expect(r.stops).toEqual([{ step: 0, reason: NO_BASE }]);
+    expect(steps["fetch and commit the Base checklist"]).toMatchObject({ status: "blocked", detail: "waits: the Base mapping (steps[0].base.map)" });
+    expect(steps[SEPIA]).toMatchObject({ status: "blocked" });
+    expect(client.callsTo("selectorOptions:fetchCardChecklist")).toEqual([]);
+    expect(client.callsTo("parallelChecklistBuild:buildParallelChecklist")).toEqual([]);
+    expect(r.steps.filter((s) => s.index === 1).map((s) => s.status)).not.toContain("blocked");
+    expect(r.steps.filter((s) => s.index === 1).length).toBeGreaterThan(0);
+    expect(r.confirmPhrase).toBe(confirmFor(raw));
+  });
+
+  test("NoBaseVariantType between the mapping and the Base checklist (the engine's own findBaseVariantType): blocked, dependents wait, the next step runs", async () => {
+    const raw = TWO_STEPS({ ...MAPPED, checklist: checklist() });
+    let treeRef: Record<string, unknown[]> = {};
+    const client = world({ ...WIDE(), vtB: 2 }, (t) => {
+      treeRef = t;
+    });
+    // The mapping reads the Base (and its chain) and finds it already mapped; the Base is gone by the time the checklist step looks again.
+    client.on("selectorOptions:getAncestorChain", () => {
+      withoutBase(treeRef);
+      return [sel("sp", "sport", "Baseball"), sel("yr", "year", "2024"), sel("mf", "manufacturer", "Topps"), sel("st", "setName", "Topps Chrome")];
+    });
+    const r = await go(raw, client);
+    const steps = byAction(r);
+    expect(steps["map Base to BSC bsc-chrome + SportLots sl-chrome"]).toMatchObject({ status: "done" });
+    expect(steps["fetch and commit the Base checklist"]).toMatchObject({ status: "blocked", detail: NO_BASE });
+    expect(r.stops).toEqual([{ step: 0, reason: NO_BASE }]);
+    // The build from Base rests on the Base checklist the run could not reach.
+    expect(steps[SEPIA]).toMatchObject({ status: "blocked", detail: "waits: the Base checklist (steps[0].base.checklist)" });
+    expect(client.callsTo("selectorOptions:fetchCardChecklist")).toEqual([]);
+    expect(r.steps.filter((s) => s.index === 1).length).toBeGreaterThan(0);
+    expect(r.steps.filter((s) => s.index === 1).map((s) => s.status)).not.toContain("blocked");
+  });
+
+  test('a variant type named "Base" in the spec: reconcile refuses it as the set\'s Base, the Parallel type and the Insert tail still run', async () => {
+    const raw = {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        {
+          kind: "set",
+          path: PATH,
+          variantTypes: { sync: true },
+          base: MAPPED,
+          variants: [
+            { type: "Base", sync: { pairs: [{ name: "Anything", bsc: ["x"] }], pending: [] } },
+            { type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] },
+            TAIL,
+          ],
+        },
+      ],
+    };
+    const client = world({ ...WIDE(), vtB: 2 });
+    const r = await go(raw, client);
+    const reason = '"Base" is the set\'s Base; it has no rows to sync (map it with base.map instead).';
+    expect(byAction(r)["sync Base rows"]).toMatchObject({ kind: "reconcile", status: "blocked", detail: reason });
+    expect(r.stops).toEqual([{ step: 0, reason }]);
+    // That type's rows wait on its sync; nothing else does.
+    expect(byAction(r)["Base rows"]).toMatchObject({ status: "blocked", detail: "waits: the Base sync (steps[0].variants[0].sync)" });
+    expect(byAction(r)[SEPIA]).toMatchObject({ status: "done" });
+    expectTailRan(r, client);
+  });
+
+  test("BuildParallelError: a build the server refuses blocks that parallel; its sibling, the next type and the next step run", async () => {
+    const raw = {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        { kind: "set", path: PATH, variantTypes: { sync: true }, base: MAPPED, variants: [{ type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] }, TAIL] },
+        { kind: "brand-year", path: { sport: "Baseball", year: "2024", manufacturer: "Topps" }, syncSets: true },
+      ],
+    };
+    const cards = { ...WIDE(), vtB: 2 } as Record<string, number>;
+    const client = world(cards);
+    client.on("parallelChecklistBuild:buildParallelChecklist", (a) => {
+      const id = a.parallelId as string;
+      if (id === "pS") return { status: "blocked", blockedReason: "its source holds no cards on this marketplace", deletedCount: 0, copied: 0 };
+      cards[id] = 20;
+      return { status: "built", copied: 20, extraOnMarketplace: { bsc: { count: 0, cards: [] }, sportlots: { count: 0, cards: [] } } };
+    });
+    const r = await go(raw, client);
+    const sepia = byAction(r)[SEPIA];
+    expect(sepia.status).toBe("blocked");
+    expect(sepia.detail).toContain('the build of "Sepia Refractors" was refused: its source holds no cards on this marketplace');
+    expect(r.stops).toEqual([{ step: 0, reason: sepia.detail }]);
+    expect(r.counts.built).toBe(20);
+    expectTailRan(r, client);
+    expect(r.steps.filter((s) => s.index === 1).length).toBeGreaterThan(0);
+    expect(r.confirmPhrase).toBe(confirmFor(raw));
+  });
+
 });

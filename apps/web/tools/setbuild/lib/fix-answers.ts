@@ -11,7 +11,7 @@
 
 import { z } from "zod";
 import type { CardFixAnswer } from "./attention";
-import type { NameFixAnswer } from "./name-suggestions";
+import { MAX_SUGGESTION_DECISIONS, type NameFixAnswer } from "./name-suggestions";
 import type { FixAnswers } from "../service";
 
 const text = (what: string) => z.string().trim().min(1).describe(what);
@@ -89,10 +89,23 @@ export const NameFixAnswerSchema = z
   })
   .strict();
 
+/** Card answers per `nb_fix` / `setbuild fix` call: one confirm phrase covers a batch a person can read. */
+export const MAX_FIX_CARDS = 100;
+/** Name answers per call: the suggestions mutation's own chunk (`MAX_SUGGESTION_DECISIONS`). */
+export const MAX_FIX_NAMES = MAX_SUGGESTION_DECISIONS;
+
 export const FixAnswersSchema = z
   .object({
-    cards: z.array(CardFixAnswerSchema).max(500).optional().describe("Card answers (set path only)."),
-    names: z.array(NameFixAnswerSchema).max(1000).optional().describe("Name-to-check answers."),
+    cards: z
+      .array(CardFixAnswerSchema)
+      .max(MAX_FIX_CARDS, `At most ${MAX_FIX_CARDS} card answers per call; split the batch and confirm each part.`)
+      .optional()
+      .describe(`Card answers (set path only), at most ${MAX_FIX_CARDS} per call.`),
+    names: z
+      .array(NameFixAnswerSchema)
+      .max(MAX_FIX_NAMES, `At most ${MAX_FIX_NAMES} name answers per call; split the batch and confirm each part.`)
+      .optional()
+      .describe(`Name-to-check answers, at most ${MAX_FIX_NAMES} per call.`),
   })
   .strict();
 

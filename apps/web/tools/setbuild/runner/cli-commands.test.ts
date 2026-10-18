@@ -17,6 +17,24 @@ vi.mock("convex/browser", () => {
   return { ConvexClient, ConvexHttpClient };
 });
 
+/**
+ * `inspectPath` and `fixAttention` run for real unless a test sets a stand-in
+ * here: a fix that stops part-way, and an inspect whose report carries a
+ * secret, cannot be reached through the network-refusing client otherwise.
+ */
+const standIns = vi.hoisted(() => ({
+  inspect: null as null | ((...args: unknown[]) => Promise<unknown>),
+  fix: null as null | ((...args: unknown[]) => Promise<unknown>),
+}));
+vi.mock("./inspect", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./inspect")>();
+  return { ...real, inspectPath: (...a: unknown[]) => (standIns.inspect ?? (real.inspectPath as (...x: unknown[]) => Promise<unknown>))(...a) };
+});
+vi.mock("./attention", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./attention")>();
+  return { ...real, fixAttention: (...a: unknown[]) => (standIns.fix ?? (real.fixAttention as (...x: unknown[]) => Promise<unknown>))(...a) };
+});
+
 import { fakeJwt, publishableKeyFor } from "../auth/test-helpers";
 import { main, type CliIO } from "../cli";
 import { parseTarget } from "../client/target";
@@ -24,6 +42,8 @@ import { fixConfirmPhrase, specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
 import { BUILD_SET_NEEDS_TTY, draftMarkdown, FIX_MACHINE_NEEDS_TTY, MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
 import { compactDraftReport } from "./draft";
+import { FixAborted } from "./attention";
+import { CardFixAborted } from "../lib/attention-answers";
 import type { DraftedReport } from "../service";
 
 function io(env: NodeJS.ProcessEnv = {}): CliIO & { out: string[]; err: string[] } {
@@ -57,6 +77,8 @@ const net = vi.fn(async (..._args: unknown[]) => new Response(JSON.stringify({ e
 const sent = () => net.mock.calls.length + fetchSpy.calls;
 
 beforeEach(() => {
+  standIns.inspect = null;
+  standIns.fix = null;
   fetchSpy.calls = 0;
   net.mockReset();
   net.mockImplementation(async () => new Response(JSON.stringify({ error: "refused in this test" }), { status: 401 }));
@@ -380,5 +402,65 @@ describe("setbuild fix", () => {
     expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile(bad)], a)).toBe(2);
     expect(a.err.join("\n")).toMatch(/--answers/);
     expect(sent()).toBe(0);
+  });
+
+  const cardResult = (at: string, detail: string) => ({
+    at,
+    card: { row: { type: "Base" }, rowLabel: "Base", cardNumber: "103b", cardName: "Jose Fernandez", cardId: "c1" },
+    answered: "title" as const,
+    outcome: "applied" as const,
+    detail,
+  });
+
+  test("a fix that stops part-way prints what it settled, scrubbed, then reports the error", async () => {
+    standIns.fix = async () => {
+      throw new FixAborted(
+        [cardResult("cards[0]", "Saved the title on this card."), { at: "names[0]", outcome: "applied", detail: "Base: kept NB's name (tes_secret_value_123)." }],
+        ["names[1]"],
+        new Error("socket closed"),
+      );
+    };
+    const a = io(TESTING_ENV);
+    expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile(), "--confirm", FIX_PHRASE], a)).toBe(1);
+    const out = a.out.join("\n");
+    expect(out).toContain("## setbuild fix: Baseball/2014/Topps/Topps Chrome (stopped)");
+    expect(out).toContain("- `cards[0]` applied: Saved the title on this card.");
+    expect(out).toContain("- `names[1]` sent, not confirmed: list attention again to see whether it was saved.");
+    expect(out).toContain("fix stopped part-way (socket closed).");
+    expect([...a.out, ...a.err].join("\n")).not.toContain("tes_secret_value_123");
+    expect(a.err.join("\n")).toMatch(/FixAborted|fix stopped part-way/);
+  });
+
+  test("a card phase that stops part-way (CardFixAborted) is printed too, as JSON with --json", async () => {
+    standIns.fix = async () => {
+      throw new CardFixAborted([cardResult("cards[0]", "Saved the title on this card.")], new Error("socket closed"), "cards[1]");
+    };
+    const a = io(TESTING_ENV);
+    expect(await main(["fix", "--path", PATH_ARG, "--answers", await answersFile(), "--confirm", FIX_PHRASE, "--json"], a)).toBe(1);
+    const printed = JSON.parse(a.out.join("\n"));
+    expect(printed).toMatchObject({ path: "Baseball/2014/Topps/Topps Chrome", unconfirmed: [], results: [{ at: "cards[0]", outcome: "applied" }] });
+    expect(printed.stopped).toBe("cards[1]: stopped after 1 answer(s): socket closed");
+  });
+});
+
+describe("setbuild inspect", () => {
+  test("--json goes through scrub, like every other output path", async () => {
+    const jwt = fakeJwt({ sub: "user_abc", aud: "convex", exp: 1_900_000_000 });
+    const report = {
+      target: { convexUrl: "https://happy-otter-123.convex.cloud", host: "happy-otter-123.convex.cloud" },
+      path: { sport: "Baseball", year: "2024", manufacturer: "Topps" },
+      pathText: "Baseball/2024/Topps",
+      found: true,
+      sets: [{ name: `Leaky ${jwt} tes_secret_value_123`, links: { buysportscards: [], sportlots: [] }, link: "/admin/set-builder" }],
+    };
+    standIns.inspect = async () => report;
+    for (const flags of [["--json"], []]) {
+      const a = io(TESTING_ENV);
+      expect(await main(["inspect", "Baseball/2024/Topps", ...flags], a)).toBe(0);
+      const out = a.out.join("\n");
+      expect(out).toContain("Leaky");
+      expect(out).not.toContain(jwt);
+      expect(out).not.toContain("tes_secret_value_123");
+    }
   });
 });

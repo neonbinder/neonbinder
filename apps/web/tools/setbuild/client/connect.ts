@@ -29,7 +29,7 @@ import { machineTokenSource } from "../auth/machine-token-source";
 import { testingTokenSource } from "../auth/testing-token-source";
 import type { TokenSource } from "../auth/token-source";
 import type { Transport } from "./convex-client";
-import { assertSiteIsTwin, parseTarget, type Target } from "./target";
+import { assertSiteIsTwin, isLocalHost, parseTarget, type Target } from "./target";
 
 export type AuthMode = "machine" | "testing";
 
@@ -76,9 +76,10 @@ function pick(flag: string | undefined, env: string | undefined): string | undef
 
 /**
  * The origin Set Builder links are printed on: the app URL's origin, or
- * undefined (links stay root-relative). Testing auth has already refused a bad
- * app URL by the time this runs; under machine auth it only shapes links, so
- * any http(s) URL will do.
+ * undefined (links stay root-relative). Held to testing auth's rule under
+ * either mode: https, or plain http on loopback only. Under machine auth the
+ * URL only shapes links, but a link the operator opens on a production run
+ * must not send them to a plain-http host anyone on the path can answer for.
  */
 function linkOrigin(appUrl: string | undefined): string | undefined {
   if (appUrl === undefined) return undefined;
@@ -88,8 +89,10 @@ function linkOrigin(appUrl: string | undefined): string | undefined {
   } catch {
     throw new ConfigError("The app URL (--app-url or NB_SETBUILD_APP_URL) is not a URL.");
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new ConfigError("The app URL (--app-url or NB_SETBUILD_APP_URL) must be http(s)://.");
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocalHost(url.hostname))) {
+    throw new ConfigError(
+      "The app URL (--app-url or NB_SETBUILD_APP_URL) must be https:// (plain http is allowed only for localhost).",
+    );
   }
   return url.origin;
 }

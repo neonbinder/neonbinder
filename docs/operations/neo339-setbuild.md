@@ -497,6 +497,16 @@ over the exact answers:
 - An answer whose item is already gone is reported `moot`; one the save
   refuses is `refused` with the reason. `remaining` and `summary` say what is
   still left. CLI `fix` exits 3 when an answer was refused.
+- A `create` only ever creates. A team or player already on file under that
+  name (one era, several, an alias; one same-name player, or one born in the
+  given year) is refused with the candidates; link it with the team's name or
+  `{ "link", "birthYear" }` instead.
+- At most 100 card answers and 200 name answers per call; split a bigger
+  batch and confirm each part.
+- A failure part-way (network, auth, a server fault) still returns every
+  answer it settled, and any name save sent but not read back as
+  `unconfirmed`; CLI `fix` prints them before the error. List attention again
+  before answering the rest.
 - `--auth machine` takes the phrase at a prompt only, as `apply` does.
 
 ## 3. Production usage

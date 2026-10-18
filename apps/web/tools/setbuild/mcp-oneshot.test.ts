@@ -17,6 +17,7 @@ import { registerTools } from "./mcp-tools";
 import { compareDraft, differingPaths, NOT_MEASURED, oneshotExpectSchema, runOneshotSequence, type OneshotExpect } from "./mcp-oneshot";
 import { specConfirmPhrase, type InspectReport, type OpenDecisions, type SetBuildService } from "./service";
 import { parseSpec } from "./spec/schema";
+import { APP, knownResolver, linkAt, SET_LINK, SET_LINK_ABS } from "./link-checks.fixture";
 
 const TARGET = parseTarget("https://happy-otter-123.convex.cloud");
 const PATH = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: "Topps Chrome Black" };
@@ -52,35 +53,47 @@ const ONE_OPEN: OpenDecisions = {
   baseCandidates: [{ at: "steps[0].base.map.sportlots", path: SCOPE, side: "sportlots", candidates: [{ id: "a", name: "A" }, { id: "b", name: "A" }] }],
 };
 
+/** Every row of the fake build links to the same real-looking row in the fixture world. */
+const LINK_ROW = linkAt(5);
+
 const built: InspectReport = {
   target: { convexUrl: TARGET.convexUrl, host: TARGET.host },
   path: PATH,
   pathText: SCOPE,
   found: true,
-  base: { name: "Base", cards: 100, isBase: true, links: { buysportscards: ["b"], sportlots: ["s"] }, link: "/admin/set-builder" },
+  link: SET_LINK,
+  base: { name: "Base", cards: 100, isBase: true, links: { buysportscards: ["b"], sportlots: ["s"] }, link: LINK_ROW },
   variantTypes: [
     {
       type: "Insert",
-      link: "/admin/set-builder",
+      link: LINK_ROW,
       rows: [
         {
           name: "Future Stars",
           cards: 10,
           isBase: false,
           links: { buysportscards: ["fs"], sportlots: [] },
-          link: "/admin/set-builder",
-          parallels: [{ name: "Future Stars Gold", cards: 10, isBase: false, links: { buysportscards: ["fsg"], sportlots: [] }, link: "/admin/set-builder" }],
+          link: LINK_ROW,
+          parallels: [{ name: "Future Stars Gold", cards: 10, isBase: false, links: { buysportscards: ["fsg"], sportlots: [] }, link: LINK_ROW }],
         },
       ],
     },
-    { type: "Parallel", link: "/admin/set-builder", rows: [{ name: "Gold", cards: 100, isBase: false, links: { buysportscards: ["g"], sportlots: [] }, link: "/admin/set-builder" }] },
+    { type: "Parallel", link: LINK_ROW, rows: [{ name: "Gold", cards: 100, isBase: false, links: { buysportscards: ["g"], sportlots: [] }, link: LINK_ROW }] },
   ],
 };
 
-const EXPECT: OneshotExpect = oneshotExpectSchema.parse({
+const FIX = {
+  cards: [{ cardNumber: "7", answer: { noTeam: true } }],
+  names: [{ side: "sportlots", action: "decline", label: "Chrome Black" }],
+};
+const MEASURED = { measured: true, totals: { cards: 1, byKind: { missingTeam: 1 }, namesToCheck: 1 }, fix: FIX };
+
+/** `attention` is required; the base expectations carry the measured block. */
+const BASE_EXPECT = {
   path: PATH,
   apply: { counts: { reconciled: 2, grouped: 1, committed: 110, built: 110 } },
-});
+};
+const EXPECT: OneshotExpect = oneshotExpectSchema.parse({ ...BASE_EXPECT, attention: MEASURED });
 
 const SUMMARY = { cards: 0, byKind: {}, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, summary: "All clear — nothing on this checklist needs attention." };
 
@@ -110,20 +123,21 @@ function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refu
   };
 }
 
-const FIX = {
-  cards: [{ cardNumber: "7", answer: { noTeam: true } }],
-  names: [{ side: "sportlots", action: "decline", label: "Chrome Black" }],
-};
-const MEASURED = { measured: true, totals: { cards: 1, byKind: { missingTeam: 1 }, namesToCheck: 1 }, fix: FIX };
-
 function fakeService(
-  o: { spec?: unknown; open?: OpenDecisions; counts?: Record<string, number>; attention?: ReturnType<typeof attentionWorld> } = {},
+  o: {
+    spec?: unknown;
+    open?: OpenDecisions;
+    counts?: Record<string, number>;
+    attention?: ReturnType<typeof attentionWorld>;
+    setLinks?: Array<{ path: string; link: string; attention?: typeof SUMMARY }>;
+    inspect?: InspectReport;
+  } = {},
 ) {
   const att = o.attention ?? attentionWorld();
   return {
     target: TARGET,
     read: {
-      inspect: vi.fn(async () => built),
+      inspect: vi.fn(async () => o.inspect ?? built),
       plan: vi.fn(async () => ({ scope: SCOPE, confirmPhrase: PHRASE, steps: [{}], openDecisions: none() })),
       reviewItems: vi.fn(),
       draftSet: vi.fn(async () => ({
@@ -141,7 +155,7 @@ function fakeService(
       apply: vi.fn(async () => ({
         counts: o.counts ?? { reconciled: 2, grouped: 1, committed: 110, built: 110, skipped: 0 },
         durationMs: 9000,
-        setLinks: [{ path: SCOPE, link: "/admin/set-builder", attention: SUMMARY }],
+        setLinks: o.setLinks ?? [{ path: SCOPE, link: SET_LINK, attention: SUMMARY }],
         attentionLine: "Built and all clear.",
       })),
       decide: vi.fn(),
@@ -176,9 +190,9 @@ async function connect(service: unknown) {
   return client;
 }
 
-const run = (service: ReturnType<typeof fakeService>, expect: OneshotExpect = EXPECT) =>
+const run = (service: ReturnType<typeof fakeService>, expect: OneshotExpect = EXPECT, link: { appOrigin?: string } = {}) =>
   connect(service).then((client) =>
-    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: ANSWERS, expect, confirm: PHRASE, sleep: async () => {} }),
+    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: ANSWERS, expect, confirm: PHRASE, sleep: async () => {}, resolveDrill: knownResolver(), ...link }),
   );
 
 describe("runOneshotSequence", () => {
@@ -195,11 +209,15 @@ describe("runOneshotSequence", () => {
       "nb_plan",
       "nb_apply",
       "nb_apply attention",
+      "nb_apply links",
+      "nb_inspect links",
       "insert with a built parallel",
       "Parallel rows built from Base",
+      "nb_attention",
+      "nb_fix answers",
+      "nb_fix",
+      "nb_attention after nb_fix",
     ]);
-    // No attention block: nothing is listed or answered.
-    expect(service.read.attention).not.toHaveBeenCalled();
     expect(service.read.draftSet).toHaveBeenCalledWith(PATH, {});
     expect(service.write.apply).toHaveBeenCalledTimes(1);
     expect(service.write.apply.mock.calls[0]).toEqual([ANSWERS, PHRASE, { stopAt: "end" }]);
@@ -242,11 +260,11 @@ describe("runOneshotSequence", () => {
     const service = fakeService({ open: conflicted, spec: answered });
     (service.read.draftSet as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "drafted", spec: answered, template, openDecisions: conflicted, proposals: [], marketplaceCalls: 1, durationMs: 1 });
     const client = await connect(service);
-    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: answered, expect: EXPECT, confirm: PHRASE });
+    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: answered, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
     expect(ok.find((c) => c.label === "nb_draft_set")).toMatchObject({ ok: true });
     expect(ok.find((c) => c.label === "draft + answers")).toMatchObject({ ok: true });
     // The committed spec without the answer leaves a fill-in: fail.
-    const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: DRAFTED, expect: EXPECT, confirm: PHRASE });
+    const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: DRAFTED, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
     expect(bad.find((c) => c.label === "draft + answers")).toMatchObject({ ok: false, detail: expect.stringContaining("leaves 1 fill-in") });
   });
 
@@ -374,13 +392,102 @@ describe("compareDraft: review answers", () => {
     const committed = withReview([{ name: "George Brett", decision: "create" }, { name: "Mark McGwire", decision: "create" }]);
     const pass = fakeService({ spec: withReview([{ name: "George Brett", decision: "create" }]) });
     const client = await connect(pass);
-    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE });
+    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
     expect(ok.find((c) => c.label === "review answers")).toMatchObject({ ok: true, detail: "drafted 1 / committed 2, 1 committed-only (moot or lookup-staged)" });
 
     const fail = fakeService({ spec: withReview([{ name: "Rookie New", decision: "create" }]) });
-    const bad = await runOneshotSequence(await connect(fail), { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE });
+    const bad = await runOneshotSequence(await connect(fail), { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
     expect(bad.find((c) => c.label === "review answers")!.ok).toBe(false);
     expect(fail.write.apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("oneshotExpectSchema — the attention block is required", () => {
+  test("an expect file without an attention block is rejected, naming it", () => {
+    const parsed = oneshotExpectSchema.safeParse(BASE_EXPECT);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error!.issues.map((i) => i.path.join("."))).toContain("attention");
+  });
+
+  test("the placeholder and the measured block both parse", () => {
+    expect(oneshotExpectSchema.safeParse({ ...BASE_EXPECT, attention: { measured: false } }).success).toBe(true);
+    expect(oneshotExpectSchema.safeParse({ ...BASE_EXPECT, attention: MEASURED }).success).toBe(true);
+  });
+
+  test("the command refuses such a file (exit 2) before it connects", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "setbuild-oneshot-"));
+    const spec = join(dir, "oneshot.spec.json");
+    const exp = join(dir, "oneshot.expect.json");
+    await writeFile(spec, JSON.stringify(ANSWERS));
+    await writeFile(exp, JSON.stringify({ measured: true, ...BASE_EXPECT }));
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await main(["oneshot-smoke", "--answers", spec, "--expect", exp, "--confirm", PHRASE], {
+      env: {},
+      stdout: (l) => out.push(l),
+      stderr: (l) => err.push(l),
+    });
+    expect(code).toBe(2);
+    expect(err.join("\n")).toMatch(/not a valid expectations file: attention/);
+  });
+});
+
+/** Every `/admin/set-builder?` in a report, made absolute on the app origin. */
+const absolute = <T,>(report: T): T => JSON.parse(JSON.stringify(report).replaceAll("/admin/set-builder?", `${APP}/admin/set-builder?`)) as T;
+
+describe("runOneshotSequence — live link assertions", () => {
+  const verdict = (checks: Awaited<ReturnType<typeof run>>, label: string) => checks.find((c) => c.label === label)!;
+
+  test("an apply report with no setLinks fails nb_apply links", async () => {
+    const checks = await run(fakeService({ setLinks: [] }));
+    expect(verdict(checks, "nb_apply links")).toMatchObject({ ok: false, detail: expect.stringContaining("no setLinks") });
+  });
+
+  test("a set link that is the bare Set Builder root fails: it does not open the set", async () => {
+    const checks = await run(fakeService({ setLinks: [{ path: SCOPE, link: "/admin/set-builder", attention: SUMMARY }] }));
+    expect(verdict(checks, "nb_apply links")).toMatchObject({ ok: false, detail: expect.stringContaining("at its root") });
+  });
+
+  test("a set link that is not four ids deep fails", async () => {
+    const checks = await run(fakeService({ setLinks: [{ path: SCOPE, link: linkAt(3), attention: SUMMARY }] }));
+    expect(verdict(checks, "nb_apply links").detail).toMatch(/3 ids deep, expected 4/);
+  });
+
+  test("a link built from ids the resolver does not know fails with how far it got", async () => {
+    const stale = linkAt(4, undefined, ["sp1", "yr1", "br1", "gone"]);
+    const checks = await run(fakeService({ setLinks: [{ path: SCOPE, link: stale, attention: SUMMARY }] }));
+    expect(verdict(checks, "nb_apply links").detail).toMatch(/answered 3 of 4 levels, so the link does not open the row/);
+  });
+
+  test("an inspect link that is not a Set Builder link fails nb_inspect links", async () => {
+    const wrong = structuredClone(built);
+    wrong.variantTypes![1].rows[0].link = "https://elsewhere.example/set?x=1";
+    const checks = await run(fakeService({ inspect: wrong }));
+    expect(verdict(checks, "nb_inspect links")).toMatchObject({ ok: false });
+    expect(verdict(checks, "nb_inspect links").detail).toContain("Parallel › Gold link");
+  });
+
+  test("with an app origin every link must be absolute on it; relative ones fail", async () => {
+    const rel = await run(fakeService(), EXPECT, { appOrigin: APP });
+    expect(verdict(rel, "nb_apply links").ok).toBe(false);
+    expect(verdict(rel, "nb_apply links").detail).toMatch(/is not absolute/);
+    expect(verdict(rel, "nb_inspect links").ok).toBe(false);
+
+    const abs = await run(
+      fakeService({ setLinks: [{ path: SCOPE, link: SET_LINK_ABS, attention: SUMMARY }], inspect: absolute(built) }),
+      EXPECT,
+      { appOrigin: APP },
+    );
+    expect(abs.filter((c) => !c.ok)).toEqual([]);
+  });
+
+  test("an absolute link on another origin fails", async () => {
+    const checks = await run(
+      fakeService({ setLinks: [{ path: SCOPE, link: SET_LINK_ABS.replace(APP, "https://other.example.test"), attention: SUMMARY }] }),
+      EXPECT,
+      { appOrigin: APP },
+    );
+    expect(verdict(checks, "nb_apply links").detail).toMatch(/not on the app origin/);
   });
 });
 

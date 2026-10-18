@@ -60,7 +60,9 @@ import { z } from "zod";
 import type { CommandSpec } from "./cli";
 import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
+import { makeClient } from "./client/convex-client";
 import { canonicalJson, contentDigest } from "./client/target";
+import { drillResolverOf, inspectLinkProblems, setLinkProblems, type DrillResolver } from "./link-checks";
 import { APPLY_TIMEOUT_MS, connectToSpawnedServer, inspectExpectSchema, inspectMismatches } from "./mcp-smoke";
 import { mergeDraftAnswers, placeholdersIn } from "./runner/draft";
 import {
@@ -109,8 +111,9 @@ export const oneshotExpectSchema = z
     after: z.array(inspectExpectSchema).default([]),
     /**
      * What the built set still needs from a person, and the answers the
-     * smoke gives. `{ "measured": false }` until measured on the PR preview:
-     * the smoke then lists, fails, and prints what it found.
+     * smoke gives. REQUIRED: a file without it would skip step 7 and still
+     * pass. `{ "measured": false }` until measured on the PR preview: the
+     * smoke then lists, fails, and prints what it found.
      */
     attention: z
       .union([
@@ -131,8 +134,7 @@ export const oneshotExpectSchema = z
             fix: FixAnswersSchema,
           })
           .strict(),
-      ])
-      .optional(),
+      ]),
   })
   .strict();
 export type OneshotExpect = z.infer<typeof oneshotExpectSchema>;
@@ -405,6 +407,10 @@ export async function runOneshotSequence(
     onCheck?: (c: OneshotCheck) => void;
     /** Injectable for tests: how the attention step waits between listings. */
     sleep?: (ms: number) => Promise<void>;
+    /** The app origin the run was given (`--app-url`); links must be absolute on it. Absent: root-relative. */
+    appOrigin?: string;
+    /** The page's read-only drill resolver, through the tool's client: a link must open the row. */
+    resolveDrill: DrillResolver;
   },
 ): Promise<OneshotCheck[]> {
   const checks: OneshotCheck[] = [];
@@ -510,6 +516,7 @@ export async function runOneshotSequence(
   // 5. apply, collecting
   let applyLine: string | undefined;
   let applyAttention: AttentionSummary | undefined;
+  let applyLinks: ApplyReport["setLinks"];
   const applied = await attempt("nb_apply", async () => {
     const report = await call<ApplyReport>(client, "nb_apply", { specPath: o.answersPath, confirm: phrase, stopAt: "end" }, APPLY_TIMEOUT_MS);
     const problems: string[] = [];
@@ -526,6 +533,7 @@ export async function runOneshotSequence(
     const shown = Object.keys(o.expect.apply.counts).map((k) => `${k} ${report.counts?.[k]}`).join(", ");
     applyLine = report.attentionLine;
     applyAttention = report.setLinks?.find((l) => l.attention)?.attention;
+    applyLinks = report.setLinks;
     return record(problems.length === 0, "nb_apply", problems.length === 0 ? `${shown} in ${Math.round((report.durationMs ?? 0) / 1000)}s` : problems.join("; "));
   });
   if (!applied) return checks;
@@ -535,10 +543,17 @@ export async function runOneshotSequence(
     applyLine ? `${applyLine}${applyAttention ? "" : " (no set carried attention)"}` : "the report has no attentionLine",
   );
 
+  await attempt("nb_apply links", async () => {
+    const problems = await setLinkProblems(applyLinks, { appOrigin: o.appOrigin, resolve: o.resolveDrill });
+    return record(problems.length === 0, "nb_apply links", problems.length === 0 ? `${applyLinks!.length} set link(s), each opens its set` : problems.join("; "));
+  });
+
   // 6. inspect
   await attempt("nb_inspect", async () => {
     const report = await call<InspectReport>(client, "nb_inspect", { path }, READ_TIMEOUT_MS);
     if (!report.found) return record(false, "nb_inspect", "the set was not found after the build");
+    const linkBad = await inspectLinkProblems(report, { appOrigin: o.appOrigin, resolve: o.resolveDrill });
+    record(linkBad.length === 0, "nb_inspect links", linkBad.length === 0 ? "every link is a Set Builder link that opens its row" : linkBad.join("; "));
     const insert = insertWithBuiltParallel(report);
     record(!!insert, "insert with a built parallel", insert ?? "no insert holds a parallel with cards");
     const parallels = (report.variantTypes ?? []).filter((t) => t.type === o.expect.builtFromBaseType).flatMap((t) => t.rows);
@@ -556,7 +571,7 @@ export async function runOneshotSequence(
   });
 
   // 7. attention
-  if (o.expect.attention) await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep);
+  await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep);
   return checks;
 }
 
@@ -727,9 +742,13 @@ export const oneshotSmokeCommand: CommandSpec = {
     const say = (line: string) => ctx.io.stdout(scrub(line, redact));
 
     const server = await connectToSpawnedServer(env);
+    // The page's resolver, through this process's own client (the server mints its own).
+    const nb = makeClient(conn.target, conn.tokens, { transport: conn.transport });
     let checks: OneshotCheck[];
     try {
       checks = await runOneshotSequence(server.client, {
+        appOrigin: conn.target.appOrigin,
+        resolveDrill: drillResolverOf(nb),
         answersPath: abs(answersArg),
         answers,
         expect: parsed.data,
@@ -737,6 +756,7 @@ export const oneshotSmokeCommand: CommandSpec = {
         onCheck: ctx.json ? undefined : (c) => say(`${c.ok ? "ok  " : "FAIL"}  ${c.label}: ${c.detail}`),
       });
     } finally {
+      await nb.close().catch(() => {});
       await server.close().catch(() => {});
     }
     const ok = checks.length > 0 && checks.every((c) => c.ok);

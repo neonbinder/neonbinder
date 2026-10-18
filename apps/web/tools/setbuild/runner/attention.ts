@@ -45,8 +45,8 @@ import {
 import { childrenOf, resolveBrandYear, resolveSetPath, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
 import { variantTypeKind } from "../../../convex/variantRole";
 import { listCardAttention, type ListCardAttentionOptions } from "../lib/attention";
-import { applyCardAnswers } from "../lib/attention-answers";
-import { applyNameAnswers, listNameSuggestions, resolveNameAnswers } from "../lib/name-suggestions";
+import { CardFixAborted, applyCardAnswers } from "../lib/attention-answers";
+import { NameFixAborted, applyNameAnswers, listNameSuggestions, resolveNameAnswers } from "../lib/name-suggestions";
 import { openSlRows, readSlReview } from "../lib/sl-review";
 import { setBuilderUrlForPath } from "../lib/set-builder-link";
 import { parseFixAnswers } from "../lib/fix-answers";
@@ -291,6 +291,27 @@ export class FixInputError extends Error {
 }
 
 /**
+ * `nb_fix` / `setbuild fix` stopped part-way by a failure that is not a
+ * refusal (network, auth, a server fault) after it may have written: every
+ * answer settled before it (`results`, cards then names) and the name answers
+ * whose save was sent but not read back (`unconfirmed`), so nothing written
+ * is unreported. The MCP tool and the CLI print both, scrubbed.
+ */
+export class FixAborted extends Error {
+  readonly results: FixResult[];
+  readonly unconfirmed: string[];
+  readonly cause: unknown;
+  constructor(results: FixResult[], unconfirmed: string[], cause: unknown) {
+    const why = cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
+    super(`fix stopped part-way (${why}). The answers it settled are listed; list attention again before answering the rest.`);
+    this.name = "FixAborted";
+    this.results = results;
+    this.unconfirmed = unconfirmed;
+    this.cause = cause instanceof CardFixAborted || cause instanceof NameFixAborted ? cause.cause : cause;
+  }
+}
+
+/**
  * `nb_fix` / `setbuild fix`. The phrase is checked before anything touches
  * the network; every name answer resolves before anything is written.
  */
@@ -326,15 +347,33 @@ export async function fixAttention(
   const results: FixResult[] = [];
   let appliedCards = 0;
   if (cards.length > 0 && r.kind === "set") {
-    for (const c of await applyCardAnswers(client, r.set, cards)) {
-      results.push(c);
-      if (c.outcome === "applied") appliedCards++;
+    try {
+      for (const c of await applyCardAnswers(client, r.set, cards)) {
+        results.push(c);
+        if (c.outcome === "applied") appliedCards++;
+      }
+    } catch (err) {
+      if (err instanceof CardFixAborted) throw new FixAborted([...err.results], [], err);
+      throw err;
     }
   }
-  const nameReport = await applyNameAnswers(client, path, node, names);
+  // From here cards may be written: a failure never loses their results.
+  let nameReport: Awaited<ReturnType<typeof applyNameAnswers>>;
+  try {
+    nameReport = await applyNameAnswers(client, path, node, names);
+  } catch (err) {
+    if (err instanceof NameFixAborted) throw new FixAborted([...results, ...err.results], err.unconfirmed, err);
+    if (results.length > 0) throw new FixAborted(results, [], err);
+    throw err;
+  }
   results.push(...nameReport.results);
 
-  const after = await attentionSummaryOf(client, path, node);
+  let after: AttentionSummary;
+  try {
+    after = await attentionSummaryOf(client, path, node);
+  } catch (err) {
+    throw new FixAborted(results, [], err);
+  }
   const { summary, ...remaining } = after;
   return {
     path: pathText,

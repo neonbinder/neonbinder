@@ -50,7 +50,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 import type { CommandSpec } from "./cli";
 import { scrub } from "./auth/token-source";
+import { makeClient } from "./client/convex-client";
 import { secretValues } from "./client/connect";
+import { drillResolverOf, inspectLinkProblems, parseDrillLink, setLinkProblems, type DrillResolver } from "./link-checks";
+import { api } from "../../convex/_generated/api";
+import type { NbClient } from "./client/convex-client";
 import { READ_TOOLS, WRITE_TOOLS } from "./mcp-tools";
 import {
   countOpenDecisions,
@@ -105,6 +109,25 @@ export const smokeExpectSchema = z
     plan: z.object({ openDecisions: z.number().int().min(0).default(0) }).strict().default({}),
     apply: z.object({ counts: z.record(z.string(), z.number()) }).strict(),
     after: z.array(inspectExpectSchema).default([]),
+    /**
+     * A variation only one marketplace lists must hang off the set's ONE
+     * plain card of that number (NEO-339: 2024 Topps Chrome #122, where
+     * SportLots' bare `[ VAR ]` once saved as a second plain #122 and made the
+     * base ambiguous to every parallel built from Base). Read-only: the Base
+     * row's cards, through a public read the tool already uses.
+     */
+    variationParents: z
+      .array(
+        z
+          .object({
+            path: pathSchema,
+            cardNumber: z.string().min(1),
+            /** How many cards of this number only SportLots lists (each must be a variation of the plain one). */
+            slOnlyVariations: z.number().int().min(1),
+          })
+          .strict(),
+      )
+      .default([]),
   })
   .strict();
 
@@ -164,6 +187,51 @@ export function inspectMismatches(report: InspectReport, exp: InspectExpect): st
   return out;
 }
 
+/** A stored card, as far as the variation check reads it. */
+export interface VariationCheckCard {
+  _id: string;
+  cardNumber: string;
+  variationOfCardId?: string;
+  platformData?: { bsc?: unknown; sportlots?: unknown };
+}
+
+/**
+ * The variation-parent check on one number's cards (see `variationParents`).
+ * Exactly one plain card (no parent), and every other card of that number only
+ * SportLots lists is a variation of it: with the bug, the SportLots row is a
+ * second plain card and there are two. Pure.
+ */
+export function variationParentProblems(
+  cards: ReadonlyArray<VariationCheckCard>,
+  cardNumber: string,
+  slOnlyVariations: number,
+): string[] {
+  const ofNumber = cards.filter((c) => c.cardNumber === cardNumber);
+  const plain = ofNumber.filter((c) => c.variationOfCardId === undefined);
+  if (plain.length !== 1) {
+    return [`${plain.length} plain cards numbered #${cardNumber} (${ofNumber.length} in all), expected exactly one`];
+  }
+  const parent = plain[0];
+  const slOnly = ofNumber.filter((c) => c._id !== parent._id && !!c.platformData?.sportlots && !c.platformData?.bsc);
+  const out: string[] = [];
+  if (slOnly.length !== slOnlyVariations) {
+    out.push(`${slOnly.length} SportLots-only cards numbered #${cardNumber}, expected ${slOnlyVariations}`);
+  }
+  const orphans = slOnly.filter((c) => c.variationOfCardId !== parent._id);
+  if (orphans.length > 0) {
+    out.push(`${orphans.length} SportLots-only #${cardNumber} card(s) are not a variation of the plain #${cardNumber}`);
+  }
+  return out;
+}
+
+/** The Base row's cards, through the public read the tool already uses (`getCardChecklist`). */
+export type CardReader = (selectorOptionId: string) => Promise<ReadonlyArray<VariationCheckCard>>;
+
+export function cardReaderOf(client: NbClient): CardReader {
+  return (selectorOptionId) =>
+    client.query(api.selectorOptions.getCardChecklist, { selectorOptionId: selectorOptionId as never });
+}
+
 function inspectSummary(report: InspectReport, exp: InspectExpect): string {
   const parts: string[] = [];
   if (exp.base && report.base) parts.push(`Base ${report.base.cards}${isLinked(report.base) ? " linked" : " unlinked"}`);
@@ -196,7 +264,18 @@ async function call<T>(client: Client, tool: string, args: Record<string, unknow
 
 export async function runSmokeSequence(
   client: Client,
-  o: { specPath: string; expect: SmokeExpect; confirm: string; onCheck?: (c: SmokeCheck) => void },
+  o: {
+    specPath: string;
+    expect: SmokeExpect;
+    confirm: string;
+    onCheck?: (c: SmokeCheck) => void;
+    /** The app origin the run was given (`--app-url`); links must be absolute on it. Absent: root-relative. */
+    appOrigin?: string;
+    /** The page's read-only drill resolver, through the tool's client: a link must open the row. */
+    resolveDrill: DrillResolver;
+    /** Reads one row's cards (read-only), for the variation-parent check. */
+    readCards: CardReader;
+  },
 ): Promise<SmokeCheck[]> {
   const checks: SmokeCheck[] = [];
   const record = (ok: boolean, label: string, detail: string) => {
@@ -232,7 +311,10 @@ export async function runSmokeSequence(
       const label = `${phase} nb_inspect ${formatPath(path)}`;
       await attempt(label, async () => {
         const report = await call<InspectReport>(client, "nb_inspect", { path }, READ_TIMEOUT_MS);
-        const bad = inspectMismatches(report, exp);
+        const bad = [
+          ...inspectMismatches(report, exp),
+          ...(await inspectLinkProblems(report, { appOrigin: o.appOrigin, resolve: o.resolveDrill })),
+        ];
         return record(bad.length === 0, label, bad.length === 0 ? inspectSummary(report, exp) : bad.join("; "));
       });
     }
@@ -275,8 +357,9 @@ export async function runSmokeSequence(
       const got = report.counts?.[key];
       if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}`);
     }
-    // A build always ends by saying what is left for a person.
-    if ((report.setLinks?.length ?? 0) > 0 && !report.attentionLine) problems.push("the report has no attentionLine");
+    // A build always ends by saying what is left for a person, and where.
+    if (!report.attentionLine) problems.push("the report has no attentionLine");
+    problems.push(...(await setLinkProblems(report.setLinks, { appOrigin: o.appOrigin, resolve: o.resolveDrill })));
     const shown = Object.keys(o.expect.apply.counts)
       .map((k) => `${k} ${report.counts?.[k]}`)
       .join(", ");
@@ -290,6 +373,24 @@ export async function runSmokeSequence(
 
   // 5. after
   await inspectAll("after", o.expect.after);
+
+  // 5b. a one-marketplace variation hangs off the set's one plain card
+  for (const exp of o.expect.variationParents) {
+    const label = `variation parent ${formatPath(exp.path as NodePath)} #${exp.cardNumber}`;
+    await attempt(label, async () => {
+      const report = await call<InspectReport>(client, "nb_inspect", { path: exp.path }, READ_TIMEOUT_MS);
+      if (!report.found || !report.base) return record(false, label, `${report.pathText} has no Base row`);
+      const at = parseDrillLink(report.base.link, o.appOrigin);
+      if ("problem" in at) return record(false, label, `the Base row's link: ${at.problem}`);
+      const cards = await o.readCards(at.ids[at.ids.length - 1]);
+      const bad = variationParentProblems(cards, exp.cardNumber, exp.slOnlyVariations);
+      return record(
+        bad.length === 0,
+        label,
+        bad.length === 0 ? `one plain #${exp.cardNumber}, ${exp.slOnlyVariations} SportLots-only variation(s) of it` : bad.join("; "),
+      );
+    });
+  }
 
   // 6. attention: listing only. The seed's sets have many readers, so this
   // never answers anything; it proves the tool returns what it promises.
@@ -432,15 +533,21 @@ export const mcpSmokeCommand: CommandSpec = {
 
     if (!ctx.json) say(`mcp-smoke  spec ${specArg}`);
     const server = await connectToSpawnedServer(env);
+    // The page's resolver, through this process's own client (the server mints its own).
+    const nb = makeClient(conn.target, conn.tokens, { transport: conn.transport });
     let checks: SmokeCheck[];
     try {
       checks = await runSmokeSequence(server.client, {
         specPath: abs(specArg),
         expect,
         confirm,
+        appOrigin: conn.target.appOrigin,
+        resolveDrill: drillResolverOf(nb),
+        readCards: cardReaderOf(nb),
         onCheck: ctx.json ? undefined : (c) => say(`${c.ok ? "ok  " : "FAIL"}  ${c.label}: ${c.detail}`),
       });
     } finally {
+      await nb.close().catch(() => {});
       await server.close().catch(() => {});
     }
     const ok = checks.length > 0 && checks.every((c) => c.ok);

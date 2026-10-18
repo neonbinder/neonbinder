@@ -290,6 +290,25 @@ export async function resolveNameAnswers(
  * with `baseVersion` read just before the write. Resolves every answer first
  * (`resolveNameAnswers`), so a bad name writes nothing.
  */
+/**
+ * A failure that is not a refusal part-way through the names' writes. Carries
+ * every answer settled before it, and the ones whose save was sent but whose
+ * outcome was not read back (`unconfirmed`: their `at`), so nothing written is
+ * unreported.
+ */
+export class NameFixAborted extends Error {
+  readonly results: NameFixResult[];
+  readonly unconfirmed: string[];
+  readonly cause: unknown;
+  constructor(results: NameFixResult[], unconfirmed: string[], cause: unknown) {
+    super(cause instanceof Error ? cause.message.split("\n")[0] : String(cause));
+    this.name = "NameFixAborted";
+    this.results = results;
+    this.unconfirmed = unconfirmed;
+    this.cause = cause;
+  }
+}
+
 export async function applyNameAnswers(
   client: NbClient,
   path: NodePath,
@@ -326,72 +345,82 @@ export async function applyNameAnswers(
   }
 
   let calls = 0;
-  for (const col of byColumn.values()) {
-    const fresh = await suggestionsOf(client, col);
-    const byRow = new Map(fresh.map((s) => [String(s.existingId), s]));
-    const sending: Array<{ t: (typeof targets)[number]; decision: SuggestionDecision }> = [];
-    for (const t of col.items) {
-      const label = describeNameRow(path, t.answer.row ?? {});
-      const row = byRow.get(String(t.rowId));
-      const s = row?.suggestions.find((x) => x.side === t.answer.side);
-      if (!row || !s) {
-        results.push({
-          at: t.at,
-          outcome: "moot",
-          detail: `${label}: nothing to check on the ${sideWord(t.answer.side)} side any more (the names agree, or it was already answered).`,
+  /** Sent in a save whose outcome has not been read back yet. */
+  let inFlight: string[] = [];
+  try {
+    for (const col of byColumn.values()) {
+      const fresh = await suggestionsOf(client, col);
+      const byRow = new Map(fresh.map((s) => [String(s.existingId), s]));
+      const sending: Array<{ t: (typeof targets)[number]; decision: SuggestionDecision }> = [];
+      for (const t of col.items) {
+        const label = describeNameRow(path, t.answer.row ?? {});
+        const row = byRow.get(String(t.rowId));
+        const s = row?.suggestions.find((x) => x.side === t.answer.side);
+        if (!row || !s) {
+          results.push({
+            at: t.at,
+            outcome: "moot",
+            detail: `${label}: nothing to check on the ${sideWord(t.answer.side)} side any more (the names agree, or it was already answered).`,
+          });
+          continue;
+        }
+        if (s.label !== t.answer.label) {
+          results.push({
+            at: t.at,
+            outcome: "refused",
+            detail: `${label}: the ${sideWord(t.answer.side)} name is now “${s.label}”, not “${t.answer.label}”. List again and answer the name it shows now.`,
+          });
+          continue;
+        }
+        sending.push({
+          t,
+          decision: { existingId: row.existingId, baseVersion: row.baseVersion, side: t.answer.side, action: t.answer.action },
         });
-        continue;
       }
-      if (s.label !== t.answer.label) {
-        results.push({
-          at: t.at,
-          outcome: "refused",
-          detail: `${label}: the ${sideWord(t.answer.side)} name is now “${s.label}”, not “${t.answer.label}”. List again and answer the name it shows now.`,
+
+      for (let i = 0; i < sending.length; i += MAX_SUGGESTION_DECISIONS) {
+        const chunk = sending.slice(i, i + MAX_SUGGESTION_DECISIONS);
+        inFlight = sending.slice(0, i + chunk.length).map((c) => c.t.at);
+        const r = await client.mutation(api.selectorOptions.applySelectorSyncSuggestions, {
+          level: col.level,
+          parentId: col.parentId,
+          decisions: chunk.map((c) => c.decision),
         });
-        continue;
+        calls++;
+        for (const k of Object.keys(counts) as Array<keyof SuggestionCounts>) counts[k] += r[k] ?? 0;
       }
-      sending.push({
-        t,
-        decision: { existingId: row.existingId, baseVersion: row.baseVersion, side: t.answer.side, action: t.answer.action },
-      });
-    }
+      if (sending.length === 0) continue;
 
-    for (let i = 0; i < sending.length; i += MAX_SUGGESTION_DECISIONS) {
-      const chunk = sending.slice(i, i + MAX_SUGGESTION_DECISIONS);
-      const r = await client.mutation(api.selectorOptions.applySelectorSyncSuggestions, {
-        level: col.level,
-        parentId: col.parentId,
-        decisions: chunk.map((c) => c.decision),
-      });
-      calls++;
-      for (const k of Object.keys(counts) as Array<keyof SuggestionCounts>) counts[k] += r[k] ?? 0;
+      // The mutation returns counts, not per-decision outcomes: read the column
+      // again and see which suggestions are gone. A suggestion that is still
+      // offered was not saved (stale, a name clash, or refused).
+      const after = new Map((await suggestionsOf(client, col)).map((s) => [String(s.existingId), s]));
+      for (const { t } of sending) {
+        const label = describeNameRow(path, t.answer.row ?? {});
+        const still = after.get(String(t.rowId))?.suggestions.some((x) => x.side === t.answer.side && x.label === t.answer.label);
+        results.push(
+          still
+            ? {
+                at: t.at,
+                outcome: "refused",
+                detail: `${label}: not saved. The row changed while this ran, or “${t.answer.label}” is already another row's name here. List again.`,
+              }
+            : {
+                at: t.at,
+                outcome: "applied",
+                detail:
+                  t.answer.action === "accept"
+                    ? `${label}: renamed to “${t.answer.label}”.`
+                    : `${label}: kept NB's name; the ${sideWord(t.answer.side)} name “${t.answer.label}” will not be suggested again.`,
+              },
+        );
+      }
+      inFlight = [];
     }
-    if (sending.length === 0) continue;
-
-    // The mutation returns counts, not per-decision outcomes: read the column
-    // again and see which suggestions are gone. A suggestion that is still
-    // offered was not saved (stale, a name clash, or refused).
-    const after = new Map((await suggestionsOf(client, col)).map((s) => [String(s.existingId), s]));
-    for (const { t } of sending) {
-      const label = describeNameRow(path, t.answer.row ?? {});
-      const still = after.get(String(t.rowId))?.suggestions.some((x) => x.side === t.answer.side && x.label === t.answer.label);
-      results.push(
-        still
-          ? {
-              at: t.at,
-              outcome: "refused",
-              detail: `${label}: not saved. The row changed while this ran, or “${t.answer.label}” is already another row's name here. List again.`,
-            }
-          : {
-              at: t.at,
-              outcome: "applied",
-              detail:
-                t.answer.action === "accept"
-                  ? `${label}: renamed to “${t.answer.label}”.`
-                  : `${label}: kept NB's name; the ${sideWord(t.answer.side)} name “${t.answer.label}” will not be suggested again.`,
-            },
-      );
-    }
+  } catch (err) {
+    const order = new Map(targets.map((t, i) => [t.at, i]));
+    results.sort((a, b) => (order.get(a.at) ?? 0) - (order.get(b.at) ?? 0));
+    throw new NameFixAborted(results, inFlight, err);
   }
 
   const order = new Map(targets.map((t, i) => [t.at, i]));

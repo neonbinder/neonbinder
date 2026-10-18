@@ -715,4 +715,32 @@ describe("commitCardChecklist — a one-marketplace variation's parent across ma
     const { bySl } = await commit([base122, second, slVar()]);
     expect(bySl("2024 Topps Chrome #122 Wyatt Langford [ VAR ]")!.variationOfCardId).toBeUndefined();
   });
+
+  // The mirror: the variation is BSC-only and its base is SportLots-only. The
+  // cross-marketplace pass attaches a variation to a base only when they share
+  // a marketplace SET on at least one side; here the two sit in different
+  // marketplaces' sets, so nothing is shared and nothing is attached. Pinned as
+  // it behaves today: it is NOT symmetric with the case above (where the base
+  // is listed by both marketplaces), because a base only the other marketplace
+  // lists gives the variation no set to share.
+  describe("mirror: a BSC-only variation with a SportLots-only base", () => {
+    const slOnlyBase = card({
+      cardNumber: "122",
+      cardName: "Wyatt Langford",
+      slRef: "2024 Topps Chrome #122 Wyatt Langford",
+      slSetId: SL_SET,
+    });
+
+    test("stays unlinked: the two marketplaces' sets share nothing (pinned, not symmetric with the matched-base case)", async () => {
+      const { rows, bySl, byBsc } = await commit([slOnlyBase, bscVar("122b")]);
+      expect(rows).toHaveLength(2);
+      expect(byBsc("bsc-122b")!.variationOfCardId).toBeUndefined();
+      expect(bySl("2024 Topps Chrome #122 Wyatt Langford")!.variationOfCardId).toBeUndefined();
+    });
+
+    test("the same variation DOES attach once its base is also listed by BSC (the matched-base case, from the BSC side)", async () => {
+      const { byBsc } = await commit([base122, bscVar("122b")]);
+      expect(byBsc("bsc-122b")!.variationOfCardId).toBe(byBsc("bsc-122")!._id);
+    });
+  });
 });

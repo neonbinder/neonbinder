@@ -32,5 +32,12 @@
       ],
       "rowCounts": [{"type": "Parallel", "count": 41}]
     }
+  ],
+  "variationParents": [
+    {
+      "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome"},
+      "cardNumber": "122",
+      "slOnlyVariations": 1
+    }
   ]
 }

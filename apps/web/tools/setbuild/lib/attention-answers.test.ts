@@ -6,11 +6,9 @@ import {
   CardAnswerError,
   CardFixAborted,
   applyCardAnswers,
-  cardAnswersForDigest,
   foldCardNumber,
   refusalText,
 } from "./attention-answers";
-import type { CardFixAnswer } from "./attention";
 import { BASE, FUTURE, SET, SPORT, attentionClient, card, era, type Store } from "./attention.fixture";
 
 const WRITES = ["selectorOptions:updateCard", "cardChecklist:confirmCardNoTeam", "teams:findOrCreate", "players:findOrCreate"];
@@ -200,7 +198,7 @@ describe("MissingTeamFixer: { teams } and { noTeam }", () => {
         ...teamsHandlers,
         "teams:findOrCreate": (a) => {
           minted.push(a);
-          return "t-new";
+          return `t-new-${minted.length}`;
         },
       },
     });
@@ -212,22 +210,67 @@ describe("MissingTeamFixer: { teams } and { noTeam }", () => {
       { name: "Unattached", sportId: SPORT },
     ]);
     expect(r.created).toEqual([
-      { kind: "team", name: "Wisconsin Badgers", id: "t-new", existed: false },
-      { kind: "team", name: "Unattached", id: "t-new", existed: false },
+      { kind: "team", name: "Wisconsin Badgers", id: "t-new-1" },
+      { kind: "team", name: "Unattached", id: "t-new-2" },
     ]);
-    expect(client.callsTo("selectorOptions:updateCard")[0].args).toEqual({ id: "c1", teamOnCardIds: ["t-new"] });
+    expect(client.callsTo("selectorOptions:updateCard")[0].args).toEqual({ id: "c1", teamOnCardIds: ["t-new-1", "t-new-2"] });
   });
 
-  test("a create whose name is already a team reports existed; one held in several eras is refused up front", async () => {
-    const client = attentionClient({ store: teamless(), handlers: { ...teamsHandlers, "teams:findOrCreate": () => "t-laa" } });
-    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { teams: [{ create: { location: "Los Angeles", name: "Angels" } }] } }]);
-    expect(r.created).toEqual([{ kind: "team", name: "Los Angeles Angels", id: "t-laa", existed: true }]);
+  test("a team create never links: a name on file (one era, several, or an alias) is refused up front, nothing written", async () => {
+    const client = attentionClient({
+      store: teamless(),
+      handlers: {
+        ...teamsHandlers,
+        "teams:nearMatches": (a) =>
+          a.name === "Louisiana State Tigers" ? [{ _id: "t-lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "Louisiana State Tigers" }] : [],
+        "teams:findOrCreate": () => "t-laa",
+      },
+    });
+    // One era: find-or-create would hand back the Angels.
+    const one = (await applyCardAnswers(client, SET, [
+      { cardNumber: "1", answer: { teams: [{ create: { location: "Los Angeles", name: "Angels" } }] } },
+    ]).catch((e) => e)) as ResolveError;
+    expect(one).toBeInstanceOf(ResolveError);
+    expect(one.candidates.map((c) => c.id)).toEqual(["t-laa"]);
+    expect(one.message).toBe(
+      '"Los Angeles Angels" is already a team in this sport; answer with "Los Angeles Angels" to put that team on the card instead of creating one.',
+    );
 
-    const err = (await applyCardAnswers(client, SET, [
+    const several = (await applyCardAnswers(client, SET, [
       { cardNumber: "1", answer: { teams: [{ create: { location: "Philadelphia", name: "Athletics" } }] } },
     ]).catch((e) => e)) as ResolveError;
-    expect(err).toBeInstanceOf(ResolveError);
-    expect(err.candidates.map((c) => c.id)).toEqual(["t-pa1", "t-pa2"]);
+    expect(several.candidates.map((c) => c.id)).toEqual(["t-pa1", "t-pa2"]);
+
+    const alias = (await applyCardAnswers(client, SET, [
+      { cardNumber: "1", answer: { teams: [{ create: { location: "Louisiana State", name: "Tigers" } }] } },
+    ]).catch((e) => e)) as ResolveError;
+    expect(alias.candidates.map((c) => c.id)).toEqual(["t-lsu"]);
+    expect(alias.message).toBe('"Louisiana State Tigers" is already a name of a team in this sport; answer with that team instead of creating one.');
+    expect(writesOf(client)).toEqual([]);
+  });
+
+  test("a team create the server answers with a row that was on file is refused, and the card is not written", async () => {
+    let created = false;
+    const client = attentionClient({
+      store: teamless(),
+      handlers: {
+        // Nothing on file while resolving; another session creates it before the write.
+        "teams:erasByNameAndSport": () => (created ? [era("t-race", "Monarchs", 1920, 1965, "Kansas City")] : []),
+        // The last read while resolving; from then on the team is on file.
+        "teams:nearMatches": () => {
+          created = true;
+          return [];
+        },
+        "teams:findOrCreate": () => "t-race",
+      },
+    });
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { teams: [{ create: { location: "Kansas City", name: "Monarchs" } }] } }]);
+    expect(r).toMatchObject({
+      outcome: "refused",
+      detail: '"Kansas City Monarchs" is already a team in this sport; answer with that team instead of creating one.',
+    });
+    expect(r.created).toBeUndefined();
+    expect(client.callsTo("selectorOptions:updateCard")).toEqual([]);
   });
 
   test("the server refusing a create refuses the answer and writes no card", async () => {
@@ -306,13 +349,68 @@ describe("UnreviewedNameFixer: { players?, teams? }", () => {
     expect(client.callsTo("selectorOptions:updateCard")[0].args).toMatchObject({ playerIds: ["p-ws2"] });
   });
 
-  test('a player "create" over a shared name needs a birthYear first; one over a unique name reports existed', async () => {
+  test('a player "create" never links: every case where find-or-create would hand back a player on file is refused up front', async () => {
     const store: Store = { rows: { [BASE]: [card("c1", "1", "Typed", { pendingPlayerNames: ["Will Smith"], teamOnCardIds: ["t"], listingTitle: "T" })] } };
-    const client = attentionClient({ store, handlers: { ...players, "players:findOrCreate": () => "p-ya" } });
-    await expect(applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { players: [{ create: "Will Smith" }] } }])).rejects.toThrow(ResolveError);
-    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { players: [{ create: "Yordan Alvarez" }] } }]);
-    expect(r.created).toEqual([{ kind: "player", name: "Yordan Alvarez", id: "p-ya", existed: true }]);
-    expect(client.callsTo("players:findOrCreate")[0].args).toEqual({ name: "Yordan Alvarez", sportId: SPORT });
+    const client = attentionClient({
+      store,
+      handlers: {
+        ...players,
+        "players:nearMatches": (a) =>
+          ({
+            "Yordan Alvarez": [{ _id: "p-ya", name: "Yordan Alvarez", confidence: "exact", birthYear: 1997 }],
+            "Will Smith": [
+              { _id: "p-ws1", name: "Will Smith", confidence: "exact", birthYear: 1989 },
+              { _id: "p-ws2", name: "Will Smith", confidence: "exact", birthYear: 1995 },
+            ],
+            "Bob Jones": [
+              { _id: "p-bj1", name: "Bob Jones", confidence: "exact", birthYear: 1950 },
+              { _id: "p-bj2", name: "Bob Jones", confidence: "exact" },
+            ],
+          })[a.name as string] ?? [],
+        "players:findOrCreate": () => "p-new",
+      },
+    });
+    const refusal = async (create: string, birthYear?: number) =>
+      (await applyCardAnswers(client, SET, [
+        { cardNumber: "1", answer: { players: [{ create, ...(birthYear !== undefined ? { birthYear } : {}) }] } },
+      ]).catch((e) => e)) as ResolveError;
+
+    // Exactly one same-name player: the server links it, whatever birthYear says.
+    for (const by of [undefined, 2001]) {
+      const one = await refusal("Yordan Alvarez", by);
+      expect(one).toBeInstanceOf(ResolveError);
+      expect(one.candidates.map((c) => c.id)).toEqual(["p-ya"]);
+      expect(one.message).toBe('"Yordan Alvarez" is already a player in this sport; link that player with { "link": "Yordan Alvarez" } instead of creating one.');
+    }
+    // Several, no birthYear: the server refuses; say so first.
+    expect((await refusal("Will Smith")).message).toBe(
+      '"Will Smith" already names 2 players; link one with { "link", "birthYear" } (born 1989, 1995), or add the new player\'s birthYear.',
+    );
+    // Several, one born that year: the server links it.
+    const year = await refusal("Will Smith", 1995);
+    expect(year.candidates.map((c) => c.id)).toEqual(["p-ws1", "p-ws2"]);
+    expect(year.message).toBe('A player named "Will Smith" born 1995 is already on file; link that player with { "link", "birthYear" } instead of creating one.');
+    // Several, one undated: it could be the same man.
+    expect((await refusal("Bob Jones", 1990)).message).toBe(
+      '"Bob Jones" already names 2 players and one has no birth year on file, so a new one cannot be told apart from it; link one with { "link", "birthYear" }.',
+    );
+    expect(writesOf(client)).toEqual([]);
+
+    // Several, all dated, none that year: a real create.
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { players: [{ create: "Will Smith", birthYear: 2001 }] } }]);
+    expect(r.created).toEqual([{ kind: "player", name: "Will Smith", id: "p-new" }]);
+    expect(client.callsTo("players:findOrCreate")[0].args).toEqual({ name: "Will Smith", sportId: SPORT, birthYear: 2001 });
+  });
+
+  test("a player create the server answers with a player on file is refused, and the card is not written", async () => {
+    const store: Store = { rows: { [BASE]: [card("c1", "1", "Typed", { pendingPlayerNames: ["Will Smith"], teamOnCardIds: ["t"], listingTitle: "T" })] } };
+    const client = attentionClient({ store, handlers: { ...players, "players:findOrCreate": () => "p-ws1" } });
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { players: [{ create: "Will Smith", birthYear: 2001 }] } }]);
+    expect(r).toMatchObject({
+      outcome: "refused",
+      detail: '"Will Smith" is already a player in this sport; link that player with { "link", "birthYear" } instead of creating one.',
+    });
+    expect(client.callsTo("selectorOptions:updateCard")).toEqual([]);
   });
 
   test("a { teams } answer on a card whose only gap is a typed team goes through the names fixer", async () => {
@@ -472,47 +570,6 @@ describe("a batch", () => {
     ]);
     expect(r.card).toEqual({ row: { type: "Inserts", name: "Future Stars" }, rowLabel: "Inserts › Future Stars", cardNumber: "FS-1", cardName: "Future", cardId: "f1" });
     expect(r.outcome).toBe("applied");
-  });
-});
-
-describe("cardAnswersForDigest", () => {
-  const answers: CardFixAnswer[] = [
-    { cardNumber: "1", answer: { teams: ["Los Angeles Angels", { name: "Philadelphia Athletics", from: 1901 }, { create: { name: "Badgers", location: "Wisconsin" } }] } },
-    { row: { type: "Inserts", name: "Future Stars" }, cardNumber: "FS-1", cardId: "f1", answer: { title: "T", variation: "V" } },
-    { cardNumber: "2", answer: { noTeam: true } },
-    { cardNumber: "3", answer: { players: ["A", { link: "B", birthYear: 1990 }, { create: "C" }] } },
-  ];
-
-  test("every field present, nulls for what was left out, text exactly as given", () => {
-    expect(cardAnswersForDigest(answers)).toEqual([
-      {
-        row: null,
-        cardNumber: "1",
-        cardId: null,
-        answer: {
-          players: null,
-          teams: [
-            "Los Angeles Angels",
-            { name: "Philadelphia Athletics", from: 1901, id: null },
-            { create: { location: "Wisconsin", name: "Badgers", league: null } },
-          ],
-        },
-      },
-      { row: { type: "Inserts", name: "Future Stars", parallel: null }, cardNumber: "FS-1", cardId: "f1", answer: { title: "T", variation: "V" } },
-      { row: null, cardNumber: "2", cardId: null, answer: { noTeam: true } },
-      {
-        row: null,
-        cardNumber: "3",
-        cardId: null,
-        answer: { players: ["A", { link: "B", birthYear: 1990 }, { create: "C", birthYear: null }], teams: null },
-      },
-    ]);
-  });
-
-  test("a different title, or a trailing space, is a different digest input", () => {
-    const a = cardAnswersForDigest([{ cardNumber: "1", answer: { title: "T" } }]);
-    const b = cardAnswersForDigest([{ cardNumber: "1", answer: { title: "T " } }]);
-    expect(a).not.toEqual(b);
   });
 });
 
