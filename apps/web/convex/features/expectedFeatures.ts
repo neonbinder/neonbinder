@@ -12,7 +12,11 @@
  * Initial list seeded from `docs/marketplace-listings.md` section 8.
  */
 
-import { LEAGUE_OPTIONS, ERA_BUCKET_OPTIONS } from "./deriveCardFeatures";
+import {
+  AUTOGRAPH_FORMATS,
+  ERA_BUCKET_OPTIONS,
+  LEAGUE_OPTIONS,
+} from "./deriveCardFeatures";
 
 export type ExpectedFeature = {
   key: string;
@@ -132,6 +136,21 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
     inputType: "toggleOptions",
     options: ["None", "On Card", "Sticker/Label"],
     toggleLabels: ["None", "Auto (On Card)", "Auto (Sticker)"],
+  },
+  // NEO-345: HOW this node's autographed cards are signed — the operator's
+  // answer, once per synced leaf (insert / parallel / base variant), because
+  // the marketplaces do not say. A card carrying the AU token under this
+  // leaf is `autographed` with it; a card without AU is untouched. Distinct
+  // from the `autographed` default above, which would mark every card.
+  // Node-level only: a card's own answer is its `autographed`. Written
+  // through `autographFormat.setAutographFormat` (which cascades to the
+  // leaf's AU cards) or the sync wizard's "Autographed cards" step.
+  {
+    key: "autographFormat",
+    label: "Autograph format",
+    inputType: "select",
+    options: AUTOGRAPH_FORMATS,
+    hiddenAtLevels: ["card"],
   },
   // Card-level only — a whole set/insert/parallel being signed by the same
   // single person is vanishingly rare (this describes an individual card's

@@ -235,6 +235,8 @@ describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)",
 
     const row = (await rowsByNumber(t, leafId)).get("1")!;
     expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+    // NEO-345: the stamp says WHY — BSC answered.
+    expect(row.teamCheckOutcome).toBe("answered");
     // BSC had nothing on file: no hint to keep.
     expect(row.bscTeamName).toBeUndefined();
     expect(row.teamOnCardIds).toBeUndefined();
@@ -254,6 +256,7 @@ describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)",
 
     const row = (await rowsByNumber(t, leafId)).get("1")!;
     expect(row.teamCheckDoneAt).toBeUndefined();
+    expect(row.teamCheckOutcome).toBeUndefined();
     expect((await settle(t)).has(row._id)).toBe(true);
   });
 
@@ -787,6 +790,8 @@ describe("commitCardChecklist — \"No team on this card\" (NEO-335)", () => {
       expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
       expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
       expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+      // NEO-345: a human's ruling is not a lookup outcome.
+      expect(row.teamCheckOutcome).toBeUndefined();
       expect(row.teamOnCardIds).toBeUndefined();
     }
     // A human settled it; a failed lookup is not retried over that.

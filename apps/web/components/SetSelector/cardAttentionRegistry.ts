@@ -59,6 +59,13 @@ export type CardChecklistRow = {
   playerIds?: Array<Id<"players">>;
   teamOnCardIds?: Array<Id<"teams">>;
   teamCheckDoneAt?: number;
+  /**
+   * NEO-345: why the background BSC team check finished, written with every
+   * `teamCheckDoneAt` stamp — "answered" (BSC replied) or "gaveUp" (retries
+   * ran out). Absent on a row stamped before the field existed. Read only by
+   * the missing-team fixer's one-line account of the card's case.
+   */
+  teamCheckOutcome?: "answered" | "gaveUp";
   teamNoneConfirmedAt?: number;
   /**
    * NEO-236: the team name BSC returned that matched no `teams` row.

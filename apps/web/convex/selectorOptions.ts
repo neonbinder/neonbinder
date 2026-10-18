@@ -29,8 +29,11 @@ import {
   CHILD_DEADLINE_MARGIN_MS,
 } from "./adapters/selectorBudgets";
 import {
+  AUTOGRAPH_FORMAT_LEVELS,
   deriveCardObservedFeatures,
   deriveOwnLevelFeatures,
+  inheritableFeatures,
+  NODE_ONLY_FEATURE_KEYS,
   validateFeatureValue,
 } from "./features/deriveCardFeatures";
 import {
@@ -42,6 +45,7 @@ import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import {
   checkTitleAnswer,
   listingInputsForCard,
+  mergeCardFeatures,
   type TitleContext,
 } from "./features/listingInputs";
 import {
@@ -1896,6 +1900,14 @@ export const getCardChecklist = query({
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
       teamCheckDoneAt: v.optional(v.number()),
+      // NEO-345: why that lookup finished — BSC answered, or the queue gave
+      // up after its retries (see schema.ts). Listed because this validator
+      // is STRICT: a row carrying the field would otherwise fail the whole
+      // checklist with `Object contains extra field`. `MissingTeamFixer`
+      // reads it for the line saying which case the card is in.
+      teamCheckOutcome: v.optional(
+        v.union(v.literal("answered"), v.literal("gaveUp")),
+      ),
       // NEO-236: the team name BSC returned that matched no row of ours.
       // `MissingTeamFixer` shows it as "Marketplace says: …" so the operator
       // has the marketplace's answer in front of them while they create the
@@ -2858,7 +2870,9 @@ export const storeSelectorOptions = mutation({
       // write-once `features.cardType` snapshot is right at birth: a parallel
       // of the base set is "Parallel", not "Insert".
       const features = {
-        ...(parentFeatures ?? {}),
+        // NEO-345: never a node-only key (autographFormat) — each synced
+        // part is asked for its own.
+        ...inheritableFeatures(parentFeatures),
         ...deriveOwnLevelFeatures(level, insertValue, variantFlags),
       };
       // NEO-96: a sport row carries its own config from creation, so nothing
@@ -3493,7 +3507,8 @@ export const addCustomSelectorOption = mutation({
     // persisted on the row.
     const variantFlags = derivedVariantFlags(level, parent);
     const features = {
-      ...(parent?.features ?? {}),
+      // NEO-345: never a node-only key (autographFormat).
+      ...inheritableFeatures(parent?.features),
       ...deriveOwnLevelFeatures(level, value, variantFlags),
     };
 
@@ -5698,10 +5713,27 @@ export const addCustomCard = mutation({
     // inheritance. Precedence = that snapshot < card-observed facts (a fact
     // seen on THIS card, e.g. it's a rookie, wins).
     const inheritedFeatures: Record<string, string> = parentNode?.features ?? {};
-    const mergedFeatures: Record<string, string> = {
-      ...inheritedFeatures,
-      ...deriveCardObservedFeatures({ attributes: args.attributes }),
-    };
+    // NEO-345 — through `mergeCardFeatures`, the merge every other new card
+    // goes through: the leaf's node-only `autographFormat` is stripped from
+    // the card, and an AU card under a leaf that has one is born
+    // `autographed` with it (fill-empty).
+    const mergedFeatures: Record<string, string> = mergeCardFeatures(
+      { cardNumber: args.cardNumber, attributes: args.attributes },
+      { sportValue: "", inheritedFeatures },
+    );
+    // NEO-345 — and Signed By seeded, by the rule `buildCardRowForInsert` and
+    // `setCardFeature` apply: only when autographed just became non-None and
+    // nothing names a signer yet. The names are the ones the title uses.
+    {
+      const wasBlank = (inheritedFeatures.autographed ?? "None") === "None";
+      const isNowSet =
+        !!mergedFeatures.autographed && mergedFeatures.autographed !== "None";
+      const signers =
+        (hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames) ?? [];
+      if (wasBlank && isNowSet && !mergedFeatures.signedBy && signers.length > 0) {
+        mergedFeatures.signedBy = signers.join(", ");
+      }
+    }
     const featuresOrUndefined: Record<string, string> | undefined =
       Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
 
@@ -6771,6 +6803,11 @@ export async function materializeSelectorOptionFeature(
   propagatedToNodeCount: number;
   skippedAsOverridden: number;
 }> {
+  // NEO-345 — a node-only key (autographFormat) belongs to one node and is
+  // never cascaded onto descendants or cards.
+  if (NODE_ONLY_FEATURE_KEYS.has(key)) {
+    throw new Error(`materializeSelectorOptionFeature: ${key} is not inherited`);
+  }
   validateFeatureValue(key, value);
 
   const row = await ctx.db.get(selectorOptionId);
@@ -6887,6 +6924,23 @@ export async function materializeSelectorOptionFeature(
  * fields the only attributes that can never be un-set — precisely the gap
  * this ticket closes.
  */
+/**
+ * NEO-345 — keys the generic feature doors refuse because another door owns
+ * them. `autographFormat` lives on a synced leaf and must cascade onto that
+ * leaf's AU cards; a plain patch here would store the answer and format no
+ * card. On a card it means nothing at all (a card's own answer is
+ * `autographed`).
+ */
+const FEATURE_KEYS_WITH_THEIR_OWN_DOOR: Record<string, string> = {
+  autographFormat:
+    "The autograph format has its own control: use autographFormat.setAutographFormat.",
+};
+
+function refuseKeyWithItsOwnDoor(key: string): void {
+  const message = FEATURE_KEYS_WITH_THEIR_OWN_DOOR[key];
+  if (message) throw new ConvexError(message);
+}
+
 function applyFeatureEdit(
   existing: Record<string, string> | undefined,
   key: string,
@@ -6910,6 +6964,8 @@ export const setSelectorOptionFeature = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    // NEO-345 — before any read: a clear ("") is refused too.
+    refuseKeyWithItsOwnDoor(args.key);
     const row = await ctx.db.get(args.selectorOptionId);
     if (!row) {
       throw new Error(`selectorOption ${args.selectorOptionId} not found`);
@@ -7510,6 +7566,8 @@ export const setCardFeature = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    // NEO-345 — a card has no autograph format of its own.
+    refuseKeyWithItsOwnDoor(args.key);
     const card = await ctx.db.get(args.cardChecklistId);
     if (!card) {
       throw new Error(`cardChecklist ${args.cardChecklistId} not found`);
@@ -16023,6 +16081,13 @@ export const PRELUDE_NAMES_PER_PAGE = 300;
  */
 export const PRELUDE_MAX_PAGES = 200;
 
+/**
+ * NEO-345 — the wizard's "Autographed cards" answer on the commit wire: one of
+ * the two formats (`AUTOGRAPH_FORMATS`), never blank. The step requires an
+ * answer, so "not asked" is the arg being absent.
+ */
+const autographFormatArg = v.union(v.literal("On Card"), v.literal("Sticker/Label"));
+
 export const commitCardChecklistPrelude = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -16135,6 +16200,16 @@ export const commitCardChecklistPrelude = internalMutation({
      * the commit never CLEARS a short name, the attributes panel does.
      */
     listingShortName: v.optional(v.string()),
+    /**
+     * NEO-345 — the wizard's "Autographed cards" answer: how this leaf's AU
+     * cards are signed. Written onto the LEAF row (`features.autographFormat`)
+     * by the call that opens the commit, beside the short name above, so the
+     * set facts this handler returns carry it and every chunk's new AU card
+     * is born `autographed` with it (`buildCardRowForInsert`). Fill-empty: a
+     * leaf that already has a format keeps it (that answer was cascaded by
+     * `autographFormat.setAutographFormat`; changing it is that door's job).
+     */
+    autographFormat: v.optional(autographFormatArg),
   },
   returns: v.object({
     /**
@@ -16331,6 +16406,23 @@ export const commitCardChecklistPrelude = internalMutation({
             lastUpdated: Date.now(),
           });
         }
+      }
+    }
+    // NEO-345 — the "Autographed cards" answer, onto the leaf, in the same
+    // slot and for the same reason: before the first insert, and before the
+    // set facts below are read. Fill-empty (see the arg).
+    if (opensCommit && args.autographFormat !== undefined) {
+      const leaf = await ctx.db.get(args.selectorOptionId);
+      if (!leaf || !AUTOGRAPH_FORMAT_LEVELS.has(leaf.level)) {
+        throw new ConvexError(
+          "An autograph format goes on a base, insert or parallel.",
+        );
+      }
+      if (leaf.features?.autographFormat === undefined) {
+        await ctx.db.patch(args.selectorOptionId, {
+          features: { ...(leaf.features ?? {}), autographFormat: args.autographFormat },
+          lastUpdated: Date.now(),
+        });
       }
     }
 
@@ -18522,6 +18614,9 @@ function settleCardTeamAnswer(a: {
     return {
       fields: {
         teamCheckDoneAt: a.now,
+        // NEO-345 — BSC answered; the same stamp `applyBscTeamResolution`
+        // writes when the background lookup gets its answer.
+        teamCheckOutcome: "answered",
         ...(hint ? { bscTeamName: hint.slice(0, MAX_BSC_TEAM_NAME_LENGTH) } : {}),
       },
       enqueue: false,
@@ -21468,6 +21563,15 @@ export const commitCardChecklist = action({
      * titles a card. Absent or blank writes nothing.
      */
     listingShortName: v.optional(v.string()),
+    /**
+     * NEO-345 — the wizard's "Autographed cards" answer for the WHOLE batch
+     * (one leaf, one answer): how the leaf's AU cards are signed. Written onto
+     * the leaf (`features.autographFormat`) by the prelude page that opens the
+     * commit, before any chunk inserts a card, so every new AU card is born
+     * `autographed` with it and Signed By seeded. Absent writes nothing; a
+     * leaf that already has a format keeps it.
+     */
+    autographFormat: v.optional(autographFormatArg),
   },
   returns: v.object({
     success: v.boolean(),
@@ -21743,6 +21847,8 @@ export const commitCardChecklist = action({
       batchId: args.batchId,
       // NEO-335 — written by the page that opens the commit, read by all.
       ...(listingShortName ? { listingShortName } : {}),
+      // NEO-345 — same page, same reason.
+      ...(args.autographFormat ? { autographFormat: args.autographFormat } : {}),
     };
     /** Walk one phase to the end, returning every page it produced. */
     const walkPrelude = async (

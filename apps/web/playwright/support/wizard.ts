@@ -12,7 +12,11 @@
  * y grows as staged steps arrive, so pin x, never y. Past the names come a
  * "Cards with no team" step and a "Card titles" step (each only when needed,
  * each with a footer "Next (Enter)" and NO Confirm & Save), then "Ready to
- * save", the only step with Confirm & Save. The post-save attention walker
+ * save", the only step with Confirm & Save. Since NEO-345 an "Autographed
+ * cards" step sits between teams and titles when a card the save will create
+ * carries BSC's AU tag on a part with no autograph format; its answer is
+ * REQUIRED (Next stays aria-disabled until one is picked), so `advanceToSave`
+ * answers it. The post-save attention walker
  * wears the same title; tell them apart by the walker's "Skip for now, card
  * <number>" or by this wizard's footer.
  *
@@ -82,7 +86,7 @@ export async function expectStepLeft(page: Page, x: number): Promise<void> {
   );
 }
 
-/** The footer's forward button on the teams / titles steps. */
+/** The footer's forward button on the teams / autograph / titles steps. */
 function nextStepButton(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: "Next (Enter)", exact: true });
 }
@@ -90,6 +94,69 @@ function nextStepButton(page: Page): Locator {
 /** The Save step's commit button. */
 export function confirmSaveButton(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: /Confirm & Save/ });
+}
+
+/**
+ * NEO-345: the wizard's "Autographed cards" step. ALL of this copy is
+ * placeholder wording that Jason will replace; it lives here, once, so the
+ * specs do not each restate it. The step's subtitle (pinned in the header).
+ */
+export const AUTOGRAPH_STEP_SUBTITLE = "Autographed cards"; // mirrors STEP_SUBTITLE.autograph
+
+/** What the step says when its held Next is pressed with nothing picked (placeholder). */
+export const AUTOGRAPH_BLOCKED_HINT = "Pick how they're signed first"; // mirrors AUTOGRAPH_NEXT_BLOCKED
+
+/** The step's two answers, as the tiles read ("On card" / "Sticker"; placeholder). */
+export type AutographChoice = "On card" | "Sticker";
+
+/**
+ * The step's radio group, named by its question ("14 of these cards are
+ * autographed. How are they signed?", "1 of these cards is autographed. How
+ * is it signed?"). Contract: a locator, nothing waited for; a count is NOT
+ * pinned here (the caller knows its fixture).
+ */
+export function autographChoices(page: Page): Locator {
+  return reviewWizard(page).getByRole("radiogroup", {
+    name: /^[0-9]+ of these cards? (is|are) autographed\. How (is it|are they) signed\?$/,
+  });
+}
+
+/** One tile of `autographChoices`, by its visible name. */
+export function autographChoice(page: Page, choice: AutographChoice): Locator {
+  return autographChoices(page).getByRole("radio", { name: choice, exact: true });
+}
+
+/**
+ * Pick `choice` on the open "Autographed cards" step and prove it took.
+ * Contract: ENTRY the step is on screen. EXIT the tile is checked (so the
+ * footer's Next is released); nothing is pressed after it.
+ */
+export async function answerAutographStep(page: Page, choice: AutographChoice = "On card"): Promise<void> {
+  const tile = autographChoice(page, choice);
+  await tile.click();
+  await expect(tile).toBeChecked();
+}
+
+/**
+ * Press Next through the steps before "Autographed cards" (a teamless-card
+ * step, say) until its radio group is up. Answers nothing.
+ *
+ * Contract: ENTRY every name is decided (the names-done footer is up). EXIT
+ * the step is showing. A wizard that never offers the step fails here, by
+ * name: the caller is the spec whose FEATURE is that step. A runaway guard of
+ * 3 (only the teams step can sit before it).
+ */
+export async function walkToAutographStep(page: Page): Promise<void> {
+  const group = autographChoices(page);
+  const next = nextStepButton(page);
+  for (let i = 0; i < 3; i++) {
+    await expect(next, "the wizard offers Next on its way to the Autographed cards step").toBeVisible();
+    if (await group.isVisible()) break;
+    const { x } = await readStep(page);
+    await next.click();
+    await expectStepLeft(page, x);
+  }
+  await expect(group, "the wizard reached its Autographed cards step").toBeVisible();
 }
 
 /**
@@ -488,7 +555,8 @@ export async function walkToPlayerRow(
 
 /**
  * util-wizard-advance-to-save.yaml (NEO-335): from "every name decided" walk
- * the teams / titles steps to the Save step, and answer nothing on them.
+ * the teams / autograph / titles steps to the Save step, and answer nothing
+ * on them that the product does not REQUIRE.
  *
  * Contract:
  * - ENTRY the wizard is open and every name is decided: its footer shows
@@ -499,21 +567,29 @@ export async function walkToPlayerRow(
  *   team, else "Leave for later"; every title kept) - the same answers the old
  *   final step's Confirm & Save saved. A spec whose FEATURE is the teams or
  *   titles step drives that step itself and does not call this.
+ * - NEO-345: the "Autographed cards" step (new AU cards on a part with no
+ *   autograph format) is the one step whose answer is REQUIRED - its Next is
+ *   aria-disabled until a tile is picked - so this picks "On card" there
+ *   (`answerAutographStep`). A caller that must not decide it for the part
+ *   (the spec whose feature is that step) calls `walkToAutographStep` and
+ *   answers it itself BEFORE this.
  * - EXIT the Save step: subtitle "Ready to save" and Confirm & Save on screen,
  *   nothing pressed. The caller asserts its own "Save N cards?" and owns the
  *   commit.
  *
- * All 7 s: Next is a client-side step change. The loop is a runaway guard of 3
- * (at most two screens sit between the names and Save).
+ * All 7 s: Next is a client-side step change. The loop is a runaway guard of 4
+ * (at most three screens sit between the names and Save).
  */
 export async function advanceToSave(page: Page): Promise<void> {
   const wizard = reviewWizard(page);
   const next = nextStepButton(page);
   const save = confirmSaveButton(page);
-  for (let i = 0; i < 3; i++) {
+  const autograph = autographChoices(page);
+  for (let i = 0; i < 4; i++) {
     await expect(next.or(save)).toBeVisible();
     if (await save.isVisible()) break;
     const { x } = await readStep(page);
+    if (await autograph.isVisible()) await answerAutographStep(page);
     await next.click();
     await expectStepLeft(page, x);
   }

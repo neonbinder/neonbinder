@@ -32,6 +32,8 @@ import {
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
+  INSERT_FETCH,
+  openInsertsReconcile,
   pick,
   setBuilderReady,
   syncChecklistButton,
@@ -42,8 +44,7 @@ import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWiz
 
 const INSERT = "Prospect Dual Autographs";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
-/** A live BSC (+ SportLots) round trip: the flow's cold-insert and checklist ceilings. */
-const COLD_INSERT_FETCH = 240_000;
+/** A live BSC (+ SportLots) checklist round trip (the cold insert-level fetch is `INSERT_FETCH`). */
 const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the live lookups the batch queues. */
 const WIZARD_OPENS = 60_000;
@@ -79,10 +80,12 @@ test(
 
     if (!env.SL_PAUSED) {
       // The column is EMPTY on a fresh preview, so selecting the type fires
-      // its own two-sided sync, which opens the reconcile. REQUIRED: if it
-      // does not open the year is dirty and this fails here, by name. A COLD
-      // insert-level BSC + SportLots fetch.
-      await expect(reconcile).toBeVisible({ timeout: COLD_INSERT_FETCH });
+      // its own two-sided sync, which opens the reconcile: a COLD insert-level
+      // BSC + SportLots fetch. NEO-345: the autograph-format spec reconciles
+      // its own insert in this same column, so when it ran first the column is
+      // already saved and the dialog opens from "Sync Inserts" instead
+      // (`openInsertsReconcile` takes either). REQUIRED either way.
+      await openInsertsReconcile(page);
 
       // Narrow both lists to the insert; the Save still writes every Ready set.
       await reconcile.getByRole("textbox", { name: "Filter NeonBinder sets" }).fill(INSERT);
@@ -113,7 +116,7 @@ test(
     } else {
       // Paused: one marketplace, nothing to reconcile; the column fills
       // straight from BSC (the same cold fetch).
-      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: COLD_INSERT_FETCH });
+      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });
       await expect(reconcile).toBeHidden();
     }
 

@@ -107,6 +107,21 @@ Things that look like failures during the apps/web fast gates but are not.
    For a quick behaviour replay of a pure module, `npx tsx <scratch>/x.ts`
    with absolute imports is faster still (NEO-335 merge).
 
+11. **`npm run lint` dies with `Cannot find package 'eslint-plugin-playwright'`**
+   when apps/web/node_modules is the symlink to main's checkout and main's
+   install predates the plugin (NEO-341 added it). Do not install into the
+   shared link while siblings run tests. Lint your files through a throwaway
+   copy of the config written next to it (it must sit in apps/web to resolve
+   its imports): replace the plugin import with
+   `const playwright = { configs: { "flat/recommended": { plugins: {}, rules: {} } } }`,
+   drop the three playwright blocks from the export, `npx eslint -c <copy> <files>`,
+   delete the copy. Report that the full `npm run lint` was not run (NEO-345).
+   A sibling `.tsx` also renders to static HTML for a visual check with
+   `node_modules/.bin/tsx --tsconfig apps/web/tsconfig.json` (set
+   `globalThis.React`; wrap a `useMutation` component in `ConvexProvider`
+   with a fake `{ mutation, watchQuery }` client) + headless Chrome over the
+   built CSS.
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

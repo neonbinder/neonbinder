@@ -9,6 +9,8 @@
  *                                       staged career New Team/League steps
  *                                       included — they are rows too)
  *       + 1 teams step                 (if any card would save teamless)
+ *       + 1 autograph step             (NEO-345: a NEW card carries AU and the
+ *                                       leaf has no autograph format yet)
  *       + 1 titles step                (if any card title needs a look)
  *       + 1 save step
  *
@@ -30,6 +32,12 @@
  */
 import { isAmbiguousPlayerRow, type NavRow } from "./entity-review-nav";
 import {
+  AUTOGRAPH_FORMATS,
+  carriesAutographToken,
+  isAutographFormat,
+  type AutographFormat,
+} from "../../convex/features/deriveCardFeatures";
+import {
   teamlessCardIndexes,
   type PreviewCardForTeams,
   type StoredPeople,
@@ -43,22 +51,99 @@ export type WizardStepKind =
   | "player"
   | "pick"
   | "teams"
+  | "autograph"
   | "titles"
   | "save";
 
-/** The subtitle under "Tidy up this set", per screen type. Jason-approved copy. */
+/**
+ * The subtitle under "Tidy up this set", per screen type. Jason-approved copy,
+ * except `autograph` (NEO-345), which is a placeholder awaiting his wording.
+ */
 export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {
   league: "New league",
   team: "New team",
   player: "New player",
   pick: "Which player is this?",
   teams: "Cards with no team",
+  autograph: "Autographed cards",
   titles: "Card titles",
   save: "Ready to save",
 };
 
-/** The steps after the names, in the order the wizard walks them. */
-export type PostReviewStep = "teams" | "titles" | "save";
+/**
+ * The steps after the names, in the order the wizard walks them. The
+ * autograph step sits before titles because a title reads `autographed`.
+ */
+export type PostReviewStep = "teams" | "autograph" | "titles" | "save";
+
+/** Which post-review steps have anything in them right now. */
+export type PostReviewLive = {
+  teams: boolean;
+  /** NEO-345 — absent reads as false (a host with no autograph step). */
+  autograph?: boolean;
+  titles: boolean;
+};
+
+const POST_REVIEW_ORDER: readonly PostReviewStep[] = ["teams", "autograph", "titles", "save"];
+
+function isLive(step: PostReviewStep, live: PostReviewLive): boolean {
+  return step === "save" || live[step] === true;
+}
+
+// ---------------------------------------------------------------------------
+// NEO-345 — the autograph format question.
+//
+// An autograph's FORMAT (on the card, or on a sticker) is NB data the
+// operator supplies once per synced leaf; no marketplace says which it is.
+// The wizard asks for it when a card the save will CREATE carries the "AU"
+// attribute and the leaf has no format yet, and the answer travels as the
+// commit's batch-level `autographFormat`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two answers, as stored in the leaf's `features.autographFormat` — the
+ * backend's own vocabulary and predicates (`deriveCardFeatures.ts`, a pure
+ * module), so the step's on/off rule is the commit's.
+ */
+export { AUTOGRAPH_FORMATS, type AutographFormat };
+
+/**
+ * The two answers' display names, keyed by the stored value — the wizard's
+ * tiles, the checklist prompt's buttons and Set details' select all say
+ * these words (NEO-345 a11y: one name per answer everywhere).
+ */
+export const AUTOGRAPH_CHOICE_LABEL: Readonly<Record<AutographFormat, string>> = {
+  "On Card": "On card",
+  "Sticker/Label": "Sticker",
+};
+
+/** A stored value read back as one of the two answers (anything else is none). */
+export function asAutographFormat(value: string | undefined | null): AutographFormat | undefined {
+  return isAutographFormat(value) ? value : undefined;
+}
+
+/** Does this attribute list carry the autograph token? Case-folded, trimmed. */
+export function carriesAutograph(attributes: readonly string[] | undefined): boolean {
+  return carriesAutographToken(attributes);
+}
+
+/**
+ * Positions in `cards` the autograph step is about: cards the save will
+ * CREATE (not in `existingIndexes`, which re-sync a stored row) that carry
+ * "AU". A re-synced row keeps its own features; the stored-leaf prompt in the
+ * checklist header is where those are answered.
+ */
+export function autographCardIndexes(
+  cards: readonly { attributes?: readonly string[] }[],
+  existingIndexes: readonly number[] = [],
+): number[] {
+  const existing = new Set(existingIndexes);
+  const out: number[] = [];
+  cards.forEach((card, i) => {
+    if (!existing.has(i) && carriesAutograph(card.attributes)) out.push(i);
+  });
+  return out;
+}
 
 /**
  * Where the operator is. `review.index` is 0-based among the review rows.
@@ -73,6 +158,8 @@ export interface StepPlanInput {
   reviewRows: number;
   /** Would any card save teamless? See `cardsForTeamsStep`. */
   teamsStep: boolean;
+  /** NEO-345 — does the autograph format question apply? Absent = no. */
+  autographStep?: boolean;
   /** Is any card title waiting for a look? */
   titlesStep: boolean;
 }
@@ -82,6 +169,8 @@ export interface StepCount {
   total: number;
   reviewRows: number;
   teamsStep: boolean;
+  /** NEO-345 — the autograph step, once counted. */
+  autographStep: boolean;
   titlesStep: boolean;
   /** On Save: nothing more is added. */
   frozen: boolean;
@@ -90,7 +179,11 @@ export interface StepCount {
 /** y for a plan, with no history. */
 export function plannedTotal(input: StepPlanInput): number {
   return (
-    Math.max(0, input.reviewRows) + (input.teamsStep ? 1 : 0) + (input.titlesStep ? 1 : 0) + 1
+    Math.max(0, input.reviewRows) +
+    (input.teamsStep ? 1 : 0) +
+    (input.autographStep ? 1 : 0) +
+    (input.titlesStep ? 1 : 0) +
+    1
   );
 }
 
@@ -101,6 +194,7 @@ export function initialStepCount(input: StepPlanInput, onSave = false): StepCoun
     total: plannedTotal({ ...input, reviewRows }),
     reviewRows,
     teamsStep: input.teamsStep,
+    autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
     frozen: onSave,
   };
@@ -126,11 +220,13 @@ export function advanceStepCount(
   // growth like any other.
   const reviewRows = Math.max(prev.reviewRows, input.reviewRows);
   const teamsStep = prev.teamsStep || input.teamsStep;
+  const autographStep = prev.autographStep || input.autographStep === true;
   const titlesStep = prev.titlesStep || input.titlesStep;
-  const total = plannedTotal({ reviewRows, teamsStep, titlesStep });
+  const total = plannedTotal({ reviewRows, teamsStep, autographStep, titlesStep });
   if (
     reviewRows === prev.reviewRows &&
     teamsStep === prev.teamsStep &&
+    autographStep === prev.autographStep &&
     titlesStep === prev.titlesStep
   ) {
     return prev.frozen
@@ -138,14 +234,16 @@ export function advanceStepCount(
       : { count: prev, added: 0 };
   }
   return {
-    count: { total, reviewRows, teamsStep, titlesStep, frozen: false },
+    count: { total, reviewRows, teamsStep, autographStep, titlesStep, frozen: false },
     added: Math.max(0, total - prev.total),
   };
 }
 
 /** The steps after the names that are counted. */
 function postReviewSteps(count: StepCount): number {
-  return 1 + (count.teamsStep ? 1 : 0) + (count.titlesStep ? 1 : 0);
+  return (
+    1 + (count.teamsStep ? 1 : 0) + (count.autographStep ? 1 : 0) + (count.titlesStep ? 1 : 0)
+  );
 }
 
 /**
@@ -158,8 +256,12 @@ export function stepNumber(count: StepCount, position: StepPosition): number {
       return count.total;
     case "titles":
       return count.total - 1;
-    case "teams":
+    case "autograph":
       return count.total - 1 - (count.titlesStep ? 1 : 0);
+    case "teams":
+      return (
+        count.total - 1 - (count.titlesStep ? 1 : 0) - (count.autographStep ? 1 : 0)
+      );
     case "review": {
       const last = Math.max(1, count.total - postReviewSteps(count));
       return Math.min(last, Math.max(1, position.index + 1));
@@ -258,39 +360,55 @@ export function cardsForTeamsStep(
  *
  * `requested` is where they asked to be (null = "the first one there is").
  * A step with nothing in it right now is passed over in the walking
- * direction — forward from teams to titles to save. Save always exists.
+ * direction — forward from teams to autograph to titles to save. Save
+ * always exists.
+ *
+ * `unanswered` (NEO-345) names a live step whose answer is REQUIRED and not
+ * yet given: no step after it can be reached until it is, whatever was
+ * requested. The autograph step is the only one today.
  */
 export function resolvePostReviewStep(
   requested: PostReviewStep | null,
-  live: { teams: boolean; titles: boolean },
+  live: PostReviewLive,
+  unanswered?: PostReviewStep,
 ): PostReviewStep {
-  const order: PostReviewStep[] = ["teams", "titles", "save"];
-  const start = requested ? order.indexOf(requested) : 0;
-  for (let i = start; i < order.length; i++) {
-    const step = order[i];
-    if (step === "save" || live[step]) return step;
+  const start = requested ? POST_REVIEW_ORDER.indexOf(requested) : 0;
+  let resolved: PostReviewStep = "save";
+  for (let i = start; i < POST_REVIEW_ORDER.length; i++) {
+    const step = POST_REVIEW_ORDER[i];
+    if (isLive(step, live)) {
+      resolved = step;
+      break;
+    }
   }
-  return "save";
+  if (
+    unanswered &&
+    unanswered !== "save" &&
+    isLive(unanswered, live) &&
+    POST_REVIEW_ORDER.indexOf(unanswered) < POST_REVIEW_ORDER.indexOf(resolved)
+  ) {
+    return unanswered;
+  }
+  return resolved;
 }
 
 /** The post-review step after `step`, or null past Save. */
 export function nextPostReviewStep(
   step: PostReviewStep,
-  live: { teams: boolean; titles: boolean },
+  live: PostReviewLive,
 ): PostReviewStep | null {
   if (step === "save") return null;
-  return resolvePostReviewStep(step === "teams" ? "titles" : "save", live);
+  return resolvePostReviewStep(POST_REVIEW_ORDER[POST_REVIEW_ORDER.indexOf(step) + 1], live);
 }
 
 /** The post-review step before `step`, or null when Back leaves for the names. */
 export function previousPostReviewStep(
   step: PostReviewStep,
-  live: { teams: boolean; titles: boolean },
+  live: PostReviewLive,
 ): PostReviewStep | null {
-  const order: PostReviewStep[] = ["teams", "titles", "save"];
-  for (let i = order.indexOf(step) - 1; i >= 0; i--) {
-    const candidate = order[i];
-    if (candidate !== "save" && live[candidate]) return candidate;
+  for (let i = POST_REVIEW_ORDER.indexOf(step) - 1; i >= 0; i--) {
+    const candidate = POST_REVIEW_ORDER[i];
+    if (candidate !== "save" && isLive(candidate, live)) return candidate;
   }
   return null;
 }
@@ -314,6 +432,7 @@ function listJoin(names: readonly string[]): string {
  * - staged career New Team steps → "teams for {player}" (Jason-approved)
  * - a league staged for a team   → "league for {team}"
  * - the teams step               → "cards with no team"
+ * - the autograph step           → "autographed cards" (NEO-345, placeholder)
  * - the titles step              → "card titles"
  * - any other new row            → "more names" (Jason)
  */
@@ -321,6 +440,8 @@ export function growthReasons(input: {
   addedRows: readonly StepRow[];
   allRows: readonly StepRow[];
   teamsStepAdded: boolean;
+  /** NEO-345 — absent reads as false. */
+  autographStepAdded?: boolean;
   titlesStepAdded: boolean;
 }): string[] {
   const nameById = new Map(input.allRows.map((r) => [r._id, r.name ?? ""]));
@@ -346,9 +467,13 @@ export function growthReasons(input: {
   if (teams.length > 0) reasons.push(`league for ${listJoin(teams)}`);
   if (other) reasons.push("more names");
   if (input.teamsStepAdded) reasons.push("cards with no team");
+  if (input.autographStepAdded) reasons.push(AUTOGRAPH_GROWTH_REASON);
   if (input.titlesStepAdded) reasons.push("card titles");
   return reasons;
 }
+
+/** NEO-345 — the growth line's words for the autograph step. */
+export const AUTOGRAPH_GROWTH_REASON = "autographed cards";
 
 /** "2 more steps: teams for Jim Thome" / "1 more step: …". */
 export function growthLine(added: number, reasons: readonly string[]): string {
@@ -372,6 +497,8 @@ export interface StepTracker {
 export interface TrackStepsInput {
   rows: readonly StepRow[];
   teamsStep: boolean;
+  /** NEO-345 — absent reads as false. */
+  autographStep?: boolean;
   titlesStep: boolean;
   onSave: boolean;
 }
@@ -380,6 +507,7 @@ export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): St
   const plan: StepPlanInput = {
     reviewRows: input.rows.length,
     teamsStep: input.teamsStep,
+    autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
   };
   if (prev === null) {
@@ -402,6 +530,7 @@ export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): St
     addedRows,
     allRows: input.rows,
     teamsStepAdded: count.teamsStep && !prev.count.teamsStep,
+    autographStepAdded: count.autographStep && !prev.count.autographStep,
     titlesStepAdded: count.titlesStep && !prev.count.titlesStep,
   });
   const knownRowIds = new Set(prev.knownRowIds);

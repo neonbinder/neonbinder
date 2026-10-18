@@ -898,6 +898,28 @@ describe("applySlSetReview — every landing", () => {
   });
 });
 
+describe("createSlRowsUnderVariantType never copies a node-only autographFormat down (NEO-345)", () => {
+  test("a SportLots name filed under an answered type keeps the type's league and starts unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await t.run(async (ctx) =>
+      ctx.db.patch(ids.insertTypeId, {
+        features: { league: "MLB", set: "Bowman", autographFormat: "On Card" },
+      }),
+    );
+    await seedReviewDoc(t, yearId, bowmanId, [
+      { slId: "sl-aa-autos", label: "All-America Game Autos" },
+    ]);
+
+    await save(t, bowmanId, [{ slId: "sl-aa-autos", variantTypeId: ids.insertTypeId }]);
+
+    const [autos] = await childrenAt(t, ids.insertTypeId, "insert");
+    expect(autos.features).toMatchObject({ league: "MLB", set: "Bowman" });
+    expect(autos.features).not.toHaveProperty("autographFormat");
+  });
+});
+
 describe("applySlSetReview — a save resumed after a thrown chunk", () => {
   test("the first chunk commits and leaves the review; the second throws; save again finishes with no duplicate", async () => {
     const t = convexTest(schema, modules);

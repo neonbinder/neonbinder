@@ -952,6 +952,16 @@ export default defineSchema({
     // has no team (an insert/subset card) would be re-fetched forever on
     // every future sync. Not touched by `lastUpdated`-driven logic.
     teamCheckDoneAt: v.optional(v.number()),
+    // NEO-345: WHY the lookup above finished. "answered" — BSC replied (with a
+    // team or without one); "gaveUp" — every retry failed and the queue
+    // stopped asking. Written in the same patch as every `teamCheckDoneAt`
+    // stamp the lookup makes. ABSENT means the stamp predates this field (or
+    // was an operator's "no team" ruling, which is not a lookup at all), so a
+    // re-ask treats absent like "gaveUp". No index: only the armed re-ask
+    // (`enqueueBscTeamBackfill` mode "reask") reads it, and it pages the table.
+    teamCheckOutcome: v.optional(
+      v.union(v.literal("answered"), v.literal("gaveUp")),
+    ),
     // NEO-236: the team name BSC returned that we could not match to a row.
     //
     // The BSC per-card lookup used to CREATE a `teams` row from whatever

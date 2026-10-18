@@ -1680,6 +1680,8 @@ export const insertParallelCardsPage = internalMutation({
           ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
           carried: {
             teamCheckDoneAt: source.teamCheckDoneAt,
+            // NEO-345 — the stamp's reason travels with the stamp.
+            teamCheckOutcome: source.teamCheckOutcome,
             bscTeamName: source.bscTeamName,
             teamNoneConfirmedAt: source.teamNoneConfirmedAt,
             teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
