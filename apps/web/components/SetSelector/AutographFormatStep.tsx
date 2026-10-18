@@ -43,7 +43,6 @@ import {
 
 /** The step's question, which also labels the radio group. */
 export function autographStepQuestion(count: number): string {
-  // COPY: placeholder
   return count === 1
     ? "1 of these cards is autographed. How is it signed?"
     : `${count} of these cards are autographed. How are they signed?`;
@@ -59,22 +58,20 @@ export { AUTOGRAPH_CHOICE_LABEL };
  * Said (politely, under the tiles) when Next is pressed before a choice is
  * made, and part of Next's description from then on.
  */
-export const AUTOGRAPH_NEXT_BLOCKED = "Pick how they're signed first"; // COPY: placeholder
+export const AUTOGRAPH_NEXT_BLOCKED = "Pick how they're signed first";
 
 /** The checklist header's one line, for a stored leaf. */
 export function autographPromptLine(count: number): string {
-  // COPY: placeholder
   return count === 1
     ? "1 autographed card — on card or sticker?"
     : `${count} autographed cards — on card or sticker?`;
 }
 
 /** Said politely while the header prompt's write is in flight. */
-export const AUTOGRAPH_PROMPT_SAVING = "Saving…"; // COPY: placeholder
+export const AUTOGRAPH_PROMPT_SAVING = "Saving…";
 
 /** What the header line says once the answer is saved. */
 export function autographPromptSaved(value: AutographFormat): string {
-  // COPY: placeholder
   return `Autographs saved as ${AUTOGRAPH_CHOICE_LABEL[value].toLowerCase()}.`;
 }
 
@@ -308,7 +305,7 @@ export function AutographFormatPrompt({
       await setAutographFormat({ selectorOptionId, value });
       onSaved(value);
     } catch (e) {
-      setError(userFacingMessage(e, "Could not save the autograph format")); // COPY: placeholder
+      setError(userFacingMessage(e, "Could not save the autograph format"));
     } finally {
       setBusy(null);
     }

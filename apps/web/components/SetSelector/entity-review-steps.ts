@@ -65,7 +65,7 @@ export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {
   player: "New player",
   pick: "Which player is this?",
   teams: "Cards with no team",
-  autograph: "Autographed cards", // COPY: placeholder
+  autograph: "Autographed cards",
   titles: "Card titles",
   save: "Ready to save",
 };
@@ -113,8 +113,8 @@ export { AUTOGRAPH_FORMATS, type AutographFormat };
  * these words (NEO-345 a11y: one name per answer everywhere).
  */
 export const AUTOGRAPH_CHOICE_LABEL: Readonly<Record<AutographFormat, string>> = {
-  "On Card": "On card", // COPY: placeholder
-  "Sticker/Label": "Sticker", // COPY: placeholder
+  "On Card": "On card",
+  "Sticker/Label": "Sticker",
 };
 
 /** A stored value read back as one of the two answers (anything else is none). */
@@ -473,7 +473,7 @@ export function growthReasons(input: {
 }
 
 /** NEO-345 — the growth line's words for the autograph step. */
-export const AUTOGRAPH_GROWTH_REASON = "autographed cards"; // COPY: placeholder
+export const AUTOGRAPH_GROWTH_REASON = "autographed cards";
 
 /** "2 more steps: teams for Jim Thome" / "1 more step: …". */
 export function growthLine(added: number, reasons: readonly string[]): string {

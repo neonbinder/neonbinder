@@ -130,10 +130,10 @@ export function outcomeHeading(
   hasHint: boolean,
 ): string | null {
   if (outcome === "gaveUp") {
-    return "We couldn’t get a team from the listing for this card. Pick the one on the card."; // COPY: placeholder, Jason to word
+    return "We couldn’t get a team from the listing for this card. Pick the one on the card.";
   }
   if (outcome === "answered" && !hasHint) {
-    return "The listing has no team for this card. Pick the one on the card, or say there isn’t one."; // COPY: placeholder, Jason to word
+    return "The listing has no team for this card. Pick the one on the card, or say there isn’t one.";
   }
   return null;
 }

@@ -1241,10 +1241,10 @@ function SlViaAllBrandsToggle({
  */
 const AUTOGRAPH_FORMAT_FEATURE: ExpectedFeature = {
   key: "autographFormat",
-  label: "Autograph format", // COPY: placeholder
+  label: "Autograph format",
   inputType: "select",
   options: AUTOGRAPH_FORMATS,
-  hint: "How this set's autographs are signed. Its autographed cards take it.", // COPY: placeholder
+  hint: "How this part's autographs are signed. Its autographed cards take it.",
 };
 
 /**
