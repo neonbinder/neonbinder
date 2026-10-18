@@ -36,3 +36,4 @@
 - [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
 - [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
+- [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label

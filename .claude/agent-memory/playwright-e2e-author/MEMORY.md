@@ -68,4 +68,5 @@
 - [Pick a fixture-owned name by name](patterns_pick_a_fixture_owned_name_by_name.md) — a committing spec chooses its row by a name only its fixture raises, never "the first row"; an alias is deployment-wide
 - [NEO-335 Tidy up this set](reference_neo335_teams_on_cards_section.md) — wizard chrome, post-name steps, teams-line handles, the `N need you` pill and walker
 - [Quick-add PlayerPicker](reference_quick_add_player_picker.md) — create/pick handles; drawer chip is the only persistence proof
+- [Probe fixture attribute tokens from BSC public catalogue](reference_probe_fixture_attribute_tokens_from_bsc_public_catalogue.md) — productName can say AU, SN99 while playerAttribute is empty; probe before asserting on a token
 - [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these players for <scope>`; read each side's value off the unmatched columns before linking; toBeChecked, exact scopes, no-source negatives

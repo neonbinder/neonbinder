@@ -55,14 +55,15 @@ export type CardRowSetContext = ListingSetContext & {
  * NB-owned fields a COPY carries verbatim from the card it copies (NEO-312).
  * The commit passes only the team bookkeeping, and only when the card earned
  * it before save (NEO-335, `settleCardTeamAnswer` in selectorOptions.ts):
- * `teamCheckDoneAt` (+ `bscTeamName`) for a card whose fetch-time BSC lookup
- * answered, or `teamNoneConfirmedAt` / `teamNoneConfirmedByUserId` for an
+ * `teamCheckDoneAt` (+ `teamCheckOutcome`, NEO-345, and `bscTeamName`) for a
+ * card whose fetch-time BSC lookup answered, or `teamNoneConfirmedAt` / `teamNoneConfirmedByUserId` for an
  * operator's "No team on this card". It never passes a variation link.
  */
 export type CarriedCardFields = Partial<
   Pick<
     Doc<"cardChecklist">,
     | "teamCheckDoneAt"
+    | "teamCheckOutcome"
     | "bscTeamName"
     | "teamNoneConfirmedAt"
     | "teamNoneConfirmedByUserId"
@@ -172,6 +173,9 @@ export function buildCardRowForInsert(
   // titles" step, so the title it shows and the one written here cannot
   // drift.
   const mergedFeatures = mergeCardFeatures(card, set);
+  // NEO-345 — the leaf's autograph format is applied (and stripped from the
+  // card) inside `mergeCardFeatures`, so the pre-save title preview and this
+  // insert read one answer.
   // A card arriving already-autographed gets the same "just became non-None
   // -> default Signed By from the roster" treatment `setCardFeature` applies
   // for a manual operator edit.
@@ -244,6 +248,10 @@ export function buildCardRowForInsert(
     // commit's row is unchanged.
     ...(carried.teamCheckDoneAt !== undefined
       ? { teamCheckDoneAt: carried.teamCheckDoneAt }
+      : {}),
+    // NEO-345 — why that lookup finished; travels with the stamp it explains.
+    ...(carried.teamCheckOutcome !== undefined
+      ? { teamCheckOutcome: carried.teamCheckOutcome }
       : {}),
     ...(carried.bscTeamName !== undefined
       ? { bscTeamName: carried.bscTeamName }

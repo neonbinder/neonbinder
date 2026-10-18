@@ -104,16 +104,25 @@ vi.mock("./TeamPicker", () => ({
 import MissingTeamFixer, {
   careerHeading,
   marketplaceHeading,
+  outcomeHeading,
   playedHere,
   saveShortcutLabel,
 } from "./MissingTeamFixer";
 import { AttentionSportContext } from "./cardAttentionRegistry";
 
 const CARD_ID = "card-1" as unknown as Id<"cardChecklist">;
+
+type RowOverrides = {
+  bscTeamName?: string;
+  cardNumber?: string;
+  cardName?: string;
+  /** NEO-345 */
+  teamCheckOutcome?: "answered" | "gaveUp";
+};
 const SPORT_ID = "sport-baseball" as unknown as Id<"selectorOptions">;
 
 function fixerElement(
-  rowOverrides: { bscTeamName?: string; cardNumber?: string; cardName?: string } = {},
+  rowOverrides: RowOverrides = {},
   opts: { sportId?: Id<"selectorOptions"> | null } = {},
 ) {
   const sportId = opts.sportId === null ? undefined : (opts.sportId ?? SPORT_ID);
@@ -135,7 +144,7 @@ function fixerElement(
 }
 
 function renderFixer(
-  rowOverrides: { bscTeamName?: string; cardNumber?: string; cardName?: string } = {},
+  rowOverrides: RowOverrides = {},
   opts: { sportId?: Id<"selectorOptions"> | null } = {},
 ) {
   return render(fixerElement(rowOverrides, opts));
@@ -478,6 +487,62 @@ describe("MissingTeamFixer — heading copy (NEO-330)", () => {
     expect(
       screen.getByText("No year on this set — here’s the whole career. Pick the one on the card."),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-345 — one line saying which case the card is in, from the background
+ * team check's recorded outcome. The strings are placeholders for Jason's
+ * wording, so the tests read them through `outcomeHeading`.
+ */
+describe("MissingTeamFixer — the team check's outcome (NEO-345)", () => {
+  const ANSWERED_NO_TEAM = outcomeHeading("answered", false);
+  const GAVE_UP = outcomeHeading("gaveUp", false);
+
+  it("has a line for answered-with-no-team and for gave-up, and they differ", () => {
+    expect(ANSWERED_NO_TEAM).toBeTruthy();
+    expect(GAVE_UP).toBeTruthy();
+    expect(ANSWERED_NO_TEAM).not.toBe(GAVE_UP);
+  });
+
+  it("says nothing when the listing's claim is already on screen, or no outcome was recorded", () => {
+    expect(outcomeHeading("answered", true)).toBeNull();
+    expect(outcomeHeading(undefined, false)).toBeNull();
+    expect(outcomeHeading(undefined, true)).toBeNull();
+  });
+
+  it("gave up says so whether or not a stale hint is on the row", () => {
+    expect(outcomeHeading("gaveUp", true)).toBe(GAVE_UP);
+  });
+
+  it("never names the marketplace", () => {
+    for (const line of [ANSWERED_NO_TEAM, GAVE_UP]) {
+      expect(line).not.toMatch(/BSC|SportLots|BuySportsCards/);
+    }
+  });
+
+  it("renders the answered line above \"Teams on this card\"", () => {
+    renderFixer({ teamCheckOutcome: "answered" });
+    const line = screen.getByText(ANSWERED_NO_TEAM!);
+    const label = screen.getByText("Teams on this card");
+    expect(line.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders the gave-up line", () => {
+    renderFixer({ teamCheckOutcome: "gaveUp" });
+    expect(screen.getByText(GAVE_UP!)).toBeTruthy();
+  });
+
+  it("renders neither line for a legacy row with no outcome", () => {
+    renderFixer({});
+    expect(screen.queryByText(ANSWERED_NO_TEAM!)).toBeNull();
+    expect(screen.queryByText(GAVE_UP!)).toBeNull();
+  });
+
+  it("renders no outcome line when the listing named a team", () => {
+    renderFixer({ teamCheckOutcome: "answered", bscTeamName: "New York Yankees" });
+    expect(screen.queryByText(ANSWERED_NO_TEAM!)).toBeNull();
+    expect(screen.queryByText(GAVE_UP!)).toBeNull();
   });
 });
 

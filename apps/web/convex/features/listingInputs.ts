@@ -33,7 +33,10 @@
  */
 
 import type { AttentionItem } from "./cardAttention";
-import { deriveCardObservedFeatures } from "./deriveCardFeatures";
+import {
+  autographedFromFormat,
+  deriveCardObservedFeatures,
+} from "./deriveCardFeatures";
 import {
   assessListingTitle,
   isFillerToken,
@@ -152,6 +155,21 @@ export function mergeCardFeatures(
   };
   const ownParallelName = card.parallelName?.trim();
   if (ownParallelName) merged.parallelName = ownParallelName;
+  // NEO-345 — the leaf's autograph FORMAT (`set.inheritedFeatures
+  // .autographFormat`: the operator's answer stored on the leaf, or the
+  // wizard's draft answer before save). A card carrying AU is born
+  // `autographed` with it. Fill-empty, the rule `applyBscAttributeFill` uses
+  // on a stored row: an `autographed` the card already has (a parallel
+  // copy's insert-card fact, an operator's set-level value) is kept.
+  const formatted = autographedFromFormat(
+    card.attributes,
+    set.inheritedFeatures?.autographFormat,
+  );
+  if (formatted && (merged.autographed ?? "None") === "None") {
+    merged.autographed = formatted;
+  }
+  // The format is a fact about the LEAF, not about any one card.
+  delete merged.autographFormat;
   return merged;
 }
 

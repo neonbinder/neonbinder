@@ -768,6 +768,10 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
           unmatched: undefined,
         },
       ],
+      // NEO-345: the wizard's "Autographed cards" answer. The format comes
+      // from HERE (written onto the leaf, read by every new AU card), never
+      // from card 1's marketplace `autographType`.
+      autographFormat: "On Card",
     });
 
     // NEO-188: drain the BSC enrichment chain these refs queue (see above).
@@ -792,12 +796,15 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
 
     // Derived from per-card columns — wins over the inherited snapshot.
     expect(c1.features?.isRookie).toBe("true");
-    // autographType "On-Card" maps to the closed autographed vocabulary, and
-    // since that's a blank->set transition on insert with a resolved player
-    // on the card, signedBy defaults from the roster (real name), not the
-    // raw autographType string.
+    // NEO-345: card 1 carries AU and the leaf now holds the operator's
+    // format, so it is born "On Card"; that's a blank->set transition on
+    // insert with a resolved player on the card, so signedBy defaults from
+    // the roster (real name). The format is the leaf's, not the card's.
     expect(c1.features?.autographed).toBe("On Card");
     expect(c1.features?.signedBy).toBe("Mike Trout");
+    expect(c1.features).not.toHaveProperty("autographFormat");
+    const leafAfter = await t.run(async (ctx) => ctx.db.get(subtreeIds.variantTypeId));
+    expect(leafAfter!.features?.autographFormat).toBe("On Card");
     // NEO-217: the RAW `autographType` column is no longer written on insert.
     // The wire field still arrives (and is still exactly what the derivation
     // above reads), but `features.autographed` is the one stored truth — the

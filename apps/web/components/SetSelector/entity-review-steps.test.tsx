@@ -7,6 +7,10 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceStepCount,
+  asAutographFormat,
+  AUTOGRAPH_GROWTH_REASON,
+  autographCardIndexes,
+  carriesAutograph,
   cardsForTeamsStep,
   growthLine,
   growthReasons,
@@ -165,6 +169,8 @@ describe("subtitles", () => {
       player: "New player",
       pick: "Which player is this?",
       teams: "Cards with no team",
+      // NEO-345 — placeholder, awaiting Jason's wording.
+      autograph: "Autographed cards",
       titles: "Card titles",
       save: "Ready to save",
     });
@@ -366,5 +372,136 @@ describe("trackSteps — one sitting", () => {
       onSave: true,
     });
     expect(stillOnSave).toBe(onSave);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-345 — the autograph format step
+// ---------------------------------------------------------------------------
+
+describe("autograph step — which cards it is about", () => {
+  it("reads the AU attribute, case-folded and trimmed", () => {
+    expect(carriesAutograph(["RC", "AU"])).toBe(true);
+    expect(carriesAutograph([" au "])).toBe(true);
+    expect(carriesAutograph(["AUTO"])).toBe(false);
+    expect(carriesAutograph(["RC"])).toBe(false);
+    expect(carriesAutograph(undefined)).toBe(false);
+  });
+
+  it("counts only cards the save will CREATE", () => {
+    const cards = [
+      { attributes: ["AU"] },
+      { attributes: ["AU", "NUM"] },
+      { attributes: ["RC"] },
+      {},
+      { attributes: ["au"] },
+    ];
+    expect(autographCardIndexes(cards)).toEqual([0, 1, 4]);
+    // Position 1 re-syncs a stored row: it keeps its own features.
+    expect(autographCardIndexes(cards, [1])).toEqual([0, 4]);
+    expect(autographCardIndexes(cards, [0, 1, 4])).toEqual([]);
+  });
+
+  it("reads a stored value back as one of the two answers, or none", () => {
+    expect(asAutographFormat("On Card")).toBe("On Card");
+    expect(asAutographFormat("Sticker/Label")).toBe("Sticker/Label");
+    expect(asAutographFormat("on card")).toBeUndefined();
+    expect(asAutographFormat("None")).toBeUndefined();
+    expect(asAutographFormat("")).toBeUndefined();
+    expect(asAutographFormat(undefined)).toBeUndefined();
+  });
+});
+
+describe("autograph step — counting and position", () => {
+  const withAutograph = (
+    reviewRows: number,
+    teamsStep: boolean,
+    titlesStep: boolean,
+  ) => ({ reviewRows, teamsStep, autographStep: true, titlesStep });
+
+  it("is one more step, between teams and titles", () => {
+    expect(plannedTotal(withAutograph(0, false, false))).toBe(2);
+    const count = initialStepCount(withAutograph(2, true, true));
+    expect(count.total).toBe(6);
+    expect(stepNumber(count, { kind: "review", index: 0 })).toBe(1);
+    expect(stepNumber(count, { kind: "review", index: 1 })).toBe(2);
+    expect(stepNumber(count, { kind: "teams" })).toBe(3);
+    expect(stepNumber(count, { kind: "autograph" })).toBe(4);
+    expect(stepNumber(count, { kind: "titles" })).toBe(5);
+    expect(stepNumber(count, { kind: "save" })).toBe(6);
+  });
+
+  it("without teams or titles: autograph, then Save", () => {
+    const count = initialStepCount(withAutograph(0, false, false));
+    expect(stepNumber(count, { kind: "autograph" })).toBe(1);
+    expect(stepNumber(count, { kind: "save" })).toBe(2);
+  });
+
+  it("an absent flag is no step, so older callers count as before", () => {
+    expect(plannedTotal(plan(3, true, true))).toBe(6);
+    expect(initialStepCount(plan(3)).autographStep).toBe(false);
+  });
+
+  it("is a high-water mark like the others", () => {
+    const first = initialStepCount(withAutograph(1, false, false));
+    const { count, added } = advanceStepCount(first, plan(1), false);
+    expect(count).toBe(first);
+    expect(added).toBe(0);
+    expect(count.autographStep).toBe(true);
+  });
+
+  it("is announced when it turns up mid-sitting", () => {
+    const row: StepRow = { _id: "p", kind: "player", name: "Mike Trout" };
+    const first = trackSteps(null, { rows: [row], teamsStep: false, titlesStep: false, onSave: false });
+    const grown = trackSteps(first, {
+      rows: [row],
+      teamsStep: false,
+      autographStep: true,
+      titlesStep: false,
+      onSave: false,
+    });
+    expect(grown.growth?.text).toBe(`1 more step: ${AUTOGRAPH_GROWTH_REASON}`);
+    expect(grown.count.total).toBe(3);
+  });
+});
+
+describe("autograph step — the walk", () => {
+  const all = { teams: true, autograph: true, titles: true };
+
+  it("walks teams → autograph → titles → save", () => {
+    expect(resolvePostReviewStep(null, all)).toBe("teams");
+    expect(nextPostReviewStep("teams", all)).toBe("autograph");
+    expect(nextPostReviewStep("autograph", all)).toBe("titles");
+    expect(nextPostReviewStep("titles", all)).toBe("save");
+    expect(previousPostReviewStep("save", all)).toBe("titles");
+    expect(previousPostReviewStep("titles", all)).toBe("autograph");
+    expect(previousPostReviewStep("autograph", all)).toBe("teams");
+    expect(previousPostReviewStep("teams", all)).toBeNull();
+  });
+
+  it("is passed over when it has nothing in it", () => {
+    const none = { teams: true, autograph: false, titles: true };
+    expect(nextPostReviewStep("teams", none)).toBe("titles");
+    expect(previousPostReviewStep("titles", none)).toBe("teams");
+    // A host that knows nothing of it walks exactly as before.
+    expect(nextPostReviewStep("teams", { teams: true, titles: false })).toBe("save");
+  });
+
+  it("unanswered, nothing after it can be reached", () => {
+    expect(resolvePostReviewStep("titles", all, "autograph")).toBe("autograph");
+    expect(resolvePostReviewStep("save", all, "autograph")).toBe("autograph");
+    expect(resolvePostReviewStep("save", { teams: false, autograph: true, titles: false }, "autograph")).toBe(
+      "autograph",
+    );
+  });
+
+  it("unanswered, the steps BEFORE it stay reachable", () => {
+    expect(resolvePostReviewStep("teams", all, "autograph")).toBe("teams");
+    expect(resolvePostReviewStep(null, all, "autograph")).toBe("teams");
+  });
+
+  it("an unanswered step that is not live holds nothing back", () => {
+    const none = { teams: false, autograph: false, titles: true };
+    expect(resolvePostReviewStep("save", none, "autograph")).toBe("save");
   });
 });

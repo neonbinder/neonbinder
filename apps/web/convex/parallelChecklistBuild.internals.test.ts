@@ -464,3 +464,35 @@ describe("clearStaleReviewState / clearParallelReviewPage — abandoned vs live 
     expect(await t.run((ctx) => ctx.db.get(rowId))).not.toBeNull();
   });
 });
+
+describe("insertParallelCardsPage — NEO-345 carried fields", () => {
+  test("a copy carries the source's teamCheckOutcome beside its teamCheckDoneAt", async () => {
+    const t = convexTest(schema, modules);
+    const { insert, parallel } = await seedTree(t);
+    const sourceId = await insertCard(t, insert, {
+      cardNumber: "1",
+      cardName: "Someone",
+      teamCheckDoneAt: 1_690_000_000_000,
+      teamCheckOutcome: "gaveUp",
+    });
+
+    const result = await t.run((ctx) =>
+      ctx.runMutation(internal.parallelChecklistBuild.insertParallelCardsPage, {
+        parallelId: parallel,
+        insertId: insert,
+        copies: [
+          {
+            sourceCardId: sourceId,
+            expect: { cardNumber: "1", cardName: "Someone", namesOnCard: [] },
+            bsc: { ref: "bsc-1" },
+          },
+        ],
+        remap: [],
+      }),
+    );
+    expect(result.created).toHaveLength(1);
+    const [copy] = await cardsOn(t, parallel);
+    expect(copy.teamCheckDoneAt).toBe(1_690_000_000_000);
+    expect(copy.teamCheckOutcome).toBe("gaveUp");
+  });
+});

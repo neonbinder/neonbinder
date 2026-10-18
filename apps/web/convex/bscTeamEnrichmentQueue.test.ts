@@ -488,6 +488,8 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     expect(card.pendingTeamNames).toBeUndefined();
     // …but the wait is over, the hint stays, and the operator is told.
     expect(card.teamCheckDoneAt).toBeTypeOf("number");
+    // NEO-345: and WHY — so a later re-ask can find it.
+    expect(card.teamCheckOutcome).toBe("gaveUp");
     expect(card.bscTeamName).toBe("New York Yankees");
     expect(deriveCardAttention(card)).toContainEqual({ kind: "missingTeam" });
 
@@ -584,7 +586,7 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
 });
 
 describe("bscTeamCheck.markBscTeamCheckGivenUp (NEO-330)", () => {
-  test("stamps teamCheckDoneAt and writes nothing else", async () => {
+  test("stamps teamCheckDoneAt with outcome gaveUp (NEO-345) and writes nothing else", async () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
@@ -598,7 +600,12 @@ describe("bscTeamCheck.markBscTeamCheckGivenUp (NEO-330)", () => {
 
     const after = (await getCard(t, cardId))!;
     expect(after.teamCheckDoneAt).toBeTypeOf("number");
-    const { teamCheckDoneAt: _stamp, ...rest } = after;
+    expect(after.teamCheckOutcome).toBe("gaveUp");
+    const {
+      teamCheckDoneAt: _stamp,
+      teamCheckOutcome: _outcome,
+      ...rest
+    } = after;
     expect(rest).toEqual(before);
   });
 
@@ -636,5 +643,147 @@ describe("bscTeamCheck.markBscTeamCheckGivenUp (NEO-330)", () => {
       }),
     ).resolves.toBe(false);
     expect((await getCard(t, cardId))!.teamCheckDoneAt).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// NEO-345 — one BSC answer fills the team check's outcome AND the card's
+// attributes
+// ===========================================================================
+
+/** A card-listing stub that answers with whole JSON bodies. */
+function makePayloadFetch(
+  responses: Record<string, Record<string, unknown>>,
+): typeof fetch {
+  return (async (url: string | URL | Request) => {
+    const match = String(url).match(/\/marketplace\/card\/([^/]+)\/card-listing/);
+    const body = responses[match?.[1] ?? ""];
+    if (!body) throw new Error("unexpected fetch");
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+}
+
+describe("resolveBscCardTeam — attributes and outcome (NEO-345)", () => {
+  test("the attribute label in the team slot: no team, a stale hint cleared, attributes and print run filled", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    await t.run(async (ctx) => ctx.db.patch(cardId, { bscTeamName: "AU  SN1" }));
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({ "bsc-1": { teamName: "AU  SN1", playerAttribute: "" } }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe("answered");
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamOnCardIds).toBeUndefined();
+    expect(card.bscTeamName).toBeUndefined();
+    expect(card.teamCheckDoneAt).toBeTypeOf("number");
+    expect(card.teamCheckOutcome).toBe("answered");
+    expect(card.attributes).toEqual(["AU", "NUM"]);
+    expect(card.printRun).toBe(1);
+    // No leaf format: AU alone never formats the card.
+    expect(card.features?.autographed).toBeUndefined();
+    vi.restoreAllMocks();
+  });
+
+  test("an AU card under a leaf with an autograph format is formatted and Signed By is seeded", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    await t.run(async (ctx) => {
+      const leaf = (await ctx.db.get(variantTypeId))!;
+      const variant = leaf;
+      const setName = (await ctx.db.get(variant.parentId!))!;
+      const playerId = await ctx.db.insert("players", {
+        name: "Barry Bonds",
+        nameNormalized: "barry bonds",
+        sportId: setName.parentId!,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(variantTypeId, {
+        features: { autographFormat: "Sticker/Label" },
+      });
+      await ctx.db.patch(cardId, {
+        playerIds: [playerId],
+        features: { autographed: "None", shortPrint: "None" },
+      });
+    });
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": { teamName: "", playerAttribute: "AU, SN25, RC, SP" },
+      }),
+    );
+
+    await t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
+      cardChecklistId: cardId,
+    });
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamCheckOutcome).toBe("answered");
+    expect(card.printRun).toBe(25);
+    expect(card.isRookie).toBe(true);
+    expect(card.attributes).toEqual(["AU", "RC", "SP", "NUM"]);
+    expect(card.features).toMatchObject({
+      autographed: "Sticker/Label",
+      signedBy: "Barry Bonds",
+      shortPrint: "SP",
+      isRookie: "true",
+    });
+  });
+
+  test("a card that already has a team still gains its print run, and keeps its team", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const teamId = await seedTeam(t, variantTypeId, {
+      location: "Seattle",
+      name: "Mariners",
+    });
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    await t.run(async (ctx) => ctx.db.patch(cardId, { teamOnCardIds: [teamId] }));
+    // getForBscTeamCheck says nothing is owed for a card with a team, so the
+    // mutation is called directly, as a late queue answer would reach it.
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      rawTeamName: "Seattle Mariners",
+      teamNames: ["Seattle Mariners"],
+      attributeTokens: ["AU", "SN50"],
+      printRun: 50,
+    });
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamOnCardIds).toEqual([teamId]);
+    expect(card.teamCheckOutcome).toBe("answered");
+    expect(card.printRun).toBe(50);
+    expect(card.attributes).toEqual(["AU", "NUM"]);
+  });
+
+  test("a call without tokens (scheduled before NEO-345) fills nothing", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const before = (await getCard(t, cardId))!;
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      rawTeamName: "",
+      teamNames: [],
+    });
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.attributes).toBeUndefined();
+    expect(card.printRun).toBeUndefined();
+    expect(card.lastUpdated).toBe(before.lastUpdated);
+    expect(card.teamCheckOutcome).toBe("answered");
   });
 });

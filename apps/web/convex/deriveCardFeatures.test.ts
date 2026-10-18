@@ -10,6 +10,7 @@ import {
   deriveCardObservedFeatures,
   deriveBackfillFeatures,
   eraForYear,
+  inheritableFeatures,
   validateFeatureValue,
   ERA_BUCKET_OPTIONS,
   LEAGUE_OPTIONS,
@@ -158,6 +159,16 @@ describe("validateFeatureValue (NEO-72/73 server-side guard)", () => {
     expect(() => validateFeatureValue("league", "XFL")).not.toThrow();
   });
 
+  test("NEO-345: autographFormat accepts exactly the two formats", () => {
+    expect(() => validateFeatureValue("autographFormat", "On Card")).not.toThrow();
+    expect(() => validateFeatureValue("autographFormat", "Sticker/Label")).not.toThrow();
+    for (const bad of ["None", "Unknown", "on card", "Sticker", ""]) {
+      expect(() => validateFeatureValue("autographFormat", bad)).toThrow(
+        /Invalid autographFormat/,
+      );
+    }
+  });
+
   test("is a no-op for every other key, even nonsense values", () => {
     expect(() => validateFeatureValue("manufacturer", "anything")).not.toThrow();
     expect(() => validateFeatureValue("isReprint", "true")).not.toThrow();
@@ -170,36 +181,74 @@ describe("deriveCardObservedFeatures", () => {
       deriveCardObservedFeatures({
         isRookie: true,
         isRelic: true,
-        autographType: "On-Card",
         cardVariation: "Gold Refractor",
       }),
     ).toEqual({
       isRookie: "true",
       isRelic: "true",
-      // autographType maps to the closed autographed vocabulary now — it no
-      // longer sets signedBy directly (that was the auto FORMAT, not a
-      // signer's name; signedBy is now resolved from playerIds by the caller).
-      autographed: "On Card",
       parallelName: "Gold Refractor",
     });
   });
 
-  test("autographType containing 'sticker' maps to Sticker/Label", () => {
-    expect(
-      deriveCardObservedFeatures({ autographType: "Sticker" }).autographed,
-    ).toBe("Sticker/Label");
-    expect(
-      deriveCardObservedFeatures({ autographType: "Sticker Auto" }).autographed,
-    ).toBe("Sticker/Label");
-  });
+  // NEO-345: an autograph's FORMAT is NB data on the leaf, never a
+  // marketplace's wording. These replace the old "autographType maps to
+  // On Card / Sticker" rules, which turned SportLots' literal "Unknown" into
+  // "On Card" — a guess presented as a fact.
+  describe("autographed (NEO-345: the leaf's format, never a marketplace's)", () => {
+    test.each(["Unknown", "On-Card", "Sticker", "Sticker Auto", "Cut"])(
+      "a marketplace autographType (%s) derives no autographed, AU or not",
+      (autographType) => {
+        expect(deriveCardObservedFeatures({ autographType })).toEqual({});
+        expect(
+          deriveCardObservedFeatures({ autographType, attributes: ["AU"] }),
+        ).toEqual({});
+      },
+    );
 
-  test("autographType not mentioning sticker maps to On Card", () => {
-    expect(
-      deriveCardObservedFeatures({ autographType: "Cut" }).autographed,
-    ).toBe("On Card");
-    expect(
-      deriveCardObservedFeatures({ autographType: "On-Card" }).autographed,
-    ).toBe("On Card");
+    test.each(["On Card", "Sticker/Label"] as const)(
+      "AU + the leaf's format %s -> autographed is that format",
+      (autographFormat) => {
+        expect(
+          deriveCardObservedFeatures({ attributes: ["AU"], autographFormat })
+            .autographed,
+        ).toBe(autographFormat);
+      },
+    );
+
+    test("the leaf's format wins over any marketplace autographType", () => {
+      expect(
+        deriveCardObservedFeatures({
+          attributes: ["AU"],
+          autographType: "On-Card",
+          autographFormat: "Sticker/Label",
+        }).autographed,
+      ).toBe("Sticker/Label");
+    });
+
+    test("AU without a format says nothing (the inherited None stands)", () => {
+      expect(deriveCardObservedFeatures({ attributes: ["AU"] })).toEqual({});
+    });
+
+    test("a format on a card WITHOUT AU marks nothing", () => {
+      expect(
+        deriveCardObservedFeatures({ attributes: ["RC"], autographFormat: "On Card" }),
+      ).toEqual({ isRookie: "true" });
+    });
+
+    test("an AU token is read case-folded", () => {
+      expect(
+        deriveCardObservedFeatures({ attributes: [" au "], autographFormat: "On Card" })
+          .autographed,
+      ).toBe("On Card");
+    });
+
+    test("a format outside the closed vocabulary is ignored", () => {
+      for (const autographFormat of ["Cut", "on card", "", "None"]) {
+        expect(
+          deriveCardObservedFeatures({ attributes: ["AU"], autographFormat }),
+        ).toEqual({});
+      }
+    });
   });
 
   test("falls back to attributes array (custom cards)", () => {
@@ -253,5 +302,17 @@ describe("deriveBackfillFeatures (gap-fill, existing wins)", () => {
     expect(second).toEqual(first);
     expect(first.vintage).toBe("true");
     expect(first.era).toBe("Vintage (1970-79)");
+  });
+});
+
+describe("inheritableFeatures (NEO-345)", () => {
+  test("drops node-only keys, keeps the rest, never mutates the input", () => {
+    const parent = { season: "2026", autographed: "None", autographFormat: "On Card" };
+    expect(inheritableFeatures(parent)).toEqual({ season: "2026", autographed: "None" });
+    expect(parent.autographFormat).toBe("On Card");
+  });
+
+  test("undefined is an empty map", () => {
+    expect(inheritableFeatures(undefined)).toEqual({});
   });
 });

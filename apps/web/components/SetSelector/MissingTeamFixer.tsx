@@ -113,6 +113,32 @@ export function marketplaceHeading(listingName: string, rowCount: number, agreed
 }
 
 /**
+ * NEO-345 — which case the card is in, from the background team check's
+ * recorded outcome. One line above "Teams on this card"; null when there is
+ * nothing to add:
+ *
+ *   answered, no hint — the listing replied and named no team
+ *   gaveUp            — the lookup ran out of retries; nobody knows yet
+ *   answered + hint   — null: the listing's claim is already on screen
+ *                       (its chips, or "Marketplace says")
+ *   absent            — null: stamped before outcomes were recorded
+ *
+ * Never names the marketplace — "the listing". Exported for the copy test.
+ */
+export function outcomeHeading(
+  outcome: "answered" | "gaveUp" | undefined,
+  hasHint: boolean,
+): string | null {
+  if (outcome === "gaveUp") {
+    return "We couldn’t get a team from the listing for this card. Pick the one on the card.";
+  }
+  if (outcome === "answered" && !hasHint) {
+    return "The listing has no team for this card. Pick the one on the card, or say there isn’t one.";
+  }
+  return null;
+}
+
+/**
  * The line over the career chips. Exported for the copy test.
  *
  * `uncoveredSetYear` is the set's year when the server fell back to the whole
@@ -175,6 +201,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     bscName !== "" && sportId !== undefined ? { name: bscName, sportId } : "skip",
   );
   const bscLookedUp = bscName !== "" && sportId !== undefined;
+  const caseLine = outcomeHeading(row.teamCheckOutcome, bscName !== "");
   const bscSettled = !bscLookedUp || bscEras !== undefined;
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const confirmCardNoTeam = useMutation(api.cardChecklist.confirmCardNoTeam);
@@ -592,6 +619,9 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             <span className="text-gray-300">{row.bscTeamName}</span>
           </p>
         )}
+        {/* NEO-345 — the card's case, from the team check's recorded
+            outcome. Plain text, like every line in this panel. */}
+        {caseLine && <p className="text-xs text-gray-300">{caseLine}</p>}
         <p className="text-xs text-gray-400">Teams on this card</p>
         {/* The same picker the card detail panel uses, including its "+ Create"
             path through teams.findOrCreate — so a team no marketplace has ever

@@ -38,6 +38,15 @@ Vite, an iframe, a fake Convex client) is overkill. This takes about a minute:
    JSON, run with `npx tsx file.tsx`, then delete it. Put `class="dark"` on the
    scratch `<html>` so `dark:` variants apply.
 
+   A component that calls `useMutation` renders too: wrap it in
+   `<ConvexProvider client={{} as never}>` — the hook only builds a callback,
+   so a fake client is never touched. Radix button chrome is NOT in `app.css`
+   (buttons render unpadded), so judge button widths from a real screenshot.
+   NEO-345 reproduced its phone squeeze this way: a `min-w-0 flex-1` text item
+   in a `flex-wrap` row never forces the wrap (basis 0 lets the buttons squeeze
+   it); the fix is the notice idiom, a `flex-1 basis-64` group holding
+   glyph + text, so the buttons drop below on a phone.
+
 6. To prove a height claim ("the footer does not jump"), measure instead of
    eyeballing: generate the scratch HTML as a case matrix (each realistic
    label set x old/new classes, one `data-case` wrapper each) and read

@@ -68,6 +68,7 @@ describe("buildCardRowForInsert — carried fields (M3)", () => {
     const built = buildCardRowForInsert(baseCard(), baseSet(), 1_700_000_000_000);
     for (const key of [
       "teamCheckDoneAt",
+      "teamCheckOutcome",
       "bscTeamName",
       "teamNoneConfirmedAt",
       "teamNoneConfirmedByUserId",
@@ -104,6 +105,19 @@ describe("buildCardRowForInsert — carried fields (M3)", () => {
     expect(built.row.bscTeamName).toBe("New York Yankees");
   });
 
+  test("NEO-345: a carried teamCheckOutcome travels with its stamp", () => {
+    for (const outcome of ["answered", "gaveUp"] as const) {
+      const built = buildCardRowForInsert(
+        baseCard({
+          carried: { teamCheckDoneAt: 1_690_000_000_000, teamCheckOutcome: outcome },
+        }),
+        baseSet(),
+        1_700_000_000_000,
+      );
+      expect(built.row.teamCheckOutcome).toBe(outcome);
+    }
+  });
+
   test("a carried field explicitly undefined is omitted, not written as undefined", () => {
     // `teamNoneConfirmedByUserId` present in the `carried` object but the
     // caller passed no value: the row must not carry the key at all, the same
@@ -118,23 +132,25 @@ describe("buildCardRowForInsert — carried fields (M3)", () => {
 });
 
 describe("buildCardRowForInsert — never stores autographType", () => {
-  test("autographType is observed (folds into features.autographed) but not stored on the row", () => {
+  test("autographType is neither stored nor a source of autographed (NEO-345)", () => {
     const built = buildCardRowForInsert(
-      baseCard({ autographType: "On-Card Auto" }),
-      baseSet(),
+      baseCard({ autographType: "On-Card Auto", attributes: ["AU"] }),
+      baseSet({ inheritedFeatures: { autographed: "None" } }),
       1_700_000_000_000,
     );
     expect(built.row).not.toHaveProperty("autographType");
-    expect(built.row.features?.autographed).toBeTruthy();
+    // AU with no leaf format: the inherited "None" stands; no signer seeded.
+    expect(built.row.features?.autographed).toBe("None");
+    expect(built.row.features?.signedBy).toBeUndefined();
   });
 
-  test("Signed By defaults from the roster when autographed newly becomes set", () => {
+  test("SportLots' literal \"Unknown\" is no longer read as On Card", () => {
     const built = buildCardRowForInsert(
-      baseCard({ autographType: "On-Card Auto", playerNames: ["Ken Griffey Jr."] }),
+      baseCard({ autographType: "Unknown", attributes: ["AU"] }),
       baseSet(),
       1_700_000_000_000,
     );
-    expect(built.row.features?.signedBy).toBe("Ken Griffey Jr.");
+    expect(built.row.features?.autographed).toBeUndefined();
   });
 
   test("an already-autographed inherited feature does not overwrite an existing signedBy", () => {
@@ -144,6 +160,94 @@ describe("buildCardRowForInsert — never stores autographType", () => {
       1_700_000_000_000,
     );
     expect(built.row.features?.signedBy).toBe("Someone Else");
+  });
+});
+
+describe("buildCardRowForInsert — the leaf's autographFormat (NEO-345)", () => {
+  const leaf = (format: string, extra: Record<string, string> = {}) =>
+    baseSet({
+      inheritedFeatures: { autographed: "None", autographFormat: format, ...extra },
+    });
+
+  test.each(["On Card", "Sticker/Label"])(
+    "an AU card under a %s leaf is born autographed with it, Signed By seeded",
+    (format) => {
+      const built = buildCardRowForInsert(
+        baseCard({ attributes: ["AU"], playerNames: ["Ken Griffey Jr."] }),
+        leaf(format),
+        1_700_000_000_000,
+      );
+      expect(built.row.features?.autographed).toBe(format);
+      expect(built.row.features?.signedBy).toBe("Ken Griffey Jr.");
+    },
+  );
+
+  test("a dual auto's Signed By names both players, in order", () => {
+    const built = buildCardRowForInsert(
+      baseCard({ attributes: ["AU"], playerNames: ["Ken Griffey Jr.", "Ken Griffey Sr."] }),
+      leaf("On Card"),
+      1_700_000_000_000,
+    );
+    expect(built.row.features?.signedBy).toBe("Ken Griffey Jr., Ken Griffey Sr.");
+  });
+
+  test("a card WITHOUT AU under a formatted leaf stays None, no signer", () => {
+    const built = buildCardRowForInsert(
+      baseCard({ attributes: ["RC"] }),
+      leaf("On Card"),
+      1_700_000_000_000,
+    );
+    expect(built.row.features?.autographed).toBe("None");
+    expect(built.row.features?.signedBy).toBeUndefined();
+  });
+
+  test("the leaf's format never lands on the card's own features", () => {
+    for (const attributes of [["AU"], []]) {
+      const built = buildCardRowForInsert(
+        baseCard({ attributes }),
+        leaf("Sticker/Label"),
+        1_700_000_000_000,
+      );
+      expect(built.row.features).not.toHaveProperty("autographFormat");
+    }
+  });
+
+  test("fill-empty: a parallel copy's own autographed (its base features) is kept", () => {
+    const built = buildCardRowForInsert(
+      baseCard({
+        attributes: ["AU"],
+        baseFeatures: { autographed: "On Card", signedBy: "Ken Griffey Jr." },
+      }),
+      leaf("Sticker/Label"),
+      1_700_000_000_000,
+    );
+    expect(built.row.features?.autographed).toBe("On Card");
+    expect(built.row.features?.signedBy).toBe("Ken Griffey Jr.");
+  });
+
+  test("an operator's existing Signed By on the snapshot is not overwritten", () => {
+    const built = buildCardRowForInsert(
+      baseCard({ attributes: ["AU"], playerNames: ["Ken Griffey Jr."] }),
+      leaf("On Card", { signedBy: "Someone Else" }),
+      1_700_000_000_000,
+    );
+    expect(built.row.features?.autographed).toBe("On Card");
+    expect(built.row.features?.signedBy).toBe("Someone Else");
+  });
+
+  test("the listing title reads the formatted autograph (AUTO token)", () => {
+    const formatted = buildCardRowForInsert(
+      baseCard({ attributes: ["AU"] }),
+      leaf("On Card"),
+      1_700_000_000_000,
+    );
+    const unformatted = buildCardRowForInsert(
+      baseCard({ attributes: ["AU"] }),
+      baseSet({ inheritedFeatures: { autographed: "None" } }),
+      1_700_000_000_000,
+    );
+    expect(formatted.row.listingTitle).toMatch(/\bAUTO\b/);
+    expect(unformatted.row.listingTitle).not.toMatch(/\bAUTO\b/);
   });
 });
 

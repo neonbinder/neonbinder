@@ -11,6 +11,14 @@ import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
+// NEO-345: the stored leaf's "how are these autographs signed?" line.
+import { AutographFormatPrompt } from "./AutographFormatStep";
+import {
+  asAutographFormat,
+  autographCardIndexes,
+  carriesAutograph,
+  type AutographFormat,
+} from "./entity-review-steps";
 // NEO-335 Phase 2: the "Card titles" step's answers, put on the cards at commit.
 import {
   cardsNeedingTitleReview,
@@ -249,6 +257,13 @@ type FetchPreview = {
    * took the suggestion. Client state only.
    */
   listingShortName?: string;
+  /**
+   * NEO-345 — the wizard's "Autographed cards" answer, sent as the commit's
+   * batch-level `autographFormat`: the server writes it onto the leaf before
+   * the first insert, so new AU cards are born with it. Absent unless the
+   * step was part of the sitting and answered. Client state only.
+   */
+  autographFormat?: AutographFormat;
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -687,6 +702,39 @@ export default function CardChecklist({
   const ancestorChain = useQuery(api.selectorOptions.getAncestorChain, {
     id: variantId,
   });
+  /**
+   * NEO-345 — how this leaf's autographs are signed, when somebody has said.
+   * NB data on the leaf (`features.autographFormat`); no marketplace knows.
+   */
+  const leafAutographFormat = asAutographFormat(variantRow?.features?.autographFormat);
+  /**
+   * NEO-345 — stored cards carrying "AU" still marked not autographed: what
+   * the header's one-line prompt counts while the leaf has no format.
+   */
+  const unformattedAutographCount = useMemo(
+    () =>
+      (cards ?? []).filter(
+        (row) =>
+          carriesAutograph(row.attributes) &&
+          (row.features?.autographed ?? "None") === "None",
+      ).length,
+    [cards],
+  );
+  /**
+   * NEO-345 — the prompt's answer, latched so its slot can say "saved" in
+   * place (the line's condition goes false the moment the leaf has a format).
+   * Keyed on the leaf, so another node never shows this one's line.
+   */
+  const [autographSaved, setAutographSaved] = useState<{
+    variantId: Id<"selectorOptions">;
+    value: AutographFormat;
+  } | null>(null);
+  // This sitting only: moving to another leaf drops the latch, so coming back
+  // never remounts a stale "saved" line (render-phase reset, the
+  // previous-render pattern).
+  if (autographSaved !== null && autographSaved.variantId !== variantId) {
+    setAutographSaved(null);
+  }
   const ancestorSport = ancestorChain?.find((c) => c.level === "sport")?.value;
   // NEO-96: the row ID, which is what teams/players now reference. The chain
   // already carried `_id` — this line is the only place it used to be thrown
@@ -1920,7 +1968,17 @@ export default function CardChecklist({
       !!titleContext &&
       cardsNeedingTitleReview(preview.cards, titleContext, undefined, { existingIndexes })
         .length > 0;
-    if (noNames && !askTeams && !askTitles) {
+    // NEO-345 — and the same for the autograph format: a NEW card carrying
+    // "AU" on a leaf that has not said how its autographs are signed gets the
+    // wizard's "Autographed cards" step, whose answer is required. Only once
+    // the leaf row has loaded: an unknown leaf is never asked about, and its
+    // cards then fall to the header prompt after the save.
+    const askAutograph =
+      noNames &&
+      !!variantRow &&
+      !leafAutographFormat &&
+      autographCardIndexes(preview.cards, existingIndexes).length > 0;
+    if (noNames && !askTeams && !askTitles && !askAutograph) {
       // No wizard on this path — nothing to hold the preview for, and nothing
       // to render `commitError`. `runCommit` has already put the failure in the
       // sync banner (`Commit failed: …`), which is the only place an operator
@@ -1930,8 +1988,8 @@ export default function CardChecklist({
         setCommitError(null);
       }
     } else if (noNames) {
-      // Stash preview; the wizard opens past the names, on its teams step or
-      // (D7) its titles step. The banner keeps whatever the run already said
+      // Stash preview; the wizard opens past the names, on its teams step,
+      // its autograph step (NEO-345) or (D7) its titles step. The banner keeps whatever the run already said
       // ("Kept all N cards from …") — the dialog itself says what is being
       // asked.
       setPendingPreview({ ...preview, teamsOnly: true });
@@ -2018,6 +2076,9 @@ export default function CardChecklist({
         ...(preview.listingShortName
           ? { listingShortName: preview.listingShortName }
           : {}),
+        // NEO-345: how this leaf's autographs are signed, only when the
+        // wizard's "Autographed cards" step asked and was answered.
+        ...(preview.autographFormat ? { autographFormat: preview.autographFormat } : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than
@@ -2203,6 +2264,17 @@ export default function CardChecklist({
     setPendingPreview((prev) => {
       if (!prev || prev.listingShortName === value) return prev;
       return { ...prev, listingShortName: value };
+    });
+  }, []);
+
+  /**
+   * NEO-345 — the wizard's "Autographed cards" answer, held on the preview
+   * until commit. `undefined` = nothing to send.
+   */
+  const handleAutographFormat = useCallback((value: AutographFormat | undefined) => {
+    setPendingPreview((prev) => {
+      if (!prev || prev.autographFormat === value) return prev;
+      return { ...prev, autographFormat: value };
     });
   }, []);
 
@@ -2964,6 +3036,32 @@ export default function CardChecklist({
           )}
         </div>
 
+        {/* NEO-345 — a stored leaf whose AU cards are still marked not
+            autographed, because nobody has said how this leaf's autographs
+            are signed. One line, two answers; each writes the leaf's format
+            and the server carries it onto those cards. Not while a sync's
+            dialogs are up (the wizard asks the same question there), and its
+            slot stays to say "saved" once answered. */}
+        {autographSaved?.variantId === variantId ? (
+          <AutographFormatPrompt
+            selectorOptionId={variantId}
+            count={unformattedAutographCount}
+            saved={autographSaved.value}
+            onSaved={() => {}}
+          />
+        ) : (
+          !pendingPreview &&
+          !!variantRow &&
+          !leafAutographFormat &&
+          unformattedAutographCount > 0 && (
+            <AutographFormatPrompt
+              selectorOptionId={variantId}
+              count={unformattedAutographCount}
+              onSaved={(value) => setAutographSaved({ variantId, value })}
+            />
+          )
+        )}
+
         {/* Add Card Form — rendered inline right under the header so the
             inputs are immediately visible after the user taps "Add Card".
             Previously this lived below the 70vh Virtuoso list, which on
@@ -3665,6 +3763,10 @@ export default function CardChecklist({
           onTitleAnswersChange={handleTitleAnswers}
           // NEO-335: the set's short name for titles, from the same step.
           onListingShortNameChange={handleListingShortName}
+          // NEO-345: the "Autographed cards" step, between teams and titles,
+          // when this leaf has not said how its autographs are signed.
+          hasAutographFormat={leafAutographFormat !== undefined}
+          onAutographFormatChange={handleAutographFormat}
           /**
            * NEO-221 (D9) — BACK, not abort.
            *

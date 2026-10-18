@@ -56,6 +56,13 @@ import {
   type BscProbeSummary,
 } from "../lib/baseMatchProbe";
 import { isPlatformPaused } from "../marketplacePause";
+// NEO-345 — one reading of BSC's attribute tokens for every parse site.
+import {
+  boundBscAttributeTokens,
+  bscAttributeLabelTokens,
+  isBscAttributeLabel,
+  normalizeBscAttributeTokens,
+} from "../lib/bscAttributeTokens";
 import {
   fetchFailureValidator,
   isAbortTimeout,
@@ -724,6 +731,15 @@ export function parsePlayerAttributeTokens(raw: unknown): string[] {
     .filter(Boolean);
   return Array.from(new Set(tokens));
 }
+
+/**
+ * NEO-345 — BSC's tokens read into NB's attribute vocabulary: `SN<n>`/`1/1`
+ * become `NUM` + a print run, `MEM`/`JSY`/`PATCH` become `RELIC`, and the
+ * rest are kept. Defined in `../lib/bscAttributeTokens` (a default-runtime
+ * module, so the stored-row fill in `cardChecklist.ts` can share it; this file
+ * is `"use node"`) and re-exported here beside the parser it follows.
+ */
+export { normalizeBscAttributeTokens };
 
 /**
  * NEO-189: the ONE marker that means `playerAttributeDesc` names a printing
@@ -1499,7 +1515,8 @@ async function bscChecklistWithSession(
   //   playerAttributeDesc, imgFront, imgBack, cardNoOrder,
   //   cardNoSequence, cardNoSort.
   // No year, sport, features, printRun, autograph, sportlots — those
-  // don't exist on the catalog template. `team`/`teams` are populated
+  // don't exist on the catalog template (NEO-345: the print run is read out
+  // of the `SN<n>` attribute token instead). `team`/`teams` are populated
   // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
   // the raw response itself never carries a separate team field.
   const seenRefs = new Set<string>();
@@ -1522,7 +1539,13 @@ async function bscChecklistWithSession(
         unrepresentable,
       } = parsePlayersField(playersRaw);
 
-      const attributes = parsePlayerAttributeTokens(r.playerAttribute);
+      // NEO-345: read into NB's vocabulary at the parse, so a numbered card
+      // arrives as `NUM` + its print run rather than BSC's raw "SN25". Bounded
+      // first: the payload is a third party's.
+      const { attributes, printRun } = normalizeBscAttributeTokens(
+        boundBscAttributeTokens(parsePlayerAttributeTokens(r.playerAttribute))
+          .tokens,
+      );
       // NEO-189: only a genuine printing variety reaches `cardVariation`.
       // BSC reuses `playerAttributeDesc` for shelf notes and for "this is
       // the base card", neither of which belongs in the eBay
@@ -1568,7 +1591,7 @@ async function bscChecklistWithSession(
         teams: teams.length ? teams : undefined,
         players: players.length ? players : undefined,
         attributes: attributes.length ? attributes : undefined,
-        printRun: undefined,
+        printRun,
         autographType: undefined,
         cardVariation,
         // NEO-189: BSC's answer to the domain question. Reads both signals
@@ -1960,6 +1983,28 @@ export type BscCardTeamValue = {
   teamNames: string[];
   rawTeamName: string;
   success: boolean;
+  /**
+   * NEO-345 — the card's attribute tokens as BSC gave them (`playerAttribute`,
+   * comma split, bounded), raw: `cardChecklist.applyBscAttributeFill`
+   * normalises them, and keeps BSC's own `SN<n>` beside `NUM` when the row
+   * already holds a different print run. When BSC put the attribute LABEL in
+   * `teamName` and left `playerAttribute` empty, these are the label's
+   * tokens. Empty on a failed call.
+   */
+  attributeTokens: string[];
+  /** NEO-345 — the print run those tokens carry (`SN<n>`, `1/1`), if any. */
+  printRun?: number;
+};
+
+/**
+ * NEO-345 — the fields of BSC's public `card-listing` response this adapter
+ * reads. Every field is `unknown` until narrowed: it is a third party's JSON.
+ * Seen live: `teamName` "" | "Seattle Mariners" | "AU  SN1" (the label, see
+ * above); `playerAttribute` "AU, SN1" | "AU ,  SN50" | "".
+ */
+type BscCardListingPayload = {
+  teamName?: unknown;
+  playerAttribute?: unknown;
 };
 
 async function fetchBscCardTeamNameRaw(
@@ -1969,6 +2014,7 @@ async function fetchBscCardTeamNameRaw(
     teamNames: [],
     rawTeamName: "",
     success: false,
+    attributeTokens: [],
   };
   try {
     const response = await fetch(
@@ -1985,10 +2031,49 @@ async function fetchBscCardTeamNameRaw(
       return failed;
     }
     const data: unknown = await response.json();
-    const upstreamTeamName =
-      data && typeof data === "object" && typeof (data as { teamName?: unknown }).teamName === "string"
-        ? stripZeroWidth((data as { teamName: string }).teamName).trim()
+    const payload: BscCardListingPayload =
+      data && typeof data === "object" ? (data as BscCardListingPayload) : {};
+    const teamNameValue =
+      typeof payload.teamName === "string"
+        ? stripZeroWidth(payload.teamName).trim()
         : "";
+    // NEO-345 — the card's attribute tokens ride on the same response
+    // (`playerAttribute`, a comma string such as "AU, SN25" or "AU ,  SN50";
+    // confirmed live). Bounded before anything reads them.
+    const bounded = boundBscAttributeTokens(
+      parsePlayerAttributeTokens(
+        typeof payload.playerAttribute === "string" ||
+          Array.isArray(payload.playerAttribute)
+          ? payload.playerAttribute
+          : undefined,
+      ),
+    );
+    let attributeTokens = bounded.tokens;
+    // NEO-345 — BSC sometimes puts the card's attribute LABEL where the team
+    // belongs ("AU  SN1", with `playerAttribute` empty; confirmed live). That
+    // is not a team and must never reach the team resolvers or the
+    // missing-team hint: the card has no team on file, and the label's
+    // tokens are its attributes.
+    const teamIsAttributeLabel =
+      !!teamNameValue && isBscAttributeLabel(teamNameValue, attributeTokens);
+    if (teamIsAttributeLabel) {
+      if (attributeTokens.length === 0) {
+        attributeTokens = boundBscAttributeTokens(
+          bscAttributeLabelTokens(teamNameValue),
+        ).tokens;
+      }
+      // A flag and the card id only — never the marketplace text.
+      console.warn(
+        `[fetchBscCardTeamNameRaw] card-listing team value is the attribute label bscCardId=${bscCardId}`,
+      );
+    }
+    if (bounded.refused) {
+      console.warn(
+        `[fetchBscCardTeamNameRaw] card-listing attribute list not representable bscCardId=${bscCardId}`,
+      );
+    }
+    const { printRun } = normalizeBscAttributeTokens(attributeTokens);
+    const upstreamTeamName = teamIsAttributeLabel ? "" : teamNameValue;
     const { names: teamNames, unrepresentable: splitUnrepresentable } =
       splitMarketplaceTeamNames(upstreamTeamName);
     // NEO-333 (security review N1): the raw string is bounded HERE, at the
@@ -2008,11 +2093,20 @@ async function fetchBscCardTeamNameRaw(
         `[fetchBscCardTeamNameRaw] card-listing team value not representable bscCardId=${bscCardId}`,
       );
     }
-    return { teamNames, rawTeamName, success: true };
+    return {
+      teamNames,
+      rawTeamName,
+      success: true,
+      attributeTokens,
+      ...(printRun !== undefined ? { printRun } : {}),
+    };
   } catch (error) {
+    // The error's NAME only (NEO-288 precedent): a JSON SyntaxError's message
+    // quotes the response body, which is marketplace bytes.
     console.warn(
-      `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId}:`,
-      error,
+      `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId} error=${
+        error instanceof Error ? error.name : "unknown"
+      }`,
     );
     return failed;
   }
@@ -2051,7 +2145,7 @@ export const resolveBscCardTeam = internalAction({
       });
     if (!row || !row.needsCheck) return "notNeeded";
 
-    const { teamNames, rawTeamName, success } =
+    const { teamNames, rawTeamName, success, attributeTokens, printRun } =
       await fetchBscCardTeamNameRaw(row.bscCardId);
     // The fetch itself failed — leave the row untouched (do NOT distinguish
     // "no team" from "couldn't check" here; only a successful call is allowed
@@ -2061,10 +2155,16 @@ export const resolveBscCardTeam = internalAction({
     // NEO-333: both forms. The mutation tries the whole raw string first and
     // only then the split parts; the raw string is also the unmatched hint.
     // An empty raw string means BSC had no team on file.
+    //
+    // NEO-345: the card's attribute tokens ride along, so the same answer
+    // fills NB's attributes, print run and flags (fill-empty, never
+    // overwrite: `applyBscAttributeFill`).
     await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: args.cardChecklistId,
       rawTeamName,
       teamNames,
+      attributeTokens,
+      ...(printRun !== undefined ? { printRun } : {}),
     });
     return "answered";
   },
@@ -2092,6 +2192,9 @@ const bscCardTeamLookupValidator = v.object({
   rawTeamName: v.string(),
   teamNames: v.array(v.string()),
   success: v.boolean(),
+  // NEO-345 — see `BscCardTeamValue`. Empty on a failed call.
+  attributeTokens: v.array(v.string()),
+  printRun: v.optional(v.number()),
 });
 
 /**
@@ -2130,14 +2233,28 @@ export const fetchBscCardTeamNames = internalAction({
         chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
       );
       chunk.forEach((bscCardId, idx) => {
-        const { rawTeamName, teamNames, success } = results[idx];
+        const { rawTeamName, teamNames, success, attributeTokens, printRun } =
+          results[idx];
         // A failed call never carries a value (`fetchBscCardTeamNameRaw`
         // returns both forms empty), so nothing downstream can attach a team
         // the call did not return.
         result.push(
           success
-            ? { bscCardId, rawTeamName, teamNames, success }
-            : { bscCardId, rawTeamName: "", teamNames: [], success },
+            ? {
+                bscCardId,
+                rawTeamName,
+                teamNames,
+                success,
+                attributeTokens,
+                ...(printRun !== undefined ? { printRun } : {}),
+              }
+            : {
+                bscCardId,
+                rawTeamName: "",
+                teamNames: [],
+                success,
+                attributeTokens: [],
+              },
         );
       });
     }
@@ -2198,7 +2315,13 @@ export const processBscTeamEnrichmentQueue = internalAction({
           { cardChecklistId: head },
         );
       } catch (error) {
-        console.error(`[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed:`, error);
+        // Name only: a thrown mutation error can echo its arguments, which
+        // carry BSC's team value.
+        console.error(
+          `[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed error=${
+            error instanceof Error ? error.name : "unknown"
+          }`,
+        );
       }
       if (outcome === "failed") failedIds.push(head);
     }
@@ -2255,7 +2378,11 @@ export const processBscTeamEnrichmentQueue = internalAction({
           flagged++;
         }
       } catch (error) {
-        console.error(`[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed:`, error);
+        console.error(
+          `[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed error=${
+            error instanceof Error ? error.name : "unknown"
+          }`,
+        );
       }
     }
     console.warn(

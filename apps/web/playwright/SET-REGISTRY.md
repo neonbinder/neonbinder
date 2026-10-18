@@ -102,6 +102,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `tests/setup.spec.ts` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `tests/set-selector/known-brand-files-set-and-operator-move-sticks.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 | Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED (on the catalogue every name is known, so the fetch commits with no wizard; any name the wizard does stage is SKIPPED) — no player, team or league minted (NOT pre-synced) | `tests/set-selector/checklist-dual-team-card-links-both-teams.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
+| Baseball → 2025 → Bowman › Bowman Draft › Insert › Bowman Draft Nights Autographs | `Insert` set `Bowman Draft Nights Autographs` — made its own set from the Reconcile Inserts dialog by its exact "Make its own set" button (its four refractor siblings are NOT made sets); its 5 cards (BDNA-SH, -EW, -GF, -KA, -XN, each AU + SN99 in BSC's attribute field) fetched and COMMITTED in-flow (NOT pre-synced); every name the wizard stages is SKIPPED, no player, team or league minted; the part's autograph format answered in the wizard, changed in Set details, cleared and answered again from the header, and card BDNA-KA's `autographed` toggled once by hand | `tests/set-selector/checklist-autograph-format-asked-applied-and-changeable.spec.ts` — **sole writer** of those five cards, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-14** (NEO-345); shares the YEAR and the Bowman Draft Insert reconcile with the dual-team spec above (a different insert, different rows) — see "Baseball → 2025 — the NEO-345 autograph fixture" |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `tests/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.spec.ts` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 | Football → 2014 (the whole year) → Topps → Topps (the flagship) | `Base` — the year's Years, Manufacturers and year-wide Sets synced cold in-flow; `Topps`' Variant Types synced; the Base picker CONFIRMED on both sides; the checklist fetched and COMMITTED in-flow through the Match Cards dialog, with BSC's #442 unlinked and then deliberately linked to a SportLots-only card and saved under the SportLots name; any review-wizard names SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-team-leader-cards-pair-and-picked-name-saves.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-13** (NEO-343/NEO-344) — see "Football → 2014 — the NEO-343 team-leader fixture" |
 
@@ -557,6 +558,49 @@ variantName is `Prospect Dual Autographs` (14 cards, PDA-AD … PDA-WW), and
 PDA-WW's BSC teams are Detroit Tigers and Boston Red Sox. In that run
 SportLots paired no set with the insert (Pending → Keep all), so the fetch
 took the one-marketplace path.
+
+### Baseball → 2025 — the NEO-345 autograph fixture (Bowman Draft › Insert › Bowman Draft Nights Autographs) ✅ APPROVED by Jason 2026-10-14
+
+`tests/set-selector/checklist-autograph-format-asked-applied-and-changeable.spec.ts` proves NEO-345
+live: a synced part's autograph format is the operator's answer, asked by the
+wizard's required "Autographed cards" step, applied to the part's AU cards
+(Signed By seeded from the card's player, print run from BSC's `SN99`),
+changeable from Set details, and asked again from the checklist header when a
+stored part has an AU card that reads "None".
+
+**Why this set, and not the dual-team one.** The dual-team insert (above)
+lists its numbering only in the card's product name: BSC's attribute field
+(`playerAttribute`) is empty for all 14 of its cards, and the sync reads that
+field, so it sees no AU and no print run (#316's green run saved it with no
+wizard). `Bowman Draft Nights Autographs` carries `["AU","SN99"]` on every card.
+Probed on BSC's public catalogue, 2026-10-14: 5 cards, `BDNA-SH`
+(Seth Hernandez, Pittsburgh Pirates), `BDNA-EW` (Eli Willits, Washington
+Nationals), `BDNA-GF` (Gavin Fien, Texas Rangers), `BDNA-KA` (Kade Anderson,
+Seattle Mariners), `BDNA-XN` (Xavier Neyens, Houston Astros); the target card
+is `BDNA-KA`, a draftee the dual-team measurement found on the catalogue.
+Whether Fien and Neyens are on it was not measured: if not, the wizard stages
+two player steps, which the spec skips.
+
+**Shared with the dual-team spec: the year and the Insert column's reconcile.**
+Both specs drill Baseball → 2025 → Bowman › Bowman Draft and click the `Insert`
+variant type; whichever shard gets there first finds the column empty and its
+own two-sided sync opens the Reconcile Inserts dialog; the other finds the
+column saved and opens the dialog from `Sync Inserts`
+(`openInsertsReconcile`, support/set-builder.ts). Each makes only its own
+insert a set (the dual-team spec by "Keep all" on its filtered column, this
+spec by the exact "Make its own set: Bowman Draft Nights Autographs" button,
+because its four `… Refractor` / `… Superfractor` siblings share the words and
+must not become sets). Neither reads or writes the other's rows. If two shards
+did hit the column at the very same moment their cold syncs would race, the
+same exposure `Baseball → 2025` already has with the past-era spec's Topps
+drill; no shard ordering is asked for.
+
+**What it writes.** Everything the cold drill syncs when it is first, the set
+row, the five cards, and the part's `autographFormat` (set by the wizard,
+changed to Sticker, cleared and set again) with the cascaded `autographed`
+values on those five cards. It creates no player, team or league and renames,
+moves or deletes nothing. Fresh-only: a re-run finds the checklist committed
+and fails at "No cards in this checklist yet.", by name.
 
 ### Football → 2014 — the NEO-343 team-leader fixture (Topps › Base) ✅ APPROVED by Jason 2026-10-13
 

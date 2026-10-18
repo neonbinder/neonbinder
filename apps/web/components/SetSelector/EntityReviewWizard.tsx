@@ -72,7 +72,10 @@ import {
   type TitleNameSources,
 } from "./card-titles";
 import type { TitleContext } from "../../convex/features/listingInputs";
+// NEO-345: the "Autographed cards" step, between teams and titles.
+import AutographFormatStep from "./AutographFormatStep";
 import {
+  autographCardIndexes,
   cardsForTeamsStep,
   nextPostReviewStep,
   previousPostReviewStep,
@@ -83,6 +86,7 @@ import {
   stepNumber,
   trackSteps,
   upcomingReviewStepKind,
+  type AutographFormat,
   type PostReviewStep,
   type StepPosition,
   type StepTracker,
@@ -451,6 +455,8 @@ export default function EntityReviewWizard({
   onTitleAnswersChange,
   onListingShortNameChange,
   hasSetTeam = false,
+  hasAutographFormat = false,
+  onAutographFormatChange,
 }: {
   isOpen: boolean;
   selectorOptionId: Id<"selectorOptions">;
@@ -528,6 +534,8 @@ export default function EntityReviewWizard({
    * its teams step (cards that would save with no team) and, since Phase 2
    * D7, its titles step (new cards whose title needs a look) applies — teams
    * then titles then Save, "Step 1 of 2" with one of them, "of 3" with both —
+   * and, since NEO-345, its autograph step (new AU cards on a leaf with no
+   * autograph format), which sits between teams and titles —
    * and reads no batch:
    * every name on the cards already resolved. `batchId` may be empty; when it
    * is not (a batch left open by "Back to Match Cards"), Cancel still discards it.
@@ -567,6 +575,21 @@ export default function EntityReviewWizard({
    * it in Set details instead of answering every card.
    */
   hasSetTeam?: boolean;
+  /**
+   * NEO-345 — the leaf these cards save under already says how its
+   * autographs are signed (`features.autographFormat`). Read the way
+   * `hasSetTeam` is: the parent holds the leaf row.
+   */
+  hasAutographFormat?: boolean;
+  /**
+   * NEO-345 — the "Autographed cards" step's answer, as the commit's
+   * batch-level `autographFormat`. With `previewCards`, turns the step on
+   * (between teams and titles) when a card the save will CREATE carries the
+   * "AU" attribute and the leaf has no format (`hasAutographFormat`). The
+   * answer is REQUIRED: the step cannot be walked past without one.
+   * Reported as `undefined` while unanswered or when the step does not apply.
+   */
+  onAutographFormatChange?: (value: AutographFormat | undefined) => void;
 }) {
   const batchRows = useQuery(
     api.entityReviewQueue.getBatch,
@@ -960,6 +983,22 @@ export default function EntityReviewWizard({
    * as the teams step's Next is by its intro.
    */
   const titlesLeadId = useId();
+  /**
+   * NEO-345 — the autograph step's answer. Wizard state like every other
+   * answer here; the parent sends it with the commit and stores it nowhere.
+   */
+  const [autographAnswer, setAutographAnswer] = useState<AutographFormat | undefined>(undefined);
+  /** NEO-345 — the autograph step's question; its Next is described by it. */
+  const autographLeadId = useId();
+  /** NEO-345 — the autograph step's tab-stop choice, focused while unanswered. */
+  const autographChoiceRef = useRef<HTMLButtonElement>(null);
+  /**
+   * NEO-345 (a11y) — the step's status line under the tiles, and whether a
+   * press on the held Next has asked for it. A held button that does nothing
+   * silently is a dead end; the press says why and puts focus on the choice.
+   */
+  const autographHintId = useId();
+  const [autographBlockedPressed, setAutographBlockedPressed] = useState(false);
   /** NEO-335 Phase 2 — the post-review steps' forward button ("Next (Enter)"). */
   const nextStepButtonRef = useRef<HTMLButtonElement>(null);
   /**
@@ -2818,6 +2857,44 @@ export default function EntityReviewWizard({
     [onTeamAnswersChange],
   );
   /**
+   * NEO-345 — the cards the autograph step is about: NEW rows carrying "AU",
+   * when the leaf has no format and the host takes the answer.
+   */
+  const autographIndexes = useMemo(
+    () =>
+      previewCards && onAutographFormatChange && !hasAutographFormat
+        ? autographCardIndexes(previewCards, existingCardIndexes)
+        : [],
+    [previewCards, onAutographFormatChange, hasAutographFormat, existingCardIndexes],
+  );
+  /** The answer the commit carries: only while the step applies. */
+  const autographForCommit = autographIndexes.length > 0 ? autographAnswer : undefined;
+  const reportedAutograph = useRef<AutographFormat | undefined | null>(null);
+  useEffect(() => {
+    if (reportedAutograph.current === autographForCommit) return;
+    reportedAutograph.current = autographForCommit;
+    onAutographFormatChange?.(autographForCommit);
+  }, [autographForCommit, onAutographFormatChange]);
+  /**
+   * NEO-345 — titles read `autographed`, and the commit writes the answer
+   * onto the leaf before the first insert, so a new card's title is
+   * generated from a leaf snapshot that carries it. The titles step reads the
+   * same: the answer joins the leaf's features here.
+   */
+  const titleContextForSitting = useMemo<TitleContext | undefined>(
+    () =>
+      titleContext && autographForCommit
+        ? {
+            ...titleContext,
+            inheritedFeatures: {
+              ...(titleContext.inheritedFeatures ?? {}),
+              autographFormat: autographForCommit,
+            },
+          }
+        : titleContext,
+    [titleContext, autographForCommit],
+  );
+  /**
    * The names the titles step reads — memoised, it is a dependency of its
    * groups. `linkedTeams` also carries the teams a teams-step answer picked by
    * id (see `linkedTeamIds`), so one lookup serves both maps.
@@ -2831,22 +2908,33 @@ export default function EntityReviewWizard({
   /** The cards the titles step would ask about, recomputed from the team answers. */
   const titleIndexes = useMemo(
     () =>
-      titleContext && previewCards
-        ? cardsNeedingTitleReview(previewCards, titleContext, teamAnswersSeen, {
+      titleContextForSitting && previewCards
+        ? cardsNeedingTitleReview(previewCards, titleContextForSitting, teamAnswersSeen, {
             names: titleNames,
             existingIndexes: existingCardIndexes,
           })
         : [],
-    [titleContext, previewCards, teamAnswersSeen, titleNames, existingCardIndexes],
+    [titleContextForSitting, previewCards, teamAnswersSeen, titleNames, existingCardIndexes],
   );
   const postLive = {
     teams: teamsStepCards.length > 0,
+    autograph: autographIndexes.length > 0,
     titles: titleIndexes.length > 0,
   };
-  /** Every name decided and none on screen: the teams / titles / save steps. */
+  /**
+   * NEO-345 — the autograph step is the one post-review step whose answer is
+   * required: unanswered, nothing after it can be reached (not titles, not
+   * Save), whichever step was asked for.
+   */
+  const autographUnanswered = postLive.autograph && autographAnswer === undefined;
+  /** Every name decided and none on screen: the teams / autograph / titles / save steps. */
   const onPostReview = !expired && current === null && allDecided;
   const postStep: PostReviewStep | null = onPostReview
-    ? resolvePostReviewStep(requestedPostStep, postLive)
+    ? resolvePostReviewStep(
+        requestedPostStep,
+        postLive,
+        autographUnanswered ? "autograph" : undefined,
+      )
     : null;
   // Back in the names (Back, Change, Back to review): the post-review steps
   // are walked again from the first when the operator returns to them.
@@ -2865,15 +2953,15 @@ export default function EntityReviewWizard({
   const shortNameAsked = useMemo(
     () =>
       !!onListingShortNameChange &&
-      !!titleContext &&
+      !!titleContextForSitting &&
       !!previewCards &&
-      shortNameFieldApplies(previewCards, titleContext, teamAnswersSeen, {
+      shortNameFieldApplies(previewCards, titleContextForSitting, teamAnswersSeen, {
         names: titleNames,
         existingIndexes: existingCardIndexes,
       }),
     [
       onListingShortNameChange,
-      titleContext,
+      titleContextForSitting,
       previewCards,
       teamAnswersSeen,
       titleNames,
@@ -2887,8 +2975,8 @@ export default function EntityReviewWizard({
    * step showed, and nothing at all when it never appeared.
    */
   const titleCommitFields = useMemo(() => {
-    if (titlesSeen.size === 0 || !titleContext || !previewCards) return undefined;
-    return titleAnswersForCommit(previewCards, titleContext, teamAnswersSeen, {
+    if (titlesSeen.size === 0 || !titleContextForSitting || !previewCards) return undefined;
+    return titleAnswersForCommit(previewCards, titleContextForSitting, teamAnswersSeen, {
       names: titleNames,
       existingIndexes: existingCardIndexes,
       answers: titleDrafts,
@@ -2896,7 +2984,7 @@ export default function EntityReviewWizard({
     }).map((fields, i) => (titlesSeen.has(i) ? fields : undefined));
   }, [
     titlesSeen,
-    titleContext,
+    titleContextForSitting,
     previewCards,
     teamAnswersSeen,
     titleNames,
@@ -2929,6 +3017,7 @@ export default function EntityReviewWizard({
       ? trackSteps(stepTracker, {
           rows,
           teamsStep: postLive.teams,
+          autographStep: postLive.autograph,
           titlesStep: postLive.titles,
           onSave: postStep === "save",
         })
@@ -3007,7 +3096,13 @@ export default function EntityReviewWizard({
         ? confirmButtonRef.current
         : screenKey === "teams" || screenKey === "titles"
           ? nextStepButtonRef.current
-          : null;
+          : screenKey === "autograph"
+            ? // NEO-345 — unanswered, Next is blocked, so focus goes to the
+              // choice (the question labels its group); answered, to Next.
+              autographAnswer === undefined
+              ? autographChoiceRef.current
+              : nextStepButtonRef.current
+            : null;
     if (screenKey !== "review" && screenKey !== "expired" && !target) return; // not mounted yet
     focusedScreenRef.current = screenKey;
     target?.focus();
@@ -3525,6 +3620,19 @@ export default function EntityReviewWizard({
       return;
     }
     if (backTargetId) presentDecided(backTargetId);
+  };
+  /** NEO-345 — Next is held while saving, and on an unanswered autograph step. */
+  const nextBlocked = saving || (postStep === "autograph" && autographUnanswered);
+  /**
+   * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
+   * autograph step is unanswered: say why in the step's status line and move
+   * focus to the choice that needs making. A press while SAVING stays silent,
+   * as it always has.
+   */
+  const pressBlockedNext = () => {
+    if (saving || postStep !== "autograph" || !autographUnanswered) return;
+    setAutographBlockedPressed(true);
+    autographChoiceRef.current?.focus();
   };
   /** C7 — a long teams step under a node with no set-level team. */
   const showSetTeamHint = !hasSetTeam && teamsStepCards.length >= SET_TEAM_HINT_MIN_CARDS;
@@ -5088,16 +5196,38 @@ export default function EntityReviewWizard({
               <p id={teamsIntroId} className="text-sm text-gray-200">
                 Pick a team for each card, or leave it for later.
               </p>
+            ) : postStep === "autograph" ? (
+              /*
+                NEO-345 — the "Autographed cards" step: how this leaf's
+                autographs are signed. Required: Next stays blocked until a
+                choice is made, and Enter on a choice picks it and goes on.
+              */
+              <AutographFormatStep
+                count={autographIndexes.length}
+                value={autographAnswer}
+                onChange={setAutographAnswer}
+                onEnter={() => {
+                  if (saving) return;
+                  // The answer lands in this same event; the step is no
+                  // longer unanswered once it renders, so ask for the next.
+                  setRequestedPostStep(nextPostReviewStep("autograph", postLive));
+                }}
+                disabled={saving}
+                headingId={autographLeadId}
+                choiceRef={autographChoiceRef}
+                hintId={autographHintId}
+                showBlockedHint={autographBlockedPressed}
+              />
             ) : postStep === "titles" ? (
               /*
                 NEO-335 Phase 2 — the "Card titles" step: the NEW cards that
                 would be born with a title the walker flags, recomputed from
                 the team answers. Never blocks the save.
               */
-              previewCards && titleContext ? (
+              previewCards && titleContextForSitting ? (
                 <CardTitlesStep
                   cards={previewCards}
-                  titleContext={titleContext}
+                  titleContext={titleContextForSitting}
                   teamAnswers={teamAnswersSeen}
                   names={titleNames}
                   existingIndexes={existingCardIndexes}
@@ -5271,6 +5401,7 @@ export default function EntityReviewWizard({
             {!expired &&
               decidedRows.length > 0 &&
               postStep !== "teams" &&
+              postStep !== "autograph" &&
               postStep !== "titles" && (
               <details
                 open={decidedListExpanded}
@@ -5482,7 +5613,9 @@ export default function EntityReviewWizard({
                   >
                     Cancel (Esc)
                   </NeonButton>
-                  {(postStep === "teams" || postStep === "titles") && (
+                  {(postStep === "teams" ||
+                    postStep === "autograph" ||
+                    postStep === "titles") && (
                     <NeonButton
                       ref={nextStepButtonRef}
                       // A unique marker class for the XPath re-find, for the
@@ -5492,13 +5625,22 @@ export default function EntityReviewWizard({
                       aria-describedby={
                         postStep === "teams"
                           ? teamsIntroId
-                          : postStep === "titles"
-                            ? titlesLeadId
-                            : undefined
+                          : postStep === "autograph"
+                            ? `${autographLeadId} ${autographHintId}`
+                            : postStep === "titles"
+                              ? titlesLeadId
+                              : undefined
                       }
-                      aria-disabled={saving || undefined}
+                      // NEO-345 — the autograph answer is required: Next is
+                      // held (focusable, never native `disabled`) until a
+                      // choice is made. A press on it says why, in the step's
+                      // status line, which also describes this button.
+                      aria-disabled={nextBlocked || undefined}
                       onClick={() => {
-                        if (saving) return;
+                        if (nextBlocked) {
+                          pressBlockedNext();
+                          return;
+                        }
                         goToNextStep();
                       }}
                       /*
@@ -5511,7 +5653,11 @@ export default function EntityReviewWizard({
                       onKeyDown={(e) => {
                         if (e.key !== "Enter") return;
                         e.preventDefault();
-                        if (e.repeat || saving) return;
+                        if (e.repeat) return;
+                        if (nextBlocked) {
+                          pressBlockedNext();
+                          return;
+                        }
                         goToNextStep();
                       }}
                     >

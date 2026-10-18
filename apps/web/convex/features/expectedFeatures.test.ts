@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "vitest";
 import { EXPECTED_FEATURES } from "./expectedFeatures";
-import { LEAGUE_OPTIONS, ERA_BUCKET_OPTIONS } from "./deriveCardFeatures";
+import { AUTOGRAPH_FORMATS, LEAGUE_OPTIONS, ERA_BUCKET_OPTIONS } from "./deriveCardFeatures";
 
 function feature(key: string) {
   const f = EXPECTED_FEATURES.find((f) => f.key === key);
@@ -25,6 +25,16 @@ describe("EXPECTED_FEATURES typed entries", () => {
     const era = feature("era");
     expect(era.inputType).toBe("select");
     expect(era.options).toBe(ERA_BUCKET_OPTIONS);
+  });
+
+  test("NEO-345: autographFormat is a node-only select sourced from AUTOGRAPH_FORMATS", () => {
+    const f = feature("autographFormat");
+    expect(f.inputType).toBe("select");
+    expect(f.options).toBe(AUTOGRAPH_FORMATS);
+    expect(f.hiddenAtLevels).toEqual(["card"]);
+    // The formats are exactly the non-"None" options of autographed, so the
+    // cascade can only ever write a value the card's own control offers.
+    expect(feature("autographed").options!.slice(1)).toEqual([...AUTOGRAPH_FORMATS]);
   });
 
   test("isRookie is a boolean bound to cardChecklist.isRookie, hidden at set level", () => {

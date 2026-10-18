@@ -60,7 +60,10 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import {
+  deriveOwnLevelFeatures,
+  inheritableFeatures,
+} from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { allocateSlots, initialSlots, slotIds } from "./platformSlots";
 import { deleteEmptySelectorOptionRow } from "./selectorOptions";
@@ -957,7 +960,9 @@ async function insertChildRow(
   const { level, value, parent, links, data, adminUserId, now } = args;
   const flags = derivedVariantFlags(level, parent);
   const features = {
-    ...(parent.features ?? {}),
+    // NEO-345: never the parent's node-only keys (autographFormat); the
+    // source's own answer, in `data`, comes with its cards.
+    ...inheritableFeatures(parent.features),
     ...(data?.features ?? {}),
     ...deriveOwnLevelFeatures(level, value, flags),
   };

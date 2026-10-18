@@ -904,6 +904,29 @@ describe("convertSetToParallel — the move", () => {
 // Part C — promoteParallelToSet
 // ───────────────────────────────────────────────────────────────────────────
 
+describe("convertSetToParallel never copies a node-only autographFormat down (NEO-345)", () => {
+  test("a new parallel under an answered Parallel type keeps the type's season and starts unanswered", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await t.run((ctx) =>
+      ctx.db.patch(ids.parallelTypeId, {
+        features: { season: "2026", autographFormat: "On Card" },
+      }),
+    );
+    const sl = await slSets(t, ids.brandId, [{ id: "SL-FUCHSIA", label: "Bowman Fuchsia" }]);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setParallelConversion.convertSetToParallel, {
+        setId: sl["Bowman Fuchsia"].setId,
+        targetParallelTypeId: ids.parallelTypeId,
+      });
+    const row = (await get(t, result.parallelId))!;
+    expect(row.features?.season).toBe("2026");
+    expect(row.features).not.toHaveProperty("autographFormat");
+  });
+});
+
 describe("promoteParallelToSet — guards", () => {
   test("refuses a caller who is not an admin", async () => {
     const t = convexTest(schema, modules);

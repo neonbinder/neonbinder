@@ -28,6 +28,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
+import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
@@ -247,6 +248,9 @@ export default function SetAttributesPanel({
   const setSelectorOptionListingShortName = useMutation(
     api.selectorOptions.setSelectorOptionListingShortName,
   );
+  // NEO-345 — the leaf's autograph format, through its own mutation: a save
+  // also carries the format onto the leaf's AU cards (server-side cascade).
+  const setAutographFormat = useMutation(api.autographFormat.setAutographFormat);
   const setSelectorOptionSetNamePrefix = useMutation(
     api.brandView.setSelectorOptionSetNamePrefix,
   );
@@ -282,6 +286,9 @@ export default function SetAttributesPanel({
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
+      // NEO-345 — rendered as its own row (`AUTOGRAPH_FORMAT_FEATURE`), saved
+      // through `setAutographFormat` so the leaf's AU cards follow it.
+      if (f.key === AUTOGRAPH_FORMAT_FEATURE.key) return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
@@ -464,6 +471,31 @@ export default function SetAttributesPanel({
       await setSelectorOptionListingShortName({
         id: selectorOptionId,
         listingShortName: trimmed,
+      });
+    } catch (e) {
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+    }
+  };
+
+  /**
+   * NEO-345 — the "Autograph format" row's save. `handleSaveFeature`'s shape
+   * (no-op on an unchanged value, optimistic toast, the server's own sentence
+   * on a refusal) through `setAutographFormat`, which also carries the format
+   * onto the leaf's AU cards. `""` clears the leaf's format and touches no
+   * card.
+   */
+  const handleSaveAutographFormat = async (value: string) => {
+    const label = AUTOGRAPH_FORMAT_FEATURE.label;
+    const trimmed = value.trim();
+    const clearing = trimmed.length === 0;
+    const current = features[AUTOGRAPH_FORMAT_FEATURE.key];
+    if (clearing ? current === undefined : current === trimmed) return;
+    if (!clearing && !(AUTOGRAPH_FORMATS as readonly string[]).includes(trimmed)) return;
+    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    try {
+      await setAutographFormat({
+        selectorOptionId,
+        value: trimmed as (typeof AUTOGRAPH_FORMATS)[number] | "",
       });
     } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
@@ -843,6 +875,14 @@ export default function SetAttributesPanel({
                 onSave={handleSaveListingShortName}
               />
             )}
+            {/* NEO-345: at the levels cards hang from — how this leaf's
+                autographs are signed. Its AU cards take it. */}
+            {showCardPrefixRow && (
+              <AutographFormatRow
+                value={features[AUTOGRAPH_FORMAT_FEATURE.key]}
+                onSave={handleSaveAutographFormat}
+              />
+            )}
             {otherFeatures.map((feat) => (
               <SetFeatureRow
                 key={feat.key}
@@ -1189,6 +1229,90 @@ function SlViaAllBrandsToggle({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * NEO-345 — how a leaf's autographs are signed: NB data the operator
+ * supplies (no marketplace says), stored as the leaf's
+ * `features.autographFormat` and inherited by every card on the leaf that
+ * carries "AU". A select with "No value" to clear. The input is
+ * `Value for Autograph format`.
+ */
+const AUTOGRAPH_FORMAT_FEATURE: ExpectedFeature = {
+  key: "autographFormat",
+  label: "Autograph format",
+  inputType: "select",
+  options: AUTOGRAPH_FORMATS,
+  hint: "How this part's autographs are signed. Its autographed cards take it.",
+};
+
+/**
+ * NEO-345 — the Autograph format row: `SetFeatureRow`'s select chrome
+ * (wrapper `Set feature Autograph format`, select `Value for Autograph
+ * format`, the hint as its description), but each option SAYS the same words
+ * the wizard's tiles and the checklist prompt say (`AUTOGRAPH_CHOICE_LABEL`)
+ * while its value stays the stored one. `FeatureValueControl`'s select can
+ * only show the stored value, hence a row of its own.
+ *
+ * Never native `disabled` while saving (focus would drop to the page);
+ * `aria-busy` instead, and the save handler toasts the outcome.
+ */
+function AutographFormatRow({
+  value,
+  onSave,
+}: {
+  value: string | undefined;
+  onSave: (value: string) => Promise<unknown>;
+}) {
+  const label = AUTOGRAPH_FORMAT_FEATURE.label;
+  const fieldClass = useFieldTestClass();
+  const hintId = useId();
+  const [busy, setBusy] = useState(false);
+  const selected = (AUTOGRAPH_FORMATS as readonly string[]).includes(value ?? "") ? value! : "";
+  const handleChange = async (next: string) => {
+    if (next === selected || busy) return;
+    setBusy(true);
+    try {
+      await onSave(next);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <label
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      aria-label={`Set feature ${label}`}
+    >
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+        <span
+          title={AUTOGRAPH_FORMAT_FEATURE.hint}
+          className="cursor-help underline decoration-dotted decoration-gray-500"
+        >
+          {label}
+        </span>
+      </span>
+      <span id={hintId} className="sr-only">
+        {AUTOGRAPH_FORMAT_FEATURE.hint}
+      </span>
+      <select
+        value={selected}
+        data-feat-key={AUTOGRAPH_FORMAT_FEATURE.key}
+        aria-label={`Value for ${label}`}
+        aria-describedby={hintId}
+        aria-busy={busy || undefined}
+        onChange={(e) => void handleChange(e.target.value)}
+        className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+      >
+        {/* The house "No value" (NEO-217): selectable, and it clears. */}
+        <option value="">No value</option>
+        {AUTOGRAPH_FORMATS.map((format) => (
+          <option key={format} value={format}>
+            {AUTOGRAPH_CHOICE_LABEL[format]}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

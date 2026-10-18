@@ -102,6 +102,10 @@ vi.mock("../../convex/_generated/api", () => ({
       suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
     },
+    // NEO-345: the header's "how are these autographs signed?" prompt.
+    autographFormat: {
+      setAutographFormat: "autographFormat.setAutographFormat",
+    },
     // NEO-212: SkippedNamesPanel, mounted unconditionally under the sync
     // notice. It renders nothing unless the set has skips, but the references
     // still have to resolve — hence these entries even for the many tests
@@ -179,7 +183,13 @@ vi.mock("./EntityReviewWizard", () => ({
     existingCardIndexes,
     onTitleAnswersChange,
     onListingShortNameChange,
+    hasAutographFormat,
+    onAutographFormatChange,
   }: {
+    // NEO-345 — the autograph step, reduced to the parent's half: whether the
+    // leaf already has a format, and the answer channel.
+    hasAutographFormat?: boolean;
+    onAutographFormatChange?: (value: "On Card" | "Sticker/Label" | undefined) => void;
     // NEO-335 Phase 2 — the titles step, reduced to the parent's half: the
     // context and positions it hands down, and the commit-field channel.
     titleContext?: unknown;
@@ -283,6 +293,17 @@ vi.mock("./EntityReviewWizard", () => ({
           Report no short name
         </button>
       )}
+      <p>{`Leaf has autograph format: ${hasAutographFormat ? "yes" : "no"}`}</p>
+      {onAutographFormatChange && (
+        <button type="button" onClick={() => onAutographFormatChange("Sticker/Label")}>
+          Report autographs on stickers
+        </button>
+      )}
+      {onAutographFormatChange && (
+        <button type="button" onClick={() => onAutographFormatChange(undefined)}>
+          Report no autograph answer
+        </button>
+      )}
       <button type="button" onClick={onConfirm}>
         Confirm entity review
       </button>
@@ -324,6 +345,8 @@ const mockFindOrCreateTeam = vi.fn();
 // NEO-221 — the attention walker's UnreviewedNameFixer.
 const mockUpdateCard = vi.fn();
 const mockFindOrCreatePlayer = vi.fn();
+// NEO-345 — the header prompt's write.
+const mockSetAutographFormat = vi.fn();
 
 // Mutable holders read lazily by the mocked hooks at call time — same shape
 // as EntityColumn.ensure-sync.test.tsx's `state`.
@@ -405,6 +428,7 @@ vi.mock("convex/react", () => ({
     if (ref === "teams.findOrCreate") return mockFindOrCreateTeam;
     if (ref === "players.findOrCreate") return mockFindOrCreatePlayer;
     if (ref === "selectorOptions.updateCard") return mockUpdateCard;
+    if (ref === "autographFormat.setAutographFormat") return mockSetAutographFormat;
     return vi.fn();
   },
   useAction: (ref: string) => {
@@ -1512,6 +1536,91 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         screen.getByLabelText("Sync card checklist"),
       ),
     );
+  });
+
+  /**
+   * NEO-345 — a new card carrying "AU" on a leaf that has not said how its
+   * autographs are signed is a question for the wizard, even with every name
+   * known and every card teamed; the answer rides on the commit as the
+   * batch-level `autographFormat`.
+   */
+  describe("NEO-345: autographs on a leaf with no format", () => {
+    const autoBatch = {
+      ...arrivedBatch,
+      cards: slCandidates.map((card, i) => (i === 0 ? { ...card, attributes: ["AU"] } : card)),
+    };
+
+    async function syncAutos(rerender: Parameters<typeof streamCandidates>[0]) {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, autoBatch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+        });
+      });
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    }
+
+    it("opens the wizard instead of committing, telling it the leaf has no format", async () => {
+      const { rerender } = renderChecklist();
+      await syncAutos(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      expect(screen.getByText("Leaf has autograph format: no")).toBeTruthy();
+    });
+
+    it("the answer rides on the commit as the batch-level arg, never on a card", async () => {
+      const { rerender } = renderChecklist();
+      await syncAutos(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report autographs on stickers"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.autographFormat).toBe("Sticker/Label");
+      for (const card of args.cards) expect(card).not.toHaveProperty("autographFormat");
+    });
+
+    it("an answer withdrawn (or never given) sends no such arg", async () => {
+      const { rerender } = renderChecklist();
+      await syncAutos(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report autographs on stickers"));
+      fireEvent.click(screen.getByText("Report no autograph answer"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("autographFormat");
+    });
+
+    it("a leaf that already says how it is signed commits straight away", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncAutos(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("autographFormat");
+    });
+
+    it("an AU card that re-syncs a stored row is not asked about here", async () => {
+      state.cards = [settledCard({ _id: "row-1", cardNumber: "1", attributes: ["AU"] })];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncAutos(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    });
   });
 
   /**
@@ -5908,6 +6017,108 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
  * every row `ready`: the fence alone passes a retried lookup that lands after
  * the action returned.
  */
+/**
+ * NEO-345 — a stored leaf whose AU cards are still "None": one line in the
+ * header asks how its autographs are signed, and each answer writes the
+ * leaf's format through `setAutographFormat`.
+ */
+describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
+  const PROMPT = /autographed cards? — on card or sticker\?/;
+  const auto = (overrides: Record<string, unknown> = {}) =>
+    settledCard({ attributes: ["AU"], features: { autographed: "None" }, ...overrides });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [];
+    state.liveCandidates = null;
+    state.skippedNames = [];
+    mockSetAutographFormat.mockResolvedValue(null);
+  });
+
+  it("counts the AU cards still marked not autographed", () => {
+    state.cards = [
+      auto({ _id: "a" }),
+      auto({ _id: "b", features: undefined }),
+      // Already formatted: not counted.
+      auto({ _id: "c", features: { autographed: "On Card" } }),
+      // Not an autograph at all.
+      settledCard({ _id: "d", attributes: ["RC"] }),
+    ];
+    renderChecklist();
+    expect(screen.getByText(PROMPT).textContent).toMatch(/^2 /);
+  });
+
+  it("is absent when the leaf already has a format", () => {
+    state.cards = [auto()];
+    state.variantRow = { value: "Test Set", features: { autographFormat: "Sticker/Label" } };
+    renderChecklist();
+    expect(screen.queryByText(PROMPT)).toBeNull();
+  });
+
+  it("is absent with no AU card waiting", () => {
+    state.cards = [settledCard({ attributes: ["RC"] })];
+    renderChecklist();
+    expect(screen.queryByText(PROMPT)).toBeNull();
+  });
+
+  it("is absent until the leaf row has loaded", () => {
+    state.cards = [auto()];
+    state.variantRow = undefined;
+    renderChecklist();
+    expect(screen.queryByText(PROMPT)).toBeNull();
+  });
+
+  it("writes the leaf's format, then says so in its own slot", async () => {
+    state.cards = [auto()];
+    const { rerender } = renderChecklist();
+    const group = screen.getByRole("group", { name: PROMPT });
+    await act(async () => {
+      fireEvent.click(within(group).getByRole("button", { name: "On card" }));
+    });
+    expect(mockSetAutographFormat).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+      value: "On Card",
+    });
+    // The write lands: the leaf now has a format, and the line's condition is gone.
+    state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />,
+      );
+    });
+    expect(screen.queryByText(PROMPT)).toBeNull();
+    const saved = screen.getAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
+    expect(saved).toBeTruthy();
+    expect(document.activeElement).toBe(saved);
+  });
+  it("the saved line is for this sitting only: another leaf drops it, and coming back does not bring it back", async () => {
+    state.cards = [auto()];
+    const view = (variantId: typeof VARIANT_ID) => (
+      <CardChecklist variantId={variantId} sourceChips={{}} sourceLabelMaps={{ bsc: {}, sportlots: {} }} />
+    );
+    const { rerender } = render(view(VARIANT_ID));
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByRole("group", { name: PROMPT })).getByRole("button", { name: "On card" }),
+      );
+    });
+    state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+    await act(async () => rerender(view(VARIANT_ID)));
+    const savedLine = () =>
+      screen.queryAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
+    expect(savedLine()).toBeTruthy();
+    await act(async () => rerender(view(OTHER_VARIANT_ID)));
+    await act(async () => rerender(view(VARIANT_ID)));
+    expect(savedLine()).toBeUndefined();
+  });
+});
+
 describe("CardChecklist — stream readiness helpers", () => {
   const live = (over: Partial<{ batchId: string; total: number; ready: number }> = {}) => ({
     batchId: "b-new",

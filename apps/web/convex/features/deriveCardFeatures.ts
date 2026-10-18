@@ -61,11 +61,102 @@ export type SetLevelFeatureInputs = {
 export type CardObservedInputs = {
   isRookie?: boolean;
   isRelic?: boolean;
+  /**
+   * NEO-345: IGNORED. A marketplace's autograph wording (BSC's, or SportLots'
+   * literal "Unknown") is never a source of the autograph FORMAT — Jason:
+   * "the marketplaces don't tell us which it is". Kept on the type only so
+   * callers that still pass the observed wire value compile; it decides
+   * nothing. The format is NB data on the leaf (`autographFormat` below).
+   */
   autographType?: string;
+  /**
+   * NEO-345: the LEAF's `features.autographFormat` — the operator's answer,
+   * once per synced insert/parallel/base node, to "how are these signed?".
+   * A card carrying the AU token is born `autographed` with it; a card
+   * without AU never is. Anything outside `AUTOGRAPH_FORMATS` is ignored.
+   */
+  autographFormat?: string;
   cardVariation?: string;
   /** Fallback when typed booleans are absent (e.g. legacy custom cards). */
   attributes?: ReadonlyArray<string>;
 };
+
+/**
+ * NEO-345: the closed vocabulary of an autograph's FORMAT — the non-"None"
+ * values of the `autographed` feature, and the only values a leaf's
+ * `autographFormat` may hold.
+ */
+export const AUTOGRAPH_FORMATS = ["On Card", "Sticker/Label"] as const;
+export type AutographFormat = (typeof AUTOGRAPH_FORMATS)[number];
+
+/**
+ * NEO-345: the selector levels an autograph format may be stored on — the
+ * leaves cards are committed under (a base variant type, an insert, a
+ * parallel). A format on a set or a brand would answer for cards it never
+ * cascades to.
+ */
+export const AUTOGRAPH_FORMAT_LEVELS: ReadonlySet<string> = new Set([
+  "variantType",
+  "insert",
+  "parallel",
+]);
+
+/**
+ * NEO-345: feature keys that belong to ONE node and are never copied down —
+ * not to a child node at its creation, and not onto a card. Jason chose to
+ * ask for the autograph format per synced part (each insert, each parallel),
+ * never per set, so a parallel minted under an answered insert starts
+ * unanswered and is asked for its own.
+ */
+export const NODE_ONLY_FEATURE_KEYS: ReadonlySet<string> = new Set([
+  "autographFormat",
+]);
+
+/**
+ * A parent's `features` as a new child (node or card) inherits them: every
+ * key except `NODE_ONLY_FEATURE_KEYS`. Every creation-time copy-down spreads
+ * this instead of the parent's raw map. A fresh object; never the input.
+ */
+export function inheritableFeatures(
+  features: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = { ...(features ?? {}) };
+  for (const key of NODE_ONLY_FEATURE_KEYS) delete out[key];
+  return out;
+}
+
+export function isAutographFormat(value: unknown): value is AutographFormat {
+  return (
+    typeof value === "string" &&
+    (AUTOGRAPH_FORMATS as ReadonlyArray<string>).includes(value)
+  );
+}
+
+/**
+ * NEO-345: does this card carry the AU (autograph) attribute token? The token
+ * is NB's own attribute vocabulary (`cardChecklist.attributes`), case-folded
+ * so a stored "au" from an older parse still counts.
+ */
+export function carriesAutographToken(
+  attributes: ReadonlyArray<string> | undefined,
+): boolean {
+  return (attributes ?? []).some((a) => a.trim().toUpperCase() === "AU");
+}
+
+/**
+ * NEO-345: the `autographed` value a card is born with, or undefined when the
+ * card says nothing: the leaf's format when the card carries AU and the
+ * format is a real one. AU without a format says nothing here, so the card
+ * keeps what it inherited (the set-level default "None") until an operator
+ * answers for its leaf.
+ */
+export function autographedFromFormat(
+  attributes: ReadonlyArray<string> | undefined,
+  autographFormat: string | undefined,
+): AutographFormat | undefined {
+  if (!carriesAutographToken(attributes)) return undefined;
+  return isAutographFormat(autographFormat) ? autographFormat : undefined;
+}
 
 /**
  * Map a 4-digit year to eBay's standard "Era" item-specific bucket.
@@ -140,8 +231,9 @@ export function deriveSetLevelFeatures(
   // operator can flip it per-set/per-card.
   f.isReprint = "false";
 
-  // Autographed — default "None"; most cards are not autographed, and an
-  // operator (or a future marketplace signal) can flip it per-set/per-card.
+  // Autographed — default "None"; most cards are not autographed. An AU card
+  // takes its leaf's `autographFormat` (NEO-345), and an operator can flip it
+  // per-set/per-card. Never a marketplace's wording.
   f.autographed = "None";
 
   // Card Size / Material / Thickness / Language / Country of Origin —
@@ -234,17 +326,15 @@ export function deriveCardObservedFeatures(
   if (card.isRelic || attrs.includes("RELIC")) f.isRelic = "true";
   if (attrs.includes("SSP")) f.shortPrint = "SSP";
   else if (attrs.includes("SP")) f.shortPrint = "SP";
-  if (card.autographType && card.autographType.trim()) {
-    // Map the marketplace-observed autograph type to the `autographed`
-    // select's closed vocabulary (None/On Card/Sticker/Label) — this used to
-    // set `signedBy` directly to the raw autographType string ("On-Card"),
-    // which is the auto FORMAT, not a signer's name. `signedBy` is now
-    // populated separately from the card's actual playerIds, matching the
-    // same "autographed just became non-None -> default signedBy from the
-    // roster" rule the setCardFeature mutation applies for manual edits.
-    const t = card.autographType.trim().toLowerCase();
-    f.autographed = t.includes("sticker") ? "Sticker/Label" : "On Card";
-  }
+  // NEO-345: an autograph's FORMAT is NB data, never a marketplace's guess.
+  // The card's AU token says it IS signed; the leaf's `autographFormat` (the
+  // operator's answer) says how. `card.autographType` is deliberately not
+  // read: SportLots only ever says "Unknown", and that used to be turned into
+  // "On Card" — a guess presented as a fact. `signedBy` is seeded by the
+  // writer (cardRowCreate / applyBscAttributeFill) from the card's players,
+  // the same "just became non-None" rule `setCardFeature` applies.
+  const autographed = autographedFromFormat(attrs, card.autographFormat);
+  if (autographed) f.autographed = autographed;
   if (card.cardVariation && card.cardVariation.trim()) {
     f.parallelName = card.cardVariation.trim();
   }
@@ -288,5 +378,12 @@ export function validateFeatureValue(key: string, value: string): void {
   }
   if (key === "totalCardCount" && value !== "" && !/^\d+$/.test(value)) {
     throw new Error(`Invalid totalCardCount value: ${value}`);
+  }
+  // NEO-345: a leaf's autograph format is a closed vocabulary — the cascade
+  // writes it into `features.autographed`, whose own options are exactly
+  // these plus "None". (A clear, "", never reaches this guard; see
+  // `applyFeatureEdit` in selectorOptions.ts.)
+  if (key === "autographFormat" && !isAutographFormat(value)) {
+    throw new Error(`Invalid autographFormat value: ${value}`);
   }
 }
