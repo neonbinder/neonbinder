@@ -326,13 +326,19 @@ export function AutographFormatPrompt({
       aria-labelledby="autograph-format-prompt"
       className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-[#00D558]/60 px-3 py-2"
     >
-      <span className="text-[#00D558]">
-        <SignatureGlyph format="On Card" />
-      </span>
-      <p id="autograph-format-prompt" className="min-w-0 flex-1 text-sm text-gray-200">
-        {autographPromptLine(count)}
-      </p>
-      <div className="flex gap-2">
+      {/* Glyph and line wrap as ONE item with a 16rem basis, the way the
+          ReauthNotice / PausedNotice banners hold their text: on a phone the
+          pair takes the whole row and the buttons drop beneath it, rather
+          than the buttons squeezing the line until words break mid-word. */}
+      <div className="flex min-w-0 flex-1 basis-64 items-center gap-3">
+        <span className="shrink-0 text-[#00D558]">
+          <SignatureGlyph format="On Card" />
+        </span>
+        <p id="autograph-format-prompt" className="min-w-0 flex-1 text-sm text-gray-200">
+          {autographPromptLine(count)}
+        </p>
+      </div>
+      <div className="flex shrink-0 gap-2">
         {AUTOGRAPH_FORMATS.map((format) => (
           <NeonButton
             key={format}
