@@ -116,6 +116,42 @@
     }
   ],
   "attention": {
-    "measured": false
+    "measured": true,
+    "totals": {
+      "cards": 21,
+      "byKind": {
+        "aspectValueOverLimit": 0,
+        "missingTeam": 0,
+        "titleOverLimit": 0,
+        "titleTruncated": 21,
+        "unreviewedName": 0
+      },
+      "namesToCheck": 14
+    },
+    "fix": {
+      "cards": [
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Super Futures Autographs"
+          },
+          "cardNumber": "SFA-CES",
+          "answer": {
+            "title": "2024 Topps Chrome Black Super Futures Autographs #SFA-CES Auto"
+          }
+        }
+      ],
+      "names": [
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Ivory Autographs"
+          },
+          "side": "sportlots",
+          "action": "decline",
+          "label": "Chrome Black Ivory Autos"
+        }
+      ]
+    }
   }
 }
