@@ -787,7 +787,7 @@ describe("applyAutographAnswers", () => {
     expect(r).toMatchObject({
       outcome: "applied",
       detail: "Autographs saved as sticker. 1 card on Inserts › Future Stars now marked sticker. Its parallel takes the same answer.",
-      parallels: { count: 1 },
+      parallels: { count: 1, rowIds: [GOLD] },
     });
     expect(r.warning).toBeUndefined();
     expect(store.leafFeatures?.[GOLD]?.autographFormat).toBe("Sticker/Label");
@@ -809,7 +809,7 @@ describe("applyAutographAnswers", () => {
       },
     });
     expect(r.outcome).toBe("applied");
-    expect(r.parallels).toEqual({ count: 1, stillUnformatted: 2 });
+    expect(r.parallels).toEqual({ count: 1, rowIds: [GOLD], stillUnformatted: 2 });
     expect(r.warning).toBe(
       "1 autographed card on Inserts › Future Stars still show no format after 2s; the server is still marking them. List attention again shortly. 2 autographed cards on its parallel still show no format; the server is still marking them. List attention again shortly.",
     );

@@ -412,8 +412,11 @@ checks the merge four ways:
   Ivory Autographs is answered through `nb_fix` instead, so the live write is
   proven too: it and its two parallels (built while it was unanswered, so
   they ask on their own) are the 3 `autographRows` the first listing shows;
-  `nb_fix` answers all three, the second listing shows none, and the same
-  read-back checks each.
+  `nb_fix` answers Ivory alone, and the answer reaches both parallels (Jason,
+  2026-10-18), so the second listing shows none (`afterAutographRows: 0`
+  pins it). The after-check counts the parallels `nb_fix` reports reached
+  (`results[].parallels.rowIds`) as gone, and the same read-back checks all
+  three rows.
 The job summary shows all three: the leave counts drafted vs committed per
 type with the moot count, and the review answers drafted vs committed with
 the committed-only count. Then it runs `nb_plan`,
@@ -557,11 +560,14 @@ over the exact answers:
   cards are all marked, is `moot`: change a format in Set details. At most 50
   per call. An insert's or the Base's answer also lands on each of its
   parallels with no format of its own (one holding a format keeps it), and
-  the wait covers their cards too; the result's `parallels` counts them. The
+  the wait covers their cards too; the result's `parallels` counts them and
+  names their row ids. When the answer CHANGES, a parallel still holding the
+  previous answer moves with it, as the cards do. The
   answers are written deepest row first, so a parallel answered in the same
   call keeps its own answer. A card the format reaches has its listing title
   rebuilt (it gains "AUTO") only while the title is still exactly the
-  generated one; a title someone wrote or edited is left alone.
+  generated one, and its listing description likewise; text someone wrote or
+  edited is left alone.
 - **Research, then ask.** The tool never guesses an answer. An agent driving
   it looks up what a source can settle (an autograph row's format, a card's
   missing team, a variation that must be shortened) on the manufacturer's

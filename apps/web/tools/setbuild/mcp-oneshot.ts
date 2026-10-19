@@ -153,6 +153,12 @@ export const oneshotExpectSchema = z
               .strict(),
             /** The answers nb_fix gives (nb_fix's own shape); each must apply, and its item must be gone after. */
             fix: FixAnswersSchema,
+            /**
+             * Jason, 2026-10-18 — rows still asking "on card or sticker?" in the
+             * listing after nb_fix. Pins the reach live: answering an insert
+             * alone must also clear its listed parallels. Compared when given.
+             */
+            afterAutographRows: z.number().int().min(0).optional(),
           })
           .strict(),
       ]),
@@ -400,6 +406,33 @@ export function autographsAnswered(
       ? a.row.name === undefined && a.row.parallel === undefined
       : a.row.type === answer.row!.type && a.row.name === answer.row!.name && a.row.parallel === answer.row!.parallel,
   );
+}
+
+/**
+ * Jason, 2026-10-18 — the listed autograph rows `nb_fix`'s answers reached
+ * (`results[].parallels.rowIds` of applied answers), each with the format of
+ * the answer that reached it. A reached row the listing did not show (no AU
+ * card waiting) is not one the after-check counts. Pure.
+ */
+export function reachedAutographRows(
+  report: Pick<FixReport, "results">,
+  listing: readonly AutographAttentionItem[],
+): Map<string, { row: AutographAttentionItem["row"]; label: string; format: string }> {
+  const listed = new Map(listing.map((a) => [a.rowId, a]));
+  const out = new Map<string, { row: AutographAttentionItem["row"]; label: string; format: string }>();
+  for (const r of report.results) {
+    if (r.outcome !== "applied" || !("parallels" in r) || !r.parallels) continue;
+    for (const rowId of r.parallels.rowIds ?? []) {
+      const item = listed.get(rowId);
+      if (item && !out.has(rowId)) out.set(rowId, { row: item.row, label: item.rowLabel, format: r.format });
+    }
+  }
+  return out;
+}
+
+/** A listed row's ref as the read-back reader takes it (Base: no row). */
+function readBackRefOf(row: AutographAttentionItem["row"]): { type?: string; name?: string; parallel?: string } | undefined {
+  return row.name === undefined && row.parallel === undefined ? undefined : row;
 }
 
 /** One row as the read-back sees it: its stored format, and its own AU cards. */
@@ -728,12 +761,21 @@ async function attentionSequence(
   });
   if (!listed || !before || expect.measured !== true) return;
   const fix = expect.fix;
+  const afterAutographRows = expect.afterAutographRows;
 
   // What each answer addresses, before: it must be listed, once.
   const goneCards = new Set<string>();
   const goneNames = new Set<string>();
   /** NEO-345: the autograph rows the fix answers, by NB row id. */
   const goneAutographs = new Set<string>();
+  /**
+   * Jason, 2026-10-18 — listed autograph rows an answer REACHED: parallels of
+   * an answered insert (or the Base) that had no format of their own, which
+   * the server answered with it (`nb_fix`'s `results[].parallels.rowIds`).
+   * They leave the listing too, and the read-back checks each one, with the
+   * answer that reached it.
+   */
+  const reachedAutographs = new Map<string, { row: AutographAttentionItem["row"]; label: string; format: string }>();
   const addressed = await attempt("nb_fix answers", async () => {
     const problems: string[] = [];
     (fix.autographs ?? []).forEach((a, i) => {
@@ -768,11 +810,15 @@ async function attentionSequence(
     if (!expected) return record(false, "nb_fix", "a call without confirm did not return the phrase");
     const report = await call<FixReport>(client, "nb_fix", { ...args, confirm: expected }, APPLY_TIMEOUT_MS);
     const notApplied = report.results.filter((r) => r.outcome !== "applied");
+    for (const [rowId, reached] of reachedAutographRows(report, before!.autographs ?? [])) {
+      if (!goneAutographs.has(rowId)) reachedAutographs.set(rowId, reached);
+    }
+    const reachedNote = reachedAutographs.size > 0 ? ` (${reachedAutographs.size} listed parallel row(s) reached)` : "";
     return record(
       notApplied.length === 0,
       "nb_fix",
       notApplied.length === 0
-        ? `${report.results.length} answers applied; ${report.summary}`
+        ? `${report.results.length} answers applied${reachedNote}; ${report.summary}`
         : notApplied.map((r) => `${r.at} ${r.outcome}: ${r.detail}`).join("; "),
     );
   });
@@ -786,23 +832,26 @@ async function attentionSequence(
     const beforeCards = new Set(before!.cards.map((c) => c.cardId));
     const beforeNames = new Set(before!.names.flatMap((n) => n.sides.map((x) => `${n.rowId}:${x.side}`)));
     const appeared = after.cards.filter((c) => !beforeCards.has(c.cardId)).length + [...nameKeys].filter((k) => !beforeNames.has(k)).length;
-    // NEO-345: the answered autograph rows are gone, and none appeared.
+    // NEO-345: the answered autograph rows, and the listed parallels the
+    // answers reached, are gone, and none appeared.
     const afterRows = new Set((after.autographs ?? []).map((a) => a.rowId));
     const beforeRows = new Set((before!.autographs ?? []).map((a) => a.rowId));
-    const autographsLeft = [...goneAutographs].filter((id) => afterRows.has(id)).length;
+    const gone = new Set([...goneAutographs, ...reachedAutographs.keys()]);
+    const autographsLeft = [...gone].filter((id) => afterRows.has(id)).length;
     const autographsNew = [...afterRows].filter((id) => !beforeRows.has(id)).length;
     const ok =
       stillThere + autographsLeft === 0 &&
       appeared + autographsNew === 0 &&
       after.totals.cards === before!.totals.cards - goneCards.size &&
       after.totals.namesToCheck === before!.totals.namesToCheck - goneNames.size &&
-      after.totals.autographRows === before!.totals.autographRows - goneAutographs.size;
+      after.totals.autographRows === before!.totals.autographRows - gone.size &&
+      (afterAutographRows === undefined || after.totals.autographRows === afterAutographRows);
     return record(
       ok,
       "nb_attention after nb_fix",
       ok
         ? after.summary
-        : `${stillThere + autographsLeft} answered item(s) still listed, ${appeared + autographsNew} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}, autograph rows ${before!.totals.autographRows} → ${after.totals.autographRows}`,
+        : `${stillThere + autographsLeft} answered item(s) still listed, ${appeared + autographsNew} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}, autograph rows ${before!.totals.autographRows} → ${after.totals.autographRows}${afterAutographRows === undefined ? "" : ` (expected ${afterAutographRows} after)`}`,
     );
   });
 
@@ -816,10 +865,16 @@ async function attentionSequence(
       const p = autographReadBackProblem(label, a.format, await readAutographRow(a.row));
       if (p) problems.push(p);
     }
+    // The parallels an answer reached hold that answer, and their AU cards took it.
+    for (const reached of reachedAutographs.values()) {
+      const p = autographReadBackProblem(reached.label, reached.format, await readAutographRow(readBackRefOf(reached.row)));
+      if (p) problems.push(p);
+    }
+    const rows = fix.autographs!.length + reachedAutographs.size;
     return record(
       problems.length === 0,
       "autograph read-back (nb_fix)",
-      problems.length === 0 ? `${fix.autographs!.length} row(s) hold their format, every AU card marked` : problems.join("; "),
+      problems.length === 0 ? `${rows} row(s) hold their format, every AU card marked` : problems.join("; "),
     );
   });
 }

@@ -112,7 +112,8 @@ export const AUTOGRAPH_FORMAT_LEVELS: ReadonlySet<string> = new Set([
  * Base is also written onto each of its PARALLELS whose own format is unset,
  * when it is given (`autographFormat.adoptAutographFormatOnParallels`) and
  * when a parallel is built later (`parallelChecklistBuild
- * .insertParallelCardsPage`). A parallel holding a format keeps it.
+ * .insertParallelCardsPage`). A changed answer moves a parallel still
+ * holding the previous one; a parallel holding any other format keeps it.
  */
 export const NODE_ONLY_FEATURE_KEYS: ReadonlySet<string> = new Set([
   "autographFormat",

@@ -17,6 +17,7 @@ import { registerTools } from "./mcp-tools";
 import {
   autographReadBackProblem,
   autographsAnswered,
+  reachedAutographRows,
   compareDraft,
   differingPaths,
   NOT_MEASURED,
@@ -111,7 +112,23 @@ const EXPECT: OneshotExpect = oneshotExpectSchema.parse({ ...BASE_EXPECT, attent
 const SUMMARY = { cards: 0, byKind: {}, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, autographRows: 0, summary: "All clear — nothing on this checklist needs attention." };
 
 /** A built set with one missing-team card and one name to check, then (after nb_fix) neither. */
-function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refused"; autographRows?: number; ivory?: boolean } = {}) {
+function attentionWorld(
+  o: {
+    awaiting?: number[];
+    fixOutcome?: "applied" | "refused";
+    autographRows?: number;
+    ivory?: boolean;
+    /** Ivory's two parallels are listed too; `reach` (default true) says the server's answer reached them. */
+    ivoryParallels?: { reach?: boolean };
+  } = {},
+) {
+  const IVORY_PARALLELS = o.ivoryParallels
+    ? [
+        { row: { type: "Insert", name: "Ivory Autographs", parallel: "Red Trim" }, rowId: "ivory-red", rowLabel: "Insert › Ivory Autographs › Red Trim", cards: 17 },
+        { row: { type: "Insert", name: "Ivory Autographs", parallel: "Gold Trim" }, rowId: "ivory-gold", rowLabel: "Insert › Ivory Autographs › Gold Trim", cards: 17 },
+      ]
+    : [];
+  const reach = o.ivoryParallels?.reach !== false;
   let fixed = false;
   const awaiting = [...(o.awaiting ?? [0])];
   const before = () => ({
@@ -122,7 +139,7 @@ function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refu
       awaitingTeamLookup: awaiting.length > 1 ? awaiting.shift()! : awaiting[0],
       namesToCheck: 1,
       slSetsToSort: 0,
-      autographRows: (o.autographRows ?? 0) + (o.ivory ? 1 : 0),
+      autographRows: (o.autographRows ?? 0) + (o.ivory ? 1 : 0) + IVORY_PARALLELS.length,
     },
     summary: "1 card needs you on Topps Chrome Black; 1 name to check.",
     cards: [{ row: { type: "Base" }, rowLabel: "Base", cardNumber: "7", cardName: "Card 7", cardId: "card-7", kinds: ["missingTeam"] }],
@@ -130,24 +147,39 @@ function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refu
     autographs: [
       ...Array.from({ length: o.autographRows ?? 0 }, (_, i) => ({ row: { type: "Insert", name: `Autos ${i}` }, rowId: `autos-${i}`, rowLabel: `Insert › Autos ${i}`, cards: 3 })),
       ...(o.ivory ? [{ row: { type: "Insert", name: "Ivory Autographs" }, rowId: "ivory", rowLabel: "Insert › Ivory Autographs", cards: 17 }] : []),
+      ...IVORY_PARALLELS,
     ],
     notices: [],
   });
   const after = () => ({
     ...before(),
-    totals: { ...before().totals, cards: 0, byKind: {}, namesToCheck: 0, autographRows: o.autographRows ?? 0 },
+    totals: {
+      ...before().totals,
+      cards: 0,
+      byKind: {},
+      namesToCheck: 0,
+      autographRows: (o.autographRows ?? 0) + (reach ? 0 : IVORY_PARALLELS.length),
+    },
     summary: SUMMARY.summary,
     cards: [],
     names: [],
-    autographs: before().autographs.filter((a) => a.rowId !== "ivory"),
+    autographs: before().autographs.filter((a) => a.rowId !== "ivory" && (!reach || !a.rowId.startsWith("ivory-"))),
   });
   return {
     attention: vi.fn(async () => (fixed ? after() : before())),
     fix: vi.fn(async (_p: unknown, a: { cards?: unknown[]; names?: unknown[]; autographs?: unknown[] }) => {
       fixed = o.fixOutcome !== "refused";
-      const n = (a.cards?.length ?? 0) + (a.names?.length ?? 0) + (a.autographs?.length ?? 0);
+      const n = (a.cards?.length ?? 0) + (a.names?.length ?? 0);
+      const autographs = (a.autographs ?? []).map((_x, i) => ({
+        at: `autographs[${i}]`,
+        outcome: o.fixOutcome ?? "applied",
+        detail: "d",
+        format: "On Card",
+        // The server's reach onto Ivory's parallels, as nb_fix reports it.
+        ...(IVORY_PARALLELS.length > 0 && reach ? { parallels: { count: 2, rowIds: IVORY_PARALLELS.map((p) => p.rowId) } } : {}),
+      }));
       return {
-        results: Array.from({ length: n }, (_, i) => ({ at: `x[${i}]`, outcome: o.fixOutcome ?? "applied", detail: "d" })),
+        results: [...Array.from({ length: n }, (_, i) => ({ at: `x[${i}]`, outcome: o.fixOutcome ?? "applied", detail: "d" })), ...autographs],
         summary: SUMMARY.summary,
       };
     }),
@@ -688,6 +720,61 @@ describe("runOneshotSequence — NEO-345 the autograph path, proven live", () =>
     expect(after.ok).toBe(false);
     expect(after.detail).toContain("autograph rows 1 → 1");
     expect(after.detail).toMatch(/^3 answered item\(s\) still listed, 0 new/);
+  });
+
+  // Jason, 2026-10-18 — answering Ivory alone reaches its two listed parallels.
+  const expectReach = (afterAutographRows?: number) =>
+    oneshotExpectSchema.parse({
+      ...BASE_EXPECT,
+      attention: {
+        ...MEASURED,
+        totals: { ...MEASURED.totals, autographRows: 3 },
+        fix: IVORY_FIX,
+        ...(afterAutographRows !== undefined ? { afterAutographRows } : {}),
+      },
+    });
+
+  test("an insert answered alone reaches its listed parallels: 3 rows before, 0 after, and all three read back formatted", async () => {
+    reads.length = 0;
+    const service = fakeService({ spec: drafted, autographFormats: asked, attention: attentionWorld({ ivory: true, ivoryParallels: {} }) });
+    const checks = await go(service, expectReach(0));
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    expect(checks.find((c) => c.label === "nb_fix")?.detail).toMatch(/answers applied \(2 listed parallel row\(s\) reached\)/);
+    expect(checks.at(-1)).toMatchObject({ ok: true, label: "autograph read-back (nb_fix)", detail: "3 row(s) hold their format, every AU card marked" });
+    expect(reads.slice(-3)).toEqual([
+      IVORY,
+      { ...IVORY, parallel: "Red Trim" },
+      { ...IVORY, parallel: "Gold Trim" },
+    ]);
+  });
+
+  test("a server that did not reach the parallels fails the pinned after-count, naming it", async () => {
+    const service = fakeService({ spec: drafted, autographFormats: asked, attention: attentionWorld({ ivory: true, ivoryParallels: { reach: false } }) });
+    const checks = await go(service, expectReach(0));
+    const after = checks.find((c) => c.label === "nb_attention after nb_fix")!;
+    expect(after.ok).toBe(false);
+    expect(after.detail).toContain("autograph rows 3 → 2 (expected 0 after)");
+    // Without the pin the accounting alone holds: the one answered row is gone.
+    const unpinned = await go(
+      fakeService({ spec: drafted, autographFormats: asked, attention: attentionWorld({ ivory: true, ivoryParallels: { reach: false } }) }),
+      expectReach(),
+    );
+    expect(unpinned.find((c) => c.label === "nb_attention after nb_fix")?.ok).toBe(true);
+  });
+
+  test("reachedAutographRows: only applied answers, only rows the listing showed, each with its answer's format", () => {
+    const listing = [
+      { row: { ...IVORY, parallel: "Red Trim" }, rowId: "r", rowLabel: "Insert › Ivory Autographs › Red Trim" },
+    ] as never[];
+    const report = {
+      results: [
+        { at: "autographs[0]", outcome: "applied", format: "Sticker/Label", parallels: { count: 2, rowIds: ["r", "unlisted"] } },
+        { at: "autographs[1]", outcome: "moot", format: "On Card", parallels: { count: 1, rowIds: ["r"] } },
+      ],
+    } as never;
+    expect([...reachedAutographRows(report, listing)]).toEqual([
+      ["r", { row: { ...IVORY, parallel: "Red Trim" }, label: "Insert › Ivory Autographs › Red Trim", format: "Sticker/Label" }],
+    ]);
   });
 
   test("autographsAnswered: Base by an omitted row, a row by type, name and parallel", () => {

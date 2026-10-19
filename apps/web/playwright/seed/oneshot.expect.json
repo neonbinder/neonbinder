@@ -165,24 +165,9 @@
             "name": "Ivory Autographs"
           },
           "format": "On Card"
-        },
-        {
-          "row": {
-            "type": "Insert",
-            "name": "Ivory Autographs",
-            "parallel": "Ivory Autographs Red Trim Refractors"
-          },
-          "format": "On Card"
-        },
-        {
-          "row": {
-            "type": "Insert",
-            "name": "Ivory Autographs",
-            "parallel": "Ivory Autographs Gold Trim Refractors"
-          },
-          "format": "On Card"
         }
       ]
-    }
+    },
+    "afterAutographRows": 0
   }
 }

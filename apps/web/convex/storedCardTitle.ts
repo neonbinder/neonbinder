@@ -1,7 +1,7 @@
 /**
  * The listing title of a STORED card: what the generator would write for it
- * today, and the rebuild that keeps a still-generated title in step with its
- * card after a server-side fact change.
+ * today, and the rebuild that keeps a still-generated title (and listing
+ * description) in step with its card after a server-side fact change.
  *
  * ## Why this module exists
  *
@@ -16,7 +16,7 @@
  * the cascade read one builder, the insert branch's own
  * (`listingInputsForCard` + `assessListingTitle`).
  *
- * ## Which titles are "still as generated"
+ * ## Which titles (and descriptions) are "still as generated"
  *
  * NB stores no provenance on `listingTitle`: creation writes the generated
  * title (or the operator's pre-save answer, NEO-335), and `updateCard` writes
@@ -27,11 +27,16 @@
  * operator's own and is never rewritten. A card whose set or player was
  * renamed since it was born fails the comparison and is left alone too: that
  * is the conservative miss, and Regenerate still offers the new title.
+ *
+ * `listingDescription` is held to the same rule against
+ * `generateListingDescription`, creation's builder, fed the same inputs
+ * (there is no Regenerate for it).
  */
 
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   assessListingTitle,
+  generateListingDescription,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./features/generateListing";
@@ -252,14 +257,20 @@ export async function assessStoredCardTitle(
 }
 
 /**
- * The title fields to patch when a server-side change to a card (`before` →
- * `after`) should carry through to its title, or `undefined` when nothing
- * changes.
+ * The listing fields to patch when a server-side change to a card (`before` →
+ * `after`) should carry through to its title and description, each decided on
+ * its own; `undefined` when nothing changes.
  *
- * Only a title still AS GENERATED is rebuilt (see the module header): the
- * stored `listingTitle` must equal the generator's title for `before`. Then
- * the new title is the generator's title for `after`, and
- * `listingTitleTruncated` follows creation's rule (NEO-101 / NEO-335):
+ * Only text still AS GENERATED is rebuilt (see the module header): the stored
+ * `listingTitle` must equal the generator's title for `before`, and the stored
+ * `listingDescription` must equal `generateListingDescription` for `before` —
+ * the insert branch's own builder, fed the same inputs as the title. Then the
+ * new text is the generator's for `after`. An operator's title or description
+ * is never touched, and one being hand-written does not stop the other from
+ * being rebuilt.
+ *
+ * `listingTitleTruncated` follows creation's rule (NEO-101 / NEO-335) when the
+ * title is rebuilt:
  *
  *   - the new core fits → the flag is cleared;
  *   - the new core is cut and the old one was not → the flag is set (a cut
@@ -268,33 +279,83 @@ export async function assessStoredCardTitle(
  *     already answered before save (`listingTitleKept`), and the change did
  *     not touch the core.
  *
- * Names are read before and after with the same ids, so `cache` makes the
- * second read free.
+ * Names are read once with `cache` and used for both halves, before and after.
  */
-export async function rebuiltGeneratedTitle(
+export async function rebuiltGeneratedListing(
   ctx: DbReader,
   before: StoredCardTitleFields &
-    Pick<Doc<"cardChecklist">, "listingTitle" | "listingTitleTruncated">,
+    Pick<
+      Doc<"cardChecklist">,
+      "listingTitle" | "listingTitleTruncated" | "listingDescription"
+    >,
   after: StoredCardTitleFields,
   chain: StoredCardTitleChain,
   cache: TitleNameCache = newTitleNameCache(),
 ): Promise<
-  { listingTitle: string; listingTitleTruncated: true | undefined } | undefined
+  | {
+      patch: {
+        listingTitle?: string;
+        listingTitleTruncated?: true | undefined;
+        listingDescription?: string;
+      };
+      retitled: boolean;
+      redescribed: boolean;
+    }
+  | undefined
 > {
-  const stored = before.listingTitle;
-  if (typeof stored !== "string" || stored.trim() === "") return undefined;
-  const was = await assessStoredCardTitle(ctx, before, chain, cache);
-  if (was.title !== stored) return undefined;
-  const now = await assessStoredCardTitle(ctx, after, chain, cache);
-  const flag: true | undefined = now.coreFits
-    ? undefined
-    : was.coreFits
-      ? true
-      : before.listingTitleTruncated === true
-        ? true
-        : undefined;
-  if (now.title === stored && flag === (before.listingTitleTruncated === true ? true : undefined)) {
-    return undefined;
+  const isText = (v: string | undefined): v is string =>
+    typeof v === "string" && v.trim() !== "";
+  const storedTitle = before.listingTitle;
+  const storedDescription = before.listingDescription;
+  if (!isText(storedTitle) && !isText(storedDescription)) return undefined;
+
+  const wasInputs = storedCardListingInputs(
+    before,
+    chain,
+    await storedCardTitleNames(ctx, before, cache),
+  );
+  const nowInputs = storedCardListingInputs(
+    after,
+    chain,
+    await storedCardTitleNames(ctx, after, cache),
+  );
+  const patch: {
+    listingTitle?: string;
+    listingTitleTruncated?: true | undefined;
+    listingDescription?: string;
+  } = {};
+  let retitled = false;
+  let redescribed = false;
+
+  if (isText(storedTitle)) {
+    const was = assessListingTitle(wasInputs);
+    if (was.title === storedTitle) {
+      const now = assessListingTitle(nowInputs);
+      const storedFlag: true | undefined =
+        before.listingTitleTruncated === true ? true : undefined;
+      const flag: true | undefined = now.coreFits
+        ? undefined
+        : was.coreFits
+          ? true
+          : storedFlag;
+      if (now.title !== storedTitle || flag !== storedFlag) {
+        patch.listingTitle = now.title;
+        // Present even when undefined: the patch then removes the field.
+        patch.listingTitleTruncated = flag;
+        retitled = true;
+      }
+    }
   }
-  return { listingTitle: now.title, listingTitleTruncated: flag };
+
+  if (isText(storedDescription)) {
+    if (generateListingDescription(wasInputs) === storedDescription) {
+      const now = generateListingDescription(nowInputs);
+      if (now !== storedDescription) {
+        patch.listingDescription = now;
+        redescribed = true;
+      }
+    }
+  }
+
+  return retitled || redescribed ? { patch, retitled, redescribed } : undefined;
 }

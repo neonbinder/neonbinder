@@ -78,7 +78,7 @@ import { variantTypeKind } from "./variantRole";
 import {
   findAncestorLabels,
   newTitleNameCache,
-  rebuiltGeneratedTitle,
+  rebuiltGeneratedListing,
   type StoredCardTitleChain,
   type TitleNameCache,
 } from "./storedCardTitle";
@@ -358,11 +358,12 @@ function hasToken(list: ReadonlyArray<string>, token: string): boolean {
  *   the card's value is absent/"None" or equals `previousAutographFormat`
  *   (the cascade re-answering a leaf). Signed By is then seeded from the
  *   card's players when empty.
- * - `listingTitle`: rebuilt ONLY when this call formatted the card's
- *   autograph and the stored title is still exactly what the generator makes
- *   of the card as it stood (Jason, 2026-10-18: the title gains "AUTO"). An
- *   operator's own title is never touched; `listingTitleTruncated` follows
- *   creation's rule (`storedCardTitle.rebuiltGeneratedTitle`). A walk passes
+ * - `listingTitle` / `listingDescription`: each rebuilt ONLY when this call
+ *   formatted the card's autograph and the stored text is still exactly what
+ *   the generator makes of the card as it stood (Jason, 2026-10-18: the title
+ *   gains "AUTO", the description "Autographed (On Card)."). An operator's
+ *   own text is never touched; `listingTitleTruncated` follows creation's
+ *   rule (`storedCardTitle.rebuiltGeneratedListing`). A walk passes
  *   `titleChain` (the leaf's ancestor facts, read once) and `titleNames` (a
  *   page-wide name cache); a lone call reads them itself.
  * - `lastUpdated` is bumped only when something was written. Idempotent: a
@@ -387,6 +388,8 @@ export async function applyBscAttributeFill(
   autographFormatted: boolean;
   /** The still-generated title was rebuilt (only ever with `autographFormatted`). */
   retitled: boolean;
+  /** The still-generated listing description was rebuilt (likewise). */
+  redescribed: boolean;
 }> {
   const incoming = normalizeBscAttributeTokensDetailed(
     boundBscAttributeTokens(opts.tokens).tokens,
@@ -522,16 +525,17 @@ export async function applyBscAttributeFill(
   if (isRelic) patch.isRelic = true;
   if (featuresChanged) patch.features = features;
 
-  // ── listing title (NEO-345) ────────────────────────────────────────────
-  // Only for the write that made the card an autograph, and only over a
-  // title nobody has edited. The rebuilt title reads the card AFTER this
-  // patch (its new `autographed`, and a print run or RC this call filled).
+  // ── listing title and description (NEO-345) ────────────────────────────
+  // Only for the write that made the card an autograph, and only over text
+  // nobody has edited. The rebuilt text reads the card AFTER this patch (its
+  // new `autographed`, and a print run or RC this call filled).
   let retitled = false;
+  let redescribed = false;
   if (autographFormatted) {
     const chain = opts.titleChain
       ? await opts.titleChain()
       : await findAncestorLabels(ctx, await ctx.db.get(row.selectorOptionId));
-    const rebuilt = await rebuiltGeneratedTitle(
+    const rebuilt = await rebuiltGeneratedListing(
       ctx,
       row,
       { ...row, ...patch },
@@ -539,10 +543,11 @@ export async function applyBscAttributeFill(
       opts.titleNames ?? newTitleNameCache(),
     );
     if (rebuilt) {
-      patch.listingTitle = rebuilt.listingTitle;
-      // `undefined` removes the field: the flag is omitted, never false.
-      patch.listingTitleTruncated = rebuilt.listingTitleTruncated;
-      retitled = true;
+      // A rebuilt title carries `listingTitleTruncated` even when undefined:
+      // that removes the field (the flag is omitted, never false).
+      Object.assign(patch, rebuilt.patch);
+      retitled = rebuilt.retitled;
+      redescribed = rebuilt.redescribed;
     }
   }
 
@@ -551,7 +556,7 @@ export async function applyBscAttributeFill(
     patch.lastUpdated = Date.now();
     await ctx.db.patch(row._id, patch);
   }
-  return { wrote, printRunDisagreement, autographFormatted, retitled };
+  return { wrote, printRunDisagreement, autographFormatted, retitled, redescribed };
 }
 
 /**

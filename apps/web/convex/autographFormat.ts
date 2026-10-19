@@ -28,8 +28,10 @@
  * row under the set's Parallel(s) variant type is built from the set's one
  * Base. So an answer on an insert, or on the Base, also lands on each of those
  * parallels whose OWN format is unset (`adoptAutographFormatOnParallels`), and
- * the cascade then walks their AU cards too. A parallel already holding a
- * DIFFERENT format is never overwritten, and nothing below it inherits
+ * the cascade then walks their AU cards too. When the answer CHANGES, a
+ * parallel still holding the previous answer moves with it (the cards' own
+ * rule, so a corrected misclick carries the parallels). A parallel holding
+ * any other format is never overwritten, and nothing below it inherits
  * through it. A parallel holding the SAME format has its cards walked again,
  * as a re-pick walks the leaf's. The step is transitive: a Base answer that
  * reaches a base parallel (an `insert`-level row) reaches that row's own
@@ -47,7 +49,8 @@
  * Each card the walk formats has its listing title rebuilt when the title is
  * still exactly the generated one (the fill does it:
  * `cardChecklist.applyBscAttributeFill` → `storedCardTitle`), so the title
- * gains "AUTO". An operator's own title is never touched.
+ * gains "AUTO"; the listing description likewise, under the same rule. An
+ * operator's own title or description is never touched.
  *
  * ## The cascade is chunked
  *
@@ -190,17 +193,21 @@ export const setAutographFormat = mutation({
         lastUpdated: Date.now(),
       });
     }
-    // The leaf's parallels take the answer in this same transaction.
-    const { parallelIds } = await adoptAutographFormatOnParallels(
-      ctx,
-      leaf,
-      args.value,
-    );
     // The PREVIOUS format is what cards formatted by an earlier answer carry;
     // the cascade may move those along with it. A stored value outside the
     // vocabulary (hand-edited data) is no previous answer at all.
     const previousFormat =
       stored === "On Card" || stored === "Sticker/Label" ? stored : undefined;
+    const moving =
+      previousFormat && previousFormat !== args.value ? previousFormat : undefined;
+    // The leaf's parallels take the answer in this same transaction, and a
+    // parallel still holding the PREVIOUS answer moves with it.
+    const { parallelIds, movedIds } = await adoptAutographFormatOnParallels(
+      ctx,
+      leaf,
+      args.value,
+      moving,
+    );
     await ctx.scheduler.runAfter(
       0,
       internal.autographFormat.cascadeAutographFormat,
@@ -211,6 +218,7 @@ export const setAutographFormat = mutation({
           ? { previousFormat }
           : {}),
         ...(parallelIds.length > 0 ? { parallelIds } : {}),
+        ...(movedIds.length > 0 ? { movedParallelIds: movedIds } : {}),
       },
     );
     return { parallelIds };
@@ -326,23 +334,35 @@ async function directParallelsOf(
 
 /**
  * Write `format` onto every parallel of `source` (`directParallelsOf`, and
- * through each one that takes it, ITS parallels) whose own format is unset.
- * Returns the parallels that now hold `format` — the ones written and the ones
- * that already held it — for the cascade to walk. A parallel holding a
- * different format is left exactly as it is, and the walk does not pass
- * through it. Bounded by `MAX_PARALLELS_PER_ANSWER` rows in all.
+ * through each one that takes it, ITS parallels) whose own format is unset —
+ * or, when the source's answer CHANGED, still holds the source's
+ * `previousFormat`: the cards' own house rule (`applyBscAttributeFill` moves
+ * a card still holding the leaf's previous format), applied one level up, so
+ * a corrected misclick carries the parallels with it. Returns the parallels
+ * that now hold `format` — written, moved, or already holding it — for the
+ * cascade to walk, and which of them MOVED (their cards still holding the
+ * previous format move too). A parallel holding any other format is left
+ * exactly as it is, and the walk does not pass through it. A parallel that
+ * was answered on its own with the same value as the previous answer cannot
+ * be told from one that took it, exactly as for a card, and moves. Bounded by
+ * `MAX_PARALLELS_PER_ANSWER` rows in all.
  */
 export async function adoptAutographFormatOnParallels(
   ctx: { db: MutationCtx["db"] },
   source: Doc<"selectorOptions">,
   format: AutographFormat,
+  previousFormat?: AutographFormat,
 ): Promise<{
   parallelIds: Array<Id<"selectorOptions">>;
+  /** Of `parallelIds`, the ones moved off `previousFormat`. */
+  movedIds: Array<Id<"selectorOptions">>;
   /** Parallels holding a different format of their own, left alone. */
   keptOwn: number;
   truncated: boolean;
 }> {
   const parallelIds: Array<Id<"selectorOptions">> = [];
+  const movedIds: Array<Id<"selectorOptions">> = [];
+  const moving = previousFormat !== undefined && previousFormat !== format;
   const seen = new Set<string>([source._id]);
   const queue: Array<Doc<"selectorOptions">> = [source];
   let keptOwn = 0;
@@ -358,11 +378,13 @@ export async function adoptAutographFormatOnParallels(
       seen.add(parallel._id);
       budget--;
       const own = parallel.features?.autographFormat;
-      if (own === undefined) {
+      const moves = moving && own === previousFormat;
+      if (own === undefined || moves) {
         await ctx.db.patch(parallel._id, {
           features: { ...(parallel.features ?? {}), autographFormat: format },
           lastUpdated: now,
         });
+        if (moves) movedIds.push(parallel._id);
       } else if (own !== format) {
         keptOwn++;
         continue;
@@ -384,7 +406,7 @@ export async function adoptAutographFormatOnParallels(
       }),
     );
   }
-  return { parallelIds, keptOwn, truncated };
+  return { parallelIds, movedIds, keptOwn, truncated };
 }
 
 const pageResultValidator = v.object({
@@ -401,6 +423,8 @@ const pageResultValidator = v.object({
   skippedOverride: v.number(),
   /** Formatted cards whose still-generated title was rebuilt. */
   retitled: v.number(),
+  /** Formatted cards whose still-generated listing description was rebuilt. */
+  redescribed: v.number(),
 });
 
 /**
@@ -430,6 +454,7 @@ export const cascadeAutographFormatPage = internalMutation({
         formatted: 0,
         skippedOverride: 0,
         retitled: 0,
+        redescribed: 0,
       };
     }
     const scanLimit = clampLimit(args.scanLimit, CASCADE_SCAN_PER_PAGE);
@@ -452,6 +477,7 @@ export const cascadeAutographFormatPage = internalMutation({
     let formatted = 0;
     let skippedOverride = 0;
     let retitled = 0;
+    let redescribed = 0;
     let stoppedOnWrites = false;
     // The title rebuild's set-level facts: the leaf's ancestor walk, read
     // once for the page and only if a card is formatted; names once per id.
@@ -491,6 +517,7 @@ export const cascadeAutographFormatPage = internalMutation({
       if (result.wrote) writes++;
       if (result.autographFormatted) formatted++;
       if (result.retitled) retitled++;
+      if (result.redescribed) redescribed++;
     }
     return {
       abandoned: false,
@@ -500,6 +527,7 @@ export const cascadeAutographFormatPage = internalMutation({
       formatted,
       skippedOverride,
       retitled,
+      redescribed,
     };
   },
 });
@@ -514,8 +542,9 @@ export const cascadeAutographFormatPage = internalMutation({
  *
  * Each row's walk stands alone: one that is abandoned (the row no longer holds
  * `format`) stops that row only. `previousFormat` is the LEAF's previous
- * answer and moves only the leaf's cards; a parallel took the answer while its
- * own format was unset (or already held it), so it has no previous one.
+ * answer: it moves the leaf's cards, and the cards of each parallel in
+ * `movedParallelIds` (the ones that moved off it with the leaf). A parallel
+ * that took the answer while unset, or already held it, has no previous one.
  */
 export const cascadeAutographFormat = internalAction({
   args: {
@@ -524,6 +553,8 @@ export const cascadeAutographFormat = internalAction({
     previousFormat: v.optional(formatValidator),
     /** The parallels the answer reached, walked after the leaf. */
     parallelIds: v.optional(v.array(v.id("selectorOptions"))),
+    /** Of `parallelIds`, the ones that moved off `previousFormat` with the leaf. */
+    movedParallelIds: v.optional(v.array(v.id("selectorOptions"))),
     /** False: the leaf's own cards are already formatted (the commit door). */
     walkLeaf: v.optional(v.boolean()),
   },
@@ -534,11 +565,12 @@ export const cascadeAutographFormat = internalAction({
     /** The LEAF's walk was abandoned (a newer answer runs its own). */
     abandoned: v.boolean(),
     retitled: v.number(),
+    redescribed: v.number(),
     /** Parallels walked (abandoned ones included). */
     parallels: v.number(),
   }),
   handler: async (ctx, args) => {
-    const totals = { pages: 0, formatted: 0, skippedOverride: 0, retitled: 0 };
+    const totals = { pages: 0, formatted: 0, skippedOverride: 0, retitled: 0, redescribed: 0 };
     const walk = async (
       selectorOptionId: Id<"selectorOptions">,
       previousFormat: AutographFormat | undefined,
@@ -558,6 +590,7 @@ export const cascadeAutographFormat = internalAction({
           formatted: number;
           skippedOverride: number;
           retitled: number;
+          redescribed: number;
         } = await ctx.runMutation(internal.autographFormat.cascadeAutographFormatPage, {
           selectorOptionId,
           format: args.format,
@@ -569,6 +602,7 @@ export const cascadeAutographFormat = internalAction({
         totals.formatted += page.formatted;
         totals.skippedOverride += page.skippedOverride;
         totals.retitled += page.retitled;
+        totals.redescribed += page.redescribed;
         if (page.abandoned) return true;
         if (page.done) return false;
         if (page.after === null || page.after === after) {
@@ -584,8 +618,9 @@ export const cascadeAutographFormat = internalAction({
         ? false
         : await walk(args.selectorOptionId, args.previousFormat);
     const parallelIds = args.parallelIds ?? [];
+    const moved = new Set<string>(args.movedParallelIds ?? []);
     for (const parallelId of parallelIds) {
-      await walk(parallelId, undefined);
+      await walk(parallelId, moved.has(parallelId) ? args.previousFormat : undefined);
     }
     const result = {
       ...totals,

@@ -805,9 +805,10 @@ export interface AutographFixResult {
    * Jason, 2026-10-18 — the parallels the answer also reached (each one whose
    * own format was unset), not counting rows this call answers itself: how
    * many, and their autographed cards still marked not autographed when the
-   * wait ended (absent when none was left, or none could be read).
+   * wait ended (absent when none was left, or none could be read), and
+   * their NB row ids (the one-shot counts them gone from the listing).
    */
-  parallels?: { count: number; stillUnformatted?: number };
+  parallels?: { count: number; rowIds: string[]; stillUnformatted?: number };
 }
 
 export interface AutographFixOptions {
@@ -1007,7 +1008,7 @@ export async function applyAutographAnswers(
         }
         reached.push({ i, rowId: id as RowId, marking });
       }
-      if (parallelIds.length > 0) byIndex[i]!.parallels = { count: parallelIds.length };
+      if (parallelIds.length > 0) byIndex[i]!.parallels = { count: parallelIds.length, rowIds: parallelIds };
     } catch (err) {
       for (const w of written) {
         byIndex[w.i]!.warning = "The run stopped before this row's cards were checked; list attention again.";
@@ -1064,7 +1065,7 @@ export async function applyAutographAnswers(
     const one = mine.length === 1;
     r.detail = `${r.detail} ${autographPromptParallels(mine.length)}`;
     if (left > 0) {
-      r.parallels = { count: mine.length, stillUnformatted: left };
+      r.parallels = { count: mine.length, rowIds: mine.map((p) => String(p.rowId)), stillUnformatted: left };
       const more = `${plural(left, "autographed card", "autographed cards")} on ${one ? "its parallel" : "its parallels"} still show no format; the server is still marking them. List attention again shortly.`;
       r.warning = r.warning ? `${r.warning} ${more}` : more;
     } else if (notRead) {

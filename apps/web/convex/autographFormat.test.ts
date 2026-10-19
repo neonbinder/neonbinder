@@ -17,6 +17,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizePlayerName } from "./players";
 import { autographPromptAsks, autographPromptCount } from "../components/SetSelector/autograph-prompt";
+import { generateListingDescription } from "./features/generateListing";
+import { findAncestorLabels, storedCardListingInputs, storedCardTitleNames } from "./storedCardTitle";
 
 const modules = (
   import.meta as unknown as {
@@ -379,6 +381,7 @@ describe("cascadeAutographFormatPage — the bounded walk", () => {
       skippedOverride: 0,
       abandoned: false,
       retitled: 0,
+      redescribed: 0,
       parallels: 0,
     });
   });
@@ -726,19 +729,55 @@ describe("setAutographFormat — an insert's answer reaches its parallels", () =
     expect((await get(t, unsetId))!.features).not.toHaveProperty("autographFormat");
   });
 
-  test("a changed insert answer leaves the parallels with the format they took", async () => {
+  test("a corrected misclick moves the parallels that took it: On Card → Sticker carries them and their cards", async () => {
     const t = convexTest(schema, modules);
-    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    const { insertId, unsetId, sameId } = await seedInsertWithParallels(t);
+    const goldCard = await seedCard(t, unsetId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    const blueCard = await seedCard(t, sameId, "1", { attributes: ["AU"], features: { autographed: "None" } });
     const admin = t.withIdentity(ADMIN);
     await admin.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: insertId, value: "On Card" });
     await drainScheduled(t);
+    expect((await get(t, goldCard))!.features?.autographed).toBe("On Card");
+
     const second = await admin.mutation(api.autographFormat.setAutographFormat, {
       selectorOptionId: insertId,
       value: "Sticker/Label",
     });
-    // Gold now holds "On Card" of its own: a different format, never overwritten.
-    expect(second.parallelIds).not.toContain(unsetId);
-    expect((await get(t, unsetId))!.features?.autographFormat).toBe("On Card");
+    // Gold took "On Card" from the insert, Blue held it: both still hold the
+    // insert's previous answer, so both move with it, in the same transaction.
+    expect(second.parallelIds).toEqual(expect.arrayContaining([unsetId, sameId]));
+    expect((await get(t, unsetId))!.features?.autographFormat).toBe("Sticker/Label");
+    expect((await get(t, sameId))!.features?.autographFormat).toBe("Sticker/Label");
+    await drainScheduled(t);
+    // Their cards still holding the previous answer move too.
+    expect((await get(t, goldCard))!.features?.autographed).toBe("Sticker/Label");
+    expect((await get(t, blueCard))!.features?.autographed).toBe("Sticker/Label");
+  });
+
+  test("a parallel with its own different answer stays put when the insert's answer changes, and so do its cards", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, ownId } = await seedInsertWithParallels(t);
+    // Red was answered on its own ("Sticker/Label"), and an operator set one
+    // of its cards to "On Card" by hand.
+    const redOverride = await seedCard(t, ownId, "1", { attributes: ["AU"], features: { autographed: "On Card" } });
+    const redLate = await seedCard(t, ownId, "2", { attributes: ["AU"], features: { autographed: "None" } });
+    const admin = t.withIdentity(ADMIN);
+    await admin.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: insertId, value: "On Card" });
+    await drainScheduled(t);
+    // Red holds a different answer from the insert's: untouched.
+    expect((await get(t, ownId))!.features?.autographFormat).toBe("Sticker/Label");
+    expect((await get(t, redLate))!.features?.autographed).toBe("None");
+
+    await admin.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: insertId, value: "Sticker/Label" });
+    await drainScheduled(t);
+    const red = await get(t, ownId);
+    expect(red!.features?.autographFormat).toBe("Sticker/Label");
+    expect(red!.lastUpdated).toBe(SEEDED_AT);
+    // Red did not move (it never held the insert's previous answer), so its
+    // operator's "On Card" card is not carried to Sticker; its unformatted
+    // card takes Red's own answer, which the insert's now equals.
+    expect((await get(t, redOverride))!.features?.autographed).toBe("On Card");
+    expect((await get(t, redLate))!.features?.autographed).toBe("Sticker/Label");
   });
 
   test("a clear reaches no parallel", async () => {
@@ -1099,5 +1138,93 @@ describe("the cascade rebuilds a still-generated title", () => {
       format: "On Card",
     });
     expect(result).toMatchObject({ formatted: 2, retitled: 1 });
+  });
+});
+
+describe("the cascade rebuilds a still-generated listing description, by the same rule", () => {
+  /** What creation's builder writes for the stored card as it stands now. */
+  const generatedDescription = (t: T, cardId: Id<"cardChecklist">) =>
+    t.run(async (ctx) => {
+      const card = (await ctx.db.get(cardId))!;
+      const chain = await findAncestorLabels(ctx, await ctx.db.get(card.selectorOptionId));
+      const names = await storedCardTitleNames(ctx, card);
+      return generateListingDescription(storedCardListingInputs(card, chain, names));
+    });
+
+  async function cardWithGeneratedText(
+    t: T,
+    leafId: Id<"selectorOptions">,
+    cardNumber: string,
+    fields: Partial<Doc<"cardChecklist">> = {},
+  ) {
+    const id = await seedCard(t, leafId, cardNumber, { attributes: ["AU"], features: { autographed: "None" }, ...fields });
+    const title = (await t.withIdentity(ADMIN).query(api.selectorOptions.previewListingTitle, { cardId: id })).title;
+    const description = await generatedDescription(t, id);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(id, {
+        ...(fields.listingTitle === undefined ? { listingTitle: title } : {}),
+        ...(fields.listingDescription === undefined ? { listingDescription: description } : {}),
+      });
+    });
+    return { id, title, description };
+  }
+
+  test("a generated description gains the autograph sentence, exactly what creation's builder writes", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedLeaf(t, { features: { autographed: "None", season: "2024" } });
+    const griffey = await seedPlayer(t, sportId, "Ken Griffey Jr.");
+    const { id, description } = await cardWithGeneratedText(t, leafId, "1", { playerIds: [griffey] });
+    expect(description).not.toContain("Autographed");
+
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "On Card",
+    });
+    await drainScheduled(t);
+
+    const row = await get(t, id);
+    expect(row!.listingDescription).toContain("Autographed (On Card).");
+    expect(row!.listingDescription).toBe(await generatedDescription(t, id));
+  });
+
+  test("an operator's description is never touched, while the generated title beside it is rebuilt", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedLeaf(t);
+    const { id } = await cardWithGeneratedText(t, leafId, "1", { listingDescription: "Signed in blue ink at the 1990 show." });
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "On Card",
+    });
+    await drainScheduled(t);
+    const row = await get(t, id);
+    expect(row!.listingDescription).toBe("Signed in blue ink at the 1990 show.");
+    expect(row!.listingTitle).toMatch(/\bAUTO\b/);
+  });
+
+  test("a hand-written title does not stop a generated description from being rebuilt", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedLeaf(t);
+    const { id } = await cardWithGeneratedText(t, leafId, "1", { listingTitle: "My own words #1" });
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "Sticker/Label",
+    });
+    await drainScheduled(t);
+    const row = await get(t, id);
+    expect(row!.listingTitle).toBe("My own words #1");
+    expect(row!.listingDescription).toContain("Autographed (Sticker/Label).");
+    expect(row!.listingDescription).toBe(await generatedDescription(t, id));
+  });
+
+  test("the action reports the descriptions it rebuilt", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedLeaf(t, { features: { autographed: "None", autographFormat: "On Card" } });
+    await cardWithGeneratedText(t, leafId, "1");
+    await cardWithGeneratedText(t, leafId, "2", { listingDescription: "Hand written." });
+    const result = await t.action(internal.autographFormat.cascadeAutographFormat, {
+      selectorOptionId: leafId,
+      format: "On Card",
+    });
+    expect(result).toMatchObject({ formatted: 2, retitled: 2, redescribed: 1 });
   });
 });
