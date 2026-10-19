@@ -9,7 +9,6 @@
   "draft": {
     "autographFormats": [
       "steps[0].variants[0].rows[0].checklist.autographFormat",
-      "steps[0].variants[0].rows[1].checklist.autographFormat",
       "steps[0].variants[0].rows[2].checklist.autographFormat"
     ]
   },

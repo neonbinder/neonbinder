@@ -397,14 +397,18 @@ checks the merge four ways:
   apply. A drafted `leave` the committed spec lacks is a NEW pending set:
   drift, and the check names the type and ids.
 - the draft's `autographFormats` must list exactly the expect file's
-  `draft.autographFormats` (Chrome Black's three autograph inserts), so an
-  empty list never passes, and each must be answered, in the committed spec
-  (the draft never drafts one; the merge takes it from the committed file)
-  or in the expect file's `fix.autographs`. Chrome Black's autographs are On
-  Card (Jason, 2026-10-18). Super Futures Autographs and Pitch Black Pairings
-  Dual Autographs are answered in the spec, and their parallels, built from
-  them, copy each card's mark. A read-back after apply checks each of those
-  rows holds `autographFormat` "On Card" and every AU card is marked.
+  `draft.autographFormats` (Chrome Black's two checklists whose cards carry
+  AU: Super Futures Autographs and Ivory Autographs), so an empty list never
+  passes, and each must be answered, in the committed spec (the draft never
+  drafts one; the merge takes it from the committed file) or in the expect
+  file's `fix.autographs`. Chrome Black's autographs are On Card (Jason,
+  2026-10-18). Super Futures Autographs is answered in the spec, and its
+  parallels, built from it, copy each card's mark. A read-back after apply
+  checks it holds `autographFormat` "On Card" and every AU card is marked.
+  Pitch Black Pairings Dual Autographs carries no AU attribute in today's
+  marketplace data (BSC puts "AU" only in the listing's product name, which
+  is never read as an attribute), so nothing asks about it and the spec gives
+  it no format.
   Ivory Autographs is answered through `nb_fix` instead, so the live write is
   proven too: it and its two parallels (built while it was unanswered, so
   they ask on their own) are the 3 `autographRows` the first listing shows;
