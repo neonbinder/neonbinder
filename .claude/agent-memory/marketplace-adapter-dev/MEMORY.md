@@ -41,3 +41,4 @@
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
 - [Build SL fixtures through the parsers](reference_build_sl_fixtures_through_the_parsers.md) — hand-set isVariation hid that a bare "[ VAR ]" parsed as a non-variation; reproduce live shapes via parseSlVariationMarker
 - [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label
+- [Mocked credentials: first action gets the real module](reference_mocked_credentials_first_action_race.md) — real-adapter preview tests: pre-import ./credentials in beforeAll or the first test hits real getSiteToken

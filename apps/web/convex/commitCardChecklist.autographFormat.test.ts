@@ -233,3 +233,60 @@ describe("commitCardChecklist — autographFormat (NEO-345)", () => {
     expect((await cardsUnder(t, leafId)).size).toBe(0);
   });
 });
+
+describe("commitCardChecklist — autographFormat reaches the leaf's parallels (Jason, 2026-10-18)", () => {
+  test("the Base's answer lands on each base parallel with no format of its own, and their AU cards follow", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, setNameId, leafId } = await seedSet(t);
+    const { refractorId, sepiaId, refractorCard, sepiaCard } = await t.run(async (ctx) => {
+      const parallelsTypeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Parallels",
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        features: { autographed: "None" },
+        lastUpdated: Date.now(),
+      });
+      const row = (value: string, features: Record<string, string>) =>
+        ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value,
+          platformData: {},
+          parentId: parallelsTypeId,
+          children: [],
+          features,
+          lastUpdated: Date.now(),
+        });
+      const refractorId = await row("Refractors", { autographed: "None" });
+      const sepiaId = await row("Sepia", { autographed: "None", autographFormat: "Sticker/Label" });
+      const card = (selectorOptionId: Id<"selectorOptions">) =>
+        ctx.db.insert("cardChecklist", {
+          selectorOptionId,
+          cardNumber: "1",
+          cardName: "Mike Trout",
+          attributes: ["AU"],
+          features: { autographed: "None" },
+          platformData: {},
+          sortOrder: 1,
+          lastUpdated: Date.now(),
+        });
+      return { refractorId, sepiaId, refractorCard: await card(refractorId), sepiaCard: await card(sepiaId) };
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [makeCard("1", { attributes: ["AU"] })],
+      autographFormat: "On Card",
+    });
+    await drainScheduled(t);
+
+    const get = <K extends "selectorOptions" | "cardChecklist">(id: Id<K>) => t.run(async (ctx) => ctx.db.get(id));
+    expect((await get(refractorId))!.features?.autographFormat).toBe("On Card");
+    expect((await get(refractorCard))!.features?.autographed).toBe("On Card");
+    // A parallel holding its own format keeps it, and so do its cards.
+    expect((await get(sepiaId))!.features?.autographFormat).toBe("Sticker/Label");
+    expect((await get(sepiaCard))!.features?.autographed).toBe("None");
+  });
+});

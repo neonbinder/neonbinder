@@ -555,8 +555,13 @@ over the exact answers:
   passes) and gives a `warning` with the count for a row it
   did not see finish. A row that already has a format, or whose autographed
   cards are all marked, is `moot`: change a format in Set details. At most 50
-  per call. The format does not rebuild the cards' listing titles (Regenerate
-  does).
+  per call. An insert's or the Base's answer also lands on each of its
+  parallels with no format of its own (one holding a format keeps it), and
+  the wait covers their cards too; the result's `parallels` counts them. The
+  answers are written deepest row first, so a parallel answered in the same
+  call keeps its own answer. A card the format reaches has its listing title
+  rebuilt (it gains "AUTO") only while the title is still exactly the
+  generated one; a title someone wrote or edited is left alone.
 - **Research, then ask.** The tool never guesses an answer. An agent driving
   it looks up what a source can settle (an autograph row's format, a card's
   missing team, a variation that must be shortened) on the manufacturer's

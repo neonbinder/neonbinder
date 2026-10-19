@@ -3,7 +3,8 @@
  * one row ("Future Stars") and its parallel ("Gold"), a mutable card store the
  * fake `updateCard` / `confirmCardNoTeam` write into the way the server does,
  * the rows' own `features` (NEO-345 `autographFormat`) with the header
- * prompt's `setAutographFormat` and its scheduled carry-over to the cards, and
+ * prompt's `setAutographFormat`, its reach onto Future Stars' parallel and its
+ * scheduled carry-over to the cards, and
  * the reads the listing makes.
  *
  * Test-only: imported by `attention.test.ts` and `attention-answers.test.ts`.
@@ -152,10 +153,25 @@ export function attentionClient({ store, handlers = {}, cascadeAfter = "now" }: 
     "autographFormat:setAutographFormat": (a) => {
       const id = ID_TEXT(a.selectorOptionId);
       if (!LEVELS[id] || id === INSERTS) throw new ConvexError("An autograph format goes on a base, insert or parallel.");
-      store.leafFeatures = { ...(store.leafFeatures ?? {}), [id]: { ...(store.leafFeatures?.[id] ?? {}), autographFormat: String(a.value) } };
-      if (cascadeAfter === "now") cascade(store, id);
-      else if (cascadeAfter !== "never") scheduled.set(id, cascadeAfter);
-      return null;
+      const value = String(a.value);
+      const setFormat = (rowId: string) => {
+        store.leafFeatures = { ...(store.leafFeatures ?? {}), [rowId]: { ...(store.leafFeatures?.[rowId] ?? {}), autographFormat: value } };
+      };
+      setFormat(id);
+      // The server's reach onto the row's parallels (Jason, 2026-10-18): Gold
+      // takes Future Stars' answer while its own format is unset, or is walked
+      // again when it already holds the same one; a different one is kept.
+      const parallelIds: string[] = [];
+      if (id === FUTURE) {
+        const own = store.leafFeatures?.[GOLD]?.autographFormat;
+        if (own === undefined) setFormat(GOLD);
+        if (own === undefined || own === value) parallelIds.push(GOLD);
+      }
+      for (const rowId of [id, ...parallelIds]) {
+        if (cascadeAfter === "now") cascade(store, rowId);
+        else if (cascadeAfter !== "never") scheduled.set(rowId, cascadeAfter);
+      }
+      return { parallelIds };
     },
     "selectorOptions:getCardChecklist": (a) => {
       const id = ID_TEXT(a.selectorOptionId);

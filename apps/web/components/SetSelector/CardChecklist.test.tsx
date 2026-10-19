@@ -6124,7 +6124,29 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
     expect(screen.queryByText(PROMPT)).toBeNull();
     const saved = screen.getAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
     expect(saved).toBeTruthy();
+    expect(saved!.textContent).toBe("Autographs saved as on card.");
     expect(document.activeElement).toBe(saved);
+  });
+
+  it("an answer that reached the leaf's parallels says so on the saved line (Jason, 2026-10-18)", async () => {
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: ["p1", "p2", "p3"] });
+    state.cards = [auto()];
+    const { rerender } = renderChecklist();
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole("group", { name: PROMPT })).getByRole("button", { name: "Sticker" }));
+    });
+    state.variantRow = { value: "Test Set", features: { autographFormat: "Sticker/Label" } };
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />,
+      );
+    });
+    const saved = screen.getAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
+    expect(saved!.textContent).toBe("Autographs saved as sticker. Its 3 parallels take the same answer.");
   });
   it("the saved line is for this sitting only: another leaf drops it, and coming back does not bring it back", async () => {
     state.cards = [auto()];

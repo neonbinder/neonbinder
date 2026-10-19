@@ -73,6 +73,15 @@ import {
   isAutographFormat,
 } from "./features/deriveCardFeatures";
 import { variantTypeKind } from "./variantRole";
+// NEO-345 (Jason, 2026-10-18) — a card the autograph format reaches has its
+// still-generated title rebuilt through Regenerate's own builder.
+import {
+  findAncestorLabels,
+  newTitleNameCache,
+  rebuiltGeneratedTitle,
+  type StoredCardTitleChain,
+  type TitleNameCache,
+} from "./storedCardTitle";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -349,8 +358,15 @@ function hasToken(list: ReadonlyArray<string>, token: string): boolean {
  *   the card's value is absent/"None" or equals `previousAutographFormat`
  *   (the cascade re-answering a leaf). Signed By is then seeded from the
  *   card's players when empty.
- * - `lastUpdated` is bumped only when something was written. The listing
- *   title is NOT regenerated. Idempotent: a second call writes nothing.
+ * - `listingTitle`: rebuilt ONLY when this call formatted the card's
+ *   autograph and the stored title is still exactly what the generator makes
+ *   of the card as it stood (Jason, 2026-10-18: the title gains "AUTO"). An
+ *   operator's own title is never touched; `listingTitleTruncated` follows
+ *   creation's rule (`storedCardTitle.rebuiltGeneratedTitle`). A walk passes
+ *   `titleChain` (the leaf's ancestor facts, read once) and `titleNames` (a
+ *   page-wide name cache); a lone call reads them itself.
+ * - `lastUpdated` is bumped only when something was written. Idempotent: a
+ *   second call writes nothing.
  */
 export async function applyBscAttributeFill(
   ctx: MutationCtx,
@@ -360,11 +376,17 @@ export async function applyBscAttributeFill(
     printRun?: number;
     autographFormat?: "On Card" | "Sticker/Label";
     previousAutographFormat?: string;
+    /** The card's leaf ancestor facts for its title, read once by a walk. */
+    titleChain?: () => Promise<StoredCardTitleChain>;
+    /** Player and team names already read in this transaction. */
+    titleNames?: TitleNameCache;
   },
 ): Promise<{
   wrote: boolean;
   printRunDisagreement: boolean;
   autographFormatted: boolean;
+  /** The still-generated title was rebuilt (only ever with `autographFormatted`). */
+  retitled: boolean;
 }> {
   const incoming = normalizeBscAttributeTokensDetailed(
     boundBscAttributeTokens(opts.tokens).tokens,
@@ -500,12 +522,36 @@ export async function applyBscAttributeFill(
   if (isRelic) patch.isRelic = true;
   if (featuresChanged) patch.features = features;
 
+  // ── listing title (NEO-345) ────────────────────────────────────────────
+  // Only for the write that made the card an autograph, and only over a
+  // title nobody has edited. The rebuilt title reads the card AFTER this
+  // patch (its new `autographed`, and a print run or RC this call filled).
+  let retitled = false;
+  if (autographFormatted) {
+    const chain = opts.titleChain
+      ? await opts.titleChain()
+      : await findAncestorLabels(ctx, await ctx.db.get(row.selectorOptionId));
+    const rebuilt = await rebuiltGeneratedTitle(
+      ctx,
+      row,
+      { ...row, ...patch },
+      chain,
+      opts.titleNames ?? newTitleNameCache(),
+    );
+    if (rebuilt) {
+      patch.listingTitle = rebuilt.listingTitle;
+      // `undefined` removes the field: the flag is omitted, never false.
+      patch.listingTitleTruncated = rebuilt.listingTitleTruncated;
+      retitled = true;
+    }
+  }
+
   const wrote = Object.keys(patch).length > 0;
   if (wrote) {
     patch.lastUpdated = Date.now();
     await ctx.db.patch(row._id, patch);
   }
-  return { wrote, printRunDisagreement, autographFormatted };
+  return { wrote, printRunDisagreement, autographFormatted, retitled };
 }
 
 /**

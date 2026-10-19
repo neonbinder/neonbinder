@@ -2160,6 +2160,7 @@ describe("NEO-345: the autograph format door is admin-gated", () => {
   test.each([
     ["autographFormat.ts", "cascadeAutographFormat", "internalAction"],
     ["autographFormat.ts", "cascadeAutographFormatPage", "internalMutation"],
+    ["autographFormat.ts", "inheritAutographFormatToParallels", "internalMutation"],
     ["backfillBscAttributeFeatures.ts", "run", "internalMutation"],
   ])("%s :: %s is declared %s", (file, fn, kind) => {
     const src = readFileSync(join(__dirname, file), "utf8");

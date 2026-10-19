@@ -702,6 +702,8 @@ export default function CardChecklist({
   const [autographSaved, setAutographSaved] = useState<{
     variantId: Id<"selectorOptions">;
     value: AutographFormat;
+    /** Parallels the answer also reached, for the saved line. */
+    parallels: number;
   } | null>(null);
   // This sitting only: moving to another leaf drops the latch, so coming back
   // never remounts a stale "saved" line (render-phase reset, the
@@ -3022,6 +3024,7 @@ export default function CardChecklist({
             selectorOptionId={variantId}
             count={unformattedAutographCount}
             saved={autographSaved.value}
+            savedParallels={autographSaved.parallels}
             onSaved={() => {}}
           />
         ) : (
@@ -3031,7 +3034,7 @@ export default function CardChecklist({
             <AutographFormatPrompt
               selectorOptionId={variantId}
               count={unformattedAutographCount}
-              onSaved={(value) => setAutographSaved({ variantId, value })}
+              onSaved={(value, parallels) => setAutographSaved({ variantId, value, parallels })}
             />
           )
         )}

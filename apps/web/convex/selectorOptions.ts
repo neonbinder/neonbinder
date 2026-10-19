@@ -56,6 +56,13 @@ import {
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
 import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
+// NEO-345 — the ancestor walk and the stored-card title mapping Regenerate
+// and the autograph cascade share (see that module's header).
+import {
+  findAncestorLabels,
+  storedCardListingInputs,
+  storedCardTitleNames,
+} from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
   attachCrossMarketplaceVariations,
@@ -4839,86 +4846,10 @@ export const renameSelectorOption = mutation({
  * to typical marketplace card numbers (1-500), which matches user
  * expectations for an appended custom slot.
  */
-/**
- * Walk a selectorOptions node's parent chain ONCE, collecting everything
- * listing generation needs from above the card: the setName display value
- * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
- * has identified the brand of the set at all (a ROLE off
- * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
- *
- * NEO-101 widened this from `findSetNameValue`, which returned early at the
- * setName level. The sport node sits ABOVE setName, so a second helper would
- * have meant a second walk over the same chain for every card previewed or
- * hand-added — the walk is the cost here, not the comparison, so both values
- * come out of one pass.
- *
- * Still deliberately narrow rather than a general ancestor-chain utility:
- * every other consumer of the chain already had its own reason to walk it
- * (commitCardChecklist resolves both in the prelude, once per commit, and
- * hands them to the chunks). Depth-bounded like
- * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
- * spin a query.
- */
-async function findAncestorLabels(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
-  node: any,
-): Promise<
-  {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } & TitleChainFacts
-> {
-  const labels: {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } = {};
-  if (!node) return labels;
-  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
-  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
-  // nearest short name). Collected on the way past: this walk already passes
-  // every one of them before it can stop.
-  const titleChain: any[] = [];
-  let current = node;
-  let depth = 0;
-  while (current && depth < 16) {
-    if (labels.setName === undefined) titleChain.push(current);
-    if (current.level === "setName" && labels.setName === undefined) {
-      labels.setName = current.value;
-    }
-    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
-    // rather than by a walk of its own: the chain is
-    // sport › year › manufacturer › setName › …, so walking UP from a card's
-    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
-    // break below waits for sport. Every chain that has a manufacturer level
-    // therefore passes through it before this loop can stop.
-    if (
-      current.level === "manufacturer" &&
-      labels.manufacturerBrandUnknown === undefined
-    ) {
-      labels.manufacturerBrandUnknown =
-        current.metadata?.isBrandUnknown === true;
-    }
-    if (current.level === "sport" && labels.sport === undefined) {
-      labels.sport = current.value;
-    }
-    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
-    // no manufacturer level at all — a setName hung straight off a sport, which
-    // is what most fixtures and some hand-built trees look like — would then
-    // never satisfy the condition and would walk to the depth cap, paying extra
-    // reads on every card previewed or hand-added to buy nothing. The value is
-    // already collected above by the time sport is reached, so stopping here
-    // loses nothing; leaving it absent is the same "no manufacturer role" answer
-    // as `false`, which is exactly how the generator reads it.
-    if (labels.setName !== undefined && labels.sport !== undefined) break;
-    const parentId: Id<"selectorOptions"> | undefined = current.parentId;
-    if (!parentId) break;
-    current = await ctx.db.get(parentId);
-    depth += 1;
-  }
-  return { ...labels, ...titleChainFacts(titleChain) };
-}
+// NEO-345 (Jason, 2026-10-18) — `findAncestorLabels` moved to
+// `storedCardTitle.ts` with the stored-card title mapping, so the autograph
+// cascade (`cardChecklist.ts`, which this module imports) can rebuild a title
+// through the same walk as Regenerate.
 
 
 /**
@@ -6276,65 +6207,17 @@ export const previewListingTitle = query({
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("previewListingTitle: no such card");
 
-    // Deduped and BOUNDED before any read, exactly as `teamOnCardIds` is
-    // below. NEO-101 originally bounded this with a LOCAL constant of its own
-    // (12) because `updateCard.playerIds` was written unvalidated and this
-    // query was the only thing standing between one card id and an unbounded
-    // sequential `ctx.db.get` walk. NEO-246 routed that write through
-    // `resolvePlayerIdsForWrite`, so the stopgap is gone and the bound here is
-    // `MAX_CARD_PLAYERS` — the same number the write path enforces. A row that
-    // went through the supported path can therefore never be truncated by it;
-    // the cap remains for rows written before that validation landed, or by a
-    // future caller that skips it. Deduping still earns its keep for the same
-    // rows: a repeat must not be read twice, or printed twice.
-    const previewPlayerIds = [...new Set(card.playerIds ?? [])].slice(
-      0,
-      MAX_CARD_PLAYERS,
-    );
-    const resolvedPlayerNames: string[] = [];
-    for (const playerId of previewPlayerIds) {
-      const player = await ctx.db.get(playerId);
-      // A dangling id is a data problem, not a reason to fail a preview —
-      // skip it and let the chips show what actually resolved.
-      if (player) resolvedPlayerNames.push(player.name);
-    }
-    const playerNames =
-      resolvedPlayerNames.length > 0
-        ? resolvedPlayerNames
-        : (card.pendingPlayerNames ?? []);
-
-    // Teams get the same treatment as players — deduped and BOUNDED before any
-    // read. The bound here is `MAX_CARD_TEAMS`, which is what `updateCard`
-    // already enforces on the write path, so a row that went through the
-    // supported path can never be truncated by it; the cap exists for rows
-    // written before that validation landed, or by a future caller that skips
-    // it.
-    const previewTeamIds = [...new Set(card.teamOnCardIds ?? [])].slice(
-      0,
-      MAX_CARD_TEAMS,
-    );
-    const resolvedTeamNames: string[] = [];
-    for (const teamId of previewTeamIds) {
-      const team = await ctx.db.get(teamId);
-      // NEO-236: full name, matching what the commit path stores on the card.
-      if (team) resolvedTeamNames.push(teamFullName(team));
-    }
-    // Same fallback as `playerNames`: a hand-added card carries the names the
-    // operator typed until a sync resolves them into `teams` rows, and those
-    // are the operator's answer.
-    const teamNames =
-      resolvedTeamNames.length > 0
-        ? resolvedTeamNames
-        : (card.pendingTeamNames ?? []).slice(0, MAX_CARD_TEAMS);
-
-    const features: Record<string, string> = card.features ?? {};
+    // Players and teams: deduped and BOUNDED before any read
+    // (`MAX_CARD_PLAYERS` / `MAX_CARD_TEAMS`, the numbers the write path
+    // enforces; NEO-101 / NEO-246), a dangling id skipped rather than failing
+    // the preview, and a hand-added card's typed `pendingPlayerNames` /
+    // `pendingTeamNames` as the fallback: both are the operator's answer.
+    // NEO-345 — that resolution, the ancestor walk and the field mapping live
+    // in `storedCardTitle.ts`, shared with the autograph cascade's title
+    // rebuild, so Regenerate and the rebuild cannot disagree.
+    const { playerNames, teamNames } = await storedCardTitleNames(ctx, card);
     const parentNode = await ctx.db.get(card.selectorOptionId);
-    const {
-      setName: setNameValue,
-      sport: sportValue,
-      manufacturerBrandUnknown,
-      ...chainFacts
-    } = await findAncestorLabels(ctx, parentNode);
+    const chain = await findAncestorLabels(ctx, parentNode);
 
     // NEO-335 — the insert branch's own mapping (`listingInputsForCard`), fed
     // the STORED row's `features` as the merged snapshot, rather than a
@@ -6343,23 +6226,10 @@ export const previewListingTitle = query({
     // print run/verbatim variation, the set name, the NEO-272 brand ROLE and
     // the sport — plus the chain's insert role, parallel leaf and short name,
     // so Regenerate and the TitleFixer read the short name an operator set.
-    const inputs: ListingCardInputs = listingInputsForCard(
-      {
-        cardNumber: card.cardNumber,
-        isRookie: card.isRookie,
-        isRelic: card.isRelic,
-        printRun: card.printRun,
-        cardVariation: card.cardVariation,
-      },
-      {
-        sportValue: sportValue ?? "",
-        setNameValue,
-        manufacturerBrandUnknown,
-        ...chainFacts,
-      },
-      { playerNames, teamNames },
-      features,
-    );
+    const inputs: ListingCardInputs = storedCardListingInputs(card, chain, {
+      playerNames,
+      teamNames,
+    });
 
     const { title, coreFits, dropped } = assessListingTitle(inputs);
     return {
@@ -16423,6 +16293,14 @@ export const commitCardChecklistPrelude = internalMutation({
           features: { ...(leaf.features ?? {}), autographFormat: args.autographFormat },
           lastUpdated: Date.now(),
         });
+        // Jason, 2026-10-18 — the answer reaches the leaf's parallels too
+        // (each one whose own format is unset), off this transaction: their
+        // reads are not the commit's to pay. See `autographFormat.ts`.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.autographFormat.inheritAutographFormatToParallels,
+          { selectorOptionId: args.selectorOptionId, format: args.autographFormat },
+        );
       }
     }
 

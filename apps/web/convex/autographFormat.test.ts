@@ -16,6 +16,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizePlayerName } from "./players";
+import { autographPromptAsks, autographPromptCount } from "../components/SetSelector/autograph-prompt";
 
 const modules = (
   import.meta as unknown as {
@@ -372,7 +373,14 @@ describe("cascadeAutographFormatPage — the bounded walk", () => {
       selectorOptionId: leafId,
       format: "On Card",
     });
-    expect(result).toEqual({ pages: 1, formatted: 3, skippedOverride: 0, abandoned: false });
+    expect(result).toEqual({
+      pages: 1,
+      formatted: 3,
+      skippedOverride: 0,
+      abandoned: false,
+      retitled: 0,
+      parallels: 0,
+    });
   });
 });
 
@@ -424,7 +432,9 @@ describe("the generic feature doors refuse autographFormat (NEO-345)", () => {
 
 /**
  * Jason chose to ask for the format per synced PART, never per set: a node
- * created under an answered node starts unanswered. The behaviour tests cover
+ * created under an answered node starts unanswered. (A parallel takes its
+ * insert's answer when the answer is given or the parallel is BUILT — the
+ * describes at the end of this file — never at the row's creation.) The behaviour tests cover
  * the sync store and the hand-made row; the source pin below covers every
  * other creation path (conversions, the SportLots review, the reconciler),
  * whose fixtures are too heavy to rebuild here.
@@ -581,5 +591,513 @@ describe("addCustomCard under an answered leaf (NEO-345)", () => {
     );
     expect(row.features?.autographed).toBe("None");
     expect(row.features?.signedBy).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Jason, 2026-10-18 — "insert info should be copied to its parallels"
+// ---------------------------------------------------------------------------
+
+/**
+ * An insert with three parallels: one with no format of its own, one already
+ * holding a DIFFERENT format, one already holding the format the test answers.
+ */
+async function seedInsertWithParallels(t: T) {
+  return t.run(async (ctx) => {
+    const sportId = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
+      platformData: {},
+      children: [],
+      lastUpdated: SEEDED_AT,
+    });
+    const insertId = await ctx.db.insert("selectorOptions", {
+      level: "insert",
+      value: "Signature Series",
+      platformData: {},
+      parentId: sportId,
+      children: [],
+      features: { autographed: "None" },
+      lastUpdated: SEEDED_AT,
+    });
+    const parallel = (value: string, features: Record<string, string>) =>
+      ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value,
+        platformData: {},
+        parentId: insertId,
+        children: [],
+        features,
+        lastUpdated: SEEDED_AT,
+      });
+    const unsetId = await parallel("Gold", { autographed: "None", cardType: "Parallel" });
+    const ownId = await parallel("Red", { autographed: "None", autographFormat: "Sticker/Label" });
+    const sameId = await parallel("Blue", { autographed: "None", autographFormat: "On Card" });
+    await ctx.db.patch(insertId, { children: [unsetId, ownId, sameId] });
+    return { sportId, insertId, unsetId, ownId, sameId };
+  });
+}
+
+/** The cards of a row, as the checklist header counts them. */
+const cardsOf = (t: T, selectorOptionId: Id<"selectorOptions">) =>
+  t.run(async (ctx) =>
+    ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", selectorOptionId))
+      .collect(),
+  );
+
+describe("setAutographFormat — an insert's answer reaches its parallels", () => {
+  test("a parallel with no format takes it, its AU cards follow, and its header stops asking", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, insertId, unsetId, sameId } = await seedInsertWithParallels(t);
+    const griffey = await seedPlayer(t, sportId, "Ken Griffey Jr.");
+    await seedCard(t, insertId, "1", { attributes: ["AU"], playerIds: [griffey], features: { autographed: "None" } });
+    const parallelAu = await seedCard(t, unsetId, "1", {
+      attributes: ["AU"],
+      playerIds: [griffey],
+      features: { autographed: "None" },
+    });
+    const parallelPlain = await seedCard(t, unsetId, "2", { attributes: ["RC"], features: { autographed: "None" } });
+    // Before the answer the parallel's header asks.
+    expect(autographPromptCount(undefined, await cardsOf(t, unsetId))).toBe(1);
+
+    const result = await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: insertId,
+      value: "On Card",
+    });
+    // In the answer's own transaction: the parallel holds the format.
+    expect(result.parallelIds).toEqual([unsetId, sameId]);
+    const gold = await get(t, unsetId);
+    expect(gold!.features).toEqual({ autographed: "None", cardType: "Parallel", autographFormat: "On Card" });
+    expect(gold!.lastUpdated).not.toBe(SEEDED_AT);
+    await drainScheduled(t);
+
+    const au = await get(t, parallelAu);
+    expect(au!.features?.autographed).toBe("On Card");
+    expect(au!.features?.signedBy).toBe("Ken Griffey Jr.");
+    expect((await get(t, parallelPlain))!.lastUpdated).toBe(SEEDED_AT);
+    // The prompt's own rule: the parallel no longer asks.
+    const after = await cardsOf(t, unsetId);
+    expect(autographPromptAsks(gold!.features?.autographFormat, autographPromptCount(undefined, after))).toBe(false);
+    expect(autographPromptCount(gold!.features?.autographFormat, after)).toBe(0);
+  });
+
+  test("a parallel already holding another format is never overwritten, and its cards are not walked", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, ownId } = await seedInsertWithParallels(t);
+    const ownCard = await seedCard(t, ownId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    const result = await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: insertId,
+      value: "On Card",
+    });
+    expect(result.parallelIds).not.toContain(ownId);
+    await drainScheduled(t);
+    const red = await get(t, ownId);
+    expect(red!.features?.autographFormat).toBe("Sticker/Label");
+    expect(red!.lastUpdated).toBe(SEEDED_AT);
+    const card = await get(t, ownCard);
+    expect(card!.features?.autographed).toBe("None");
+    expect(card!.lastUpdated).toBe(SEEDED_AT);
+  });
+
+  test("a parallel already holding the same format has its AU cards walked again", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, sameId } = await seedInsertWithParallels(t);
+    const late = await seedCard(t, sameId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: insertId,
+      value: "On Card",
+    });
+    expect((await get(t, sameId))!.lastUpdated).toBe(SEEDED_AT);
+    await drainScheduled(t);
+    expect((await get(t, late))!.features?.autographed).toBe("On Card");
+  });
+
+  test("a parallel's own answer does not reach its insert or its siblings", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId, sameId } = await seedInsertWithParallels(t);
+    const result = await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: sameId,
+      value: "Sticker/Label",
+    });
+    expect(result.parallelIds).toEqual([]);
+    expect((await get(t, insertId))!.features).toEqual({ autographed: "None" });
+    expect((await get(t, unsetId))!.features).not.toHaveProperty("autographFormat");
+  });
+
+  test("a changed insert answer leaves the parallels with the format they took", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    const admin = t.withIdentity(ADMIN);
+    await admin.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: insertId, value: "On Card" });
+    await drainScheduled(t);
+    const second = await admin.mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: insertId,
+      value: "Sticker/Label",
+    });
+    // Gold now holds "On Card" of its own: a different format, never overwritten.
+    expect(second.parallelIds).not.toContain(unsetId);
+    expect((await get(t, unsetId))!.features?.autographFormat).toBe("On Card");
+  });
+
+  test("a clear reaches no parallel", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, sameId } = await seedInsertWithParallels(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(insertId, { features: { autographed: "None", autographFormat: "On Card" } });
+    });
+    const result = await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: insertId,
+      value: "",
+    });
+    expect(result).toEqual({ parallelIds: [] });
+    expect((await get(t, sameId))!.features?.autographFormat).toBe("On Card");
+  });
+});
+
+/**
+ * The Base and its parallels: sport › setName › variantType "Base", and a
+ * sibling variantType "Parallels" holding two base parallels (`insert`-level
+ * rows), one of which has a parallel of its own.
+ */
+async function seedBaseWithParallels(t: T, opts: { secondBase?: boolean } = {}) {
+  return t.run(async (ctx) => {
+    const sportId = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
+      platformData: {},
+      children: [],
+      lastUpdated: SEEDED_AT,
+    });
+    const setNameId = await ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value: "Chrome",
+      platformData: {},
+      parentId: sportId,
+      children: [],
+      lastUpdated: SEEDED_AT,
+    });
+    const type = (value: string) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value,
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        features: { autographed: "None" },
+        lastUpdated: SEEDED_AT,
+      });
+    const baseId = await type("Base");
+    if (opts.secondBase) await type("Bases");
+    const parallelsTypeId = await type("Parallels");
+    const insertsTypeId = await type("Inserts");
+    const row = (level: "insert" | "parallel", value: string, parentId: Id<"selectorOptions">, features: Record<string, string> = { autographed: "None" }) =>
+      ctx.db.insert("selectorOptions", {
+        level,
+        value,
+        platformData: {},
+        parentId,
+        children: [],
+        features,
+        lastUpdated: SEEDED_AT,
+      });
+    const refractorId = await row("insert", "Refractors", parallelsTypeId);
+    const refractorGoldId = await row("parallel", "Refractors Gold", refractorId);
+    const sepiaId = await row("insert", "Sepia", parallelsTypeId, { autographed: "None", autographFormat: "Sticker/Label" });
+    const sepiaRedId = await row("parallel", "Sepia Red", sepiaId);
+    // An insert under the Inserts type is not a parallel of the Base.
+    const futureId = await row("insert", "Future Stars", insertsTypeId);
+    return { baseId, refractorId, refractorGoldId, sepiaId, sepiaRedId, futureId };
+  });
+}
+
+describe("setAutographFormat — a Base answer reaches the Base's parallels", () => {
+  test("each base parallel with no format takes it, and so do ITS parallels; one holding its own stops the reach there", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedBaseWithParallels(t);
+    const refractorCard = await seedCard(t, ids.refractorId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    const goldCard = await seedCard(t, ids.refractorGoldId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+
+    const result = await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: ids.baseId,
+      value: "On Card",
+    });
+    expect(result.parallelIds).toEqual([ids.refractorId, ids.refractorGoldId]);
+    await drainScheduled(t);
+
+    expect((await get(t, ids.refractorId))!.features?.autographFormat).toBe("On Card");
+    expect((await get(t, ids.refractorGoldId))!.features?.autographFormat).toBe("On Card");
+    expect((await get(t, refractorCard))!.features?.autographed).toBe("On Card");
+    expect((await get(t, goldCard))!.features?.autographed).toBe("On Card");
+    // Sepia holds its own answer, so neither it nor its parallel moves.
+    expect((await get(t, ids.sepiaId))!.features?.autographFormat).toBe("Sticker/Label");
+    expect((await get(t, ids.sepiaRedId))!.features).not.toHaveProperty("autographFormat");
+    // An insert is not a base parallel.
+    expect((await get(t, ids.futureId))!.features).not.toHaveProperty("autographFormat");
+  });
+
+  test("a set with no single Base reaches nothing, as the build refuses it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedBaseWithParallels(t, { secondBase: true });
+    const result = await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: ids.baseId,
+      value: "On Card",
+    });
+    expect(result.parallelIds).toEqual([]);
+    expect((await get(t, ids.refractorId))!.features).not.toHaveProperty("autographFormat");
+  });
+});
+
+describe("inheritAutographFormatToParallels — the commit door", () => {
+  test("reaches the parallels and walks only their cards (the leaf's are born formatted)", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(insertId, { features: { autographed: "None", autographFormat: "On Card" } });
+    });
+    const leafCard = await seedCard(t, insertId, "9", { attributes: ["AU"], features: { autographed: "None" } });
+    const parallelCard = await seedCard(t, unsetId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    await t.mutation(internal.autographFormat.inheritAutographFormatToParallels, {
+      selectorOptionId: insertId,
+      format: "On Card",
+    });
+    expect((await get(t, unsetId))!.features?.autographFormat).toBe("On Card");
+    await drainScheduled(t);
+    expect((await get(t, parallelCard))!.features?.autographed).toBe("On Card");
+    // `walkLeaf: false` — the leaf's own walk is the commit's, not this one's.
+    expect((await get(t, leafCard))!.features?.autographed).toBe("None");
+  });
+
+  test("does nothing once the leaf no longer holds the format", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    await t.mutation(internal.autographFormat.inheritAutographFormatToParallels, {
+      selectorOptionId: insertId,
+      format: "On Card",
+    });
+    expect((await get(t, unsetId))!.features).not.toHaveProperty("autographFormat");
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled).toEqual([]);
+  });
+});
+
+describe("a parallel built after its insert has a format inherits it", () => {
+  async function buildOne(t: T, parallelId: Id<"selectorOptions">, insertId: Id<"selectorOptions">, sourceCardId: Id<"cardChecklist">) {
+    return t.mutation(internal.parallelChecklistBuild.insertParallelCardsPage, {
+      parallelId,
+      sourceId: insertId,
+      copies: [
+        {
+          sourceCardId,
+          expect: { cardNumber: "1", cardName: "Card 1", namesOnCard: [] },
+          bsc: { ref: "bsc-1" },
+        },
+      ],
+      remap: [],
+    });
+  }
+
+  test("the first copy page writes the insert's format onto the parallel and the AU copy is born formatted, AUTO in its title", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(insertId, { features: { autographed: "None", autographFormat: "Sticker/Label" } });
+    });
+    // An insert card the cascade has not reached yet: the copy is formatted
+    // by the parallel's inherited answer, not by the card's own fact.
+    const source = await seedCard(t, insertId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    const page = await buildOne(t, unsetId, insertId, source);
+    expect(page.changed).toBe(false);
+    expect(page.created).toHaveLength(1);
+    expect((await get(t, unsetId))!.features?.autographFormat).toBe("Sticker/Label");
+    const copy = await get(t, page.created[0].to);
+    expect(copy!.features?.autographed).toBe("Sticker/Label");
+    expect(copy!.features).not.toHaveProperty("autographFormat");
+    expect(copy!.listingTitle).toMatch(/\bAUTO\b/);
+  });
+
+  test("a parallel holding its own format keeps it at build time", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, ownId } = await seedInsertWithParallels(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(insertId, { features: { autographed: "None", autographFormat: "On Card" } });
+    });
+    const source = await seedCard(t, insertId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    const page = await buildOne(t, ownId, insertId, source);
+    expect((await get(t, ownId))!.features?.autographFormat).toBe("Sticker/Label");
+    expect((await get(t, page.created[0].to))!.features?.autographed).toBe("Sticker/Label");
+  });
+
+  test("an insert with no format gives the parallel none", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    const source = await seedCard(t, insertId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    const page = await buildOne(t, unsetId, insertId, source);
+    expect((await get(t, unsetId))!.features).not.toHaveProperty("autographFormat");
+    expect((await get(t, page.created[0].to))!.features?.autographed).toBe("None");
+  });
+
+  test("a changed page (another build got there first) writes no format", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(insertId, { features: { autographed: "None", autographFormat: "On Card" } });
+    });
+    const source = await seedCard(t, insertId, "1", { attributes: ["AU"], features: { autographed: "None" } });
+    await seedCard(t, unsetId, "1", {});
+    const page = await buildOne(t, unsetId, insertId, source);
+    expect(page.changed).toBe(true);
+    expect((await get(t, unsetId))!.features).not.toHaveProperty("autographFormat");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Jason, 2026-10-18 — the generated title is rebuilt once the format lands
+// ---------------------------------------------------------------------------
+
+describe("the cascade rebuilds a still-generated title", () => {
+  const preview = (t: T, cardId: Id<"cardChecklist">) =>
+    t.withIdentity(ADMIN).query(api.selectorOptions.previewListingTitle, { cardId });
+
+  /** Seed an AU card whose stored title is exactly what the generator makes of it now. */
+  async function generatedCard(
+    t: T,
+    leafId: Id<"selectorOptions">,
+    cardNumber: string,
+    fields: Partial<Doc<"cardChecklist">>,
+  ) {
+    const id = await seedCard(t, leafId, cardNumber, { attributes: ["AU"], features: { autographed: "None" }, ...fields });
+    const before = await preview(t, id);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(id, {
+        listingTitle: before.title,
+        ...(before.coreFits ? {} : { listingTitleTruncated: true }),
+      });
+    });
+    return { id, before };
+  }
+
+  test("a generated title gains AUTO, built by Regenerate's own builder; the flag stays absent", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedLeaf(t, { features: { autographed: "None", season: "2024" } });
+    const griffey = await seedPlayer(t, sportId, "Ken Griffey Jr.");
+    const { id, before } = await generatedCard(t, leafId, "1", { playerIds: [griffey] });
+    expect(before.title).not.toMatch(/\bAUTO\b/);
+
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "On Card",
+    });
+    await drainScheduled(t);
+
+    const row = await get(t, id);
+    expect(row!.features?.autographed).toBe("On Card");
+    expect(row!.listingTitle).toMatch(/\bAUTO\b/);
+    // The rebuilt title is exactly what Regenerate offers for the card now.
+    expect(row!.listingTitle).toBe((await preview(t, id)).title);
+    expect(row!).not.toHaveProperty("listingTitleTruncated");
+  });
+
+  test("an operator's own title is never touched, though the card is formatted", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedLeaf(t, { features: { autographed: "None", season: "2024" } });
+    const griffey = await seedPlayer(t, sportId, "Ken Griffey Jr.");
+    const edited = await seedCard(t, leafId, "1", {
+      attributes: ["AU"],
+      playerIds: [griffey],
+      features: { autographed: "None" },
+      listingTitle: "Griffey Kid signed beauty #1",
+    });
+    // An edit that differs from the generated title by one word is still an edit.
+    const { id: nearly, before } = await generatedCard(t, leafId, "2", { playerIds: [griffey] });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(nearly, { listingTitle: `${before.title} Mint` });
+    });
+
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "Sticker/Label",
+    });
+    await drainScheduled(t);
+
+    const one = await get(t, edited);
+    expect(one!.features?.autographed).toBe("Sticker/Label");
+    expect(one!.listingTitle).toBe("Griffey Kid signed beauty #1");
+    expect((await get(t, nearly))!.listingTitle).toBe(`${before.title} Mint`);
+  });
+
+  test("a cut title is rebuilt like creation: still flagged when it was, still unflagged when it was answered before save", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedLeaf(t);
+    // Three long names: the core is cut at a word boundary with room left
+    // for the AUTO token.
+    const players = [];
+    for (const name of ["Alexander Hamilton", "Bartholomew Featherstonehaugh", "Maximilian Montgomery-Worthington"]) {
+      players.push(await seedPlayer(t, sportId, name));
+    }
+    const flagged = await generatedCard(t, leafId, "1", { playerIds: players });
+    expect(flagged.before.coreFits).toBe(false);
+    const kept = await generatedCard(t, leafId, "2", { playerIds: players });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(kept.id, { listingTitleTruncated: undefined });
+    });
+
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "On Card",
+    });
+    await drainScheduled(t);
+
+    const one = await get(t, flagged.id);
+    const now = await preview(t, flagged.id);
+    expect(now.coreFits).toBe(false);
+    expect(one!.listingTitle).toBe(now.title);
+    expect(one!.listingTitle).toMatch(/\bAUTO\b/);
+    expect(one!.listingTitleTruncated).toBe(true);
+    const two = await get(t, kept.id);
+    expect(two!.listingTitle).toBe((await preview(t, kept.id)).title);
+    expect(two!).not.toHaveProperty("listingTitleTruncated");
+  });
+
+  test("a parallel's AU cards reached by the insert's answer gain AUTO too", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, unsetId } = await seedInsertWithParallels(t);
+    const { id } = await generatedCard(t, unsetId, "1", {});
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: insertId,
+      value: "On Card",
+    });
+    await drainScheduled(t);
+    const row = await get(t, id);
+    expect(row!.listingTitle).toMatch(/\bAUTO\b/);
+    expect(row!.listingTitle).toBe((await preview(t, id)).title);
+  });
+
+  test("a changed answer moves the card's format but leaves its title (AUTO either way)", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedLeaf(t);
+    const { id } = await generatedCard(t, leafId, "1", {});
+    const admin = t.withIdentity(ADMIN);
+    await admin.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: leafId, value: "On Card" });
+    await drainScheduled(t);
+    const first = await get(t, id);
+    await admin.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: leafId, value: "Sticker/Label" });
+    await drainScheduled(t);
+    const second = await get(t, id);
+    expect(second!.features?.autographed).toBe("Sticker/Label");
+    expect(second!.listingTitle).toBe(first!.listingTitle);
+  });
+
+  test("the action reports the titles it rebuilt", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedLeaf(t, { features: { autographed: "None", autographFormat: "On Card" } });
+    await generatedCard(t, leafId, "1", {});
+    await seedCard(t, leafId, "2", { attributes: ["AU"], listingTitle: "Hand written" });
+    const result = await t.action(internal.autographFormat.cascadeAutographFormat, {
+      selectorOptionId: leafId,
+      format: "On Card",
+    });
+    expect(result).toMatchObject({ formatted: 2, retitled: 1 });
   });
 });

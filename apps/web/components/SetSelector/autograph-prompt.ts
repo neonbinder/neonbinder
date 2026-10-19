@@ -56,6 +56,16 @@ export function autographPromptSaved(value: AutographFormat): string {
   return `Autographs saved as ${AUTOGRAPH_CHOICE_LABEL[value].toLowerCase()}.`;
 }
 
+/**
+ * Said after the saved line when the answer also reached the row's parallels
+ * (Jason, 2026-10-18: an insert's or the Base's answer lands on each of its
+ * parallels with no format of its own). `count` is how many the server says
+ * it reached; nothing is said for none.
+ */
+export function autographPromptParallels(count: number): string {
+  return count === 1 ? "Its parallel takes the same answer." : `Its ${count} parallels take the same answer.`;
+}
+
 /** What the prompt reads off a stored card (a `getCardChecklist` row fits). */
 export interface AutographPromptCard {
   attributes?: readonly string[];

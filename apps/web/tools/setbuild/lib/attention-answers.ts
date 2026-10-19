@@ -85,6 +85,7 @@ import {
   AUTOGRAPH_FORMATS,
   asAutographFormat,
   autographPromptCount,
+  autographPromptParallels,
   autographPromptSaved,
   countUnformattedAutographs,
   type AutographFormat,
@@ -800,6 +801,13 @@ export interface AutographFixResult {
   warning?: string;
   /** The row's own autographed cards still marked not autographed when the wait ended. */
   stillUnformatted?: number;
+  /**
+   * Jason, 2026-10-18 — the parallels the answer also reached (each one whose
+   * own format was unset), not counting rows this call answers itself: how
+   * many, and their autographed cards still marked not autographed when the
+   * wait ended (absent when none was left, or none could be read).
+   */
+  parallels?: { count: number; stillUnformatted?: number };
 }
 
 export interface AutographFixOptions {
@@ -813,10 +821,11 @@ export interface AutographFixOptions {
 
 /**
  * The carry-over to the cards is scheduled server-side (`cascadeAutographFormat`,
- * one bounded page per 500 cards); this is the whole call's wait for it, shared
- * by every row the call answers, so a batch never waits row after row. The
- * budget is checked between polling passes, so a slow pass can run a little
- * past it: about 30 s, not a hard deadline.
+ * one bounded page per 500 cards, the row's first and then its parallels');
+ * this is the whole call's wait for it, shared by every row the call answers
+ * and every parallel those answers reach, so a batch never waits row after
+ * row. The budget is checked between polling passes, so a slow pass can run a
+ * little past it: about 30 s, not a hard deadline.
  */
 export const AUTOGRAPH_WAIT_MS = 30_000;
 export const AUTOGRAPH_POLL_MS = 1_000;
@@ -854,6 +863,16 @@ function ownUnformatted(cards: readonly ChecklistCard[]): number {
 }
 
 const labelOf = (f: AutographFormat) => AUTOGRAPH_CHOICE_LABEL[f].toLowerCase();
+
+/**
+ * The parallels `setAutographFormat` says its answer reached. A server from
+ * before that answer was returned says nothing (null): no parallels, never a
+ * failure.
+ */
+function parallelIdsOf(saved: unknown): string[] {
+  const ids = (saved as { parallelIds?: unknown } | null | undefined)?.parallelIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
 
 /**
  * Resolve every autograph answer to its row (exactly-one at every level; a
@@ -895,6 +914,13 @@ export async function resolveAutographAnswers(
  * to mark each row's cards, and says so for a row whose cards it did not see
  * finish.
  *
+ * An answer on an insert (or the Base) also reaches its parallels whose own
+ * format is unset (the server says which), and the wait covers their cards
+ * too. So the writes go DEEPEST ROW FIRST, whatever order the answers came
+ * in: a parallel answered in the same call holds its own answer before its
+ * insert's could reach it, and two answers are never settled by their order.
+ * Results stay in the answers' order.
+ *
  * Takes answers (resolved here first, with no write) or answers the caller
  * has already resolved. A refusal or a moot answer is a result, never a
  * throw; a failure that is neither throws `AutographFixAborted` with every
@@ -915,70 +941,101 @@ export async function applyAutographAnswers(
       ? (answers as readonly ResolvedAutographAnswer[])
       : await resolveAutographAnswers(client, target, answers as readonly AutographFixAnswer[]);
 
-  const results: AutographFixResult[] = [];
-  /** Rows written, waiting for the server to mark their cards: index into `results`. */
+  /** Indexed by the answer's position, so results keep the answers' order. */
+  const byIndex: Array<AutographFixResult | undefined> = [];
+  const inOrder = () => byIndex.filter((r): r is AutographFixResult => r !== undefined);
+  /** Rows written, waiting for the server to mark their cards: index into `byIndex`. */
   const written: Array<{ i: number; node: AttentionRowNode; marking: number }> = [];
+  /** Parallels an answer reached, waiting the same way: `i` is the answer that reached them. */
+  const reached: Array<{ i: number; rowId: RowId; marking: number }> = [];
+  const answeredIds = new Set(resolved.map((r) => String(r.node.rowId)));
+  const reachedIds = new Set<string>();
+  // Deepest row first (a parallel before its insert, an insert before the
+  // Base); a stable sort, so rows at one depth keep the answers' order.
+  const order = resolved
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.node.drillIds.length - a.r.node.drillIds.length);
 
-  for (const { at, node, answer } of resolved) {
+  for (const { r: { at, node, answer }, i } of order) {
     const head = { at, row: node.ref, rowLabel: node.label, rowId: String(node.rowId), format: answer.format };
     try {
       const leaf = await client.query(api.selectorOptions.getSelectorOptionById, { id: node.rowId });
       if (!leaf) {
-        results.push({ ...head, outcome: "moot", detail: "Already settled: this row is no longer in the set." });
+        byIndex[i] = { ...head, outcome: "moot", detail: "Already settled: this row is no longer in the set." };
         continue;
       }
       const stored = asAutographFormat(leaf.features?.autographFormat);
       if (stored !== undefined) {
-        results.push({
+        byIndex[i] = {
           ...head,
           outcome: "moot",
           detail:
             stored === answer.format
               ? `Already settled: ${node.label}'s autographs are marked ${labelOf(stored)}.`
               : `Already settled: ${node.label}'s autographs are marked ${labelOf(stored)}. If that is wrong, change it in Set details.`,
-        });
+        };
         continue;
       }
       const cards = await readChecklist(client, node.rowId);
       // The prompt's own rule (the leaf has no format, read just above).
       if (autographPromptCount(leaf.features?.autographFormat, cards) === 0) {
-        results.push({ ...head, outcome: "moot", detail: `Already settled: no autographed card on ${node.label} is waiting for a format.` });
+        byIndex[i] = { ...head, outcome: "moot", detail: `Already settled: no autographed card on ${node.label} is waiting for a format.` };
         continue;
       }
+      let saved: unknown;
       try {
-        await client.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: node.rowId, value: answer.format });
+        saved = await client.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: node.rowId, value: answer.format });
       } catch (err) {
         if (isRefusal(err)) {
-          results.push({ ...head, outcome: "refused", detail: refusalText(err) });
+          byIndex[i] = { ...head, outcome: "refused", detail: refusalText(err) };
           continue;
         }
         throw err;
       }
-      results.push({ ...head, outcome: "applied", detail: autographPromptSaved(answer.format) });
-      written.push({ i: results.length - 1, node, marking: ownUnformatted(cards) });
+      byIndex[i] = { ...head, outcome: "applied", detail: autographPromptSaved(answer.format) };
+      written.push({ i, node, marking: ownUnformatted(cards) });
+      // The parallels it reached, less the rows this call answers itself
+      // (each waited on as its own row) and any an earlier answer reached.
+      const parallelIds = parallelIdsOf(saved).filter((id) => !answeredIds.has(id) && !reachedIds.has(id));
+      for (const id of parallelIds) {
+        reachedIds.add(id);
+        let marking = -1;
+        try {
+          marking = ownUnformatted(await readChecklist(client, id as RowId));
+        } catch {
+          // Saved; only the first look failed. The wait looks again.
+        }
+        reached.push({ i, rowId: id as RowId, marking });
+      }
+      if (parallelIds.length > 0) byIndex[i]!.parallels = { count: parallelIds.length };
     } catch (err) {
       for (const w of written) {
-        results[w.i].warning = "The run stopped before this row's cards were checked; list attention again.";
+        byIndex[w.i]!.warning = "The run stopped before this row's cards were checked; list attention again.";
       }
-      throw new AutographFixAborted(results, err, at);
+      throw new AutographFixAborted(inOrder(), err, at);
     }
   }
+  const results = byIndex as AutographFixResult[];
 
-  // The server marks each row's cards in a scheduled walk: look until none
-  // of the rows' own autographed cards shows "None", within one budget.
-  const pending = new Map(written.filter((w) => w.marking > 0).map((w) => [w.i, { ...w, left: w.marking }]));
-  const unread = new Set<number>();
+  // The server marks each row's cards, then its parallels', in a scheduled
+  // walk: look until none of those autographed cards shows "None", within one
+  // budget. A parallel whose first look failed (`marking` -1) is looked at too.
+  type Watch = { key: string; rowId: RowId; left: number };
+  const pending = new Map<string, Watch>();
+  for (const w of written) if (w.marking > 0) pending.set(`row:${w.i}`, { key: `row:${w.i}`, rowId: w.node.rowId, left: w.marking });
+  for (const p of reached) if (p.marking !== 0) pending.set(`par:${p.rowId}`, { key: `par:${p.rowId}`, rowId: p.rowId, left: Math.max(p.marking, 0) });
+  const unread = new Set<string>();
   const started = now();
   while (pending.size > 0) {
-    for (const [i, w] of pending) {
+    for (const [key, w] of pending) {
       try {
-        w.left = ownUnformatted(await readChecklist(client, w.node.rowId));
-        unread.delete(i);
+        w.left = ownUnformatted(await readChecklist(client, w.rowId));
+        unread.delete(key);
       } catch {
         // The answer is saved; only the check failed. Try again next pass.
-        unread.add(i);
+        unread.add(key);
       }
-      if (w.left === 0 && !unread.has(i)) pending.delete(i);
+      if (w.left === 0 && !unread.has(key)) pending.delete(key);
     }
     if (pending.size === 0 || now() - started >= waitMs) break;
     await sleep(pollMs);
@@ -987,16 +1044,32 @@ export async function applyAutographAnswers(
   for (const w of written) {
     const r = results[w.i];
     const label = labelOf(r.format);
-    const still = pending.get(w.i);
+    const still = pending.get(`row:${w.i}`);
     if (w.marking === 0) {
       r.detail = `${r.detail} Its autographed cards here are listed from other sets, which keep their own format.`;
     } else if (!still) {
       r.detail = `${r.detail} ${plural(w.marking, "card", "cards")} on ${w.node.label} now marked ${label}.`;
-    } else if (unread.has(w.i)) {
+    } else if (unread.has(`row:${w.i}`)) {
       r.warning = `Saved, but ${w.node.label} could not be read back to check its cards; list attention again shortly.`;
     } else {
       r.warning = `${plural(still.left, "autographed card", "autographed cards")} on ${w.node.label} still show no format after ${Math.round(waitMs / 1000)}s; the server is still marking them. List attention again shortly.`;
       r.stillUnformatted = still.left;
+    }
+
+    // The parallels this answer reached.
+    const mine = reached.filter((p) => p.i === w.i);
+    if (mine.length === 0) continue;
+    const left = mine.reduce((n, p) => n + (pending.get(`par:${p.rowId}`)?.left ?? 0), 0);
+    const notRead = mine.some((p) => unread.has(`par:${p.rowId}`));
+    const one = mine.length === 1;
+    r.detail = `${r.detail} ${autographPromptParallels(mine.length)}`;
+    if (left > 0) {
+      r.parallels = { count: mine.length, stillUnformatted: left };
+      const more = `${plural(left, "autographed card", "autographed cards")} on ${one ? "its parallel" : "its parallels"} still show no format; the server is still marking them. List attention again shortly.`;
+      r.warning = r.warning ? `${r.warning} ${more}` : more;
+    } else if (notRead) {
+      const more = `${one ? "Its parallel" : "Its parallels"} could not be read back to check ${one ? "its" : "their"} cards; list attention again shortly.`;
+      r.warning = r.warning ? `${r.warning} ${more}` : more;
     }
   }
   return results;

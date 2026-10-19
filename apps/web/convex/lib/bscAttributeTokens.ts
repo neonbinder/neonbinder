@@ -48,6 +48,10 @@ const KNOWN_BSC_ATTRIBUTE_TOKENS = new Set([
   "PC",
   "FY",
   "EXCH",
+  // A serial number with no print run ("AU, SN" on a dual autograph's
+  // productName). Not a print run, so normalising keeps it raw, as it always
+  // has; listed so a label or a productName run made of it is recognised.
+  "SN",
   // NB's own canonical tokens, so an already-normalised list reads as one.
   "NUM",
 ]);
@@ -234,4 +238,87 @@ export function isBscAttributeLabel(
 /** The label's tokens, for a card whose attributes arrived only as a label. */
 export function bscAttributeLabelTokens(teamName: string): string[] {
   return labelTokens(teamName);
+}
+
+/**
+ * A `productName` longer than this is not one card's title; it is not read.
+ * Dropped, never truncated, like every other bound in this module.
+ */
+export const MAX_BSC_PRODUCT_NAME_LENGTH = 512;
+
+const ZERO_WIDTH = /[​-‍﻿]/g;
+
+/**
+ * The comma-joined run of upper-case words at the end of the text before
+ * `#<cardNo>`. The first word follows whitespace (it is attached to the last
+ * player name by a space); the rest follow commas. Case-sensitive on purpose:
+ * BSC writes its tokens upper case, and a mixed-case word ("Au", "Sn",
+ * "Harper") can never start or join the run.
+ */
+const PRODUCT_NAME_TOKEN_RUN = /(?:^|\s)([A-Z0-9/]+(?:\s*,\s*[A-Z0-9/]+)*)\s*$/;
+
+/** A word this module knows as an attribute token, exactly as BSC writes it. */
+function isProductNameToken(word: string): boolean {
+  if (word === "NUM") return false;
+  return (
+    KNOWN_BSC_ATTRIBUTE_TOKENS.has(word) || printRunFromToken(word) !== undefined
+  );
+}
+
+/**
+ * NEO-339 (Jason: "yes read AU from product name") — the attribute tokens in
+ * BSC's per-card `productName`, for a card whose `playerAttribute` is empty.
+ *
+ * Seen live on dual-autograph inserts (2024 Topps Chrome Black "Pitch Black
+ * Pairings Dual Autographs", 2025 Bowman Draft "Prospect Dual Autographs"):
+ * `playerAttribute` is "" while `productName` reads
+ * "Gerrit Cole / Andy Pettitte AU, SN #PBDA-CP" or "... AU, SN99 #...". The
+ * tokens are the comma-separated run between the player names and the
+ * `#<cardNo>` suffix.
+ *
+ * Strict, because the rest of the string is player names:
+ * - no `#<cardNo>` suffix (a `#` after whitespace, with text after it) means
+ *   no run, so nothing is read;
+ * - only the trailing run of words this module knows, written upper case
+ *   (`AU`, `SN`, `SN99`, `1/1`, `RC`, ...), is taken; the walk stops at the
+ *   first word it does not know, so a name never becomes a token;
+ * - something must precede the run (the names), or nothing is read;
+ * - `NUM` is NB's own word, never BSC's, and is not read from here.
+ *
+ * Returns the raw tokens, like `parsePlayerAttributeTokens`; the caller bounds
+ * and normalises them the same way (`SN99` -> `NUM` + print run 99; a bare
+ * `SN`, which names no print run, stays `SN`). Pure; per-card data read once,
+ * when the card is created from marketplace data. Set and insert names are
+ * never passed here.
+ */
+export function bscAttributeTokensFromProductName(productName: unknown): string[] {
+  if (typeof productName !== "string") return [];
+  const value = productName.replace(ZERO_WIDTH, "").trim();
+  if (!value || value.length > MAX_BSC_PRODUCT_NAME_LENGTH) return [];
+
+  const hash = value.lastIndexOf("#");
+  if (hash <= 0 || !/\s/.test(value[hash - 1])) return [];
+  if (!value.slice(hash + 1).trim()) return [];
+  const head = value.slice(0, hash).trimEnd();
+
+  const match = head.match(PRODUCT_NAME_TOKEN_RUN);
+  if (!match || match.index === undefined) return [];
+  const words = match[1].split(",").map((w) => w.trim());
+
+  // The trailing run of known tokens, read right to left: "WITT, AU" keeps
+  // "AU" and stops at the name.
+  let firstToken = words.length;
+  while (firstToken > 0 && isProductNameToken(words[firstToken - 1])) {
+    firstToken--;
+  }
+  if (firstToken === words.length) return [];
+
+  // The names must come first: a run with nothing before it is not the
+  // "<players> <tokens> #<cardNo>" shape.
+  const before =
+    head.slice(0, match.index).trim() +
+    (firstToken > 0 ? words.slice(0, firstToken).join(",") : "");
+  if (!before.trim()) return [];
+
+  return Array.from(new Set(words.slice(firstToken)));
 }

@@ -28,6 +28,7 @@ import AutographFormatStep, {
   AUTOGRAPH_PROMPT_SAVING,
   AutographFormatPrompt,
   autographPromptLine,
+  autographPromptParallels,
   autographPromptSaved,
   autographStepQuestion,
 } from "./AutographFormatStep";
@@ -182,13 +183,14 @@ describe("AutographFormatStep — keyboard", () => {
 
 describe("AutographFormatPrompt — a stored leaf", () => {
   function PromptHost({ count = 3 }: { count?: number }) {
-    const [saved, setSaved] = useState<AutographFormat | undefined>(undefined);
+    const [saved, setSaved] = useState<{ value: AutographFormat; parallels: number } | undefined>(undefined);
     return (
       <AutographFormatPrompt
         selectorOptionId={LEAF}
         count={count}
-        saved={saved}
-        onSaved={setSaved}
+        saved={saved?.value}
+        savedParallels={saved?.parallels}
+        onSaved={(value, parallels) => setSaved({ value, parallels })}
       />
     );
   }
@@ -214,6 +216,27 @@ describe("AutographFormatPrompt — a stored leaf", () => {
     expect(status.textContent).toBe(autographPromptSaved("Sticker/Label"));
     expect(document.activeElement).toBe(status);
     expect(screen.queryByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] })).toBeNull();
+  });
+
+  it("names the parallels the answer also reached, and says nothing of none", async () => {
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: ["p1"] });
+    const { unmount } = render(<PromptHost />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] }));
+    });
+    expect((await screen.findByRole("status")).textContent).toBe(
+      `${autographPromptSaved("On Card")} ${autographPromptParallels(1)}`,
+    );
+    expect(autographPromptParallels(1)).toBe("Its parallel takes the same answer.");
+    expect(autographPromptParallels(4)).toBe("Its 4 parallels take the same answer.");
+    unmount();
+
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: [] });
+    render(<PromptHost />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] }));
+    });
+    expect((await screen.findByRole("status")).textContent).toBe(autographPromptSaved("On Card"));
   });
 
   it("a refusal shows the server's sentence and keeps both answers", async () => {
