@@ -13,9 +13,10 @@ test(
     const edit = page.getByRole("button", { name: new RegExp(`^Edit card ${num}(, .*)?$`) });
     const cardName = page.getByRole("textbox", { name: "Card name" });
     const cardTitle = page.getByRole("textbox", { name: "Card title", exact: true });
-    const attentionBadge = page.getByRole("img", {
-      name: new RegExp(`^Card ${num}(, .*)? needs attention: variation text is over the 65-character limit$`),
-    });
+    // The row's mark, by its full list of reasons.
+    const markFor = (reasons: string) =>
+      page.getByRole("img", { name: new RegExp(`^Card ${num}(, .*)? needs attention: ${reasons}$`) });
+    const attentionBadge = markFor("variation text is over the 65-character limit");
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
 
@@ -87,8 +88,10 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
 
-    // The row carries an attention badge, and the checklist counts it.
-    await expect(attentionBadge).toBeVisible();
+    // The row carries an attention badge, and the checklist counts it. NEO-339:
+    // the card links no player (none was picked), so its mark says that first.
+    const playerAndVariation = markFor("no player on this card yet; variation text is over the 65-character limit");
+    await expect(playerAndVariation).toBeVisible();
     // The header's amber pill (NEO-335): singular for one card, and its visible
     // text is its accessible name, so the exact name is the exact count.
     const pill = page.getByRole("button", { name: "1 needs you", exact: true });
@@ -103,7 +106,19 @@ test(
     // says which this is, and the subtitle names the question.
     await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
     await expect(fixer.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+
+    // NEO-339: the player is asked first. This card shows nobody, so the answer
+    // is "No player on this card", recorded on the card.
+    await expect(fixer.getByText("Cards with no player", { exact: true })).toBeVisible();
+    await expect(fixer.getByText(/^No player is linked to this card yet\./)).toBeVisible();
+    await expectAccessible(page, { within: fixer, label: "Attention walker, card with no player" });
+    await fixer.getByRole("button", { name: "No player on this card", exact: true }).click();
+
+    // The same card comes straight back for its variation: the sitting's second
+    // question, so the counter reads 2 of 2.
     await expect(fixer.getByText("Card titles", { exact: true })).toBeVisible();
+    await expect(fixer.getByText("Step 2 of 2", { exact: true })).toBeVisible();
+    await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
     await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
     await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
@@ -116,12 +131,15 @@ test(
     await expect(fixer.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();
     // No "fixed" count any more (NEO-335 Phase 2): the counter holds y of y, and
     // that the save WROTE is proved on the grid below, where the badge is gone.
-    await expect(fixer.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(fixer.getByText("Step 2 of 2", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: fixer, label: "Attention walker, all clear" });
     await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
     await expect(fixer).toBeHidden();
 
+    // Both answers stood: no mark of either kind, and nothing left to count.
     await expect(attentionBadge).toBeHidden();
+    await expect(playerAndVariation).toBeHidden();
+    await expect(page.getByRole("img", { name: new RegExp(`^Card ${num}(, .*)? needs attention: `) })).toBeHidden();
     await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toBeHidden();
     await expect(page.getByText(`#${num}`, { exact: true })).toBeVisible();
   },

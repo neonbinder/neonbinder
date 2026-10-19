@@ -5,6 +5,7 @@
  * UI.
  */
 import { describe, expect, test } from "vitest";
+import { detectGroupings, normalizeName } from "../../components/SetSelector/parallelDetection";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   buildInitialState,
@@ -172,8 +173,19 @@ describe("buildInitialState — a row that roots its own family (NEO-339, 2023 T
     "Future Stars Autographs Orange",
   );
 
-  test("the Autographs family stands on its own: its parallels go under it, not under Future Stars", () => {
+  test("by default the plain prefix rule places every row, and the family root is only reported", () => {
     const init = buildInitialState(family);
+    expect(childrenOf(init, "Future Stars")).toHaveLength(5);
+    expect([...init.familyRoots]).toEqual([["Future Stars Autographs", "Future Stars"]]);
+  });
+
+  test("X / X Orange / X Orange Wave: both are parallels of X (Jason, 2026-10-19)", () => {
+    const init = buildInitialState(flat("X", "X Orange", "X Orange Wave"));
+    expect(childrenOf(init, "X")).toEqual(["X Orange", "X Orange Wave"]);
+  });
+
+  test("holdFamilyRoots (evidence: no shared card number) keeps the root top level, parent of its own family", () => {
+    const init = buildInitialState(family, { holdFamilyRoots: new Set([id("Future Stars Autographs")]) });
     expect(init.placement.get(id("Future Stars Autographs"))).toEqual({ kind: "ungrouped" });
     expect(childrenOf(init, "Future Stars")).toEqual(["Future Stars Red"]);
     expect(childrenOf(init, "Future Stars Autographs")).toEqual([
@@ -181,29 +193,95 @@ describe("buildInitialState — a row that roots its own family (NEO-339, 2023 T
       "Future Stars Autographs Red",
       "Future Stars Autographs SuperFractor",
     ]);
-    expect([...init.familyRoots]).toEqual([["Future Stars Autographs", "Future Stars"]]);
+    expect(init.familyRoots.size).toBe(0);
   });
 
-  test("a lone extension is still a parallel by prefix: only a row that heads a family is held back", () => {
+  test("one family is one level: inside a held family, a deeper extension joins the root", () => {
+    const init = buildInitialState(flat("Stars", "Stars Autographs", "Stars Autographs Gold", "Stars Autographs Gold Wave"), {
+      holdFamilyRoots: new Set([id("Stars Autographs")]),
+    });
+    expect(childrenOf(init, "Stars Autographs")).toEqual(["Stars Autographs Gold", "Stars Autographs Gold Wave"]);
+    expect(init.familyRoots.size).toBe(0);
+  });
+
+  test("a lone extension roots no family: never reported", () => {
     const init = buildInitialState(flat("Radiating Rookies", "Radiating Rookies Autographs"));
     expect(init.placement.get(id("Radiating Rookies Autographs"))).toEqual({ kind: "child", parentId: "Radiating Rookies" });
     expect(init.familyRoots.size).toBe(0);
   });
 
-  test("one family is one level: a deeper extension joins the family root, never a row inside the family", () => {
-    const init = buildInitialState(flat("Stars", "Stars Autographs", "Stars Autographs Gold", "Stars Autographs Gold Wave"));
-    expect(childrenOf(init, "Stars Autographs")).toEqual(["Stars Autographs Gold", "Stars Autographs Gold Wave"]);
-    expect(init.placement.get(id("Stars Autographs"))).toEqual({ kind: "ungrouped" });
-    expect([...init.familyRoots.keys()]).toEqual(["Stars Autographs"]);
-  });
-
-  test("nestFamilyRoots restores the plain prefix rule for a root the caller vouches for", () => {
-    const init = buildInitialState(family, { nestFamilyRoots: new Set([id("Future Stars Autographs")]) });
-    expect(childrenOf(init, "Future Stars")).toHaveLength(5);
-    expect(init.familyRoots.size).toBe(0);
-  });
-
   test("suggest: false reports no family roots", () => {
     expect(buildInitialState(family, { suggest: false }).familyRoots.size).toBe(0);
+  });
+});
+
+/**
+ * The modal's suggestions must stay exactly what main shipped: this is
+ * main's `detectGroupings`, verbatim but for its types, run against the
+ * current one with no `holdFamilyRoots`.
+ */
+function mainDetectGroupings(inserts: ReadonlyArray<{ _id: string; value: string }>, excludeAsChild: ReadonlySet<string>) {
+  const normalized = inserts.map((it) => ({ _id: it._id, norm: normalizeName(it.value) }));
+  const byLength = [...normalized].sort((a, b) => a.norm.length - b.norm.length);
+  const suggestions = new Map<string, string[]>();
+  const parents = new Set<string>();
+  const claimedAsChild = new Set<string>();
+  for (const child of byLength) {
+    if (excludeAsChild.has(child._id)) continue;
+    let bestParent: string | null = null;
+    let bestLen = -1;
+    for (const candidate of byLength) {
+      if (candidate._id === child._id) continue;
+      if (candidate.norm.length >= child.norm.length) continue;
+      const prefix = candidate.norm + " ";
+      if (!child.norm.startsWith(prefix)) continue;
+      if (claimedAsChild.has(candidate._id)) continue;
+      if (candidate.norm.length > bestLen) {
+        bestLen = candidate.norm.length;
+        bestParent = candidate._id;
+      }
+    }
+    if (bestParent) {
+      const list = suggestions.get(bestParent) ?? [];
+      list.push(child._id);
+      suggestions.set(bestParent, list);
+      parents.add(bestParent);
+      claimedAsChild.add(child._id);
+    }
+  }
+  const ungroupedSelfStanding = new Set<string>();
+  for (const it of normalized) {
+    if (parents.has(it._id) || claimedAsChild.has(it._id)) continue;
+    ungroupedSelfStanding.add(it._id);
+  }
+  return { suggestions, ungroupedSelfStanding, parents };
+}
+
+describe("detectGroupings with no evidence is main's rule, unchanged", () => {
+  test("same suggestions, parents and standing rows over many generated name lists", () => {
+    const words = ["Stars", "Autographs", "Red", "Gold", "Wave", "Orange", "Refractor", "Future"];
+    let seed = 339;
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    for (let run = 0; run < 400; run++) {
+      // Mostly names that extend another by a word, so families form often.
+      const names = new Set<string>();
+      const count = 2 + rand(9);
+      for (let i = 0; i < count; i++) {
+        const existing = [...names];
+        const word = words[rand(words.length)];
+        names.add(existing.length > 0 && rand(10) < 7 ? `${existing[rand(existing.length)]} ${word}` : word);
+      }
+      const inserts = [...names].map((value, i) => ({ _id: `r${i}`, value }));
+      const exclude = new Set(inserts.filter(() => rand(5) === 0).map((x) => x._id));
+      const now = detectGroupings(inserts, exclude);
+      const was = mainDetectGroupings(inserts, exclude);
+      expect([...now.suggestions]).toEqual([...was.suggestions]);
+      expect([...now.parents]).toEqual([...was.parents]);
+      expect([...now.ungroupedSelfStanding]).toEqual([...was.ungroupedSelfStanding]);
+      expect(now.heldFamilyRoots.size).toBe(0);
+    }
   });
 });

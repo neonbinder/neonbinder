@@ -1,7 +1,8 @@
 /**
  * NEO-339 — a small set for the attention tests: Base, an Inserts type with
  * one row ("Future Stars") and its parallel ("Gold"), a mutable card store the
- * fake `updateCard` / `confirmCardNoTeam` write into the way the server does,
+ * fake `updateCard` / `confirmCardNoTeam` / `confirmCardNoPlayer` (NEO-339)
+ * write into the way the server does,
  * the rows' own `features` (NEO-345 `autographFormat`) with the header
  * prompt's `setAutographFormat`, its reach onto Future Stars' parallel and its
  * scheduled carry-over to the cards, and
@@ -51,9 +52,13 @@ export function card(id: string, cardNumber: string, cardName: string, extra: Re
   };
 }
 
-/** A card with a team on it and nothing to ask: never listed. */
+/** A card with a player and a team on it and nothing to ask: never listed. */
 export function quiet(id: string, cardNumber: string): Card {
-  return card(id, cardNumber, `Quiet ${cardNumber}`, { teamOnCardIds: ["team-x"], listingTitle: `Title ${cardNumber}` });
+  return card(id, cardNumber, `Quiet ${cardNumber}`, {
+    playerIds: [`player-${id}`],
+    teamOnCardIds: ["team-x"],
+    listingTitle: `Title ${cardNumber}`,
+  });
 }
 
 const ID_TEXT = (id: unknown) => String(id);
@@ -97,6 +102,10 @@ function updateCard(store: Store, args: Record<string, unknown>): null {
     delete target.teamNoneConfirmedAt;
     delete target.pendingTeamNames;
   }
+  // NEO-339: a non-empty player write retires "No player on this card".
+  if (Array.isArray(patch.playerIds) && patch.playerIds.length > 0) {
+    delete target.playerNoneConfirmedAt;
+  }
   for (const [k, v] of Object.entries(patch)) {
     if (Array.isArray(v) && v.length === 0) delete target[k];
     else target[k] = v;
@@ -110,6 +119,17 @@ function confirmNoTeam(store: Store, args: Record<string, unknown>) {
   if (Array.isArray(target.teamOnCardIds) && target.teamOnCardIds.length > 0) return { confirmed: false, stamped: false };
   if (target.teamNoneConfirmedAt) return { confirmed: true, stamped: false };
   target.teamNoneConfirmedAt = 1;
+  return { confirmed: true, stamped: true };
+}
+
+/** NEO-339 — `confirmCardNoPlayer`: refused once the card names a player. */
+function confirmNoPlayer(store: Store, args: Record<string, unknown>) {
+  const target = Object.values(store.rows).flat().find((c) => c._id === args.cardId);
+  if (!target) return { confirmed: false, stamped: false };
+  const named = (k: string) => Array.isArray(target[k]) && (target[k] as unknown[]).length > 0;
+  if (named("playerIds") || named("pendingPlayerNames")) return { confirmed: false, stamped: false };
+  if (target.playerNoneConfirmedAt) return { confirmed: true, stamped: false };
+  target.playerNoneConfirmedAt = 1;
   return { confirmed: true, stamped: true };
 }
 
@@ -186,6 +206,7 @@ export function attentionClient({ store, handlers = {}, cascadeAfter = "now" }: 
     },
     "selectorOptions:updateCard": (a) => updateCard(store, a),
     "cardChecklist:confirmCardNoTeam": (a) => confirmNoTeam(store, a),
+    "cardChecklist:confirmCardNoPlayer": (a) => confirmNoPlayer(store, a),
     "cardChecklist:suggestedTeamsForCard": () => [],
     "players:getManyByIds": (a) => (a.ids as string[]).map((id) => ({ _id: id, name: `Player ${id}` })),
     "teams:getManyByIds": (a) => (a.ids as string[]).map((id) => ({ _id: id, name: `Team ${id}` })),

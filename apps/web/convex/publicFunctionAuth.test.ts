@@ -2168,3 +2168,33 @@ describe("NEO-345: the autograph format door is admin-gated", () => {
     expect(src).toContain(`export const ${fn} = ${kind}({`);
   });
 });
+
+/**
+ * NEO-339 — "No player on this card". Public because the attention walker's
+ * MissingPlayerFixer (and the set-build tool's `{ noPlayer: true }`) call it;
+ * admin-only like its twin `confirmCardNoTeam`, and refused before the row is
+ * stamped. Its own file covers the answers.
+ */
+describe("NEO-339: the no-player confirmation is admin-gated", () => {
+  test("cardChecklist.confirmCardNoPlayer refuses a signed-out caller and a non-admin without stamping the card", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const cardId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "Checklist",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.cardChecklist.confirmCardNoPlayer, { cardId });
+    await expect(call(t)).rejects.toThrow();
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    expect((await t.run(async (ctx) => ctx.db.get(cardId)))!.playerNoneConfirmedAt).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call stamps.
+    await expect(call(t.withIdentity(ADMIN))).resolves.toEqual({ confirmed: true, stamped: true });
+  });
+});

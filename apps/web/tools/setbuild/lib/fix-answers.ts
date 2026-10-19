@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { CardFixAnswer } from "./attention";
 import { MAX_SUGGESTION_DECISIONS, type NameFixAnswer } from "./name-suggestions";
 import type { AutographFixAnswer } from "./attention-answers";
+import { MAX_FIX_DETACH, type DetachFixAnswer } from "./detach-answers";
 import { AUTOGRAPH_FORMATS } from "../../../convex/features/deriveCardFeatures";
 import type { FixAnswers } from "../service";
 
@@ -57,6 +58,8 @@ const playerAnswer = z.union([
 ]);
 
 const cardAnswer = z.union([
+  // NEO-339: "No player on this card" (a checklist, team, logo or relic card).
+  z.object({ noPlayer: z.literal(true) }).strict(),
   z.object({ noTeam: z.literal(true) }).strict(),
   z
     .object({
@@ -70,7 +73,7 @@ const cardAnswer = z.union([
       teams: z.array(teamAnswer).max(8).optional(),
     })
     .strict()
-    .refine((a) => a.players !== undefined || a.teams !== undefined, { message: "Give players, teams, noTeam or title." }),
+    .refine((a) => a.players !== undefined || a.teams !== undefined, { message: "Give players, teams, noPlayer, noTeam or title." }),
 ]);
 
 export const CardFixAnswerSchema = z
@@ -107,6 +110,15 @@ export const AutographFixAnswerSchema = z
 /** Autograph answers per call: each waits on the server's walk over its row, so a call stays short. */
 export const MAX_FIX_AUTOGRAPHS = 50;
 
+/** One marketplace link to detach from a row, as the Sources panel's × does (lib/detach-answers.ts). */
+export const DetachFixAnswerSchema = z
+  .object({
+    row: rowRef.optional().describe("The row; omit for Base."),
+    side: z.enum(["bsc", "sportlots"]),
+    id: text("The marketplace set id attached to the row, as nb_inspect lists it."),
+  })
+  .strict();
+
 export const FixAnswersSchema = z
   .object({
     cards: z
@@ -124,6 +136,14 @@ export const FixAnswersSchema = z
       .max(MAX_FIX_AUTOGRAPHS, `At most ${MAX_FIX_AUTOGRAPHS} autograph answers per call; split the batch and confirm each part.`)
       .optional()
       .describe(`Autograph format answers, one per row (set path only), at most ${MAX_FIX_AUTOGRAPHS} per call.`),
+    detach: z
+      .array(DetachFixAnswerSchema)
+      .max(MAX_FIX_DETACH, `At most ${MAX_FIX_DETACH} detach answers per call; split the batch and confirm each part.`)
+      .optional()
+      .describe(
+        `Marketplace links to detach from a row (set path only), at most ${MAX_FIX_DETACH} per call. ` +
+          "Removes the link only: cards fetched from it stay on the row.",
+      ),
   })
   .strict();
 
@@ -132,6 +152,8 @@ type Parsed = z.infer<typeof FixAnswersSchema>;
 const _cards: CardFixAnswer[] | undefined = undefined as unknown as Parsed["cards"];
 const _names: NameFixAnswer[] | undefined = undefined as unknown as Parsed["names"];
 const _autographs: AutographFixAnswer[] | undefined = undefined as unknown as Parsed["autographs"];
+const _detach: DetachFixAnswer[] | undefined = undefined as unknown as Parsed["detach"];
+void _detach;
 void _cards;
 void _names;
 void _autographs;

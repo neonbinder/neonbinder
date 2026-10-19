@@ -49,11 +49,13 @@ other ids and asks about the SportLots set (`reconcile-unsorted-sportlots`,
 answered at `sync.pending`), and apply never offers such an auto-match as a
 proposed pair. SportLots names no product for a set, so the review and the
 brand's held ids are the only id-based evidence of whose set it is.
-Group Parallels' suggestions (`detectGroupings`) hold back a row that roots
-its own family ("Future Stars Autographs", which "Future Stars Autographs
-Red" extends) instead of grouping it under its prefix parent ("Future Stars");
-the draft previews both rows and nests it only when their cards share a
-number, and with no preview it stays the parent of its own family.
+Group Parallels' suggestions (`detectGroupings`) are the plain prefix rule,
+as in the modal. The draft weighs one case by card numbers: a suggested
+child that roots a family of its own ("Future Stars Autographs", which
+"Future Stars Autographs Red" extends, under "Future Stars"). It previews
+both rows, and only when their cards share no number does the row stay top
+level as the parent of its own family (`holdFamilyRoots`). A shared number,
+or no preview to compare, groups it and its family under the parent.
 `nb_draft_set` returns a summary by
 default (`compactDraftReport`: the template or spec and every open decision
 whole, the other lists sampled with complete counts); `detail: "full"` /
@@ -121,7 +123,7 @@ nothing on any set is waiting, lookups and autograph rows included. A failed rea
 report. `nb_attention` / `attention` lists every item with the facts its
 fixer shows and the answers it takes; `nb_fix` / `fix` answers them through
 the fixers' own mutations (`lib/attention-answers.ts`: `updateCard`,
-`confirmCardNoTeam`, the pickers' `findOrCreate`) and the names dialog's
+`confirmCardNoPlayer`, `confirmCardNoTeam`, the pickers' `findOrCreate`) and the names dialog's
 (`applySelectorSyncSuggestions`, `baseVersion` read at fix time, the label
 checked against a fresh read, 200 decisions per call). The answer shapes are
 one zod schema (`lib/fix-answers.ts`) shared by the tool and the CLI's
@@ -129,6 +131,21 @@ one zod schema (`lib/fix-answers.ts`) shared by the tool and the CLI's
 read-only; the SportLots review and an open entity review point at
 `nb_sl_review_apply` and `nb_decide`. `nb_inspect` takes `attention: true`
 (CLI `--attention`) for the totals alone.
+
+**A card with no player (NEO-339).** Jason, 2026-10-19: a card that links to
+no player "needs you", by exactly the Set Builder's rule. `missingPlayer`
+fires when the card has no `playerIds`, no typed player name (that is
+`unreviewedName`) and no operator "No player on this card"
+(`playerNoneConfirmedAt`); it is walked first, ahead of missing teams,
+because a linked player is what the team question's suggestions come from.
+`nb_attention` lists it with the card's name and number and `teamsOnCard`
+(the clue that a card with nobody on it is the team card). It takes
+`{ players: [...] }` (each a name that is exactly one player in the sport,
+`{ link, birthYear }`, or `{ create }`, which only ever creates, as every
+player answer; plus `teams` when the card is missing its team too, in the
+same write) or `{ noPlayer: true }` for a checklist, team, logo or relic card
+that shows nobody (`cardChecklist.confirmCardNoPlayer`, refused once the card
+names a player). Linking a player later retires the stamp.
 
 **Autograph format (NEO-345).** A card carrying "AU" is signed; HOW it is
 signed (On Card or Sticker/Label) is NB data no marketplace gives, so the
@@ -177,11 +194,27 @@ titles: the walk writes `features.autographed` (and Signed By) only, so a
 title generated without "AUTO" keeps it until Regenerate (whose preview reads
 the new value). A commit that carries the format titles its AU cards with it.
 
+**Detaching a wrong marketplace link (`nb_fix`'s `detach: [{ row, side, id }]`,
+`lib/detach-answers.ts`).** The Set Builder's Sources panel × as an answer:
+set path only, at most 10 per call (`MAX_FIX_DETACH`), in the confirm digest
+only when given (every earlier phrase holds). The row is named like every fix
+answer (omit for Base); the id resolves to its slot by id (`slotForId`),
+never by label, and an id the row does not carry is moot. The card count is
+read at fix time (`getSlotCardCounts`) and sent as `acknowledgedCards` to
+`selectorOptions.detachPlatformId`, so a commit landing in between is refused
+(`DETACH_COUNT_CHANGED`, reported, nothing written); the reconciler's primary
+goes with `confirmPrimary`, as the panel's confirm sends it, and a later sync
+of the row could re-add it. Like the panel, it removes no card: the cards
+fetched from that set stay on the row (counted in the result as
+`orphanedCards`), for the operator to delete in the Set Builder. `nb_fix` is
+annotated destructive for it.
+
 **Research before asking (Jason, 2026-10-18).** The tool never guesses a
 fact about the real card and never writes one unasked. The agent driving it
 should look up what a source can settle before putting the question to the
-operator: an autograph row's format, a card's missing team, a variation that
-must be shortened. It checks the manufacturer's checklist or product page,
+operator: an autograph row's format, who is on a card with no player (or
+that it shows nobody), a card's missing team, a variation that must be
+shortened. It checks the manufacturer's checklist or product page,
 Beckett, Cardboard Connection and the like, brings the operator a proposal
 with the source it used, and writes it (spec or `nb_fix`) only once the
 operator confirms. With no source it says so and asks. A team it found is

@@ -32,7 +32,9 @@ describe("walkRankOfKind", () => {
     expect(walkRankOfKind("")).toBe(WALK_UNRANKED);
   });
 
-  test("teams are asked before names, names before titles, and the three title kinds share a rank", () => {
+  test("players are asked before teams, teams before names, names before titles, and the three title kinds share a rank", () => {
+    // NEO-339: a linked player is what the team question's chips come from.
+    expect(WALK_RANK.missingPlayer).toBeLessThan(WALK_RANK.missingTeam);
     expect(WALK_RANK.missingTeam).toBeLessThan(WALK_RANK.unreviewedName);
     expect(WALK_RANK.unreviewedName).toBeLessThan(WALK_RANK.titleOverLimit);
     expect(new Set([WALK_RANK.titleOverLimit, WALK_RANK.titleTruncated, WALK_RANK.aspectValueOverLimit]).size).toBe(1);

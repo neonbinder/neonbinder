@@ -17,8 +17,8 @@ import type { AttentionCardRow, AttentionKind } from "./card-attention";
 
 /**
  * NEO-335 — the order the walker asks its questions in: every card missing a
- * team first, then names not yet linked, then titles. Within a group, by card
- * number.
+ * player first (NEO-339), then every card missing a team, then names not yet
+ * linked, then titles. Within a group, by card number.
  *
  * A card is ranked by the question the walker will actually PUT to it — the
  * item `pickAttentionFixer` chose — not by the earliest kind it happens to
@@ -30,17 +30,25 @@ import type { AttentionCardRow, AttentionKind } from "./card-attention";
  * A `Record` over every kind, so adding a kind to `AttentionItem` without
  * deciding where it walks is a type error rather than a silent "last".
  * The three title kinds share a rank: they are one fixer and one question.
+ *
+ * NEO-339: cards with no player walk FIRST, ahead of the teams. A linked
+ * player is what the team question's chips come from (`suggestedTeamsForCard`
+ * reads the card's players' careers), so a card missing both is asked for its
+ * player first and, answered, comes to its team with the career's set-year
+ * team already picked — rather than asking for a team blind and then for the
+ * player who would have named it.
  */
 export const WALK_RANK: Record<AttentionKind, number> = {
-  missingTeam: 0,
-  unreviewedName: 1,
-  titleOverLimit: 2,
-  titleTruncated: 2,
-  aspectValueOverLimit: 2,
+  missingPlayer: 0,
+  missingTeam: 1,
+  unreviewedName: 2,
+  titleOverLimit: 3,
+  titleTruncated: 3,
+  aspectValueOverLimit: 3,
 };
 
 /** After every ranked kind: a card whose kinds this bundle has no fixer for. */
-export const WALK_UNRANKED = 3;
+export const WALK_UNRANKED = 4;
 
 /** The walk rank of the question a card is asked (its chosen item's kind). */
 export function walkRankOfKind(kind: string): number {

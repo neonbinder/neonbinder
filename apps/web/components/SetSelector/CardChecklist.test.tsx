@@ -1990,6 +1990,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           _id: "row-1",
           cardNumber: "1",
           teamOnCardIds: undefined,
+          playerIds: undefined,
           pendingPlayerNames: ["Chris Potter"],
         }),
       ];
@@ -2080,7 +2081,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       // that has a player. Neither has a team, so both are asked about — but
       // only card 1 belongs on the no-players line.
       state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined, playerIds: undefined }),
         settledCard({
           _id: "row-2",
           cardNumber: "2",
@@ -2111,8 +2112,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("a row whose incoming players were ACCEPTED in the review is not playerless", async () => {
       state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
-        settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined }),
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined, playerIds: undefined }),
+        settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined, playerIds: undefined }),
       ];
       mockDiffChecklist.mockResolvedValue({
         ...emptyDiff,
@@ -2140,6 +2141,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           _id: "row-1",
           cardNumber: "1",
           teamOnCardIds: undefined,
+          playerIds: undefined,
           pendingPlayerNames: ["Chris Potter"],
         }),
       ];
@@ -3063,6 +3065,8 @@ function attentionCard(overrides: Record<string, unknown> = {}) {
     cardName: "AL Leaders ERA LL",
     platformData: { bsc: { ref: "bsc-1" } },
     teamCheckDoneAt: 1_000,
+    // NEO-339: its players are linked, so a team is all it needs.
+    playerIds: ["player-1"],
     ...overrides,
   };
 }
@@ -3077,6 +3081,7 @@ function settledCard(overrides: Record<string, unknown> = {}) {
     platformData: { bsc: { ref: "bsc-2" } },
     teamCheckDoneAt: 1_000,
     teamOnCardIds: ["team-1"],
+    playerIds: ["player-2"],
     ...overrides,
   };
 }
@@ -4839,6 +4844,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
         _id: "card-unreviewed" as unknown as Id<"cardChecklist">,
         cardNumber: "9",
         cardName: "Yordan Alvrez",
+        playerIds: undefined,
         pendingPlayerNames: ["Yordan Alvrez"],
       }),
     ];

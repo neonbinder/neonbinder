@@ -137,6 +137,8 @@ export function fixConfirmPhrase(t: Target, path: NodePath, a: FixAnswers): stri
       cards: a.cards ?? [],
       names: a.names ?? [],
       ...(a.autographs && a.autographs.length > 0 ? { autographs: a.autographs } : {}),
+      // Like `autographs`: only when given, so every earlier phrase holds.
+      ...(a.detach && a.detach.length > 0 ? { detach: a.detach } : {}),
     }),
   );
 }
@@ -593,6 +595,8 @@ export interface FixAnswers {
   names?: NameFixAnswer[];
   /** Set path only: a row's autograph format, as the header prompt answers it (NEO-345). */
   autographs?: AutographFixAnswer[];
+  /** Set path only: marketplace links to detach from a row, as the Sources panel's × does (lib/detach-answers.ts). */
+  detach?: DetachFixAnswer[];
 }
 
 /**
@@ -602,12 +606,13 @@ export interface FixAnswers {
  * when its cards were not seen marked in time) or `names[i]`
  * (lib/name-suggestions.ts).
  */
-export type FixResult = CardFixResult | NameFixResult | AutographFixResult;
+export type FixResult = CardFixResult | NameFixResult | AutographFixResult | DetachFixResult;
 
 export interface FixReport {
   path: string;
-  applied: { cards: number; names: number; autographs: number };
-  /** One per answer, in answer order: cards, then autographs, then names. */
+  /** `detach` is present only when the call carried detach answers. */
+  applied: { cards: number; names: number; autographs: number; detach?: number };
+  /** One per answer, in answer order: cards, then autographs, then detach, then names. */
   results: FixResult[];
   /** The rename mutation's own counts, summed over its calls. */
   nameCounts: { applied: number; declined: number; stale: number; clashed: number; skipped: number };
@@ -620,6 +625,8 @@ export interface FixReport {
 import type { AutographAttentionItem, CardAttentionItem, CardFixAnswer } from "./lib/attention";
 import type { AutographFixAnswer, AutographFixResult, CardFixResult } from "./lib/attention-answers";
 import type { NameFixAnswer, NameFixResult, NameSuggestionItem } from "./lib/name-suggestions";
+import type { DetachFixAnswer, DetachFixResult } from "./lib/detach-answers";
+export type { DetachFixAnswer, DetachFixResult } from "./lib/detach-answers";
 export type { AutographFixAnswer, AutographFixResult, CardFixResult } from "./lib/attention-answers";
 export type { AutographAttentionItem, CardAttentionItem, CardFixAnswer } from "./lib/attention";
 export type { NameFixAnswer, NameFixResult, NameRowRef, NameSuggestionItem } from "./lib/name-suggestions";

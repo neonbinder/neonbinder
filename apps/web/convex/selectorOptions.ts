@@ -1937,6 +1937,13 @@ export const getCardChecklist = query({
       // `Object contains extra field` for every row that has it. This query is
       // `requireAdmin`, and the value is an admin's own Clerk subject.
       teamNoneConfirmedByUserId: v.optional(v.string()),
+      // NEO-339: the operator's "No player on this card" — the half of
+      // `missingPlayer` the row cannot say by itself (an empty `playerIds`
+      // is also "nobody linked yet"). Read client-side by
+      // `features/cardAttention.ts`, like `teamNoneConfirmedAt` above; the
+      // user id is audit only and listed because this validator is strict.
+      playerNoneConfirmedAt: v.optional(v.number()),
+      playerNoneConfirmedByUserId: v.optional(v.string()),
       attributes: v.optional(v.array(v.string())),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -6086,6 +6093,16 @@ export const updateCard = mutation({
     // Only a NON-EMPTY write clears it. `teamOnCardIds: []` is the operator
     // unlinking every team, which leaves the card teamless and the
     // confirmation still true.
+    // NEO-339: the player twin. A non-empty `playerIds` write (validated by
+    // `resolvePlayerIdsForWrite` above, so `filtered.playerIds` is what will
+    // actually be stored) retires the operator's "No player on this card" in
+    // the same patch. Derived, never an argument; `playerIds: []` leaves it.
+    const writtenPlayerIds = filtered.playerIds;
+    if (Array.isArray(writtenPlayerIds) && writtenPlayerIds.length > 0) {
+      filtered.playerNoneConfirmedAt = undefined;
+      filtered.playerNoneConfirmedByUserId = undefined;
+    }
+
     const writtenTeamIds = filtered.teamOnCardIds;
     if (Array.isArray(writtenTeamIds) && writtenTeamIds.length > 0) {
       filtered.teamNoneConfirmedAt = undefined;
@@ -19052,6 +19069,13 @@ export const commitCardChecklistChunk = internalMutation({
           existing.teamNoneConfirmedAt !== undefined &&
           teamIdsWritten !== undefined &&
           teamIdsWritten.length > 0;
+        // NEO-339 — the player twin, on the same one gate: an ACCEPTED,
+        // re-diffed, non-empty `playerIds` retires "No player on this card".
+        // A linkage-only refresh never touches it.
+        const retirePlayerNoneConfirmed =
+          existing.playerNoneConfirmedAt !== undefined &&
+          Array.isArray(contentPatch.playerIds) &&
+          (contentPatch.playerIds as unknown[]).length > 0;
 
         // ── NEO-221: this row's unreviewed-name stamp ─────────────────────
         //
@@ -19200,6 +19224,12 @@ export const commitCardChecklistChunk = internalMutation({
             ? {
                 teamNoneConfirmedAt: undefined,
                 teamNoneConfirmedByUserId: undefined,
+              }
+            : {}),
+          ...(retirePlayerNoneConfirmed
+            ? {
+                playerNoneConfirmedAt: undefined,
+                playerNoneConfirmedByUserId: undefined,
               }
             : {}),
           // Patching `undefined` deletes the field, so an emptied list is

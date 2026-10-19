@@ -1025,6 +1025,27 @@ export default defineSchema({
     // no document to point at, and every other audit column in this codebase
     // is the subject string.
     teamNoneConfirmedByUserId: v.optional(v.string()),
+    // NEO-339: an OPERATOR decided this card shows no player at all — a
+    // checklist, a team card, a logo or relic card with no person on it.
+    //
+    // The player twin of `teamNoneConfirmedAt` above, on the same terms. An
+    // empty `playerIds` cannot tell "nobody is on this card" from "nobody
+    // has linked the player yet", and `features/cardAttention.ts` badges the
+    // second as `missingPlayer`; this field is the operator's answer to the
+    // first, so the card stops being asked. Nothing derives it: no card
+    // name, attribute or marketplace value says a card has no player
+    // (invariant 4), only the operator does.
+    //
+    // Set ONLY by `cardChecklist.confirmCardNoPlayer`, server-stamped (the
+    // time is the server's, the user id `requireAdmin`'s; no client argument
+    // carries either). CLEARED the moment a non-empty `playerIds` is written
+    // in the same transaction (`updateCard`, or the commit's accepted content
+    // patch), so it can never contradict the players on the row. Carried
+    // verbatim onto a parallel's copy of the card, like the team ruling.
+    playerNoneConfirmedAt: v.optional(v.number()),
+    // The Clerk subject who confirmed it. Audit only: no UI reads it
+    // (`getCardChecklist` lists it because its `returns` is strict).
+    playerNoneConfirmedByUserId: v.optional(v.string()),
     // De-duped union of BSC playerAttribute[] + BSC features[] + variant
     // metadata. Tokens: ["RC","AU","RELIC","SP","SSP","NUM",...]. Drives
     // both the eBay Features aspect and the boolean derivations below.

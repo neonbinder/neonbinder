@@ -1359,6 +1359,58 @@ export const confirmCardNoTeam = mutation({
 });
 
 /**
+ * NEO-339 — record that an operator has decided this card shows no player: a
+ * checklist, a team card, a logo or relic card with nobody on it. The answer
+ * `MissingPlayerFixer`'s "No player on this card" gives, and the set-build
+ * tool's `{ noPlayer: true }`.
+ *
+ * `confirmCardNoTeam`'s twin, on the same terms, for the same reasons:
+ *
+ *  - **Server-stamped.** The only argument is the card; the time is
+ *    `Date.now()` and the user is `requireAdmin`'s. A client-supplied
+ *    timestamp would be badge suppression the client could mint for itself.
+ *  - **Refuses a card that names a player.** Re-read here, against the row as
+ *    it stands: a linked player (`playerIds`) or a typed one
+ *    (`pendingPlayerNames`, NEO-221's `unreviewedName`) and "nobody on this
+ *    card" cannot both be true, and a stale render must not be how that
+ *    contradiction is written. `confirmed: false` is the honest answer, not
+ *    an error.
+ *  - **Idempotent, never re-stamps.** A second call writes nothing and says
+ *    `stamped: false`, so it neither invalidates the checklist's queries nor
+ *    moves the audit stamp off whoever answered first.
+ *  - **`lastUpdated` untouched.** Suppression bookkeeping, not card content:
+ *    bumping it would stale a sync review open in another tab.
+ *
+ * `selectorOptions.updateCard` retires the stamp on any non-empty `playerIds`
+ * write, so linking a player later undoes this without a second control.
+ */
+export const confirmCardNoPlayer = mutation({
+  args: { cardId: v.id("cardChecklist") },
+  returns: v.object({
+    /** The row now carries a "no player" confirmation. */
+    confirmed: v.boolean(),
+    /** THIS call wrote it. False when it was already confirmed, or refused. */
+    stamped: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+
+    const row = await ctx.db.get(args.cardId);
+    if (!row) return { confirmed: false, stamped: false };
+    if ((row.playerIds?.length ?? 0) > 0 || (row.pendingPlayerNames?.length ?? 0) > 0) {
+      return { confirmed: false, stamped: false };
+    }
+    if (row.playerNoneConfirmedAt) return { confirmed: true, stamped: false };
+
+    await ctx.db.patch(row._id, {
+      playerNoneConfirmedAt: Date.now(),
+      playerNoneConfirmedByUserId: userId,
+    });
+    return { confirmed: true, stamped: true };
+  },
+});
+
+/**
  * NEO-102 — career-team SUGGESTIONS for one card, from the players on it.
  *
  * Suggestions, never auto-fill. The operator accepts one with a keystroke and

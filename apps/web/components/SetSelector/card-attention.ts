@@ -24,6 +24,10 @@ import type { AttentionKind } from "../../convex/features/cardAttention";
  * rather than indexed directly.
  */
 export const ATTENTION_LABELS: Record<AttentionKind, string> = {
+  // NEO-339. The twin of `missingTeam`'s wording, and "yet" for the same
+  // reason: a card with nobody on it is answered with "No player on this
+  // card", so the badge must not claim the card is wrong.
+  missingPlayer: "no player on this card yet",
   missingTeam: "no team on this card yet",
   // NEO-101. Worded as what is wrong rather than what to do — the fixer next
   // to it is the instruction. The numbers are spelled out because an operator

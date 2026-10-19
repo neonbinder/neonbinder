@@ -922,36 +922,34 @@ describe("draftSet: Group Parallels never swallows an insert's own family (NEO-3
       ["Future Stars", ["Future Stars Red"]],
       ["Future Stars Autographs", ["Future Stars Autographs SuperFractor", "Future Stars Autographs Red", "Future Stars Autographs Orange"]],
     ]);
-    expect(r.notes).toContain("Insert › Future Stars Autographs shares no card number with Future Stars: it stays its own insert, the parent of the rows that extend its name.");
+    expect(r.proposals).toContainEqual({
+      at: "steps[0].variants[0].group.parents",
+      kind: "grouping",
+      detail: "Insert › Future Stars Autographs shares no card number with Future Stars, so it stays its own insert and parents the rows that extend its name",
+    });
     // Each checklist is previewed once: the evidence and the row's own checklist share the answer.
     expect(previewsOf(client).sort()).toEqual(["base", "fs", "fsa"]);
   });
 
+  const allUnderFutureStars = [
+    {
+      insert: { bsc: "fs" },
+      parallels: [{ bsc: "fs-red" }, { bsc: "fsa" }, { bsc: "fsa-sf" }, { bsc: "fsa-red" }, { bsc: "fsa-or" }],
+    },
+  ];
+
   test("a shared card number nests the family under Future Stars, as the prefix rule always did", async () => {
     const r = await drafted(world({ insertCandidates: family, insertPreview: byIds(true) }));
     const insert = insertOf(r);
-    expect(insert.group!.parents).toEqual([
-      {
-        insert: { bsc: "fs" },
-        parallels: [{ bsc: "fs-red" }, { bsc: "fsa" }, { bsc: "fsa-sf" }, { bsc: "fsa-red" }, { bsc: "fsa-or" }],
-      },
-    ]);
-    expect(r.proposals).toContainEqual({
-      at: "steps[0].variants[0].group.parents",
-      kind: "grouping",
-      detail: "Insert › Future Stars Autographs shares card numbers with Future Stars, so it groups under it with its own parallels",
-    });
+    expect(insert.group!.parents).toEqual(allUnderFutureStars);
+    expect(r.proposals.filter((p) => p.at.endsWith(".group.parents"))).toEqual([]);
   });
 
-  test("with no previews to compare, the row is the parent of its own family", async () => {
+  test("with no previews to compare, the plain prefix rule stands: the family goes under Future Stars", async () => {
     const client = world({ insertCandidates: family });
     const r = await drafted(client, { checklists: false });
-    expect(insertOf(r).group!.parents).toEqual([
-      { insert: { bsc: "fs" }, parallels: [{ bsc: "fs-red" }] },
-      { insert: { bsc: "fsa" }, parallels: [{ bsc: "fsa-sf" }, { bsc: "fsa-red" }, { bsc: "fsa-or" }] },
-    ]);
+    expect(insertOf(r).group!.parents).toEqual(allUnderFutureStars);
     expect(client.callsTo("selectorOptions:previewCardChecklist")).toEqual([]);
-    expect(r.notes.some((n) => n.includes("Future Stars Autographs is the root of its own family"))).toBe(true);
   });
 });
 

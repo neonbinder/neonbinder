@@ -21,7 +21,7 @@
  * routes the picker's value into the write and enforces the cap around it.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -31,6 +31,7 @@ vi.mock("../../convex/_generated/api", () => ({
     cardChecklist: {
       suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
+      confirmCardNoPlayer: "cardChecklist.confirmCardNoPlayer",
     },
     selectorOptions: { updateCard: "selectorOptions.updateCard" },
     players: { getManyByIds: "players.getManyByIds" },
@@ -68,6 +69,7 @@ const NO_SUGGESTIONS: Suggestion[] = [];
 let playerRows: Array<{ _id: string; name: string }> | undefined;
 const mockUpdateCard = vi.fn();
 const mockConfirmCardNoTeam = vi.fn();
+const mockConfirmCardNoPlayer = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -81,6 +83,7 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => {
     if (ref === "selectorOptions.updateCard") return mockUpdateCard;
     if (ref === "cardChecklist.confirmCardNoTeam") return mockConfirmCardNoTeam;
+    if (ref === "cardChecklist.confirmCardNoPlayer") return mockConfirmCardNoPlayer;
     return vi.fn();
   },
 }));
@@ -134,6 +137,10 @@ import type { AttentionItem } from "./card-attention";
  * A stored row that needs a team: BSC-linked, its lookup has been and gone,
  * it still has no team, and no operator has answered. This is the shape of the
  * ten real teamless cards in dev's 2026 Topps base.
+ *
+ * NEO-339: it links a player, as those cards do, so it asks for its team and
+ * nothing else (a card with no player is asked for that first). A test about
+ * a card with no player says so with `playerIds: []`.
  */
 function needsTeamRow(overrides: Partial<CardChecklistRow> = {}): CardChecklistRow {
   return {
@@ -142,6 +149,7 @@ function needsTeamRow(overrides: Partial<CardChecklistRow> = {}): CardChecklistR
     cardName: "American League Leaders ERA LL",
     platformData: { bsc: { ref: "bsc-ref-1" } },
     teamCheckDoneAt: 1_000,
+    playerIds: ["player-on-card" as unknown as Id<"players">],
     ...overrides,
   };
 }
@@ -179,6 +187,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockUpdateCard.mockResolvedValue(null);
   mockConfirmCardNoTeam.mockResolvedValue({ confirmed: true, stamped: true });
+  mockConfirmCardNoPlayer.mockResolvedValue({ confirmed: true, stamped: true });
   suggestionsByCard = {};
   playerRows = undefined;
 });
@@ -215,7 +224,8 @@ describe("deriveCardAttention", () => {
       cardNumber: "301",
       cardName: "Hand-added Card",
     };
-    expect(deriveCardAttention(handAdded)).toEqual([{ kind: "missingTeam" }]);
+    // NEO-339: it links no player either, so it is asked for that first.
+    expect(deriveCardAttention(handAdded)).toEqual([{ kind: "missingPlayer" }, { kind: "missingTeam" }]);
     expect(needsAttention(handAdded)).toBe(true);
   });
 
@@ -333,6 +343,7 @@ describe("attentionFixers registry", () => {
     // the walker itself hits: a fresh custom card with no team yet, whose
     // operator also pasted an over-length title before saving.
     const row = {
+      playerIds: ["player-1"],
       teamOnCardIds: [],
       platformData: {},
       listingTitle: "x".repeat(94),
@@ -343,6 +354,15 @@ describe("attentionFixers registry", () => {
     const { item, Fixer } = pickAttentionFixer(items);
     expect(item).toEqual({ kind: "missingTeam" });
     expect(Fixer).toBe(attentionFixers.missingTeam);
+  });
+
+  it("end to end (NEO-339): the same row with NO player routes to MissingPlayerFixer first", () => {
+    const items = deriveCardAttention({ teamOnCardIds: [], platformData: {}, listingTitle: "x".repeat(94) });
+    expect(items.map((i) => i.kind)).toEqual(["missingPlayer", "missingTeam", "titleOverLimit"]);
+    const { item, Fixer } = pickAttentionFixer(items);
+    expect(item).toEqual({ kind: "missingPlayer" });
+    expect(Fixer).toBe(attentionFixers.missingPlayer);
+    expect(attentionWalkSubtitle(items)).toBe("Cards with no player");
   });
 });
 
@@ -1026,7 +1046,16 @@ describe("CardAttentionWalker — walk order (NEO-335)", () => {
     _id: "card-n" as unknown as Id<"cardChecklist">,
     cardNumber: "2",
     cardName: "Name Card",
+    playerIds: [],
     pendingPlayerNames: ["Somebody"],
+  });
+  /** NEO-339 — the highest number, and still asked first: nobody is linked to it. */
+  const playerRow20 = needsTeamRow({
+    _id: "card-20" as unknown as Id<"cardChecklist">,
+    cardNumber: "20",
+    cardName: "Checklist Card",
+    playerIds: [],
+    teamOnCardIds: ["team-1" as unknown as Id<"teams">],
   });
   const teamRow10 = needsTeamRow({
     _id: "card-10" as unknown as Id<"cardChecklist">,
@@ -1042,10 +1071,13 @@ describe("CardAttentionWalker — walk order (NEO-335)", () => {
   const heading = () => screen.getByRole("heading", { level: 3 }).textContent;
   const skip = () => fireEvent.click(screen.getByRole("button", { name: /^Skip for now, card .*$/ }));
 
-  it("asks every missing team first (by number), then unlinked names, then titles", () => {
+  it("asks every missing player first, then missing teams (by number), then unlinked names, then titles", () => {
     // Handed over in an order that matches neither rule.
-    renderWalker([titleRow, teamRow10, nameRow, teamRow3]);
+    renderWalker([titleRow, teamRow10, nameRow, playerRow20, teamRow3]);
 
+    expect(heading()).toBe("#20 Checklist Card");
+    expect(screen.getByText("Cards with no player", { exact: true })).toBeTruthy();
+    skip();
     expect(heading()).toBe("#3 Team Card Three");
     skip();
     expect(heading()).toBe("#10 Team Card Ten");
@@ -1096,6 +1128,7 @@ describe("walkStep (NEO-335 Phase 2)", () => {
 
 describe("attentionWalkSubtitle (NEO-335 Phase 2)", () => {
   it("names the question, not the kind: titles share one subtitle", () => {
+    expect(attentionWalkSubtitle([{ kind: "missingPlayer" }])).toBe("Cards with no player");
     expect(attentionWalkSubtitle([{ kind: "missingTeam" }])).toBe("Cards with no team");
     expect(attentionWalkSubtitle([{ kind: "unreviewedName", names: ["X"] }])).toBe(
       "Names not yet linked",
@@ -1138,7 +1171,7 @@ describe("CardAttentionWalker — Step x of y and the subtitle (NEO-335 Phase 2)
     teamOnCardIds: ["team-1" as unknown as Id<"teams">],
     listingTitle: "x".repeat(94),
   });
-  const nameRow = row("card-n", "2", { pendingPlayerNames: ["Somebody"] });
+  const nameRow = row("card-n", "2", { playerIds: [], pendingPlayerNames: ["Somebody"] });
   const teamRow3 = row("card-3", "3");
   const teamRow10 = row("card-10", "10");
   const skip = () =>
@@ -1225,6 +1258,33 @@ describe("CardAttentionWalker — Step x of y and the subtitle (NEO-335 Phase 2)
     rerenderWith(rerender, onClose, [answeredA, b, row("card-c", "3")]);
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#2 Card 2");
     expect(counter()).toBe("Step 2 of 3");
+  });
+
+  it("NEO-339: a card answered for its player comes back for its team in the same sitting, and y counts both questions", async () => {
+    const a = row("card-a", "1", { playerIds: [] });
+    const b = row("card-b", "2");
+    const { rerender, onClose } = renderWalker([a, b]);
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#1 Card 1");
+    expect(screen.getByText("Cards with no player", { exact: true })).toBeTruthy();
+    expect(counter()).toBe("Step 1 of 2");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "No player on this card" }));
+    });
+    expect(mockConfirmCardNoPlayer).toHaveBeenCalledWith({ cardId: "card-a" });
+    // Before the write reaches the subscription, #1 is not shown again.
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#2 Card 2");
+
+    // The write lands: #1 now asks for its team, and joins the teams group,
+    // ahead of #2 by number — but the card on screen stays put.
+    const answeredA = { ...a, playerNoneConfirmedAt: 1 };
+    rerenderWith(rerender, onClose, [answeredA, b]);
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#2 Card 2");
+    expect(counter()).toBe("Step 2 of 3");
+    skip();
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#1 Card 1");
+    expect(screen.getByText("Cards with no team", { exact: true })).toBeTruthy();
+    expect(counter()).toBe("Step 3 of 3");
   });
 
   it("the rail moves forward with a transition that reduced motion switches off, and never animates back", () => {

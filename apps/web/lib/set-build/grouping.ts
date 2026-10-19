@@ -264,9 +264,10 @@ export type InitialGrouping = {
   placement: Map<RowId, Placement>;
   suggested: Set<RowId>;
   /**
-   * NEO-339 — rows the suggestions held back as the root of their own family
-   * (`detectGroupings`' `familyRoots`): root → the prefix parent the plain
-   * rule would have placed it under. Empty with `suggest: false`.
+   * NEO-339 — rows suggested as a child that root a family of their own
+   * (`detectGroupings`' `familyRoots`): row → the parent it was suggested
+   * under. Reported only; the placement is the plain prefix rule's. Empty
+   * with `suggest: false`.
    */
   familyRoots: Map<RowId, RowId>;
 };
@@ -276,12 +277,13 @@ export type InitialGrouping = {
  * `suggest: false` — the prefix suggestions (`detectGroupings`) placed and
  * marked `suggested`, which is what the modal opens on. The set-build tool's
  * apply passes `suggest: false`: a spec names every move it wants, and a row
- * it does not name stays where it is. Its draft passes `nestFamilyRoots`, the
- * held family roots it has card-number evidence for (see `detectGroupings`).
+ * it does not name stays where it is. Its draft passes `holdFamilyRoots`, the
+ * family roots its previews show share no card number with their parent (see
+ * `detectGroupings`); the modal never does, so it opens on the plain rule.
  */
 export function buildInitialState(
   tree: InsertTree,
-  opts: { suggest?: boolean; nestFamilyRoots?: ReadonlySet<RowId> } = {},
+  opts: { suggest?: boolean; holdFamilyRoots?: ReadonlySet<RowId> } = {},
 ): InitialGrouping {
   const rows = new Map<RowId, RowInfo>();
   const placement = new Map<RowId, Placement>();
@@ -323,7 +325,7 @@ export function buildInitialState(
     if (info.originalHadParallels) excludeAsChild.add(id);
   }
   const detection = detectGroupings(candidates, excludeAsChild, {
-    nestFamilyRoots: opts.nestFamilyRoots,
+    holdFamilyRoots: opts.holdFamilyRoots,
   });
   for (const [parentId, childIds] of detection.suggestions) {
     for (const childId of childIds) {

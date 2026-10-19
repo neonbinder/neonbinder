@@ -22,7 +22,7 @@
  * | variant types           | the set's variant-type sync (always)                  | —                                              |
  * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
  * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash |
- * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types); a row that roots its own family nests under its prefix parent only when their previewed cards share a number | a suggested parent whose name another row shares |
+ * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types); a suggested child that roots its own family stays top level only when previews show it shares no card number with its parent | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair (answered with a side, or `pairing.unlink` when it is two cards) |
  * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
@@ -1086,15 +1086,16 @@ export async function draftSet(
    * its name. A suggested parent whose grouping name another row shares is a
    * tie: never taken, an open decision.
    *
-   * A row the suggestions hold back as the root of its own family ("Future
-   * Stars Autographs", which "Future Stars Autographs Red" extends, under
-   * "Future Stars": `detectGroupings`' `familyRoots`) is settled by card
-   * numbers when the draft can preview both rows: sharing a number nests it
-   * (and its family) under the parent, as the plain prefix rule would;
-   * sharing none keeps it the parent of its own family. With no preview
-   * (checklists off, a row already holding cards, a failed preview) it stays
-   * the root of its own family: apply would only find out at the build
-   * (`no-shared-numbers`), after the grouping had moved it.
+   * A suggested child that roots a family of its own ("Future Stars
+   * Autographs", which "Future Stars Autographs Red" extends, under "Future
+   * Stars": `detectGroupings`' `familyRoots`) is weighed by card numbers when
+   * the draft can preview both rows. Only when their cards share NO number
+   * does it stay top level, the parent of its own family (`holdFamilyRoots`):
+   * apply would otherwise find out only at the build (`no-shared-numbers`),
+   * after the grouping had moved it. Sharing a number, or no preview to
+   * compare (checklists off, a row already holding cards, a failed preview),
+   * leaves the plain prefix rule: it and its family go under the parent
+   * (Jason, 2026-10-19: in X / X Orange / X Orange Wave, X is the root).
    */
   async function draftGrouping(
     rows: DraftRow[],
@@ -1128,33 +1129,27 @@ export async function draftSet(
     const keyCount = new Map<string, number>();
     for (const r of allRows) keyCount.set(groupingKey(r.value), (keyCount.get(groupingKey(r.value)) ?? 0) + 1);
 
-    // Family roots, settled by card numbers where both rows can be previewed.
+    // Family roots held apart only where previews show no shared card number.
     const draftRowOf = new Map<string, DraftRow>(rows.map((r, i) => [String(r.existingId ?? `draft:${i}`), r]));
-    const nest = new Set<Id<"selectorOptions">>();
+    const hold = new Set<Id<"selectorOptions">>();
     const weighed = new Set<string>();
-    let init = buildInitialState(nodes, { nestFamilyRoots: nest });
+    let init = buildInitialState(nodes, { holdFamilyRoots: hold });
     for (;;) {
-      let nested = false;
+      let held = false;
       for (const [root, parent] of init.familyRoots) {
         if (weighed.has(root)) continue;
         weighed.add(root);
-        const rootName = draftRowOf.get(root)?.name ?? root;
-        const parentName = draftRowOf.get(parent)?.name ?? parent;
-        const shared = await sharesNumbers(draftRowOf.get(parent), draftRowOf.get(root), t, title);
-        if (shared === true) {
-          nest.add(root);
-          nested = true;
-          propose(`${at}.parents`, "grouping", `${title} › ${rootName} shares card numbers with ${parentName}, so it groups under it with its own parallels`);
-        } else {
-          notes.push(
-            shared === false
-              ? `${title} › ${rootName} shares no card number with ${parentName}: it stays its own insert, the parent of the rows that extend its name.`
-              : `${title} › ${rootName} is the root of its own family (rows extend its name), so it stays its own insert, the parent of those rows, not a parallel of ${parentName}; no previews compared their card numbers.`,
-          );
-        }
+        if ((await sharesNumbers(draftRowOf.get(parent), draftRowOf.get(root), t, title)) !== false) continue;
+        hold.add(root);
+        held = true;
+        propose(
+          `${at}.parents`,
+          "grouping",
+          `${title} › ${draftRowOf.get(root)?.name ?? root} shares no card number with ${draftRowOf.get(parent)?.name ?? parent}, so it stays its own insert and parents the rows that extend its name`,
+        );
       }
-      if (!nested) break;
-      init = buildInitialState(nodes, { nestFamilyRoots: nest });
+      if (!held) break;
+      init = buildInitialState(nodes, { holdFamilyRoots: hold });
     }
     const kids = new Map<string, string[]>();
     for (const [id, placement] of init.placement) {

@@ -62,6 +62,7 @@ import { NameFixAborted, applyNameAnswers, listNameSuggestions, resolveNameAnswe
 import { openSlRows, readSlReview } from "../lib/sl-review";
 import { setBuilderUrlForPath } from "../lib/set-builder-link";
 import { parseFixAnswers } from "../lib/fix-answers";
+import { DetachFixAborted, applyDetachAnswers, resolveDetachAnswers, type ResolvedDetachAnswer } from "../lib/detach-answers";
 import { queryOnlyClient } from "./read-only-client";
 
 /** What the service knows that the server cannot say: the entity reviews its own apply left open. */
@@ -378,11 +379,12 @@ export async function fixAttention(
   const cards = answers.cards ?? [];
   const names = answers.names ?? [];
   const autographs = answers.autographs ?? [];
-  if (cards.length === 0 && names.length === 0 && autographs.length === 0) {
-    throw new FixInputError("Nothing to fix: give cards, autographs or names answers.");
+  const detach = answers.detach ?? [];
+  if (cards.length === 0 && names.length === 0 && autographs.length === 0 && detach.length === 0) {
+    throw new FixInputError("Nothing to fix: give cards, autographs, detach or names answers.");
   }
-  if ((cards.length > 0 || autographs.length > 0) && !isSetPath(path)) {
-    throw new FixInputError(`${pathText} is a brand-year; card and autograph answers go on the set's path (Sport/Year/Manufacturer/Set).`);
+  if ((cards.length > 0 || autographs.length > 0 || detach.length > 0) && !isSetPath(path)) {
+    throw new FixInputError(`${pathText} is a brand-year; card, autograph and detach answers go on the set's path (Sport/Year/Manufacturer/Set).`);
   }
 
   const r = await resolveNode(client, path);
@@ -392,6 +394,7 @@ export async function fixAttention(
   await resolveNameAnswers(client, path, node, names);
   const autographRows: ResolvedAutographAnswer[] =
     r.kind === "set" && autographs.length > 0 ? await resolveAutographAnswers(client, r.set, autographs) : [];
+  const detachRows: ResolvedDetachAnswer[] = r.kind === "set" && detach.length > 0 ? await resolveDetachAnswers(client, r.set, detach) : [];
 
   const results: FixResult[] = [];
   let appliedCards = 0;
@@ -415,6 +418,19 @@ export async function fixAttention(
       }
     } catch (err) {
       if (err instanceof AutographFixAborted) throw new FixAborted([...results, ...err.results], [], err);
+      if (results.length > 0) throw new FixAborted(results, [], err);
+      throw err;
+    }
+  }
+  let appliedDetach = 0;
+  if (detachRows.length > 0) {
+    try {
+      for (const d of await applyDetachAnswers(client, detachRows)) {
+        results.push(d);
+        if (d.outcome === "applied") appliedDetach++;
+      }
+    } catch (err) {
+      if (err instanceof DetachFixAborted) throw new FixAborted([...results, ...err.results], [], err);
       if (results.length > 0) throw new FixAborted(results, [], err);
       throw err;
     }
@@ -443,6 +459,7 @@ export async function fixAttention(
       cards: appliedCards,
       names: nameReport.results.filter((x) => x.outcome === "applied").length,
       autographs: appliedAutographs,
+      ...(detach.length > 0 ? { detach: appliedDetach } : {}),
     },
     results,
     nameCounts: nameReport.counts,

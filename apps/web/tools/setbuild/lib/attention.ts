@@ -9,14 +9,15 @@
  *    through the SPA's `components/SetSelector/card-attention.ts` seam), run on
  *    the same `getCardChecklist` rows the pill counts. Nothing here decides
  *    what needs attention; it only reads the rule's answer.
- *  - **The order** is the walker's: missing teams, then names not linked, then
- *    titles, by card number within each; a card is ASKED once, for its first
+ *  - **The order** is the walker's: missing players (NEO-339), then missing
+ *    teams, then names not linked, then titles, by card number within each; a card is ASKED once, for its first
  *    item, and a card with a title kind and an unlinked name walks with the
  *    titles. `WALK_RANK`, the "still looking up teams" rule and the fixer's
  *    headings come from `components/SetSelector/attention-rules.ts`, the one
  *    React-free home the registry and MissingTeamFixer re-export from.
  *  - **The facts per card** are what each fixer puts on screen:
- *    `MissingTeamFixer` (the players, the career chips with whose career they
+ *    `MissingPlayerFixer` (the card, and the teams it carries — the clue for
+ *    "nobody on this card"), `MissingTeamFixer` (the players, the career chips with whose career they
  *    came from, the listing's team name as NB's rows era by era, what it would
  *    preselect), `UnreviewedNameFixer` (the typed names per side, the links the
  *    card already has), `TitleFixer` (the title, its length band, and what
@@ -87,10 +88,10 @@ export interface CardRowRef {
 }
 
 /** The question the walker would put to a card: the fixer for its first item. */
-export type AskedQuestion = "missingTeam" | "unreviewedName" | "title";
+export type AskedQuestion = "missingPlayer" | "missingTeam" | "unreviewedName" | "title";
 
 /** The answer shapes a card accepts, by what it is flagged for. */
-export type CardAnswerKind = "teams" | "noTeam" | "players+teams" | "title" | "title+variation";
+export type CardAnswerKind = "players" | "noPlayer" | "teams" | "noTeam" | "players+teams" | "title" | "title+variation";
 
 /**
  * An NB team, named the way an answer names it. Never a listing's string:
@@ -116,6 +117,11 @@ export type PlayerAnswer = string | { link: string; birthYear?: number } | { cre
 
 /**
  * One card's answer, mirroring the fixer that asks it:
+ *  - `{ players }` — MissingPlayerFixer's Save (1–20 players, NEO-339); on a
+ *    card missing its team as well, `{ players, teams }` answers both in one
+ *    write;
+ *  - `{ noPlayer: true }` — "No player on this card" (a checklist, a team
+ *    card, a logo or relic card with nobody on it);
  *  - `{ teams }` — MissingTeamFixer's Save (1–8 teams), or, on a card whose
  *    typed team name links to nothing, UnreviewedNameFixer with only the team
  *    side given;
@@ -127,6 +133,7 @@ export type PlayerAnswer = string | { link: string; birthYear?: number } | { cre
  *    variation only on a card flagged for it.
  */
 export type CardAnswer =
+  | { noPlayer: true }
   | { noTeam: true }
   | { title: string; variation?: string }
   | { players?: PlayerAnswer[]; teams?: TeamAnswer[] };
@@ -197,6 +204,13 @@ export interface CardAttentionItem {
   crossListedFrom?: string;
   /** False when the per-card facts below were not read (summary detail past the limit, or a failed read). */
   enriched: boolean;
+
+  // missingPlayer
+  /**
+   * The teams the card carries (full names; a typed team name as typed) — the
+   * clue that a card with nobody on it is the team card. Empty when none.
+   */
+  teamsOnCard?: string[];
 
   // missingTeam
   /** The players linked on the card. */
@@ -302,6 +316,7 @@ const READ_CONCURRENCY = 4;
 // ---------------------------------------------------------------------------
 
 const ASKED: Record<AttentionKind, AskedQuestion> = {
+  missingPlayer: "missingPlayer",
   missingTeam: "missingTeam",
   unreviewedName: "unreviewedName",
   titleOverLimit: "title",
@@ -328,6 +343,7 @@ export function askedQuestion(items: readonly AttentionItem[]): AskedQuestion {
 /** The answers a card takes, from every kind it carries. */
 export function answersFor(kinds: readonly AttentionKind[]): CardAnswerKind[] {
   const out: CardAnswerKind[] = [];
+  if (kinds.includes("missingPlayer")) out.push("players", "noPlayer");
   if (kinds.includes("missingTeam")) out.push("teams", "noTeam");
   if (kinds.includes("unreviewedName")) out.push("players+teams");
   if (kinds.some((k) => TITLE_KINDS.has(k))) out.push(kinds.includes("aspectValueOverLimit") ? "title+variation" : "title");
@@ -609,7 +625,7 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
 }
 
 function emptyByKind(): Record<AttentionKind, number> {
-  return { missingTeam: 0, unreviewedName: 0, titleOverLimit: 0, titleTruncated: 0, aspectValueOverLimit: 0 };
+  return { missingPlayer: 0, missingTeam: 0, unreviewedName: 0, titleOverLimit: 0, titleTruncated: 0, aspectValueOverLimit: 0 };
 }
 
 /** The row's autograph prompt as an item, or undefined when the header does not ask. */
@@ -682,6 +698,15 @@ async function readFixerFacts(
   const playerNames = async () =>
     playerIds.length > 0 ? (await client.query(api.players.getManyByIds, { ids: playerIds })).map((p) => p.name) : [];
 
+  if (item.kinds.includes("missingPlayer")) {
+    // MissingPlayerFixer's team line: the linked teams, else a typed name as
+    // typed, else none.
+    const teamIds = card.teamOnCardIds ?? [];
+    facts.teamsOnCard =
+      teamIds.length > 0
+        ? (await client.query(api.teams.getManyByIds, { ids: teamIds })).map((t) => teamFullName(t))
+        : [...(card.pendingTeamNames ?? [])];
+  }
   if (item.kinds.includes("missingTeam")) {
     const listingName = card.bscTeamName?.trim() ?? "";
     const [suggestions, names, listingEras] = await Promise.all([
@@ -720,7 +745,7 @@ async function readFixerFacts(
 
 /**
  * Everything on the set's checklists that still needs a person, in the
- * walker's order (checklist by checklist, then missing teams → names → titles
+ * walker's order (checklist by checklist, then missing players → teams → names → titles
  * by card number), with the totals the pill and the walker's done line read.
  *
  * Every flagged card is listed; `detail: "summary"` reads the per-card facts

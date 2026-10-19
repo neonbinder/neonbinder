@@ -260,12 +260,14 @@ test(
     await expect(wizard.getByRole("radio", { name: new RegExp(`^${team} — `) })).toBeChecked();
 
     // What the checklist must say once this saves: every card left for later is
-    // flagged; the one answered "no team" is not, nor the pre-filled one, nor the
-    // one given RXO: K - 3 (one Roanoke card per player, SET-REGISTRY
-    // measurement 5). The catalogue-known players' cards are left for later too.
+    // flagged, and so are the one answered "no team" and the one given RXO —
+    // their names were skipped, so they link no player, which NEO-339 asks
+    // about. Only the pre-filled card (the created player and his team) is
+    // settled: K - 1 (one Roanoke card per player, SET-REGISTRY measurement 5).
+    // The catalogue-known players' cards are left for later too.
     // LEFT is the bare number the re-sync in STEP 10 finds on its no-players
     // line: that line less the two cards answered above.
-    const needYouCount = String(FETCHED - 3);
+    const needYouCount = String(FETCHED - 1);
     const needYou = needYouCount === "1" ? "1 needs you" : `${needYouCount} need you`;
     const left = String(Number(noPlayersCount) - 2);
 
@@ -287,7 +289,7 @@ test(
 
     // ── STEP 7: the count is FINAL at "Saved" (NEO-335) ──
     // The header's amber pill counts the cards that need a person and must read
-    // K - 3 now. Before NEO-335 a BSC card was not flagged until the background
+    // K - 1 now. Before NEO-335 a BSC card was not flagged until the background
     // queue re-asked BSC (a measured ~15 s tail), so the count started near 0
     // and climbed; now the commit stamps every card whose fetch-time lookup
     // answered. 7 s is the R5 bar and the discriminator: the old climb could not

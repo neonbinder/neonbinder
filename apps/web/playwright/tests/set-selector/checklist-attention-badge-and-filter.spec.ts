@@ -16,6 +16,12 @@
 // a marketplace fetch flags a card only if its team string resolves to no NB
 // team. The search control itself is checklist-search-narrows-and-clears'.
 // Searching is client-side and writes nothing.
+//
+// NEO-339: a card linked to no player needs a person too (Jason, 2026-10-19:
+// the tool and the Set Builder by the same rule). Cards 1 and 2 are added with
+// a name and nobody linked, so each carries both reasons; giving card 2 a team
+// clears its TEAM reason only, and it stays marked and counted for its player.
+// The walker the pill opens asks the player first ("Cards with no player").
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm, editCardButton, escapeRe } from "../../support/cards";
@@ -48,8 +54,14 @@ test(
   async ({ page, signIn, env }) => {
     const id = env.ATTEMPT_ID;
     const token = env.ATTEMPT_TOKEN;
+    // The row's mark when one of its reasons is the missing team (NEO-339: it may
+    // name the missing player first), and when one is the missing player.
     const badge = (n: string) =>
-      page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: no team on this card yet$`) });
+      page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: (.+; )?no team on this card yet$`) });
+    const playerMark = (n: string) =>
+      page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: no player on this card yet(; .+)?$`) });
+    const anyMark = (n: string) =>
+      page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: `) });
     const teamB = `CNAB${token}`;
     const teamA = `CNAA${token}`;
     const player = `CNAP${token}`;
@@ -97,10 +109,14 @@ test(
     });
     await expect(page.getByText(teamB).first()).toBeVisible();
 
-    // Only the team-less cards are badged, and the header counts them.
-    await expect(badge("703")).toBeHidden();
+    // Only the team-less cards are badged, and the header counts them. They link
+    // no player either (NEO-339), so their marks say that too; card 3, born with
+    // a player and a team, has no mark at all.
+    await expect(anyMark("703")).toBeHidden();
     await expect(badge("701")).toBeVisible();
     await expect(badge("702")).toBeVisible();
+    await expect(playerMark("701")).toBeVisible();
+    await expect(playerMark("702")).toBeVisible();
     await expect(pill("2 need you")).toBeVisible();
     await expectAccessible(page, { label: "Checklist with attention badges and count" });
 
@@ -113,7 +129,8 @@ test(
     await born.getByRole("button", { name: "Done editing card" }).click();
     await expect(born.getByRole("button", { name: `Remove player ${player}` })).toBeHidden();
 
-    // Give card 702 a team through its drawer: its badge goes, the count drops.
+    // Give card 702 a team through its drawer: its team reason goes. NEO-339: it
+    // still links no player, so it stays marked for that and the count holds.
     await page.getByRole("button", { name: new RegExp(`^Edit card 702-${id}(, .*)?$`) }).click();
     const cardName = page.getByRole("textbox", { name: "Card name", exact: true });
     await expect(cardName).toBeVisible({ timeout: 15_000 });
@@ -123,25 +140,28 @@ test(
     await cardName.click();
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(badge("702")).toBeHidden();
+    await expect(playerMark("702")).toBeVisible();
     await expect(badge("701")).toBeVisible();
-    await expect(pill("1 needs you")).toBeVisible();
+    // Exact name: the count the team alone would leave ("1 needs you") fails here.
+    await expect(pill("2 need you")).toBeVisible();
     await expect(page.getByText(teamA).first()).toBeVisible();
 
-    // NEO-343 — "attention" in the checklist search lists the one flagged card
+    // NEO-343 — "attention" in the checklist search lists the two flagged cards
     // the pill counts, out of the set's three, and every row it lists carries
     // the attention mark. Rows and marks are scoped to this attempt's cards.
     const search = page.getByRole("searchbox", { name: "Search cards" });
     const rows = page.getByRole("button", { name: new RegExp(`^Edit card [0-9]+-${escapeRe(id)}(, .*)?$`) });
     const marks = page.getByRole("img", { name: new RegExp(`^Card [0-9]+-${escapeRe(id)}(, .*)? needs attention: `) });
     await search.fill("attention");
-    await expect(page.getByText("1 of 3 cards", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 of 3 cards", { exact: true })).toBeVisible();
     await expect(editCardButton(page, `701-${id}`)).toBeVisible();
-    await expect(rows).toHaveCount(1);
+    await expect(editCardButton(page, `702-${id}`)).toBeVisible();
+    await expect(rows).toHaveCount(2);
     await expect(badge("701")).toBeVisible();
-    await expect(marks).toHaveCount(1);
-    // A keyword ANDs with the other terms: flagged AND #702 is nothing.
-    await search.fill(`attention 702-${id}`);
-    await expect(page.getByText(`No cards match "attention 702-${id}".`)).toBeVisible();
+    await expect(marks).toHaveCount(2);
+    // A keyword ANDs with the other terms: flagged AND #703 (settled) is nothing.
+    await search.fill(`attention 703-${id}`);
+    await expect(page.getByText(`No cards match "attention 703-${id}".`)).toBeVisible();
     await expect(page.getByText("0 of 3 cards", { exact: true })).toBeVisible();
     await expect(rows).toHaveCount(0);
     // Escape clears it: all three rows are back.
@@ -149,21 +169,24 @@ test(
     await expect(search).toHaveValue("");
     await expect(rows).toHaveCount(3);
 
-    // WHICH card: the pill opens the walker on the flagged set and only that. It
-    // opens on the lowest-numbered flagged card, #701, and the counter's y is the
-    // queue's length, so a walker that also held #702 (answered) or #703 (born
-    // linked) reads "Step 1 of 2" / "of 3". The Skip button is the walker's one
-    // card-specific handle (the wizard shares its title). Nothing is answered.
-    await pill("1 needs you").click();
+    // WHICH cards: the pill opens the walker on the flagged set and only that.
+    // Both flagged cards lack a player, the question asked first (NEO-339), so it
+    // opens on the lowest-numbered, #701, under "Cards with no player", and the
+    // counter's y is the queue's length, so a walker that also held #703 (born
+    // linked) reads "of 3". The Skip button is the walker's one card-specific
+    // handle (the wizard shares its title). Nothing is answered.
+    await pill("2 need you").click();
     const walker = page.getByRole("dialog", { name: "Tidy up this set" });
     await expect(walker).toBeVisible();
     await expect(walker.getByRole("button", { name: `Skip for now, card 701-${id}` })).toBeVisible();
-    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(walker.getByText("Step 1 of 2", { exact: true })).toBeVisible();
+    await expect(walker.getByText("Cards with no player", { exact: true })).toBeVisible();
+    await expect(walker.getByRole("button", { name: "No player on this card", exact: true })).toBeVisible();
     await expectAccessible(page, { within: walker, label: "Attention walker opened from the need-you pill" });
     await walker.getByRole("button", { name: "Close (Esc)" }).click();
     await expect(walker).toBeHidden();
-    // Closing deferred: #701 is still the one flagged card.
-    await expect(pill("1 needs you")).toBeVisible();
+    // Closing deferred: both cards are still flagged.
+    await expect(pill("2 need you")).toBeVisible();
     await expect(badge("701")).toBeVisible();
   },
 );

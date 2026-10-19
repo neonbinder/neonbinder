@@ -776,6 +776,9 @@ describe("NEO-345: the autograph format, through the spec, the listing and nb_fi
     cardNumber: n,
     cardName: `Auto ${n}`,
     selectorOptionId: "vtB",
+    // NEO-339: linked to a player and a team, so the autograph prompt is the
+    // only thing these cards ask.
+    playerIds: ["p1"],
     teamOnCardIds: ["t1"],
     listingTitle: "T",
     attributes: ["AU"],
@@ -860,7 +863,7 @@ describe("NEO-345: the autograph format, through the spec, the listing and nb_fi
     const brand = { sport: "Baseball", year: "2024", manufacturer: "Topps" };
     const answers = { autographs: [{ format: "On Card" as const }] };
     await expect(svc.write.fix(brand, answers, fixConfirmPhrase(FAKE_TARGET, brand, answers))).rejects.toThrow(
-      "Baseball/2024/Topps is a brand-year; card and autograph answers go on the set's path (Sport/Year/Manufacturer/Set).",
+      "Baseball/2024/Topps is a brand-year; card, autograph and detach answers go on the set's path (Sport/Year/Manufacturer/Set).",
     );
     expect(() => parseFixAnswers({ autographs: [{ format: "on card" }] })).toThrow(/autographs\.0\.format/);
     expect(() => parseFixAnswers({ autographs: Array.from({ length: 51 }, () => ({ format: "On Card" })) })).toThrow(
@@ -873,5 +876,38 @@ describe("NEO-345: the autograph format, through the spec, the listing and nb_fi
     client.on("slSetReview:getSlSetReviewSummary", { pending: 2, partial: false, moreNextSync: 0 });
     const a = await createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" }).read.attention({ ...PATH, manufacturer: "topps" });
     expect(a.summary).toBe("2 SportLots sets to sort for Topps 2024.");
+  });
+});
+
+describe("NEO-339: nb_fix detach, the Sources panel's × as an answer", () => {
+  test("the phrase binds the link, the panel's mutation detaches it, and the cards it brought are counted, not removed", async () => {
+    const client = world(done());
+    const sepia = sel("pS", "insert", "Sepia Refractors", { platformData: { bsc: { s1: "bsc-sepia" } } });
+    client.on("selectorOptions:getSelectorOptionById", (a) => (a.id === "pS" ? sepia : null));
+    client.on("selectorOptions:getSlotCardCounts", () => ({ bsc: { s1: 2 }, sportlots: {}, total: 2 }));
+    client.on("selectorOptions:detachPlatformId", () => ({ success: true, message: "ok", orphanedCards: 2 }));
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const answers = { detach: [{ row: { type: "Parallel", name: "Sepia Refractors" }, side: "bsc" as const, id: "bsc-sepia" }] };
+    const phrase = fixConfirmPhrase(FAKE_TARGET, PATH, answers);
+    await expect(svc.write.fix(PATH, { detach: [{ ...answers.detach[0], id: "other" }] }, phrase)).rejects.toBeInstanceOf(ConfirmMismatch);
+    expect(client.callsTo("selectorOptions:detachPlatformId")).toEqual([]);
+
+    const r = await svc.write.fix(PATH, answers, phrase);
+    expect(client.callsTo("selectorOptions:detachPlatformId").map((c) => c.args)).toEqual([
+      { selectorOptionId: "pS", side: "bsc", slot: "s1", confirmPrimary: true, acknowledgedCards: 2 },
+    ]);
+    expect(r.applied).toEqual({ cards: 0, names: 0, autographs: 0, detach: 1 });
+    expect(r.results).toEqual([expect.objectContaining({ at: "detach[0]", outcome: "applied", orphanedCards: 2, primary: true })]);
+    // Nothing else is written: no card is deleted.
+    expect(client.writes().map((c) => c.fn)).toEqual(["selectorOptions:detachPlatformId"]);
+  });
+
+  test("detach answers go on a set path", async () => {
+    const client = world(done());
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const brand = { sport: "Baseball", year: "2024", manufacturer: "Topps" };
+    const answers = { detach: [{ side: "sportlots" as const, id: "269998" }] };
+    await expect(svc.write.fix(brand, answers, fixConfirmPhrase(FAKE_TARGET, brand, answers))).rejects.toThrow(/is a brand-year; card, autograph and detach answers/);
+    expect(client.callsTo("selectorOptions:detachPlatformId")).toEqual([]);
   });
 });

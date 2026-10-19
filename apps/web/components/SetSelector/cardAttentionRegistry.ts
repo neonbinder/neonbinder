@@ -2,6 +2,7 @@ import { createContext, useContext, type ComponentType } from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import { WALK_UNRANKED, walkRankOfKind } from "./attention-rules";
 import { attentionItemLabel, type AttentionItem } from "./card-attention";
+import MissingPlayerFixer from "./MissingPlayerFixer";
 import MissingTeamFixer from "./MissingTeamFixer";
 import TitleFixer from "./TitleFixer";
 import UnreviewedNameFixer from "./UnreviewedNameFixer";
@@ -118,6 +119,14 @@ export type CardChecklistRow = {
    * an audit fact, not something to put on an operator's screen.
    */
   teamNoneConfirmedByUserId?: string;
+  /**
+   * NEO-339: the operator's "No player on this card". `deriveCardAttention`
+   * reads it — leave it off the row and every card answered "nobody" is
+   * walked again.
+   */
+  playerNoneConfirmedAt?: number;
+  /** Stamped alongside it; audit only, NEVER RENDERED (as the team one). */
+  playerNoneConfirmedByUserId?: string;
   attributes?: string[];
   cardVariation?: string;
   /**
@@ -192,6 +201,8 @@ export function useAttentionContextOptionId(): Id<"selectorOptions"> | undefined
  * bundle. The walker degrades instead of crashing on it.
  */
 export const attentionFixers: Partial<Record<AttentionItem["kind"], AttentionFixer>> = {
+  // NEO-339 — a card linked to no player: link one, or record nobody.
+  missingPlayer: MissingPlayerFixer,
   missingTeam: MissingTeamFixer,
   // All three title-shaped kinds map to ONE component on purpose: they are the
   // same field with different reasons, and a card flagged for two of them must
@@ -226,8 +237,8 @@ export function pickAttentionFixer(items: AttentionItem[]): {
   return { item: items[0], Fixer: undefined };
 }
 
-// NEO-339: `WALK_RANK` (the order the walker asks in: missing teams, then
-// names not yet linked, then titles) lives in the pure `attention-rules.ts`,
+// NEO-339: `WALK_RANK` (the order the walker asks in: missing players, then
+// missing teams, then names not yet linked, then titles) lives in the pure `attention-rules.ts`,
 // so the set-build tool walks in the same order without importing the fixers.
 
 /** Where a card with these attention items falls in the walk. Lower walks first. */
@@ -247,6 +258,7 @@ export function attentionWalkRank(items: AttentionItem[]): number {
  * must decide what its screen is called.
  */
 const WALK_SUBTITLE: Record<AttentionItem["kind"], string> = {
+  missingPlayer: "Cards with no player",
   missingTeam: "Cards with no team",
   unreviewedName: "Names not yet linked",
   titleOverLimit: "Card titles",

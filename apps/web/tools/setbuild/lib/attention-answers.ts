@@ -4,6 +4,8 @@
  *
  * | Answer                 | Fixer                 | Write                                                  |
  * |------------------------|-----------------------|--------------------------------------------------------|
+ * | `{ players, teams? }`  | MissingPlayerFixer    | `selectorOptions.updateCard { id, playerIds, teams? }` |
+ * | `{ noPlayer: true }`   | "No player on this card"| `cardChecklist.confirmCardNoPlayer { cardId }`       |
  * | `{ teams }` (missing)  | MissingTeamFixer Save | `selectorOptions.updateCard { id, teamOnCardIds }`     |
  * | `{ noTeam: true }`     | "No team on this card"| `cardChecklist.confirmCardNoTeam { cardId }`           |
  * | `{ players?, teams? }` | UnreviewedNameFixer   | `updateCard { id, playerIds, teamOnCardIds, pending… }`|
@@ -14,6 +16,10 @@
  * `autographFormat.setAutographFormat { selectorOptionId, value }`.
  *
  * The gates, each the fixer's own:
+ *  - a player Save (NEO-339) needs 1–20 players (`MAX_CARD_PLAYERS`); teams
+ *    ride along only on a card that is missing its team too;
+ *  - `confirmCardNoPlayer` answering `confirmed: false` (the card names a
+ *    player now, or is gone) is a refusal, not a fix;
  *  - a team Save needs 1–8 teams (`MAX_CARD_TEAMS`, refused past it, never
  *    trimmed);
  *  - `confirmCardNoTeam` answering `confirmed: false` (the card has teams now,
@@ -147,7 +153,7 @@ export class CardFixAborted extends Error {
 // Answer shapes (pure)
 // ---------------------------------------------------------------------------
 
-type AnswerShape = "noTeam" | "title" | "links";
+type AnswerShape = "noPlayer" | "noTeam" | "title" | "links";
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -155,6 +161,10 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 export function answerShape(answer: CardAnswer, at: string): AnswerShape {
   if (!isObj(answer)) throw new CardAnswerError(at, "an answer is an object.");
   const keys = Object.keys(answer).filter((k) => (answer as Record<string, unknown>)[k] !== undefined);
+  if ("noPlayer" in answer && answer.noPlayer !== undefined) {
+    if (answer.noPlayer !== true || keys.length !== 1) throw new CardAnswerError(at, '"noPlayer" is `true` and stands alone.');
+    return "noPlayer";
+  }
   if ("noTeam" in answer && answer.noTeam !== undefined) {
     if (answer.noTeam !== true || keys.length !== 1) throw new CardAnswerError(at, '"noTeam" is `true` and stands alone.');
     return "noTeam";
@@ -169,7 +179,7 @@ export function answerShape(answer: CardAnswer, at: string): AnswerShape {
   }
   const links = answer as { players?: unknown; teams?: unknown };
   if (keys.some((k) => k !== "players" && k !== "teams")) {
-    throw new CardAnswerError(at, 'an answer is { teams }, { noTeam: true }, { players, teams } or { title, variation }.');
+    throw new CardAnswerError(at, 'an answer is { players }, { noPlayer: true }, { teams }, { noTeam: true }, { players, teams } or { title, variation }.');
   }
   if (links.players === undefined && links.teams === undefined) {
     throw new CardAnswerError(at, 'name "teams", "players", or both.');
@@ -572,13 +582,27 @@ async function applyOne(client: NbClient, set: ResolvedSet, r: ResolvedAnswer, c
 
   // ── which fixer ────────────────────────────────────────────────────────
   let answered: CardAnswerKind;
-  if (r.shape === "noTeam") answered = "noTeam";
+  if (r.shape === "noPlayer") answered = "noPlayer";
+  else if (r.shape === "noTeam") answered = "noTeam";
   else if (r.shape === "title") answered = (r.answer as { variation?: string }).variation !== undefined ? "title+variation" : "title";
-  else answered = kinds.includes("unreviewedName") || r.players ? "players+teams" : "teams";
+  else if (kinds.includes("unreviewedName")) answered = "players+teams";
+  else if (r.players && kinds.includes("missingPlayer")) answered = "players";
+  else answered = r.players ? "players+teams" : "teams";
 
   if (!card) return done(answered, "moot", "Already settled: this card is no longer on this checklist.");
 
   try {
+    // ── "No player on this card" (NEO-339) ───────────────────────────────
+    if (r.shape === "noPlayer") {
+      if (!kinds.includes("missingPlayer")) return done(answered, "moot", settled("missingPlayer"));
+      const res = await client.mutation(api.cardChecklist.confirmCardNoPlayer, { cardId: r.cardId });
+      touch();
+      if (!res.confirmed) {
+        return done(answered, "refused", "This card has a player now, or it is no longer on this checklist — nothing to confirm.");
+      }
+      return done(answered, "applied", res.stamped ? "Recorded: no player on this card." : "Already recorded: no player on this card.");
+    }
+
     // ── "No team on this card" ───────────────────────────────────────────
     if (r.shape === "noTeam") {
       if (!kinds.includes("missingTeam")) return done(answered, "moot", settled("missingTeam"));
@@ -621,6 +645,14 @@ async function applyOne(client: NbClient, set: ResolvedSet, r: ResolvedAnswer, c
     // ── UnreviewedNameFixer ──────────────────────────────────────────────
     if (kinds.includes("unreviewedName")) {
       return await linkNames(client, set, r, card, created, done, touch);
+    }
+
+    // ── MissingPlayerFixer (NEO-339) ─────────────────────────────────────
+    if (kinds.includes("missingPlayer")) {
+      if (r.players) return await linkPlayers(client, set, r, kinds, created, done, touch);
+      if (!kinds.includes("missingTeam")) {
+        return done(answered, "refused", "This card needs a player, not a team; answer with players, or noPlayer.");
+      }
     }
 
     // ── MissingTeamFixer ─────────────────────────────────────────────────
@@ -710,6 +742,55 @@ async function playerIdsOf(client: NbClient, set: ResolvedSet, plans: readonly P
     ids.push(id);
   }
   return ids;
+}
+
+/** How many distinct players a plan list names (a create counts once). */
+function plannedPlayerCount(plans: readonly PlayerPlan[]): number {
+  return new Set(plans.map((p) => (p.kind === "link" ? `id:${p.id}` : `new:${p.name.toLowerCase()}`))).size;
+}
+
+/**
+ * NEO-339 — MissingPlayerFixer's Save: the card's players, a full list (the
+ * picker starts empty, because the card has none). Gated as the fixer gates
+ * its button: at least one player, at most `MAX_CARD_PLAYERS`. A card also
+ * missing its team may take its teams in the same write (1–8, as
+ * MissingTeamFixer's Save); a card that has its team refuses them rather than
+ * replacing it. Creates only ever create (`playerIdsOf`, `teamIdsOf`).
+ */
+async function linkPlayers(
+  client: NbClient,
+  set: ResolvedSet,
+  r: ResolvedAnswer,
+  kinds: readonly AttentionKind[],
+  created: CreatedRow[],
+  done: (answered: CardAnswerKind, outcome: CardFixResult["outcome"], detail: string, warning?: string) => CardFixResult,
+  touch: () => void,
+): Promise<CardFixResult> {
+  const answered: CardAnswerKind = "players";
+  const plans = r.players ?? [];
+  if (plans.length === 0) return done(answered, "refused", "Pick at least one player, or record that this card has none.");
+  if (plannedPlayerCount(plans) > MAX_CARD_PLAYERS) {
+    return done(answered, "refused", `That is the limit of ${MAX_CARD_PLAYERS} players on one card.`);
+  }
+  if (r.teams) {
+    if (!kinds.includes("missingTeam")) {
+      return done(answered, "refused", "This card has its team already; answer with players alone.");
+    }
+    if (r.teams.length === 0) return done(answered, "refused", "Pick at least one team, or leave teams out.");
+    if (plannedCount(r.teams) > MAX_CARD_TEAMS) {
+      return done(answered, "refused", `That is the limit of ${MAX_CARD_TEAMS} teams on one card.`);
+    }
+  }
+  const playerIds = uniqueIds(await playerIdsOf(client, set, plans, created));
+  const teamIds = r.teams ? uniqueIds(await teamIdsOf(client, set, r.teams, created)) : undefined;
+  await client.mutation(api.selectorOptions.updateCard, {
+    id: r.cardId,
+    playerIds,
+    ...(teamIds ? { teamOnCardIds: teamIds } : {}),
+  });
+  touch();
+  const parts = [plural(playerIds.length, "player", "players"), ...(teamIds ? [plural(teamIds.length, "team", "teams")] : [])];
+  return done(answered, "applied", `Saved ${parts.join(" and ")} on this card.`);
 }
 
 const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i]);

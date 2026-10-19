@@ -22,23 +22,26 @@ describe("listCardAttention", () => {
       rows: {
         [BASE]: [
           quiet("c-ok", "1"),
-          card("c-title", "2", "Long Title", { teamOnCardIds: ["t"], listingTitle: "x".repeat(84) }),
-          card("c-team10", "10", "No Team Ten", { listingTitle: "T" }),
-          card("c-team3", "3", "No Team Three", { listingTitle: "T" }),
+          card("c-title", "2", "Long Title", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "x".repeat(84) }),
+          card("c-team10", "10", "No Team Ten", { playerIds: ["p"], listingTitle: "T" }),
+          card("c-team3", "3", "No Team Three", { playerIds: ["p"], listingTitle: "T" }),
+          // NEO-339: a team card nobody is linked to: the highest number, asked first.
+          card("c-nobody", "12", "Mariners Team Card", { teamOnCardIds: ["t-sea"], listingTitle: "T" }),
           // An unlinked player name and an over-long title: walks with the titles.
           card("c-both", "4", "Both", { pendingPlayerNames: ["Yordan Alvrez"], listingTitle: "y".repeat(90) }),
           card("c-name", "9", "Typed", { pendingPlayerNames: ["Typed Guy"], listingTitle: "T" }),
           // Still waiting on the BSC lookup: not listed, but counted.
-          card("c-wait", "5", "Waiting", { platformData: { bsc: { ref: "b5" } }, listingTitle: "T" }),
+          card("c-wait", "5", "Waiting", { playerIds: ["p"], platformData: { bsc: { ref: "b5" } }, listingTitle: "T" }),
         ],
-        [FUTURE]: [card("c-fs1", "FS-1", "Future One", { listingTitle: "T" })],
-        [GOLD]: [card("c-gold", "FS-1", "Future One Gold", { teamOnCardIds: ["t"], listingTitleTruncated: true, listingTitle: "Cut" })],
+        [FUTURE]: [card("c-fs1", "FS-1", "Future One", { playerIds: ["p"], listingTitle: "T" })],
+        [GOLD]: [card("c-gold", "FS-1", "Future One Gold", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitleTruncated: true, listingTitle: "Cut" })],
       },
     };
     const client = attentionClient({ store });
     const out = await listCardAttention(client, SET);
 
     expect(out.cards.map((c) => [c.rowLabel, c.cardNumber, c.asked])).toEqual([
+      ["Base", "12", "missingPlayer"],
       ["Base", "3", "missingTeam"],
       ["Base", "10", "missingTeam"],
       ["Base", "9", "unreviewedName"],
@@ -52,6 +55,7 @@ describe("listCardAttention", () => {
     expect(out.totals.cards).toBe(all.filter((c) => needsAttention(c as AttentionCardRow)).length);
     expect(out.totals.awaitingTeamLookup).toBe(1);
     expect(out.totals.byKind).toEqual({
+      missingPlayer: 1,
       missingTeam: 3,
       unreviewedName: 2,
       titleOverLimit: 2,
@@ -73,6 +77,37 @@ describe("listCardAttention", () => {
     }).toString());
     expect(out.cards.find((c) => c.cardId === "c-team3")!.row).toEqual({ type: "Base" });
     expect(out.cards.find((c) => c.cardId === "c-team3")!.answers).toEqual(["teams", "noTeam"]);
+
+    // NEO-339: the card with nobody on it, with the team it carries as the clue.
+    const nobody = out.cards.find((c) => c.cardId === "c-nobody")!;
+    expect(nobody).toMatchObject({
+      kinds: ["missingPlayer"],
+      reasons: [ATTENTION_LABELS.missingPlayer],
+      answers: ["players", "noPlayer"],
+      teamsOnCard: ["Team t-sea"],
+      enriched: true,
+    });
+  });
+
+  test("NEO-339: a card with no player and no team is asked both, player first, and lists both answers", async () => {
+    const store: Store = { rows: { [BASE]: [card("c-bare", "7", "Checklist", { listingTitle: "T" })] } };
+    const out = await listCardAttention(attentionClient({ store }), SET);
+    expect(out.cards).toHaveLength(1);
+    expect(out.cards[0]).toMatchObject({
+      asked: "missingPlayer",
+      kinds: ["missingPlayer", "missingTeam"],
+      answers: ["players", "noPlayer", "teams", "noTeam"],
+      teamsOnCard: [],
+    });
+    expect(out.totals).toMatchObject({ cards: 1, byKind: { missingPlayer: 1, missingTeam: 1 } });
+  });
+
+  test("NEO-339: an operator's \"No player on this card\" takes the card off the list", async () => {
+    const store: Store = {
+      rows: { [BASE]: [card("c-done", "8", "Logo Card", { teamOnCardIds: ["t"], playerNoneConfirmedAt: 1, listingTitle: "T" })] },
+    };
+    const out = await listCardAttention(attentionClient({ store }), SET);
+    expect(out.cards).toEqual([]);
   });
 
   test("a guest card on two of the set's checklists is listed once", async () => {
@@ -231,10 +266,10 @@ describe("title facts (TitleFixer)", () => {
     const store: Store = {
       rows: {
         [BASE]: [
-          card("t55", "1", "A", { teamOnCardIds: ["t"], listingTitle: "a".repeat(55), listingTitleTruncated: true }),
-          card("t70", "2", "B", { teamOnCardIds: ["t"], listingTitle: "b".repeat(70), listingTitleTruncated: true }),
-          card("t80", "3", "C", { teamOnCardIds: ["t"], listingTitle: "c".repeat(80), cardVariation: ` ${"v".repeat(66)} ` }),
-          card("t81", "4", "D", { teamOnCardIds: ["t"], listingTitle: "d".repeat(81) }),
+          card("t55", "1", "A", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "a".repeat(55), listingTitleTruncated: true }),
+          card("t70", "2", "B", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "b".repeat(70), listingTitleTruncated: true }),
+          card("t80", "3", "C", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "c".repeat(80), cardVariation: ` ${"v".repeat(66)} ` }),
+          card("t81", "4", "D", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "d".repeat(81) }),
         ],
       },
     };
@@ -278,8 +313,8 @@ describe("title facts (TitleFixer)", () => {
     const store: Store = {
       rows: {
         [BASE]: [
-          card("v65", "1", "A", { teamOnCardIds: ["t"], listingTitle: "ok", cardVariation: "v".repeat(65) }),
-          card("v66", "2", "B", { teamOnCardIds: ["t"], listingTitle: "ok", cardVariation: "v".repeat(66) }),
+          card("v65", "1", "A", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "ok", cardVariation: "v".repeat(65) }),
+          card("v66", "2", "B", { playerIds: ["p"], teamOnCardIds: ["t"], listingTitle: "ok", cardVariation: "v".repeat(66) }),
         ],
       },
     };

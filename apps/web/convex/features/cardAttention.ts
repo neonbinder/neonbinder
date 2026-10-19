@@ -42,6 +42,9 @@ import { titleAttentionItems } from "./listingInputs";
  * measurement without re-measuring the row it was derived from.
  */
 export type AttentionItem =
+  // NEO-339: the card links to no player, carries no typed player name, and
+  // no operator has said it shows nobody. See the rule below.
+  | { kind: "missingPlayer" }
   | { kind: "missingTeam" }
   // NEO-101: the stored title is longer than eBay will accept. eBay REJECTS
   // rather than truncating, so this one BLOCKS listing — the only way a row
@@ -126,6 +129,8 @@ export type AttentionCardRow = {
   pendingPlayerNames?: readonly string[];
   /** Operator confirmed this card carries no team — see schema.ts. */
   teamNoneConfirmedAt?: number;
+  /** NEO-339 — operator confirmed this card shows no player — see schema.ts. */
+  playerNoneConfirmedAt?: number;
   /** The BSC per-card team lookup has RUN, whatever it found — see schema.ts. */
   teamCheckDoneAt?: number;
   /**
@@ -203,6 +208,42 @@ export type AttentionCardRow = {
  * `bscTeamCheck.markBscTeamCheckGivenUp`, writing no team — so the card lands
  * here, badged, for the operator to pick. Jason, 2026-10-11: "If a team lookup
  * never returns then the user must select a team."
+ *
+ * ## The `missingPlayer` rule (NEO-339)
+ *
+ * Jason, 2026-10-19: a card with no player linked "needs you", in the web
+ * walker and the set-build tool alike. Three clauses, all read off NB's own
+ * fields:
+ *
+ *   1. `playerIds` is empty (absent and `[]` are the same statement);
+ *   2. `pendingPlayerNames` is empty — a card naming a player it does not
+ *      link to is NEO-221's `unreviewedName`, the same gap seen from the
+ *      other side, and one gap gets one badge;
+ *   3. `playerNoneConfirmedAt` is unset — the operator's "No player on this
+ *      card" answer for a checklist, a team card, a logo or relic card with
+ *      nobody on it.
+ *
+ * plus the fourth clause `missingTeam` has, for the same walker reason: no
+ * `unreviewedName` item fired. `UnreviewedNameFixer` shows the player picker
+ * too, so a card with only an unlinked TEAM name is asked once, there; if it
+ * leaves that fixer still without a player, this item takes over.
+ *
+ * What it deliberately does NOT read: the card's name, its attributes, or
+ * whether it has a marketplace ref. "Team Card", "Checklist" and a relic
+ * swatch are the exclusions a name rule would want, and every one of them is
+ * a guess (invariant 4) — "Team Leaders" names players. The exclusion is the
+ * operator's stamp, recorded once. Nor does it wait on anything: unlike the
+ * team, no background lookup fills a card's players after the commit.
+ *
+ * ## With `missingTeam` on the same card
+ *
+ * Both are raised. A team card with nobody on it still needs its team, and
+ * neither fixer answers the other's question, so neither suppresses the other
+ * (unlike `unreviewedName`, whose fixer writes both sides). `missingPlayer`
+ * is listed FIRST, so the walker asks it first (`pickAttentionFixer` takes
+ * the first item it has a fixer for): a linked player is what
+ * `suggestedTeamsForCard` builds the team chips from, so the team question
+ * asked second comes with the career's answer preselected.
  */
 export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];
@@ -235,6 +276,18 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const hasTeam =
     (row.teamOnCardIds?.length ?? 0) > 0 || (row.pendingTeamNames?.length ?? 0) > 0;
   const awaitingBscLookup = !!row.platformData?.bsc?.ref && !row.teamCheckDoneAt;
+
+  // NEO-339 — see "The `missingPlayer` rule" above. First, so it is asked
+  // first.
+  if (
+    (row.playerIds?.length ?? 0) === 0 &&
+    (row.pendingPlayerNames?.length ?? 0) === 0 &&
+    !row.playerNoneConfirmedAt &&
+    unreviewed.length === 0
+  ) {
+    items.push({ kind: "missingPlayer" });
+  }
+
   // `unreviewed.length === 0` is the fourth clause, and it is about the
   // WALKER rather than about teams. `unreviewedName`'s fixer links the whole
   // card — players and teams, in one write — so a card carrying both items

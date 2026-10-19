@@ -127,6 +127,7 @@
       "cards": 21,
       "byKind": {
         "aspectValueOverLimit": 0,
+        "missingPlayer": 0,
         "missingTeam": 0,
         "titleOverLimit": 0,
         "titleTruncated": 21,

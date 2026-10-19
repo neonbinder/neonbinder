@@ -1250,9 +1250,10 @@ old attention count climbed to). The step prints no count; the header's
   which joins that card selected; the line itself stays on `Leave for later`.
 - **STEP 6c** leaves with `Next (Enter)` and asserts the Save step is
   `Step y of y` (y read on the teams step) and `Save 25 cards?`.
-- **STEP 7** asserts the pill reads `22 need you` within 7s of
-  `Saved 25 cards.` (25 − the "no team" card − the RXO card − the pre-filled
-  card; one card per player here, measurement 5).
+- **STEP 7** asserts the pill reads `24 need you` within 7s of
+  `Saved 25 cards.` (25 − the pre-filled card; one card per player here,
+  measurement 5). The "no team" card and the RXO card still count: their
+  names were skipped, so they link no player, and NEO-339 asks about that.
 - **STEP 9** walks the drawer's `Next card` from `NB272-…` (it sorts first)
   to the two cards with a team chip, in whichever order the checklist shows
   them, and asserts `Remove team RXT<token>` on one and

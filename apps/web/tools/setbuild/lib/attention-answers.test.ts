@@ -14,6 +14,7 @@ import {
   resolveAutographAnswers,
 } from "./attention-answers";
 import { listCardAttention } from "./attention";
+import { parseFixAnswers } from "./fix-answers";
 import { BASE, FUTURE, GOLD, SET, SPORT, attentionClient, card, cascade, era, type Store } from "./attention.fixture";
 
 const WRITES = ["selectorOptions:updateCard", "cardChecklist:confirmCardNoTeam", "teams:findOrCreate", "players:findOrCreate"];
@@ -434,9 +435,142 @@ describe("UnreviewedNameFixer: { players?, teams? }", () => {
   });
 });
 
+describe("MissingPlayerFixer: { players } and { noPlayer } (NEO-339)", () => {
+  /** A team card on Base, #660, that nobody is linked to. */
+  const nobody = (extra: Record<string, unknown> = {}): Store => ({
+    rows: { [BASE]: [card("c1", "660", "Mariners Team Card", { teamOnCardIds: ["t-sea"], listingTitle: "T", ...extra })] },
+  });
+  const players = {
+    "players:nearMatches": (a: Record<string, unknown>) =>
+      ({
+        "Ichiro Suzuki": [{ _id: "p-ichiro", name: "Ichiro Suzuki", confidence: "exact", birthYear: 1973 }],
+        "Will Smith": [
+          { _id: "p-ws1", name: "Will Smith", confidence: "exact", birthYear: 1989 },
+          { _id: "p-ws2", name: "Will Smith", confidence: "exact", birthYear: 1995 },
+        ],
+      })[a.name as string] ?? [],
+    "teams:erasByNameAndSport": (a: Record<string, unknown>) => (a.name === "Seattle Mariners" ? [era("t-sea", "Mariners", 1977, undefined, "Seattle")] : []),
+  };
+  const writes = (client: ReturnType<typeof attentionClient>) =>
+    client.calls.filter((c) => [...WRITES, "cardChecklist:confirmCardNoPlayer"].includes(c.name));
+
+  test("{ noPlayer: true } records it through confirmCardNoPlayer, and a second one is moot", async () => {
+    const client = attentionClient({ store: nobody() });
+    const [r, again] = await applyCardAnswers(client, SET, [
+      { cardNumber: "660", answer: { noPlayer: true } },
+      { cardNumber: "660", answer: { noPlayer: true } },
+    ]);
+    expect(r).toMatchObject({ outcome: "applied", answered: "noPlayer", detail: "Recorded: no player on this card.", stillNeeds: [] });
+    expect(again).toMatchObject({ outcome: "moot", detail: `Already settled: this card is no longer flagged “${ATTENTION_LABELS.missingPlayer}”.` });
+    expect(client.callsTo("cardChecklist:confirmCardNoPlayer").map((c) => c.args)).toEqual([{ cardId: "c1" }]);
+    expect(client.callsTo("selectorOptions:updateCard")).toEqual([]);
+  });
+
+  test("a confirmCardNoPlayer refusal is a refusal, not a fix", async () => {
+    const client = attentionClient({
+      store: nobody(),
+      handlers: { "cardChecklist:confirmCardNoPlayer": () => ({ confirmed: false, stamped: false }) },
+    });
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { noPlayer: true } }]);
+    expect(r).toMatchObject({
+      outcome: "refused",
+      detail: "This card has a player now, or it is no longer on this checklist — nothing to confirm.",
+      stillNeeds: [ATTENTION_LABELS.missingPlayer],
+    });
+  });
+
+  test("{ players } links them as the card's whole list, and nothing else is sent", async () => {
+    const client = attentionClient({ store: nobody(), handlers: players });
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: ["Ichiro Suzuki"] } }]);
+    expect(client.callsTo("selectorOptions:updateCard").map((c) => c.args)).toEqual([{ id: "c1", playerIds: ["p-ichiro"] }]);
+    expect(r).toMatchObject({ outcome: "applied", answered: "players", detail: "Saved 1 player on this card.", stillNeeds: [] });
+  });
+
+  test("a linked player retires an earlier 'No player on this card'", async () => {
+    const store = nobody();
+    const client = attentionClient({ store, handlers: players });
+    await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { noPlayer: true } }]);
+    expect(store.rows[BASE][0].playerNoneConfirmedAt).toBe(1);
+    // Not asked any more, so a players answer is moot rather than a silent relink.
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: ["Ichiro Suzuki"] } }]);
+    expect(r.outcome).toBe("moot");
+    expect(client.callsTo("selectorOptions:updateCard")).toEqual([]);
+  });
+
+  test("a shared name needs a birthYear: a ResolveError with both, before anything is written", async () => {
+    const client = attentionClient({ store: nobody(), handlers: players });
+    const err = (await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: ["Will Smith"] } }]).catch((e) => e)) as ResolveError;
+    expect(err).toBeInstanceOf(ResolveError);
+    expect(err.candidates.map((c) => c.id)).toEqual(["p-ws1", "p-ws2"]);
+    expect(writes(client)).toEqual([]);
+  });
+
+  test('a "create" only ever creates: a name already on file is refused up front; a new one is created and reported', async () => {
+    const client = attentionClient({ store: nobody(), handlers: { ...players, "players:findOrCreate": () => "p-new" } });
+    const err = (await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: [{ create: "Ichiro Suzuki" }] } }]).catch(
+      (e) => e,
+    )) as ResolveError;
+    expect(err).toBeInstanceOf(ResolveError);
+    expect(writes(client)).toEqual([]);
+
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: [{ create: "Kazuhiro Sasaki" }] } }]);
+    expect(r).toMatchObject({ outcome: "applied", created: [{ kind: "player", name: "Kazuhiro Sasaki", id: "p-new" }] });
+    expect(client.callsTo("selectorOptions:updateCard").map((c) => c.args)).toEqual([{ id: "c1", playerIds: ["p-new"] }]);
+  });
+
+  test("an empty list and a list past the cap are refused, nothing written", async () => {
+    const client = attentionClient({ store: nobody(), handlers: players });
+    const [empty] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: [] } }]);
+    expect(empty).toMatchObject({ outcome: "refused", detail: "Pick at least one player, or record that this card has none." });
+    const many = Array.from({ length: 21 }, (_, i) => ({ create: `Rookie ${i}` }));
+    const [over] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: many } }]);
+    expect(over).toMatchObject({ outcome: "refused", detail: "That is the limit of 20 players on one card." });
+    expect(writes(client)).toEqual([]);
+  });
+
+  test("teams alone on a card that has its team: refused, it asks for a player", async () => {
+    const client = attentionClient({ store: nobody(), handlers: players });
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { teams: ["Seattle Mariners"] } }]);
+    expect(r).toMatchObject({ outcome: "refused", detail: "This card needs a player, not a team; answer with players, or noPlayer." });
+    const [both] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: ["Ichiro Suzuki"], teams: ["Seattle Mariners"] } }]);
+    expect(both).toMatchObject({ outcome: "refused", detail: "This card has its team already; answer with players alone." });
+    expect(writes(client)).toEqual([]);
+  });
+
+  test("a card missing both: { players, teams } answers both in one write; { teams } alone answers the team", async () => {
+    const bare = (): Store => ({ rows: { [BASE]: [card("c1", "660", "Ichiro", { listingTitle: "T" })] } });
+    const client = attentionClient({ store: bare(), handlers: players });
+    const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { players: ["Ichiro Suzuki"], teams: ["Seattle Mariners"] } }]);
+    expect(client.callsTo("selectorOptions:updateCard").map((c) => c.args)).toEqual([
+      { id: "c1", playerIds: ["p-ichiro"], teamOnCardIds: ["t-sea"] },
+    ]);
+    expect(r).toMatchObject({ outcome: "applied", answered: "players", detail: "Saved 1 player and 1 team on this card.", stillNeeds: [] });
+
+    const client2 = attentionClient({ store: bare(), handlers: players });
+    const [t] = await applyCardAnswers(client2, SET, [{ cardNumber: "660", answer: { teams: ["Seattle Mariners"] } }]);
+    expect(t).toMatchObject({ outcome: "applied", answered: "teams", stillNeeds: [ATTENTION_LABELS.missingPlayer] });
+  });
+
+  test("the shared answers schema (nb_fix and --answers) takes both shapes, and noPlayer only as true", () => {
+    expect(parseFixAnswers({ cards: [{ cardNumber: "660", answer: { noPlayer: true } }] }).cards?.[0].answer).toEqual({ noPlayer: true });
+    expect(parseFixAnswers({ cards: [{ cardNumber: "660", answer: { players: ["Ichiro Suzuki"] } }] }).cards?.[0].answer).toEqual({
+      players: ["Ichiro Suzuki"],
+    });
+    expect(() => parseFixAnswers({ cards: [{ cardNumber: "660", answer: { noPlayer: false } }] })).toThrow();
+  });
+
+  test('"noPlayer" stands alone', async () => {
+    const client = attentionClient({ store: nobody() });
+    await expect(
+      applyCardAnswers(client, SET, [{ cardNumber: "660", answer: { noPlayer: true, teams: [] } as never }]),
+    ).rejects.toThrow(CardAnswerError);
+    expect(writes(client)).toEqual([]);
+  });
+});
+
 describe("TitleFixer: { title, variation? }", () => {
   const titled = (extra: Record<string, unknown> = {}): Store => ({
-    rows: { [BASE]: [card("c1", "1", "Long", { teamOnCardIds: ["t"], listingTitle: "x".repeat(90), ...extra })] },
+    rows: { [BASE]: [card("c1", "1", "Long", { playerIds: ["p1"], teamOnCardIds: ["t"], listingTitle: "x".repeat(90), ...extra })] },
   });
 
   test("80 characters is written; 81 is refused in the server's sentence before the write", async () => {
@@ -510,7 +644,7 @@ describe("TitleFixer: { title, variation? }", () => {
 
 describe("a batch", () => {
   test("answers apply in order against the card as it stands: a team, then the same card's title", async () => {
-    const store: Store = { rows: { [BASE]: [card("c1", "1", "Both", { listingTitle: "x".repeat(85) })] } };
+    const store: Store = { rows: { [BASE]: [card("c1", "1", "Both", { playerIds: ["p1"], listingTitle: "x".repeat(85) })] } };
     const client = attentionClient({ store, handlers: teamsHandlers });
     const results = await applyCardAnswers(client, SET, [
       { cardNumber: "1", answer: { teams: ["Los Angeles Angels"] } },

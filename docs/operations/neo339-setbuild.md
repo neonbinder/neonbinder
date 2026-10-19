@@ -502,10 +502,13 @@ is opt-in.
 `nb_attention` (CLI `attention <path>`) lists, for a set:
 
 - `cards`: every card the checklist header's amber pill counts, in the
-  walker's order (missing team, then a name not linked, then titles), each with
+  walker's order (missing player, then missing team, then a name not linked,
+  then titles), each with
   its row, number, name, `cardId`, Set Builder link, reasons (the Set
   Builder's own words), the answers it takes, and the facts its fixer shows:
-  the players, the team the listing names and the NB teams that name could
+  for a card with no player (NEO-339: no player linked, no typed name, and
+  nobody has said it shows none) the teams it carries (`teamsOnCard`); the
+  players, the team the listing names and the NB teams that name could
   mean, career teams, `suggested` (exactly what the Set Builder would
   preselect; never written unasked), the title with its meter band and the
   generated title. `detail: "summary"` (default) reads those facts for the
@@ -537,6 +540,8 @@ over the exact answers:
 ```json
 {
   "cards": [
+    { "cardNumber": "7", "answer": { "players": ["Ichiro Suzuki"] } },
+    { "cardNumber": "660", "answer": { "noPlayer": true } },
     { "cardNumber": "12", "answer": { "teams": ["San Diego Padres"] } },
     { "row": { "type": "Inserts", "name": "Future Stars" }, "cardNumber": "FS-3", "answer": { "noTeam": true } },
     { "cardNumber": "103b", "answer": { "title": "<the title text>", "variation": "<shorter variation>" } },
@@ -548,9 +553,23 @@ over the exact answers:
   ],
   "autographs": [
     { "row": { "type": "Insert", "name": "Ivory Autographs" }, "format": "On Card" }
+  ],
+  "detach": [
+    { "row": { "type": "Insert", "name": "1988 Topps Baseball Autographs Red" }, "side": "sportlots", "id": "269998" }
   ]
 }
 ```
+
+- A detach answer removes one marketplace link a row should not have (a
+  SportLots set of another product, say), exactly as the Set Builder's Sources
+  panel × does (`detachPlatformId`): the row (omitted = Base), the side, and
+  the marketplace set id as `nb_inspect` lists it. The count of cards fetched
+  from it is read at fix time and checked by the server, so a checklist commit
+  in between refuses the answer (`refused`, nothing written). The row's
+  primary link is detached too (a later sync of the row could re-add it). An
+  id the row does not carry is `moot`. It removes NO card: the cards that set
+  brought stay on the row (`orphanedCards` in the result), to delete in the
+  Set Builder. At most 10 per call.
 
 - An autograph answer names its row (omitted = Base) and the format, and goes
   through the header prompt's own save (`setAutographFormat`). The server then
@@ -590,8 +609,8 @@ over the exact answers:
   name (one era, several, an alias; one same-name player, or one born in the
   given year) is refused with the candidates; link it with the team's name or
   `{ "link", "birthYear" }` instead.
-- At most 100 card answers, 200 name answers and 50 autograph answers per
-  call; split a bigger batch and confirm each part.
+- At most 100 card answers, 200 name answers, 50 autograph answers and 10
+  detach answers per call; split a bigger batch and confirm each part.
 - A failure part-way (network, auth, a server fault) still returns every
   answer it settled, and any name save sent but not read back as
   `unconfirmed`; CLI `fix` prints them before the error. List attention again

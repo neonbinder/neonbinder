@@ -1100,7 +1100,9 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     });
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([]);
+    // No team item. (NEO-339: the card was added with no player linked, so
+    // that is the one thing it is still asked for.)
+    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingPlayer" }]);
   });
 
   test("sends neither field and the card is correctly left needing a team", async () => {
@@ -1117,7 +1119,8 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     const row = await getCard(t, cardId);
     expect(row!.teamOnCardIds).toBeUndefined();
     expect(row!.pendingTeamNames).toBeUndefined();
-    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
+    // NEO-339: no player linked either, asked first.
+    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingPlayer" }, { kind: "missingTeam" }]);
   });
 
   test("rejects an id that resolves to no team, and writes NO card at all", async () => {
@@ -1406,7 +1409,8 @@ describe("addCustomCard — teamOnCardIds edge shapes", () => {
     const row = await getCard(t, cardId);
     expect(row!.teamOnCardIds).toBeUndefined();
     expect(row!.pendingTeamNames).toBeUndefined();
-    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
+    // NEO-339: no player linked either, asked first.
+    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingPlayer" }, { kind: "missingTeam" }]);
   });
 
   test("addCustomCard and updateCard agree: a card whose ancestor chain has no sport accepts ANY team id", async () => {
@@ -1536,7 +1540,8 @@ describe("deriveCardAttention — a stale row carrying BOTH fields (NEO-208)", (
     );
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([]);
+    // No team item (NEO-339: only the player it has never been linked to).
+    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingPlayer" }]);
   });
 });
 

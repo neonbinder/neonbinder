@@ -16,12 +16,14 @@ import { askedQuestion, walkRank } from "../../tools/setbuild/lib/attention";
 import { ATTENTION_LABELS, type AttentionItem, type AttentionKind } from "./card-attention";
 import { WALK_RANK } from "./attention-rules";
 import { attentionFixers, attentionWalkRank, pickAttentionFixer } from "./cardAttentionRegistry";
+import MissingPlayerFixer from "./MissingPlayerFixer";
 import MissingTeamFixer from "./MissingTeamFixer";
 import TitleFixer from "./TitleFixer";
 import UnreviewedNameFixer from "./UnreviewedNameFixer";
 
 /** One item per kind, carrying the payload its type asks for. */
 const ITEM: Record<AttentionKind, AttentionItem> = {
+  missingPlayer: { kind: "missingPlayer" },
   missingTeam: { kind: "missingTeam" },
   unreviewedName: { kind: "unreviewedName", names: ["A. Player"] },
   titleOverLimit: { kind: "titleOverLimit", length: 90 },
@@ -32,12 +34,13 @@ const KINDS = Object.keys(ITEM) as AttentionKind[];
 
 /** The question each fixer component asks, written down independently of the kinds. */
 const QUESTION_OF = new Map<unknown, ReturnType<typeof askedQuestion>>([
+  [MissingPlayerFixer, "missingPlayer"],
   [MissingTeamFixer, "missingTeam"],
   [UnreviewedNameFixer, "unreviewedName"],
   [TitleFixer, "title"],
 ]);
 
-/** Every non-empty ordered selection of the kinds: 5 + 20 + 60 + 120 + 120. */
+/** Every non-empty ordered selection of the kinds: 6 + 30 + 120 + 360 + 720 + 720. */
 function orderedCombinations(kinds: AttentionKind[]): AttentionKind[][] {
   const out: AttentionKind[][] = [];
   const walk = (soFar: AttentionKind[]) => {
@@ -55,7 +58,7 @@ describe("the tool's walk agrees with the registry's", () => {
     expect(Object.keys(ATTENTION_LABELS).sort()).toEqual([...KINDS].sort());
   });
 
-  test("every fixer is one of the three the question table knows", () => {
+  test("every fixer is one of the four the question table knows", () => {
     for (const k of KINDS) expect(QUESTION_OF.has(attentionFixers[k]), `${k} has an unknown fixer`).toBe(true);
   });
 
@@ -67,7 +70,7 @@ describe("the tool's walk agrees with the registry's", () => {
 
   test("every ordered combination of kinds: same rank, same question", () => {
     const combos = orderedCombinations(KINDS);
-    expect(combos).toHaveLength(325);
+    expect(combos).toHaveLength(1956);
     const disagreements: string[] = [];
     for (const combo of combos) {
       const items = combo.map((k) => ITEM[k]);

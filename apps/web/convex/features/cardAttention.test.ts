@@ -18,17 +18,26 @@ import { deriveCardAttention, needsAttention } from "./cardAttention";
 
 const MISSING_TEAM = [{ kind: "missingTeam" as const }];
 
+/**
+ * NEO-339 — every rule below `missingPlayer`'s own block is about something
+ * else, so its rows carry a linked player and `missingPlayer` stays out of the
+ * way (the same trick `HAS_TEAM` plays for `missingTeam`). A row that says
+ * otherwise wins.
+ */
+const deriveWithPlayer = (row: Parameters<typeof deriveCardAttention>[0]) =>
+  deriveCardAttention({ playerIds: ["player_1"], ...row });
+
 describe("deriveCardAttention — missingTeam", () => {
   test("a custom card with no team and no BSC ref is flagged immediately", () => {
     // Nothing will ever answer this automatically: no BSC ref means no
     // per-card lookup, and SportLots deliberately never scrapes team at all.
     // So there is nothing to wait for.
-    expect(deriveCardAttention({ platformData: {} })).toEqual(MISSING_TEAM);
+    expect(deriveWithPlayer({ platformData: {} })).toEqual(MISSING_TEAM);
   });
 
   test("a SportLots-only card with no team is flagged immediately", () => {
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         platformData: { sportlots: { ref: "some SL description" } },
       }),
@@ -40,7 +49,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // during the drain would flood a 900-card checklist with items that
     // resolve themselves, which is how a badge gets trained out of usefulness.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         platformData: { bsc: { ref: "bsc-1" } },
       }),
@@ -52,7 +61,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // team on file is exactly the case a human has to settle — and it is the
     // state every pre-NEO-102 teamless card is already sitting in.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         teamCheckDoneAt: 1_700_000_000_000,
         platformData: { bsc: { ref: "bsc-1" } },
@@ -62,7 +71,7 @@ describe("deriveCardAttention — missingTeam", () => {
 
   test("an operator-confirmed 'no team' card is never flagged", () => {
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         teamCheckDoneAt: 1_700_000_000_000,
         teamNoneConfirmedAt: 1_700_000_001_000,
@@ -73,7 +82,7 @@ describe("deriveCardAttention — missingTeam", () => {
 
   test("a confirmation suppresses the flag even with no lookup ever having run", () => {
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamNoneConfirmedAt: 1_700_000_001_000,
         platformData: {},
       }),
@@ -88,14 +97,14 @@ describe("deriveCardAttention — missingTeam", () => {
       { platformData: { bsc: { ref: "bsc-1" } } },
     ]) {
       expect(
-        deriveCardAttention({ teamOnCardIds: ["team_1"], ...extra }),
+        deriveWithPlayer({ teamOnCardIds: ["team_1"], ...extra }),
       ).toEqual([]);
     }
   });
 
   test("absent and empty teamOnCardIds are the same statement", () => {
-    expect(deriveCardAttention({ teamOnCardIds: [] })).toEqual(
-      deriveCardAttention({}),
+    expect(deriveWithPlayer({ teamOnCardIds: [] })).toEqual(
+      deriveWithPlayer({}),
     );
   });
 
@@ -116,7 +125,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // left. Exactly ONE item either way: two badges for one gap would just
     // double the count the operator walks through.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         pendingTeamNames: ["Savannah Bananas"],
         platformData: {},
@@ -132,7 +141,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // names as it resolves them and can leave the array behind empty, so this
     // is a real stored shape — and it must read exactly like an absent one.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         pendingTeamNames: [],
         platformData: {},
@@ -147,7 +156,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // same convention here: a card cannot be stuck waiting forever on
     // `teamCheckDoneAt` for a ref that was never a real one.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: [],
         platformData: { bsc: { ref: "" } },
       }),
@@ -167,29 +176,29 @@ const HAS_TEAM = { teamOnCardIds: ["team_1"] } as const;
 describe("deriveCardAttention — titleOverLimit", () => {
   test("a title at exactly the cap is fine; one character more is not", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(80) }),
+      deriveWithPlayer({ ...HAS_TEAM, listingTitle: "x".repeat(80) }),
     ).toEqual([]);
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(81) }),
+      deriveWithPlayer({ ...HAS_TEAM, listingTitle: "x".repeat(81) }),
     ).toEqual([{ kind: "titleOverLimit", length: 81 }]);
   });
 
   test("carries the measured length so the label need not re-measure", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(94) }),
+      deriveWithPlayer({ ...HAS_TEAM, listingTitle: "x".repeat(94) }),
     ).toEqual([{ kind: "titleOverLimit", length: 94 }]);
   });
 
   test("an absent or empty title is not over the limit", () => {
-    expect(deriveCardAttention({ ...HAS_TEAM })).toEqual([]);
-    expect(deriveCardAttention({ ...HAS_TEAM, listingTitle: "" })).toEqual([]);
+    expect(deriveWithPlayer({ ...HAS_TEAM })).toEqual([]);
+    expect(deriveWithPlayer({ ...HAS_TEAM, listingTitle: "" })).toEqual([]);
   });
 });
 
 describe("deriveCardAttention — titleTruncated", () => {
   test("fires on the stored flag alone", () => {
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         ...HAS_TEAM,
         listingTitle: "2024 Topps Chrome An Absurdly Long Player Full Name #1",
         listingTitleTruncated: true,
@@ -202,13 +211,13 @@ describe("deriveCardAttention — titleTruncated", () => {
     // write, so this is the after state of a human rewriting the title. The
     // item clears by construction; nothing has to remember to retract it.
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "A hand-written title" }),
+      deriveWithPlayer({ ...HAS_TEAM, listingTitle: "A hand-written title" }),
     ).toEqual([]);
   });
 
   test("`false` is the same as absent", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitleTruncated: false }),
+      deriveWithPlayer({ ...HAS_TEAM, listingTitleTruncated: false }),
     ).toEqual([]);
   });
 
@@ -218,7 +227,7 @@ describe("deriveCardAttention — titleTruncated", () => {
     // "is 94 characters" and "was cut short" read as a contradiction, and
     // rewriting the title fixes both, so only the blocking one is reported.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         ...HAS_TEAM,
         listingTitle: "x".repeat(94),
         listingTitleTruncated: true,
@@ -230,17 +239,17 @@ describe("deriveCardAttention — titleTruncated", () => {
 describe("deriveCardAttention — aspectValueOverLimit", () => {
   test("a cardVariation at exactly 65 is fine; 66 is flagged", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(65) }),
+      deriveWithPlayer({ ...HAS_TEAM, cardVariation: "v".repeat(65) }),
     ).toEqual([]);
     expect(
-      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(66) }),
+      deriveWithPlayer({ ...HAS_TEAM, cardVariation: "v".repeat(66) }),
     ).toEqual([
       { kind: "aspectValueOverLimit", field: "cardVariation", length: 66 },
     ]);
   });
 
   test("names the field, so a future second aspect field does not need a second kind", () => {
-    const [item] = deriveCardAttention({
+    const [item] = deriveWithPlayer({
       ...HAS_TEAM,
       cardVariation: "v".repeat(100),
     });
@@ -255,13 +264,13 @@ describe("deriveCardAttention — aspectValueOverLimit", () => {
     // `updateCard` deliberately does NOT cap cardVariation — see the note
     // there. This item existing at all is the whole enforcement.
     expect(
-      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(200) }),
+      deriveWithPlayer({ ...HAS_TEAM, cardVariation: "v".repeat(200) }),
     ).toHaveLength(1);
   });
 });
 
 describe("deriveCardAttention — kinds compose", () => {
-  test("one row can owe a human several different things at once", () => {
+  test("one row can owe a human several different things at once — player first, then team", () => {
     expect(
       deriveCardAttention({
         platformData: {},
@@ -269,6 +278,7 @@ describe("deriveCardAttention — kinds compose", () => {
         cardVariation: "v".repeat(90),
       }),
     ).toEqual([
+      { kind: "missingPlayer" },
       { kind: "missingTeam" },
       { kind: "titleOverLimit", length: 120 },
       { kind: "aspectValueOverLimit", field: "cardVariation", length: 90 },
@@ -277,7 +287,7 @@ describe("deriveCardAttention — kinds compose", () => {
 
   test("a fully-settled row owes nothing", () => {
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         ...HAS_TEAM,
         listingTitle: "2024 Topps Chrome Elly De La Cruz #50 RC",
         cardVariation: "Image Variation; Wearing sunglasses",
@@ -342,7 +352,7 @@ describe("deriveCardAttention — unreviewedName", () => {
 
   test("a card with a linked team is not flagged for a leftover team name", () => {
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         teamOnCardIds: ["team_1"],
         pendingTeamNames: ["Reno Aces"],
       }),
@@ -425,7 +435,7 @@ describe("deriveCardAttention — unreviewedName", () => {
     // `[]` is the shape a resolve pass leaves behind after stripping the last
     // name, and it must read exactly like an absent field.
     expect(
-      deriveCardAttention({
+      deriveWithPlayer({
         ...HAS_TEAM,
         pendingPlayerNames: [],
         pendingTeamNames: [],
@@ -456,6 +466,83 @@ describe("deriveCardAttention — unreviewedName", () => {
   });
 });
 
+// ===========================================================================
+// NEO-339 — missingPlayer
+//
+// Jason, 2026-10-19: a card with no player linked needs a person, by the same
+// rule in the walker and the set-build tool. The exclusions are data, never a
+// name: a typed player name is `unreviewedName`'s, and "nobody is on this
+// card" is the operator's stamp.
+// ===========================================================================
+
+describe("deriveCardAttention — missingPlayer", () => {
+  const MISSING_PLAYER = [{ kind: "missingPlayer" as const }];
+
+  test("a card with a team and no player link is flagged", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM })).toEqual(MISSING_PLAYER);
+  });
+
+  test("absent and empty playerIds are the same statement", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM, playerIds: [] })).toEqual(MISSING_PLAYER);
+  });
+
+  test("a card linked to any player is not flagged", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM, playerIds: ["player_1"] })).toEqual([]);
+  });
+
+  test("the operator's 'No player on this card' settles it", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM, playerNoneConfirmedAt: 1_700_000_000_000 })).toEqual([]);
+  });
+
+  test("a typed player name is unreviewedName, never also missingPlayer", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM, pendingPlayerNames: ["Ichiro"] })).toEqual([
+      { kind: "unreviewedName", names: ["Ichiro"] },
+    ]);
+  });
+
+  test("an unlinked TEAM name suppresses it too — UnreviewedNameFixer asks for the player as well", () => {
+    expect(deriveCardAttention({ pendingTeamNames: ["Reno Aces"] })).toEqual([
+      { kind: "unreviewedName", names: ["Reno Aces"] },
+    ]);
+  });
+
+  test("…and it comes BACK once that name is linked and the card still names nobody", () => {
+    expect(deriveCardAttention({ teamOnCardIds: ["team_1"], pendingTeamNames: ["Reno Aces"] })).toEqual(MISSING_PLAYER);
+  });
+
+  test("the card's name and attributes are never read: a 'Team Card' or 'Checklist' is asked like any other", () => {
+    for (const cardName of ["Seattle Mariners Team Card", "Checklist 1-110", "Logo Patch"]) {
+      expect(
+        deriveCardAttention({ ...HAS_TEAM, cardName, attributes: ["RELIC"] } as Parameters<typeof deriveCardAttention>[0]),
+      ).toEqual(MISSING_PLAYER);
+    }
+  });
+
+  test("no marketplace gate and no wait: a BSC card awaiting its team lookup is still asked for its player", () => {
+    // The team rule holds back for the lookup; nothing fills players after the
+    // commit, so the player rule has nothing to wait for.
+    expect(deriveCardAttention({ platformData: { bsc: { ref: "bsc-1" } } })).toEqual(MISSING_PLAYER);
+    expect(deriveCardAttention({ ...HAS_TEAM, platformData: { sportlots: { ref: "sl" } } })).toEqual(
+      deriveCardAttention({ ...HAS_TEAM, platformData: {} }),
+    );
+  });
+
+  test("with no team either, BOTH are raised, player first — neither fixer answers the other", () => {
+    expect(deriveCardAttention({ platformData: {} })).toEqual([{ kind: "missingPlayer" }, { kind: "missingTeam" }]);
+    // Each ruling settles only its own question.
+    expect(deriveCardAttention({ platformData: {}, playerNoneConfirmedAt: 1 })).toEqual([{ kind: "missingTeam" }]);
+    expect(deriveCardAttention({ platformData: {}, teamNoneConfirmedAt: 1 })).toEqual(MISSING_PLAYER);
+    expect(deriveCardAttention({ platformData: {}, playerNoneConfirmedAt: 1, teamNoneConfirmedAt: 1 })).toEqual([]);
+  });
+
+  test("stacks ahead of the title items", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM, listingTitleTruncated: true })).toEqual([
+      { kind: "missingPlayer" },
+      { kind: "titleTruncated" },
+    ]);
+  });
+});
+
 describe("needsAttention", () => {
   test("agrees with deriveCardAttention", () => {
     const rows: Array<Parameters<typeof deriveCardAttention>[0]> = [
@@ -464,6 +551,9 @@ describe("needsAttention", () => {
       { platformData: { bsc: { ref: "b" } } },
       { platformData: { bsc: { ref: "b" } }, teamCheckDoneAt: 1 },
       { teamNoneConfirmedAt: 1 },
+      // NEO-339
+      { ...HAS_TEAM, playerNoneConfirmedAt: 1 },
+      { playerIds: ["player_1"], teamNoneConfirmedAt: 1 },
       { pendingTeamNames: ["Savannah Bananas"] },
       { pendingTeamNames: [] },
       // NEO-221

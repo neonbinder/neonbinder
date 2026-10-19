@@ -1721,6 +1721,9 @@ export const insertParallelCardsPage = internalMutation({
             bscTeamName: source.bscTeamName,
             teamNoneConfirmedAt: source.teamNoneConfirmedAt,
             teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
+            // NEO-339 — and the "No player on this card" ruling.
+            playerNoneConfirmedAt: source.playerNoneConfirmedAt,
+            playerNoneConfirmedByUserId: source.playerNoneConfirmedByUserId,
             ...variation,
           },
         },

@@ -148,8 +148,10 @@ function card(
     selectorOptionId: VARIANT_ID,
     cardNumber: n,
     cardName: name,
-    // Teamed and settled, so no attention row joins the toolbar.
+    // Teamed, its player linked (NEO-339), and settled, so no attention row
+    // joins the toolbar.
     teamOnCardIds: ["team-sd"],
+    playerIds: ["player-1"],
     platformData: {},
     sortOrder: 0,
     lastUpdated: 1_000,
