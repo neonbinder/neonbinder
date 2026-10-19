@@ -13315,6 +13315,8 @@ const commitCardValidator = v.object({
  * against the set's own marketplace lists.
  */
 type ChecklistChainNode = ResolvableRow & {
+  /** The row's id; present on every chain read from the DB. */
+  _id?: Id<"selectorOptions">;
   value: string;
   metadata?: { cardNumberPrefix?: string; setNamePrefix?: string } | null;
 };
@@ -13522,6 +13524,8 @@ async function fetchAndMatchChecklist(
       /** NEO-189 — SL tags a variation in the description and reuses the
        *  parent's card number. */
       isVariation?: boolean;
+      /** NEO-339 — see `SlListcardsCard.mononymHint`. Never a player as-is. */
+      mononymHint?: string;
       platformRef?: string;
       sportlotsRef?: string;
       sourceSlSetId?: string;
@@ -13870,6 +13874,10 @@ async function fetchAndMatchChecklist(
     // Falls back to the number only when a row has no ref, which is the one
     // case where nothing better exists.
     const claimedSlRefs = new Set<string>();
+    // NEO-339 — the cards no marketplace named a player on whose SportLots row
+    // carried a one-word name (`mononymHint`). Settled against NB's players
+    // after the merge; see `applyMononymHints`.
+    const mononymHintByCard = new Map<ReconciledCard, string>();
     const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
       c.platformRef ?? `#${c.cardNumber}`;
 
@@ -14059,6 +14067,9 @@ async function fetchAndMatchChecklist(
         ...(sl ? {} : { unmatched: "sl" as const }),
       };
       out.push(candidate);
+      if (!candidate.players?.length && sl?.mononymHint) {
+        mononymHintByCard.set(candidate, sl.mononymHint);
+      }
       if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
       else unmatchedBscCards.push(candidate);
     }
@@ -14093,6 +14104,9 @@ async function fetchAndMatchChecklist(
       };
       out.push(slOnly);
       unmatchedSlCards.push(slOnly);
+      if (!slOnly.players?.length && sl.mononymHint) {
+        mononymHintByCard.set(slOnly, sl.mononymHint);
+      }
     }
 
     // 3b. NEO-251 — did an operator already settle this same roster
@@ -14154,6 +14168,15 @@ async function fetchAndMatchChecklist(
       }
     }
 
+    // 3c. NEO-339 — a one-word name names the card only when exactly one NB
+    //     player in this sport answers to it. Before staging, so the preview
+    //     and the commit read the same `players`.
+    await applyMononymHints(
+      ctx,
+      chain.find((node) => node.level === "sport")?._id,
+      mononymHintByCard,
+    );
+
     return {
       kind: "matched",
       autoMatchedCards,
@@ -14167,6 +14190,41 @@ async function fetchAndMatchChecklist(
     report.marketplaceCalls += marketplaceCalls;
   }
 }
+
+/**
+ * NEO-339 — give a card its SportLots one-word name ("Ichiro") when, and only
+ * when, exactly one NB player in the set's sport answers to it, by name or
+ * alias (`players.uniquelyNamedPlayers`, the commit's own lookup). Zero
+ * matches, several (invariant 7), or no sport row on the chain: the card
+ * keeps no players, exactly as before.
+ *
+ * The hint is written as the card's printed name, never as a player: the
+ * commit then resolves it to that one existing row, and nothing creates a
+ * player from it. Only cards neither marketplace named a player on carry a
+ * hint at all (see where `mononymHintByCard` is filled).
+ */
+async function applyMononymHints(
+  ctx: ActionCtx,
+  sportId: Id<"selectorOptions"> | undefined,
+  hintByCard: ReadonlyMap<{ players?: string[] }, string>,
+): Promise<void> {
+  if (!sportId || hintByCard.size === 0) return;
+  const names = [...new Set(hintByCard.values())];
+  const unique = new Set<string>();
+  for (let i = 0; i < names.length; i += MONONYM_HINTS_PER_QUERY) {
+    const answered = await ctx.runQuery(internal.players.uniquelyNamedPlayers, {
+      sportId,
+      names: names.slice(i, i + MONONYM_HINTS_PER_QUERY),
+    });
+    for (const name of answered) unique.add(name);
+  }
+  for (const [card, hint] of hintByCard) {
+    if (unique.has(hint)) card.players = [hint];
+  }
+}
+
+/** How many one-word names one `uniquelyNamedPlayers` read settles. */
+const MONONYM_HINTS_PER_QUERY = 100;
 
 /**
  * NEO-335 — one `resolveCandidateTeams` entry per looked-up card, from what

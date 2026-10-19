@@ -1648,6 +1648,38 @@ export function parseSlSubjects(residual: string): { players?: string[] } {
 }
 
 /**
+ * NEO-339 — the ONE-WORD name `parseSlSubjects` refuses (rule 8), offered as
+ * an unconfirmed hint rather than a player.
+ *
+ * Rule 8 stays: an adapter cannot tell "Ichiro" from "Checklist", a sponsor,
+ * a team nickname or a subset word, and a junk player in NB's table is the
+ * failure the parser exists to prevent. What CAN tell them apart is NB's own
+ * data, so `fetchCardChecklist` takes this hint only for a card neither
+ * marketplace named a player on, and only when exactly one player in the
+ * set's sport already answers to the word (name or alias, the commit's own
+ * lookup). Anything else drops it. Jason, NEO-339: "it should match an alias
+ * if it is a one word name".
+ *
+ * The residual must be ONE token with nothing else on the row: no separator,
+ * no digit, no markup or control character, not a stoplist word, not a
+ * SportLots team code ("SEA"), a suffix or a particle, and shaped like a
+ * capitalised name token. "Ichiro SEA" stays refused, hint and all: whether
+ * SEA is a team code or half a name is the ambiguity rule 7 refuses.
+ */
+export function parseSlMononymHint(residual: string): string | undefined {
+  if (/[<>]/.test(residual) || SL_CONTROL_CHARS.test(residual)) return undefined;
+  const subject = residual.replace(/\s+/g, " ").trim();
+  if (!subject || subject.includes(" ")) return undefined;
+  if (/[|,/&]/.test(subject) || /\d/.test(subject)) return undefined;
+  if (subject.length > SL_MAX_SUBJECT_LENGTH) return undefined;
+  const lowered = subject.toLowerCase();
+  if (SL_SUBJECT_STOPWORDS.some((pattern) => pattern.test(lowered))) return undefined;
+  if (SL_TEAM_ABBREVIATION.test(subject)) return undefined;
+  if (SL_NAME_SUFFIXES.has(lowered) || SL_NAME_PARTICLES.has(subject)) return undefined;
+  return SL_NAME_TOKEN.test(subject) ? subject : undefined;
+}
+
+/**
  * NEO-343 — the card-type word SportLots appends to a team card:
  * "Philadelphia Eagles Team". Its own final token after whitespace, and
  * case-sensitive like BSC's `TC`/`TL` suffixes, so "Eagles team",
@@ -1801,6 +1833,13 @@ export type SlListcardsCard = {
    *  parent's card number, so this flag is the only thing separating
    *  these rows from the card they vary. */
   isVariation?: boolean;
+  /**
+   * NEO-339 — a one-word subject ("Ichiro") `parseSlSubjects` refused by rule
+   * 8. NOT a player: `fetchCardChecklist` names the card with it only when
+   * neither marketplace gave players and exactly one NB player in the sport
+   * answers to it. See `parseSlMononymHint`.
+   */
+  mononymHint?: string;
   platformRef?: string;
   sportlotsRef?: string;
 };
@@ -2071,6 +2110,10 @@ export async function walkSlListcards(
       const { players } = teamCardTeam
         ? { players: [teamCardTeam] }
         : parseSlSubjects(residual);
+      // NEO-339 — the one-word name rule 8 refused, as a HINT only. Never in
+      // `players`; see `parseSlMononymHint`.
+      const mononymHint =
+        teamCardTeam || players ? undefined : parseSlMononymHint(residual);
 
       pageCards.push({
         cardNumber,
@@ -2084,6 +2127,7 @@ export async function walkSlListcards(
         // wording for the variation. Untranslated — see parseSlVariationMarker.
         isVariation: isVariation || undefined,
         cardVariation: variationLabel,
+        ...(mononymHint ? { mononymHint } : {}),
         // NEO-91: the raw, un-tokenized description (not the bare card
         // number) — this is what lands in cardChecklist.platformData.
         // sportlots. SL reuses the same cardNumber across variation rows
@@ -2167,6 +2211,8 @@ export const fetchSportLotsChecklist = action({
         // NEO-189: does this source consider the row a variation of another
         // card? A domain answer, not a marketplace field.
         isVariation: v.optional(v.boolean()),
+        // NEO-339: an unconfirmed one-word name, never a player on its own.
+        mononymHint: v.optional(v.string()),
         platformRef: v.optional(v.string()),
         sportlotsRef: v.optional(v.string()),
       }),

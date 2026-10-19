@@ -263,6 +263,43 @@ export const findByNameAndSport = query({
 });
 
 /**
+ * NEO-339 — of these names, the ones EXACTLY ONE player in the sport answers
+ * to, by name or alias (`sameNamePlayers`, the commit prelude's lookup, so a
+ * name that passes here links there). Zero or several matches leave a name
+ * out: invariant 7, never a guess.
+ *
+ * Read by `fetchCardChecklist` to settle SportLots' one-word names
+ * ("Ichiro"), which the adapter cannot tell from a non-name on its own.
+ * Bounded by the caller's page size; each name costs the three indexed legs
+ * of `sameNamePlayers`.
+ */
+export const uniquelyNamedPlayers = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    if (args.names.length > MAX_UNIQUELY_NAMED_LOOKUP) {
+      throw new Error(
+        `uniquelyNamedPlayers: ${args.names.length} names, above the ${MAX_UNIQUELY_NAMED_LOOKUP}-name limit`,
+      );
+    }
+    const out: string[] = [];
+    for (const name of args.names) {
+      const normalized = normalizePlayerName(name);
+      if (!normalized) continue;
+      const matches = await sameNamePlayers(ctx, normalized, args.sportId);
+      if (matches.length === 1) out.push(name);
+    }
+    return out;
+  },
+});
+
+/** `uniquelyNamedPlayers`' per-call bound; its caller pages under it. */
+const MAX_UNIQUELY_NAMED_LOOKUP = 100;
+
+/**
  * NEO-254 — re-exported from `lib/players/name-limits.ts`, which is where it
  * has to live: the review wizard's candidate panel reads it too, and that is a
  * browser bundle. Same split, same reasoning as `MAX_PLAYER_NAME_LENGTH`

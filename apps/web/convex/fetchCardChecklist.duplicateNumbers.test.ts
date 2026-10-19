@@ -25,6 +25,7 @@ import { Id } from "./_generated/dataModel";
 // the exact live descriptions, so these tests cover the adapter's reading of
 // "[ VAR ]" as well as the pairing.
 import {
+  parseSlMononymHint,
   parseSlSubjects,
   parseSlVariationMarker,
   tokenizeSlDescription,
@@ -42,6 +43,7 @@ type Card = {
   cardName: string;
   players?: string[];
   attributes?: string[];
+  mononymHint?: string;
   cardVariation?: string;
   isVariation?: boolean;
   platformRef?: string;
@@ -537,10 +539,12 @@ function slParsed(cardNumber: string, description: string): Card {
     parseSlVariationMarker(description);
   const { attributes, residual } = tokenizeSlDescription(withoutVariation);
   const { players } = parseSlSubjects(residual);
+  const mononymHint = players ? undefined : parseSlMononymHint(residual);
   return {
     cardNumber,
     cardName: residual || withoutVariation,
     ...(players ? { players } : {}),
+    ...(mononymHint ? { mononymHint } : {}),
     ...(attributes.length ? { attributes } : {}),
     ...(isVariation ? { isVariation: true } : {}),
     ...(variationLabel ? { cardVariation: variationLabel } : {}),
@@ -556,7 +560,9 @@ function slParsed(cardNumber: string, description: string): Card {
  * each name resolves to exactly one row. Returns the committed rows by number
  * and each player's id by name.
  */
-async function fetchPairAndCommit(playerNames: string[]) {
+async function fetchPairAndCommit(
+  playerNames: Array<string | { name: string; aliases: string[] }>,
+) {
   const t = convexTest(schema, modules);
   const insertId = await seedTree(t);
   const sportId = await t.run(async (ctx) => {
@@ -567,16 +573,27 @@ async function fetchPairAndCommit(playerNames: string[]) {
     return sport!._id;
   });
   const idByName = new Map<string, Id<"players">>();
-  for (const name of playerNames) {
-    const id = await t.run(async (ctx) =>
-      ctx.db.insert("players", {
+  for (const entry of playerNames) {
+    const { name, aliases } = typeof entry === "string" ? { name: entry, aliases: [] } : entry;
+    const id = await t.run(async (ctx) => {
+      const playerId = await ctx.db.insert("players", {
         name,
         nameNormalized: normalizePlayerName(name),
         sportId,
+        ...(aliases.length ? { aliases } : {}),
         lastUpdated: Date.now(),
-      }),
-    );
-    idByName.set(name, id);
+      });
+      for (const alias of aliases) {
+        await ctx.db.insert("playerAliases", {
+          playerId,
+          sportId,
+          aliasNormalized: normalizePlayerName(alias),
+        });
+      }
+      return playerId;
+    });
+    // Two players may share a name here; the map keeps the first.
+    if (!idByName.has(name)) idByName.set(name, id);
   }
   const admin = t.withIdentity(ADMIN);
   await admin.action(api.selectorOptions.fetchCardChecklist, {
@@ -592,6 +609,7 @@ async function fetchPairAndCommit(playerNames: string[]) {
     unmatchedBsc: live.cards.filter((c) => c.bucket === "bscOnly").map(candidateToPairingCard),
     unmatchedSl: live.cards.filter((c) => c.bucket === "slOnly").map(candidateToPairingCard),
   });
+  const candidatePlayers = live.cards.map((c) => c.players ?? []);
   const { cards } = buildPairingResult(state, {
     keepUnmatchedBsc: true,
     keepUnmatchedSl: true,
@@ -607,8 +625,9 @@ async function fetchPairAndCommit(playerNames: string[]) {
       .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", insertId))
       .collect(),
   );
+  const playerCount = await t.run(async (ctx) => (await ctx.db.query("players").collect()).length);
   await cancelScheduled(t);
-  return { rows, idByName };
+  return { rows, idByName, candidatePlayers, playerCount };
 }
 
 describe("fetchCardChecklist — a SportLots VAR keeps its player (NEO-339, 2023 Topps Chrome)", () => {
@@ -804,5 +823,80 @@ describe("fetchCardChecklist — a SportLots VAR keeps its player (NEO-339, 2023
 
     expect(rows).toHaveLength(1);
     expect(rows[0].playerIds).toEqual([idByName.get("Ichiro")]);
+  });
+});
+
+describe("fetchCardChecklist — a SportLots one-word name (NEO-339, CLA-I \"Ichiro\")", () => {
+  // 2023 Topps Chrome Update Legend Autographs, SportLots only: "Ichiro AU".
+  const ICHIRO = () => slParsed("CLA-I", "Ichiro AU");
+
+  test("the adapter keeps it out of players and offers it as a hint", () => {
+    expect(ICHIRO()).toMatchObject({ cardName: "Ichiro", mononymHint: "Ichiro" });
+    expect(ICHIRO()).not.toHaveProperty("players");
+  });
+
+  test("exactly one NB player answers to it by alias: the card names him and links", async () => {
+    mockState.slCards = [ICHIRO()];
+    const { rows, idByName, candidatePlayers, playerCount } = await fetchPairAndCommit([
+      { name: "Ichiro Suzuki", aliases: ["Ichiro"] },
+      "Ken Griffey Jr.",
+    ]);
+    // The preview and the commit read the same staged field.
+    expect(candidatePlayers).toEqual([["Ichiro"]]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].playerIds).toEqual([idByName.get("Ichiro Suzuki")]);
+    expect(playerCount).toBe(2);
+  });
+
+  test("exactly one NB player by that exact name links too", async () => {
+    mockState.slCards = [ICHIRO()];
+    const { rows, idByName } = await fetchPairAndCommit(["Ichiro"]);
+    expect(rows[0].playerIds).toEqual([idByName.get("Ichiro")]);
+  });
+
+  test("no NB player answers to it: no player, and none is created", async () => {
+    mockState.slCards = [ICHIRO()];
+    const { rows, candidatePlayers, playerCount } = await fetchPairAndCommit(["Ken Griffey Jr."]);
+    expect(candidatePlayers).toEqual([[]]);
+    expect(rows[0].playerIds ?? []).toEqual([]);
+    expect(playerCount).toBe(1);
+  });
+
+  test("two NB players share the alias: a tie, so no player (invariant 7)", async () => {
+    mockState.slCards = [ICHIRO()];
+    const { rows, candidatePlayers, playerCount } = await fetchPairAndCommit([
+      { name: "Ichiro Suzuki", aliases: ["Ichiro"] },
+      { name: "Ichiro Kitano", aliases: ["Ichiro"] },
+    ]);
+    expect(candidatePlayers).toEqual([[]]);
+    expect(rows[0].playerIds ?? []).toEqual([]);
+    expect(playerCount).toBe(2);
+  });
+
+  test("a stoplisted word never links, even when an NB player has that name", async () => {
+    const row = slParsed("CL", "Checklist");
+    expect(row).not.toHaveProperty("mononymHint");
+    mockState.slCards = [row];
+    const { rows } = await fetchPairAndCommit(["Checklist"]);
+    expect(rows[0].playerIds ?? []).toEqual([]);
+  });
+
+  test("a team nickname is a hint the NB check turns down: no player answers to it", async () => {
+    mockState.slCards = [slParsed("T-1", "Yankees")];
+    const { rows, candidatePlayers, playerCount } = await fetchPairAndCommit(["Aaron Judge"]);
+    expect(candidatePlayers).toEqual([[]]);
+    expect(rows[0].playerIds ?? []).toEqual([]);
+    expect(playerCount).toBe(1);
+  });
+
+  test("a card BSC named a player on keeps BSC's roster; the hint is not consulted", async () => {
+    mockState.bscCards = [bscRow("CLA-I", "Ichiro Suzuki")];
+    mockState.slCards = [ICHIRO()];
+    const { rows, idByName, candidatePlayers } = await fetchPairAndCommit([
+      "Ichiro Suzuki",
+      { name: "Someone Else", aliases: ["Ichiro"] },
+    ]);
+    expect(candidatePlayers).toEqual([["Ichiro Suzuki"]]);
+    expect(rows[0].playerIds).toEqual([idByName.get("Ichiro Suzuki")]);
   });
 });

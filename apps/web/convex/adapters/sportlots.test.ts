@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   decodeSlEntities,
+  parseSlMononymHint,
   parseSlSubjects,
   parseSlTeamCard,
   parseSlVariationMarker,
@@ -1005,5 +1006,36 @@ describe("parseSlSubjects over a recorded listcards.tpl page", () => {
     );
     // No attributes beyond the two cell classes the parser keys on.
     expect(markup).not.toMatch(/\b(?:href|src|action|value|name|id)\s*=/i);
+  });
+});
+
+describe("parseSlMononymHint (NEO-339)", () => {
+  test("a one-word name is offered as a hint; parseSlSubjects still refuses it", () => {
+    expect(parseSlMononymHint("Ichiro")).toBe("Ichiro");
+    // The row loop hands it the tokenizer's residual, whitespace collapsed.
+    expect(parseSlMononymHint(" Ichiro ")).toBe("Ichiro");
+    expect(parseSlSubjects("Ichiro")).toEqual({});
+  });
+
+  test("anything that is not one clean capitalised word gives no hint", () => {
+    for (const residual of [
+      "",
+      "Checklist",
+      "Legends",
+      "Ichiro SEA",
+      "Mike Trout",
+      "SEA",
+      "Jr",
+      "Jr.",
+      "ichiro",
+      "Ichiro2",
+      "Ichiro/Suzuki",
+      "Ichiro|",
+      "Ichi<ro",
+      "Ichiro\u0007",
+      `I${"x".repeat(MAX_PLAYER_NAME_LENGTH)}`,
+    ]) {
+      expect(parseSlMononymHint(residual), residual).toBeUndefined();
+    }
   });
 });
