@@ -689,10 +689,66 @@ export function assessListingTitle(
   return { ...buildTitle(inputs, true), shortNameUsed: true };
 }
 
-/** One title build: full set names, or the short name in their place. */
+/**
+ * NEO-339 — the words that tell this parallel apart from its parent: the
+ * parallel's name less the leading words its parent already says. "1988 Topps
+ * Baseball Autographs Red" under the insert "1988 Topps Baseball Autographs"
+ * is "Red"; "SuperFractor" is itself. The parent is the insert when there is
+ * one, else the set. Undefined when there is no real parallel, when the
+ * parallel token is really the card's variation text (NEO-189 copies it into
+ * `parallelName`), or when nothing is left.
+ *
+ * Leading words only, so the phrase keeps its order ("Orange Refractor" stays
+ * "Orange Refractor"). Compared case-insensitively, by word.
+ */
+export function parallelDistinguishingWords(inputs: ListingCardInputs): string | undefined {
+  const token = parallelToken(inputs);
+  if (!token) return undefined;
+  if (token.toLowerCase() === inputs.cardVariation?.trim().toLowerCase()) return undefined;
+  const parent = inputs.insertName?.trim() || inputs.setName?.trim() || "";
+  const parentWords = new Set(wordsOf(parent));
+  const words = token.split(/\s+/).filter(Boolean);
+  let at = 0;
+  while (at < words.length && parentWords.has(words[at].toLowerCase())) at += 1;
+  const rest = words.slice(at).join(" ");
+  return rest || undefined;
+}
+
+/**
+ * One title build: full set names, or the short name in their place.
+ *
+ * ## NEO-339 — a parallel's own words outlive its insert's and its set's
+ *
+ * The 2023 Topps Chrome "1988 Topps Baseball Autographs Red" card titled as
+ * "… 1988 Topps Baseball Autographs Vladimir Guerrero Jr. #88BA-VG": the
+ * parallel's whole name could not fit after the core, so it was dropped, and
+ * the title read exactly like the base and SuperFractor versions. "Red" is
+ * what identifies the card.
+ *
+ * So the plain build runs first, and when it lost the parallel's
+ * distinguishing words (`parallelDistinguishingWords`) the title is rebuilt
+ * with them right after the card number, as part of the core: year,
+ * player(s), number, those words. Room for them comes out of the identity
+ * words, insert first, then set, then maker (`cutCore`). A title that already
+ * carries them is returned unchanged. The rebuild is flagged as cut
+ * (`coreFits: false`) only when identity words were actually given up.
+ */
 function buildTitle(
   inputs: ListingCardInputs,
   useShortName: boolean,
+): ListingTitleAssessment {
+  const plain = buildTitleWith(inputs, useShortName, undefined);
+  const key = parallelDistinguishingWords(inputs);
+  if (!key || alreadySaid(plain.title, key)) return plain;
+  // A key that cannot fit beside the card number cannot be kept at all.
+  if (` #${inputs.cardNumber} ${key}`.length > LISTING_TITLE_MAX) return plain;
+  return buildTitleWith(inputs, useShortName, key);
+}
+
+function buildTitleWith(
+  inputs: ListingCardInputs,
+  useShortName: boolean,
+  parallelKey: string | undefined,
 ): ListingTitleAssessment {
   const identityParts: string[] = [];
   if (inputs.year) identityParts.push(inputs.year);
@@ -704,7 +760,11 @@ function buildTitle(
   const identity = identityParts.join(" ");
   const corePrefix = [identity, playerPart].filter(Boolean).join(" ");
 
-  const reserved = ` #${inputs.cardNumber}`;
+  // The parallel's own words ride with the number when a plain build lost
+  // them (see `buildTitle`).
+  const reserved = parallelKey
+    ? ` #${inputs.cardNumber} ${parallelKey}`
+    : ` #${inputs.cardNumber}`;
   const maxPrefixLen = LISTING_TITLE_MAX - reserved.length;
   const coreFits = corePrefix.length <= maxPrefixLen;
   const prefix = coreFits
@@ -722,8 +782,11 @@ function buildTitle(
   const parallel = parallelToken(inputs);
   // Where the parallel token ends in the title, once it is in. Later tokens
   // only ever append, so the index stays true.
-  let parallelEnd: number | undefined;
+  let parallelEnd: number | undefined = parallelKey ? title.length : undefined;
   for (const token of optionalTokens(inputs)) {
+    // Already in the core, by its distinguishing words; its full name would
+    // only repeat the parent's.
+    if (parallelKey && token === parallel) continue;
     // A token the buyer has already read is not reported as dropped — it IS
     // in the title, just not a second time.
     if (alreadySaid(title, token)) continue;
