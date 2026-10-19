@@ -41,7 +41,7 @@
  * settles and then settle it afterward to prove the late result is dropped.
  */
 
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -476,6 +476,7 @@ import CardChecklist, {
   streamRowsArrived,
   streamTeamsLanded,
 } from "./CardChecklist";
+import { autographPromptCount, autographPromptLine } from "./autograph-prompt";
 
 /**
  * Every live-region line on the page, hidden ones included: the sync banner
@@ -6063,6 +6064,32 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
     state.cards = [settledCard({ attributes: ["RC"] })];
     renderChecklist();
     expect(screen.queryByText(PROMPT)).toBeNull();
+  });
+
+  it("a stored format outside the two answers is no answer: the prompt still asks", () => {
+    state.cards = [auto()];
+    state.variantRow = { value: "Test Set", features: { autographFormat: "on card" } };
+    renderChecklist();
+    expect(screen.getByText(PROMPT).textContent).toBe(autographPromptLine(1));
+  });
+
+  it("shows exactly when the tool's rule says it asks, with the same count (NEO-339 parity)", () => {
+    const cases: Array<{ format?: string; cards: Array<Record<string, unknown>> }> = [
+      { cards: [auto({ _id: "a" }), auto({ _id: "b" })] },
+      { format: "On Card", cards: [auto({ _id: "a" })] },
+      { cards: [auto({ _id: "a", features: { autographed: "Sticker/Label" } })] },
+      { cards: [settledCard({ _id: "a", attributes: ["RC"] })] },
+      { format: "Sticker/Label", cards: [] },
+    ];
+    for (const c of cases) {
+      cleanup();
+      state.cards = c.cards as never;
+      state.variantRow = { value: "Test Set", ...(c.format ? { features: { autographFormat: c.format } } : {}) };
+      renderChecklist();
+      const count = autographPromptCount(c.format, c.cards as never);
+      const line = screen.queryByText(PROMPT);
+      expect(line?.textContent ?? null, JSON.stringify(c)).toBe(count > 0 ? autographPromptLine(count) : null);
+    }
   });
 
   it("is absent until the leaf row has loaded", () => {

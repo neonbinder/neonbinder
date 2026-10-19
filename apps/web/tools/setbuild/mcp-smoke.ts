@@ -411,13 +411,15 @@ export async function runSmokeSequence(
 export function attentionShapeProblems(r: AttentionReport): string[] {
   const problems: string[] = [];
   const t = r.totals;
-  for (const k of ["cards", "awaitingTeamLookup", "namesToCheck", "slSetsToSort"] as const) {
+  for (const k of ["cards", "awaitingTeamLookup", "namesToCheck", "slSetsToSort", "autographRows"] as const) {
     if (typeof t?.[k] !== "number") problems.push(`totals.${k} is missing`);
   }
   if (!t?.byKind || typeof t.byKind !== "object") problems.push("totals.byKind is missing");
   if (typeof r.summary !== "string" || r.summary === "") problems.push("summary is missing");
-  if (!Array.isArray(r.cards) || !Array.isArray(r.names) || !Array.isArray(r.notices)) problems.push("cards, names or notices is not a list");
-  else {
+  if (!Array.isArray(r.cards) || !Array.isArray(r.names) || !Array.isArray(r.notices) || !Array.isArray(r.autographs)) {
+    problems.push("cards, autographs, names or notices is not a list");
+  } else {
+    if (r.autographs.length !== t.autographRows) problems.push(`${r.autographs.length} autograph rows listed, totals.autographRows says ${t.autographRows}`);
     if (r.cards.length !== t.cards) problems.push(`${r.cards.length} cards listed, totals.cards says ${t.cards}`);
     const sides = r.names.reduce((n, x) => n + x.sides.length, 0);
     if (sides !== t.namesToCheck) problems.push(`${sides} name sides listed, totals.namesToCheck says ${t.namesToCheck}`);

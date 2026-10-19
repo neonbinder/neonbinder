@@ -35,7 +35,7 @@ explicit answer for every operator decision) and:
 | `mcp-smoke` | **yes** | Spawns the MCP server over stdio and runs inspect, plan, apply, inspect against an expectations file. CI only. |
 | `oneshot-smoke` | **yes** | Spawns the MCP server and proves the one-shot build: draft, merge with the committed answers, plan, apply, inspect. CI only (§2.4). |
 | `confirm-phrase` | no | Offline (no network, no sign-in): prints the confirm phrase `apply` and `nb_apply` need for a spec on a deployment. |
-| `attention` | no | Everything on a set or brand-year still waiting on a person: cards that need you, names to check, SportLots sets to sort, sync notices (§2.5). |
+| `attention` | no | Everything on a set or brand-year still waiting on a person: cards that need you, names to check, rows to mark on-card or sticker, SportLots sets to sort, sync notices (§2.5). |
 | `fix` | **yes** | Answers what `attention` listed, through the Set Builder's own saves, from an answers file (§2.5). |
 
 Writes (`apply`, and the MCP write tools) require the **confirm phrase**, bound
@@ -87,7 +87,24 @@ the machine).
 Under either mode, `--app-url` / `NB_SETBUILD_APP_URL` is also the web app the
 tool's Set Builder links open on (a message that sends the operator to the Set
 Builder carries a link to the row it is about). Set it with `--auth machine`
-too; without it the links are root-relative (`/admin/set-builder?sport=…`).
+too; without it the links are root-relative (`/admin/set-builder?sport=…`)
+and every result that carries links says so in `linksNote`: "Links are paths
+only: set NB_SETBUILD_APP_URL to the app address for this deployment."
+
+**Pair it with the Convex URL, per environment.** `NB_SETBUILD_APP_URL` is the
+origin of the web app that serves the deployment `NB_SETBUILD_CONVEX_URL`
+points at, never another one: a link on the wrong app opens a different
+deployment's Set Builder, where these ids mean nothing, so the tool never
+guesses it.
+
+| Target (`NB_SETBUILD_CONVEX_URL`) | `NB_SETBUILD_APP_URL` |
+|---|---|
+| The production deployment | `https://<the production app>` |
+| A PR's Convex preview | `https://<that PR's preview app>` |
+| A deployment a local Vite serves (`VITE_CONVEX_URL`) | `http://localhost:<that Vite's port>` |
+
+`.mcp.json` passes both through from the environment (`${NB_SETBUILD_APP_URL:-}`),
+so set the pair in the shell that starts the session.
 
 Each credential goes only where the confirm phrase's host binds it:
 
@@ -265,6 +282,16 @@ with the set's path; the draft comes back with:
   same-name birth year). To make a pending set its own set instead, change its `leave` to
   `own-set` in the spec and raise that type's `expectRows` (and, for an
   Insert type with a `group`, `expectUngrouped`) by one;
+- `autographFormats` (NEO-345): every drafted checklist whose cards carry
+  "AU", which the Set Builder would ask "on card or sticker?", with `at` (where
+  `autographFormat` goes in the spec), the row, the card count, the prompt's
+  line and the two answers. It is the operator's answer, never drafted and
+  never an open decision: `confirmPhrase` does not wait for it. Research it
+  (§2.5), and once the operator confirms put `"autographFormat": "On Card"`
+  (or `"Sticker/Label"`) at `at` and plan again: the commit stores it on the
+  row and every new AU card is born marked. Left out, apply still commits and
+  `nb_attention` lists the row until `nb_fix` answers it. A parallel built
+  from that insert copies each card's mark, so it does not ask again;
 - between a draft and its apply the brand can change (another writer syncs
   a sibling set, a marketplace drops a set). A `leave` whose set apply no
   longer shows (now held by another NB row, or no longer listed) is a
@@ -350,7 +377,7 @@ Topps Chrome Black (`apps/web/playwright/seed/oneshot.spec.json`, the committed 
 requires **no** open decision (the draft settles the whole fixture itself),
 merges the draft with the committed spec (any `<…>` from the committed file,
 everything else from the draft; `credentials` from the committed file), and
-checks the merge three ways:
+checks the merge four ways:
 - with every `leave` taken out of every `sync.pending`, and every checklist's
   review answers taken out, the merge must have the committed spec's digest
   (drift anywhere else fails, naming the paths);
@@ -366,6 +393,13 @@ checks the merge three ways:
   the brand); a committed `leave` the draft no longer shows is a moot no-op at
   apply. A drafted `leave` the committed spec lacks is a NEW pending set:
   drift, and the check names the type and ids.
+- every checklist the draft lists in `autographFormats` must carry an
+  `autographFormat` in the committed spec (the draft never drafts one; the
+  merge takes it from the committed file). Chrome Black's three autograph
+  inserts (Super Futures Autographs, Pitch Black Pairings Dual Autographs,
+  Ivory Autographs) are answered On Card (Jason, 2026-10-18); their parallels
+  are built from them and copy each card's mark. The expect file's
+  `attention.totals.autographRows` is 0 and is compared when present.
 The job summary shows all three: the leave counts drafted vs committed per
 type with the moot count, and the review answers drafted vs committed with
 the committed-only count. Then it runs `nb_plan`,
@@ -460,8 +494,18 @@ is opt-in.
   first 25 cards; `"full"` for all;
 - `names`: every "name to check" on the set's own row and every row under it
   (what BSC or SportLots calls the row, when it differs from NB's name);
-- `slReview`: the brand's "SportLots sets to sort" count (answered with
-  `nb_sl_review_apply` on the brand-year, whose `nb_attention` lists the lines);
+- `autographs` (NEO-345): every row (Base, insert or parallel) whose
+  checklist header asks "on card or sticker?": no autograph format on the row,
+  and at least one card carrying "AU" still marked not autographed. Each has
+  its row, Set Builder link, the card count, the prompt's own line ("17
+  autographed cards — on card or sticker?") and the two answers, `"On Card"`
+  and `"Sticker/Label"`. The rule is the Set Builder's own
+  (`components/SetSelector/autograph-prompt.ts`), so the list is exactly what
+  the header shows. `totals.autographRows` counts them;
+- `slReview`: the brand's "SportLots sets to sort" count, named for the
+  brand-year ("2 SportLots sets to sort for Topps 2024": the review belongs to
+  the brand, not the set; answered with `nb_sl_review_apply` on the
+  brand-year, whose `nb_attention` lists the lines);
 - `review`: an entity review this server's `nb_apply` left open (answered with
   `nb_decide`);
 - `notices`: sync notices the set's columns still show (read-only);
@@ -483,9 +527,27 @@ over the exact answers:
   "names": [
     { "row": { "type": "Inserts", "name": "Future Stars" }, "side": "bsc", "action": "accept", "label": "Future Stars Inserts" },
     { "side": "sportlots", "action": "decline", "label": "Chrome" }
+  ],
+  "autographs": [
+    { "row": { "type": "Insert", "name": "Ivory Autographs" }, "format": "On Card" }
   ]
 }
 ```
+
+- An autograph answer names its row (omitted = Base) and the format, and goes
+  through the header prompt's own save (`setAutographFormat`). The server then
+  marks the row's autographed cards in a scheduled walk; `nb_fix` waits for it
+  (30 s for the whole call) and gives a `warning` with the count for a row it
+  did not see finish. A row that already has a format, or whose autographed
+  cards are all marked, is `moot`: change a format in Set details. At most 50
+  per call. The format does not rebuild the cards' listing titles (Regenerate
+  does).
+- **Research, then ask.** The tool never guesses an answer. An agent driving
+  it looks up what a source can settle (an autograph row's format, a card's
+  missing team, a variation that must be shortened) on the manufacturer's
+  checklist or product page, Beckett, Cardboard Connection and the like,
+  brings the operator a proposal with the source, and sends it only once the
+  operator confirms. With no source, it says so and asks.
 
 - A card is named by its row (omitted = Base) and number; add `cardId` when
   the number is on two cards in the row (the listing prints it). A name that
@@ -501,8 +563,8 @@ over the exact answers:
   name (one era, several, an alias; one same-name player, or one born in the
   given year) is refused with the candidates; link it with the team's name or
   `{ "link", "birthYear" }` instead.
-- At most 100 card answers and 200 name answers per call; split a bigger
-  batch and confirm each part.
+- At most 100 card answers, 200 name answers and 50 autograph answers per
+  call; split a bigger batch and confirm each part.
 - A failure part-way (network, auth, a server fault) still returns every
   answer it settled, and any name save sent but not read back as
   `unconfirmed`; CLI `fix` prints them before the error. List attention again

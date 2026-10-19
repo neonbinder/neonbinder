@@ -9,6 +9,10 @@
  * | `{ players?, teams? }` | UnreviewedNameFixer   | `updateCard { id, playerIds, teamOnCardIds, pending… }`|
  * | `{ title, variation? }`| TitleFixer Save       | `updateCard { id, listingTitle, cardVariation? }`      |
  *
+ * And per row, the checklist header's autograph prompt (NEO-345, the end of
+ * this file): `autographs[i] = { row, format }` through the prompt's own
+ * `autographFormat.setAutographFormat { selectorOptionId, value }`.
+ *
  * The gates, each the fixer's own:
  *  - a team Save needs 1–8 teams (`MAX_CARD_TEAMS`, refused past it, never
  *    trimmed);
@@ -76,6 +80,16 @@ import {
   type TeamAnswer,
 } from "./attention";
 import { PLAYER_LINK_SCAN_LIMIT, birthYearsText, pickPlayerByBirthYear } from "./review";
+import {
+  AUTOGRAPH_CHOICE_LABEL,
+  AUTOGRAPH_FORMATS,
+  asAutographFormat,
+  autographPromptCount,
+  autographPromptSaved,
+  countUnformattedAutographs,
+  type AutographFormat,
+} from "../../../components/SetSelector/autograph-prompt";
+import { isAutographFormat } from "../../../convex/features/deriveCardFeatures";
 
 // ---------------------------------------------------------------------------
 // Result shapes
@@ -755,4 +769,233 @@ async function linkNames(
     ...(teamIds.length > 0 ? [plural(teamIds.length, "team", "teams")] : []),
   ];
   return done(answered, "applied", `Linked ${parts.join(" and ")} to this card.`);
+}
+
+
+// ---------------------------------------------------------------------------
+// NEO-345 — the checklist header's autograph prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * One row's answer to "on card or sticker?": the stored value, as the
+ * prompt's buttons write it. The operator's answer, never the tool's: no
+ * marketplace says which, so nothing here proposes one.
+ */
+export interface AutographFixAnswer {
+  /** The row; omitted = the set's Base. */
+  row?: CardRowRef;
+  format: AutographFormat;
+}
+
+export interface AutographFixResult {
+  /** `autographs[i]`. */
+  at: string;
+  row: CardRowRef;
+  rowLabel: string;
+  rowId: string;
+  format: AutographFormat;
+  outcome: "applied" | "moot" | "refused";
+  detail: string;
+  /** Saved, but the row's cards were not all seen marked (the wait ran out, or the re-read failed). */
+  warning?: string;
+  /** The row's own autographed cards still marked not autographed when the wait ended. */
+  stillUnformatted?: number;
+}
+
+export interface AutographFixOptions {
+  /** How long, in all, to wait for the server to mark the answered rows' cards. Default `AUTOGRAPH_WAIT_MS`. */
+  waitMs?: number;
+  /** How often to look. Default `AUTOGRAPH_POLL_MS`. */
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * The carry-over to the cards is scheduled server-side (`cascadeAutographFormat`,
+ * one bounded page per 500 cards); this is the whole call's wait for it, shared
+ * by every row the call answers, so a batch never waits row after row.
+ */
+export const AUTOGRAPH_WAIT_MS = 30_000;
+export const AUTOGRAPH_POLL_MS = 1_000;
+
+/** An autograph answer resolved to its row, before anything is written. */
+export interface ResolvedAutographAnswer {
+  at: string;
+  node: AttentionRowNode;
+  answer: AutographFixAnswer;
+}
+
+/**
+ * A failure that is not a refusal (network, auth, a server fault) part-way
+ * through the autograph writes. Carries every result before it, the rows
+ * already saved included, so what was written is never unreported.
+ */
+export class AutographFixAborted extends Error {
+  readonly results: AutographFixResult[];
+  readonly cause: unknown;
+  constructor(results: AutographFixResult[], cause: unknown, at: string) {
+    super(`${at}: stopped after ${results.length} answer(s): ${cause instanceof Error ? cause.message.split("\n")[0] : String(cause)}`);
+    this.name = "AutographFixAborted";
+    this.results = results;
+    this.cause = cause;
+  }
+}
+
+/**
+ * The row's OWN autographed cards still "None". A guest (a card listed here
+ * from its home set) is its home row's to format: the server's walk over this
+ * row never touches it, so the wait does not count it.
+ */
+function ownUnformatted(cards: readonly ChecklistCard[]): number {
+  return countUnformattedAutographs(cards.filter((c) => !c.isCrossListed));
+}
+
+const labelOf = (f: AutographFormat) => AUTOGRAPH_CHOICE_LABEL[f].toLowerCase();
+
+/**
+ * Resolve every autograph answer to its row (exactly-one at every level; a
+ * `ResolveError` with the candidates otherwise). Reads only. A row answered
+ * twice in one call is refused here, before anything is written: two answers
+ * are never settled by their order.
+ */
+export async function resolveAutographAnswers(
+  client: NbClient,
+  target: AttentionSetTarget,
+  answers: readonly AutographFixAnswer[],
+): Promise<ResolvedAutographAnswer[]> {
+  const set = attentionSetOf(target);
+  const out: ResolvedAutographAnswer[] = [];
+  const seen = new Map<string, string>();
+  for (const [i, answer] of answers.entries()) {
+    const at = `autographs[${i}]`;
+    if (!isAutographFormat(answer.format)) {
+      throw new CardAnswerError(at, `"format" is ${AUTOGRAPH_FORMATS.map((f) => `"${f}"`).join(" or ")}.`);
+    }
+    const node = await resolveAttentionRow(client, set, answer.row, at);
+    const first = seen.get(String(node.rowId));
+    if (first !== undefined) {
+      throw new CardAnswerError(at, `${node.label} is answered at ${first} too. Answer each row once.`);
+    }
+    seen.set(String(node.rowId), at);
+    out.push({ at, node, answer });
+  }
+  return out;
+}
+
+/**
+ * Answer the header's autograph prompt, through its own mutation
+ * (`autographFormat.setAutographFormat { selectorOptionId, value }`), gated
+ * as the prompt is shown: a row that already has a format, or whose
+ * autographed cards are all marked, no longer asks, so its answer is moot
+ * (changing a format is Set details' job, not this one). After the writes it
+ * waits, once for the whole call and bounded, for the server's scheduled walk
+ * to mark each row's cards, and says so for a row whose cards it did not see
+ * finish.
+ *
+ * Takes answers (resolved here first, with no write) or answers the caller
+ * has already resolved. A refusal or a moot answer is a result, never a
+ * throw; a failure that is neither throws `AutographFixAborted` with every
+ * result before it.
+ */
+export async function applyAutographAnswers(
+  client: NbClient,
+  target: AttentionSetTarget,
+  answers: readonly AutographFixAnswer[] | readonly ResolvedAutographAnswer[],
+  opts: AutographFixOptions = {},
+): Promise<AutographFixResult[]> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const waitMs = opts.waitMs ?? AUTOGRAPH_WAIT_MS;
+  const pollMs = opts.pollMs ?? AUTOGRAPH_POLL_MS;
+  const resolved: readonly ResolvedAutographAnswer[] =
+    answers.length > 0 && "node" in answers[0]
+      ? (answers as readonly ResolvedAutographAnswer[])
+      : await resolveAutographAnswers(client, target, answers as readonly AutographFixAnswer[]);
+
+  const results: AutographFixResult[] = [];
+  /** Rows written, waiting for the server to mark their cards: index into `results`. */
+  const written: Array<{ i: number; node: AttentionRowNode; marking: number }> = [];
+
+  for (const { at, node, answer } of resolved) {
+    const head = { at, row: node.ref, rowLabel: node.label, rowId: String(node.rowId), format: answer.format };
+    try {
+      const leaf = await client.query(api.selectorOptions.getSelectorOptionById, { id: node.rowId });
+      if (!leaf) {
+        results.push({ ...head, outcome: "moot", detail: "Already settled: this row is no longer in the set." });
+        continue;
+      }
+      const stored = asAutographFormat(leaf.features?.autographFormat);
+      if (stored !== undefined) {
+        results.push({
+          ...head,
+          outcome: "moot",
+          detail:
+            stored === answer.format
+              ? `Already settled: ${node.label}'s autographs are marked ${labelOf(stored)}.`
+              : `Already settled: ${node.label}'s autographs are marked ${labelOf(stored)}. If that is wrong, change it in Set details.`,
+        });
+        continue;
+      }
+      const cards = await readChecklist(client, node.rowId);
+      // The prompt's own rule (the leaf has no format, read just above).
+      if (autographPromptCount(leaf.features?.autographFormat, cards) === 0) {
+        results.push({ ...head, outcome: "moot", detail: `Already settled: no autographed card on ${node.label} is waiting for a format.` });
+        continue;
+      }
+      try {
+        await client.mutation(api.autographFormat.setAutographFormat, { selectorOptionId: node.rowId, value: answer.format });
+      } catch (err) {
+        if (isRefusal(err)) {
+          results.push({ ...head, outcome: "refused", detail: refusalText(err) });
+          continue;
+        }
+        throw err;
+      }
+      results.push({ ...head, outcome: "applied", detail: autographPromptSaved(answer.format) });
+      written.push({ i: results.length - 1, node, marking: ownUnformatted(cards) });
+    } catch (err) {
+      for (const w of written) {
+        results[w.i].warning = "The run stopped before this row's cards were checked; list attention again.";
+      }
+      throw new AutographFixAborted(results, err, at);
+    }
+  }
+
+  // The server marks each row's cards in a scheduled walk: look until none
+  // of the rows' own autographed cards shows "None", within one budget.
+  const pending = new Map(written.filter((w) => w.marking > 0).map((w) => [w.i, { ...w, left: w.marking }]));
+  const unread = new Set<number>();
+  const started = now();
+  while (pending.size > 0) {
+    for (const [i, w] of pending) {
+      try {
+        w.left = ownUnformatted(await readChecklist(client, w.node.rowId));
+        unread.delete(i);
+      } catch {
+        // The answer is saved; only the check failed. Try again next pass.
+        unread.add(i);
+      }
+      if (w.left === 0 && !unread.has(i)) pending.delete(i);
+    }
+    if (pending.size === 0 || now() - started >= waitMs) break;
+    await sleep(pollMs);
+  }
+
+  for (const w of written) {
+    const r = results[w.i];
+    const label = labelOf(r.format);
+    const still = pending.get(w.i);
+    if (w.marking === 0) {
+      r.detail = `${r.detail} Its autographed cards here are listed from other sets, which keep their own format.`;
+    } else if (!still) {
+      r.detail = `${r.detail} ${plural(w.marking, "card", "cards")} on ${w.node.label} now marked ${label}.`;
+    } else if (unread.has(w.i)) {
+      r.warning = `Saved, but ${w.node.label} could not be read back to check its cards; list attention again shortly.`;
+    } else {
+      r.warning = `${plural(still.left, "autographed card", "autographed cards")} on ${w.node.label} still show no format after ${Math.round(waitMs / 1000)}s; the server is still marking them. List attention again shortly.`;
+      r.stillUnformatted = still.left;
+    }
+  }
+  return results;
 }

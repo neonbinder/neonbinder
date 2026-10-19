@@ -28,6 +28,9 @@
  *        sets out of Pending, and a committed `leave` the draft no longer
  *        shows is a reported no-op at apply. A drafted `leave` the committed
  *        spec lacks is a NEW pending set: drift, and the check names it;
+ *      - every checklist the draft lists in `autographFormats` (its cards
+ *        carry AU) has an `autographFormat` in the committed spec: the
+ *        operator's answer, which the draft never fills (NEO-345);
  *   4. `nb_plan` on the answers file: no open decision, and its confirmPhrase
  *      is exactly `--confirm` (computed offline by `confirm-phrase`);
  *   5. `nb_apply` with that phrase and `stopAt: "end"`: no stop, and every
@@ -37,7 +40,9 @@
  *      expectation holds;
  *   7. `attention` (when the expect file has it): `nb_attention` on the set,
  *      polled (bounded by `lookupWaitMs`) until no card is still waiting on
- *      the BSC team lookup, must show exactly the measured `totals`; then
+ *      the BSC team lookup, must show exactly the measured `totals` (and,
+ *      when the file gives it, exactly `autographRows` rows still asking
+ *      "on card or sticker?"); then
  *      `nb_fix` with the committed `fix` answers (its phrase taken from the
  *      tool's own refusal, as an agent does) must apply every one, and a
  *      second `nb_attention` must show exactly those items gone. The apply's
@@ -65,6 +70,7 @@ import { canonicalJson, contentDigest } from "./client/target";
 import { drillResolverOf, inspectLinkProblems, setLinkProblems, type DrillResolver } from "./link-checks";
 import { APPLY_TIMEOUT_MS, connectToSpawnedServer, inspectExpectSchema, inspectMismatches } from "./mcp-smoke";
 import { mergeDraftAnswers, placeholdersIn } from "./runner/draft";
+import { getAt } from "./runner/engine";
 import {
   countOpenDecisions,
   type ApplyReport,
@@ -128,6 +134,8 @@ export const oneshotExpectSchema = z
                 cards: z.number().int().min(0),
                 byKind: z.record(z.string(), z.number().int().min(0)),
                 namesToCheck: z.number().int().min(0),
+                /** NEO-345: rows still asking "on card or sticker?". Compared when given. */
+                autographRows: z.number().int().min(0).optional(),
               })
               .strict(),
             /** The answers nb_fix gives (nb_fix's own shape); each must apply, and its item must be gone after. */
@@ -381,8 +389,9 @@ export function namesAnswered(listing: readonly NameSuggestionItem[], answer: No
 function attentionInventory(r: AttentionReport): string {
   const cards = r.cards.map((c) => `${c.rowLabel} #${c.cardNumber} (${c.kinds.join("+")})`);
   const names = r.names.flatMap((n) => n.sides.map((x) => `${n.where} ${x.side} “${x.label}”`));
+  const autographs = (r.autographs ?? []).map((a) => `${a.rowLabel} (${a.cards})`);
   const short = (xs: string[]) => (xs.length > 20 ? [...xs.slice(0, 20), `+${xs.length - 20} more`] : xs).join("; ");
-  return `cards: ${short(cards) || "none"} | names: ${short(names) || "none"}`;
+  return `cards: ${short(cards) || "none"} | names: ${short(names) || "none"} | autograph rows: ${short(autographs) || "none"}`;
 }
 
 async function call<T>(client: Client, tool: string, args: Record<string, unknown>, timeout: number): Promise<T> {
@@ -484,6 +493,16 @@ export async function runOneshotSequence(
             .map((t) => `${t.type} (${t.at}) ${t.added.slice(0, 10).join(", ")}${t.added.length > 10 ? ` +${t.added.length - 10} more` : ""}`)
             .join("; ")}; ${perType}`,
     );
+    // NEO-345: the operator's "on card or sticker?" for every AU checklist.
+    const asked = draft.autographFormats ?? [];
+    const unanswered = asked.filter((q) => typeof getAt(o.answers, q.at) !== "string");
+    record(
+      unanswered.length === 0,
+      "autograph formats",
+      unanswered.length === 0
+        ? `${asked.length} AU checklist(s), each answered`
+        : `the committed spec does not say how these are signed: ${unanswered.map((q) => `${q.label} (${q.at})`).join("; ")}`,
+    );
     const answersOk = cmp.answers.problems.length === 0;
     const answerLine = `drafted ${cmp.answers.drafted} / committed ${cmp.answers.committed}, ${cmp.answers.committedOnly} committed-only (moot or lookup-staged)`;
     record(
@@ -493,7 +512,7 @@ export async function runOneshotSequence(
         ? answerLine
         : `${cmp.answers.problems.slice(0, 8).join("; ")}${cmp.answers.problems.length > 8 ? `; +${cmp.answers.problems.length - 8} more` : ""}; ${answerLine}`,
     );
-    return okOpen && cmp.restSame && leavesOk && answersOk;
+    return okOpen && cmp.restSame && leavesOk && answersOk && unanswered.length === 0;
   });
   if (!drafted) return checks;
 
@@ -594,15 +613,20 @@ async function attentionSequence(
       await sleep(LOOKUP_POLL_MS);
     }
     const t = before.totals;
-    const seen = `cards ${t.cards}, byKind ${canonicalJson(t.byKind)}, namesToCheck ${t.namesToCheck}, awaitingTeamLookup ${t.awaitingTeamLookup}`;
+    const seen = `cards ${t.cards}, byKind ${canonicalJson(t.byKind)}, namesToCheck ${t.namesToCheck}, autographRows ${t.autographRows}, awaitingTeamLookup ${t.awaitingTeamLookup}`;
     if (t.awaitingTeamLookup > 0) return record(false, "nb_attention", `the team lookup did not finish in ${Math.round(waitMs / 1000)}s: ${seen}`);
     if (expect.measured !== true) {
       return record(false, "nb_attention", `attention ${NOT_MEASURED}; measured ${seen}. ${attentionInventory(before)}`);
     }
     const want = expect.totals;
     const nonzero = (m: Record<string, number>) => canonicalJson(Object.fromEntries(Object.entries(m).filter(([, n]) => n > 0)));
-    const ok = t.cards === want.cards && t.namesToCheck === want.namesToCheck && nonzero(t.byKind) === nonzero(want.byKind);
-    return record(ok, "nb_attention", ok ? `${seen}: ${before.summary}` : `${seen}; expected cards ${want.cards}, byKind ${canonicalJson(want.byKind)}, namesToCheck ${want.namesToCheck}. ${attentionInventory(before)}`);
+    const ok =
+      t.cards === want.cards &&
+      t.namesToCheck === want.namesToCheck &&
+      nonzero(t.byKind) === nonzero(want.byKind) &&
+      (want.autographRows === undefined || t.autographRows === want.autographRows);
+    const wanted = `expected cards ${want.cards}, byKind ${canonicalJson(want.byKind)}, namesToCheck ${want.namesToCheck}${want.autographRows === undefined ? "" : `, autographRows ${want.autographRows}`}`;
+    return record(ok, "nb_attention", ok ? `${seen}: ${before.summary}` : `${seen}; ${wanted}. ${attentionInventory(before)}`);
   });
   if (!listed || !before || expect.measured !== true) return;
   const fix = expect.fix;

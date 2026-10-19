@@ -4,14 +4,16 @@
  * are this schema, so a phrase printed for a file and a phrase the tool
  * computes are taken over the same parsed value.
  *
- * The shapes are lib/attention.ts's (cards) and lib/name-suggestions.ts's
- * (names); the `satisfies`-style checks below fail the typecheck when either
- * drifts from this schema.
+ * The shapes are lib/attention.ts's (cards), lib/name-suggestions.ts's
+ * (names) and lib/attention-answers.ts's (autographs); the checks below fail
+ * the typecheck when any of them drifts from this schema.
  */
 
 import { z } from "zod";
 import type { CardFixAnswer } from "./attention";
 import { MAX_SUGGESTION_DECISIONS, type NameFixAnswer } from "./name-suggestions";
+import type { AutographFixAnswer } from "./attention-answers";
+import { AUTOGRAPH_FORMATS } from "../../../convex/features/deriveCardFeatures";
 import type { FixAnswers } from "../service";
 
 const text = (what: string) => z.string().trim().min(1).describe(what);
@@ -94,6 +96,17 @@ export const MAX_FIX_CARDS = 100;
 /** Name answers per call: the suggestions mutation's own chunk (`MAX_SUGGESTION_DECISIONS`). */
 export const MAX_FIX_NAMES = MAX_SUGGESTION_DECISIONS;
 
+/** NEO-345: the header's "on card or sticker?" for one row, in the stored vocabulary. */
+export const AutographFixAnswerSchema = z
+  .object({
+    row: rowRef.optional().describe("The row; omit for Base."),
+    format: z.enum(AUTOGRAPH_FORMATS).describe('How the row\'s autographs are signed: "On Card" or "Sticker/Label".'),
+  })
+  .strict();
+
+/** Autograph answers per call: each waits on the server's walk over its row, so a call stays short. */
+export const MAX_FIX_AUTOGRAPHS = 50;
+
 export const FixAnswersSchema = z
   .object({
     cards: z
@@ -106,6 +119,11 @@ export const FixAnswersSchema = z
       .max(MAX_FIX_NAMES, `At most ${MAX_FIX_NAMES} name answers per call; split the batch and confirm each part.`)
       .optional()
       .describe(`Name-to-check answers, at most ${MAX_FIX_NAMES} per call.`),
+    autographs: z
+      .array(AutographFixAnswerSchema)
+      .max(MAX_FIX_AUTOGRAPHS, `At most ${MAX_FIX_AUTOGRAPHS} autograph answers per call; split the batch and confirm each part.`)
+      .optional()
+      .describe(`Autograph format answers, one per row (set path only), at most ${MAX_FIX_AUTOGRAPHS} per call.`),
   })
   .strict();
 
@@ -113,8 +131,10 @@ export const FixAnswersSchema = z
 type Parsed = z.infer<typeof FixAnswersSchema>;
 const _cards: CardFixAnswer[] | undefined = undefined as unknown as Parsed["cards"];
 const _names: NameFixAnswer[] | undefined = undefined as unknown as Parsed["names"];
+const _autographs: AutographFixAnswer[] | undefined = undefined as unknown as Parsed["autographs"];
 void _cards;
 void _names;
+void _autographs;
 
 /** Parse an answers object (a file's JSON, or a tool input). Throws a readable error. */
 export function parseFixAnswers(raw: unknown): FixAnswers {

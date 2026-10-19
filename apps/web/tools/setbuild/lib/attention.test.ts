@@ -2,9 +2,11 @@ import { describe, expect, test } from "vitest";
 import { ATTENTION_LABELS, needsAttention, type AttentionCardRow } from "../../../components/SetSelector/card-attention";
 import { careerHeading, marketplaceHeading } from "../../../components/SetSelector/attention-rules";
 import { ResolveError } from "../service";
+import { autographPromptCount, autographPromptLine } from "../../../components/SetSelector/autograph-prompt";
 import {
   SUMMARY_ENRICH_LIMIT,
   answerForEra,
+  autographItem,
   listCardAttention,
   resolveAttentionRow,
 } from "./attention";
@@ -358,5 +360,67 @@ describe("answerForEra", () => {
     expect(answerForEra("Winnipeg Jets", "b", [era("a", "Jets", 1972, 1996), era("b", "Jets", 2011)])).toEqual({ name: "Winnipeg Jets", from: 2011 });
     expect(answerForEra("Twins", "b", [era("a", "Twins", 1901), era("b", "Twins", 1901)])).toEqual({ name: "Twins", id: "b" });
     expect(answerForEra("Twins", "b", [era("a", "Twins"), era("b", "Twins")])).toEqual({ name: "Twins", id: "b" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-345 — the checklist header's "on card or sticker?"
+// ---------------------------------------------------------------------------
+
+describe("listCardAttention: autograph rows (the header prompt's own rule)", () => {
+  const au = (id: string, n: string, autographed?: string, extra: Record<string, unknown> = {}) =>
+    ({ ...quiet(id, n), attributes: ["AU"], ...(autographed ? { features: { autographed } } : {}), ...extra });
+
+  test("a row with no format and an AU card still marked None asks; the count, line, answers and link are the prompt's", async () => {
+    const store: Store = {
+      rows: {
+        [BASE]: [quiet("b1", "1"), quiet("b2", "2")],
+        [FUTURE]: [au("f1", "FS-1"), au("f2", "FS-2", "None"), au("f3", "FS-3", "On Card"), quiet("f4", "FS-4")],
+        [GOLD]: [au("g1", "FS-1")],
+      },
+      leafFeatures: { [GOLD]: { autographFormat: "Sticker/Label" } },
+    };
+    const out = await listCardAttention(attentionClient({ store }), SET);
+    expect(out.totals.autographRows).toBe(1);
+    expect(out.autographs).toEqual([
+      {
+        row: { type: "Inserts", name: "Future Stars" },
+        rowLabel: "Inserts › Future Stars",
+        rowId: FUTURE,
+        link:
+          "/admin/set-builder?" +
+          new URLSearchParams({ sport: "sport-bb", year: "year-2014", brand: "mfr-topps", set: "set-chrome", type: "vt-ins", insert: "ins-fs" }).toString(),
+        cards: 2,
+        prompt: autographPromptLine(2),
+        answers: [
+          { format: "On Card", label: "On card" },
+          { format: "Sticker/Label", label: "Sticker" },
+        ],
+      },
+    ]);
+    // An autograph row is not a card that needs you: the pill's count is untouched.
+    expect(out.totals.cards).toBe(0);
+  });
+
+  test("nothing asks once every AU card is marked, or when no card carries AU; Base asks like any row", async () => {
+    const marked: Store = { rows: { [BASE]: [au("b1", "1", "On Card")], [FUTURE]: [quiet("f1", "FS-1")] } };
+    expect((await listCardAttention(attentionClient({ store: marked }), SET)).autographs).toEqual([]);
+    const base: Store = { rows: { [BASE]: [au("b1", "1")] } };
+    const out = await listCardAttention(attentionClient({ store: base }), SET);
+    expect(out.autographs.map((a) => [a.rowLabel, a.row, a.cards, a.prompt])).toEqual([["Base", { type: "Base" }, 1, "1 autographed card — on card or sticker?"]]);
+  });
+
+  test("a value outside the two answers is no answer at all (the prompt still asks); guests count, as the header counts them", async () => {
+    const guest = { ...au("g-guest", "7"), isCrossListed: true, homeSetLabel: "2014 Topps" };
+    const store: Store = { rows: { [BASE]: [guest] }, leafFeatures: { [BASE]: { autographFormat: "on card" } } };
+    const out = await listCardAttention(attentionClient({ store }), SET);
+    expect(out.autographs.map((a) => a.cards)).toEqual([1]);
+  });
+
+  test("the item is the prompt's predicate exactly (autographPromptCount over the row's whole list)", () => {
+    const node = { ref: { type: "Base" }, label: "Base", rowId: BASE as never, drillIds: ["a"] };
+    const cards = [au("x", "1"), au("y", "2", "Sticker/Label")] as never[];
+    expect(autographItem(node, cards)?.cards).toBe(autographPromptCount(undefined, cards));
+    expect(autographItem({ ...node, autographFormat: "On Card" }, cards)).toBeUndefined();
   });
 });

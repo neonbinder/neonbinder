@@ -122,11 +122,35 @@ export function slReviewConfirmPhrase(t: Target, path: BrandYearPath, decisions:
 
 /**
  * `fix` / `nb_fix`: the answers exactly as given (a title's text, a team's
- * name, a label accepted). Absent lists count as empty.
+ * name, a label accepted, a row's autograph format). Absent lists count as
+ * empty. `autographs` joins the digest only when given, so a phrase for card
+ * and name answers alone is the one it always was.
  */
 export function fixConfirmPhrase(t: Target, path: NodePath, a: FixAnswers): string {
   const scope = formatPath(path);
-  return confirmPhrase(t, scope, contentDigest({ write: "fix", path: scope, cards: a.cards ?? [], names: a.names ?? [] }));
+  return confirmPhrase(
+    t,
+    scope,
+    contentDigest({
+      write: "fix",
+      path: scope,
+      cards: a.cards ?? [],
+      names: a.names ?? [],
+      ...(a.autographs && a.autographs.length > 0 ? { autographs: a.autographs } : {}),
+    }),
+  );
+}
+
+/**
+ * NEO-339 — said beside the links when the tool has no app address: a
+ * root-relative link opens nothing on its own, and a guessed host could open
+ * another deployment's Set Builder, where these ids mean nothing.
+ */
+export const LINKS_NOTE = "Links are paths only: set NB_SETBUILD_APP_URL to the app address for this deployment.";
+
+/** `{ linksNote }` when the target has no app origin, else nothing (spread into every report that carries links). */
+export function linksNoteFor(t: Pick<Target, "appOrigin">): { linksNote?: string } {
+  return t.appOrigin ? {} : { linksNote: LINKS_NOTE };
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +370,8 @@ export interface PlanReport {
    * resolved has no entry. Always present on plan and apply reports.
    */
   setLinks?: SetLink[];
+  /** Present when the links are root-relative paths: `LINKS_NOTE`, how to make them absolute. */
+  linksNote?: string;
   /** The exact string `apply` must be confirmed with. */
   confirmPhrase: string;
   steps: PlanStep[];
@@ -421,6 +447,8 @@ export interface InspectReport {
   variantTypes?: Array<{ type: string; link: string; rows: InspectRow[] }>;
   /** Only with `attention: true`: what the node still needs from a person (`nb_attention`'s totals). */
   attention?: AttentionSummary;
+  /** Present when the links are root-relative paths (`LINKS_NOTE`). */
+  linksNote?: string;
 }
 
 export interface InspectOptions {
@@ -486,12 +514,26 @@ export interface AttentionTotals {
   awaitingTeamLookup: number;
   /** Sides with a marketplace name that differs from NB's (one row may have two). */
   namesToCheck: number;
-  /** The brand's SportLots sets waiting to be sorted (answered with nb_sl_review_apply). */
+  /**
+   * The brand's SportLots sets waiting to be sorted (answered with
+   * nb_sl_review_apply). Brand-wide, not the set's: the summary names it for
+   * the brand-year ("2 SportLots sets to sort for Topps 2024").
+   */
   slSetsToSort: number;
+  /**
+   * NEO-345: rows (Base, insert or parallel) whose checklist header asks how
+   * their autographs are signed ("on card or sticker?"); answered with nb_fix
+   * `autographs`. Always 0 on a brand-year.
+   */
+  autographRows: number;
 }
 
 export interface AttentionSummary extends AttentionTotals {
-  /** One line for a person: "1 card needs you on Topps Chrome; 13 names to check." or the walker's all-clear. */
+  /**
+   * One line for a person: "1 card needs you on Topps Chrome; 13 names to
+   * check; 2 autograph rows to mark on-card or sticker; 1 SportLots set to
+   * sort for Topps 2024." or the walker's all-clear.
+   */
   summary: string;
 }
 
@@ -529,6 +571,8 @@ export interface AttentionReport {
   summary: string;
   /** Set path: every card that needs a person, in the walker's order. Empty on a brand-year. */
   cards: CardAttentionItem[];
+  /** Set path: every row whose header asks "on card or sticker?" (NEO-345), in walk order. Empty on a brand-year. */
+  autographs: AutographAttentionItem[];
   /** Set path: how many cards carry their fixer's facts (`detail: "summary"` reads the first few). */
   enrichment?: { enriched: number; of: number };
   /** Every name to check, on the node's own row and every row under it. */
@@ -538,6 +582,8 @@ export interface AttentionReport {
   /** An entity review this process's nb_apply left open on the set, by checklist (null = Base). */
   review: { rows: Array<RowRef | null>; answerWith: "nb_decide" } | null;
   notices: AttentionNotice[];
+  /** Present when the links are root-relative paths (`LINKS_NOTE`). */
+  linksNote?: string;
 }
 
 /** What `fix` takes. Every answer is explicit text or an explicit NB name; nothing is derived. */
@@ -545,19 +591,23 @@ export interface FixAnswers {
   /** Set path only. */
   cards?: CardFixAnswer[];
   names?: NameFixAnswer[];
+  /** Set path only: a row's autograph format, as the header prompt answers it (NEO-345). */
+  autographs?: AutographFixAnswer[];
 }
 
 /**
  * One answer's outcome: `cards[i]` (lib/attention-answers.ts, with the card,
  * the fixer it went through, any `warning`, any row `created`, and what the
- * card still needs) or `names[i]` (lib/name-suggestions.ts).
+ * card still needs), `autographs[i]` (the row, the format, and a `warning`
+ * when its cards were not seen marked in time) or `names[i]`
+ * (lib/name-suggestions.ts).
  */
-export type FixResult = CardFixResult | NameFixResult;
+export type FixResult = CardFixResult | NameFixResult | AutographFixResult;
 
 export interface FixReport {
   path: string;
-  applied: { cards: number; names: number };
-  /** One per answer, in answer order: cards first, then names. */
+  applied: { cards: number; names: number; autographs: number };
+  /** One per answer, in answer order: cards, then autographs, then names. */
   results: FixResult[];
   /** The rename mutation's own counts, summed over its calls. */
   nameCounts: { applied: number; declined: number; stale: number; clashed: number; skipped: number };
@@ -567,11 +617,11 @@ export interface FixReport {
 }
 
 // The card item and answer shapes are lib/attention.ts's; the name shapes are lib/name-suggestions.ts's.
-import type { CardAttentionItem, CardFixAnswer } from "./lib/attention";
-import type { CardFixResult } from "./lib/attention-answers";
+import type { AutographAttentionItem, CardAttentionItem, CardFixAnswer } from "./lib/attention";
+import type { AutographFixAnswer, AutographFixResult, CardFixResult } from "./lib/attention-answers";
 import type { NameFixAnswer, NameFixResult, NameSuggestionItem } from "./lib/name-suggestions";
-export type { CardFixResult } from "./lib/attention-answers";
-export type { CardAttentionItem, CardFixAnswer } from "./lib/attention";
+export type { AutographFixAnswer, AutographFixResult, CardFixResult } from "./lib/attention-answers";
+export type { AutographAttentionItem, CardAttentionItem, CardFixAnswer } from "./lib/attention";
 export type { NameFixAnswer, NameFixResult, NameRowRef, NameSuggestionItem } from "./lib/name-suggestions";
 
 // ---------------------------------------------------------------------------
@@ -679,6 +729,15 @@ export interface DraftedReport {
     pairedElsewhere: number;
     outsideScopeSets: Array<{ id: string; name: string }>;
   }>;
+  /**
+   * NEO-345: every drafted checklist whose previewed cards carry "AU", which
+   * the Set Builder would ask "on card or sticker?". The operator's answer:
+   * never drafted, never blocking (`confirmPhrase` does not wait for it).
+   * Put it in the spec at `at` (`autographFormat`, "On Card" or
+   * "Sticker/Label") and plan again; left out, apply still commits and
+   * nb_attention lists the row.
+   */
+  autographFormats: DraftAutographQuestion[];
   /** Marketplace requests the previews reported making. */
   marketplaceCalls: number;
   durationMs: number;
@@ -687,6 +746,22 @@ export interface DraftedReport {
    * to keep the result small, and how to get all of it.
    */
   summary?: DraftSummary;
+}
+
+/** NEO-345: one drafted checklist the operator must say "on card or sticker?" for. */
+export interface DraftAutographQuestion {
+  /** Where the answer goes in the spec: `<the checklist's location>.autographFormat`. */
+  at: string;
+  /** The checklist's row (null = Base). */
+  row: RowRef | null;
+  /** "Base", "Insert › Ivory Autographs". */
+  label: string;
+  /** Previewed cards carrying "AU". */
+  cards: number;
+  /** The Set Builder prompt's own line for that count. */
+  question: string;
+  /** The two answers: the spec value and the Set Builder button's name. */
+  answers: Array<{ format: "On Card" | "Sticker/Label"; label: string }>;
 }
 
 /** How a summary draft was cut (`compactDraftReport`). */

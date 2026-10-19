@@ -268,6 +268,23 @@ describe("read tools", () => {
     expect(f.write.fix).toHaveBeenCalledWith(TOPPS_CHROME, FIX_ARGS, PHRASE.fix);
   });
 
+  test("NEO-345: nb_fix takes autographs in the stored vocabulary, the phrase binds them, and they reach the service as given", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const answers = { autographs: [{ row: { type: "Insert", name: "Ivory Autographs" }, format: "On Card" as const }] };
+    const phrase = fixConfirmPhrase(TARGET, TOPPS_CHROME, answers);
+    const refused = await callTool(client, "nb_fix", { path: TOPPS_CHROME, ...answers });
+    expect(refused.json().expected).toBe(phrase);
+    for (const bad of [{ format: "on card" }, { format: "None" }, { row: { type: "Insert" }, format: "Sticker/Label", extra: 1 }]) {
+      const r = await callTool(client, "nb_fix", { path: TOPPS_CHROME, autographs: [bad], confirm: phrase });
+      expect(r.isError, JSON.stringify(bad)).toBe(true);
+    }
+    expect(f.write.fix).not.toHaveBeenCalled();
+    const ok = await callTool(client, "nb_fix", { path: TOPPS_CHROME, ...answers, confirm: phrase });
+    expect(ok.isError).toBe(false);
+    expect(f.write.fix).toHaveBeenCalledWith(TOPPS_CHROME, answers, phrase);
+  });
+
   test("nb_draft_set calls read.draftSet once with the path and options, and never a write", async () => {
     const f = fakeService();
     const client = await connect(f.service);
@@ -739,6 +756,28 @@ describe("marketplace data is never instructions", () => {
     expect(byName.nb_attention).toContain(line);
     // WORKFLOW rides on the read tools' descriptions.
     for (const name of ["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set"]) expect(byName[name], name).toContain(line);
+  });
+});
+
+describe("research before asking, never invent (NEO-345, Jason 2026-10-18)", () => {
+  test("the workflow tells the agent to look up what a source can settle, cite it, and let the operator confirm", async () => {
+    const client = await connect(fakeService().service);
+    const { tools } = await client.listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t.description ?? ""]));
+    for (const name of ["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set", "nb_attention"]) {
+      const d = byName[name];
+      expect(d, name).toContain("Research what a source can settle before you ask");
+      expect(d, name).toContain("how a row's autographs are signed");
+      expect(d, name).toContain("a card's missing team, a variation that must be shortened");
+      expect(d, name).toContain("Beckett, Cardboard Connection");
+      expect(d, name).toContain("bring the operator a proposal with the source you used; the operator confirms it before nb_fix or the spec writes it");
+      expect(d, name).toContain("Never invent an answer: with no source, say so and ask. The tool itself never guesses one.");
+      expect(d, name).toContain("linksNote");
+    }
+    expect(byName.nb_draft_set).toContain("autographFormats lists every drafted checklist whose cards carry AU");
+    expect(byName.nb_attention).toContain("autographs, the rows whose checklist header asks");
+    expect(byName.nb_fix).toContain("autographs (set path only)");
+    expect(byName.nb_fix).toContain("Send only answers the operator confirmed: one you researched (a format, a team, a shortened variation) goes to the operator first, with its source.");
   });
 });
 

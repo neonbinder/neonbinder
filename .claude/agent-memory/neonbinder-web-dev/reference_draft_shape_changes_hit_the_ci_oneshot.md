@@ -21,4 +21,9 @@ check the committed fixture for the case you touch (e.g. which review names
 it answers, which conflicts). Say in the report whether the fixture needs a
 re-measure. A stub read service in `mcp-tools.test.ts` returns a PARTIAL
 report, so any MCP-side post-processing must read lists defensively.
+A spec key the draft never drafts (an operator-only answer such as a
+checklist's `autographFormat`, NEO-345) is DROPPED by the merge unless
+`mergeDraftAnswers` carries it from the answers like `credentials` and
+`pairing.unlink`; without that rule the committed answer makes the digest
+check red.
 Related: [[convex-typecheck-excludes-test-files]].

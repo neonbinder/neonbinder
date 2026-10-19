@@ -18,6 +18,7 @@ import type { Target } from "../client/target";
 import {
   formatPath,
   isSetPath,
+  linksNoteFor,
   ResolveError,
   type InspectOptions,
   type InspectReport,
@@ -67,6 +68,7 @@ export async function inspectPath(
         link: linkTo(at),
         sets: sets.map((s) => ({ name: s.value, links: linksOf(s), link: linkTo([...at, s._id]) })),
         ...(opts.attention ? { attention: await attentionSummaryOf(client, path, brand) } : {}),
+        ...linksNoteFor(target),
       };
     }
     const set = await resolveSetPath(client, path);
@@ -102,6 +104,7 @@ export async function inspectPath(
       base,
       variantTypes,
       ...(opts.attention ? { attention: await attentionSummaryOf(client, path, set) } : {}),
+      ...linksNoteFor(target),
     };
   } catch (err) {
     if (err instanceof ResolveError) return { ...head, found: false };

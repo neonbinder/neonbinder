@@ -17,6 +17,9 @@ import {
   AUTOGRAPH_FORMATS,
   type AutographFormat,
 } from "./entity-review-steps";
+// The header prompt's words live in the pure prompt module, which the
+// set-build tool's attention listing reads too (NEO-339).
+import { autographPromptLine, autographPromptSaved } from "./autograph-prompt";
 
 /**
  * NEO-345 — how a leaf's autographs are signed: on the card, or on a sticker.
@@ -60,20 +63,15 @@ export { AUTOGRAPH_CHOICE_LABEL };
  */
 export const AUTOGRAPH_NEXT_BLOCKED = "Pick how they're signed first";
 
-/** The checklist header's one line, for a stored leaf. */
-export function autographPromptLine(count: number): string {
-  return count === 1
-    ? "1 autographed card — on card or sticker?"
-    : `${count} autographed cards — on card or sticker?`;
-}
+/**
+ * The checklist header's one line, for a stored leaf, and what it says once
+ * the answer is saved: defined in `autograph-prompt.ts` so the set-build
+ * tool's listing says the same words, re-exported for this step's callers.
+ */
+export { autographPromptLine, autographPromptSaved };
 
 /** Said politely while the header prompt's write is in flight. */
 export const AUTOGRAPH_PROMPT_SAVING = "Saving…";
-
-/** What the header line says once the answer is saved. */
-export function autographPromptSaved(value: AutographFormat): string {
-  return `Autographs saved as ${AUTOGRAPH_CHOICE_LABEL[value].toLowerCase()}.`;
-}
 
 /**
  * A small drawn card: the hobby's own picture of the question. On card, the

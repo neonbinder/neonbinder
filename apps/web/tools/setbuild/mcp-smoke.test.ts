@@ -91,9 +91,10 @@ const EXPECT: SmokeExpect = smokeExpectSchema.parse({
 
 const ATTENTION = {
   pathText: SCOPE,
-  totals: { cards: 1, byKind: { missingTeam: 1 }, awaitingTeamLookup: 0, namesToCheck: 2, slSetsToSort: 0 },
+  totals: { cards: 1, byKind: { missingTeam: 1 }, awaitingTeamLookup: 0, namesToCheck: 2, slSetsToSort: 0, autographRows: 0 },
   summary: "1 card needs you on Topps Chrome; 2 names to check.",
   cards: [{ cardNumber: "1" }],
+  autographs: [],
   names: [{ sides: [{ side: "bsc", label: "Chrome", foldEqual: false }, { side: "sportlots", label: "Chrome!", foldEqual: false }] }],
   notices: [],
 };
@@ -213,6 +214,17 @@ describe("runSmokeSequence", () => {
     });
     expect(checks.at(-1)).toMatchObject({ ok: false, label: `nb_attention ${SCOPE}` });
     expect(checks.at(-1)!.detail).toMatch(/2 name sides listed, totals.namesToCheck says 5/);
+
+    // NEO-345: the autograph rows must agree with their count too.
+    const autographLie = { ...ATTENTION, totals: { ...ATTENTION.totals, autographRows: 1 } };
+    const au = await runSmokeSequence(await connect(fakeService({ attention: autographLie })), {
+      specPath: "/seed/parallel.spec.json",
+      expect: EXPECT,
+      confirm: PHRASE,
+      ...WORLD,
+      ...WORLD,
+    });
+    expect(au.at(-1)!.detail).toMatch(/0 autograph rows listed, totals.autographRows says 1/);
 
     const quiet = await runSmokeSequence(await connect(fakeService({ noAttentionLine: true })), {
       specPath: "/seed/parallel.spec.json",

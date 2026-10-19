@@ -27,6 +27,14 @@
  * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
  * | builds                  | Parallel rows from Base; an insert's grouped parallels from the insert | — |
+ * | autograph format        | never (no marketplace says it)                         | — : listed in `autographFormats`, not blocking |
+ *
+ * A checklist whose previewed cards carry "AU" asks how they are signed (the
+ * wizard's "Autographed cards" step, NEO-345). That answer is the operator's
+ * alone, so the draft never fills it and never blocks on it: each such
+ * checklist is listed in `autographFormats` with the spec location its
+ * `autographFormat` goes at. A spec without it still applies; the rows are
+ * then listed by nb_attention until answered.
  *
  * Checklists are previewed with `previewCardChecklist`: by row when the row
  * exists with the drafted ids, cold (by ids from THIS draft's
@@ -62,6 +70,12 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { slotIds } from "../../../convex/platformSlots";
 import { variantTypeKind } from "../../../convex/variantRole";
 import { normalizeEntityName } from "../../../lib/entities/normalize-name";
+import { carriesAutographToken } from "../../../convex/features/deriveCardFeatures";
+import {
+  AUTOGRAPH_CHOICE_LABEL,
+  AUTOGRAPH_FORMATS,
+  autographPromptLine,
+} from "../../../components/SetSelector/autograph-prompt";
 import { listBaseCandidates } from "../../../lib/set-build/base-candidates";
 import { buildInitialState } from "../../../lib/set-build/grouping";
 import {
@@ -101,6 +115,7 @@ import {
   MAX_TEAM_LOOKUP_BUDGET,
   ResolveError,
   specConfirmPhrase,
+  type DraftAutographQuestion,
   type DraftOptions,
   type DraftProposal,
   type DraftReport,
@@ -155,7 +170,9 @@ export function isPlaceholder(v: unknown): v is string {
  * oneshot.spec.json`). Everything else comes from the template, so the
  * result equals `answers` exactly when the draft drafted everything the
  * answers hold besides those fill-ins. `credentials` is the one key taken
- * from `answers` wholesale: it sets up the run's account, not the set.
+ * from `answers` wholesale: it sets up the run's account, not the set. A
+ * checklist's `autographFormat` is taken from `answers` too (the draft never
+ * drafts one: it is the operator's answer, listed in `autographFormats`).
  * A `pairing.unlink` in the answers is the other answer to a card conflict:
  * it is taken, and the template's conflict fill-ins for the pairs it names
  * are dropped (the answers file deletes them too).
@@ -167,7 +184,10 @@ export function mergeDraftAnswers(template: unknown, answers: unknown): unknown 
     if (Array.isArray(t)) return t.map((v, i) => walk(v, Array.isArray(a) ? a[i] : undefined));
     if (t && typeof t === "object") {
       const ao = a && typeof a === "object" && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
-      const to = key === "pairing" ? withUnlinkAnswers(t as Record<string, unknown>, ao) : (t as Record<string, unknown>);
+      let to = key === "pairing" ? withUnlinkAnswers(t as Record<string, unknown>, ao) : (t as Record<string, unknown>);
+      if (key === "checklist" && ao.autographFormat !== undefined && !("autographFormat" in to)) {
+        to = { ...to, autographFormat: structuredClone(ao.autographFormat) };
+      }
       return Object.fromEntries(Object.entries(to).map(([k, v]) => [k, walk(v, ao[k], k)]));
     }
     return t;
@@ -463,6 +483,8 @@ export async function draftSet(
   const open = emptyOpenDecisions();
   const notes: string[] = [];
   const leftUnasked: DraftedReport["leftUnasked"] = [];
+  /** NEO-345: drafted checklists whose cards carry "AU": the operator says how they are signed. */
+  const autographFormats: DraftAutographQuestion[] = [];
   const fills: Array<{ at: string; value: unknown }> = [];
   const propose = (at: string, kind: DraftProposal["kind"], detail: string) => proposals.push({ at, kind, detail });
   const openCondition = (at: string, kind: string, name: string, detail: string, value?: unknown) => {
@@ -1151,6 +1173,19 @@ export async function draftSet(
     // checklist reaches it first; the later answer is then moot (a reported
     // no-op), and an earlier checklist that stops open cannot strand it.
     const cards = [...preview.matched.map((m) => m.card), ...preview.bscOnly, ...preview.slOnly];
+    // NEO-345: the wizard's "Autographed cards" question, asked of the
+    // operator, never answered here (no marketplace says which it is).
+    const autographed = cards.filter((c) => carriesAutographToken(c.attributes)).length;
+    if (autographed > 0) {
+      autographFormats.push({
+        at: `${at}.autographFormat`,
+        row,
+        label,
+        cards: autographed,
+        question: autographPromptLine(autographed),
+        answers: AUTOGRAPH_FORMATS.map((format) => ({ format, label: AUTOGRAPH_CHOICE_LABEL[format] })),
+      });
+    }
     const names = namesOnCards(cards);
     // A name only one side of an unanswered players conflict carries is asked
     // about only if that side is chosen: never pre-filled, and its fill-in
@@ -1267,6 +1302,7 @@ export async function draftSet(
         steps,
         notes,
         leftUnasked,
+        autographFormats,
         marketplaceCalls,
         durationMs: now() - started,
       };

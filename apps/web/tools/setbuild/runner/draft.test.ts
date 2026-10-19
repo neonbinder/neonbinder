@@ -825,3 +825,57 @@ describe("pure helpers", () => {
     expect(contentDigest(parseSpec(merged2))).toBe(contentDigest(parseSpec(onlyUnlink)));
   });
 });
+
+describe("draftSet: NEO-345 the autograph format is the operator's", () => {
+  /** Future Stars previews two AU cards (the token case-folded) and a plain one. */
+  const auPreview = () => {
+    const p = preview([
+      { num: "FS-1", players: ["Shohei Ohtani"], bsc: "fs1", sl: "sfs1" },
+      { num: "FS-2", players: ["Bobby Witt Jr."], bsc: "fs2", sl: "sfs2" },
+      { num: "FS-3", players: ["Mike Trout"], bsc: "fs3", sl: "sfs3" },
+    ]);
+    Object.assign(p.matched[0].card, { attributes: ["AU"] });
+    Object.assign(p.matched[1].card, { attributes: ["RC", " au "] });
+    return p;
+  };
+
+  test("an AU checklist is listed with where its answer goes, never filled, and never blocks the phrase", async () => {
+    const plain = await drafted(world());
+    const r = await drafted(world({ insertPreview: auPreview }));
+    expect(plain.autographFormats).toEqual([]);
+    expect(r.autographFormats.length).toBeGreaterThan(0);
+    const fs = r.autographFormats.find((q) => q.label === "Insert › Future Stars")!;
+    expect(fs).toMatchObject({
+      row: { type: "Insert", name: "Future Stars" },
+      cards: 2,
+      question: "2 autographed cards — on card or sticker?",
+      answers: [
+        { format: "On Card", label: "On card" },
+        { format: "Sticker/Label", label: "Sticker" },
+      ],
+    });
+    expect(fs.at).toMatch(/^steps\[0\]\.variants\[\d+\]\.rows\[\d+\]\.checklist\.autographFormat$/);
+    // The draft holds no answer and no fill-in for it, and counts nothing open for it.
+    expect(JSON.stringify(r.spec)).not.toContain("autographFormat");
+    expect(JSON.stringify(r.template)).not.toContain("autographFormat");
+    expect(r.openCount).toBe(plain.openCount);
+    // Base previewed no AU card: not listed.
+    expect(r.autographFormats.some((q) => q.label === "Base")).toBe(false);
+  });
+
+  test("mergeDraftAnswers takes a checklist's autographFormat from the answers (the draft never drafts one)", async () => {
+    const r = await drafted(world({ insertPreview: auPreview }));
+    const at = r.autographFormats[0].at;
+    const committed = structuredClone(r.template ?? r.spec) as Record<string, unknown>;
+    // Answer the template's fill-ins with themselves resolved, then the format.
+    const answered = JSON.parse(JSON.stringify(committed).replace(/"<[^"]*>"/g, '"create"')) as Record<string, unknown>;
+    const parts = at.replace(/\.autographFormat$/, "");
+    const node = parts.split(/\.|\[|\]/).filter(Boolean).reduce<Record<string, unknown>>((n, k) => n[k] as Record<string, unknown>, answered);
+    node.autographFormat = "On Card";
+    const merged = mergeDraftAnswers(r.template ?? r.spec, answered);
+    expect(JSON.stringify(merged)).toContain('"autographFormat":"On Card"');
+    // Only on a checklist: the same key elsewhere in the answers is not taken.
+    const stray = mergeDraftAnswers(r.template ?? r.spec, { ...answered, autographFormat: "On Card" }) as Record<string, unknown>;
+    expect("autographFormat" in stray).toBe(false);
+  });
+});

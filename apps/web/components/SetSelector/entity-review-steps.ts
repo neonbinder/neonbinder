@@ -31,12 +31,8 @@
  *   there; anything that turns up after is the post-save walker's to catch.
  */
 import { isAmbiguousPlayerRow, type NavRow } from "./entity-review-nav";
-import {
-  AUTOGRAPH_FORMATS,
-  carriesAutographToken,
-  isAutographFormat,
-  type AutographFormat,
-} from "../../convex/features/deriveCardFeatures";
+import { AUTOGRAPH_FORMATS, type AutographFormat } from "../../convex/features/deriveCardFeatures";
+import { carriesAutograph } from "./autograph-prompt";
 import {
   teamlessCardIndexes,
   type PreviewCardForTeams,
@@ -108,24 +104,11 @@ function isLive(step: PostReviewStep, live: PostReviewLive): boolean {
 export { AUTOGRAPH_FORMATS, type AutographFormat };
 
 /**
- * The two answers' display names, keyed by the stored value — the wizard's
- * tiles, the checklist prompt's buttons and Set details' select all say
- * these words (NEO-345 a11y: one name per answer everywhere).
+ * The two answers' display names, the stored-value reader and the token test
+ * live in the pure prompt module (`autograph-prompt.ts`), which the set-build
+ * tool also reads; re-exported here so the step's callers keep one import.
  */
-export const AUTOGRAPH_CHOICE_LABEL: Readonly<Record<AutographFormat, string>> = {
-  "On Card": "On card",
-  "Sticker/Label": "Sticker",
-};
-
-/** A stored value read back as one of the two answers (anything else is none). */
-export function asAutographFormat(value: string | undefined | null): AutographFormat | undefined {
-  return isAutographFormat(value) ? value : undefined;
-}
-
-/** Does this attribute list carry the autograph token? Case-folded, trimmed. */
-export function carriesAutograph(attributes: readonly string[] | undefined): boolean {
-  return carriesAutographToken(attributes);
-}
+export { AUTOGRAPH_CHOICE_LABEL, asAutographFormat, carriesAutograph } from "./autograph-prompt";
 
 /**
  * Positions in `cards` the autograph step is about: cards the save will

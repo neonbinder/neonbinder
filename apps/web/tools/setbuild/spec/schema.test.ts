@@ -306,6 +306,30 @@ describe("SetBuildSpec", () => {
     }
   });
 
+  test("NEO-345: a checklist may carry autographFormat in the stored vocabulary, nothing else; absent adds nothing", () => {
+    const withFormat = structuredClone(minimal) as unknown as { steps: Array<{ variants?: Array<{ rows?: Array<{ checklist?: Record<string, unknown> }> }> }> };
+    withFormat.steps[1].variants![0].rows![0].checklist!.autographFormat = "Sticker/Label";
+    const parsed = parseSpec(withFormat) as unknown as typeof withFormat;
+    expect(parsed.steps[1].variants![0].rows![0].checklist!.autographFormat).toBe("Sticker/Label");
+    for (const bad of ["sticker", "None", "Yes", ""]) {
+      withFormat.steps[1].variants![0].rows![0].checklist!.autographFormat = bad;
+      expect(() => parseSpec(withFormat), bad).toThrow(SpecError);
+    }
+    expect(JSON.stringify(parseSpec(minimal))).not.toContain("autographFormat");
+    expect(JSON.stringify(specJsonSchema())).toContain("Sticker/Label");
+  });
+
+  test("the one-shot fixture answers its autograph checklists On Card (Jason, 2026-10-18) and still parses", () => {
+    const raw = JSON.parse(readFileSync(join(__dirname, "../../../playwright/seed/oneshot.spec.json"), "utf8"));
+    const rows = (parseSpec(raw) as unknown as { steps: Array<{ variants: Array<{ rows: Array<{ name: string; checklist?: { autographFormat?: string } }> }> }> }).steps[0].variants[0].rows;
+    expect(rows.map((r) => [r.name, r.checklist?.autographFormat ?? null])).toEqual([
+      ["Super Futures Autographs", "On Card"],
+      ["Pitch Black Pairings Dual Autographs", "On Card"],
+      ["Ivory Autographs", "On Card"],
+      ["Depth of Darkness", null],
+    ]);
+  });
+
   test("exports a JSON Schema for the spec", () => {
     const schema = specJsonSchema();
     expect(JSON.stringify(schema)).toContain("whenPaused");

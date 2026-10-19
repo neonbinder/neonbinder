@@ -48,6 +48,7 @@ import type { NbClient } from "../client/convex-client";
 import type { Target } from "../client/target";
 import {
   formatPath,
+  linksNoteFor,
   ResolveError,
   specConfirmPhrase,
   type ApplyCounts,
@@ -168,6 +169,16 @@ function parseAt(at: string): Array<string | number> {
     out.push(m[2] !== undefined ? Number(m[2]) : m[1]);
   }
   return out;
+}
+
+/** The value at `at` (`steps[1].base.checklist.autographFormat`), or undefined when the path does not reach one. */
+export function getAt(root: unknown, at: string): unknown {
+  let node: unknown = root;
+  for (const p of parseAt(at)) {
+    if (node === null || typeof node !== "object") return undefined;
+    node = (node as Record<string | number, unknown>)[p];
+  }
+  return node;
 }
 
 /** Set `value` at `at` (`steps[1].base.checklist`) in a deep copy's tree, creating objects on the way. */
@@ -383,6 +394,7 @@ export async function runSpec(
       target: { convexUrl: target.convexUrl, host: target.host },
       scope: spec.scope,
       setLinks: [...setLinks.values()],
+      ...(setLinks.size > 0 ? linksNoteFor(target) : {}),
       confirmPhrase: phrase,
       steps,
       openDecisions: open,
@@ -805,6 +817,8 @@ export async function runSpec(
     label: string,
   ): Promise<StepStatus> {
     const action = `fetch and commit the ${label} checklist`;
+    // NEO-345: the spec's "Autographed cards" answer, said where the plan shows it.
+    const autographs = spec.autographFormat ? `; autographs: ${spec.autographFormat}` : "";
     if (readOnly) {
       const n = await cardCount(client, rowId);
       let done: boolean;
@@ -814,7 +828,7 @@ export async function runSpec(
         record({ index: i, kind: "checklist", path, action, status: "blocked", detail: err instanceof Error ? err.message : String(err) });
         return "blocked";
       }
-      record({ index: i, kind: "checklist", path, action, status: done ? "done" : "todo", detail: done ? `holds ${n} cards` : "the review is only known once apply fetches it" });
+      record({ index: i, kind: "checklist", path, action, status: done ? "done" : "todo", detail: done ? `holds ${n} cards` : `the review is only known once apply fetches it${autographs}` });
       return done ? "done" : "todo";
     }
     let r: Awaited<ReturnType<typeof runChecklistStep>>;
@@ -839,7 +853,7 @@ export async function runSpec(
         path,
         action,
         status: "done",
-        detail: `saved ${r.committed} (holds ${r.cards}); ${r.pairing}; review: ${r.review.players} players, ${r.review.teams} teams, ${r.review.leagues} leagues${r.notes.length ? `; ${r.notes.join("; ")}` : ""}`,
+        detail: `saved ${r.committed} (holds ${r.cards}); ${r.pairing}; review: ${r.review.players} players, ${r.review.teams} teams, ${r.review.leagues} leagues${autographs}${r.notes.length ? `; ${r.notes.join("; ")}` : ""}`,
       });
       return "done";
     }

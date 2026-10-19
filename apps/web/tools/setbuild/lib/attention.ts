@@ -59,6 +59,13 @@ import type { NbClient } from "../client/convex-client";
 import { ResolveError } from "../service";
 import { childrenOf, pickExactlyOne, type ResolvedSet, type RowId, type SelectorRow } from "../spec/resolve";
 import { setBuilderUrlForPath } from "./set-builder-link";
+import {
+  AUTOGRAPH_CHOICE_LABEL,
+  AUTOGRAPH_FORMATS,
+  autographPromptCount,
+  autographPromptLine,
+  type AutographFormat,
+} from "../../../components/SetSelector/autograph-prompt";
 
 // ---------------------------------------------------------------------------
 // Shapes (the contract builder B's service/MCP layer imports)
@@ -222,10 +229,41 @@ export interface CardAttentionTotals {
   byKind: Record<AttentionKind, number>;
   /** Cards still waiting on the automatic team lookup; they may join later. */
   awaitingTeamLookup: number;
+  /** NEO-345: rows whose checklist header asks "on card or sticker?" (`autographs`). */
+  autographRows: number;
+}
+
+/**
+ * NEO-345 — one row (Base, insert or parallel) whose checklist header asks
+ * how its autographs are signed: no `features.autographFormat` on the row,
+ * and cards carrying "AU" still marked not autographed. The rule, the count
+ * and the line are the prompt's own (`components/SetSelector/autograph-prompt.ts`,
+ * which `CardChecklist` gates the prompt on). Answered once for the row
+ * (`nb_fix` `autographs`); the server then marks its autographed cards.
+ *
+ * No marketplace says which it is, so nothing here proposes an answer: the
+ * operator gives it (an agent may research it and cite a source, but the
+ * operator confirms before it is written).
+ */
+export interface AutographAttentionItem {
+  row: CardRowRef;
+  rowLabel: string;
+  /** NB's `selectorOptions` id of the row. */
+  rowId: string;
+  /** The Set Builder, opened on the row. */
+  link: string;
+  /** Autographed cards still marked not autographed (the prompt's count). */
+  cards: number;
+  /** The prompt's own line, e.g. "3 autographed cards — on card or sticker?". */
+  prompt: string;
+  /** The two answers: the stored value, and the button's name. */
+  answers: Array<{ format: AutographFormat; label: string }>;
 }
 
 export interface CardAttentionListing {
   cards: CardAttentionItem[];
+  /** NEO-345: rows asking how their autographs are signed, in walk order. */
+  autographs: AutographAttentionItem[];
   totals: CardAttentionTotals;
   /** How many items carry their fixer's facts, of how many listed. */
   enrichment: { enriched: number; of: number };
@@ -307,7 +345,15 @@ export interface AttentionRowNode {
   rowId: RowId;
   /** NB ids root first, for the Set Builder link. */
   drillIds: string[];
+  /** NEO-345: the row's own `features.autographFormat`, as stored (absent when nobody has said). */
+  autographFormat?: string;
 }
+
+/** The row's stored autograph format, for the node (`getSelectorOptions` returns `features`). */
+const formatOf = (row: SelectorRow): { autographFormat?: string } => {
+  const f = row.features?.autographFormat;
+  return f !== undefined ? { autographFormat: f } : {};
+};
 
 function setDrillIds(set: ResolvedSet): string[] {
   return [set.sportId, set.yearId, set.manufacturerId, set.setId].map(String);
@@ -328,18 +374,19 @@ export async function attentionRows(client: NbClient, set: ResolvedSet): Promise
   for (const t of await childrenOf(client, "variantType", set.setId)) {
     const typeIds = [...base, String(t._id)];
     if (isBaseType(t)) {
-      out.push({ ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: typeIds });
+      out.push({ ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: typeIds, ...formatOf(t) });
       continue;
     }
     for (const r of await childrenOf(client, "insert", t._id)) {
       const rowIds = [...typeIds, String(r._id)];
-      out.push({ ref: { type: t.value, name: r.value }, label: `${t.value} › ${r.value}`, rowId: r._id, drillIds: rowIds });
+      out.push({ ref: { type: t.value, name: r.value }, label: `${t.value} › ${r.value}`, rowId: r._id, drillIds: rowIds, ...formatOf(r) });
       for (const p of await childrenOf(client, "parallel", r._id)) {
         out.push({
           ref: { type: t.value, name: r.value, parallel: p.value },
           label: `${t.value} › ${r.value} › ${p.value}`,
           rowId: p._id,
           drillIds: [...rowIds, String(p._id)],
+          ...formatOf(p),
         });
       }
     }
@@ -381,7 +428,7 @@ export async function resolveAttentionRow(
       });
     }
     const t = bases[0];
-    return { ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: [...base, String(t._id)] };
+    return { ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: [...base, String(t._id)], ...formatOf(t) };
   }
   const t = pickExactlyOne(types, r.type, "variant type", `${at}.row.type`);
   const typeIds = [...base, String(t._id)];
@@ -395,7 +442,7 @@ export async function resolveAttentionRow(
         message: `"${t.value}" holds its cards itself; drop "name" and "parallel" from ${at}.row.`,
       });
     }
-    return { ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: typeIds };
+    return { ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: typeIds, ...formatOf(t) };
   }
   if (r.name === undefined) {
     const rows = await childrenOf(client, "insert", t._id);
@@ -410,7 +457,7 @@ export async function resolveAttentionRow(
   const row = pickExactlyOne(await childrenOf(client, "insert", t._id), r.name, "row", `${at}.row.name`);
   const rowIds = [...typeIds, String(row._id)];
   if (r.parallel === undefined) {
-    return { ref: { type: t.value, name: row.value }, label: `${t.value} › ${row.value}`, rowId: row._id, drillIds: rowIds };
+    return { ref: { type: t.value, name: row.value }, label: `${t.value} › ${row.value}`, rowId: row._id, drillIds: rowIds, ...formatOf(row) };
   }
   const p = pickExactlyOne(await childrenOf(client, "parallel", row._id), r.parallel, "parallel", `${at}.row.parallel`);
   return {
@@ -418,6 +465,7 @@ export async function resolveAttentionRow(
     label: `${t.value} › ${row.value} › ${p.value}`,
     rowId: p._id,
     drillIds: [...rowIds, String(p._id)],
+    ...formatOf(p),
   };
 }
 
@@ -564,6 +612,21 @@ function emptyByKind(): Record<AttentionKind, number> {
   return { missingTeam: 0, unreviewedName: 0, titleOverLimit: 0, titleTruncated: 0, aspectValueOverLimit: 0 };
 }
 
+/** The row's autograph prompt as an item, or undefined when the header does not ask. */
+export function autographItem(node: AttentionRowNode, cards: readonly ChecklistCard[], appOrigin?: string): AutographAttentionItem | undefined {
+  const count = autographPromptCount(node.autographFormat, cards);
+  if (count === 0) return undefined;
+  return {
+    row: node.ref,
+    rowLabel: node.label,
+    rowId: String(node.rowId),
+    link: setBuilderUrlForPath(node.drillIds, appOrigin),
+    cards: count,
+    prompt: autographPromptLine(count),
+    answers: AUTOGRAPH_FORMATS.map((format) => ({ format, label: AUTOGRAPH_CHOICE_LABEL[format] })),
+  };
+}
+
 /** The item for one flagged card, before the per-card facts are read. */
 export function baseItem(node: AttentionRowNode, card: ChecklistCard, items: readonly AttentionItem[], appOrigin?: string): CardAttentionItem {
   const kinds = items.map((i) => i.kind);
@@ -676,8 +739,16 @@ export async function listCardAttention(
   const checklists = await mapLimit(nodes, READ_CONCURRENCY, (n) => readChecklist(client, n.rowId));
 
   const seen = new Set<string>();
-  const totals: CardAttentionTotals = { cards: 0, byKind: emptyByKind(), awaitingTeamLookup: 0 };
+  const totals: CardAttentionTotals = { cards: 0, byKind: emptyByKind(), awaitingTeamLookup: 0, autographRows: 0 };
   const flagged: Array<{ item: CardAttentionItem; card: ChecklistCard }> = [];
+  // NEO-345: the header's autograph prompt, per row, over the row's whole
+  // list as the header counts it (guests included).
+  const autographs: AutographAttentionItem[] = [];
+  nodes.forEach((node, i) => {
+    const item = autographItem(node, checklists[i], client.target.appOrigin);
+    if (item) autographs.push(item);
+  });
+  totals.autographRows = autographs.length;
   nodes.forEach((node, i) => {
     const ranked = checklists[i]
       .filter((card) => {
@@ -714,6 +785,7 @@ export async function listCardAttention(
 
   return {
     cards: flagged.map((f) => f.item),
+    autographs,
     totals,
     enrichment: { enriched: flagged.filter((f) => f.item.enriched).length, of: flagged.length },
   };

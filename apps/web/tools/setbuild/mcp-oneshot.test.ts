@@ -95,18 +95,26 @@ const BASE_EXPECT = {
 };
 const EXPECT: OneshotExpect = oneshotExpectSchema.parse({ ...BASE_EXPECT, attention: MEASURED });
 
-const SUMMARY = { cards: 0, byKind: {}, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, summary: "All clear — nothing on this checklist needs attention." };
+const SUMMARY = { cards: 0, byKind: {}, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, autographRows: 0, summary: "All clear — nothing on this checklist needs attention." };
 
 /** A built set with one missing-team card and one name to check, then (after nb_fix) neither. */
-function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refused" } = {}) {
+function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refused"; autographRows?: number } = {}) {
   let fixed = false;
   const awaiting = [...(o.awaiting ?? [0])];
   const before = () => ({
     pathText: SCOPE,
-    totals: { cards: 1, byKind: { missingTeam: 1 }, awaitingTeamLookup: awaiting.length > 1 ? awaiting.shift()! : awaiting[0], namesToCheck: 1, slSetsToSort: 0 },
+    totals: {
+      cards: 1,
+      byKind: { missingTeam: 1 },
+      awaitingTeamLookup: awaiting.length > 1 ? awaiting.shift()! : awaiting[0],
+      namesToCheck: 1,
+      slSetsToSort: 0,
+      autographRows: o.autographRows ?? 0,
+    },
     summary: "1 card needs you on Topps Chrome Black; 1 name to check.",
     cards: [{ row: { type: "Base" }, rowLabel: "Base", cardNumber: "7", cardName: "Card 7", cardId: "card-7", kinds: ["missingTeam"] }],
     names: [{ path: PATH, row: {}, where: SCOPE, rowId: "set-1", sides: [{ side: "sportlots", label: "Chrome Black", foldEqual: false }] }],
+    autographs: Array.from({ length: o.autographRows ?? 0 }, (_, i) => ({ rowLabel: `Insert › Autos ${i}`, cards: 3 })),
     notices: [],
   });
   const after = () => ({ ...before(), totals: { ...before().totals, cards: 0, byKind: {}, namesToCheck: 0 }, summary: SUMMARY.summary, cards: [], names: [] });
@@ -129,6 +137,7 @@ function fakeService(
     open?: OpenDecisions;
     counts?: Record<string, number>;
     attention?: ReturnType<typeof attentionWorld>;
+    autographFormats?: Array<{ at: string; label: string }>;
     setLinks?: Array<{ path: string; link: string; attention?: typeof SUMMARY }>;
     inspect?: InspectReport;
   } = {},
@@ -146,6 +155,7 @@ function fakeService(
         template: null,
         openDecisions: o.open ?? none(),
         proposals: [],
+        ...(o.autographFormats ? { autographFormats: o.autographFormats } : {}),
         marketplaceCalls: 12,
         durationMs: 3000,
       })),
@@ -190,9 +200,9 @@ async function connect(service: unknown) {
   return client;
 }
 
-const run = (service: ReturnType<typeof fakeService>, expect: OneshotExpect = EXPECT, link: { appOrigin?: string } = {}) =>
+const run = (service: ReturnType<typeof fakeService>, expect: OneshotExpect = EXPECT, link: { appOrigin?: string } = {}, answers: unknown = ANSWERS) =>
   connect(service).then((client) =>
-    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: ANSWERS, expect, confirm: PHRASE, sleep: async () => {}, resolveDrill: knownResolver(), ...link }),
+    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers, expect, confirm: PHRASE, sleep: async () => {}, resolveDrill: knownResolver(), ...link }),
   );
 
 describe("runOneshotSequence", () => {
@@ -205,6 +215,7 @@ describe("runOneshotSequence", () => {
       "nb_draft_set",
       "draft + answers",
       "leave lists",
+      "autograph formats",
       "review answers",
       "nb_plan",
       "nb_apply",
@@ -526,5 +537,50 @@ describe("runOneshotSequence — attention (step 7)", () => {
     const service = fakeService({ attention: attentionWorld({ fixOutcome: "refused" }) });
     const checks = await run(service, oneshotExpectSchema.parse({ ...EXPECT, attention: MEASURED }));
     expect(checks.at(-1)).toMatchObject({ ok: false, label: "nb_fix" });
+  });
+
+  test("NEO-345: autographRows, when the file gives it, must match; rows still asking fail, naming them", async () => {
+    const want = oneshotExpectSchema.parse({ ...EXPECT, attention: { ...MEASURED, totals: { ...MEASURED.totals, autographRows: 0 } } });
+    const green = await run(fakeService(), want);
+    expect(green.filter((c) => !c.ok)).toEqual([]);
+
+    const service = fakeService({ attention: attentionWorld({ autographRows: 2 }) });
+    const checks = await run(service, want);
+    const att = checks.find((c) => c.label === "nb_attention")!;
+    expect(att.ok).toBe(false);
+    expect(att.detail).toContain("autographRows 2");
+    expect(att.detail).toContain("expected cards 1, byKind {\"missingTeam\":1}, namesToCheck 1, autographRows 0");
+    expect(att.detail).toContain("autograph rows: Insert › Autos 0 (3); Insert › Autos 1 (3)");
+    expect(service.write.fix).not.toHaveBeenCalled();
+  });
+
+  test("a file without autographRows does not compare them (an older measurement still holds)", async () => {
+    const checks = await run(fakeService({ attention: attentionWorld({ autographRows: 1 }) }), oneshotExpectSchema.parse({ ...EXPECT, attention: MEASURED }));
+    expect(checks.find((c) => c.label === "nb_attention")?.ok).toBe(true);
+  });
+});
+
+describe("runOneshotSequence — NEO-345 autograph formats", () => {
+  const checklist = { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep" }, review: "none-expected", expectCards: 10 };
+  /** The draft never fills the format; the committed spec carries the operator's answer. */
+  const map = { bsc: "base-bsc", whenPaused: "bsc-only" };
+  const drafted = { ...structuredClone(ANSWERS), steps: [{ ...structuredClone(ANSWERS.steps[0]), base: { map, checklist } }] };
+  const answered = { ...structuredClone(drafted), steps: [{ ...structuredClone(drafted.steps[0]), base: { map, checklist: { ...checklist, autographFormat: "On Card" } } }] };
+  const asked = [{ at: "steps[0].base.checklist.autographFormat", label: "Base" }];
+
+  test("every AU checklist the draft lists is answered in the committed spec: the merge keeps the answer and the digest holds", async () => {
+    const checks = await run(fakeService({ spec: drafted, autographFormats: asked }), EXPECT, {}, answered);
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    expect(checks.find((c) => c.label === "autograph formats")?.detail).toBe("1 AU checklist(s), each answered");
+  });
+
+  test("an AU checklist the committed spec leaves unanswered fails, naming it, and nothing is applied", async () => {
+    const service = fakeService({ spec: drafted, autographFormats: asked });
+    const checks = await run(service, EXPECT, {}, drafted);
+    expect(checks.find((c) => c.label === "autograph formats")).toMatchObject({
+      ok: false,
+      detail: "the committed spec does not say how these are signed: Base (steps[0].base.checklist.autographFormat)",
+    });
+    expect(service.write.apply).not.toHaveBeenCalled();
   });
 });

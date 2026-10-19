@@ -18,6 +18,7 @@
 
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { AUTOGRAPH_FORMATS } from "../../../convex/features/deriveCardFeatures";
 import type { LeagueLevel } from "../../../convex/leagues";
 
 // ---------------------------------------------------------------------------
@@ -263,6 +264,16 @@ export const ChecklistSchema = z
     review: z.union([z.literal("none-expected"), ReviewAnswersSchema]),
     /** Cards the checklist must hold after the commit (asserted, never used to decide). */
     expectCards: z.number().int().nonnegative().optional(),
+    /**
+     * NEO-345 — how this checklist's autographed ("AU") cards are signed, the
+     * Set Builder wizard's "Autographed cards" answer: sent as the commit's
+     * own `autographFormat`, stored on the row, and every new AU card is born
+     * marked with it. The OPERATOR's answer (no marketplace says which), so a
+     * draft never proposes it. Optional: a commit without it still saves, and
+     * nb_attention lists the row until it is answered (nb_fix `autographs`).
+     * A row that already has a format keeps it (the commit only fills).
+     */
+    autographFormat: z.enum(AUTOGRAPH_FORMATS).optional(),
   })
   .strict();
 

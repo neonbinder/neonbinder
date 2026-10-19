@@ -49,6 +49,8 @@ interface World {
   attentionCards?: Array<Record<string, unknown>>;
   /** `getSelectorSyncSuggestions` by `level:parentId`. */
   suggestions?: Record<string, unknown[]>;
+  /** NEO-345: the Base row's own `features` (its `autographFormat`). */
+  baseFeatures?: Record<string, string>;
 }
 
 const sel = (id: string, level: string, value: string, extra: Record<string, unknown> = {}) => ({
@@ -71,6 +73,7 @@ function world(w: World): FakeClient {
     "variantType:st": [
       sel("vtB", "variantType", "Base", {
         platformData: { bsc: { s1: "bsc-chrome" }, sportlots: { s1: "sl-chrome" } },
+        ...(w.baseFeatures ? { features: w.baseFeatures } : {}),
       }),
       sel("vtP", "variantType", "Parallel"),
     ],
@@ -639,7 +642,7 @@ describe("attention: a build that leaves something for a person never reads as d
       parentId: "mf",
       decisions: [{ existingId: "st", baseVersion: 4, side: "sportlots", action: "decline" }],
     });
-    expect(r.applied).toEqual({ cards: 0, names: 1 });
+    expect(r.applied).toEqual({ cards: 0, names: 1, autographs: 0 });
     expect(r.remaining.namesToCheck).toBe(0);
     expect(r.summary).toBe("All clear — nothing on this checklist needs attention.");
   });
@@ -730,5 +733,112 @@ describe("attention: a build that leaves something for a person never reads as d
     const calls = client.calls.length;
     await expect(svc.write.fix(brand, answers, fixConfirmPhrase(FAKE_TARGET, brand, answers))).rejects.toThrow(/brand-year/);
     expect(client.calls.length).toBe(calls);
+  });
+});
+
+describe("NEO-345: the autograph format, through the spec, the listing and nb_fix", () => {
+  const auCard = (n: string, autographed?: string) => ({
+    _id: `card-${n}`,
+    _creationTime: 1,
+    cardNumber: n,
+    cardName: `Auto ${n}`,
+    selectorOptionId: "vtB",
+    teamOnCardIds: ["t1"],
+    listingTitle: "T",
+    attributes: ["AU"],
+    platformData: {},
+    ...(autographed ? { features: { autographed } } : {}),
+  });
+
+  test("a spec's autographFormat rides on the commit as the wizard's answer, and the plan shows it", async () => {
+    const answered = spec();
+    (answered.steps[0].base.checklist as Record<string, unknown>).autographFormat = "On Card";
+    const w: World = { ...done(), baseCards: 0, sepiaCards: 2, reviewRows: [] };
+    const client = world(w);
+    client.on("selectorOptions:resolveChecklistEntities", () => ({ unknownPlayers: [], unknownTeams: [] }));
+    const plan = await planSpec(world({ ...done(), baseCards: 0, sepiaCards: 2, reviewRows: [] }), FAKE_TARGET, answered, { pausedPlatforms: "" });
+    expect(plan.steps.find((s) => s.kind === "checklist")?.detail).toBe("the review is only known once apply fetches it; autographs: On Card");
+    const r = await applySpec(client, FAKE_TARGET, answered, confirmFor(answered), { pausedPlatforms: "" });
+    expect(r.stoppedAt).toBeUndefined();
+    expect(client.callsTo("selectorOptions:commitCardChecklist")[0].args).toMatchObject({ selectorOptionId: "vtB", autographFormat: "On Card" });
+    // Without it the commit sends none (the default: save and list).
+    const plain = world({ ...done(), baseCards: 0, sepiaCards: 2, reviewRows: [] });
+    plain.on("selectorOptions:resolveChecklistEntities", () => ({ unknownPlayers: [], unknownTeams: [] }));
+    await applySpec(plain, FAKE_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    expect("autographFormat" in plain.callsTo("selectorOptions:commitCardChecklist")[0].args).toBe(false);
+  });
+
+  test("apply with the format unanswered still builds, and its last line names the rows; nb_attention lists them with the links note", async () => {
+    const client = world({ ...done(), attentionCards: [auCard("1"), auCard("2", "None")] });
+    const r = await applySpec(client, FAKE_TARGET, spec(), CONFIRM, { pausedPlatforms: "" });
+    expect(r.setLinks?.[0].attention).toMatchObject({ autographRows: 1, cards: 0 });
+    expect(r.attentionLine).toBe("Built, but not done: 1 autograph row to mark on-card or sticker on Topps Chrome. Run nb_attention to walk them.");
+    expect(r.linksNote).toBe("Links are paths only: set NB_SETBUILD_APP_URL to the app address for this deployment.");
+
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const a = await svc.read.attention(PATH);
+    expect(a.autographs).toEqual([
+      expect.objectContaining({ row: { type: "Base" }, rowLabel: "Base", rowId: "vtB", cards: 2, prompt: "2 autographed cards — on card or sticker?", link: "/admin/set-builder?sport=sp&year=yr&brand=mf&set=st&type=vtB" }),
+    ]);
+    expect(a.linksNote).toBe("Links are paths only: set NB_SETBUILD_APP_URL to the app address for this deployment.");
+    expect((await svc.read.inspect(PATH)).linksNote).toBe(a.linksNote);
+    // With an app address the links are absolute and there is nothing to say.
+    const withApp = { ...FAKE_TARGET, appOrigin: "https://app.example.test" };
+    const appClient = Object.assign(world({ ...done(), attentionCards: [auCard("1")] }), { target: withApp });
+    const b = await createSetBuildService(appClient, withApp, { pausedPlatforms: "" }).read.attention(PATH);
+    expect(b.linksNote).toBeUndefined();
+    expect(b.autographs[0].link.startsWith("https://app.example.test/admin/set-builder?")).toBe(true);
+  });
+
+  test("nb_fix autographs: the phrase binds them, the prompt's mutation writes the row, the wait sees the cards marked", async () => {
+    const w: World = { ...done(), attentionCards: [auCard("1"), auCard("2")] };
+    const client = world(w);
+    client.on("selectorOptions:getSelectorOptionById", (a) => (a.id === "vtB" ? sel("vtB", "variantType", "Base", w.baseFeatures ? { features: w.baseFeatures } : {}) : null));
+    client.on("autographFormat:setAutographFormat", (a) => {
+      w.baseFeatures = { autographFormat: String(a.value) };
+      // The server's scheduled walk: the row's AU cards take the format.
+      w.attentionCards = (w.attentionCards ?? []).map((c) => ({ ...c, features: { autographed: String(a.value) } }));
+      return null;
+    });
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const answers = { autographs: [{ format: "Sticker/Label" as const }] };
+    const phrase = fixConfirmPhrase(FAKE_TARGET, PATH, answers);
+    // The digest binds the answer: another format, or none, is another phrase.
+    expect(fixConfirmPhrase(FAKE_TARGET, PATH, { autographs: [{ format: "On Card" }] })).not.toBe(phrase);
+    expect(fixConfirmPhrase(FAKE_TARGET, PATH, {})).not.toBe(phrase);
+    // An empty list is the phrase it always was.
+    expect(fixConfirmPhrase(FAKE_TARGET, PATH, { autographs: [] })).toBe(fixConfirmPhrase(FAKE_TARGET, PATH, {}));
+    await expect(svc.write.fix(PATH, { autographs: [{ format: "On Card" }] }, phrase)).rejects.toBeInstanceOf(ConfirmMismatch);
+    expect(client.callsTo("autographFormat:setAutographFormat")).toEqual([]);
+
+    const r = await svc.write.fix(PATH, answers, phrase);
+    expect(client.callsTo("autographFormat:setAutographFormat").map((c) => c.args)).toEqual([{ selectorOptionId: "vtB", value: "Sticker/Label" }]);
+    expect(r.applied).toEqual({ cards: 0, names: 0, autographs: 1 });
+    expect(r.results).toEqual([
+      expect.objectContaining({ at: "autographs[0]", outcome: "applied", detail: "Autographs saved as sticker. 2 cards on Base now marked sticker." }),
+    ]);
+    expect(r.remaining.autographRows).toBe(0);
+    expect(r.summary).toBe("All clear — nothing on this checklist needs attention.");
+  });
+
+  test("autograph answers go on a set path; the parse holds the vocabulary", async () => {
+    const client = world(done());
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const brand = { sport: "Baseball", year: "2024", manufacturer: "Topps" };
+    const answers = { autographs: [{ format: "On Card" as const }] };
+    await expect(svc.write.fix(brand, answers, fixConfirmPhrase(FAKE_TARGET, brand, answers))).rejects.toThrow(
+      "Baseball/2024/Topps is a brand-year; card and autograph answers go on the set's path (Sport/Year/Manufacturer/Set).",
+    );
+    expect(() => parseFixAnswers({ autographs: [{ format: "on card" }] })).toThrow(/autographs\.0\.format/);
+    expect(() => parseFixAnswers({ autographs: Array.from({ length: 51 }, () => ({ format: "On Card" })) })).toThrow(
+      "At most 50 autograph answers per call; split the batch and confirm each part.",
+    );
+  });
+
+  test("the SportLots count is named for the brand-year NB resolved, not attached to the set", async () => {
+    const client = world(done());
+    client.on("slSetReview:getSlSetReviewSummary", { pending: 2, partial: false, moreNextSync: 0 });
+    const a = await createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" }).read.attention({ ...PATH, manufacturer: "topps" });
+    expect(a.summary).toBe("2 SportLots sets to sort for Topps 2024.");
   });
 });

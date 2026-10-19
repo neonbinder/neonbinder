@@ -4,7 +4,8 @@
  * `discardCandidates` → the expected count asserted.
  *
  * The order and the calls are `CardChecklist`'s (`handleSync` →
- * `handlePairingConfirm` → `resolveAndCommit` → `runCommit`). The commit is ONE
+ * `handlePairingConfirm` → `resolveAndCommit` → `runCommit`), with the spec's
+ * `autographFormat` as the wizard's "Autographed cards" answer. The commit is ONE
  * call, as the UI makes it: the server chunks the write itself
  * (`MAX_CARDS_PER_COMMIT` is the per-call bound), and the tool never sends
  * `operatorDeleteIds` or `applyFields` — those only exist on the sync-review
@@ -107,6 +108,7 @@ function templateOf(checklist: Checklist, extra: { conflicts?: Array<Record<stri
     },
     review: extra.review ?? checklist.review,
     ...(checklist.expectCards !== undefined ? { expectCards: checklist.expectCards } : {}),
+    ...(checklist.autographFormat !== undefined ? { autographFormat: checklist.autographFormat } : {}),
   };
 }
 
@@ -200,6 +202,8 @@ export async function runChecklistStep(
     sportId,
     cards,
     ...(resolved.batchId ? { batchId: resolved.batchId } : {}),
+    // NEO-345 — the wizard's "Autographed cards" answer, when the spec gives it.
+    ...(checklist.autographFormat ? { autographFormat: checklist.autographFormat } : {}),
   });
   const notes: string[] = [];
   try {

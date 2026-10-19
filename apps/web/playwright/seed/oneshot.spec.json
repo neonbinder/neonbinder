@@ -12309,7 +12309,8 @@
                   "unmatchedSportlots": "keep"
                 },
                 "review": "none-expected",
-                "expectCards": 20
+                "expectCards": 20,
+                "autographFormat": "On Card"
               },
               "parallels": [
                 {
@@ -12430,7 +12431,8 @@
                     }
                   ]
                 },
-                "expectCards": 6
+                "expectCards": 6,
+                "autographFormat": "On Card"
               },
               "parallels": [
                 {
@@ -12507,7 +12509,8 @@
                     }
                   ]
                 },
-                "expectCards": 17
+                "expectCards": 17,
+                "autographFormat": "On Card"
               },
               "parallels": [
                 {

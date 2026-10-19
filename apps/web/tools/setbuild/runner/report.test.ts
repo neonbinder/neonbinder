@@ -60,21 +60,39 @@ const totals = (o: Partial<AttentionTotals> = {}): AttentionTotals => ({
   awaitingTeamLookup: 0,
   namesToCheck: 0,
   slSetsToSort: 0,
+  autographRows: 0,
   ...o,
 });
 
 describe("attentionSummaryLine", () => {
+  const brand = "Topps 2024";
   test("the walker's own done line when nothing is left, lookups included", () => {
-    expect(attentionSummaryLine(totals(), "Topps Chrome")).toBe("All clear — nothing on this checklist needs attention.");
-    expect(attentionSummaryLine(totals({ awaitingTeamLookup: 3 }), "Topps Chrome")).toBe("All clear for now. Still looking up teams for 3 cards.");
+    expect(attentionSummaryLine(totals(), "Topps Chrome", brand)).toBe("All clear — nothing on this checklist needs attention.");
+    expect(attentionSummaryLine(totals({ awaitingTeamLookup: 3 }), "Topps Chrome", brand)).toBe("All clear for now. Still looking up teams for 3 cards.");
   });
 
   test("names what is left, singular and plural, on the set", () => {
-    expect(attentionSummaryLine(totals({ cards: 1 }), "Topps Chrome")).toBe("1 card needs you on Topps Chrome.");
-    expect(attentionSummaryLine(totals({ cards: 2, awaitingTeamLookup: 1, namesToCheck: 13, slSetsToSort: 1 }), "Topps Chrome")).toBe(
-      "2 cards need you on Topps Chrome, still looking up teams for 1 card; 13 names to check; 1 SportLots set to sort.",
+    expect(attentionSummaryLine(totals({ cards: 1 }), "Topps Chrome", brand)).toBe("1 card needs you on Topps Chrome.");
+    expect(attentionSummaryLine(totals({ cards: 2, awaitingTeamLookup: 1, namesToCheck: 13, slSetsToSort: 1 }), "Topps Chrome", brand)).toBe(
+      "2 cards need you on Topps Chrome, still looking up teams for 1 card; 13 names to check; 1 SportLots set to sort for Topps 2024.",
     );
-    expect(attentionSummaryLine(totals({ namesToCheck: 1 }), "Topps Chrome")).toBe("1 name to check on Topps Chrome.");
+    expect(attentionSummaryLine(totals({ namesToCheck: 1 }), "Topps Chrome", brand)).toBe("1 name to check on Topps Chrome.");
+  });
+
+  test("the SportLots count is the brand-year's, never the set's", () => {
+    expect(attentionSummaryLine(totals({ slSetsToSort: 3 }), "Topps Chrome", brand)).toBe("3 SportLots sets to sort for Topps 2024.");
+    expect(attentionSummaryLine(totals({ slSetsToSort: 1, awaitingTeamLookup: 2 }), "Topps Chrome", brand)).toBe(
+      "Still looking up teams for 2 cards on Topps Chrome; 1 SportLots set to sort for Topps 2024.",
+    );
+  });
+
+  test("NEO-345: rows asking on card or sticker are named, and keep the line from reading all clear", () => {
+    expect(attentionSummaryLine(totals({ autographRows: 1 }), "Topps Chrome Black", brand)).toBe(
+      "1 autograph row to mark on-card or sticker on Topps Chrome Black.",
+    );
+    expect(attentionSummaryLine(totals({ cards: 21, namesToCheck: 14, autographRows: 3, slSetsToSort: 2 }), "Topps Chrome Black", brand)).toBe(
+      "21 cards need you on Topps Chrome Black; 14 names to check; 3 autograph rows to mark on-card or sticker; 2 SportLots sets to sort for Topps 2024.",
+    );
   });
 });
 
@@ -85,6 +103,13 @@ describe("applyEndLine", () => {
     expect(applyEndLine([], 0)).toBeUndefined();
     expect(applyEndLine([{ path: "A", attention: { ...clear, awaitingTeamLookup: 2 } }], 0)).toBe(
       "Built, but not done: nothing needs you on A yet, but teams are still being looked up for 2 cards. Run nb_attention to walk them.",
+    );
+  });
+
+  test("NEO-345: a set whose header still asks on card or sticker is never all clear", () => {
+    const autographs = { ...totals({ autographRows: 2 }), summary: "2 autograph rows to mark on-card or sticker on A." };
+    expect(applyEndLine([{ path: "A", attention: autographs }], 0)).toBe(
+      "Built, but not done: 2 autograph rows to mark on-card or sticker on A. Run nb_attention to walk them.",
     );
   });
 
@@ -130,6 +155,40 @@ describe("attention in the markdown", () => {
     expect(md.split("\n")[2]).toBe(r.summary);
     expect(md).toContain("- Base #103b Jose Fernandez — variation text is over the 65-character limit (/l1)");
     expect(md).toContain("NB says “Future Stars”; BSC calls it “Future Stars Inserts” (/l2)");
+    expect(md).not.toContain("autograph row");
+  });
+
+  test("attentionMarkdown lists each autograph row with its line, its answers and its link, and the links note", () => {
+    const r = {
+      pathText: "Baseball/2024/Topps/Topps Chrome Black",
+      link: "/admin/set-builder?set=s",
+      summary: "1 autograph row to mark on-card or sticker on Topps Chrome Black.",
+      totals: totals({ autographRows: 1 }),
+      cards: [],
+      autographs: [
+        {
+          row: { type: "Insert", name: "Ivory Autographs" },
+          rowLabel: "Insert › Ivory Autographs",
+          rowId: "r1",
+          link: "/l3",
+          cards: 17,
+          prompt: "17 autographed cards — on card or sticker?",
+          answers: [
+            { format: "On Card", label: "On card" },
+            { format: "Sticker/Label", label: "Sticker" },
+          ],
+        },
+      ],
+      names: [],
+      slReview: null,
+      review: null,
+      notices: [],
+      linksNote: "Links are paths only: set NB_SETBUILD_APP_URL to the app address for this deployment.",
+    } as unknown as AttentionReport;
+    const md = attentionMarkdown(r);
+    expect(md).toContain("### 1 autograph row to mark on-card or sticker");
+    expect(md).toContain('- Insert › Ivory Autographs: 17 autographed cards — on card or sticker? Answer "On Card" or "Sticker/Label" (/l3)');
+    expect(md).toContain("Links are paths only: set NB_SETBUILD_APP_URL to the app address for this deployment.");
   });
 
   test("fixMarkdown lists every outcome with its warning", () => {
@@ -142,6 +201,20 @@ describe("attention in the markdown", () => {
       summary: "All clear — nothing on this checklist needs attention.",
     } as unknown as FixReport);
     expect(md).toContain("- `cards[0]` applied: Saved. (over 65)");
+    expect(md).toContain("Applied 1 card answer and 0 name answers.");
     expect(md.trimEnd().split("\n").at(-1)).toBe("Still: All clear — nothing on this checklist needs attention.");
+  });
+
+  test("fixMarkdown counts autograph answers when there are any", () => {
+    const md = fixMarkdown({
+      path: "Baseball/2024/Topps/Topps Chrome Black",
+      applied: { cards: 0, names: 1, autographs: 2 },
+      results: [{ at: "autographs[0]", outcome: "applied", detail: "Autographs saved as on card.", warning: "still marking" }],
+      nameCounts: { applied: 1, declined: 0, stale: 0, clashed: 0, skipped: 0 },
+      remaining: totals(),
+      summary: "All clear — nothing on this checklist needs attention.",
+    } as unknown as FixReport);
+    expect(md).toContain("Applied 0 card answers, 2 autograph answers and 1 name answer.");
+    expect(md).toContain("- `autographs[0]` applied: Autographs saved as on card. (still marking)");
   });
 });

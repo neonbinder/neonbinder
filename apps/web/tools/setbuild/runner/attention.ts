@@ -8,13 +8,16 @@
  * - every "name to check" on the node's own row and every row under it
  *   (lib/name-suggestions.ts);
  * - the brand's "N SportLots sets to sort" (`getSlSetReviewSummary`; on a
- *   brand-year path, the lines themselves);
+ *   brand-year path, the lines themselves), named for the brand-year;
+ * - the rows whose checklist header asks "on card or sticker?" (NEO-345,
+ *   the prompt's own rule, `autographs`);
  * - an entity review this process's apply left open (a pointer to nb_decide);
  * - the sync notices the node's columns still show (read-only).
  *
  * `fixAttention` checks the confirm phrase first (no network before it),
- * resolves every name answer, then answers the cards through the fixers' own
- * mutations (lib/attention-answers.ts) and the names through the suggestions
+ * resolves every name and autograph answer, then answers the cards through
+ * the fixers' own mutations (lib/attention-answers.ts), the autograph rows
+ * through the header prompt's, and the names through the suggestions
  * dialog's (lib/name-suggestions.ts), and lists the node again for
  * `remaining`.
  *
@@ -30,6 +33,7 @@ import {
   fixConfirmPhrase,
   formatPath,
   isSetPath,
+  linksNoteFor,
   type AttentionNotice,
   type AttentionOptions,
   type AttentionReport,
@@ -45,7 +49,15 @@ import {
 import { childrenOf, resolveBrandYear, resolveSetPath, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
 import { variantTypeKind } from "../../../convex/variantRole";
 import { listCardAttention, type ListCardAttentionOptions } from "../lib/attention";
-import { CardFixAborted, applyCardAnswers } from "../lib/attention-answers";
+import {
+  AutographFixAborted,
+  CardFixAborted,
+  applyAutographAnswers,
+  applyCardAnswers,
+  resolveAutographAnswers,
+  type AutographFixOptions,
+  type ResolvedAutographAnswer,
+} from "../lib/attention-answers";
 import { NameFixAborted, applyNameAnswers, listNameSuggestions, resolveNameAnswers } from "../lib/name-suggestions";
 import { openSlRows, readSlReview } from "../lib/sl-review";
 import { setBuilderUrlForPath } from "../lib/set-builder-link";
@@ -74,6 +86,17 @@ const nodeIds = (r: Resolved): string[] =>
 /** The node's name as a person reads it in a summary: the set's, or the brand-year's. */
 const nodeName = (path: NodePath): string => (isSetPath(path) ? path.set : formatPath(path));
 
+/**
+ * "Topps 2024": the brand-year a SportLots review belongs to, in NB's names
+ * off the rows the path resolved to (the path's own words if none were read).
+ */
+function brandName(path: NodePath, node?: ResolvedSet | ResolvedBrandYear): string {
+  const rows = node?.rows;
+  return rows ? `${rows.manufacturer.value} ${rows.year.value}` : `${path.manufacturer} ${path.year}`;
+}
+
+const resolvedOf = (r: Resolved): ResolvedSet | ResolvedBrandYear => (r.kind === "set" ? r.set : r.brand);
+
 // ---------------------------------------------------------------------------
 // Words
 // ---------------------------------------------------------------------------
@@ -83,19 +106,31 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /**
  * The listing's one line. Everything at zero is the walker's own done line
  * (`walkDoneLine`, shared with the Set Builder so the words cannot drift).
+ *
+ * The SportLots count is the BRAND's review, not the set's, so it is named
+ * for the brand-year (`brand`, e.g. "Topps 2024") and never "on" the set:
+ * "3 SportLots sets to sort for Topps 2024".
  */
-export function attentionSummaryLine(t: AttentionTotals, where: string): string {
-  const parts: string[] = [];
-  if (t.cards > 0) parts.push(`${plural(t.cards, "card needs", "cards need")} you`);
-  if (t.namesToCheck > 0) parts.push(`${plural(t.namesToCheck, "name", "names")} to check`);
-  if (t.slSetsToSort > 0) parts.push(`${plural(t.slSetsToSort, "SportLots set", "SportLots sets")} to sort`);
-  if (parts.length === 0) return walkDoneLine(t.awaitingTeamLookup);
-  parts[0] += ` on ${where}`;
-  if (t.awaitingTeamLookup > 0) parts[0] += `, still looking up teams for ${plural(t.awaitingTeamLookup, "card", "cards")}`;
-  return `${parts.join("; ")}.`;
+export function attentionSummaryLine(t: AttentionTotals, where: string, brand: string): string {
+  const local: string[] = [];
+  if (t.cards > 0) local.push(`${plural(t.cards, "card needs", "cards need")} you`);
+  if (t.namesToCheck > 0) local.push(`${plural(t.namesToCheck, "name", "names")} to check`);
+  if (t.autographRows > 0) local.push(`${plural(t.autographRows, "autograph row", "autograph rows")} to mark on-card or sticker`);
+  const sl = t.slSetsToSort > 0 ? `${plural(t.slSetsToSort, "SportLots set", "SportLots sets")} to sort for ${brand}` : undefined;
+  if (local.length === 0 && !sl) return walkDoneLine(t.awaitingTeamLookup);
+  const lookups = t.awaitingTeamLookup > 0 ? `still looking up teams for ${plural(t.awaitingTeamLookup, "card", "cards")}` : undefined;
+  if (local.length > 0) {
+    local[0] += ` on ${where}`;
+    if (lookups) local[0] += `, ${lookups}`;
+  } else if (lookups) {
+    local.push(`${lookups} on ${where}`);
+  }
+  const parts = sl ? [...local, sl] : local;
+  const line = parts.join("; ");
+  return `${line.charAt(0).toUpperCase()}${line.slice(1)}.`;
 }
 
-const isClear = (t: AttentionTotals) => t.cards + t.namesToCheck + t.slSetsToSort === 0;
+const isClear = (t: AttentionTotals) => t.cards + t.namesToCheck + t.slSetsToSort + t.autographRows === 0;
 
 /**
  * An apply's last line, from what each set it reached still needs. "Built
@@ -190,13 +225,14 @@ async function totalsOf(
   totals: AttentionTotals;
   cards: Awaited<ReturnType<typeof listCardAttention>>["cards"];
   enrichment: Awaited<ReturnType<typeof listCardAttention>>["enrichment"];
+  autographs: Awaited<ReturnType<typeof listCardAttention>>["autographs"];
   names: Awaited<ReturnType<typeof listNameSuggestions>>;
   sl: Awaited<ReturnType<typeof slSummaryOf>>;
 }> {
   const cardPart =
     r.kind === "set"
       ? await listCardAttention(client, r.set, { detail: detail ?? "summary" })
-      : { cards: [], totals: { cards: 0, byKind: {}, awaitingTeamLookup: 0 }, enrichment: { enriched: 0, of: 0 } };
+      : { cards: [], autographs: [], totals: { cards: 0, byKind: {}, awaitingTeamLookup: 0, autographRows: 0 }, enrichment: { enriched: 0, of: 0 } };
   const names = await listNameSuggestions(client, r.path, r.kind === "set" ? r.set : r.brand);
   const sl = await slSummaryOf(client, r.kind === "set" ? r.set.manufacturerId : r.brand.manufacturerId);
   return {
@@ -204,10 +240,12 @@ async function totalsOf(
       cards: cardPart.totals.cards,
       byKind: { ...cardPart.totals.byKind },
       awaitingTeamLookup: cardPart.totals.awaitingTeamLookup,
+      autographRows: cardPart.totals.autographRows,
       namesToCheck: nameSides(names),
       slSetsToSort: sl?.pending ?? 0,
     },
     cards: cardPart.cards,
+    autographs: cardPart.autographs,
     enrichment: cardPart.enrichment,
     names,
     sl,
@@ -228,7 +266,7 @@ export async function attentionOf(
   const client = queryOnlyClient(inner);
   const pathText = formatPath(path);
   const r = await resolveNode(client, path);
-  const { totals, cards, enrichment, names, sl } = await totalsOf(client, r, opts.detail);
+  const { totals, cards, autographs, enrichment, names, sl } = await totalsOf(client, r, opts.detail);
 
   let slReview: AttentionReport["slReview"] = null;
   if (sl) {
@@ -246,13 +284,15 @@ export async function attentionOf(
     pathText,
     link: setBuilderUrlForPath(nodeIds(r), target.appOrigin),
     totals,
-    summary: attentionSummaryLine(totals, nodeName(path)),
+    summary: attentionSummaryLine(totals, nodeName(path), brandName(path, resolvedOf(r))),
     cards,
+    autographs,
     ...(r.kind === "set" ? { enrichment } : {}),
     names,
     slReview,
     review: openRows.length > 0 ? { rows: openRows, answerWith: "nb_decide" } : null,
     notices: await noticesOf(client, r),
+    ...linksNoteFor(target),
   };
 }
 
@@ -275,7 +315,7 @@ export async function attentionSummaryOf(
   // the end of every apply (the CI seed, mcp-smoke on a big set) pays nothing
   // per flagged card.
   const { totals } = await totalsOf(client, r, "totals");
-  return { ...totals, summary: attentionSummaryLine(totals, nodeName(path)) };
+  return { ...totals, summary: attentionSummaryLine(totals, nodeName(path), brandName(path, resolvedOf(r))) };
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +333,7 @@ export class FixInputError extends Error {
 /**
  * `nb_fix` / `setbuild fix` stopped part-way by a failure that is not a
  * refusal (network, auth, a server fault) after it may have written: every
- * answer settled before it (`results`, cards then names) and the name answers
+ * answer settled before it (`results`: cards, autographs, then names) and the name answers
  * whose save was sent but not read back (`unconfirmed`), so nothing written
  * is unreported. The MCP tool and the CLI print both, scrubbed.
  */
@@ -307,13 +347,16 @@ export class FixAborted extends Error {
     this.name = "FixAborted";
     this.results = results;
     this.unconfirmed = unconfirmed;
-    this.cause = cause instanceof CardFixAborted || cause instanceof NameFixAborted ? cause.cause : cause;
+    this.cause =
+      cause instanceof CardFixAborted || cause instanceof NameFixAborted || cause instanceof AutographFixAborted ? cause.cause : cause;
   }
 }
 
 /**
  * `nb_fix` / `setbuild fix`. The phrase is checked before anything touches
- * the network; every name answer resolves before anything is written.
+ * the network; every name and autograph answer resolves before anything is
+ * written. `opts.autographWait` bounds the wait for the server to mark an
+ * answered row's cards (tests shorten it).
  */
 export async function fixAttention(
   client: NbClient,
@@ -321,6 +364,7 @@ export async function fixAttention(
   path: NodePath,
   given: FixAnswers,
   confirm: string | undefined,
+  opts: { autographWait?: AutographFixOptions } = {},
 ): Promise<FixReport> {
   let parsed: FixAnswers;
   try {
@@ -333,16 +377,21 @@ export async function fixAttention(
   const pathText = formatPath(path);
   const cards = answers.cards ?? [];
   const names = answers.names ?? [];
-  if (cards.length === 0 && names.length === 0) throw new FixInputError("Nothing to fix: give cards or names answers.");
-  if (cards.length > 0 && !isSetPath(path)) {
-    throw new FixInputError(`${pathText} is a brand-year; card answers go on the set's path (Sport/Year/Manufacturer/Set).`);
+  const autographs = answers.autographs ?? [];
+  if (cards.length === 0 && names.length === 0 && autographs.length === 0) {
+    throw new FixInputError("Nothing to fix: give cards, autographs or names answers.");
+  }
+  if ((cards.length > 0 || autographs.length > 0) && !isSetPath(path)) {
+    throw new FixInputError(`${pathText} is a brand-year; card and autograph answers go on the set's path (Sport/Year/Manufacturer/Set).`);
   }
 
   const r = await resolveNode(client, path);
   const node = r.kind === "set" ? r.set : r.brand;
-  // Names resolve first (reads only), so a name that is not exactly one row
-  // stops the batch before any card is written.
+  // Names and autograph rows resolve first (reads only), so a name or a row
+  // that is not exactly one stops the batch before any card is written.
   await resolveNameAnswers(client, path, node, names);
+  const autographRows: ResolvedAutographAnswer[] =
+    r.kind === "set" && autographs.length > 0 ? await resolveAutographAnswers(client, r.set, autographs) : [];
 
   const results: FixResult[] = [];
   let appliedCards = 0;
@@ -354,6 +403,19 @@ export async function fixAttention(
       }
     } catch (err) {
       if (err instanceof CardFixAborted) throw new FixAborted([...err.results], [], err);
+      throw err;
+    }
+  }
+  let appliedAutographs = 0;
+  if (autographRows.length > 0 && r.kind === "set") {
+    try {
+      for (const a of await applyAutographAnswers(client, r.set, autographRows, opts.autographWait ?? {})) {
+        results.push(a);
+        if (a.outcome === "applied") appliedAutographs++;
+      }
+    } catch (err) {
+      if (err instanceof AutographFixAborted) throw new FixAborted([...results, ...err.results], [], err);
+      if (results.length > 0) throw new FixAborted(results, [], err);
       throw err;
     }
   }
@@ -377,7 +439,11 @@ export async function fixAttention(
   const { summary, ...remaining } = after;
   return {
     path: pathText,
-    applied: { cards: appliedCards, names: nameReport.results.filter((x) => x.outcome === "applied").length },
+    applied: {
+      cards: appliedCards,
+      names: nameReport.results.filter((x) => x.outcome === "applied").length,
+      autographs: appliedAutographs,
+    },
     results,
     nameCounts: nameReport.counts,
     remaining,

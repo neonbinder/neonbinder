@@ -66,6 +66,7 @@ export function reportMarkdown(r: PlanReport | ApplyReport): string {
       out.push(`Open ${s.path} in the Set Builder: ${s.link}`);
       if (s.attention) out.push(`- ${s.attention.summary}`);
     }
+    if (r.linksNote) out.push("", r.linksNote);
   }
   if (apply) {
     out.push("");
@@ -111,11 +112,19 @@ const rowWords = (row: { type?: string; name?: string; parallel?: string } | nul
 /** `setbuild attention` for a person: the line first, then every item with its link. */
 export function attentionMarkdown(r: AttentionReport): string {
   const out: string[] = [`## setbuild attention: ${r.pathText}`, "", r.summary, "", `Open it in the Set Builder: ${r.link}`];
+  if (r.linksNote) out.push("", r.linksNote);
   if (r.cards.length > 0) {
     out.push("", `### ${r.totals.cards} card${r.totals.cards === 1 ? "" : "s"}`, "");
     for (const c of r.cards) {
       const reasons = c.reasons.length ? ` — ${c.reasons.join("; ")}` : "";
       out.push(`- ${c.rowLabel} #${c.cardNumber} ${c.cardName}${reasons} (${c.link})`);
+    }
+  }
+  const autographs = r.autographs ?? [];
+  if (autographs.length > 0) {
+    out.push("", `### ${autographs.length} autograph row${autographs.length === 1 ? "" : "s"} to mark on-card or sticker`, "");
+    for (const a of autographs) {
+      out.push(`- ${a.rowLabel}: ${a.prompt} Answer ${a.answers.map((x) => `"${x.format}"`).join(" or ")} (${a.link})`);
     }
   }
   if (r.names.length > 0) {
@@ -148,7 +157,14 @@ export function attentionMarkdown(r: AttentionReport): string {
 /** `setbuild fix` for a person. */
 export function fixMarkdown(r: FixReport): string {
   const out: string[] = [`## setbuild fix: ${r.path}`, ""];
-  out.push(`Applied ${r.applied.cards} card answer${r.applied.cards === 1 ? "" : "s"} and ${r.applied.names} name answer${r.applied.names === 1 ? "" : "s"}.`, "");
+  const n = (k: number, what: string) => `${k} ${what} answer${k === 1 ? "" : "s"}`;
+  const autographs = r.applied.autographs ?? 0;
+  out.push(
+    autographs > 0
+      ? `Applied ${n(r.applied.cards, "card")}, ${n(autographs, "autograph")} and ${n(r.applied.names, "name")}.`
+      : `Applied ${n(r.applied.cards, "card")} and ${n(r.applied.names, "name")}.`,
+    "",
+  );
   for (const x of r.results) {
     const warning = "warning" in x && x.warning ? ` (${x.warning})` : "";
     out.push(`- \`${x.at}\` ${x.outcome}: ${x.detail}${warning}`);

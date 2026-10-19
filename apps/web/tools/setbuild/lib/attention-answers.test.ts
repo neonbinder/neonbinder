@@ -3,13 +3,18 @@ import { describe, expect, test } from "vitest";
 import { ATTENTION_LABELS } from "../../../components/SetSelector/card-attention";
 import { ResolveError } from "../service";
 import {
+  AUTOGRAPH_WAIT_MS,
+  AutographFixAborted,
   CardAnswerError,
   CardFixAborted,
+  applyAutographAnswers,
   applyCardAnswers,
   foldCardNumber,
   refusalText,
+  resolveAutographAnswers,
 } from "./attention-answers";
-import { BASE, FUTURE, SET, SPORT, attentionClient, card, era, type Store } from "./attention.fixture";
+import { listCardAttention } from "./attention";
+import { BASE, FUTURE, GOLD, SET, SPORT, attentionClient, card, era, type Store } from "./attention.fixture";
 
 const WRITES = ["selectorOptions:updateCard", "cardChecklist:confirmCardNoTeam", "teams:findOrCreate", "players:findOrCreate"];
 const writesOf = (client: ReturnType<typeof attentionClient>) => client.calls.filter((c) => WRITES.includes(c.name));
@@ -578,5 +583,139 @@ describe("refusalText", () => {
     expect(refusalText(new ConvexError("Listing title is 81 characters; the limit is 80."))).toBe("Listing title is 81 characters; the limit is 80.");
     expect(refusalText(new ConvexError({ code: "SOMETHING" }))).toBe("Refused (SOMETHING).");
     expect(refusalText(new Error("first\nsecond"))).toBe("first");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-345 — the header's "on card or sticker?", answered per row
+// ---------------------------------------------------------------------------
+
+describe("applyAutographAnswers", () => {
+  const au = (id: string, n: string, extra: Record<string, unknown> = {}) =>
+    card(id, n, `Auto ${n}`, { teamOnCardIds: ["t"], listingTitle: "T", attributes: ["AU"], ...extra });
+  const FS = { type: "Inserts", name: "Future Stars" };
+  /** Future Stars: two AU cards still None, one plain card. */
+  const autos = (): Store => ({ rows: { [FUTURE]: [au("f1", "FS-1"), au("f2", "FS-2", { features: { autographed: "None" } }), card("f3", "FS-3", "Plain", { teamOnCardIds: ["t"], listingTitle: "T" })] } });
+  const fast = { waitMs: 5_000, pollMs: 1_000, sleep: async () => {} };
+  const writes = (c: ReturnType<typeof attentionClient>) => c.callsTo("autographFormat:setAutographFormat").map((x) => x.args);
+
+  test("saves the row's format through the prompt's own mutation and waits until its AU cards are marked", async () => {
+    const store = autos();
+    const client = attentionClient({ store, cascadeAfter: 2 });
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }], fast);
+    expect(writes(client)).toEqual([{ selectorOptionId: FUTURE, value: "On Card" }]);
+    expect(r).toMatchObject({
+      at: "autographs[0]",
+      row: FS,
+      rowLabel: "Inserts › Future Stars",
+      rowId: FUTURE,
+      format: "On Card",
+      outcome: "applied",
+      detail: "Autographs saved as on card. 2 cards on Inserts › Future Stars now marked on card.",
+    });
+    expect(r.warning).toBeUndefined();
+    // The row no longer asks.
+    expect((await listCardAttention(client, SET)).autographs).toEqual([]);
+  });
+
+  test("a wait that runs out is said, with how many cards are still unmarked; the answer stands", async () => {
+    let t = 0;
+    const client = attentionClient({ store: autos(), cascadeAfter: "never" });
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "Sticker/Label" }], {
+      waitMs: 3_000,
+      pollMs: 1_000,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(r.outcome).toBe("applied");
+    expect(r.detail).toBe("Autographs saved as sticker.");
+    expect(r.stillUnformatted).toBe(2);
+    expect(r.warning).toBe(
+      "2 autographed cards on Inserts › Future Stars still show no format after 3s; the server is still marking them. List attention again shortly.",
+    );
+    // Bounded: the first look, then one per poll until the budget.
+    expect(client.callsTo("selectorOptions:getCardChecklist").length).toBeLessThanOrEqual(1 + 4 + 1);
+  });
+
+  test("one wait for the whole call, not one per row", async () => {
+    let t = 0;
+    const store: Store = { rows: { [BASE]: [au("b1", "1")], [FUTURE]: [au("f1", "FS-1")] } };
+    const client = attentionClient({ store, cascadeAfter: "never" });
+    const results = await applyAutographAnswers(client, SET, [{ format: "On Card" }, { row: FS, format: "On Card" }], {
+      waitMs: 2_000,
+      pollMs: 1_000,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(results.map((r) => r.stillUnformatted)).toEqual([1, 1]);
+    expect(t).toBe(2_000);
+    expect(AUTOGRAPH_WAIT_MS).toBeLessThanOrEqual(30_000);
+  });
+
+  test("a row that already has a format is moot (same or different), and nothing is written", async () => {
+    const store: Store = { ...autos(), leafFeatures: { [FUTURE]: { autographFormat: "Sticker/Label" } } };
+    const client = attentionClient({ store });
+    const results = await applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }], fast);
+    expect(results[0]).toMatchObject({
+      outcome: "moot",
+      detail: "Already settled: Inserts › Future Stars's autographs are marked sticker. If that is wrong, change it in Set details.",
+    });
+    const same = await applyAutographAnswers(client, SET, [{ row: FS, format: "Sticker/Label" }], fast);
+    expect(same[0]).toMatchObject({ outcome: "moot", detail: "Already settled: Inserts › Future Stars's autographs are marked sticker." });
+    expect(writes(client)).toEqual([]);
+  });
+
+  test("a row whose autographed cards are all marked is moot: the header no longer asks", async () => {
+    const store: Store = { rows: { [FUTURE]: [au("f1", "FS-1", { features: { autographed: "On Card" } })] } };
+    const client = attentionClient({ store });
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }], fast);
+    expect(r).toMatchObject({ outcome: "moot", detail: "Already settled: no autographed card on Inserts › Future Stars is waiting for a format." });
+    expect(writes(client)).toEqual([]);
+  });
+
+  test("the server's refusal is a result, in its own words", async () => {
+    const client = attentionClient({
+      store: autos(),
+      handlers: {
+        "autographFormat:setAutographFormat": () => {
+          throw new ConvexError("That row is gone. Refresh and try again.");
+        },
+      },
+    });
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }], fast);
+    expect(r).toMatchObject({ outcome: "refused", detail: "That row is gone. Refresh and try again." });
+  });
+
+  test("resolve first: an unknown row throws with candidates and nothing is written; a row answered twice is refused before any write", async () => {
+    const client = attentionClient({ store: autos() });
+    await expect(applyAutographAnswers(client, SET, [{ row: { type: "Inserts", name: "Nope" }, format: "On Card" }], fast)).rejects.toBeInstanceOf(ResolveError);
+    const twice = applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }, { row: FS, format: "Sticker/Label" }], fast);
+    await expect(twice).rejects.toBeInstanceOf(CardAnswerError);
+    await expect(resolveAutographAnswers(client, SET, [{ row: FS, format: "On Card" }, { row: FS, format: "Sticker/Label" }])).rejects.toThrow(
+      "autographs[1]: Inserts › Future Stars is answered at autographs[0] too. Answer each row once.",
+    );
+    await expect(resolveAutographAnswers(client, SET, [{ row: FS, format: "on card" as never }])).rejects.toThrow('"format" is "On Card" or "Sticker/Label".');
+    expect(writes(client)).toEqual([]);
+  });
+
+  test("a failure that is not a refusal stops the run and reports every row saved before it", async () => {
+    const store: Store = { rows: { [BASE]: [au("b1", "1")], [GOLD]: [au("g1", "FS-1")] } };
+    const client = attentionClient({ store });
+    let n = 0;
+    client.on("autographFormat:setAutographFormat", (a) => {
+      if (++n === 2) throw new Error("network down");
+      store.leafFeatures = { ...(store.leafFeatures ?? {}), [String(a.selectorOptionId)]: { autographFormat: String(a.value) } };
+      return null;
+    });
+    const err = await applyAutographAnswers(client, SET, [{ format: "On Card" }, { row: { ...FS, parallel: "Gold" }, format: "On Card" }], fast).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AutographFixAborted);
+    const aborted = err as AutographFixAborted;
+    expect(aborted.results.map((r) => [r.at, r.outcome])).toEqual([["autographs[0]", "applied"]]);
+    expect(aborted.results[0].warning).toBe("The run stopped before this row's cards were checked; list attention again.");
+    expect(aborted.message).toContain("autographs[1]: stopped after 1 answer(s): network down");
   });
 });

@@ -73,19 +73,39 @@ in spec order. A set that never resolved has no entry. `inspect` gives a
 lists. A link is the Set Builder's own drill URL, built from the NB ids the
 walk already holds, so it costs no query. It is absolute on `--app-url` /
 `NB_SETBUILD_APP_URL` when that is set, and root-relative
-(`/admin/set-builder?sport=…&set=…`) otherwise. The CLI prints the set links
-under the report's target line, and `inspect` prints the node's link under
-its path.
+(`/admin/set-builder?sport=…&set=…`) otherwise. A root-relative link opens
+nothing on its own, so every report that carries links (plan, apply, inspect,
+attention) then adds `linksNote`: "Links are paths only: set
+NB_SETBUILD_APP_URL to the app address for this deployment." The CLI prints
+the set links under the report's target line, and `inspect` prints the
+node's link under its path.
+
+**The app URL goes with the Convex URL.** `NB_SETBUILD_APP_URL` is the origin
+of the web app that serves the deployment `NB_SETBUILD_CONVEX_URL` points at:
+the production app for the production deployment, a PR's preview app for
+that PR's Convex preview, a local Vite (`http://localhost:<port>`) for the
+deployment that Vite's `VITE_CONVEX_URL` names. Set them as a pair, per
+environment (`.mcp.json` passes both through from the environment):
+
+```bash
+NB_SETBUILD_CONVEX_URL=https://<deployment>.convex.cloud
+NB_SETBUILD_APP_URL=https://<the app that serves that deployment>
+```
+
+The tool never guesses the pair: a link on another deployment's app would
+open its Set Builder, where these ids mean nothing.
 
 **A build is not done while the set still needs a person.** Every apply
 ends by reading, per set in `setLinks`, what the Set Builder would still
 show (`runner/attention.ts`, queries only): the cards the checklist header's
 "N need you" pill counts (`lib/attention.ts`, over `deriveCardAttention`),
 the "N names to check" suggestions on the set and every row under it
-(`lib/name-suggestions.ts`), and the brand's SportLots sets to sort. Each
-link gains `attention` (totals and one line) and the report gains
-`attentionLine`: "Built and all clear." only when nothing on any set is
-waiting, lookups included. A failed read is said in the line, never a lost
+(`lib/name-suggestions.ts`), the rows whose checklist header asks "on card or
+sticker?" (below), and the brand's SportLots sets to sort, named for the
+brand-year ("2 SportLots sets to sort for Topps 2024": the review is the
+brand's, not the set's). Each link gains `attention` (totals and one line)
+and the report gains `attentionLine`: "Built and all clear." only when
+nothing on any set is waiting, lookups and autograph rows included. A failed read is said in the line, never a lost
 report. `nb_attention` / `attention` lists every item with the facts its
 fixer shows and the answers it takes; `nb_fix` / `fix` answers them through
 the fixers' own mutations (`lib/attention-answers.ts`: `updateCard`,
@@ -97,6 +117,58 @@ one zod schema (`lib/fix-answers.ts`) shared by the tool and the CLI's
 read-only; the SportLots review and an open entity review point at
 `nb_sl_review_apply` and `nb_decide`. `nb_inspect` takes `attention: true`
 (CLI `--attention`) for the totals alone.
+
+**Autograph format (NEO-345).** A card carrying "AU" is signed; HOW it is
+signed (On Card or Sticker/Label) is NB data no marketplace gives, so the
+operator says it once per row (Base, insert or parallel), stored on the row as
+`features.autographFormat`, and the row's AU cards take it as
+`features.autographed`. Three places carry the answer:
+
+- **The spec.** A checklist's optional `autographFormat` (`"On Card"` or
+  `"Sticker/Label"`) is the wizard's "Autographed cards" answer, sent as
+  `commitCardChecklist`'s own `autographFormat`: the row stores it and every
+  new AU card is born marked. `nb_draft_set` never proposes it. It lists each
+  checklist whose previewed cards carry AU in `autographFormats` (`at`, the
+  row, the card count, the prompt's line, the two answers), not as an open
+  decision: `confirmPhrase` does not wait for it, and the default is "save and
+  list" (Jason, 2026-10-18): a spec without it still commits, and the rows are
+  listed afterwards. `mergeDraftAnswers` takes a checklist's `autographFormat`
+  from the answers file, like `pairing.unlink`. A parallel built from an
+  insert copies each card's `autographed` with it, so it does not ask again.
+- **`nb_attention`'s `autographs`.** One item per row whose header asks:
+  no `features.autographFormat` on the row and at least one AU card still
+  marked "None". The rule, the count, the line ("17 autographed cards — on
+  card or sticker?") and the answers' names come from
+  `components/SetSelector/autograph-prompt.ts`, the same pure module
+  `CardChecklist` gates the prompt on, so the tool lists exactly what the Set
+  Builder shows (`autograph-prompt.test.tsx` pins the parity). Totals carry
+  `autographRows`; the summary says "N autograph rows to mark on-card or
+  sticker".
+- **`nb_fix`'s `autographs: [{ row, format }]`** (set path only, at most 50
+  per call, in the confirm digest only when given, so a cards-and-names
+  phrase is unchanged). Each goes through the prompt's own
+  `autographFormat.setAutographFormat`. A row that already has a format, or
+  whose AU cards are all marked, is moot (changing a format is Set details'
+  job). The carry-over to the cards is a scheduled server walk, so `nb_fix`
+  then waits, once for the whole call and bounded (`AUTOGRAPH_WAIT_MS`,
+  30 s), until each row's own AU cards stop showing "None", and gives a
+  `warning` with the count for a row it did not see finish.
+
+Setting the format after the commit does not rebuild the cards' listing
+titles: the walk writes `features.autographed` (and Signed By) only, so a
+title generated without "AUTO" keeps it until Regenerate (whose preview reads
+the new value). A commit that carries the format titles its AU cards with it.
+
+**Research before asking (Jason, 2026-10-18).** The tool never guesses a
+fact about the real card and never writes one unasked. The agent driving it
+should look up what a source can settle before putting the question to the
+operator: an autograph row's format, a card's missing team, a variation that
+must be shortened. It checks the manufacturer's checklist or product page,
+Beckett, Cardboard Connection and the like, brings the operator a proposal
+with the source it used, and writes it (spec or `nb_fix`) only once the
+operator confirms. With no source it says so and asks. A team it found is
+shown beside `listingSays`; when they differ, the operator decides. The
+WORKFLOW string every read tool carries, and `nb_fix`'s description, say this.
 
 A spec check that fails during apply stops its step the same way. That
 covers an expected count (`expectCards`, `expectRows`,
@@ -260,5 +332,9 @@ inspects, then (the expect file's `attention` block) lists what the built set
 still needs, answers it with the committed `fix` answers through `nb_fix`, and
 checks exactly those items are gone. The draft's only open decisions may be card conflicts and review
 names, answered by the committed spec; its leaves and review answers must be
-subsets of the committed spec's, and everything else must match exactly. Placeholder fixture files (`"measured": false`) fail it on purpose.
+subsets of the committed spec's, and everything else must match exactly.
+Every checklist the draft lists in `autographFormats` must carry an
+`autographFormat` in the committed spec (2024 Topps Chrome Black's
+autographs are On Card, Jason 2026-10-18), and the expect file's
+`attention.totals.autographRows` (0) is compared when present. Placeholder fixture files (`"measured": false`) fail it on purpose.
 Neither job prints the deployment: the host is masked and redacted.

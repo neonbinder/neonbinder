@@ -2,7 +2,9 @@
  * NEO-339 — a small set for the attention tests: Base, an Inserts type with
  * one row ("Future Stars") and its parallel ("Gold"), a mutable card store the
  * fake `updateCard` / `confirmCardNoTeam` write into the way the server does,
- * and the reads the listing makes.
+ * the rows' own `features` (NEO-345 `autographFormat`) with the header
+ * prompt's `setAutographFormat` and its scheduled carry-over to the cards, and
+ * the reads the listing makes.
  *
  * Test-only: imported by `attention.test.ts` and `attention-answers.test.ts`.
  */
@@ -58,6 +60,25 @@ const ID_TEXT = (id: unknown) => String(id);
 export interface Store {
   /** Cards per checklist row id. A guest card can sit in two lists (same object). */
   rows: Record<string, Card[]>;
+  /** NEO-345: each tree row's own `features` (Base, Future Stars, Gold), keyed by row id. */
+  leafFeatures?: Record<string, Record<string, string>>;
+}
+
+/**
+ * NEO-345 — the server's carry-over of a row's new format onto its OWN AU
+ * cards still "None" (a guest's home is elsewhere), as `cascadeAutographFormat`
+ * does in its scheduled walk.
+ */
+export function cascade(store: Store, rowId: string): void {
+  const format = store.leafFeatures?.[rowId]?.autographFormat;
+  if (!format) return;
+  for (const c of store.rows[rowId] ?? []) {
+    const attrs = (c.attributes as string[] | undefined) ?? [];
+    const features = (c.features as Record<string, string> | undefined) ?? {};
+    if (c.isCrossListed || !attrs.some((a) => a.trim().toUpperCase() === "AU")) continue;
+    if ((features.autographed ?? "None") !== "None") continue;
+    c.features = { ...features, autographed: format };
+  }
 }
 
 /** Apply `updateCard`'s semantics to the stored card (the parts the fixers use). */
@@ -93,20 +114,60 @@ function confirmNoTeam(store: Store, args: Record<string, unknown>) {
 
 export interface FixtureOptions {
   store: Store;
+  /**
+   * NEO-345: when `setAutographFormat`'s scheduled walk lands: "now" (before
+   * the next read, the default), after this many `getCardChecklist` reads of
+   * the row, or "never" (the wait runs out).
+   */
+  cascadeAfter?: "now" | number | "never";
   /** Extra or replacement handlers (suggestions, eras, previews, matches…). */
   handlers?: Record<string, Handler>;
 }
 
 /** The set's tree, the store, and the two card writes. Everything else comes from `handlers`. */
-export function attentionClient({ store, handlers = {} }: FixtureOptions): FakeNbClient {
-  const tree: Record<string, ReturnType<typeof row>[]> = {
-    [`variantType:${SET.setId}`]: [row(BASE, "variantType", "Base"), row(INSERTS, "variantType", "Inserts")],
-    [`insert:${INSERTS}`]: [row(FUTURE, "insert", "Future Stars")],
-    [`parallel:${FUTURE}`]: [row(GOLD, "parallel", "Gold")],
+export function attentionClient({ store, handlers = {}, cascadeAfter = "now" }: FixtureOptions): FakeNbClient {
+  const withFeatures = (id: string, level: string, value: string) => {
+    const features = store.leafFeatures?.[id];
+    return row(id, level, value, features ? { features } : {});
   };
+  const tree = (): Record<string, ReturnType<typeof row>[]> => ({
+    [`variantType:${SET.setId}`]: [withFeatures(BASE, "variantType", "Base"), withFeatures(INSERTS, "variantType", "Inserts")],
+    [`insert:${INSERTS}`]: [withFeatures(FUTURE, "insert", "Future Stars")],
+    [`parallel:${FUTURE}`]: [withFeatures(GOLD, "parallel", "Gold")],
+  });
+  const LEVELS: Record<string, [string, string]> = {
+    [BASE]: ["variantType", "Base"],
+    [INSERTS]: ["variantType", "Inserts"],
+    [FUTURE]: ["insert", "Future Stars"],
+    [GOLD]: ["parallel", "Gold"],
+  };
+  /** Rows whose walk is scheduled, with the reads left before it lands. */
+  const scheduled = new Map<string, number>();
   return fakeNbClient({
-    "selectorOptions:getSelectorOptions": (a) => tree[`${a.level}:${ID_TEXT(a.parentId)}`] ?? [],
-    "selectorOptions:getCardChecklist": (a) => store.rows[ID_TEXT(a.selectorOptionId)] ?? [],
+    "selectorOptions:getSelectorOptions": (a) => tree()[`${a.level}:${ID_TEXT(a.parentId)}`] ?? [],
+    "selectorOptions:getSelectorOptionById": (a) => {
+      const at = LEVELS[ID_TEXT(a.id)];
+      return at ? withFeatures(ID_TEXT(a.id), at[0], at[1]) : null;
+    },
+    "autographFormat:setAutographFormat": (a) => {
+      const id = ID_TEXT(a.selectorOptionId);
+      if (!LEVELS[id] || id === INSERTS) throw new ConvexError("An autograph format goes on a base, insert or parallel.");
+      store.leafFeatures = { ...(store.leafFeatures ?? {}), [id]: { ...(store.leafFeatures?.[id] ?? {}), autographFormat: String(a.value) } };
+      if (cascadeAfter === "now") cascade(store, id);
+      else if (cascadeAfter !== "never") scheduled.set(id, cascadeAfter);
+      return null;
+    },
+    "selectorOptions:getCardChecklist": (a) => {
+      const id = ID_TEXT(a.selectorOptionId);
+      const left = scheduled.get(id);
+      if (left !== undefined) {
+        if (left <= 0) {
+          cascade(store, id);
+          scheduled.delete(id);
+        } else scheduled.set(id, left - 1);
+      }
+      return store.rows[id] ?? [];
+    },
     "selectorOptions:updateCard": (a) => updateCard(store, a),
     "cardChecklist:confirmCardNoTeam": (a) => confirmNoTeam(store, a),
     "cardChecklist:suggestedTeamsForCard": () => [],

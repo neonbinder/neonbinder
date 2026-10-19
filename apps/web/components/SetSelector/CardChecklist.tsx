@@ -13,10 +13,11 @@ import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
 // NEO-345: the stored leaf's "how are these autographs signed?" line.
 import { AutographFormatPrompt } from "./AutographFormatStep";
+// NEO-339: the prompt's rule, shared with the set-build tool's attention listing.
+import { autographPromptAsks, isUnformattedAutograph } from "./autograph-prompt";
 import {
   asAutographFormat,
   autographCardIndexes,
-  carriesAutograph,
   type AutographFormat,
 } from "./entity-review-steps";
 // NEO-335 Phase 2: the "Card titles" step's answers, put on the cards at commit.
@@ -685,15 +686,12 @@ export default function CardChecklist({
   const leafAutographFormat = asAutographFormat(variantRow?.features?.autographFormat);
   /**
    * NEO-345 — stored cards carrying "AU" still marked not autographed: what
-   * the header's one-line prompt counts while the leaf has no format.
+   * the header's one-line prompt counts while the leaf has no format. The
+   * per-card rule is `autograph-prompt.ts`'s, shared with the set-build
+   * tool's attention listing (NEO-339).
    */
   const unformattedAutographCount = useMemo(
-    () =>
-      (cards ?? []).filter(
-        (row) =>
-          carriesAutograph(row.attributes) &&
-          (row.features?.autographed ?? "None") === "None",
-      ).length,
+    () => (cards ?? []).filter((row) => isUnformattedAutograph(row.attributes, row.features?.autographed)).length,
     [cards],
   );
   /**
@@ -3029,8 +3027,7 @@ export default function CardChecklist({
         ) : (
           !pendingPreview &&
           !!variantRow &&
-          !leafAutographFormat &&
-          unformattedAutographCount > 0 && (
+          autographPromptAsks(variantRow.features?.autographFormat, unformattedAutographCount) && (
             <AutographFormatPrompt
               selectorOptionId={variantId}
               count={unformattedAutographCount}
