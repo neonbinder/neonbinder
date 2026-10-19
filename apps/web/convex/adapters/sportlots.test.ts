@@ -7,6 +7,7 @@ import {
   parseSlTeamCard,
   parseSlVariationMarker,
   stripBrandPrefixForLabel,
+  tokenizeSlDescription,
 } from "./sportlots";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS } from "../features/cardAttention";
@@ -145,12 +146,23 @@ describe("parseSlVariationMarker", () => {
     );
   });
 
-  test("a bracket that is not a VAR marker is left alone", () => {
-    const desc = "2021 Topps Heritage #7 Brandon Belt [ SP ]";
-    expect(parseSlVariationMarker(desc)).toEqual({
+  test("an attribute-only bracket is not a variation: the bracket goes, the token stays to be lifted (NEO-339)", () => {
+    expect(parseSlVariationMarker("2021 Topps Heritage #7 Brandon Belt [ SP ]")).toEqual({
       isVariation: false,
-      residual: desc,
+      residual: "2021 Topps Heritage #7 Brandon Belt SP",
     });
+    expect(parseSlVariationMarker("Brandon Belt\r\n    [ rc ] /99")).toEqual({
+      isVariation: false,
+      residual: "Brandon Belt rc /99",
+    });
+  });
+
+  test("[ SP ] end to end: the name is clean, the player is read, SP is an attribute", () => {
+    const { residual: withoutBracket } = parseSlVariationMarker("Brandon Belt [ SP ]");
+    const { attributes, residual } = tokenizeSlDescription(withoutBracket);
+    expect(residual).toBe("Brandon Belt");
+    expect(attributes).toEqual(["SP"]);
+    expect(parseSlSubjects(residual)).toEqual({ players: ["Brandon Belt"] });
   });
 });
 

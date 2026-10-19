@@ -1122,8 +1122,10 @@ async function fetchSetNames(
  * ## The one thing a bracket does NOT mean
  *
  * A bracket holding nothing but a known attribute token — `[ SP ]`, `[ RC ]` —
- * is describing the card, not naming a second version of it. Those are left
- * alone; `tokenizeSlDescription` picks them up as attributes.
+ * is describing the card, not naming a second version of it. The brackets are
+ * removed and the token left in place, so `tokenizeSlDescription` picks it up
+ * as an attribute and the name comes out clean (NEO-339: it used to read
+ * "Brandon Belt [ ]", with no player).
  *
  * The residual risk is a bracket that is neither: a genuinely new convention
  * would be read as a variation name. That is the safer direction to fail —
@@ -1187,9 +1189,15 @@ export function parseSlVariationMarker(desc: string): {
   const inner = m[1].trim();
   const varMarker = inner.match(/^VAR(?:\s+([\s\S]*))?$/i);
   // A bracket holding only an attribute token, and no `VAR`, describes the
-  // card rather than naming a second version of it.
+  // card rather than naming a second version of it. The bracket goes and its
+  // token stays for `tokenizeSlDescription` to lift: "Brandon Belt [ SP ]"
+  // used to leave "Brandon Belt [ ]", which no name parse accepts.
   if (!varMarker && SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
-    return { isVariation: false, residual: desc };
+    const residual = [desc.slice(0, m.index), inner, desc.slice(m.index! + m[0].length)]
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return { isVariation: false, residual };
   }
   const label = (varMarker ? (varMarker[1] ?? "") : inner).trim();
   const labelWords = label.split(/\s+/).filter(Boolean);

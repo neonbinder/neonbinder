@@ -772,6 +772,25 @@ describe("fetchCardChecklist — a SportLots VAR keeps its player (NEO-339, 2023
     expect(ssp.cardVariation).toBe("SSP");
   });
 
+  test("SportLots' [ SP ] pairs with BSC's card cleanly: no name or roster disagreement, SP carried", async () => {
+    mockState.bscCards = [bscRow("7", "Brandon Belt")];
+    mockState.slCards = [slParsed("7", "Brandon Belt\r\n    [ SP ]")];
+    expect(mockState.slCards[0]).toMatchObject({
+      cardName: "Brandon Belt",
+      players: ["Brandon Belt"],
+      attributes: ["SP"],
+    });
+    expect(mockState.slCards[0]).not.toHaveProperty("isVariation");
+
+    const res = await fetchAndBucket();
+
+    expect(res.matched).toHaveLength(1);
+    expect(res.matched[0]).not.toHaveProperty("nameConflict");
+    expect(res.matched[0]).not.toHaveProperty("playersConflict");
+    expect(res.matched[0].players).toEqual(["Brandon Belt"]);
+    expect(res.matched[0].attributes).toContain("SP");
+  });
+
   test("committed: a one-word name BSC lists (\"Ichiro\") links, though SportLots' parser refuses it", async () => {
     // 2023 Topps Chrome Update Legend Autographs: BSC lists CLA-I as
     // "Ichiro" (read live, 2026-10-19). SportLots' "Ichiro AU" yields no
