@@ -166,6 +166,9 @@ export function attentionClient({ store, handlers = {}, cascadeAfter = "now" }: 
   const scheduled = new Map<string, number>();
   return fakeNbClient({
     "selectorOptions:getSelectorOptions": (a) => tree()[`${a.level}:${ID_TEXT(a.parentId)}`] ?? [],
+    // The type's inserts with their grouped parallels (the shared row resolution reads it on a miss).
+    "selectorOptions:getInsertTreeByVariantType": (a) =>
+      (tree()[`insert:${ID_TEXT(a.variantTypeId)}`] ?? []).map((insert) => ({ insert, parallels: tree()[`parallel:${insert._id}`] ?? [] })),
     "selectorOptions:getSelectorOptionById": (a) => {
       const at = LEVELS[ID_TEXT(a.id)];
       return at ? withFeatures(ID_TEXT(a.id), at[0], at[1]) : null;

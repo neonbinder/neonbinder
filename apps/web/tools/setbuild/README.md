@@ -343,11 +343,18 @@ mcp*.ts    the MCP server, its ten tools, mcp-smoke and oneshot-smoke
 - **No marketplace name is ever a key.** Rows are addressed by NB path or by a
   marketplace id from a slot (a `group` ref may be `{ "bsc": id }` or
   `{ "sportlots": id }`, matched against the rows' platform slots).
-- **A row resolves by its own name, grouped or not.** `resolveVariantRow`
-  answers from the type's top-level rows first; only when none carries the
-  name does it read the rows Group Parallels moved under an insert, so a
-  grouped row is never mistaken for the parent its name begins with. A name
-  that matches nothing says so, and lists near names as candidates only.
+- **A row resolves by its own name, grouped or not, everywhere.** Every
+  name-addressed row lookup shares one resolution, `resolveTypeRow`
+  (`spec/resolve.ts`): a spec's `rows[k].name`, and every `row` a fix answer
+  names (cards, autographs, detach, names, through `resolveTypeRowRef`). A
+  top-level row answers first; only when none carries the name are the rows
+  Group Parallels moved under an insert read, so a grouped row is never
+  mistaken for the parent its name begins with, and `{ name: "<grouped
+  row>" }` reaches the same row as `{ name: "<its parent>", parallel:
+  "<grouped row>" }` (a `parallel` under a grouped row is refused). Two
+  grouped rows with one name are asked, each named with its parent. A name
+  that matches nothing says so, and lists near names (top-level and grouped)
+  as candidates only.
 - **Group Parallels runs the dialog's own code.** `lib/group-parallels.ts`
   drives `lib/set-build/grouping.ts` (the reducer, tree builder and diff the
   modal imports) and `chunkGroupingPlan`; never re-implement a rule there. It

@@ -58,7 +58,7 @@ import { compareCardNumbers } from "../../../lib/cards/card-number";
 import { teamFullName } from "../../../lib/teams/team-name";
 import type { NbClient } from "../client/convex-client";
 import { ResolveError } from "../service";
-import { childrenOf, pickExactlyOne, type ResolvedSet, type RowId, type SelectorRow } from "../spec/resolve";
+import { childrenOf, pickExactlyOne, resolveTypeRowRef, type ResolvedSet, type RowId, type SelectorRow } from "../spec/resolve";
 import { setBuilderUrlForPath } from "./set-builder-link";
 import {
   AUTOGRAPH_CHOICE_LABEL,
@@ -470,18 +470,23 @@ export async function resolveAttentionRow(
       message: `${at}.row names "${t.value}" but not the row under it; add "name".`,
     });
   }
-  const row = pickExactlyOne(await childrenOf(client, "insert", t._id), r.name, "row", `${at}.row.name`);
-  const rowIds = [...typeIds, String(row._id)];
-  if (r.parallel === undefined) {
-    return { ref: { type: t.value, name: row.value }, label: `${t.value} › ${row.value}`, rowId: row._id, drillIds: rowIds, ...formatOf(row) };
+  // The tool's one row resolution: top-level first, then a grouped row by its
+  // own name (its parent becomes `name`, it the `parallel`).
+  const { row, parent } = await resolveTypeRowRef(
+    client,
+    t._id,
+    { name: r.name, ...(r.parallel !== undefined ? { parallel: r.parallel } : {}) },
+    { name: `${at}.row.name`, parallel: `${at}.row.parallel` },
+  );
+  if (!parent) {
+    return { ref: { type: t.value, name: row.value }, label: `${t.value} › ${row.value}`, rowId: row._id, drillIds: [...typeIds, String(row._id)], ...formatOf(row) };
   }
-  const p = pickExactlyOne(await childrenOf(client, "parallel", row._id), r.parallel, "parallel", `${at}.row.parallel`);
   return {
-    ref: { type: t.value, name: row.value, parallel: p.value },
-    label: `${t.value} › ${row.value} › ${p.value}`,
-    rowId: p._id,
-    drillIds: [...rowIds, String(p._id)],
-    ...formatOf(p),
+    ref: { type: t.value, name: parent.value, parallel: row.value },
+    label: `${t.value} › ${parent.value} › ${row.value}`,
+    rowId: row._id,
+    drillIds: [...typeIds, String(parent._id), String(row._id)],
+    ...formatOf(row),
   };
 }
 

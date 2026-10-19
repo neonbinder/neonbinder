@@ -184,37 +184,91 @@ export async function resolveVariantType(
   return resolveChild(client, "variantType", setId, title, where);
 }
 
+/** A row resolved under a variant type: the row, and its parent insert when Group Parallels grouped it. */
+export interface TypeRow {
+  row: SelectorRow;
+  /** The insert the row is grouped under; null for a top-level row. */
+  parent: SelectorRow | null;
+}
+
 /**
- * A row under a variant type, exactly-one, by its own name. A top-level row
- * (`insert` level) answers first, exactly as before. Only when no top-level
- * row carries the name are the rows Group Parallels moved under an insert
- * read (`parallel` level, from the type's insert tree): a grouped row keeps
- * its own name, so "Future Stars Autographs" grouped under "Future Stars"
- * still resolves to itself, never to the parent its name begins with. Two
- * grouped rows with the name are a `ResolveError` naming each one's parent.
+ * THE row resolution every name-addressed lookup in the tool shares (the
+ * engine's spec rows, nb_fix's cards, autographs, detach and names, through
+ * `resolveTypeRowRef`): a row under a variant type, exactly-one, by its own
+ * name. A top-level row (`insert` level) answers first, exactly as before.
+ * Only when no top-level row carries the name are the rows Group Parallels
+ * moved under an insert read (`parallel` level, from the type's insert
+ * tree): a grouped row keeps its own name, so "Future Stars Autographs Red"
+ * grouped under "Future Stars Autographs" resolves to itself, never to the
+ * parent its name begins with. Two grouped rows with the name are a
+ * `ResolveError` naming each one's parent; a name matching nothing lists
+ * near names (top-level and grouped, each with its parent) as candidates.
  */
+export async function resolveTypeRow(
+  client: NbClient,
+  variantTypeId: RowId,
+  name: string,
+  where?: string,
+): Promise<TypeRow> {
+  const inserts = await childrenOf(client, "insert", variantTypeId);
+  const key = selectorValueKey(name);
+  if (inserts.some((r) => selectorValueKey(r.value) === key)) {
+    return { row: pickExactlyOne(inserts, name, "row", where), parent: null };
+  }
+  const tree = await client.query(api.selectorOptions.getInsertTreeByVariantType, { variantTypeId });
+  const parentOf = new Map<string, SelectorRow>();
+  const rows: SelectorRow[] = [...inserts];
+  for (const node of tree) {
+    for (const p of node.parallels) {
+      rows.push(p as SelectorRow);
+      parentOf.set(String(p._id), node.insert as SelectorRow);
+    }
+  }
+  const row = pickExactlyOne(rows, name, "row", where, (r) => {
+    const parent = parentOf.get(String(r._id));
+    return parent ? `parallel of ${parent.value}` : "insert";
+  });
+  return { row, parent: parentOf.get(String(row._id)) ?? null };
+}
+
+/** `resolveTypeRow`'s row alone: the engine's lookup for a spec's `rows[k].name`. */
 export async function resolveVariantRow(
   client: NbClient,
   variantTypeId: RowId,
   name: string,
   where?: string,
 ): Promise<SelectorRow> {
-  const inserts = await childrenOf(client, "insert", variantTypeId);
-  const key = selectorValueKey(name);
-  if (inserts.some((r) => selectorValueKey(r.value) === key)) return pickExactlyOne(inserts, name, "row", where);
-  const tree = await client.query(api.selectorOptions.getInsertTreeByVariantType, { variantTypeId });
-  const parentName = new Map<string, string>();
-  const rows: SelectorRow[] = [...inserts];
-  for (const node of tree) {
-    for (const p of node.parallels) {
-      rows.push(p as SelectorRow);
-      parentName.set(String(p._id), node.insert.value);
-    }
+  return (await resolveTypeRow(client, variantTypeId, name, where)).row;
+}
+
+/**
+ * A row ref's `name` (and optional `parallel`) under a variant type, as the
+ * fix answers address one: `name` resolves by `resolveTypeRow` (top-level
+ * first, then grouped rows); `parallel` then names a parallel of that
+ * top-level row. A `name` that is itself a grouped row needs no `parallel`:
+ * naming one under it is refused, since a parallel holds no parallels.
+ * `parent` is the insert the resolved row sits under (null for a top-level
+ * row), so a caller can build the row's full address and drill link.
+ */
+export async function resolveTypeRowRef(
+  client: NbClient,
+  variantTypeId: RowId,
+  ref: { name: string; parallel?: string },
+  where: { name: string; parallel: string },
+): Promise<TypeRow> {
+  const named = await resolveTypeRow(client, variantTypeId, ref.name, where.name);
+  if (ref.parallel === undefined) return named;
+  if (named.parent) {
+    throw new ResolveError({
+      kind: "parallel",
+      query: ref.parallel,
+      at: where.parallel,
+      candidates: [],
+      message: `"${named.row.value}" is a parallel of "${named.parent.value}", so nothing sits under it: name "${named.row.value}" alone, or name "${named.parent.value}" with parallel "${named.row.value}".`,
+    });
   }
-  return pickExactlyOne(rows, name, "row", where, (r) => {
-    const parent = parentName.get(String(r._id));
-    return parent ? `parallel of ${parent}` : "insert";
-  });
+  const p = pickExactlyOne(await childrenOf(client, "parallel", named.row._id), ref.parallel, "parallel", where.parallel);
+  return { row: p, parent: named.row };
 }
 
 /**

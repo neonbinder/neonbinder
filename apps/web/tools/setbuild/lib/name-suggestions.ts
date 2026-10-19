@@ -33,7 +33,7 @@ import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { NbClient } from "../client/convex-client";
 import { formatPath, ResolveError, type BrandYearPath, type NodePath, type SetPath } from "../service";
-import { childrenOf, resolveChild, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
+import { childrenOf, resolveChild, resolveTypeRowRef, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
 import { variantTypeKind } from "../../../convex/variantRole";
 import { setBuilderUrlForPath } from "./set-builder-link";
 
@@ -258,10 +258,14 @@ async function resolveNameRow(
   }
   const type = await resolveChild(client, "variantType", set.setId, ref.type!, `${at}.row.type`);
   if (!named(ref.name)) return { level: "variantType", parentId: set.setId, rowId: type._id };
-  const row = await resolveChild(client, "insert", type._id, ref.name!, `${at}.row.name`);
-  if (!named(ref.parallel)) return { level: "insert", parentId: type._id, rowId: row._id };
-  const parallel = await resolveChild(client, "parallel", row._id, ref.parallel!, `${at}.row.parallel`);
-  return { level: "parallel", parentId: row._id, rowId: parallel._id };
+  // The tool's one row resolution: top-level first, then a grouped row by its own name.
+  const { row, parent } = await resolveTypeRowRef(
+    client,
+    type._id,
+    { name: ref.name!, ...(named(ref.parallel) ? { parallel: ref.parallel! } : {}) },
+    { name: `${at}.row.name`, parallel: `${at}.row.parallel` },
+  );
+  return parent ? { level: "parallel", parentId: parent._id, rowId: row._id } : { level: "insert", parentId: type._id, rowId: row._id };
 }
 
 const columnKey = (level: string, parentId: string) => `${level}\u0000${parentId}`;

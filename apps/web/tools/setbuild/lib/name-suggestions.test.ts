@@ -36,6 +36,13 @@ function world(columns: Record<string, SRow[]>, opts: { refuse?: string[]; versi
       if (a.level === "setName") return [row("set", "setName", "Topps Chrome"), row("set-2", "setName", "Topps Chrome Update")];
       return [];
     },
+    "selectorOptions:getInsertTreeByVariantType": (a) =>
+      a.variantTypeId === "vt-ins"
+        ? [
+            { insert: row("r-fs", "insert", "Future Stars"), parallels: [row("p-ref", "parallel", "Refractor")] },
+            { insert: row("r-rd", "insert", "Rookie Debut"), parallels: [] },
+          ]
+        : [],
     [SUGGEST]: (a) => live[`${a.level}|${a.parentId}`] ?? [],
     [APPLY]: (a) => {
       const decisions = a.decisions as Array<{ existingId: string; baseVersion: number; side: string; action: string }>;
