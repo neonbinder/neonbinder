@@ -322,3 +322,136 @@ export function bscAttributeTokensFromProductName(productName: unknown): string[
 
   return Array.from(new Set(words.slice(firstToken)));
 }
+
+/** The attribute fields a checklist candidate (or stored card) carries. */
+export type BscAttributeFields = {
+  attributes?: string[];
+  printRun?: number;
+  isRookie?: boolean;
+  isRelic?: boolean;
+};
+
+function hasAttributeToken(list: ReadonlyArray<string>, token: string): boolean {
+  const key = token.toUpperCase();
+  return list.some((t) => t.trim().toUpperCase() === key);
+}
+
+/**
+ * NEO-339 — BSC's per-card tokens (the card-listing lookup) filled onto a
+ * checklist CANDIDATE, by the rule `cardChecklist.applyBscAttributeFill`
+ * applies to a stored card. Pure, so the staging mutation
+ * (`checklistCandidates.resolveCandidateTeams`) and the read-only preview
+ * (`selectorOptions.previewCardChecklist`) run the one function, and a draft
+ * stays byte-identical to the stage.
+ *
+ * FILL-EMPTY, NEVER OVERWRITE, exactly the attribute half of that fill:
+ * - `attributes`: the union of what the card holds (first, in its order) and
+ *   BSC's tokens, bounded and normalised here. A raw `SN<n>`/`1/1` becomes
+ *   `NUM`; one is kept beside `NUM` only while it disagrees with the card's
+ *   print run. Nothing the card holds is removed.
+ * - `printRun`: set only when the card has none; a different one is left,
+ *   reported as `printRunDisagreement`, with BSC's raw token kept.
+ * - `isRookie` / `isRelic`: set true from `RC` / `RELIC`; never set false.
+ *
+ * `changed` is false, and `fields` equals `current`, when BSC adds nothing:
+ * the usual case, where the catalogue already carried the same tokens.
+ *
+ * DRIFT: `applyBscAttributeFill` still holds its own copy of this rule;
+ * `convex/bscProductNameTokens.test.ts` pins the two equal on the same inputs.
+ */
+export function fillBscAttributeFields(
+  current: BscAttributeFields,
+  opts: { tokens: ReadonlyArray<string>; printRun?: number },
+): { fields: BscAttributeFields; changed: boolean; printRunDisagreement: boolean } {
+  const incoming = normalizeBscAttributeTokensDetailed(
+    boundBscAttributeTokens(opts.tokens).tokens,
+  );
+  const callerPrintRun =
+    opts.printRun !== undefined &&
+    Number.isInteger(opts.printRun) &&
+    opts.printRun >= 1 &&
+    opts.printRun <= MAX_BSC_PRINT_RUN
+      ? opts.printRun
+      : undefined;
+  const incomingPrintRun = callerPrintRun ?? incoming.printRun;
+
+  const stored = current.attributes ?? [];
+  const storedRuns = new Set<number>();
+  for (const t of stored) {
+    const n = printRunFromToken(t);
+    if (n !== undefined) storedRuns.add(n);
+  }
+  const storedRun = storedRuns.size === 1 ? [...storedRuns][0] : undefined;
+
+  // ── print run ──────────────────────────────────────────────────────────
+  const offeredRun = incomingPrintRun ?? storedRun;
+  let printRun = current.printRun;
+  let printRunDisagreement = false;
+  if (offeredRun !== undefined) {
+    if (printRun === undefined) printRun = offeredRun;
+    else if (printRun !== offeredRun) printRunDisagreement = true;
+  }
+  if (printRun !== undefined) {
+    for (const n of storedRuns) if (n !== printRun) printRunDisagreement = true;
+  }
+
+  // ── attributes ─────────────────────────────────────────────────────────
+  const keepRawRun = (t: string): boolean => {
+    const n = printRunFromToken(t);
+    return n !== undefined && (printRun === undefined || n !== printRun);
+  };
+  const merged: string[] = [];
+  const add = (t: string) => {
+    const trimmed = t.trim();
+    if (trimmed && !hasAttributeToken(merged, trimmed)) merged.push(trimmed);
+  };
+  let numbered = false;
+  for (const t of [...stored, ...incoming.attributes]) {
+    if (printRunFromToken(t) !== undefined) {
+      numbered = true;
+      if (keepRawRun(t)) add(t);
+      continue;
+    }
+    add(t);
+  }
+  if (incoming.printRun !== undefined || incoming.printRunTokens.length > 0) {
+    numbered = true;
+    for (const t of incoming.printRunTokens) if (keepRawRun(t)) add(t);
+  }
+  if (callerPrintRun !== undefined) {
+    numbered = true;
+    if (printRun !== undefined && callerPrintRun !== printRun) {
+      add(`SN${callerPrintRun}`);
+    }
+  }
+  if (numbered) add("NUM");
+
+  // ── typed flags ────────────────────────────────────────────────────────
+  const isRookie =
+    current.isRookie === true || hasAttributeToken(merged, "RC")
+      ? true
+      : current.isRookie;
+  const isRelic =
+    current.isRelic === true || hasAttributeToken(merged, "RELIC")
+      ? true
+      : current.isRelic;
+
+  const attributesChanged =
+    merged.length !== stored.length || merged.some((t, i) => t !== stored[i]);
+  const fields: BscAttributeFields = {
+    ...(attributesChanged
+      ? { attributes: merged }
+      : current.attributes !== undefined
+        ? { attributes: current.attributes }
+        : {}),
+    ...(printRun !== undefined ? { printRun } : {}),
+    ...(isRookie !== undefined ? { isRookie } : {}),
+    ...(isRelic !== undefined ? { isRelic } : {}),
+  };
+  const changed =
+    attributesChanged ||
+    printRun !== current.printRun ||
+    isRookie !== current.isRookie ||
+    isRelic !== current.isRelic;
+  return { fields, changed, printRunDisagreement };
+}

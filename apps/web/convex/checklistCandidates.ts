@@ -15,6 +15,7 @@ import { cardNumberStem } from "../lib/cards/variations";
 // at this boundary too — see `startCandidateBatch`'s handler.
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import { fillBscAttributeFields } from "./lib/bscAttributeTokens";
 // NEO-333 — the whole-name-first team match, through the one resolution the
 // review gate and the commit prelude also use.
 import { resolveTeamForSetYear } from "./lib/teamRow";
@@ -553,6 +554,13 @@ const teamLookupEntryValidator = v.object({
   teamNames: v.optional(v.array(v.string())),
   // NEO-335 — how the lookup ended; see `resolveCandidateTeams`.
   teamLookup: v.optional(teamLookupValidator),
+  // NEO-339 — the card's attribute tokens on the same answer, raw
+  // (`playerAttribute`, else the `teamName` label, else `productName`), and
+  // the print run they carry. Filled onto the candidate fill-empty
+  // (`fillBscAttributeFields`), which bounds and normalises them again: an
+  // internal caller is not trusted with a third party's list.
+  attributeTokens: v.optional(v.array(v.string())),
+  printRun: v.optional(v.number()),
 });
 
 /** The set's sport and year: what a whole-name team match is scoped by. */
@@ -769,8 +777,16 @@ export const resolveCandidateTeams = internalMutation({
     type ResolvedEntry = (typeof args.resolved)[number];
     // NEO-335 — and `teamLookup`: an "answered: no team" and a "failed" for
     // one ref are not the same claim, so neither is written.
+    // NEO-339 — and the attribute answer: two entries naming different
+    // tokens for one ref fill nothing, as two teams write none.
     const answerKey = (e: ResolvedEntry) =>
-      JSON.stringify([e.rawTeamName ?? null, e.teamNames ?? null, e.teamLookup ?? null]);
+      JSON.stringify([
+        e.rawTeamName ?? null,
+        e.teamNames ?? null,
+        e.teamLookup ?? null,
+        e.attributeTokens ?? null,
+        e.printRun ?? null,
+      ]);
     const answerByRef = new Map<string, ResolvedEntry | undefined>();
     for (const entry of args.resolved) {
       if (!answerByRef.has(entry.bscRef)) {
@@ -815,7 +831,21 @@ export const resolveCandidateTeams = internalMutation({
         ? candidateRawTeamHint(entry.rawTeamName, teams)
         : undefined;
       for (const row of matching) {
+        // NEO-339 — BSC's per-card tokens, filled onto the candidate by the
+        // rule `applyBscAttributeFill` applies to a stored card: union the
+        // attributes, set a print run only where there is none, set the
+        // rookie/relic flags true from RC/RELIC. Nothing the card holds is
+        // replaced. The preview (`previewCardChecklist`) runs the same fill.
+        const attributeFill =
+          entry &&
+          (entry.attributeTokens?.length || entry.printRun !== undefined)
+            ? fillBscAttributeFields(row, {
+                tokens: entry.attributeTokens ?? [],
+                printRun: entry.printRun,
+              })
+            : undefined;
         await ctx.db.patch(row._id, {
+          ...(attributeFill?.changed ? attributeFill.fields : {}),
           // An empty result is an answer, not a failure — see the note above.
           // So is a refused split or a disagreement (`undefined`): the row is
           // settled with no team, and the operator picks one in review —

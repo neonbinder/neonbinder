@@ -26,6 +26,11 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { applyBscAttributeFill } from "./cardChecklist";
+import {
+  fillBscAttributeFields,
+  type BscAttributeFields,
+} from "./lib/bscAttributeTokens";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -152,7 +157,10 @@ const PLAYER_ATTRIBUTE_ROWS: BscRow[] = [
  * BSC's per-card card-listing (no team, no tokens — the bulk parse is under
  * test here), BSC's bulk-upload catalogue, and `{}` for anything else.
  */
-function stubMarketplaces(bscRows: BscRow[]): void {
+function stubMarketplaces(
+  bscRows: BscRow[],
+  cardListing: Record<string, Record<string, unknown>> = {},
+): void {
   const bulk = bscRows.map((r) => ({
     id: `bsc-${r.cardNo}`,
     setName: "2024-topps-chrome-black",
@@ -173,7 +181,9 @@ function stubMarketplaces(bscRows: BscRow[]): void {
         });
       }
       if (href.includes("/card-listing")) {
-        return new Response(JSON.stringify({ teamName: "", playerAttribute: "" }), {
+        const id = href.match(/\/marketplace\/card\/([^/]+)\/card-listing/)?.[1] ?? "";
+        const body = cardListing[id] ?? { teamName: "", playerAttribute: "" };
+        return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -273,14 +283,16 @@ function attributeView(card: unknown): AttributeView {
 
 async function previewByNumber(
   bscRows: BscRow[],
+  cardListing?: Record<string, Record<string, unknown>>,
 ): Promise<Map<string, AttributeView>> {
-  stubMarketplaces(bscRows);
+  stubMarketplaces(bscRows, cardListing);
   const t = convexTest(schema, modules);
   const baseId = await seedBase(t);
   const preview = await t
     .withIdentity(ADMIN)
     .action(api.selectorOptions.previewCardChecklist, {
       selectorOptionId: baseId,
+      ...(cardListing ? { lookupTeams: true } : {}),
     });
   await drainScheduled(t);
   expect(preview.success).toBe(true);
@@ -297,8 +309,9 @@ async function previewByNumber(
 
 async function stagedByNumber(
   bscRows: BscRow[],
+  cardListing?: Record<string, Record<string, unknown>>,
 ): Promise<Map<string, AttributeView>> {
-  stubMarketplaces(bscRows);
+  stubMarketplaces(bscRows, cardListing);
   const t = convexTest(schema, modules);
   const baseId = await seedBase(t);
   const staged = await t
@@ -364,4 +377,188 @@ describe("BSC productName attribute tokens through the real reconcile (NEO-339)"
     expect(staged.get("PDA-1")?.printRun).toBe(99);
     expect(new Map([...staged].sort())).toEqual(new Map([...preview].sort()));
   });
+});
+
+/**
+ * NEO-339 Gap 2 — the bulk row carries NO token (no `playerAttribute`, no
+ * `productName`); only BSC's per-card card-listing does, in its
+ * `productName` or as the attribute label in `teamName`. The lookup's tokens
+ * ride `fetchBscCardTeamNames` → `bscTeamLookupEntries` →
+ * `resolveCandidateTeams` (the stage) and the preview's in-memory twin, and
+ * are filled onto the candidate fill-empty (`fillBscAttributeFields`).
+ */
+const BULK_NO_TOKEN_ROWS: BscRow[] = [
+  { cardNo: "PBDA-CP", players: "Gerrit Cole/Andy Pettitte" },
+  { cardNo: "PBDA-HS", players: "Mike Schmidt/Bryce Harper" },
+  { cardNo: "PDA-1", players: "Jac Caglianone/Charlie Condon" },
+  { cardNo: "7", players: "Mike Trout", playerAttribute: "RC" },
+  { cardNo: "8", players: "Aubrey Huff" },
+];
+
+const CARD_LISTING: Record<string, Record<string, unknown>> = {
+  // The live PBDA payload: the tokens only in productName.
+  "bsc-PBDA-CP": {
+    teamName: "",
+    playerAttribute: "",
+    productName: "Gerrit Cole / Andy Pettitte AU, SN #PBDA-CP",
+  },
+  // The NEO-345 shape: the label where the team belongs.
+  "bsc-PBDA-HS": { teamName: "AU, SN", playerAttribute: "" },
+  "bsc-PDA-1": {
+    teamName: "",
+    playerAttribute: "",
+    productName: "Jac Caglianone / Charlie Condon AU, SN99 #PDA-1",
+  },
+  // The usual case: the lookup repeats the catalogue's tokens.
+  "bsc-7": { teamName: "", playerAttribute: "RC", productName: "Mike Trout RC #7" },
+  "bsc-8": { teamName: "", playerAttribute: "", productName: "Aubrey Huff #8" },
+};
+
+describe("card-listing-only tokens reach the draft and the stage (NEO-339)", () => {
+  test("the draft preview gets AU from the per-card productName and from the teamName label", async () => {
+    const cards = await previewByNumber(BULK_NO_TOKEN_ROWS, CARD_LISTING);
+    // SportLots' "AU /25" is what the candidate held; BSC's AU and bare SN
+    // are added after it (the stored-card fill's order), its print run kept.
+    expect(cards.get("PBDA-CP")).toEqual({
+      attributes: ["NUM", "AU", "SN"],
+      printRun: 25,
+      autographType: "Unknown",
+    });
+    expect(cards.get("PBDA-HS")).toEqual(cards.get("PBDA-CP"));
+    expect(cards.get("PDA-1")).toEqual({
+      attributes: ["NUM", "AU"],
+      printRun: 99,
+      autographType: "Unknown",
+    });
+    expect(cards.get("7")).toEqual({ attributes: ["RC"], isRookie: true });
+    expect(cards.get("8")).toEqual({});
+  });
+
+  test("without the lookup the draft cannot see them: the bulk row alone has no AU", async () => {
+    const cards = await previewByNumber(BULK_NO_TOKEN_ROWS);
+    expect(cards.get("PBDA-CP")).toEqual({
+      attributes: ["NUM", "AU"],
+      printRun: 25,
+      autographType: "Unknown",
+    });
+  });
+
+  test("the staged candidates the commit reads carry exactly the draft's tokens", async () => {
+    const preview = await previewByNumber(BULK_NO_TOKEN_ROWS, CARD_LISTING);
+    const staged = await stagedByNumber(BULK_NO_TOKEN_ROWS, CARD_LISTING);
+    expect(staged.get("PBDA-CP")?.attributes).toEqual(["NUM", "AU", "SN"]);
+    expect(staged.get("PBDA-HS")?.attributes).toEqual(["NUM", "AU", "SN"]);
+    expect(new Map([...staged].sort())).toEqual(new Map([...preview].sort()));
+  });
+
+  test("the merge with SportLots is unchanged: the same tokens, flags and print run as a catalogue card", async () => {
+    const fromLookup = await previewByNumber(BULK_NO_TOKEN_ROWS, CARD_LISTING);
+    const fromCatalogue = await previewByNumber(PLAYER_ATTRIBUTE_ROWS);
+    for (const [cardNumber, view] of fromCatalogue) {
+      const got = fromLookup.get(cardNumber)!;
+      expect(got, `#${cardNumber}`).toBeDefined();
+      // Order aside (the fill appends after what the card held), the card
+      // carries what the reconcile would have given it.
+      expect([...(got.attributes ?? [])].sort(), `#${cardNumber}`).toEqual(
+        [...(view.attributes ?? [])].sort(),
+      );
+      const { attributes: _a, ...gotRest } = got;
+      const { attributes: _b, ...viewRest } = view;
+      expect(gotRest, `#${cardNumber}`).toEqual(viewRest);
+    }
+  });
+
+  test("a lookup that repeats the catalogue's tokens leaves the candidate byte-identical", async () => {
+    const withCatalogueTokens = await previewByNumber(PLAYER_ATTRIBUTE_ROWS, {
+      "bsc-PBDA-CP": { teamName: "", playerAttribute: "AU, SN" },
+      "bsc-PBDA-HS": { teamName: "", playerAttribute: "AU, SN" },
+      "bsc-PDA-1": { teamName: "", playerAttribute: "AU, SN99" },
+      "bsc-7": { teamName: "", playerAttribute: "RC" },
+      "bsc-8": { teamName: "", playerAttribute: "" },
+    });
+    const withoutLookup = await previewByNumber(PLAYER_ATTRIBUTE_ROWS);
+    expect(withCatalogueTokens).toEqual(withoutLookup);
+  });
+});
+
+/**
+ * DRIFT GUARD — `fillBscAttributeFields` (candidates) and
+ * `cardChecklist.applyBscAttributeFill` (stored cards) hold one rule in two
+ * places. Same inputs, same attributes, print run and flags.
+ */
+describe("fillBscAttributeFields matches applyBscAttributeFill (NEO-339)", () => {
+  const CASES: Array<{
+    name: string;
+    current: BscAttributeFields;
+    tokens: string[];
+    printRun?: number;
+  }> = [
+    { name: "empty card, AU + bare SN", current: {}, tokens: ["AU", "SN"] },
+    {
+      name: "SportLots AU /25, BSC AU + bare SN",
+      current: { attributes: ["NUM", "AU"], printRun: 25 },
+      tokens: ["AU", "SN"],
+    },
+    {
+      name: "RC card, BSC AU SN99",
+      current: { attributes: ["RC"], isRookie: true },
+      tokens: ["AU", "SN99"],
+      printRun: 99,
+    },
+    {
+      name: "print runs disagree",
+      current: { attributes: ["AU", "NUM"], printRun: 25 },
+      tokens: ["AU", "SN99"],
+      printRun: 99,
+    },
+    { name: "a raw stored run", current: { attributes: ["SN25"] }, tokens: ["MEM"] },
+    {
+      name: "explicit false flags",
+      current: { attributes: [], isRookie: false, isRelic: false },
+      tokens: ["RC", "JSY"],
+    },
+    { name: "nothing new", current: { attributes: ["AU", "NUM"], printRun: 5 }, tokens: ["AU", "SN5"] },
+  ];
+
+  for (const c of CASES) {
+    test(c.name, async () => {
+      const t = convexTest(schema, modules);
+      const stored = await t.run(async (ctx) => {
+        const selectorOptionId = await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: "Base",
+          platformData: {},
+          children: [],
+          lastUpdated: T,
+        });
+        const id = await ctx.db.insert("cardChecklist", {
+          selectorOptionId,
+          cardNumber: "1",
+          cardName: "Card 1",
+          platformData: {},
+          sortOrder: 1,
+          lastUpdated: T,
+          ...c.current,
+        });
+        const row = (await ctx.db.get(id))!;
+        await applyBscAttributeFill(ctx, row, {
+          tokens: c.tokens,
+          ...(c.printRun !== undefined ? { printRun: c.printRun } : {}),
+        });
+        const after = (await ctx.db.get(id))!;
+        return {
+          attributes: after.attributes,
+          printRun: after.printRun,
+          isRookie: after.isRookie,
+          isRelic: after.isRelic,
+        };
+      });
+      const { fields } = fillBscAttributeFields(c.current, {
+        tokens: c.tokens,
+        printRun: c.printRun,
+      });
+      const clean = (f: BscAttributeFields) => JSON.parse(JSON.stringify(f));
+      expect(clean(fields)).toEqual(clean(stored));
+    });
+  }
 });

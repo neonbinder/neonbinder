@@ -69,6 +69,8 @@ import {
   resolveVariationParents,
 } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-339 — the card-listing lookup's tokens filled onto a candidate.
+import { fillBscAttributeFields } from "./lib/bscAttributeTokens";
 import {
   decideDuplicateNumberPairs,
   decideVariationPairs,
@@ -14186,6 +14188,8 @@ function bscTeamLookupEntries(
   rawTeamName?: string;
   teamNames?: string[];
   teamLookup: "answered" | "failed";
+  attributeTokens?: string[];
+  printRun?: number;
 }> {
   const lookupByRef = new Map(lookups.map((l) => [l.bscCardId, l]));
   return bscRefs.map((bscRef) => {
@@ -14193,13 +14197,49 @@ function bscTeamLookupEntries(
     if (lookup?.success !== true) {
       return { bscRef, teamLookup: "failed" as const };
     }
+    // NEO-339 — the card's attribute tokens ride on the same answer
+    // (`playerAttribute`, else the `teamName` label, else `productName`), so
+    // the candidate is filled from them (`fillBscAttributeFields`). Read
+    // defensively: an older stub of the adapter returns no tokens.
+    const attributeTokens = lookup.attributeTokens ?? [];
     return {
       bscRef,
       ...(lookup.rawTeamName ? { rawTeamName: lookup.rawTeamName } : {}),
       ...(lookup.teamNames.length > 0 ? { teamNames: lookup.teamNames } : {}),
       teamLookup: "answered" as const,
+      ...(attributeTokens.length > 0 ? { attributeTokens } : {}),
+      ...(lookup.printRun !== undefined ? { printRun: lookup.printRun } : {}),
     };
   });
+}
+
+/**
+ * NEO-339 — the attribute answer for each looked-up ref, one per ref: two
+ * entries for one ref that disagree give `undefined` (nothing is filled), the
+ * rule `resolveCandidateTeams` applies, so the preview fills what the stage
+ * fills.
+ */
+function bscAttributeAnswerByRef(
+  entries: ReadonlyArray<{
+    bscRef: string;
+    attributeTokens?: string[];
+    printRun?: number;
+  }>,
+): Map<string, { attributeTokens?: string[]; printRun?: number } | undefined> {
+  const key = (e: { attributeTokens?: string[]; printRun?: number }) =>
+    JSON.stringify([e.attributeTokens ?? null, e.printRun ?? null]);
+  const out = new Map<
+    string,
+    { attributeTokens?: string[]; printRun?: number } | undefined
+  >();
+  for (const e of entries) {
+    if (!out.has(e.bscRef)) out.set(e.bscRef, e);
+    else {
+      const prior = out.get(e.bscRef);
+      if (prior && key(prior) !== key(e)) out.set(e.bscRef, undefined);
+    }
+  }
+  return out;
 }
 
 /**
@@ -15342,6 +15382,9 @@ export const previewCardChecklist = action({
             }
           }
           const teamsFor = new Map(decided.map((d) => [d.bscRef, d.teams]));
+          // NEO-339 — the attribute fill `resolveCandidateTeams` patches onto
+          // the staged row, applied in memory by the same function.
+          const attributesFor = bscAttributeAnswerByRef(entries);
           for (const c of chunk) {
             const teams = teamsFor.get(c.platformData.bsc!.ref);
             if (teams && teams.length > 0) {
@@ -15349,6 +15392,22 @@ export const previewCardChecklist = action({
               // Cards that now carry at least one team (a dual-team card
               // counts once).
               teamLookup.resolved++;
+            }
+            const answer = attributesFor.get(c.platformData.bsc!.ref);
+            if (
+              answer &&
+              (answer.attributeTokens?.length || answer.printRun !== undefined)
+            ) {
+              const { fields, changed } = fillBscAttributeFields(c, {
+                tokens: answer.attributeTokens ?? [],
+                printRun: answer.printRun,
+              });
+              if (changed) {
+                c.attributes = fields.attributes;
+                c.printRun = fields.printRun;
+                c.isRookie = fields.isRookie;
+                c.isRelic = fields.isRelic;
+              }
             }
           }
         }
