@@ -96,7 +96,10 @@ describe("generateListingTitle", () => {
     expect(title.length).toBeLessThanOrEqual(80);
     // The card number is the least negotiable token — must always survive,
     // even when the descriptive prefix has to be truncated to fit.
-    expect(title.endsWith("#1")).toBe(true);
+    expect(title).toMatch(/ #1( |$)/);
+    // NEO-339: the set words were cut, not the player.
+    expect(title).toContain("A Very Long Player Name Indeed Jones Jr #1");
+    expect(title).not.toContain("Extremely");
   });
 
   test("setName matching manufacturer is not duplicated (e.g. Topps flagship base product)", () => {
@@ -133,7 +136,7 @@ describe("generateListingTitle", () => {
     expect(title).toBe("2024 Topps Toppsmania #1");
   });
 
-  test("hard cap truncates the descriptive prefix (never the card number) when even the core overflows 80 chars", () => {
+  test("hard cap truncates the descriptive prefix (never the card number) when even the player alone overflows 80 chars", () => {
     const title = generateListingTitle({
       cardNumber: "99999",
       playerNames: [
@@ -148,8 +151,10 @@ describe("generateListingTitle", () => {
     // eBay title reads to a buyer as a broken listing. The cut is at a whole
     // word instead.
     expect(title).not.toContain("…");
+    // NEO-339: the set words go before any of the player's ("Topps Chrome"
+    // is gone); the year leads, then the name is cut at a whole word.
     expect(title).toBe(
-      "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999",
+      "2024 An Absurdly Long Player Full Name That Alone Exceeds The Entire #99999",
     );
     expect(title.endsWith("#99999")).toBe(true);
   });

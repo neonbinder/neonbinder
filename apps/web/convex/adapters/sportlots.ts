@@ -1142,6 +1142,24 @@ async function fetchSetNames(
  * carrying "[ VAR ]" in its name: the number looked printed twice, and the
  * name disagreed with BSC's on every pair. It is the plainest variation marker
  * SportLots writes; it just names no variation, so `variationLabel` is absent.
+ *
+ * ## `VAR` makes it a variation whatever follows, and the name is never glued
+ *
+ * NEO-339 (2023 Topps Chrome): two shapes lost the card's player.
+ *
+ *   - `[ VAR SSP ]`. The attribute-token check above ran on what followed the
+ *     optional `VAR`, so an SSP variation (BSC's 1c, "VAR: SSP") read as a
+ *     second plain card, kept "[ VAR ]" in its name, and `parseSlSubjects`
+ *     refused the bracket: no player at all. A bracket that SAYS `VAR` is a
+ *     variation; the attribute check only applies to a bracket without it.
+ *     The words after `VAR` are still its label (untranslated, "SSP" here,
+ *     which is also BSC's), and when every one of them is an attribute token
+ *     they are left in the residual too, so `tokenizeSlDescription` lifts
+ *     them as attributes.
+ *   - `[ VAR ] RC`. The marker was cut out with the spaces on both sides of
+ *     it and the two halves joined with nothing, so "Adley Rutschman [ VAR ]
+ *     RC" became "Adley RutschmanRC": a player NB has never heard of, and
+ *     the RC lost. The cut now leaves one space.
  */
 /**
  * Bracket contents that describe the card rather than name a variation of it.
@@ -1163,23 +1181,38 @@ export function parseSlVariationMarker(desc: string): {
   variationLabel?: string;
   residual: string;
 } {
-  // `VAR ` is optional — see the note above. Tolerant of internal spacing.
-  const m = desc.match(/\s*\[\s*(?:VAR\s+)?([^\]]+?)\s*\]\s*/i);
+  // `VAR` is optional — see the note above. Tolerant of internal spacing.
+  const m = desc.match(/\s*\[\s*([^\]]+?)\s*\]\s*/);
   if (!m) return { isVariation: false, residual: desc };
   const inner = m[1].trim();
-  // A bracket holding only an attribute token describes the card rather than
-  // naming a second version of it.
-  if (SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
+  const varMarker = inner.match(/^VAR(?:\s+([\s\S]*))?$/i);
+  // A bracket holding only an attribute token, and no `VAR`, describes the
+  // card rather than naming a second version of it.
+  if (!varMarker && SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
     return { isVariation: false, residual: desc };
   }
-  const residual = (desc.slice(0, m.index) + desc.slice(m.index! + m[0].length))
+  const label = (varMarker ? (varMarker[1] ?? "") : inner).trim();
+  const labelWords = label.split(/\s+/).filter(Boolean);
+  // `[ VAR SSP ]`: the short print is a fact about the card as well as SL's
+  // name for the variation, so it stays where the tokenizer will lift it.
+  const keepInResidual =
+    labelWords.length > 0 &&
+    labelWords.every((w) => SL_BRACKET_ATTRIBUTE_TOKENS.has(w.toUpperCase()));
+  // One space where the marker was, never none: "… [ VAR ] RC" must not
+  // become "…RC".
+  const residual = [
+    desc.slice(0, m.index),
+    keepInResidual ? label : "",
+    desc.slice(m.index! + m[0].length),
+  ]
+    .join(" ")
     .replace(/\s+/g, " ")
     .trim();
   // A bare `[ VAR ]`: a variation that names no variation.
-  if (inner.toUpperCase() === "VAR") return { isVariation: true, residual };
+  if (!label) return { isVariation: true, residual };
   return {
     isVariation: true,
-    variationLabel: displayVariationLabel(inner),
+    variationLabel: displayVariationLabel(label),
     residual,
   };
 }
@@ -1232,7 +1265,7 @@ export function parseSlVariationMarker(desc: string): {
  * Still pure parsing of SportLots' own string: nothing is looked up in NB, and
  * no name is matched against anything.
  */
-function tokenizeSlDescription(desc: string): {
+export function tokenizeSlDescription(desc: string): {
   attributes: string[];
   printRun?: number;
   residual: string;

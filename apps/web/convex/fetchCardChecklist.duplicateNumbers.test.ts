@@ -24,12 +24,24 @@ import { Id } from "./_generated/dataModel";
 // The real parsers, not the mocked action: SportLots rows below are built from
 // the exact live descriptions, so these tests cover the adapter's reading of
 // "[ VAR ]" as well as the pairing.
-import { parseSlSubjects, parseSlVariationMarker } from "./adapters/sportlots";
+import {
+  parseSlSubjects,
+  parseSlVariationMarker,
+  tokenizeSlDescription,
+} from "./adapters/sportlots";
+import { normalizePlayerName } from "./players";
+import {
+  buildPairingResult,
+  candidateToPairingCard,
+  seedPairingState,
+} from "../lib/set-build/pairing";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 type Card = {
   cardNumber: string;
   cardName: string;
   players?: string[];
+  attributes?: string[];
   cardVariation?: string;
   isVariation?: boolean;
   platformRef?: string;
@@ -514,3 +526,264 @@ describe("fetchCardChecklist — an unlabelled SportLots [ VAR ] under the base 
   });
 });
 
+
+/**
+ * A SportLots row exactly as the adapter derives it (the `fetchSportLotsChecklist`
+ * row loop): the variation marker, then the attribute tokens, then the players
+ * off what is left. `slRow` above skips the tokenizer; these shapes need it.
+ */
+function slParsed(cardNumber: string, description: string): Card {
+  const { isVariation, variationLabel, residual: withoutVariation } =
+    parseSlVariationMarker(description);
+  const { attributes, residual } = tokenizeSlDescription(withoutVariation);
+  const { players } = parseSlSubjects(residual);
+  return {
+    cardNumber,
+    cardName: residual || withoutVariation,
+    ...(players ? { players } : {}),
+    ...(attributes.length ? { attributes } : {}),
+    ...(isVariation ? { isVariation: true } : {}),
+    ...(variationLabel ? { cardVariation: variationLabel } : {}),
+    platformRef: `2023 Topps Chrome #${cardNumber} ${description}`,
+    sportlotsRef: cardNumber,
+    sourceSlSetId: "189991",
+  };
+}
+
+/**
+ * Fetch, pair (the dialog's reducer, every unmatched card kept, as the set
+ * builder's spec does), and commit, with the named players already in NB so
+ * each name resolves to exactly one row. Returns the committed rows by number
+ * and each player's id by name.
+ */
+async function fetchPairAndCommit(playerNames: string[]) {
+  const t = convexTest(schema, modules);
+  const insertId = await seedTree(t);
+  const sportId = await t.run(async (ctx) => {
+    const sport = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level", (q) => q.eq("level", "sport"))
+      .first();
+    return sport!._id;
+  });
+  const idByName = new Map<string, Id<"players">>();
+  for (const name of playerNames) {
+    const id = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name,
+        nameNormalized: normalizePlayerName(name),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    idByName.set(name, id);
+  }
+  const admin = t.withIdentity(ADMIN);
+  await admin.action(api.selectorOptions.fetchCardChecklist, {
+    selectorOptionId: insertId,
+  });
+  const live = await admin.query(api.checklistCandidates.getReadyCandidates, {
+    selectorOptionId: insertId,
+  });
+  const state = seedPairingState({
+    autoMatched: live.cards
+      .filter((c) => c.bucket === "matched")
+      .map((c) => ({ card: candidateToPairingCard(c), confidence: c.confidence ?? 1 })),
+    unmatchedBsc: live.cards.filter((c) => c.bucket === "bscOnly").map(candidateToPairingCard),
+    unmatchedSl: live.cards.filter((c) => c.bucket === "slOnly").map(candidateToPairingCard),
+  });
+  const { cards } = buildPairingResult(state, {
+    keepUnmatchedBsc: true,
+    keepUnmatchedSl: true,
+  });
+  await admin.action(api.selectorOptions.commitCardChecklist, {
+    selectorOptionId: insertId,
+    sportId,
+    cards,
+  });
+  const rows = await t.run(async (ctx) =>
+    ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", insertId))
+      .collect(),
+  );
+  await cancelScheduled(t);
+  return { rows, idByName };
+}
+
+describe("fetchCardChecklist — a SportLots VAR keeps its player (NEO-339, 2023 Topps Chrome)", () => {
+  // BSC's own rows for #1 (read live, 2026-10-19): 1, 1b "VAR: Base image
+  // variation", 1c "VAR: SSP", all Adley Rutschman.
+  const BSC_ONE = [
+    bscRow("1", "Adley Rutschman"),
+    bscRow("1b", "Adley Rutschman", {
+      isVariation: true,
+      cardVariation: "Base image variation",
+    }),
+    bscRow("1c", "Adley Rutschman", { isVariation: true, cardVariation: "SSP" }),
+  ];
+
+  test("SportLots' [ VAR SSP ] is a variation with its player, not a second plain #1 with none", () => {
+    const row = slParsed("1", "Adley Rutschman [ VAR SSP ]");
+    expect(row).toMatchObject({
+      cardName: "Adley Rutschman",
+      players: ["Adley Rutschman"],
+      isVariation: true,
+      cardVariation: "SSP",
+      attributes: ["SSP"],
+    });
+  });
+
+  test("a word after [ VAR ] is not glued to the name", () => {
+    const row = slParsed("182", "Riley Greene [ VAR ] RC");
+    expect(row).toMatchObject({
+      cardName: "Riley Greene",
+      players: ["Riley Greene"],
+      isVariation: true,
+      attributes: ["RC"],
+    });
+    expect(row).not.toHaveProperty("cardVariation");
+  });
+
+  test("BSC 1 + 1b + 1c against SL #1, #1 [ VAR ], #1 [ VAR SSP ]: three pairs, every card carrying the player", async () => {
+    mockState.bscCards = BSC_ONE;
+    mockState.slCards = [
+      slParsed("1", "Adley Rutschman RC"),
+      slParsed("1", "Adley Rutschman [ VAR ]"),
+      slParsed("1", "Adley Rutschman [ VAR SSP ]"),
+    ];
+
+    const res = await fetchAndBucket();
+
+    expect(pairs(res)).toEqual({
+      "bsc-1": "2023 Topps Chrome #1 Adley Rutschman RC",
+      "bsc-1b": "2023 Topps Chrome #1 Adley Rutschman [ VAR ]",
+      "bsc-1c": "2023 Topps Chrome #1 Adley Rutschman [ VAR SSP ]",
+    });
+    expect(res.bscOnly).toHaveLength(0);
+    expect(res.slOnly).toHaveLength(0);
+    for (const m of res.matched) {
+      expect(m.players).toEqual(["Adley Rutschman"]);
+      expect(m).not.toHaveProperty("nameConflict");
+      expect(m).not.toHaveProperty("playersConflict");
+    }
+  });
+
+  test("[ VAR ] RC against BSC 182b: one pair, no roster disagreement", async () => {
+    mockState.bscCards = [
+      bscRow("182", "Riley Greene"),
+      bscRow("182b", "Riley Greene", { isVariation: true }),
+    ];
+    mockState.slCards = [
+      slParsed("182", "Riley Greene RC"),
+      slParsed("182", "Riley Greene [ VAR ] RC"),
+    ];
+
+    const res = await fetchAndBucket();
+
+    expect(pairs(res)).toEqual({
+      "bsc-182": "2023 Topps Chrome #182 Riley Greene RC",
+      "bsc-182b": "2023 Topps Chrome #182 Riley Greene [ VAR ] RC",
+    });
+    for (const m of res.matched) {
+      expect(m.players).toEqual(["Riley Greene"]);
+      expect(m).not.toHaveProperty("playersConflict");
+    }
+  });
+
+  test("a SportLots VAR matched to a BSC variation that names no player carries SportLots' player", async () => {
+    mockState.bscCards = [
+      bscRow("95", "Corbin Carroll"),
+      bscRow("95b", "Card #95b", { isVariation: true, players: undefined }),
+    ];
+    mockState.slCards = [
+      slParsed("95", "Corbin Carroll RC"),
+      slParsed("95", "Corbin Carroll [ VAR ]"),
+    ];
+
+    const res = await fetchAndBucket();
+
+    expect(pairs(res)).toEqual({
+      "bsc-95": "2023 Topps Chrome #95 Corbin Carroll RC",
+      "bsc-95b": "2023 Topps Chrome #95 Corbin Carroll [ VAR ]",
+    });
+    const variation = res.matched.find((m) => m.platformData.bsc?.ref === "bsc-95b")!;
+    expect(variation.players).toEqual(["Corbin Carroll"]);
+  });
+
+  test("committed: the base card and both variations link the same player, and the variations hang off #1", async () => {
+    mockState.bscCards = BSC_ONE;
+    mockState.slCards = [
+      slParsed("1", "Adley Rutschman RC"),
+      slParsed("1", "Adley Rutschman [ VAR ]"),
+      slParsed("1", "Adley Rutschman [ VAR SSP ]"),
+    ];
+
+    const { rows, idByName } = await fetchPairAndCommit(["Adley Rutschman"]);
+
+    const byNumber = new Map(rows.map((r) => [r.cardNumber, r]));
+    expect([...byNumber.keys()].sort()).toEqual(["1", "1b", "1c"]);
+    const rutschman = idByName.get("Adley Rutschman");
+    for (const number of ["1", "1b", "1c"]) {
+      expect(byNumber.get(number)!.playerIds).toEqual([rutschman]);
+    }
+    expect(byNumber.get("1b")!.variationOfCardId).toBe(byNumber.get("1")!._id);
+    expect(byNumber.get("1c")!.variationOfCardId).toBe(byNumber.get("1")!._id);
+  });
+
+  test("committed, the live #1 shape: both SportLots VARs and BSC 1b hang off base #1, each with the player", async () => {
+    // Read from the preview at 244f846: SportLots serves three #1 rows, the
+    // VAR ones with a line break before the bracket; BSC lists 1 and 1b.
+    // BSC 1b against two SportLots variations of the same player is a tie, so
+    // the three variations stay unpaired (invariant 8) and are kept as
+    // singles; the commit still files each one under #1.
+    mockState.bscCards = BSC_ONE.slice(0, 2);
+    mockState.slCards = [
+      slParsed("1", "Adley Rutschman"),
+      slParsed("1", "Adley Rutschman\r\n    [ VAR ]"),
+      slParsed("1", "Adley Rutschman\r\n    [ VAR SSP ]"),
+    ];
+    for (const row of mockState.slCards.slice(1)) {
+      expect(row).toMatchObject({
+        cardName: "Adley Rutschman",
+        players: ["Adley Rutschman"],
+        isVariation: true,
+      });
+    }
+
+    const { rows, idByName } = await fetchPairAndCommit(["Adley Rutschman"]);
+
+    expect(rows).toHaveLength(4);
+    const base = rows.filter((r) => r.platformData?.bsc?.ref === "bsc-1");
+    expect(base).toHaveLength(1);
+    const variations = rows.filter((r) => r._id !== base[0]._id);
+    // 1b, and the two SportLots VARs (still numbered 1, as SportLots prints).
+    expect(variations.map((r) => r.cardNumber).sort()).toEqual(["1", "1", "1b"]);
+    for (const r of rows) {
+      expect(r.playerIds).toEqual([idByName.get("Adley Rutschman")]);
+    }
+    for (const r of variations) {
+      expect(r.variationOfCardId).toBe(base[0]._id);
+    }
+    expect(base[0].variationOfCardId).toBeUndefined();
+    const ssp = variations.find((r) =>
+      r.platformData?.sportlots?.ref?.includes("[ VAR SSP ]"),
+    )!;
+    expect(ssp.cardVariation).toBe("SSP");
+  });
+
+  test("committed: a one-word name BSC lists (\"Ichiro\") links, though SportLots' parser refuses it", async () => {
+    // 2023 Topps Chrome Update Legend Autographs: BSC lists CLA-I as
+    // "Ichiro" (read live, 2026-10-19). SportLots' "Ichiro AU" yields no
+    // players (`parseSlSubjects` refuses a single token), which is not a
+    // disagreement, so the merged card carries BSC's name.
+    mockState.bscCards = [bscRow("CLA-I", "Ichiro")];
+    mockState.slCards = [slParsed("CLA-I", "Ichiro AU")];
+    expect(mockState.slCards[0]).not.toHaveProperty("players");
+
+    const { rows, idByName } = await fetchPairAndCommit(["Ichiro"]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].playerIds).toEqual([idByName.get("Ichiro")]);
+  });
+});

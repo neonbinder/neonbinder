@@ -110,6 +110,41 @@ describe("parseSlVariationMarker", () => {
     });
   });
 
+  test("[ VAR SSP ] is a variation: VAR decides, and the short print stays for the tokenizer (NEO-339)", () => {
+    // 2023 Topps Chrome #1c (BSC: "VAR: SSP"). It used to read as a second
+    // plain #1 named "Adley Rutschman [ VAR ]", with no player.
+    expect(parseSlVariationMarker("Adley Rutschman [ VAR SSP ]")).toEqual({
+      isVariation: true,
+      variationLabel: "SSP",
+      residual: "Adley Rutschman SSP",
+    });
+    // A label that is not only attribute tokens is not put back.
+    expect(parseSlVariationMarker("Carl Yastrzemski [ VAR SSSP ]")).toEqual({
+      isVariation: true,
+      variationLabel: "SSSP",
+      residual: "Carl Yastrzemski",
+    });
+  });
+
+  test("the live 2023 Topps Chrome rows: a line break before the bracket is cleaned out (NEO-339)", () => {
+    for (const desc of ["Adley Rutschman\r\n    [ VAR ]", "Adley Rutschman\r\n    [ VAR SSP ]"]) {
+      const { isVariation, residual } = parseSlVariationMarker(desc);
+      expect(isVariation).toBe(true);
+      expect(residual).not.toMatch(/[\r\n[\]]/);
+      expect(residual.replace(/ SSP$/, "")).toBe("Adley Rutschman");
+    }
+  });
+
+  test("text after the marker is not glued to the name (NEO-339)", () => {
+    expect(parseSlVariationMarker("Riley Greene [ VAR ] RC")).toEqual({
+      isVariation: true,
+      residual: "Riley Greene RC",
+    });
+    expect(parseSlVariationMarker("Alec Bohm [ VAR Action Image ] SP").residual).toBe(
+      "Alec Bohm SP",
+    );
+  });
+
   test("a bracket that is not a VAR marker is left alone", () => {
     const desc = "2021 Topps Heritage #7 Brandon Belt [ SP ]";
     expect(parseSlVariationMarker(desc)).toEqual({

@@ -258,8 +258,10 @@ describe("leftOutOfTitle", () => {
     });
     const assessment = assessListingTitle(inputs);
     expect(assessment.coreFits).toBe(false);
+    // NEO-339: the set's last words are cut, never the player.
+    expect(assessment.title).toContain("Shohei Ohtani #300");
     const left = leftOutOfTitle(inputs, assessment);
-    expect(left).toContain("Shohei Ohtani");
+    expect(left).toEqual(["Anniversary Collectors Box", "Los Angeles Dodgers"]);
     // The sport and the second rookie spelling are FILLER: dropped, never
     // listed as a loss.
     expect(assessment.dropped).toEqual(expect.arrayContaining(["Rookie", "Baseball"]));
@@ -364,16 +366,22 @@ describe("buildCardRowForInsert — the operator's pre-save answer", () => {
 
 describe("a generational suffix is never trimmed off a name (NEO-335 visual pass)", () => {
   /**
-   * Every identity length from "the core fits" down to "only the year fits",
+   * Every prefix budget from "the core fits" down to "only the year fits",
    * so the cut is tried at EVERY boundary inside the names, including the one
-   * right before the suffix.
+   * right before the suffix. NEO-339: the players outrank the set words, so a
+   * name is only cut once the set words are all gone; the budget is squeezed
+   * with the card number, the one token that never gives way.
    */
   function sweep(playerNames: string[]) {
     const out: Array<{ title: string; coreFits: boolean; left: string[] }> = [];
-    for (let pad = 0; pad < 70; pad += 1) {
+    for (let pad = 0; pad < 72; pad += 1) {
       const inputs = listingInputsForCard(
-        { cardNumber: "1" },
-        { sportValue: "Baseball", setNameValue: `Upper Deck ${"x".repeat(pad)}`.trim() },
+        { cardNumber: `1${"9".repeat(pad)}` },
+        {
+          sportValue: "Baseball",
+          setNameValue: "Upper Deck",
+          inheritedFeatures: { season: "1989" },
+        },
         { playerNames },
       );
       const a = assessListingTitle(inputs);
@@ -398,6 +406,16 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
     expect(results.some((r) => r.left.includes("Ken Griffey Jr."))).toBe(true);
   });
 
+  test("NEO-339: no player word is lost while a set word is still in the title", () => {
+    for (const names of [["Ken Griffey Jr.", "Ken Griffey Sr."], ["Shohei Ohtani"]]) {
+      for (const { title, left } of sweep(names)) {
+        if (left.some((l) => names.includes(l))) {
+          expect(title).not.toMatch(/\b(Upper|Deck)\b/);
+        }
+      }
+    }
+  });
+
   test("a single Jr. stays attached", () => {
     for (const { title } of sweep(["Bobby Witt Jr."])) {
       expect(title).not.toMatch(/Witt(?! Jr\.)/);
@@ -415,28 +433,34 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
 
   test("a name with no suffix is cut exactly as before (a partial name is still possible)", () => {
     const results = sweep(["Shohei Ohtani"]);
-    expect(results.some((r) => /Shohei #1$/.test(r.title))).toBe(true);
+    expect(results.some((r) => /^1989 Shohei #19*( |$)/.test(r.title))).toBe(true);
     // …and is reported whole.
     expect(
-      results.filter((r) => /Shohei #1$/.test(r.title)).every((r) => r.left.includes("Shohei Ohtani")),
+      results
+        .filter((r) => /^1989 Shohei #19*( |$)/.test(r.title))
+        .every((r) => r.left.includes("Shohei Ohtani")),
     ).toBe(true);
   });
 });
 
 describe("filler is never listed as a loss (collector review)", () => {
   test("a set or player word that reads like the sport is still reported; the sport TOKEN is not", () => {
+    // NEO-339: the core gives up set words before the player, so the set's
+    // last two words go and the player stays; the 9-character " Baseball"
+    // sport token then does not fit either.
     const inputs = listingInputsForCard(
       { cardNumber: "1" },
-      { sportValue: "Baseball", setNameValue: `${"x".repeat(70)} Baseball Heroes` },
+      { sportValue: "Baseball", setNameValue: `${"x".repeat(55)} Baseball Heroes` },
       { playerNames: ["Shohei Ohtani"] },
     );
     const a = assessListingTitle(inputs);
     expect(a.coreFits).toBe(false);
+    expect(a.title).toBe(`${"x".repeat(55)} Shohei Ohtani #1`);
     expect(a.dropped).toContain("Baseball");
     const left = leftOutOfTitle(inputs, a);
     // "Baseball" here is a SET word the core cut lost, so it is a real loss;
     // the sport token dropped beside it is filler and not listed again.
-    expect(left).toEqual(["Baseball Heroes", "Shohei Ohtani"]);
+    expect(left).toEqual(["Baseball Heroes"]);
   });
 
   test("isFillerToken: the sport, and Rookie only beside RC", () => {
@@ -488,7 +512,9 @@ describe("filler is never listed as a loss (collector review)", () => {
     expect(a.rookieAsRcUsed).toBe(true);
     const left = leftOutOfTitle(inputs, a);
     expect(left.some((entry) => /\bRookie\b/.test(entry))).toBe(false);
-    expect(left).toContain("Elly De La Cruz");
+    // NEO-339: the insert's tail is what the cut lost, not the player.
+    expect(a.title).toContain("Elly De La Cruz #RD-12");
+    expect(left).toEqual(["Platinum Anniversary Edition"]);
   });
 });
 
@@ -578,9 +604,12 @@ describe("NEO-335 — leftOutOfTitle reports the set and insert words", () => {
     });
     const assessment = assessListingTitle(inputs);
     expect(assessment.coreFits).toBe(false);
+    // NEO-339: the insert's last words go first; the player stays.
+    expect(assessment.title).toBe(
+      "2026 Topps Chrome Update Series Sapphire Edition Platinum Shohei Ohtani #300",
+    );
     const left = leftOutOfTitle(inputs, assessment);
-    expect(left).toContain("Shohei Ohtani");
-    expect(left.some((entry) => entry.includes("Box"))).toBe(true);
+    expect(left).toEqual(["Anniversary Collectors Box"]);
   });
 
   test("with the short name in use, the full names are not reported — they were replaced", () => {
@@ -721,5 +750,78 @@ describe("NEO-345 — the leaf's autograph format, through mergeCardFeatures", (
     expect(built.row.listingTitle).toBe(preview.assessment.title);
     expect(built.row.features?.autographed).toBe("On Card");
     expect(built.row.features?.signedBy).toBe("Mike Trout");
+  });
+});
+
+describe("NEO-339 — a long insert name never pushes the player out of the title", () => {
+  // 2023 Topps Chrome as the set builder files it: a flat insert whose name
+  // carries its parallel's words ("Authentics Relics Orange Refractor").
+  const chrome = (insert: string): ListingSetContext => ({
+    sportValue: "Baseball",
+    setNameValue: "Topps Chrome",
+    inheritedFeatures: { manufacturer: "Topps", season: "2023" },
+    insertNameValue: insert,
+    insertIsRole: true,
+  });
+  const ORANGE_RELIC = "Authentics Relics Orange Refractor";
+
+  test("the tester's card: the insert's last word goes, the player stays, and the row is flagged", () => {
+    const { assessment, inputs, items } = assessNewCardListing(
+      { cardNumber: "TCA-VG", isRelic: true, printRun: 25 },
+      chrome(ORANGE_RELIC),
+      { playerNames: ["Vladimir Guerrero Jr."], teamNames: ["Toronto Blue Jays"] },
+    );
+    // Before the fix this card came out as "2023 Topps Chrome Authentics
+    // Relics Orange Refractor #TCA-VG RELIC /25 Baseball": every set word, no
+    // player.
+    expect(assessment.title).toBe(
+      "2023 Topps Chrome Authentics Relics Orange Vladimir Guerrero Jr. #TCA-VG RELIC",
+    );
+    expect(assessment.title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    // The core was still cut, so the row is born `listingTitleTruncated`.
+    expect(assessment.coreFits).toBe(false);
+    expect(items).toEqual([{ kind: "titleTruncated" }]);
+    // "Left out to fit" names the insert word the cut lost, then the tokens.
+    expect(leftOutOfTitle(inputs, assessment)).toEqual(["Refractor", "/25", "Toronto Blue Jays"]);
+  });
+
+  test("a dual-player card keeps both names whole and gives up insert words instead", () => {
+    const { assessment, inputs, items } = assessNewCardListing(
+      { cardNumber: "DR-GT", isRelic: true, printRun: 25 },
+      chrome(ORANGE_RELIC),
+      { playerNames: ["Vladimir Guerrero Jr.", "Fernando Tatis Jr."] },
+    );
+    expect(assessment.title).toBe(
+      "2023 Topps Chrome Authentics Vladimir Guerrero Jr. & Fernando Tatis Jr. #DR-GT",
+    );
+    expect(assessment.coreFits).toBe(false);
+    expect(items).toEqual([{ kind: "titleTruncated" }]);
+    expect(leftOutOfTitle(inputs, assessment)).toEqual(["Relics Orange Refractor", "RELIC", "/25"]);
+  });
+
+  test("an insert that fits is untouched and not flagged", () => {
+    const { assessment, inputs, items } = assessNewCardListing(
+      { cardNumber: "YQ-1", isRookie: true },
+      chrome("Youthquake"),
+      { playerNames: ["Elly De La Cruz"], teamNames: ["Cincinnati Reds"] },
+    );
+    expect(assessment.title).toBe(
+      "2023 Topps Chrome Youthquake Elly De La Cruz #YQ-1 RC Cincinnati Reds Rookie",
+    );
+    expect(assessment.coreFits).toBe(true);
+    expect(items).toEqual([]);
+    expect(leftOutOfTitle(inputs, assessment)).toEqual([]);
+  });
+
+  test("three players: the set words go from the end, the names and the year stay", () => {
+    const { assessment } = assessNewCardListing(
+      { cardNumber: "1" },
+      chrome(ORANGE_RELIC),
+      { playerNames: ["Vladimir Guerrero Jr.", "Fernando Tatis Jr.", "Julio Rodriguez"] },
+    );
+    expect(assessment.coreFits).toBe(false);
+    expect(assessment.title).toBe(
+      "2023 Topps Vladimir Guerrero Jr. & Fernando Tatis Jr. & Julio Rodriguez #1",
+    );
   });
 });

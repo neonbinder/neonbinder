@@ -16,6 +16,8 @@
  * ## The formula, and why the title PACKS rather than stays short
  *
  *   core:      <year> <manufacturer/set> <insert> <players> #<cardNumber>
+ *              (a core too long to fit gives up its insert, set and maker
+ *              words, from the end, before any player's: `cutCore`)
  *   then, while each still fits, in this order:
  *              AUTO, RELIC, <parallel>, /<printRun>, <cardVariation>,
  *              RC, SP|SSP, <each team name>, "Rookie", <sport>
@@ -542,6 +544,80 @@ function cutAtWordBoundary(
 }
 
 /**
+ * The leading whole words of `text` that fit in `room` characters; empty when
+ * not even the first word fits. Never a mid-word slice and never a trailing
+ * " &" ("Black & White Mini" cut after "&").
+ */
+function leadingWordsThatFit(text: string, room: number): string {
+  if (text.length <= room) return text;
+  if (room <= 0) return "";
+  const at = text.lastIndexOf(" ", room);
+  return at > 0 ? dropDanglingConnector(text.slice(0, at)) : "";
+}
+
+/**
+ * The core's prefix (everything before ` #<cardNumber>`) when it does not fit
+ * whole in `maxPrefixLen` characters.
+ *
+ * ## The players outrank the set words
+ *
+ * A title is found by the player's name first: "Vladimir Guerrero Jr.
+ * Authentics Relic" is a search, "Topps Chrome Authentics Relics Orange
+ * Refractor" with no name in it is not, and nobody can tell from it which of
+ * the checklist's cards is for sale. The cut used to run from the END of the
+ * core, which is where the players sit, so on a long insert the whole name
+ * went and every set word stayed (NEO-339: thirteen 2023 Topps Chrome insert
+ * titles rewritten by hand).
+ *
+ * So the words are given up in this order:
+ *
+ *   1. set identity, from its end: the insert's words first (on a flat insert
+ *      such as "Authentics Relics Orange Refractor" that is its parallel
+ *      words, then its own), then the set's, then the maker's. The year leads
+ *      the identity, so it is the last of them to go.
+ *   2. only when the players do not fit even beside nothing but the card
+ *      number: the players, cut at a whole word after the year. A name ending
+ *      in Jr./Sr./II/III/IV is kept whole or dropped whole when an earlier
+ *      boundary exists (`cutAtWordBoundary`'s `forbidden`): Ken Griffey Jr.
+ *      and Sr. share a card.
+ *
+ * With no players the identity is cut at a whole word, as it always was
+ * (including the hard-slice fallback for a single unbroken word).
+ *
+ * Either way the core was cut, so the assessment reports `coreFits: false`
+ * and the row is born `listingTitleTruncated`: identity words a buyer might
+ * search on are gone, and `leftOutOfTitle` names them.
+ */
+function cutCore(
+  identity: string,
+  playerPart: string,
+  inputs: ListingCardInputs,
+  maxPrefixLen: number,
+): string {
+  if (!playerPart) return cutAtWordBoundary(identity, maxPrefixLen);
+  if (playerPart.length <= maxPrefixLen) {
+    // The space between the identity and the players costs one character.
+    const kept = leadingWordsThatFit(identity, maxPrefixLen - playerPart.length - 1);
+    return [kept, playerPart].filter(Boolean).join(" ");
+  }
+  const year = inputs.year?.trim() ?? "";
+  const text = [year, playerPart].filter(Boolean).join(" ");
+  // NEO-335 — the spaces inside a player name ending in Jr./Sr./II/III/IV,
+  // where the cut may not land: the suffix is who the player is.
+  const suffixedNameSpaces = new Set<number>();
+  let start = year ? year.length + 1 : 0;
+  for (const name of inputs.playerNames ?? []) {
+    if (endsWithNameSuffix(name)) {
+      for (let i = 0; i < name.length; i += 1) {
+        if (name[i] === " ") suffixedNameSpaces.add(start + i);
+      }
+    }
+    start += name.length + " & ".length;
+  }
+  return cutAtWordBoundary(text, maxPrefixLen, suffixedNameSpaces);
+}
+
+/**
  * NEO-101 — eBay-style SEO title, plus what it had to give up building it.
  *
  * ## The shape
@@ -559,7 +635,8 @@ function cutAtWordBoundary(
  *   2. the title ends with `#<cardNumber>`, or with `#<cardNumber>` followed by
  *      optional tokens. The card number is the least negotiable token — a
  *      listing is ambiguous without it — so it is never the thing that gets
- *      cut; the descriptive prefix truncates instead.
+ *      cut; the descriptive prefix truncates instead, set words before
+ *      players (`cutCore`).
  *
  * (Guarantee 1 assumes the card number itself fits: `#<cardNumber>` shorter
  * than the cap. A card number pushing 80 characters is not a card number, and
@@ -627,28 +704,12 @@ function buildTitle(
   const identity = identityParts.join(" ");
   const corePrefix = [identity, playerPart].filter(Boolean).join(" ");
 
-  // NEO-335 — the spaces inside a player name ending in Jr./Sr./II/III/IV,
-  // where the core cut may not land: the suffix is who the player is (Ken
-  // Griffey Jr. and Sr. share a card). See `cutAtWordBoundary`.
-  const suffixedNameSpaces = new Set<number>();
-  if (playerPart) {
-    let start = identity ? identity.length + 1 : 0;
-    for (const name of inputs.playerNames ?? []) {
-      if (endsWithNameSuffix(name)) {
-        for (let i = 0; i < name.length; i += 1) {
-          if (name[i] === " ") suffixedNameSpaces.add(start + i);
-        }
-      }
-      start += name.length + " & ".length;
-    }
-  }
-
   const reserved = ` #${inputs.cardNumber}`;
   const maxPrefixLen = LISTING_TITLE_MAX - reserved.length;
   const coreFits = corePrefix.length <= maxPrefixLen;
   const prefix = coreFits
     ? corePrefix
-    : cutAtWordBoundary(corePrefix, maxPrefixLen, suffixedNameSpaces);
+    : cutCore(identity, playerPart, inputs, maxPrefixLen);
 
   let title = `${prefix}${reserved}`.trim();
 

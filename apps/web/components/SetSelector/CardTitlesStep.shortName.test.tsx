@@ -128,7 +128,11 @@ describe("CardTitlesStep — typing recomputes every title live", () => {
     });
     const left = titleFields() as HTMLTextAreaElement[];
     expect(left).toHaveLength(1);
-    expect(left[0].value).toContain("Platinum");
+    // Titled with the short name, which is cut from its end before any player
+    // is (NEO-339).
+    expect(left[0].value).toBe(
+      "2026 Topps Chrome Update Series Sapphire Shohei Ohtani & Shohei Ohtani #2",
+    );
     expect(screen.getByText("1 title still trimmed.")).toBeTruthy();
   });
 

@@ -83,8 +83,9 @@ describe("names — a data claim, never a guess", () => {
   test("a printed name that resolved is titled by its CANONICAL name", () => {
     const [group] = buildTitleGroups([card("1", { players: ["Doc Gooden"] })], context()).titleGroups;
     expect(group.cards[0].title).not.toContain("Doc");
-    // The core is cut: the canonical name is what it left out.
-    expect(group.cards[0].leftOut.join(" ")).toContain("Gooden");
+    // The core is cut, but the set's words go first (NEO-339): the canonical
+    // name is in the title.
+    expect(group.cards[0].title).toContain("Dwight Gooden #1");
   });
 
   test("a printed name that did not resolve and has no wizard answer is not on the card", () => {
@@ -199,17 +200,19 @@ describe("a generational suffix stays on the name (shared with the insert)", () 
 describe("grouping identical drops", () => {
   test("cards that lost the same words share one line, whoever is on them; a different drop is its own", () => {
     const cards = [
-      card("1"),
+      card("1", { teams: ["LA Dodgers"] }),
       card("2", { players: ["Doc Gooden"] }),
       // A dropped variation is a real loss ("Rookie" is filler and hidden).
       card("3", { cardVariation: "Sapphire Throwback Gold Refractor" }),
     ];
     const { titleGroups } = buildTitleGroups(cards, context());
     expect(titleGroups.map((g) => g.cards.map((c) => c.cardNumber))).toEqual([["1", "2"], ["3"]]);
+    // NEO-339: the set's last words are what the cut cost; the players stay.
+    expect(titleGroups[0].leftOut).toEqual(["Anniversary Collectors Box"]);
     // Each card's own names stay on its own row, never on the shared line.
-    expect(titleGroups[0].leftOut.join(" ")).not.toMatch(/Ohtani|Gooden/);
-    expect(titleGroups[0].cards[0].ownLeftOut).toEqual(["Shohei Ohtani"]);
-    expect(titleGroups[0].cards[1].ownLeftOut).toEqual(["Dwight Gooden"]);
+    expect(titleGroups[0].leftOut.join(" ")).not.toMatch(/Ohtani|Gooden|Dodgers/);
+    expect(titleGroups[0].cards[0].ownLeftOut).toEqual(["Los Angeles Dodgers"]);
+    expect(titleGroups[0].cards[1].ownLeftOut).toEqual([]);
     expect(titleGroups[1].leftOut).toContain("Sapphire Throwback Gold Refractor");
   });
 
@@ -325,7 +328,12 @@ describe("NEO-335 — the short name on the step", () => {
     });
     const shown = titleGroups.flatMap((g) => g.cards);
     expect(shown.map((c) => c.index)).toEqual([1]);
-    for (const c of shown) expect(c.title).toContain("Platinum");
+    // Titled with the short name, cut from its end (NEO-339: the set words go
+    // before the players).
+    for (const c of shown) {
+      expect(c.title.startsWith("2026 Topps Chrome Update Series Sapphire ")).toBe(true);
+      expect(c.title).toContain("Shohei Ohtani & Dwight Gooden #3");
+    }
   });
 
   test("the commit's kept titles are generated with the short name; fitted cards send nothing", () => {

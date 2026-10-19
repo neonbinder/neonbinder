@@ -369,9 +369,11 @@ describe("the post-review steps", () => {
     expect(screen.getByText("Card titles")).toBeTruthy();
     // "Kept" carries the title the operator was shown, so the server keeps
     // exactly that one.
+    // NEO-339: the cut gives up set words, not the player, so a filler word
+    // can follow the number.
     expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
-      { listingTitleKept: expect.stringMatching(/#1$/) },
-      { listingTitleKept: expect.stringMatching(/#2$/) },
+      { listingTitleKept: expect.stringMatching(/ #1( |$)/) },
+      { listingTitleKept: expect.stringMatching(/ #2( |$)/) },
     ]);
   });
 
