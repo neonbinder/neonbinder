@@ -42,13 +42,22 @@ SportLots' insert-level list is brand-year wide, so a SportLots set outside
 the Reconcile dialog's own prefix filter (`defaultSlPrefixes` in
 `lib/set-build/reconcile.ts`), or one another variant type of the set pairs,
 is not listed: it is counted in `leftUnasked`, and apply leaves it in Pending
-unasked (`dialogOpenDecisions`' `left`). A SportLots set still waiting in
-the brand's SportLots review (`readUnsortedSlIds`: no NB set has placed it) is
-never paired by the matcher's name match: the draft drafts that row from its
-other ids and asks about the SportLots set (`reconcile-unsorted-sportlots`,
-answered at `sync.pending`), and apply never offers such an auto-match as a
-proposed pair. SportLots names no product for a set, so the review and the
-brand's held ids are the only id-based evidence of whose set it is.
+unasked (`dialogOpenDecisions`' `left`). The matcher pairs BSC and SportLots
+sets by name, and SportLots names no product for a set, so a name-only pair
+(an auto-match no NB row already holds) is drafted only when the cards
+confirm it (`lib/pair-evidence.ts`): the pair's own preview must share at
+least one card number, and at most a third of the shared numbers may name
+different players (`MAX_DIFFERING_SHARE`). Otherwise, or with no preview to
+compare (checklists off, a failed preview), or while the brand's SportLots
+review still holds the SportLots set (`readUnsortedSlIds`), the row is
+drafted from its other ids and the SportLots set is an open decision
+(`reconcile-unsorted-sportlots`, answered at `sync.pending`, its detail citing
+the evidence: "2 of 3 shared card numbers name different players"). An
+insert row's evidence is its own checklist preview, read once; each other
+pair costs one preview (a Parallel type's with no team lookup). Apply sees no
+cards before it saves: it pairs only what the spec names, never offers an
+auto-match whose SportLots set the review holds, and its template leaves a
+proposed pair's SportLots half as a fill-in.
 Group Parallels' suggestions (`detectGroupings`) are the plain prefix rule,
 as in the modal. The draft weighs one case by card numbers: a suggested
 child that roots a family of its own ("Future Stars Autographs", which

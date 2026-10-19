@@ -21,7 +21,7 @@
  * |-------------------------|------------------------------------------------------|------------------------------------------------|
  * | variant types           | the set's variant-type sync (always)                  | —                                              |
  * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
- * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash |
+ * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (saved rows, by marketplace id; an auto-match only when its cards confirm it, `pairCardEvidence`); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash; an auto-match's SportLots set its cards do not confirm, or the brand's SportLots review holds (`reconcile-unsorted-sportlots`) |
  * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types); a suggested child that roots its own family stays top level only when previews show it shares no card number with its parent | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair (answered with a side, or `pairing.unlink` when it is two cards) |
  * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
@@ -108,6 +108,7 @@ import {
   type PendingSet,
 } from "../lib/reconcile-variants";
 import { cardCount } from "../lib/commit";
+import { evidenceText, pairCardEvidence, type PairEvidence } from "../lib/pair-evidence";
 import { DECISION_PLACEHOLDER, SAME_NAME_PLAYER_PLACEHOLDER } from "../lib/review";
 import {
   countOpenDecisions,
@@ -466,22 +467,35 @@ export function compactDraftReport(r: DraftReport, detail: DraftDetail = "summar
 // The draft
 // ---------------------------------------------------------------------------
 
-/** A SportLots set the matcher paired by name while the brand's SportLots review still holds it. */
+/** Why a name-only pair was not confirmed: the brand's review holds the SportLots set, or the cards. */
+export type UnconfirmedWhy =
+  | { kind: "review" }
+  | { kind: "cards"; evidence: PairEvidence }
+  | { kind: "no-evidence"; reason: string };
+
+/** A SportLots set the matcher paired by name alone that the draft could not confirm as this row's. */
 interface CrossProductSl {
   id: string;
   name: string;
   /** The Ready set it sat in: its title and BSC ids. */
   row: string;
   bsc: string[];
+  why: UnconfirmedWhy;
 }
 
-/** Why an unsorted SportLots set is asked rather than paired, and how to answer. */
-export function unsortedSlDetail(c: { id: string; name: string; row: string }, brandYear: string): string {
+/** Why a name-only SportLots set is asked rather than paired, and how to answer. */
+export function unsortedSlDetail(c: { id: string; name: string; row: string; why: UnconfirmedWhy }, brandYear: string): string {
+  const because =
+    c.why.kind === "review"
+      ? `it is still unsorted in the ${brandYear} SportLots review, so no NB set has it yet`
+      : c.why.kind === "cards"
+        ? `the cards do not confirm it: ${evidenceText(c.why.evidence)}`
+        : `the draft could not compare their cards (${c.why.reason})`;
   return (
-    `The matcher paired SportLots set ${c.id} ("${c.name}") with "${c.row}" by name alone, and it is still unsorted in the ${brandYear} SportLots review, ` +
-    `so no NB set has it yet: it may be another product's. The draft does not pair it; "${c.row}" is drafted from its other ids. ` +
-    `Answer "leave", or if it is this set's, add "${c.id}" to that row's sportlots in sync.pairs and drop this entry. ` +
-    `Sorting the review (nb_sl_review_apply) files it under the set it belongs to.`
+    `The matcher paired SportLots set ${c.id} ("${c.name}") with "${c.row}" by name alone, and ${because}: it may be another product's. ` +
+    `The draft does not pair it; "${c.row}" is drafted from its other ids. ` +
+    `Answer "leave", or if it is this set's, add "${c.id}" to that row's sportlots in sync.pairs and drop this entry.` +
+    (c.why.kind === "review" ? ` Sorting the review (nb_sl_review_apply) files it under the set it belongs to.` : "")
   );
 }
 
@@ -748,21 +762,33 @@ export async function draftSet(
         heldInBrand: { rows: brandHeld },
         usedIds,
       });
-      // A SportLots set the matcher put in a Ready set by its name alone while
-      // the brand's SportLots review still holds it (no NB set has it): never
-      // drafted as a pair. The row keeps its other ids; the SportLots set is an
-      // open decision (settlePending). A restored row's own saved ids stay.
+      // A SportLots set the matcher put in a Ready set by its NAME alone (no
+      // NB row holds both ids) is drafted as a pair only when the two sides'
+      // cards confirm it (`pairCardEvidence`: shared numbers naming the same
+      // players). Never when the brand's SportLots review still holds it (no
+      // NB set has it). Unconfirmed, the row keeps its other ids and the
+      // SportLots set is an open decision (settlePending). A restored row's
+      // own saved ids are never questioned.
       const unsortedSl = result.autoMatched.length > 0 ? await unsortedSlIds() : new Set<string>();
       const cross: CrossProductSl[] = [];
-      const ready = seed.state.ready.map((s) => {
+      const ready: typeof seed.state.ready = [];
+      for (const s of seed.state.ready) {
         const savedRow = s.existingId ? existingRows.find((r) => r._id === s.existingId) : undefined;
         const saved = new Set(savedRow ? slotIds(savedRow, "sportlots") : []);
-        const foreign = s.sl.filter((i) => unsortedSl.has(i.platformValue) && !saved.has(i.platformValue));
-        for (const f of foreign) {
-          if (!cross.some((c) => c.id === f.platformValue)) cross.push({ id: f.platformValue, name: f.value, row: s.title, bsc: s.bsc.map((i) => i.platformValue) });
+        const nameOnly = s.sl.filter((i) => !saved.has(i.platformValue));
+        let why: UnconfirmedWhy | null = null;
+        if (nameOnly.length > 0 && s.bsc.length > 0) {
+          why = nameOnly.some((i) => unsortedSl.has(i.platformValue)) ? { kind: "review" } : await pairUnconfirmed(s, t);
         }
-        return foreign.length > 0 ? { ...s, sl: s.sl.filter((i) => !foreign.includes(i)) } : s;
-      }).filter((s) => s.bsc.length + s.sl.length > 0);
+        if (!why) {
+          ready.push(s);
+          continue;
+        }
+        for (const f of nameOnly) {
+          if (!cross.some((c) => c.id === f.platformValue)) cross.push({ id: f.platformValue, name: f.value, row: s.title, bsc: s.bsc.map((i) => i.platformValue), why });
+        }
+        ready.push({ ...s, sl: s.sl.filter((i) => !nameOnly.includes(i)) });
+      }
       const pairs: Array<ExplicitPair & { bsc?: string[]; sportlots?: string[] }> = ready.map((s) => ({
         name: s.title,
         ...(s.bsc.length ? { bsc: s.bsc.map((i) => i.platformValue) } : {}),
@@ -1002,6 +1028,24 @@ export async function draftSet(
       if (e instanceof ResolveError) return false;
       throw e;
     }
+  }
+
+  /**
+   * Why a name-only Ready set is not confirmed by its cards, or null when it
+   * is: the pair's own preview (the same request the row's checklist sends,
+   * so an insert row's preview is read once), judged by `pairCardEvidence`.
+   * A Parallel type's rows are built from Base, never previewed for their own
+   * checklist, so its evidence preview skips the BSC team lookup.
+   */
+  async function pairUnconfirmed(s: { title: string; bsc: Array<{ platformValue: string }>; sl: Array<{ platformValue: string }> }, t: StructureType): Promise<UnconfirmedWhy | null> {
+    if (!wantChecklists) return { kind: "no-evidence", reason: "this draft previews no checklists" };
+    const r: DraftRow = { name: s.title, bsc: s.bsc.map((i) => i.platformValue), sportlots: s.sl.map((i) => i.platformValue) };
+    const request = rowPreviewRequest(r, t);
+    if (typeof request === "string") return { kind: "no-evidence", reason: request };
+    const got = await fetchPreview(`${t.label} › ${s.title}`, request, rowSides(r), t.role === "insert" ? {} : { lookupTeams: false });
+    if (!got.ok) return { kind: "no-evidence", reason: got.detail };
+    const evidence = pairCardEvidence(got.preview);
+    return evidence.verdict === "agree" ? null : { kind: "cards", evidence };
   }
 
   /** The brand's SportLots review ids (`readUnsortedSlIds`), read once per draft. */
@@ -1256,7 +1300,7 @@ export async function draftSet(
    * same answer. A refused session stops later previews needing that side; a
    * failure is kept, never retried.
    */
-  async function fetchPreview(label: string, request: PreviewRequest, sides: Side[]): Promise<PreviewOutcome> {
+  async function fetchPreview(label: string, request: PreviewRequest, sides: Side[], o: { lookupTeams?: boolean } = {}): Promise<PreviewOutcome> {
     const refused = sides.filter((s) => refusedSides.has(s));
     if (refused.length > 0) {
       return { ok: false, detail: `${refused.map((s) => (s === "bsc" ? "BSC" : "SportLots")).join(" and ")} refused the session earlier in this draft` };
@@ -1264,7 +1308,7 @@ export async function draftSet(
     const key = JSON.stringify(request);
     const cached = previews.get(key);
     if (cached) return cached;
-    const lookupTeams = teamBudget > 0;
+    const lookupTeams = o.lookupTeams ?? teamBudget > 0;
     const preview = await client.action(api.selectorOptions.previewCardChecklist, { ...request, lookupTeams });
     marketplaceCalls += preview.marketplaceCalls;
     let out: PreviewOutcome;

@@ -197,6 +197,14 @@ export function setAt(root: Record<string, unknown>, at: string, value: unknown)
   });
 }
 
+/** The SportLots half of a name-only proposed pair, as a template fill-in. */
+export function nameOnlySlFill(ids: readonly string[]): string {
+  return (
+    `<${JSON.stringify(ids)} only if this set's cards are that SportLots set's: the matcher paired them by name alone ` +
+    `(nb_draft_set compares their cards). Otherwise drop "sportlots" and leave the SportLots set in sync.pending.>`
+  );
+}
+
 const PICK = (ids: string[]) => `<one of: ${ids.join(" | ") || "(no candidates — check the name)"}>`;
 
 // ---------------------------------------------------------------------------
@@ -595,7 +603,12 @@ export async function runSpec(
         patch(`${at}.sync`, {
           pairs: [
             ...sync.pairs,
-            ...r.reconcile.proposedPairs.map((p) => ({ name: p.name, bsc: p.buysportscards, sportlots: p.sportlots })),
+            // A proposed pair is the matcher's NAME match (an auto-match the
+            // spec left out): its SportLots half is a fill-in, never pre-filled,
+            // so the template cannot pair two products unread. The draft
+            // confirms a pair by its cards (lib/pair-evidence.ts); apply sees
+            // no cards before it saves.
+            ...r.reconcile.proposedPairs.map((p) => ({ name: p.name, bsc: p.buysportscards, sportlots: nameOnlySlFill(p.sportlots) })),
           ],
           pending: [
             ...sync.pending,

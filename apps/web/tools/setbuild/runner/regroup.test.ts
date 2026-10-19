@@ -126,6 +126,7 @@ function world(initial: Row[] = []): FakeClient & { rows: Row[] } {
     .on("selectorOptions:getBaseVariantBySet", () => structuredClone({ ...rows.find((r) => r._id === "vtB")!, platformLabels: { sportlots: { s0: "Topps Chrome" } } }))
     .on("selectorOptions:getInsertTreeByVariantType", () => structuredClone(tree()))
     .on("setParallelConversion:getBrandSlHolders", { rows: [], truncated: false })
+    .on("slSetReview:getSlSetReview", null)
     .on("selectorOptions:getUsedInsertIdentifiersBySet", { values: [], slPlatformValues: [], bscPlatformValues: [] })
     .on(FETCH, {
       success: true,
@@ -264,6 +265,16 @@ describe("re-planning after apply ran Group Parallels (2014 Topps Chrome repro)"
     expect(plan.steps.find((s) => s.kind === "group")).toMatchObject({ status: "todo" });
     expect(plan.openDecisions.names.filter((n) => n.at.includes(".rows["))).toEqual([]);
     expect(plan.steps).toContainEqual(expect.objectContaining({ kind: "row", action: "find Insert › Stars of MLB", status: "done" }));
+  });
+
+  test("an auto-match the spec leaves out is offered with its SportLots half as a fill-in, never pre-filled (NEO-339: name-only pairs)", async () => {
+    const raw = spec();
+    const sync = (raw.steps[0] as { variants: Array<{ sync: { pairs: Array<{ name: string }> } }> }).variants[0].sync;
+    sync.pairs = sync.pairs.filter((p) => p.name !== "Stars of MLB");
+    const plan = await planSpec(world(), FAKE_TARGET, raw, { pausedPlatforms: "" });
+    expect(plan.openDecisions.reconcile[0].proposedPairs).toEqual([{ name: "Stars of MLB", buysportscards: ["smlb"], sportlots: ["9010"] }]);
+    const pairs = (plan.template as { steps: Array<{ variants: Array<{ sync: { pairs: Array<Record<string, unknown>> } }> }> }).steps[0].variants[0].sync.pairs;
+    expect(pairs.at(-1)).toEqual({ name: "Stars of MLB", bsc: ["smlb"], sportlots: expect.stringMatching(/^<\["9010"\] only if this set's cards are that SportLots set's/) });
   });
 
   test("a grouped row holding only SOME of a pair's ids is still the open decision it was", async () => {

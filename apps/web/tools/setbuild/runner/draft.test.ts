@@ -377,6 +377,11 @@ describe("draftSet: proposals vs open decisions", () => {
     expect(previews).toEqual([
       { cold: { setId: "st", variantType: { bscVariantId: "base", sportlotsIds: ["sl-black"] } }, lookupTeams: true },
       { cold: { setId: "st", variantType: { bscVariantId: "insert" }, insert: { bscVariantNameIds: ["fs"], sportlotsIds: ["sl-fs"] } }, lookupTeams: true },
+      // Card evidence for each name-only pair: the row's own preview where it
+      // has one (Future Stars, read once), else its own, with no team lookup
+      // for a Parallel type's row (built from Base, never previewed itself).
+      { cold: { setId: "st", variantType: { bscVariantId: "insert" }, insert: { bscVariantNameIds: ["fs-gold"], sportlotsIds: ["sl-fsg"] } }, lookupTeams: true },
+      { cold: { setId: "st", variantType: { bscVariantId: "parallel" }, insert: { bscVariantNameIds: ["gold"], sportlotsIds: ["sl-gold"] } }, lookupTeams: false },
     ]);
     // Entities: one-shot queries, never a subscription.
     expect(client.calls.filter((c) => c.kind === "waitFor")).toEqual([]);
@@ -411,7 +416,8 @@ describe("draftSet: proposals vs open decisions", () => {
       review: "none-expected",
       expectCards: 1,
     });
-    expect(r.marketplaceCalls).toBe(3 + 3 + 3);
+    // Structure, the Base preview, and the Gold pair's card evidence.
+    expect(r.marketplaceCalls).toBe(3 + 3 + 3 + 3);
   });
 });
 
@@ -557,7 +563,8 @@ describe("draftSet: sessions and budgets (security audit)", () => {
       basePreview: preview([{ num: "1", players: ["Mike Trout"], bsc: "b1", sl: "s1" }], [], { needed: 5 }),
     });
     const r = await drafted(client, { teamLookupBudget: 3 });
-    expect(client.callsTo("selectorOptions:previewCardChecklist").map((c) => c.args.lookupTeams)).toEqual([true, false]);
+    // Base spends the budget; Future Stars, Future Stars Gold's evidence and Gold's evidence go without.
+    expect(client.callsTo("selectorOptions:previewCardChecklist").map((c) => c.args.lookupTeams)).toEqual([true, false, false, false]);
     expect(r.notes.join(" ")).not.toMatch(/budget is spent/); // the insert needed none
     const off = world();
     await drafted(off, { teamLookupBudget: 0 });
@@ -928,7 +935,9 @@ describe("draftSet: Group Parallels never swallows an insert's own family (NEO-3
       detail: "Insert › Future Stars Autographs shares no card number with Future Stars, so it stays its own insert and parents the rows that extend its name",
     });
     // Each checklist is previewed once: the evidence and the row's own checklist share the answer.
-    expect(previewsOf(client).sort()).toEqual(["base", "fs", "fsa"]);
+    const sent = previewsOf(client);
+    expect(new Set(sent).size).toBe(sent.length);
+    expect(sent).toEqual(expect.arrayContaining(["base", "fs", "fsa"]));
   });
 
   const allUnderFutureStars = [
@@ -1004,6 +1013,67 @@ describe("draftSet: a SportLots set no NB set has placed is never paired by name
       name: "1988 Topps Baseball Autographs Red",
       bsc: ["1988-topps-baseball-autographs-red"],
       sportlots: ["269998"],
+    });
+  });
+
+  describe("card evidence, with no SportLots review at all (NEO-339 live: the preview had no slSetReviews document)", () => {
+    /** The pair's own preview: the 1988 autographs share numbers with the flagship's, but not its players. */
+    const evidence = (o: { shared: Array<[string, string, string | null]>; extraBsc?: string[] }) => (a: Record<string, unknown>) => {
+      const insert = (a.cold as { insert?: { bscVariantNameIds?: string[]; sportlotsIds?: string[] } }).insert;
+      if (!insert?.sportlotsIds?.includes("269998")) return undefined; // every other row: the world's default preview
+      return {
+        ...preview([], (o.extraBsc ?? []).map((num) => ({ num, players: ["Someone"], bsc: `b-${num}` }))),
+        matched: o.shared.map(([num, bscPlayer, slPlayer]) => ({
+          confidence: 1,
+          card: {
+            ...card({ num, players: [bscPlayer], bsc: `b-${num}`, sl: `s-${num}` }),
+            ...(slPlayer ? { playersConflict: { bsc: [bscPlayer], sportlots: [slPlayer] } } : {}),
+          },
+        })),
+      };
+    };
+    const autosPair = { name: "1988 Topps Baseball Autographs Red", bsc: ["1988-topps-baseball-autographs-red"], sportlots: ["269998"] };
+
+    test("the flagship case: shared numbers naming different players is an open decision citing the cards, never a pair", async () => {
+      const client = world({
+        insertCandidates: candidates,
+        insertPreview: evidence({ shared: [["88BA-AJ", "Aaron Judge", "Andruw Jones"], ["88BA-JS", "Juan Soto", "John Smoltz"], ["88BA-MT", "Mike Trout", null]] }),
+      });
+      const r = await drafted(client);
+      expect(client.callsTo("slSetReview:getSlSetReview")).toHaveLength(1);
+      expect(insertOf(r).sync!.pairs).toContainEqual({ name: autosPair.name, bsc: autosPair.bsc });
+      expect(JSON.stringify(r.spec)).not.toContain("269998");
+      const open = r.openDecisions.names.find((n) => n.kind === "reconcile-unsorted-sportlots");
+      expect(open).toMatchObject({ at: "steps[0].variants[0].sync.pending[1]", name: "1988 Topps Autos Red" });
+      expect(open!.detail).toContain("the cards do not confirm it: 2 of 3 shared card numbers name different players");
+      expect(r.confirmPhrase).toBeNull();
+    });
+
+    test("a genuine pair, numbers and players agreeing (one misread allowed in three), is drafted as the pair", async () => {
+      const r = await drafted(
+        world({
+          insertCandidates: candidates,
+          insertPreview: evidence({ shared: [["88BA-AJ", "Aaron Judge", null], ["88BA-JS", "Juan Soto", null], ["88BA-MT", "Mike Trout", "Mike Trout Jr"]] }),
+        }),
+      );
+      expect(insertOf(r).sync!.pairs).toContainEqual(autosPair);
+      expect(r.openDecisions.names.filter((n) => n.kind === "reconcile-unsorted-sportlots")).toEqual([]);
+    });
+
+    test("no shared card number is an open decision too", async () => {
+      const r = await drafted(world({ insertCandidates: candidates, insertPreview: evidence({ shared: [], extraBsc: ["88BA-AJ"] }) }));
+      expect(insertOf(r).sync!.pairs).toContainEqual({ name: autosPair.name, bsc: autosPair.bsc });
+      expect(r.openDecisions.names.find((n) => n.kind === "reconcile-unsorted-sportlots")!.detail).toContain(
+        "the cards do not confirm it: their checklists share no card number",
+      );
+    });
+
+    test("with no previews (checklists off) a name-only pair is never drafted: nothing confirms it", async () => {
+      const r = await drafted(world({ insertCandidates: candidates }), { checklists: false });
+      expect(JSON.stringify(r.spec)).not.toContain("269998");
+      expect(r.openDecisions.names.find((n) => n.name === "1988 Topps Autos Red")!.detail).toContain(
+        "the draft could not compare their cards (this draft previews no checklists)",
+      );
     });
   });
 });
