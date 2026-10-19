@@ -129,3 +129,4 @@
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
 - [Draft shape changes hit the CI oneshot](reference_draft_shape_changes_hit_the_ci_oneshot.md) — index-merged vs oneshot.spec.json; new fill-ins/reorders go red
 - [React Compiler lint flips on unrelated edits](reference_react_compiler_lint_flips_on_unrelated_edits.md) — CardChecklist: hook-derived local into an import at render = 8 far-away errors; bisect via eslint --stdin, run 3x
+- [SL set has no product id](reference_sl_set_has_no_product_id.md) — whose SL set: brand holders + SL review entries only; never the label

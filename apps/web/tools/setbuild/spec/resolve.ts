@@ -71,12 +71,21 @@ export function pickExactlyOne<T extends { _id: string; value: string }>(
         })
         .slice(0, MAX_NEAR_CANDIDATES)
     : [];
+  // Near names are suggestions, not matches: the message says nothing matched.
   throw new ResolveError({
     kind,
     query: name,
     at,
     candidates: near.map((r) => candidateOf(r, detailOf?.(r))),
+    message: near.length === 0 ? undefined : noMatchMessage(kind, name, near.length),
   });
+}
+
+/** "No row named "X"; 1 similar name is listed as a candidate." */
+export function noMatchMessage(kind: string, name: string, near: number): string {
+  return near === 1
+    ? `No ${kind} named "${name}"; 1 similar name is listed as a candidate.`
+    : `No ${kind} named "${name}"; ${near} similar names are listed as candidates.`;
 }
 
 /** The children of `parentId` at `level` (the root level when no parent). */
@@ -175,14 +184,37 @@ export async function resolveVariantType(
   return resolveChild(client, "variantType", setId, title, where);
 }
 
-/** A row (`insert` level) under a variant type, exactly-one. */
+/**
+ * A row under a variant type, exactly-one, by its own name. A top-level row
+ * (`insert` level) answers first, exactly as before. Only when no top-level
+ * row carries the name are the rows Group Parallels moved under an insert
+ * read (`parallel` level, from the type's insert tree): a grouped row keeps
+ * its own name, so "Future Stars Autographs" grouped under "Future Stars"
+ * still resolves to itself, never to the parent its name begins with. Two
+ * grouped rows with the name are a `ResolveError` naming each one's parent.
+ */
 export async function resolveVariantRow(
   client: NbClient,
   variantTypeId: RowId,
   name: string,
   where?: string,
 ): Promise<SelectorRow> {
-  return resolveChild(client, "insert", variantTypeId, name, where);
+  const inserts = await childrenOf(client, "insert", variantTypeId);
+  const key = selectorValueKey(name);
+  if (inserts.some((r) => selectorValueKey(r.value) === key)) return pickExactlyOne(inserts, name, "row", where);
+  const tree = await client.query(api.selectorOptions.getInsertTreeByVariantType, { variantTypeId });
+  const parentName = new Map<string, string>();
+  const rows: SelectorRow[] = [...inserts];
+  for (const node of tree) {
+    for (const p of node.parallels) {
+      rows.push(p as SelectorRow);
+      parentName.set(String(p._id), node.insert.value);
+    }
+  }
+  return pickExactlyOne(rows, name, "row", where, (r) => {
+    const parent = parentName.get(String(r._id));
+    return parent ? `parallel of ${parent}` : "insert";
+  });
 }
 
 /**

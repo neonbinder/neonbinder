@@ -44,7 +44,7 @@ const twoSided = (): Fetch => {
 
 type Tree = Array<{ insert: ReturnType<typeof row>; parallels: ReturnType<typeof row>[] }>;
 
-function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedBsc?: string[]; tree?: Tree } = {}) {
+function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedBsc?: string[]; tree?: Tree; unsortedSl?: string[] } = {}) {
   const fetch = opts.fetch ?? twoSided();
   return fakeNbClient({
     [LIST]: (a) => {
@@ -76,6 +76,11 @@ function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedB
       slPlatformValues: [],
       bscPlatformValues: opts.usedBsc ?? [],
     }),
+    // The brand's SportLots review: the ids Sync Sets could not place under any NB set.
+    "slSetReview:getSlSetReview": (a) =>
+      opts.unsortedSl?.length && a.manufacturerId === "m1"
+        ? { entries: opts.unsortedSl.map((slId) => ({ slId, label: slId, defaultName: slId })) }
+        : null,
     [FETCH]: () => ({
       success: true,
       slCandidates: [],
@@ -196,6 +201,56 @@ describe("reconcileVariants: the Reconcile dialog path", () => {
     expect(res.reconcile.proposedPairs).toEqual([{ name: "Stars of MLB", buysportscards: ["smlb"], sportlots: ["9010"] }]);
     expect(res.reconcile.pending).toEqual([]);
     expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+
+  test("an auto-match whose SportLots set is still unsorted in the brand's review is never offered as a pair (NEO-339: 2023 Topps Chrome took the flagship's 1988 Topps Autos Red)", async () => {
+    // BSC lists the autographs under this set; SportLots 269998 is the
+    // flagship's, matched on its label, and no NB set has placed it yet.
+    const fetch = twoSided();
+    const autosB = bsc("1988 Topps Baseball Autographs Red", "1988-topps-baseball-autographs-red");
+    const autosS = sl("1988 Topps Autos Red", "269998");
+    fetch.bscOptions.push(autosB);
+    fetch.slOptions.push(autosS);
+    fetch.autoMatched.push({ displayName: autosB.value, bsc: autosB, sl: autosS, confidence: 0.7 });
+    const client = world({ fetch, unsortedSl: ["269998", "9030"] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(res.outcome).toBe("open");
+    if (res.outcome !== "open") return;
+    expect(res.reconcile.proposedPairs).toEqual([]);
+    // The BSC half is this set's pending decision; the SportLots half is
+    // another product's (outside the set's filter), left unasked.
+    expect(res.reconcile.pending).toEqual([
+      { side: "buysportscards", id: "1988-topps-baseball-autographs-red", name: "1988 Topps Baseball Autographs Red" },
+    ]);
+    expect(client.callsTo(STORE)).toHaveLength(0);
+  });
+
+  test("the review decides by id, not label: an unsorted SportLots set whose label passes the set's filter is not offered either", async () => {
+    const fetch = twoSided();
+    const autosB = bsc("1988 Topps Baseball Autographs Red", "1988-topps-baseball-autographs-red");
+    const autosS = sl("Topps Chrome 1988 Autos Red", "269998");
+    fetch.bscOptions.push(autosB);
+    fetch.slOptions.push(autosS);
+    fetch.autoMatched.push({ displayName: autosB.value, bsc: autosB, sl: autosS, confidence: 0.7 });
+    const unsorted = await reconcileVariants(world({ fetch, unsortedSl: ["269998"] }), "set1" as never, "Insert", cleanSync(), opts);
+    expect(unsorted.outcome === "open" && unsorted.reconcile).toMatchObject({
+      proposedPairs: [],
+      pending: [
+        { side: "buysportscards", id: "1988-topps-baseball-autographs-red" },
+        { side: "sportlots", id: "269998" },
+      ],
+    });
+    // Once no review holds it (placed under this set, or never reviewed), the matcher's pair is offered as before.
+    const placed = await reconcileVariants(world({ fetch }), "set1" as never, "Insert", cleanSync(), opts);
+    expect(placed.outcome === "open" && placed.reconcile.proposedPairs).toEqual([
+      { name: "1988 Topps Baseball Autographs Red", buysportscards: ["1988-topps-baseball-autographs-red"], sportlots: ["269998"] },
+    ]);
+  });
+
+  test("the review is read only when the dialog would offer a pair", async () => {
+    const client = world({ unsortedSl: ["9030"] });
+    await reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts);
+    expect(client.callsTo("slSetReview:getSlSetReview")).toEqual([]);
   });
 
   test("leaving an auto-match out ON PURPOSE (both halves 'leave') is a clean answer", async () => {

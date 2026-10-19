@@ -109,6 +109,10 @@ interface WorldOpts {
   baseSl?: Array<[string, string]>;
   basePreview?: unknown;
   insertPreview?: (args: Record<string, unknown>) => unknown;
+  /** The Insert type's candidates, in place of the Future Stars / Gold pair. */
+  insertCandidates?: ReturnType<typeof raw>;
+  /** The brand's SportLots review (`slSetReview:getSlSetReview`); null = none waits. */
+  slReview?: unknown;
 }
 
 /**
@@ -133,6 +137,7 @@ function world(o: WorldOpts = {}): FakeClient {
   const baseCands = raw({ bsc: [["Topps Chrome Black", "topps-chrome-black"]], sl: o.baseSl ?? [["Topps Chrome Black", "sl-black"], ["Topps Chrome", "sl-chrome"]] });
   return fakeClient()
     .on("marketplacePause:getPausedPlatforms", [])
+    .on("slSetReview:getSlSetReview", o.slReview ?? null)
     .on("selectorOptions:getSelectorOptions", (a) => tree[`${a.level}:${a.parentId ?? ""}`] ?? [])
     .on("selectorOptions:getInsertTreeByVariantType", (a) =>
       a.variantTypeId === "tcI"
@@ -150,7 +155,7 @@ function world(o: WorldOpts = {}): FakeClient {
           bscVariantId: "insert",
           label: "Insert",
           role: "insert",
-          candidates: raw({
+          candidates: o.insertCandidates ?? raw({
             autoMatched: [
               ["Future Stars", "fs", "2024 Topps Chrome Black Future Stars", "sl-fs"],
               ["Future Stars Gold", "fs-gold", "2024 Topps Chrome Black Future Stars Gold", "sl-fsg"],
@@ -877,5 +882,130 @@ describe("draftSet: NEO-345 the autograph format is the operator's", () => {
     // Only on a checklist: the same key elsewhere in the answers is not taken.
     const stray = mergeDraftAnswers(r.template ?? r.spec, { ...answered, autographFormat: "On Card" }) as Record<string, unknown>;
     expect("autographFormat" in stray).toBe(false);
+  });
+});
+
+describe("draftSet: Group Parallels never swallows an insert's own family (NEO-339, 2023 Topps Chrome Future Stars)", () => {
+  // BSC lists the autographs and their parallels flat beside Future Stars.
+  const family = raw({
+    autoMatched: [
+      ["Future Stars", "fs", "Chrome Black Future Stars", "sl-fs"],
+      ["Future Stars Red", "fs-red", "Chrome Black Future Stars Red", "sl-fs-red"],
+      ["Future Stars Autographs", "fsa", "Chrome Black Future Stars Autographs", "sl-fsa"],
+      ["Future Stars Autographs SuperFractor", "fsa-sf", "Chrome Black Future Stars Autographs SuperFractor", "sl-fsa-sf"],
+      ["Future Stars Autographs Red", "fsa-red", "Chrome Black Future Stars Autographs Red", "sl-fsa-red"],
+      ["Future Stars Autographs Orange", "fsa-or", "Chrome Black Future Stars Autographs Orange", "sl-fsa-or"],
+    ],
+  });
+  /** Future Stars cards are FS-n; the autographs are FSA-xx unless `sameNumbers`. */
+  const byIds = (sameNumbers: boolean) => (a: Record<string, unknown>) => {
+    const ids = ((a.cold as { insert?: { bscVariantNameIds?: string[] } }).insert?.bscVariantNameIds ?? []).join();
+    const autos = ids.startsWith("fsa") && !sameNumbers;
+    return preview([
+      { num: autos ? "FSA-AB" : "FS-1", players: ["Shohei Ohtani"], bsc: `${ids}-1`, sl: `s-${ids}-1` },
+      { num: autos ? "FSA-CD" : "FS-2", players: ["Bobby Witt Jr."], bsc: `${ids}-2`, sl: `s-${ids}-2` },
+    ]);
+  };
+  const insertOf = (r: DraftedReport) => (r.spec as unknown as Spec).steps[0].variants!.find((v) => v.type === "Insert")!;
+  const previewsOf = (client: FakeClient) =>
+    client.callsTo("selectorOptions:previewCardChecklist").map((c) => (c.args.cold as { insert?: { bscVariantNameIds?: string[] } }).insert?.bscVariantNameIds?.join() ?? "base");
+
+  test("no shared card number: Future Stars Autographs stays its own insert and parents its SuperFractor, Red and Orange", async () => {
+    const client = world({ insertCandidates: family, insertPreview: byIds(false) });
+    const r = await drafted(client);
+    const insert = insertOf(r);
+    expect(insert.group!.parents).toEqual([
+      { insert: { bsc: "fs" }, parallels: [{ bsc: "fs-red" }] },
+      { insert: { bsc: "fsa" }, parallels: [{ bsc: "fsa-sf" }, { bsc: "fsa-red" }, { bsc: "fsa-or" }] },
+    ]);
+    expect(insert.rows!.map((row) => [row.name, (row.parallels as Array<{ name: string }> | undefined)?.map((p) => p.name)])).toEqual([
+      ["Future Stars", ["Future Stars Red"]],
+      ["Future Stars Autographs", ["Future Stars Autographs SuperFractor", "Future Stars Autographs Red", "Future Stars Autographs Orange"]],
+    ]);
+    expect(r.notes).toContain("Insert › Future Stars Autographs shares no card number with Future Stars: it stays its own insert, the parent of the rows that extend its name.");
+    // Each checklist is previewed once: the evidence and the row's own checklist share the answer.
+    expect(previewsOf(client).sort()).toEqual(["base", "fs", "fsa"]);
+  });
+
+  test("a shared card number nests the family under Future Stars, as the prefix rule always did", async () => {
+    const r = await drafted(world({ insertCandidates: family, insertPreview: byIds(true) }));
+    const insert = insertOf(r);
+    expect(insert.group!.parents).toEqual([
+      {
+        insert: { bsc: "fs" },
+        parallels: [{ bsc: "fs-red" }, { bsc: "fsa" }, { bsc: "fsa-sf" }, { bsc: "fsa-red" }, { bsc: "fsa-or" }],
+      },
+    ]);
+    expect(r.proposals).toContainEqual({
+      at: "steps[0].variants[0].group.parents",
+      kind: "grouping",
+      detail: "Insert › Future Stars Autographs shares card numbers with Future Stars, so it groups under it with its own parallels",
+    });
+  });
+
+  test("with no previews to compare, the row is the parent of its own family", async () => {
+    const client = world({ insertCandidates: family });
+    const r = await drafted(client, { checklists: false });
+    expect(insertOf(r).group!.parents).toEqual([
+      { insert: { bsc: "fs" }, parallels: [{ bsc: "fs-red" }] },
+      { insert: { bsc: "fsa" }, parallels: [{ bsc: "fsa-sf" }, { bsc: "fsa-red" }, { bsc: "fsa-or" }] },
+    ]);
+    expect(client.callsTo("selectorOptions:previewCardChecklist")).toEqual([]);
+    expect(r.notes.some((n) => n.includes("Future Stars Autographs is the root of its own family"))).toBe(true);
+  });
+});
+
+describe("draftSet: a SportLots set no NB set has placed is never paired by name (NEO-339: 2023 Topps Chrome took the flagship's 1988 Topps Autos Red)", () => {
+  // BSC lists the autographs under this set; the matcher paired them with the
+  // flagship's SportLots set 269998, which the brand's SportLots review still holds.
+  const candidates = raw({
+    autoMatched: [
+      ["Future Stars", "fs", "2024 Topps Chrome Black Future Stars", "sl-fs"],
+      ["1988 Topps Baseball Autographs Red", "1988-topps-baseball-autographs-red", "1988 Topps Autos Red", "269998"],
+    ],
+    sl: [["Chrome Black Something", "sl-other"]],
+  });
+  const review = { entries: [{ slId: "269998", label: "1988 Topps Autos Red", defaultName: "1988 Topps Autos Red" }] };
+  const insertOf = (r: DraftedReport) => (r.spec as unknown as Spec).steps[0].variants!.find((v) => v.type === "Insert")!;
+
+  test("the row is drafted from BSC alone and the SportLots set is an open decision, never a pair or a silent leave", async () => {
+    const client = world({ insertCandidates: candidates, slReview: review });
+    const r = await drafted(client);
+    const insert = insertOf(r);
+    expect(insert.sync!.pairs).toEqual([
+      { name: "Future Stars", bsc: ["fs"], sportlots: ["sl-fs"] },
+      { name: "1988 Topps Baseball Autographs Red", bsc: ["1988-topps-baseball-autographs-red"] },
+    ]);
+    expect(JSON.stringify(r.spec)).not.toContain("269998");
+    expect(r.openDecisions.names).toContainEqual(
+      expect.objectContaining({
+        at: "steps[0].variants[0].sync.pending[1]",
+        kind: "reconcile-unsorted-sportlots",
+        name: "1988 Topps Autos Red",
+        candidates: [expect.objectContaining({ id: "269998" })],
+      }),
+    );
+    expect(r.confirmPhrase).toBeNull();
+    // One read per draft, however many types the matcher paired in.
+    expect(client.callsTo("slSetReview:getSlSetReview")).toHaveLength(1);
+    const pending = (r.template as unknown as Spec).steps[0].variants![0].sync!.pending;
+    expect(pending[1]).toMatchObject({ side: "sportlots", id: "269998", decision: expect.stringMatching(/^<"leave" \| "own-set">/) });
+    // Asked, so neither listed as a leave nor counted as left unasked.
+    expect(r.leftUnasked.find((l) => l.type === "Insert")?.outsideScopeSets ?? []).not.toContainEqual(expect.objectContaining({ id: "269998" }));
+    // The checklist is previewed from BSC alone: no SportLots id reaches it.
+    const autosPreview = client
+      .callsTo("selectorOptions:previewCardChecklist")
+      .map((c) => (c.args.cold as { insert?: Record<string, unknown> }).insert)
+      .find((i) => (i?.bscVariantNameIds as string[] | undefined)?.[0] === "1988-topps-baseball-autographs-red");
+    expect(autosPreview).toEqual({ bscVariantNameIds: ["1988-topps-baseball-autographs-red"] });
+  });
+
+  test("with nothing in the review the matcher's pair is drafted as before", async () => {
+    const r = await drafted(world({ insertCandidates: candidates }));
+    expect(insertOf(r).sync!.pairs).toContainEqual({
+      name: "1988 Topps Baseball Autographs Red",
+      bsc: ["1988-topps-baseball-autographs-red"],
+      sportlots: ["269998"],
+    });
   });
 });

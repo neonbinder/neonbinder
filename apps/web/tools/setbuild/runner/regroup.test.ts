@@ -251,6 +251,21 @@ describe("re-planning after apply ran Group Parallels (2014 Topps Chrome repro)"
     expect(plan.steps.filter((s) => s.status !== "done")).toEqual([]);
   });
 
+  test("a row the spec names while it is still grouped resolves by its own name (NEO-339, 2023 Topps Chrome Future Stars Autographs)", async () => {
+    // Everything saved, but "Stars of MLB" sits grouped under "Future Stars":
+    // the spec moves it out with group.topLevel and names it in rows.
+    const w = world([
+      sel("fsRow", "insert", "Future Stars", "vtI", { platformData: { bsc: { s0: "fs" }, sportlots: { s0: "9001" } } }),
+      sel("fsrRow", "parallel", "Future Stars Refractors", "fsRow", { platformData: { bsc: { s0: "fsr" }, sportlots: { s0: "9002" } } }),
+      sel("cpRow", "parallel", "Chrome Prospects", "fsRow", { platformData: { bsc: { s0: "cp" } } }),
+      sel("smRow", "parallel", "Stars of MLB", "fsRow", { platformData: { bsc: { s0: "smlb" }, sportlots: { s0: "9010" } } }),
+    ]);
+    const plan = await planSpec(w, FAKE_TARGET, spec(), { pausedPlatforms: "" });
+    expect(plan.steps.find((s) => s.kind === "group")).toMatchObject({ status: "todo" });
+    expect(plan.openDecisions.names.filter((n) => n.at.includes(".rows["))).toEqual([]);
+    expect(plan.steps).toContainEqual(expect.objectContaining({ kind: "row", action: "find Insert › Stars of MLB", status: "done" }));
+  });
+
   test("a grouped row holding only SOME of a pair's ids is still the open decision it was", async () => {
     // "Future Stars Refractors" grouped, carrying the BSC id but a different SportLots id.
     const w = world([

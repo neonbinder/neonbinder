@@ -22,7 +22,7 @@
  * | variant types           | the set's variant-type sync (always)                  | —                                              |
  * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
  * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (auto-matches and saved rows, by marketplace id); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash |
- * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types)  | a suggested parent whose name another row shares |
+ * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types); a row that roots its own family nests under its prefix parent only when their previewed cards share a number | a suggested parent whose name another row shares |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair (answered with a side, or `pairing.unlink` when it is two cards) |
  * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
@@ -103,6 +103,7 @@ import {
   baseSlLabelsOf,
   dialogOpenDecisions,
   existingRowsForSeed,
+  readUnsortedSlIds,
   slPrefixesForFetch,
   type PendingSet,
 } from "../lib/reconcile-variants";
@@ -143,6 +144,7 @@ type Side = "bsc" | "sportlots";
 type PreviewRequest =
   | { selectorOptionId: RowId }
   | { cold: NonNullable<FunctionArgs<typeof api.selectorOptions.previewCardChecklist>["cold"]> };
+type PreviewOutcome = { ok: true; preview: CardPreview } | { ok: false; detail: string };
 
 /** `previewChecklistEntities`' per-call cap (players + teams), mirrored. */
 export const ENTITY_NAMES_PER_CALL = 200;
@@ -259,6 +261,22 @@ export function previewAsCandidates(p: Pick<CardPreview, "matched" | "bscOnly" |
   for (const c of p.bscOnly) push(c, "bscOnly");
   for (const c of p.slOnly) push(c, "slOnly");
   return { batchId: "preview", total: cards.length, ready: cards.length, cards } as unknown as ReadyCandidates;
+}
+
+/** Every card number a preview lists, matched, BSC-only and SportLots-only alike. */
+export function previewCardNumbers(p: Pick<CardPreview, "matched" | "bscOnly" | "slOnly">): string[] {
+  return [...p.matched.map((m) => m.card.cardNumber), ...p.bscOnly.map((c) => c.cardNumber), ...p.slOnly.map((c) => c.cardNumber)];
+}
+
+/**
+ * Whether two checklists share at least one card number, folded the way a
+ * parallel build matches them (`cardKey` in convex/lib/parallelCardLink.ts:
+ * trimmed, upper-cased). Overlap only: no number is taken as a key. Pure.
+ */
+export function sharesACardNumber(a: readonly string[], b: readonly string[]): boolean {
+  const fold = (n: string) => n.trim().toUpperCase();
+  const seen = new Set(a.map(fold).filter(Boolean));
+  return b.some((n) => seen.has(fold(n)));
 }
 
 /**
@@ -448,6 +466,25 @@ export function compactDraftReport(r: DraftReport, detail: DraftDetail = "summar
 // The draft
 // ---------------------------------------------------------------------------
 
+/** A SportLots set the matcher paired by name while the brand's SportLots review still holds it. */
+interface CrossProductSl {
+  id: string;
+  name: string;
+  /** The Ready set it sat in: its title and BSC ids. */
+  row: string;
+  bsc: string[];
+}
+
+/** Why an unsorted SportLots set is asked rather than paired, and how to answer. */
+export function unsortedSlDetail(c: { id: string; name: string; row: string }, brandYear: string): string {
+  return (
+    `The matcher paired SportLots set ${c.id} ("${c.name}") with "${c.row}" by name alone, and it is still unsorted in the ${brandYear} SportLots review, ` +
+    `so no NB set has it yet: it may be another product's. The draft does not pair it; "${c.row}" is drafted from its other ids. ` +
+    `Answer "leave", or if it is this set's, add "${c.id}" to that row's sportlots in sync.pairs and drop this entry. ` +
+    `Sorting the review (nb_sl_review_apply) files it under the set it belongs to.`
+  );
+}
+
 interface DraftRow {
   /** NB name the row has (or will have once the sync saves it). */
   name: string;
@@ -493,6 +530,10 @@ export async function draftSet(
   };
   /** Sides whose session a preview reported refused: no further preview needing them is sent. */
   const refusedSides = new Set<Side>();
+  /** The brand's SportLots review ids, once read (`unsortedSlIds`). */
+  let unsortedSlCache: Promise<Set<string>> | undefined;
+  /** Every preview this draft sent, by request: none is sent twice. */
+  const previews = new Map<string, PreviewOutcome>();
   const refuse = (sides: Side[], where: string) => {
     for (const s of sides) {
       if (!refusedSides.has(s)) notes.push(`${s === "bsc" ? "BSC" : "SportLots"} refused the session at ${where}; no further preview needing it was sent.`);
@@ -644,7 +685,7 @@ export async function draftSet(
         ? [structure.baseSportlots.label]
         : [];
   /** Per type, the sets the dialog leaves in Pending: settled once every type's pairs are known. */
-  const pendingByType: Array<{ j: number; at: string; title: string; leave: PendingSet[]; outsideScope: PendingSet[] }> = [];
+  const pendingByType: Array<{ j: number; at: string; title: string; leave: PendingSet[]; outsideScope: PendingSet[]; cross: CrossProductSl[] }> = [];
   for (const t of structure.types) {
     if (t.role === null) notes.push(`BSC lists a "${t.label}" variant whose title is not Base, Insert or Parallel; the variant-type sync creates it, the draft has no rows for it.`);
   }
@@ -707,7 +748,22 @@ export async function draftSet(
         heldInBrand: { rows: brandHeld },
         usedIds,
       });
-      const pairs: Array<ExplicitPair & { bsc?: string[]; sportlots?: string[] }> = seed.state.ready.map((s) => ({
+      // A SportLots set the matcher put in a Ready set by its name alone while
+      // the brand's SportLots review still holds it (no NB set has it): never
+      // drafted as a pair. The row keeps its other ids; the SportLots set is an
+      // open decision (settlePending). A restored row's own saved ids stay.
+      const unsortedSl = result.autoMatched.length > 0 ? await unsortedSlIds() : new Set<string>();
+      const cross: CrossProductSl[] = [];
+      const ready = seed.state.ready.map((s) => {
+        const savedRow = s.existingId ? existingRows.find((r) => r._id === s.existingId) : undefined;
+        const saved = new Set(savedRow ? slotIds(savedRow, "sportlots") : []);
+        const foreign = s.sl.filter((i) => unsortedSl.has(i.platformValue) && !saved.has(i.platformValue));
+        for (const f of foreign) {
+          if (!cross.some((c) => c.id === f.platformValue)) cross.push({ id: f.platformValue, name: f.value, row: s.title, bsc: s.bsc.map((i) => i.platformValue) });
+        }
+        return foreign.length > 0 ? { ...s, sl: s.sl.filter((i) => !foreign.includes(i)) } : s;
+      }).filter((s) => s.bsc.length + s.sl.length > 0);
+      const pairs: Array<ExplicitPair & { bsc?: string[]; sportlots?: string[] }> = ready.map((s) => ({
         name: s.title,
         ...(s.bsc.length ? { bsc: s.bsc.map((i) => i.platformValue) } : {}),
         ...(s.sl.length ? { sportlots: s.sl.map((i) => i.platformValue) } : {}),
@@ -747,6 +803,7 @@ export async function draftSet(
           name: p.name,
         })),
         outsideScope: decisions.left.outsideScope,
+        cross,
       });
       syncPairs.forEach((p, k) => {
         if (clashed.has(p.name)) fills.push({ at: `${at}.sync.pairs[${k}].name`, value: `<rename: two sets would save as "${p.name}">` });
@@ -757,7 +814,7 @@ export async function draftSet(
         open.reconcile.push({ ...decisions.reconcile, pending: [] });
       }
       if (pairs.length > 0) propose(`${at}.sync.pairs`, "reconcile-pairs", `the Reconcile dialog's ${pairs.length} Ready set(s) (its auto-matches and saved rows, by marketplace id)`);
-      rows = seed.state.ready.map((s) => ({
+      rows = ready.map((s) => ({
         name: s.title,
         bsc: s.bsc.map((i) => i.platformValue),
         sportlots: s.sl.map((i) => i.platformValue),
@@ -782,7 +839,7 @@ export async function draftSet(
     const children = new Map<string, string[]>();
     const childNames = new Set<string>();
     if (t.role === "insert") {
-      const grouping = draftGrouping(rows, unseeded, tree, `${at}.group`, title);
+      const grouping = await draftGrouping(rows, unseeded, tree, `${at}.group`, title, t);
       if (grouping.parents.length > 0) {
         entry.group = { parents: grouping.parents, expectUngrouped: grouping.ungrouped };
         propose(`${at}.group`, "grouping", `${grouping.moves} prefix suggestion(s) from Group Parallels (detectGroupings), under ${grouping.parents.length} insert(s)`);
@@ -850,23 +907,39 @@ export async function draftSet(
     for (const p of pendingByType) {
       const elsewhere = filedByOtherTypes(asSteps, p.j);
       const filed = { bsc: new Set(elsewhere.bsc), sportlots: new Set(elsewhere.sportlots) };
-      const leave = p.leave.filter((l) => !filed[l.side].has(l.id));
-      const pairedElsewhere = p.leave.length - leave.length;
+      // An unsorted SportLots set the matcher offered is asked below, not left.
+      const cross = p.cross.filter((c) => !filed.sportlots.has(c.id));
+      const asked = new Set(p.cross.map((c) => c.id));
+      const unfiled = p.leave.filter((l) => !(l.side === "sportlots" && asked.has(l.id)));
+      const leave = unfiled.filter((l) => !filed[l.side].has(l.id));
+      const pairedElsewhere = unfiled.length - leave.length;
+      const outsideScope = p.outsideScope.filter((o) => !asked.has(o.id));
       (variants[p.j].sync as { pending: unknown[] }).pending = leave.map((l) => ({ side: l.side, id: l.id, name: l.name, decision: "leave" }));
-      if (p.outsideScope.length + pairedElsewhere > 0) {
+      cross.forEach((c, i) => {
+        const at = `${p.at}.sync.pending[${leave.length + i}]`;
+        open.names.push({
+          at,
+          kind: "reconcile-unsorted-sportlots",
+          name: c.name,
+          candidates: [{ id: c.id, name: c.name, detail: `SportLots set the matcher paired with BSC ${c.bsc.join(", ")} ("${c.row}")` }],
+          detail: unsortedSlDetail(c, `${manufacturer} ${path.year}`),
+        });
+        fills.push({ at, value: { side: "sportlots", id: c.id, name: c.name, decision: `<"leave" | "own-set"> — ${c.name}: unsorted in the brand's SportLots review, so not paired with "${c.row}"` } });
+      });
+      if (outsideScope.length + pairedElsewhere > 0) {
         leftUnasked.push({
           at: `${p.at}.sync.pending`,
           type: p.title,
-          outsideScope: p.outsideScope.length,
+          outsideScope: outsideScope.length,
           pairedElsewhere,
-          outsideScopeSets: p.outsideScope.map((o) => ({ id: o.id, name: o.name })),
+          outsideScopeSets: outsideScope.map((o) => ({ id: o.id, name: o.name })),
         });
       }
-      if (leave.length + p.outsideScope.length + pairedElsewhere === 0) continue;
+      if (leave.length + outsideScope.length + pairedElsewhere === 0) continue;
       const count = (side: Side) => leave.filter((l) => l.side === side).length;
       const sides = [count("bsc") ? `BSC ${count("bsc")}` : "", count("sportlots") ? `SportLots ${count("sportlots")}` : ""].filter(Boolean).join(", ");
       const unasked = [
-        p.outsideScope.length ? `${p.outsideScope.length} SportLots set(s) outside this set's SportLots filter (other products of the brand-year)` : "",
+        outsideScope.length ? `${outsideScope.length} SportLots set(s) outside this set's SportLots filter (other products of the brand-year)` : "",
         pairedElsewhere ? `${pairedElsewhere} set(s) another variant type pairs` : "",
       ].filter(Boolean);
       propose(
@@ -929,6 +1002,12 @@ export async function draftSet(
       if (e instanceof ResolveError) return false;
       throw e;
     }
+  }
+
+  /** The brand's SportLots review ids (`readUnsortedSlIds`), read once per draft. */
+  async function unsortedSlIds(): Promise<Set<string>> {
+    unsortedSlCache ??= readUnsortedSlIds(client, set.manufacturerId);
+    return unsortedSlCache;
   }
 
   async function insertTree(variantTypeId: RowId) {
@@ -1006,13 +1085,24 @@ export async function draftSet(
    * that only it holds among the type's rows (it survives a rename), else by
    * its name. A suggested parent whose grouping name another row shares is a
    * tie: never taken, an open decision.
+   *
+   * A row the suggestions hold back as the root of its own family ("Future
+   * Stars Autographs", which "Future Stars Autographs Red" extends, under
+   * "Future Stars": `detectGroupings`' `familyRoots`) is settled by card
+   * numbers when the draft can preview both rows: sharing a number nests it
+   * (and its family) under the parent, as the plain prefix rule would;
+   * sharing none keeps it the parent of its own family. With no preview
+   * (checklists off, a row already holding cards, a failed preview) it stays
+   * the root of its own family: apply would only find out at the build
+   * (`no-shared-numbers`), after the grouping had moved it.
    */
-  function draftGrouping(
+  async function draftGrouping(
     rows: DraftRow[],
     unseeded: SelectorRow[],
     tree: Awaited<ReturnType<typeof insertTree>>,
     at: string,
     title: string,
+    t: StructureType,
   ) {
     const nodes: Array<{ insert: { _id: Id<"selectorOptions">; value: string }; parallels: Array<{ _id: Id<"selectorOptions">; value: string }> }> = [];
     rows.forEach((r, i) => {
@@ -1038,7 +1128,34 @@ export async function draftSet(
     const keyCount = new Map<string, number>();
     for (const r of allRows) keyCount.set(groupingKey(r.value), (keyCount.get(groupingKey(r.value)) ?? 0) + 1);
 
-    const init = buildInitialState(nodes);
+    // Family roots, settled by card numbers where both rows can be previewed.
+    const draftRowOf = new Map<string, DraftRow>(rows.map((r, i) => [String(r.existingId ?? `draft:${i}`), r]));
+    const nest = new Set<Id<"selectorOptions">>();
+    const weighed = new Set<string>();
+    let init = buildInitialState(nodes, { nestFamilyRoots: nest });
+    for (;;) {
+      let nested = false;
+      for (const [root, parent] of init.familyRoots) {
+        if (weighed.has(root)) continue;
+        weighed.add(root);
+        const rootName = draftRowOf.get(root)?.name ?? root;
+        const parentName = draftRowOf.get(parent)?.name ?? parent;
+        const shared = await sharesNumbers(draftRowOf.get(parent), draftRowOf.get(root), t, title);
+        if (shared === true) {
+          nest.add(root);
+          nested = true;
+          propose(`${at}.parents`, "grouping", `${title} › ${rootName} shares card numbers with ${parentName}, so it groups under it with its own parallels`);
+        } else {
+          notes.push(
+            shared === false
+              ? `${title} › ${rootName} shares no card number with ${parentName}: it stays its own insert, the parent of the rows that extend its name.`
+              : `${title} › ${rootName} is the root of its own family (rows extend its name), so it stays its own insert, the parent of those rows, not a parallel of ${parentName}; no previews compared their card numbers.`,
+          );
+        }
+      }
+      if (!nested) break;
+      init = buildInitialState(nodes, { nestFamilyRoots: nest });
+    }
     const kids = new Map<string, string[]>();
     for (const [id, placement] of init.placement) {
       if (placement.kind !== "child") continue;
@@ -1083,6 +1200,25 @@ export async function draftSet(
     return { parents, children, groupedRowNames, moves, ungrouped };
   }
 
+  /**
+   * Whether two rows' previewed checklists share a card number: undefined
+   * when either cannot be previewed (checklists off, already holding cards,
+   * a request the cold preview cannot make, a failed preview).
+   */
+  async function sharesNumbers(a: DraftRow | undefined, b: DraftRow | undefined, t: StructureType, title: string): Promise<boolean | undefined> {
+    if (!wantChecklists || !a || !b) return undefined;
+    const numbers: string[][] = [];
+    for (const r of [a, b]) {
+      if (r.existingId && (await cardCount(client, r.existingId)) > 0) return undefined;
+      const request = rowPreviewRequest(r, t);
+      if (typeof request === "string") return undefined;
+      const got = await fetchPreview(`${title} › ${r.name}`, request, rowSides(r));
+      if (!got.ok) return undefined;
+      numbers.push(previewCardNumbers(got.preview));
+    }
+    return sharesACardNumber(numbers[0], numbers[1]);
+  }
+
   /** A row the draft found already holding cards: apply skips its fetch. */
   function doneChecklist(n: number) {
     return { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep" }, review: "none-expected", expectCards: n };
@@ -1097,21 +1233,59 @@ export async function draftSet(
         return doneChecklist(n);
       }
     }
-    const sides: Side[] = [...(r.bsc.length ? ["bsc" as const] : []), ...(r.sportlots.length ? ["sportlots" as const] : [])];
-    let request: PreviewRequest | string;
-    if (r.existingId) request = { selectorOptionId: r.existingId };
-    else if (!setListing) request = "the set has no BSC listing of its own, which the cold preview reads";
-    else if (r.bsc.length > COLD_IDS_PER_LIST || r.sportlots.length > COLD_IDS_PER_LIST) request = `the row carries more than ${COLD_IDS_PER_LIST} ids on one side`;
-    else {
-      request = {
-        cold: {
-          setId: set.setId,
-          variantType: { bscVariantId: t.bscVariantId },
-          insert: { ...(r.bsc.length ? { bscVariantNameIds: r.bsc } : {}), ...(r.sportlots.length ? { sportlotsIds: r.sportlots } : {}) },
-        },
-      };
+    return draftChecklist(at, `${row.type} › ${row.name}`, row, rowPreviewRequest(r, t), rowSides(r), r.existingId ?? set.setId);
+  }
+
+  /** The marketplace sides a row's preview reads: the ones it carries ids for. */
+  function rowSides(r: DraftRow): Side[] {
+    return [...(r.bsc.length ? ["bsc" as const] : []), ...(r.sportlots.length ? ["sportlots" as const] : [])];
+  }
+
+  /** How an insert row is previewed: by row, cold, or why it cannot be (a string). */
+  function rowPreviewRequest(r: DraftRow, t: StructureType): PreviewRequest | string {
+    if (r.existingId) return { selectorOptionId: r.existingId };
+    if (!setListing) return "the set has no BSC listing of its own, which the cold preview reads";
+    if (r.bsc.length > COLD_IDS_PER_LIST || r.sportlots.length > COLD_IDS_PER_LIST) return `the row carries more than ${COLD_IDS_PER_LIST} ids on one side`;
+    return {
+      cold: {
+        setId: set.setId,
+        variantType: { bscVariantId: t.bscVariantId },
+        insert: { ...(r.bsc.length ? { bscVariantNameIds: r.bsc } : {}), ...(r.sportlots.length ? { sportlotsIds: r.sportlots } : {}) },
+      },
+    };
+  }
+
+  /**
+   * One `previewCardChecklist` call, at most once per request in a draft:
+   * Group Parallels' card-number evidence and the row's own checklist read the
+   * same answer. A refused session stops later previews needing that side; a
+   * failure is kept, never retried.
+   */
+  async function fetchPreview(label: string, request: PreviewRequest, sides: Side[]): Promise<PreviewOutcome> {
+    const refused = sides.filter((s) => refusedSides.has(s));
+    if (refused.length > 0) {
+      return { ok: false, detail: `${refused.map((s) => (s === "bsc" ? "BSC" : "SportLots")).join(" and ")} refused the session earlier in this draft` };
     }
-    return draftChecklist(at, `${row.type} › ${row.name}`, row, request, sides, r.existingId ?? set.setId);
+    const key = JSON.stringify(request);
+    const cached = previews.get(key);
+    if (cached) return cached;
+    const lookupTeams = teamBudget > 0;
+    const preview = await client.action(api.selectorOptions.previewCardChecklist, { ...request, lookupTeams });
+    marketplaceCalls += preview.marketplaceCalls;
+    let out: PreviewOutcome;
+    if (!preview.success) {
+      const cls = failureClass(preview.message);
+      if (cls === "session") refuse(sidesNamed(preview.message), label);
+      out = { ok: false, detail: `the preview failed (${cls === "session" ? "a marketplace refused the session" : "fetch failed"})` };
+    } else {
+      if (preview.teamLookup.performed) teamBudget = Math.max(0, teamBudget - preview.teamLookup.needed);
+      else if (preview.teamLookup.needed > 0) {
+        notes.push(`${label}: ${preview.teamLookup.needed} card(s) had no team looked up (the draft's team-lookup budget is spent); their teams are looked up when apply fetches the checklist.`);
+      }
+      out = { ok: true, preview };
+    }
+    previews.set(key, out);
+    return out;
   }
 
   /**
@@ -1136,21 +1310,9 @@ export async function draftSet(
       return undefined;
     };
     if (typeof request === "string") return openWhole(request);
-    const refused = sides.filter((s) => refusedSides.has(s));
-    if (refused.length > 0) return openWhole(`${refused.map((s) => (s === "bsc" ? "BSC" : "SportLots")).join(" and ")} refused the session earlier in this draft`);
-
-    const lookupTeams = teamBudget > 0;
-    const preview = await client.action(api.selectorOptions.previewCardChecklist, { ...request, lookupTeams });
-    marketplaceCalls += preview.marketplaceCalls;
-    if (!preview.success) {
-      const cls = failureClass(preview.message);
-      if (cls === "session") refuse(sidesNamed(preview.message), label);
-      return openWhole(`the preview failed (${cls === "session" ? "a marketplace refused the session" : "fetch failed"})`);
-    }
-    if (preview.teamLookup.performed) teamBudget = Math.max(0, teamBudget - preview.teamLookup.needed);
-    else if (preview.teamLookup.needed > 0) {
-      notes.push(`${label}: ${preview.teamLookup.needed} card(s) had no team looked up (the draft's team-lookup budget is spent); their teams are looked up when apply fetches the checklist.`);
-    }
+    const got = await fetchPreview(label, request, sides);
+    if (!got.ok) return openWhole(got.detail);
+    const preview = got.preview;
 
     const paused = new Set(preview.pausedSides);
     const servedSides = preview.attachedSides.filter((s) => !paused.has(s)) as ServedSide[];

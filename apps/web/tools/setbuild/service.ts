@@ -184,7 +184,7 @@ export class ResolveError extends Error {
       o.message ??
         (o.candidates.length === 0
           ? `No ${o.kind} named "${o.query}".`
-          : `"${o.query}" matches ${o.candidates.length} ${o.kind} rows; name exactly one.`),
+          : `"${o.query}" matches ${o.candidates.length} ${o.kind === "row" ? "rows" : `${o.kind} rows`}; name exactly one.`),
     );
     this.name = "ResolveError";
     this.kind = o.kind;

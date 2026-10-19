@@ -543,6 +543,12 @@ export interface DialogDecisionInput {
   slPrefixes?: readonly string[];
   /** Ids another variant type of the set files (`ReconcileOptions.pairedElsewhere`). */
   pairedElsewhere?: { bsc: ReadonlySet<string>; sportlots: ReadonlySet<string> };
+  /**
+   * SportLots ids still unsorted in the brand's SportLots review
+   * (`readUnsortedSlIds`): an auto-match carrying one is never offered as a
+   * pair; its halves stay the plain pending decisions they are.
+   */
+  unsortedSl?: ReadonlySet<string>;
 }
 
 /** One marketplace set Save leaves in Pending, with the marketplace's name for it. */
@@ -629,6 +635,10 @@ export function dialogOpenDecisions(input: DialogDecisionInput): {
   for (const set of outcome.disbanded) {
     const bsc = set.bsc.map((i) => i.platformValue);
     const sl = set.sl.map((i) => i.platformValue);
+    // A SportLots set no product claims yet is not this set's by any id: the
+    // matcher's label pairing is not offered (2023 Topps Chrome took the
+    // flagship's "1988 Topps Autos Red" that way).
+    if (sl.some((id) => input.unsortedSl?.has(id))) continue;
     if (bsc.every((id) => openIds.bsc.has(id)) && sl.every((id) => openIds.sportlots.has(id))) {
       proposedPairs.push({ name: set.title, buysportscards: bsc, sportlots: sl });
       for (const id of bsc) openIds.bsc.delete(id);
@@ -679,6 +689,24 @@ export function dialogOpenDecisions(input: DialogDecisionInput): {
   }
 
   return { reconcile: { at: `${at}.sync`, path, type, proposedPairs, pending }, names, left };
+}
+
+/**
+ * NEO-339 — the SportLots ids still waiting in the brand's SportLots review
+ * (`slSetReview.getSlSetReview`, one query).
+ *
+ * SportLots lists a whole brand-year at the insert level and names no product
+ * for a set, so ids and NB structure are the only way to tell whose a
+ * SportLots set is: a set another NB set holds is held (`getBrandSlHolders`,
+ * NEO-305), and a set Sync Sets could not place under any NB set waits in the
+ * review until the operator files it (its own set, or a row under one set's
+ * variant type). An id in the review is therefore no set's yet, and a
+ * Reconcile auto-match carrying one (paired by label similarity alone) is
+ * never proposed: at most it is an open decision. Empty when nothing waits.
+ */
+export async function readUnsortedSlIds(client: NbClient, manufacturerId: RowId): Promise<Set<string>> {
+  const review = await client.query(api.slSetReview.getSlSetReview, { manufacturerId });
+  return new Set((review?.entries ?? []).map((e) => e.slId));
 }
 
 /** `left` as counts, or undefined when nothing was left unasked. */
@@ -832,7 +860,7 @@ export async function reconcileVariants(
   const outcome = split.outcome;
   const leftMoot = split.moot.length > 0 ? { leftMoot: split.moot } : {};
 
-  const decisions = dialogOpenDecisions({
+  const decisionInput: DialogDecisionInput = {
     outcome,
     pending: sync.pending,
     savedSiblings: seed.savedSiblings,
@@ -847,7 +875,15 @@ export async function reconcileVariants(
     ...(opts.pairedElsewhere
       ? { pairedElsewhere: { bsc: new Set(opts.pairedElsewhere.bsc), sportlots: new Set(opts.pairedElsewhere.sportlots) } }
       : {}),
-  });
+  };
+  let decisions = dialogOpenDecisions(decisionInput);
+  // Only when the dialog would offer an auto-match the spec left out: is its
+  // SportLots half a set the brand's review has not placed yet?
+  const manufacturerId = ctx.chain.find((a) => a.level === "manufacturer")?._id;
+  if (manufacturerId && decisions.reconcile.proposedPairs.some((p) => p.sportlots.length > 0)) {
+    const unsortedSl = await readUnsortedSlIds(client, manufacturerId);
+    if (unsortedSl.size > 0) decisions = dialogOpenDecisions({ ...decisionInput, unsortedSl });
+  }
   // A tie on a grouped row is asked once, with every holder as a candidate,
   // in place of whatever the dialog made of the same entry.
   if (claims.open.length > 0) {

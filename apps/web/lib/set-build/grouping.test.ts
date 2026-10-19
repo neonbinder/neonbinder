@@ -156,3 +156,54 @@ describe("buildInitialState — what the session opens on", () => {
     expect(computeDiff(s).demotions).toEqual([{ parallelId: "Chrome Red" }]);
   });
 });
+
+describe("buildInitialState — a row that roots its own family (NEO-339, 2023 Topps Chrome)", () => {
+  const id = (s: string) => s as Id<"selectorOptions">;
+  const r = (s: string) => ({ _id: id(s), value: s });
+  const flat = (...names: string[]): InsertTree => names.map((n) => ({ insert: r(n), parallels: [] }));
+  const childrenOf = (init: ReturnType<typeof buildInitialState>, parent: string) =>
+    [...init.placement].filter(([, p]) => p.kind === "child" && p.parentId === parent).map(([c]) => c).sort();
+  const family = flat(
+    "Future Stars",
+    "Future Stars Red",
+    "Future Stars Autographs",
+    "Future Stars Autographs SuperFractor",
+    "Future Stars Autographs Red",
+    "Future Stars Autographs Orange",
+  );
+
+  test("the Autographs family stands on its own: its parallels go under it, not under Future Stars", () => {
+    const init = buildInitialState(family);
+    expect(init.placement.get(id("Future Stars Autographs"))).toEqual({ kind: "ungrouped" });
+    expect(childrenOf(init, "Future Stars")).toEqual(["Future Stars Red"]);
+    expect(childrenOf(init, "Future Stars Autographs")).toEqual([
+      "Future Stars Autographs Orange",
+      "Future Stars Autographs Red",
+      "Future Stars Autographs SuperFractor",
+    ]);
+    expect([...init.familyRoots]).toEqual([["Future Stars Autographs", "Future Stars"]]);
+  });
+
+  test("a lone extension is still a parallel by prefix: only a row that heads a family is held back", () => {
+    const init = buildInitialState(flat("Radiating Rookies", "Radiating Rookies Autographs"));
+    expect(init.placement.get(id("Radiating Rookies Autographs"))).toEqual({ kind: "child", parentId: "Radiating Rookies" });
+    expect(init.familyRoots.size).toBe(0);
+  });
+
+  test("one family is one level: a deeper extension joins the family root, never a row inside the family", () => {
+    const init = buildInitialState(flat("Stars", "Stars Autographs", "Stars Autographs Gold", "Stars Autographs Gold Wave"));
+    expect(childrenOf(init, "Stars Autographs")).toEqual(["Stars Autographs Gold", "Stars Autographs Gold Wave"]);
+    expect(init.placement.get(id("Stars Autographs"))).toEqual({ kind: "ungrouped" });
+    expect([...init.familyRoots.keys()]).toEqual(["Stars Autographs"]);
+  });
+
+  test("nestFamilyRoots restores the plain prefix rule for a root the caller vouches for", () => {
+    const init = buildInitialState(family, { nestFamilyRoots: new Set([id("Future Stars Autographs")]) });
+    expect(childrenOf(init, "Future Stars")).toHaveLength(5);
+    expect(init.familyRoots.size).toBe(0);
+  });
+
+  test("suggest: false reports no family roots", () => {
+    expect(buildInitialState(family, { suggest: false }).familyRoots.size).toBe(0);
+  });
+});

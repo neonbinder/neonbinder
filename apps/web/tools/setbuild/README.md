@@ -42,7 +42,19 @@ SportLots' insert-level list is brand-year wide, so a SportLots set outside
 the Reconcile dialog's own prefix filter (`defaultSlPrefixes` in
 `lib/set-build/reconcile.ts`), or one another variant type of the set pairs,
 is not listed: it is counted in `leftUnasked`, and apply leaves it in Pending
-unasked (`dialogOpenDecisions`' `left`). `nb_draft_set` returns a summary by
+unasked (`dialogOpenDecisions`' `left`). A SportLots set still waiting in
+the brand's SportLots review (`readUnsortedSlIds`: no NB set has placed it) is
+never paired by the matcher's name match: the draft drafts that row from its
+other ids and asks about the SportLots set (`reconcile-unsorted-sportlots`,
+answered at `sync.pending`), and apply never offers such an auto-match as a
+proposed pair. SportLots names no product for a set, so the review and the
+brand's held ids are the only id-based evidence of whose set it is.
+Group Parallels' suggestions (`detectGroupings`) hold back a row that roots
+its own family ("Future Stars Autographs", which "Future Stars Autographs
+Red" extends) instead of grouping it under its prefix parent ("Future Stars");
+the draft previews both rows and nests it only when their cards share a
+number, and with no preview it stays the parent of its own family.
+`nb_draft_set` returns a summary by
 default (`compactDraftReport`: the template or spec and every open decision
 whole, the other lists sampled with complete counts); `detail: "full"` /
 `--detail full` returns everything. `confirmPhrase` is
@@ -289,6 +301,11 @@ mcp*.ts    the MCP server, its ten tools, mcp-smoke and oneshot-smoke
 - **No marketplace name is ever a key.** Rows are addressed by NB path or by a
   marketplace id from a slot (a `group` ref may be `{ "bsc": id }` or
   `{ "sportlots": id }`, matched against the rows' platform slots).
+- **A row resolves by its own name, grouped or not.** `resolveVariantRow`
+  answers from the type's top-level rows first; only when none carries the
+  name does it read the rows Group Parallels moved under an insert, so a
+  grouped row is never mistaken for the parent its name begins with. A name
+  that matches nothing says so, and lists near names as candidates only.
 - **Group Parallels runs the dialog's own code.** `lib/group-parallels.ts`
   drives `lib/set-build/grouping.ts` (the reducer, tree builder and diff the
   modal imports) and `chunkGroupingPlan`; never re-implement a rule there. It

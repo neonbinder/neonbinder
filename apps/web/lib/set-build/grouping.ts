@@ -263,26 +263,30 @@ export type InitialGrouping = {
   rows: Map<RowId, RowInfo>;
   placement: Map<RowId, Placement>;
   suggested: Set<RowId>;
+  /**
+   * NEO-339 — rows the suggestions held back as the root of their own family
+   * (`detectGroupings`' `familyRoots`): root → the prefix parent the plain
+   * rule would have placed it under. Empty with `suggest: false`.
+   */
+  familyRoots: Map<RowId, RowId>;
 };
 
 /**
  * The tree as reducer state: every row where it stands now, plus — unless
  * `suggest: false` — the prefix suggestions (`detectGroupings`) placed and
- * marked `suggested`, which is what the modal opens on. The set-build tool
- * passes `suggest: false`: a spec names every move it wants, and a row it does
- * not name stays where it is.
+ * marked `suggested`, which is what the modal opens on. The set-build tool's
+ * apply passes `suggest: false`: a spec names every move it wants, and a row
+ * it does not name stays where it is. Its draft passes `nestFamilyRoots`, the
+ * held family roots it has card-number evidence for (see `detectGroupings`).
  */
 export function buildInitialState(
   tree: InsertTree,
-  opts: { suggest?: boolean } = {},
-): {
-  rows: Map<RowId, RowInfo>;
-  placement: Map<RowId, Placement>;
-  suggested: Set<RowId>;
-} {
+  opts: { suggest?: boolean; nestFamilyRoots?: ReadonlySet<RowId> } = {},
+): InitialGrouping {
   const rows = new Map<RowId, RowInfo>();
   const placement = new Map<RowId, Placement>();
   const suggested = new Set<RowId>();
+  const familyRoots = new Map<RowId, RowId>();
 
   for (const { insert, parallels } of tree) {
     rows.set(insert._id, {
@@ -305,7 +309,7 @@ export function buildInitialState(
     }
   }
 
-  if (opts.suggest === false) return { rows, placement, suggested };
+  if (opts.suggest === false) return { rows, placement, suggested, familyRoots };
 
   // Auto-suggest groupings only among currently-ungrouped inserts. Fixed
   // parents (had parallels at open) can be parents but can't themselves be
@@ -318,15 +322,18 @@ export function buildInitialState(
     candidates.push({ _id: id, value: info.value });
     if (info.originalHadParallels) excludeAsChild.add(id);
   }
-  const detection = detectGroupings(candidates, excludeAsChild);
+  const detection = detectGroupings(candidates, excludeAsChild, {
+    nestFamilyRoots: opts.nestFamilyRoots,
+  });
   for (const [parentId, childIds] of detection.suggestions) {
     for (const childId of childIds) {
       placement.set(childId, { kind: "child", parentId });
       suggested.add(childId);
     }
   }
+  for (const [root, parent] of detection.familyRoots) familyRoots.set(root, parent);
 
-  return { rows, placement, suggested };
+  return { rows, placement, suggested, familyRoots };
 }
 
 export function computeDiff(state: State): {
