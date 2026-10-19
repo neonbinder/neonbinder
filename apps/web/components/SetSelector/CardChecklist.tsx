@@ -704,6 +704,8 @@ export default function CardChecklist({
     value: AutographFormat;
     /** Parallels the answer also reached, for the saved line. */
     parallels: number;
+    /** Of those, the ones that moved off an old answer. */
+    moved: number;
   } | null>(null);
   // This sitting only: moving to another leaf drops the latch, so coming back
   // never remounts a stale "saved" line (render-phase reset, the
@@ -3025,6 +3027,7 @@ export default function CardChecklist({
             count={unformattedAutographCount}
             saved={autographSaved.value}
             savedParallels={autographSaved.parallels}
+            savedMoved={autographSaved.moved}
             onSaved={() => {}}
           />
         ) : (
@@ -3034,7 +3037,7 @@ export default function CardChecklist({
             <AutographFormatPrompt
               selectorOptionId={variantId}
               count={unformattedAutographCount}
-              onSaved={(value, parallels) => setAutographSaved({ variantId, value, parallels })}
+              onSaved={(value, parallels, moved) => setAutographSaved({ variantId, value, parallels, moved })}
             />
           )
         )}

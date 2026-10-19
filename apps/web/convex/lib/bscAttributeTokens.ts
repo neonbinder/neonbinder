@@ -246,7 +246,9 @@ export function bscAttributeLabelTokens(teamName: string): string[] {
  */
 export const MAX_BSC_PRODUCT_NAME_LENGTH = 512;
 
-const ZERO_WIDTH = /[​-‍﻿]/g;
+// U+200B..U+200D (zero-width space, non-joiner, joiner) and U+FEFF (BOM),
+// written as escapes so the class is visible in review.
+const ZERO_WIDTH = /[\u200B-\u200D\uFEFF]/g;
 
 /**
  * The comma-joined run of upper-case words at the end of the text before

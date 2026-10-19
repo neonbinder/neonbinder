@@ -790,7 +790,7 @@ describe("setAutographFormat — an insert's answer reaches its parallels", () =
       selectorOptionId: insertId,
       value: "",
     });
-    expect(result).toEqual({ parallelIds: [] });
+    expect(result).toEqual({ parallelIds: [], movedIds: [] });
     expect((await get(t, sameId))!.features?.autographFormat).toBe("On Card");
   });
 });

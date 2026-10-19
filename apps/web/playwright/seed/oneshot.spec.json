@@ -12431,7 +12431,8 @@
                     }
                   ]
                 },
-                "expectCards": 6
+                "expectCards": 6,
+                "autographFormat": "On Card"
               },
               "parallels": [
                 {

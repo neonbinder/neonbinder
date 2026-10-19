@@ -78,7 +78,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { requireAdmin } from "./auth";
 import { applyBscAttributeFill } from "./cardChecklist";
 import {
@@ -162,6 +162,11 @@ export const setAutographFormat = mutation({
      * for a clear. The set-build tool waits on them (NEO-339 `nb_fix`).
      */
     parallelIds: v.array(v.id("selectorOptions")),
+    /**
+     * Of `parallelIds`, the ones that MOVED with a changed answer (they still
+     * held the previous one), so the saved line can say so. Empty otherwise.
+     */
+    movedIds: v.array(v.id("selectorOptions")),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -174,14 +179,14 @@ export const setAutographFormat = mutation({
 
     if (args.value === "") {
       // A clear is this row's alone: parallels that took the answer keep it.
-      if (stored === undefined) return { parallelIds: [] };
+      if (stored === undefined) return { parallelIds: [], movedIds: [] };
       const features = { ...(leaf.features ?? {}) };
       delete features.autographFormat;
       await ctx.db.patch(args.selectorOptionId, {
         features,
         lastUpdated: Date.now(),
       });
-      return { parallelIds: [] };
+      return { parallelIds: [], movedIds: [] };
     }
 
     // The validator already holds the vocabulary; this is the same guard
@@ -221,7 +226,7 @@ export const setAutographFormat = mutation({
         ...(movedIds.length > 0 ? { movedParallelIds: movedIds } : {}),
       },
     );
-    return { parallelIds };
+    return { parallelIds, movedIds };
   },
 });
 
@@ -352,6 +357,8 @@ export async function adoptAutographFormatOnParallels(
   source: Doc<"selectorOptions">,
   format: AutographFormat,
   previousFormat?: AutographFormat,
+  /** Tests only: a SMALLER bound than `MAX_PARALLELS_PER_ANSWER`, never larger. */
+  options: { limit?: number } = {},
 ): Promise<{
   parallelIds: Array<Id<"selectorOptions">>;
   /** Of `parallelIds`, the ones moved off `previousFormat`. */
@@ -367,7 +374,8 @@ export async function adoptAutographFormatOnParallels(
   const queue: Array<Doc<"selectorOptions">> = [source];
   let keptOwn = 0;
   let truncated = false;
-  let budget = MAX_PARALLELS_PER_ANSWER;
+  const limit = clampLimit(options.limit, MAX_PARALLELS_PER_ANSWER);
+  let budget = limit;
   const now = Date.now();
   while (queue.length > 0 && budget > 0) {
     const current = queue.shift()!;
@@ -402,7 +410,7 @@ export async function adoptAutographFormatOnParallels(
         msg: "autograph_format_parallels_truncated",
         selectorOptionId: source._id,
         reached: parallelIds.length,
-        limit: MAX_PARALLELS_PER_ANSWER,
+        limit,
       }),
     );
   }
@@ -532,18 +540,96 @@ export const cascadeAutographFormatPage = internalMutation({
   },
 });
 
+/** Totals one or more walks add up. */
+type WalkTotals = {
+  pages: number;
+  formatted: number;
+  skippedOverride: number;
+  retitled: number;
+  redescribed: number;
+};
+
+const emptyTotals = (): WalkTotals => ({
+  pages: 0,
+  formatted: 0,
+  skippedOverride: 0,
+  retitled: 0,
+  redescribed: 0,
+});
+
 /**
- * Walk a leaf's cards one page at a time, then each of `parallelIds` (the
- * parallels the answer reached, `adoptAutographFormatOnParallels`) the same
- * way. Scheduled by `setAutographFormat` and `inheritAutographFormatToParallels`;
- * each page is its own transaction, so partial progress is durable and a
- * failure part-way leaves every earlier page applied (re-picking the answer
- * finishes the rest — the fill is idempotent).
+ * One row's walk: its cards one bounded page at a time
+ * (`cascadeAutographFormatPage`), adding to `totals`. True when the walk was
+ * abandoned (the row no longer holds `format`). Throws on a runaway (no
+ * progress, or past `CASCADE_MAX_PAGES`); every page before it stays applied.
+ */
+async function walkRowCards(
+  ctx: ActionCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  format: AutographFormat,
+  previousFormat: AutographFormat | undefined,
+  totals: WalkTotals,
+): Promise<boolean> {
+  let after: number | undefined;
+  let pages = 0;
+  for (;;) {
+    if (pages >= CASCADE_MAX_PAGES) {
+      throw new Error(
+        `cascadeAutographFormat: did not finish within ${CASCADE_MAX_PAGES} pages`,
+      );
+    }
+    const page: {
+      abandoned: boolean;
+      done: boolean;
+      after: number | null;
+      formatted: number;
+      skippedOverride: number;
+      retitled: number;
+      redescribed: number;
+    } = await ctx.runMutation(internal.autographFormat.cascadeAutographFormatPage, {
+      selectorOptionId,
+      format,
+      ...(previousFormat ? { previousFormat } : {}),
+      ...(after !== undefined ? { after } : {}),
+    });
+    pages++;
+    totals.pages++;
+    totals.formatted += page.formatted;
+    totals.skippedOverride += page.skippedOverride;
+    totals.retitled += page.retitled;
+    totals.redescribed += page.redescribed;
+    if (page.abandoned) return true;
+    if (page.done) return false;
+    if (page.after === null || page.after === after) {
+      // A page that examined nothing cannot advance; stop rather than spin.
+      throw new Error("cascadeAutographFormat: cursor did not advance");
+    }
+    after = page.after;
+  }
+}
+
+/**
+ * Parallels one scheduled `cascadeAutographFormatParallels` action walks. A
+ * reached parallel already holds the format, so its header never asks again:
+ * a walk that dies must strand as few of them as possible. Small chunks keep
+ * each action far from the action time limit, and each chunk is its own
+ * scheduled function, so one failing chunk never stops the others.
+ */
+export const PARALLEL_WALKS_PER_ACTION = 25;
+
+/**
+ * Walk a leaf's cards one page at a time. Scheduled by `setAutographFormat`
+ * and `inheritAutographFormatToParallels`; each page is its own transaction,
+ * so partial progress is durable and a failure part-way leaves every earlier
+ * page applied (re-picking the answer finishes the rest — the fill is
+ * idempotent).
  *
- * Each row's walk stands alone: one that is abandoned (the row no longer holds
- * `format`) stops that row only. `previousFormat` is the LEAF's previous
- * answer: it moves the leaf's cards, and the cards of each parallel in
- * `movedParallelIds` (the ones that moved off it with the leaf). A parallel
+ * The parallels the answer reached (`parallelIds`) are NOT walked here: they
+ * are scheduled FIRST, in chunks of `PARALLEL_WALKS_PER_ACTION`
+ * (`cascadeAutographFormatParallels`), so neither a failure of the leaf's own
+ * walk nor one parallel's can strand the rest. `previousFormat` is the LEAF's
+ * previous answer: it moves the leaf's cards, and the cards of each parallel
+ * in `movedParallelIds` (the ones that moved off it with the leaf). A parallel
  * that took the answer while unset, or already held it, has no previous one.
  */
 export const cascadeAutographFormat = internalAction({
@@ -551,7 +637,7 @@ export const cascadeAutographFormat = internalAction({
     selectorOptionId: v.id("selectorOptions"),
     format: formatValidator,
     previousFormat: v.optional(formatValidator),
-    /** The parallels the answer reached, walked after the leaf. */
+    /** The parallels the answer reached, walked in their own scheduled chunks. */
     parallelIds: v.optional(v.array(v.id("selectorOptions"))),
     /** Of `parallelIds`, the ones that moved off `previousFormat` with the leaf. */
     movedParallelIds: v.optional(v.array(v.id("selectorOptions"))),
@@ -566,62 +652,33 @@ export const cascadeAutographFormat = internalAction({
     abandoned: v.boolean(),
     retitled: v.number(),
     redescribed: v.number(),
-    /** Parallels walked (abandoned ones included). */
+    /** Parallels whose walks were scheduled (in chunks). */
     parallels: v.number(),
   }),
   handler: async (ctx, args) => {
-    const totals = { pages: 0, formatted: 0, skippedOverride: 0, retitled: 0, redescribed: 0 };
-    const walk = async (
-      selectorOptionId: Id<"selectorOptions">,
-      previousFormat: AutographFormat | undefined,
-    ): Promise<boolean> => {
-      let after: number | undefined;
-      let pages = 0;
-      for (;;) {
-        if (pages >= CASCADE_MAX_PAGES) {
-          throw new Error(
-            `cascadeAutographFormat: did not finish within ${CASCADE_MAX_PAGES} pages`,
-          );
-        }
-        const page: {
-          abandoned: boolean;
-          done: boolean;
-          after: number | null;
-          formatted: number;
-          skippedOverride: number;
-          retitled: number;
-          redescribed: number;
-        } = await ctx.runMutation(internal.autographFormat.cascadeAutographFormatPage, {
-          selectorOptionId,
+    const parallelIds = args.parallelIds ?? [];
+    const moved = new Set<string>(args.movedParallelIds ?? []);
+    for (let i = 0; i < parallelIds.length; i += PARALLEL_WALKS_PER_ACTION) {
+      const chunk = parallelIds.slice(i, i + PARALLEL_WALKS_PER_ACTION);
+      const chunkMoved = chunk.filter((id) => moved.has(id));
+      await ctx.scheduler.runAfter(
+        0,
+        internal.autographFormat.cascadeAutographFormatParallels,
+        {
           format: args.format,
-          ...(previousFormat ? { previousFormat } : {}),
-          ...(after !== undefined ? { after } : {}),
-        });
-        pages++;
-        totals.pages++;
-        totals.formatted += page.formatted;
-        totals.skippedOverride += page.skippedOverride;
-        totals.retitled += page.retitled;
-        totals.redescribed += page.redescribed;
-        if (page.abandoned) return true;
-        if (page.done) return false;
-        if (page.after === null || page.after === after) {
-          // A page that examined nothing cannot advance; stop rather than spin.
-          throw new Error("cascadeAutographFormat: cursor did not advance");
-        }
-        after = page.after;
-      }
-    };
+          parallelIds: chunk,
+          ...(args.previousFormat && chunkMoved.length > 0
+            ? { previousFormat: args.previousFormat, movedParallelIds: chunkMoved }
+            : {}),
+        },
+      );
+    }
 
+    const totals = emptyTotals();
     const abandoned =
       args.walkLeaf === false
         ? false
-        : await walk(args.selectorOptionId, args.previousFormat);
-    const parallelIds = args.parallelIds ?? [];
-    const moved = new Set<string>(args.movedParallelIds ?? []);
-    for (const parallelId of parallelIds) {
-      await walk(parallelId, moved.has(parallelId) ? args.previousFormat : undefined);
-    }
+        : await walkRowCards(ctx, args.selectorOptionId, args.format, args.previousFormat, totals);
     const result = {
       ...totals,
       abandoned,
@@ -638,6 +695,75 @@ export const cascadeAutographFormat = internalAction({
     return result;
   },
 });
+
+/**
+ * One chunk of reached parallels (at most `PARALLEL_WALKS_PER_ACTION`), each
+ * walked like the leaf. A walk that fails is logged (ids and the error's
+ * class only, never a value or a message) and the next parallel is walked:
+ * one parallel's failure strands only itself, and re-picking the answer
+ * finishes it.
+ */
+export const cascadeAutographFormatParallels = internalAction({
+  args: {
+    format: formatValidator,
+    parallelIds: v.array(v.id("selectorOptions")),
+    previousFormat: v.optional(formatValidator),
+    /** Of `parallelIds`, the ones that moved off `previousFormat`. */
+    movedParallelIds: v.optional(v.array(v.id("selectorOptions"))),
+  },
+  returns: v.object({
+    walked: v.number(),
+    failed: v.number(),
+    formatted: v.number(),
+    retitled: v.number(),
+    redescribed: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.parallelIds.length > PARALLEL_WALKS_PER_ACTION) {
+      throw new Error(
+        `cascadeAutographFormatParallels: at most ${PARALLEL_WALKS_PER_ACTION} parallels per call`,
+      );
+    }
+    const moved = new Set<string>(args.movedParallelIds ?? []);
+    const totals = emptyTotals();
+    let walked = 0;
+    let failed = 0;
+    for (const parallelId of args.parallelIds) {
+      try {
+        await walkRowCards(
+          ctx,
+          parallelId,
+          args.format,
+          moved.has(parallelId) ? args.previousFormat : undefined,
+          totals,
+        );
+        walked++;
+      } catch (err) {
+        failed++;
+        console.error(
+          JSON.stringify({
+            msg: "autograph_format_parallel_walk_failed",
+            selectorOptionId: parallelId,
+            errorClass: errorClassOf(err),
+          }),
+        );
+      }
+    }
+    return {
+      walked,
+      failed,
+      formatted: totals.formatted,
+      retitled: totals.retitled,
+      redescribed: totals.redescribed,
+    };
+  },
+});
+
+/** An error's class for a log line: its constructor's name, never its message. */
+function errorClassOf(err: unknown): string {
+  if (err instanceof Error) return err.name || "Error";
+  return typeof err;
+}
 
 /** A caller may make a bound smaller, never larger, and never below one. */
 function clampLimit(requested: number | undefined, ceiling: number): number {

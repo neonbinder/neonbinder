@@ -66,6 +66,29 @@ export function autographPromptParallels(count: number): string {
   return count === 1 ? "Its parallel takes the same answer." : `Its ${count} parallels take the same answer.`;
 }
 
+/**
+ * Said when a CHANGED answer also moved parallels that still held the old one
+ * (Jason, 2026-10-18: a corrected misclick carries them). `count` is how many
+ * the server says moved; nothing is said for none.
+ */
+export function autographPromptMoved(count: number): string {
+  return count === 1
+    ? "Its parallel that had the old answer moved too."
+    : `Its ${count} parallels that had the old answer moved too.`;
+}
+
+/**
+ * What a saved answer's line adds about the parallels it reached: the ones
+ * that moved with a changed answer, and the ones that took it fresh (or
+ * already held it). Empty when it reached none.
+ */
+export function autographParallelsNote(reached: number, moved: number): string {
+  const fresh = Math.max(reached - moved, 0);
+  return [fresh > 0 ? autographPromptParallels(fresh) : "", moved > 0 ? autographPromptMoved(moved) : ""]
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** What the prompt reads off a stored card (a `getCardChecklist` row fits). */
 export interface AutographPromptCard {
   attributes?: readonly string[];

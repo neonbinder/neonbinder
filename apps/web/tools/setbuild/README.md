@@ -341,15 +341,16 @@ names, answered by the committed spec; its leaves and review answers must be
 subsets of the committed spec's, and everything else must match exactly.
 The autograph path is proven both ways (2024 Topps Chrome Black's
 autographs are On Card, Jason 2026-10-18). The draft must list exactly the
-expect file's `draft.autographFormats` (the two checklists whose cards carry
-AU), and each must be answered by the committed spec or by the expect file's
-`fix.autographs`. Super Futures Autographs is answered in the spec, and a
-read-back after apply checks it holds `autographFormat` "On Card" with every
-AU card marked; its built parallels copy the mark and do not ask. (Pitch
-Black Pairings Dual Autographs carries no AU attribute in today's marketplace
-data, so nothing asks about it, and the spec gives it no format.) Ivory Autographs
+expect file's `draft.autographFormats` (the three checklists whose cards
+carry AU), and each must be answered by the committed spec or by the expect
+file's `fix.autographs`. Super Futures Autographs and Pitch Black Pairings
+Dual Autographs are answered in the spec (PBDA's AU comes from BSC's per-card
+`productName`, which the fetch reads), and a read-back after apply checks each
+holds `autographFormat` "On Card" with every AU card marked; their built
+parallels take the format at build time and do not ask. Ivory Autographs
 is left out of the spec on purpose: it and its two built parallels are the
-`autographRows` (3) the first listing must show, `nb_fix` answers all three
-live through `setAutographFormat`, the second listing must show none, and
-the same read-back checks each row. Placeholder fixture files (`"measured": false`) fail it on purpose.
+`autographRows` (3) the first listing must show, `nb_fix` answers Ivory alone
+live through `setAutographFormat`, the answer reaches both parallels, the
+second listing must show none (`afterAutographRows: 0`), and the same
+read-back checks all three rows. Placeholder fixture files (`"measured": false`) fail it on purpose.
 Neither job prints the deployment: the host is masked and redacted.

@@ -19,7 +19,13 @@ import {
 } from "./entity-review-steps";
 // The header prompt's words live in the pure prompt module, which the
 // set-build tool's attention listing reads too (NEO-339).
-import { autographPromptLine, autographPromptParallels, autographPromptSaved } from "./autograph-prompt";
+import {
+  autographParallelsNote,
+  autographPromptLine,
+  autographPromptMoved,
+  autographPromptParallels,
+  autographPromptSaved,
+} from "./autograph-prompt";
 
 /**
  * NEO-345 — how a leaf's autographs are signed: on the card, or on a sticker.
@@ -68,7 +74,7 @@ export const AUTOGRAPH_NEXT_BLOCKED = "Pick how they're signed first";
  * the answer is saved: defined in `autograph-prompt.ts` so the set-build
  * tool's listing says the same words, re-exported for this step's callers.
  */
-export { autographPromptLine, autographPromptParallels, autographPromptSaved };
+export { autographParallelsNote, autographPromptLine, autographPromptMoved, autographPromptParallels, autographPromptSaved };
 
 /** Said politely while the header prompt's write is in flight. */
 export const AUTOGRAPH_PROMPT_SAVING = "Saving…";
@@ -245,11 +251,14 @@ export default function AutographFormatStep({
 function SavedLine({
   value,
   parallels,
+  moved,
   slotRef,
 }: {
   value: AutographFormat;
   /** Parallels the answer also reached (0: say nothing about them). */
   parallels: number;
+  /** Of those, the ones that moved off the old answer. */
+  moved: number;
   slotRef: RefObject<HTMLDivElement | null>;
 }) {
   const ref = useRef<HTMLParagraphElement>(null);
@@ -265,9 +274,7 @@ function SavedLine({
       role="status"
       className="mb-3 rounded-md border border-slate-500 px-3 py-2 text-sm text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
     >
-      {parallels > 0
-        ? `${autographPromptSaved(value)} ${autographPromptParallels(parallels)}`
-        : autographPromptSaved(value)}
+      {[autographPromptSaved(value), autographParallelsNote(parallels, moved)].filter(Boolean).join(" ")}
     </p>
   );
 }
@@ -289,6 +296,7 @@ export function AutographFormatPrompt({
   count,
   saved,
   savedParallels = 0,
+  savedMoved = 0,
   onSaved,
 }: {
   selectorOptionId: Id<"selectorOptions">;
@@ -296,7 +304,9 @@ export function AutographFormatPrompt({
   saved?: AutographFormat;
   /** How many parallels the saved answer also reached. */
   savedParallels?: number;
-  onSaved: (value: AutographFormat, parallels: number) => void;
+  /** Of those, how many moved off the old answer. */
+  savedMoved?: number;
+  onSaved: (value: AutographFormat, parallels: number, moved: number) => void;
 }) {
   const setAutographFormat = useMutation(api.autographFormat.setAutographFormat);
   const [busy, setBusy] = useState<AutographFormat | null>(null);
@@ -311,7 +321,7 @@ export function AutographFormatPrompt({
     setError(null);
     try {
       const result = await setAutographFormat({ selectorOptionId, value });
-      onSaved(value, result?.parallelIds?.length ?? 0);
+      onSaved(value, result?.parallelIds?.length ?? 0, result?.movedIds?.length ?? 0);
     } catch (e) {
       setError(userFacingMessage(e, "Could not save the autograph format"));
     } finally {
@@ -322,7 +332,7 @@ export function AutographFormatPrompt({
   if (saved) {
     return (
       <div ref={slotRef}>
-        <SavedLine value={saved} parallels={savedParallels} slotRef={slotRef} />
+        <SavedLine value={saved} parallels={savedParallels} moved={savedMoved} slotRef={slotRef} />
       </div>
     );
   }
