@@ -65,7 +65,13 @@ import { z } from "zod";
 import type { CommandSpec } from "./cli";
 import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
-import { makeClient } from "./client/convex-client";
+import { makeClient, type NbClient } from "./client/convex-client";
+import { api } from "../../convex/_generated/api";
+import { carriesAutographToken } from "../../convex/features/deriveCardFeatures";
+import { countUnformattedAutographs } from "../../components/SetSelector/autograph-prompt";
+import { readChecklist, resolveAttentionRow } from "./lib/attention";
+import { queryOnlyClient } from "./runner/read-only-client";
+import { resolveSetPath, type ResolvedSet } from "./spec/resolve";
 import { canonicalJson, contentDigest } from "./client/target";
 import { drillResolverOf, inspectLinkProblems, setLinkProblems, type DrillResolver } from "./link-checks";
 import { APPLY_TIMEOUT_MS, connectToSpawnedServer, inspectExpectSchema, inspectMismatches } from "./mcp-smoke";
@@ -76,6 +82,7 @@ import {
   type ApplyReport,
   type AttentionReport,
   type AttentionSummary,
+  type AutographAttentionItem,
   type CardAttentionItem,
   type DraftReport,
   type FixReport,
@@ -108,6 +115,12 @@ export const oneshotExpectSchema = z
     draft: z
       .object({
         teamLookupBudget: z.number().int().min(0).optional(),
+        /**
+         * NEO-345: exactly the `at`s the draft's `autographFormats` must list
+         * (the set's AU checklists), so an empty list can never pass.
+         * Compared when given.
+         */
+        autographFormats: z.array(z.string().min(1)).optional(),
       })
       .strict()
       .default({}),
@@ -377,6 +390,56 @@ export function cardsAnswered(listing: readonly CardAttentionItem[], answer: Non
   });
 }
 
+/** The listed autograph row an answer addresses (its row; omitted = Base). Pure. */
+export function autographsAnswered(
+  listing: readonly AutographAttentionItem[],
+  answer: NonNullable<FixAnswerSet["autographs"]>[number],
+): AutographAttentionItem[] {
+  return listing.filter((a) =>
+    isBaseRef(answer.row)
+      ? a.row.name === undefined && a.row.parallel === undefined
+      : a.row.type === answer.row!.type && a.row.name === answer.row!.name && a.row.parallel === answer.row!.parallel,
+  );
+}
+
+/** One row as the read-back sees it: its stored format, and its own AU cards. */
+export interface AutographRowState {
+  format?: string;
+  /** The row's own cards carrying "AU" (guests excluded). */
+  autographed: number;
+  /** Of those, the ones still marked not autographed. */
+  unformatted: number;
+}
+
+/** Reads one row of the set straight from NB (queries only), for the positive read-back. */
+export type AutographRowReader = (row: { type?: string; name?: string; parallel?: string } | undefined) => Promise<AutographRowState>;
+
+/** The read-back's verdict for one row the run answered. Pure. */
+export function autographReadBackProblem(label: string, want: string, got: AutographRowState): string | undefined {
+  if (got.format !== want) return `${label} holds autographFormat ${got.format === undefined ? "none" : `"${got.format}"`}, expected "${want}"`;
+  if (got.autographed === 0) return `${label} holds no AU card`;
+  if (got.unformatted > 0) return `${label}: ${got.unformatted} of ${got.autographed} AU cards still marked None`;
+  return undefined;
+}
+
+/** The read-back's reader, over the harness's own client (queries only). */
+export function autographRowReaderOf(client: NbClient, path: SetPath): AutographRowReader {
+  const reads = queryOnlyClient(client);
+  let set: Promise<ResolvedSet> | undefined;
+  return async (row) => {
+    set ??= resolveSetPath(reads, path);
+    const node = await resolveAttentionRow(reads, await set, row, "read-back");
+    const leaf = await reads.query(api.selectorOptions.getSelectorOptionById, { id: node.rowId });
+    const own = (await readChecklist(reads, node.rowId)).filter((c) => !c.isCrossListed);
+    const au = own.filter((c) => carriesAutographToken(c.attributes));
+    return {
+      ...(leaf?.features?.autographFormat !== undefined ? { format: leaf.features.autographFormat } : {}),
+      autographed: au.length,
+      unformatted: countUnformattedAutographs(au),
+    };
+  };
+}
+
 /** The listed name side an answer addresses. Pure. */
 export function namesAnswered(listing: readonly NameSuggestionItem[], answer: NonNullable<FixAnswerSet["names"]>[number]): string[] {
   const want = canonicalJson(answer.row ?? {});
@@ -420,6 +483,8 @@ export async function runOneshotSequence(
     appOrigin?: string;
     /** The page's read-only drill resolver, through the tool's client: a link must open the row. */
     resolveDrill: DrillResolver;
+    /** NEO-345: reads a row's stored format and its AU cards straight from NB, for the positive read-back. */
+    readAutographRow: AutographRowReader;
   },
 ): Promise<OneshotCheck[]> {
   const checks: OneshotCheck[] = [];
@@ -437,6 +502,9 @@ export async function runOneshotSequence(
     }
   };
   const path = o.expect.path as SetPath;
+  /** NEO-345: rows the committed spec answers "on card or sticker?" for, read back after apply. */
+  const specAutographs: Array<{ label: string; row: { type?: string; name?: string; parallel?: string } | undefined; format: string }> = [];
+  const fixAutographs = o.expect.attention.measured === true ? (o.expect.attention.fix.autographs ?? []) : [];
 
   // 1. tools/list
   const listed = await attempt("tools/list", async () => {
@@ -493,15 +561,30 @@ export async function runOneshotSequence(
             .map((t) => `${t.type} (${t.at}) ${t.added.slice(0, 10).join(", ")}${t.added.length > 10 ? ` +${t.added.length - 10} more` : ""}`)
             .join("; ")}; ${perType}`,
     );
-    // NEO-345: the operator's "on card or sticker?" for every AU checklist.
+    // NEO-345: the operator's "on card or sticker?" for every AU checklist:
+    // the draft must list exactly the pinned checklists (an empty list never
+    // passes), and each is answered by the committed spec or by the fix answers.
     const asked = draft.autographFormats ?? [];
-    const unanswered = asked.filter((q) => typeof getAt(o.answers, q.at) !== "string");
+    const pinned = o.expect.draft.autographFormats;
+    const askedAts = asked.map((q) => q.at).sort();
+    const pinOk = pinned === undefined || canonicalJson(askedAts) === canonicalJson([...pinned].sort());
+    const byFix = (q: (typeof asked)[number]) =>
+      fixAutographs.some((a) => autographsAnswered([{ row: q.row ?? {} } as AutographAttentionItem], a).length === 1);
+    const unanswered = asked.filter((q) => typeof getAt(o.answers, q.at) !== "string" && !byFix(q));
+    for (const q of asked) {
+      const format = getAt(o.answers, q.at);
+      if (typeof format === "string") specAutographs.push({ label: q.label, row: q.row ?? undefined, format });
+    }
+    const fixed = asked.filter(byFix).length;
     record(
-      unanswered.length === 0,
+      pinOk && unanswered.length === 0,
       "autograph formats",
-      unanswered.length === 0
-        ? `${asked.length} AU checklist(s), each answered`
-        : `the committed spec does not say how these are signed: ${unanswered.map((q) => `${q.label} (${q.at})`).join("; ")}`,
+      [
+        !pinOk && `the draft lists ${askedAts.length} AU checklist(s) (${askedAts.join(", ") || "none"}), expected ${pinned!.length} (${[...pinned!].sort().join(", ")})`,
+        unanswered.length > 0 && `neither the committed spec nor the fix answers say how these are signed: ${unanswered.map((q) => `${q.label} (${q.at})`).join("; ")}`,
+      ]
+        .filter(Boolean)
+        .join("; ") || `${asked.length} AU checklist(s): ${specAutographs.length} answered in the spec, ${fixed} by the fix answers`,
     );
     const answersOk = cmp.answers.problems.length === 0;
     const answerLine = `drafted ${cmp.answers.drafted} / committed ${cmp.answers.committed}, ${cmp.answers.committedOnly} committed-only (moot or lookup-staged)`;
@@ -512,7 +595,7 @@ export async function runOneshotSequence(
         ? answerLine
         : `${cmp.answers.problems.slice(0, 8).join("; ")}${cmp.answers.problems.length > 8 ? `; +${cmp.answers.problems.length - 8} more` : ""}; ${answerLine}`,
     );
-    return okOpen && cmp.restSame && leavesOk && answersOk && unanswered.length === 0;
+    return okOpen && cmp.restSame && leavesOk && answersOk && pinOk && unanswered.length === 0;
   });
   if (!drafted) return checks;
 
@@ -589,8 +672,22 @@ export async function runOneshotSequence(
     return true;
   });
 
+  // 6b. NEO-345: each row the spec answered holds the format, and its AU cards took it.
+  await attempt("autograph read-back (spec)", async () => {
+    const problems: string[] = [];
+    for (const a of specAutographs) {
+      const p = autographReadBackProblem(a.label, a.format, await o.readAutographRow(a.row));
+      if (p) problems.push(p);
+    }
+    return record(
+      problems.length === 0,
+      "autograph read-back (spec)",
+      problems.length === 0 ? `${specAutographs.length} row(s) hold their format, every AU card marked` : problems.join("; "),
+    );
+  });
+
   // 7. attention
-  await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep);
+  await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep, o.readAutographRow);
   return checks;
 }
 
@@ -602,6 +699,7 @@ async function attentionSequence(
   record: (ok: boolean, label: string, detail: string) => boolean,
   attempt: (label: string, fn: () => Promise<boolean>) => Promise<boolean>,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  readAutographRow?: AutographRowReader,
 ): Promise<void> {
   const waitMs = expect.measured === true ? expect.lookupWaitMs : 10 * 60_000;
   let before: AttentionReport | undefined;
@@ -634,8 +732,15 @@ async function attentionSequence(
   // What each answer addresses, before: it must be listed, once.
   const goneCards = new Set<string>();
   const goneNames = new Set<string>();
+  /** NEO-345: the autograph rows the fix answers, by NB row id. */
+  const goneAutographs = new Set<string>();
   const addressed = await attempt("nb_fix answers", async () => {
     const problems: string[] = [];
+    (fix.autographs ?? []).forEach((a, i) => {
+      const hit = autographsAnswered(before!.autographs ?? [], a);
+      if (hit.length !== 1) problems.push(`autographs[${i}] addresses ${hit.length} listed autograph rows`);
+      else goneAutographs.add(hit[0].rowId);
+    });
     (fix.cards ?? []).forEach((a, i) => {
       const hit = cardsAnswered(before!.cards, a);
       if (hit.length !== 1) problems.push(`cards[${i}] #${a.cardNumber} addresses ${hit.length} listed cards`);
@@ -646,7 +751,11 @@ async function attentionSequence(
       if (hit.length !== 1) problems.push(`names[${i}] addresses ${hit.length} listed names`);
       else goneNames.add(hit[0]);
     });
-    return record(problems.length === 0, "nb_fix answers", problems.length === 0 ? `${goneCards.size} cards, ${goneNames.size} names, each listed once` : problems.join("; "));
+    return record(
+      problems.length === 0,
+      "nb_fix answers",
+      problems.length === 0 ? `${goneCards.size} cards, ${goneNames.size} names, ${goneAutographs.size} autograph rows, each listed once` : problems.join("; "),
+    );
   });
   if (!addressed) return;
 
@@ -677,11 +786,40 @@ async function attentionSequence(
     const beforeCards = new Set(before!.cards.map((c) => c.cardId));
     const beforeNames = new Set(before!.names.flatMap((n) => n.sides.map((x) => `${n.rowId}:${x.side}`)));
     const appeared = after.cards.filter((c) => !beforeCards.has(c.cardId)).length + [...nameKeys].filter((k) => !beforeNames.has(k)).length;
-    const ok = stillThere === 0 && appeared === 0 && after.totals.cards === before!.totals.cards - goneCards.size && after.totals.namesToCheck === before!.totals.namesToCheck - goneNames.size;
+    // NEO-345: the answered autograph rows are gone, and none appeared.
+    const afterRows = new Set((after.autographs ?? []).map((a) => a.rowId));
+    const beforeRows = new Set((before!.autographs ?? []).map((a) => a.rowId));
+    const autographsLeft = [...goneAutographs].filter((id) => afterRows.has(id)).length;
+    const autographsNew = [...afterRows].filter((id) => !beforeRows.has(id)).length;
+    const ok =
+      stillThere + autographsLeft === 0 &&
+      appeared + autographsNew === 0 &&
+      after.totals.cards === before!.totals.cards - goneCards.size &&
+      after.totals.namesToCheck === before!.totals.namesToCheck - goneNames.size &&
+      after.totals.autographRows === before!.totals.autographRows - goneAutographs.size;
     return record(
       ok,
       "nb_attention after nb_fix",
-      ok ? after.summary : `${stillThere} answered item(s) still listed, ${appeared} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}`,
+      ok
+        ? after.summary
+        : `${stillThere + autographsLeft} answered item(s) still listed, ${appeared + autographsNew} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}, autograph rows ${before!.totals.autographRows} → ${after.totals.autographRows}`,
+    );
+  });
+
+  // NEO-345: each row nb_fix answered holds the format, and its AU cards took it (the fix waited for the walk).
+  if ((fix.autographs ?? []).length === 0) return;
+  await attempt("autograph read-back (nb_fix)", async () => {
+    if (!readAutographRow) return record(false, "autograph read-back (nb_fix)", "the run has no read-back reader");
+    const problems: string[] = [];
+    for (const a of fix.autographs ?? []) {
+      const label = [a.row?.type, a.row?.name, a.row?.parallel].filter(Boolean).join(" › ") || "Base";
+      const p = autographReadBackProblem(label, a.format, await readAutographRow(a.row));
+      if (p) problems.push(p);
+    }
+    return record(
+      problems.length === 0,
+      "autograph read-back (nb_fix)",
+      problems.length === 0 ? `${fix.autographs!.length} row(s) hold their format, every AU card marked` : problems.join("; "),
     );
   });
 }
@@ -773,6 +911,7 @@ export const oneshotSmokeCommand: CommandSpec = {
       checks = await runOneshotSequence(server.client, {
         appOrigin: conn.target.appOrigin,
         resolveDrill: drillResolverOf(nb),
+        readAutographRow: autographRowReaderOf(nb, parsed.data.path as SetPath),
         answersPath: abs(answersArg),
         answers,
         expect: parsed.data,

@@ -14,7 +14,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { main, type CliIO } from "./cli";
 import { parseTarget } from "./client/target";
 import { registerTools } from "./mcp-tools";
-import { compareDraft, differingPaths, NOT_MEASURED, oneshotExpectSchema, runOneshotSequence, type OneshotExpect } from "./mcp-oneshot";
+import {
+  autographReadBackProblem,
+  autographsAnswered,
+  compareDraft,
+  differingPaths,
+  NOT_MEASURED,
+  oneshotExpectSchema,
+  runOneshotSequence,
+  type AutographRowReader,
+  type OneshotExpect,
+} from "./mcp-oneshot";
+
+/** NEO-345: the read-back's NB answer for a row the run answered: formatted, every AU card marked. */
+const READ_OK: AutographRowReader = async () => ({ format: "On Card", autographed: 1, unformatted: 0 });
 import { specConfirmPhrase, type InspectReport, type OpenDecisions, type SetBuildService } from "./service";
 import { parseSpec } from "./spec/schema";
 import { APP, knownResolver, linkAt, SET_LINK, SET_LINK_ABS } from "./link-checks.fixture";
@@ -98,7 +111,7 @@ const EXPECT: OneshotExpect = oneshotExpectSchema.parse({ ...BASE_EXPECT, attent
 const SUMMARY = { cards: 0, byKind: {}, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, autographRows: 0, summary: "All clear — nothing on this checklist needs attention." };
 
 /** A built set with one missing-team card and one name to check, then (after nb_fix) neither. */
-function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refused"; autographRows?: number } = {}) {
+function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refused"; autographRows?: number; ivory?: boolean } = {}) {
   let fixed = false;
   const awaiting = [...(o.awaiting ?? [0])];
   const before = () => ({
@@ -109,20 +122,30 @@ function attentionWorld(o: { awaiting?: number[]; fixOutcome?: "applied" | "refu
       awaitingTeamLookup: awaiting.length > 1 ? awaiting.shift()! : awaiting[0],
       namesToCheck: 1,
       slSetsToSort: 0,
-      autographRows: o.autographRows ?? 0,
+      autographRows: (o.autographRows ?? 0) + (o.ivory ? 1 : 0),
     },
     summary: "1 card needs you on Topps Chrome Black; 1 name to check.",
     cards: [{ row: { type: "Base" }, rowLabel: "Base", cardNumber: "7", cardName: "Card 7", cardId: "card-7", kinds: ["missingTeam"] }],
     names: [{ path: PATH, row: {}, where: SCOPE, rowId: "set-1", sides: [{ side: "sportlots", label: "Chrome Black", foldEqual: false }] }],
-    autographs: Array.from({ length: o.autographRows ?? 0 }, (_, i) => ({ rowLabel: `Insert › Autos ${i}`, cards: 3 })),
+    autographs: [
+      ...Array.from({ length: o.autographRows ?? 0 }, (_, i) => ({ row: { type: "Insert", name: `Autos ${i}` }, rowId: `autos-${i}`, rowLabel: `Insert › Autos ${i}`, cards: 3 })),
+      ...(o.ivory ? [{ row: { type: "Insert", name: "Ivory Autographs" }, rowId: "ivory", rowLabel: "Insert › Ivory Autographs", cards: 17 }] : []),
+    ],
     notices: [],
   });
-  const after = () => ({ ...before(), totals: { ...before().totals, cards: 0, byKind: {}, namesToCheck: 0 }, summary: SUMMARY.summary, cards: [], names: [] });
+  const after = () => ({
+    ...before(),
+    totals: { ...before().totals, cards: 0, byKind: {}, namesToCheck: 0, autographRows: o.autographRows ?? 0 },
+    summary: SUMMARY.summary,
+    cards: [],
+    names: [],
+    autographs: before().autographs.filter((a) => a.rowId !== "ivory"),
+  });
   return {
     attention: vi.fn(async () => (fixed ? after() : before())),
-    fix: vi.fn(async (_p: unknown, a: { cards?: unknown[]; names?: unknown[] }) => {
+    fix: vi.fn(async (_p: unknown, a: { cards?: unknown[]; names?: unknown[]; autographs?: unknown[] }) => {
       fixed = o.fixOutcome !== "refused";
-      const n = (a.cards?.length ?? 0) + (a.names?.length ?? 0);
+      const n = (a.cards?.length ?? 0) + (a.names?.length ?? 0) + (a.autographs?.length ?? 0);
       return {
         results: Array.from({ length: n }, (_, i) => ({ at: `x[${i}]`, outcome: o.fixOutcome ?? "applied", detail: "d" })),
         summary: SUMMARY.summary,
@@ -202,7 +225,7 @@ async function connect(service: unknown) {
 
 const run = (service: ReturnType<typeof fakeService>, expect: OneshotExpect = EXPECT, link: { appOrigin?: string } = {}, answers: unknown = ANSWERS) =>
   connect(service).then((client) =>
-    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers, expect, confirm: PHRASE, sleep: async () => {}, resolveDrill: knownResolver(), ...link }),
+    runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers, expect, confirm: PHRASE, sleep: async () => {}, resolveDrill: knownResolver(), readAutographRow: READ_OK, ...link }),
   );
 
 describe("runOneshotSequence", () => {
@@ -224,6 +247,7 @@ describe("runOneshotSequence", () => {
       "nb_inspect links",
       "insert with a built parallel",
       "Parallel rows built from Base",
+      "autograph read-back (spec)",
       "nb_attention",
       "nb_fix answers",
       "nb_fix",
@@ -271,11 +295,11 @@ describe("runOneshotSequence", () => {
     const service = fakeService({ open: conflicted, spec: answered });
     (service.read.draftSet as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "drafted", spec: answered, template, openDecisions: conflicted, proposals: [], marketplaceCalls: 1, durationMs: 1 });
     const client = await connect(service);
-    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: answered, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
+    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: answered, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
     expect(ok.find((c) => c.label === "nb_draft_set")).toMatchObject({ ok: true });
     expect(ok.find((c) => c.label === "draft + answers")).toMatchObject({ ok: true });
     // The committed spec without the answer leaves a fill-in: fail.
-    const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: DRAFTED, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
+    const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: DRAFTED, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
     expect(bad.find((c) => c.label === "draft + answers")).toMatchObject({ ok: false, detail: expect.stringContaining("leaves 1 fill-in") });
   });
 
@@ -403,11 +427,11 @@ describe("compareDraft: review answers", () => {
     const committed = withReview([{ name: "George Brett", decision: "create" }, { name: "Mark McGwire", decision: "create" }]);
     const pass = fakeService({ spec: withReview([{ name: "George Brett", decision: "create" }]) });
     const client = await connect(pass);
-    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
+    const ok = await runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
     expect(ok.find((c) => c.label === "review answers")).toMatchObject({ ok: true, detail: "drafted 1 / committed 2, 1 committed-only (moot or lookup-staged)" });
 
     const fail = fakeService({ spec: withReview([{ name: "Rookie New", decision: "create" }]) });
-    const bad = await runOneshotSequence(await connect(fail), { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver() });
+    const bad = await runOneshotSequence(await connect(fail), { answersPath: "/oneshot.spec.json", answers: committed, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
     expect(bad.find((c) => c.label === "review answers")!.ok).toBe(false);
     expect(fail.write.apply).not.toHaveBeenCalled();
   });
@@ -571,7 +595,8 @@ describe("runOneshotSequence — NEO-345 autograph formats", () => {
   test("every AU checklist the draft lists is answered in the committed spec: the merge keeps the answer and the digest holds", async () => {
     const checks = await run(fakeService({ spec: drafted, autographFormats: asked }), EXPECT, {}, answered);
     expect(checks.filter((c) => !c.ok)).toEqual([]);
-    expect(checks.find((c) => c.label === "autograph formats")?.detail).toBe("1 AU checklist(s), each answered");
+    expect(checks.find((c) => c.label === "autograph formats")?.detail).toBe("1 AU checklist(s): 1 answered in the spec, 0 by the fix answers");
+    expect(checks.find((c) => c.label === "autograph read-back (spec)")?.detail).toBe("1 row(s) hold their format, every AU card marked");
   });
 
   test("an AU checklist the committed spec leaves unanswered fails, naming it, and nothing is applied", async () => {
@@ -579,8 +604,100 @@ describe("runOneshotSequence — NEO-345 autograph formats", () => {
     const checks = await run(service, EXPECT, {}, drafted);
     expect(checks.find((c) => c.label === "autograph formats")).toMatchObject({
       ok: false,
-      detail: "the committed spec does not say how these are signed: Base (steps[0].base.checklist.autographFormat)",
+      detail: "neither the committed spec nor the fix answers say how these are signed: Base (steps[0].base.checklist.autographFormat)",
     });
     expect(service.write.apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("runOneshotSequence — NEO-345 the autograph path, proven live", () => {
+  const checklist = { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep" }, review: "none-expected", expectCards: 10 };
+  const map = { bsc: "base-bsc", whenPaused: "bsc-only" };
+  const drafted = { ...structuredClone(ANSWERS), steps: [{ ...structuredClone(ANSWERS.steps[0]), base: { map, checklist } }] };
+  const answered = { ...structuredClone(drafted), steps: [{ ...structuredClone(drafted.steps[0]), base: { map, checklist: { ...checklist, autographFormat: "On Card" } } }] };
+  const BASE_AT = "steps[0].base.checklist.autographFormat";
+  const IVORY_AT = "steps[0].variants[0].rows[0].checklist.autographFormat";
+  const IVORY = { type: "Insert", name: "Ivory Autographs" };
+  const asked = [
+    { at: BASE_AT, label: "Base", row: null },
+    { at: IVORY_AT, label: "Insert › Ivory Autographs", row: IVORY },
+  ];
+  const IVORY_FIX = { ...FIX, autographs: [{ row: IVORY, format: "On Card" }] };
+  const expectWith = (o: { pinned?: string[]; fix?: unknown; autographRows?: number } = {}) =>
+    oneshotExpectSchema.parse({
+      ...BASE_EXPECT,
+      ...(o.pinned ? { draft: { autographFormats: o.pinned } } : {}),
+      attention: { ...MEASURED, totals: { ...MEASURED.totals, autographRows: o.autographRows ?? 1 }, fix: o.fix ?? IVORY_FIX },
+    });
+  const reads: Array<unknown> = [];
+  const reader: AutographRowReader = async (row) => {
+    reads.push(row ?? null);
+    return { format: "On Card", autographed: 2, unformatted: 0 };
+  };
+  const go = (service: ReturnType<typeof fakeService>, expect: OneshotExpect, readAutographRow: AutographRowReader = reader) =>
+    connect(service).then((client) =>
+      runOneshotSequence(client, { answersPath: "/oneshot.spec.json", answers: answered, expect, confirm: PHRASE, sleep: async () => {}, resolveDrill: knownResolver(), readAutographRow }),
+    );
+
+  test("one checklist answered by the spec, one by nb_fix: listed once before, gone after, both read back formatted", async () => {
+    reads.length = 0;
+    const att = attentionWorld({ ivory: true });
+    const service = fakeService({ spec: drafted, autographFormats: asked, attention: att });
+    const checks = await go(service, expectWith({ pinned: [IVORY_AT, BASE_AT] }));
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    expect(checks.find((c) => c.label === "autograph formats")?.detail).toBe("2 AU checklist(s): 1 answered in the spec, 1 by the fix answers");
+    expect(checks.find((c) => c.label === "nb_fix answers")?.detail).toBe("1 cards, 1 names, 1 autograph rows, each listed once");
+    expect(checks.at(-1)).toMatchObject({ ok: true, label: "autograph read-back (nb_fix)", detail: "1 row(s) hold their format, every AU card marked" });
+    // The fix carried the autograph answer to the service, beside the others.
+    expect(att.fix.mock.calls[0][1]).toMatchObject({ autographs: [{ row: IVORY, format: "On Card" }] });
+    // The spec's row (Base) after apply, the fix's row after nb_fix.
+    expect(reads).toEqual([null, IVORY]);
+  });
+
+  test("the pinned list must match exactly: a draft that lists none (or other rows) fails before any write", async () => {
+    const service = fakeService({ spec: drafted, autographFormats: [], attention: attentionWorld({ ivory: true }) });
+    const checks = await go(service, expectWith({ pinned: [IVORY_AT, BASE_AT] }));
+    expect(checks.find((c) => c.label === "autograph formats")).toMatchObject({
+      ok: false,
+      detail: `the draft lists 0 AU checklist(s) (none), expected 2 (${[IVORY_AT, BASE_AT].sort().join(", ")})`,
+    });
+    expect(service.write.apply).not.toHaveBeenCalled();
+  });
+
+  test("a row whose read-back shows no format, or AU cards still None, fails naming it", async () => {
+    const service = fakeService({ spec: drafted, autographFormats: asked, attention: attentionWorld({ ivory: true }) });
+    const checks = await go(service, expectWith(), async () => ({ autographed: 2, unformatted: 2 }));
+    expect(checks.find((c) => c.label === "autograph read-back (spec)")).toMatchObject({ ok: false, detail: 'Base holds autographFormat none, expected "On Card"' });
+    expect(autographReadBackProblem("Insert › Ivory Autographs", "On Card", { format: "On Card", autographed: 17, unformatted: 3 })).toBe(
+      "Insert › Ivory Autographs: 3 of 17 AU cards still marked None",
+    );
+    expect(autographReadBackProblem("Base", "On Card", { format: "On Card", autographed: 0, unformatted: 0 })).toBe("Base holds no AU card");
+    expect(autographReadBackProblem("Base", "On Card", { format: "On Card", autographed: 4, unformatted: 0 })).toBeUndefined();
+  });
+
+  test("an autograph answer that addresses no listed row fails before the fix; one still listed after it fails", async () => {
+    const missing = await go(fakeService({ spec: drafted, autographFormats: asked, attention: attentionWorld() }), expectWith({ autographRows: 0 }));
+    expect(missing.find((c) => c.label === "nb_fix answers")).toMatchObject({ ok: false, detail: "autographs[0] addresses 0 listed autograph rows" });
+
+    // The server never took the answer: the second listing still shows everything.
+    const att = attentionWorld({ ivory: true });
+    const first = await att.attention();
+    const stuck = { ...att, attention: vi.fn(async () => structuredClone(first)) };
+    const checks = await go(fakeService({ spec: drafted, autographFormats: asked, attention: stuck as never }), expectWith());
+    const after = checks.find((c) => c.label === "nb_attention after nb_fix")!;
+    expect(after.ok).toBe(false);
+    expect(after.detail).toContain("autograph rows 1 → 1");
+    expect(after.detail).toMatch(/^3 answered item\(s\) still listed, 0 new/);
+  });
+
+  test("autographsAnswered: Base by an omitted row, a row by type, name and parallel", () => {
+    const items = [
+      { row: { type: "Base" }, rowId: "b" },
+      { row: IVORY, rowId: "i" },
+      { row: { ...IVORY, parallel: "Gold" }, rowId: "g" },
+    ] as never[];
+    expect(autographsAnswered(items, { format: "On Card" }).map((x: { rowId: string }) => x.rowId)).toEqual(["b"]);
+    expect(autographsAnswered(items, { row: IVORY, format: "On Card" }).map((x: { rowId: string }) => x.rowId)).toEqual(["i"]);
+    expect(autographsAnswered(items, { row: { ...IVORY, parallel: "Gold" }, format: "On Card" }).map((x: { rowId: string }) => x.rowId)).toEqual(["g"]);
   });
 });

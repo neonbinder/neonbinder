@@ -702,6 +702,60 @@ describe("applyAutographAnswers", () => {
     expect(writes(client)).toEqual([]);
   });
 
+  test("a row that is gone by the time it is answered is moot, and nothing is written", async () => {
+    const client = attentionClient({ store: autos(), handlers: { "selectorOptions:getSelectorOptionById": () => null } });
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }], fast);
+    expect(r).toMatchObject({ outcome: "moot", detail: "Already settled: this row is no longer in the set." });
+    expect(writes(client)).toEqual([]);
+  });
+
+  test("a re-read that fails during the wait keeps the answer and says the cards were not checked", async () => {
+    let t = 0;
+    const store = autos();
+    const client = attentionClient({ store, cascadeAfter: "never" });
+    let reads = 0;
+    client.on("selectorOptions:getCardChecklist", (a) => {
+      // The pre-write read answers; every read after the write fails.
+      if (++reads > 1) throw new Error("Convex is down");
+      return store.rows[String(a.selectorOptionId)] ?? [];
+    });
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "On Card" }], {
+      waitMs: 2_000,
+      pollMs: 1_000,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    expect(writes(client)).toEqual([{ selectorOptionId: FUTURE, value: "On Card" }]);
+    expect(r.outcome).toBe("applied");
+    expect(r.detail).toBe("Autographs saved as on card.");
+    expect(r.warning).toBe("Saved, but Inserts › Future Stars could not be read back to check its cards; list attention again shortly.");
+    expect(r.stillUnformatted).toBeUndefined();
+  });
+
+  test("a row whose only waiting AU cards are guests is answered, and the wait is skipped: their home rows keep their own", async () => {
+    const guest = au("g1", "FS-9", { isCrossListed: true, homeSetLabel: "2014 Topps" });
+    const store: Store = { rows: { [FUTURE]: [guest] } };
+    const client = attentionClient({ store });
+    let sleeps = 0;
+    const [r] = await applyAutographAnswers(client, SET, [{ row: FS, format: "Sticker/Label" }], {
+      ...fast,
+      sleep: async () => {
+        sleeps++;
+      },
+    });
+    expect(writes(client)).toEqual([{ selectorOptionId: FUTURE, value: "Sticker/Label" }]);
+    expect(r).toMatchObject({
+      outcome: "applied",
+      detail: "Autographs saved as sticker. Its autographed cards here are listed from other sets, which keep their own format.",
+    });
+    expect(r.warning).toBeUndefined();
+    expect(sleeps).toBe(0);
+    // The guest is not this row's to mark.
+    expect((guest as { features?: unknown }).features).toBeUndefined();
+  });
+
   test("a failure that is not a refusal stops the run and reports every row saved before it", async () => {
     const store: Store = { rows: { [BASE]: [au("b1", "1")], [GOLD]: [au("g1", "FS-1")] } };
     const client = attentionClient({ store });

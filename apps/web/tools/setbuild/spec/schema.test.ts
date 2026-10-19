@@ -319,13 +319,13 @@ describe("SetBuildSpec", () => {
     expect(JSON.stringify(specJsonSchema())).toContain("Sticker/Label");
   });
 
-  test("the one-shot fixture answers its autograph checklists On Card (Jason, 2026-10-18) and still parses", () => {
+  test("the one-shot fixture answers two autograph checklists On Card in the spec (Jason, 2026-10-18; Ivory goes through nb_fix) and still parses", () => {
     const raw = JSON.parse(readFileSync(join(__dirname, "../../../playwright/seed/oneshot.spec.json"), "utf8"));
     const rows = (parseSpec(raw) as unknown as { steps: Array<{ variants: Array<{ rows: Array<{ name: string; checklist?: { autographFormat?: string } }> }> }> }).steps[0].variants[0].rows;
     expect(rows.map((r) => [r.name, r.checklist?.autographFormat ?? null])).toEqual([
       ["Super Futures Autographs", "On Card"],
       ["Pitch Black Pairings Dual Autographs", "On Card"],
-      ["Ivory Autographs", "On Card"],
+      ["Ivory Autographs", null],
       ["Depth of Darkness", null],
     ]);
   });

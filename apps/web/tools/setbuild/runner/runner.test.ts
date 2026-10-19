@@ -688,6 +688,37 @@ describe("attention: a build that leaves something for a person never reads as d
       expect(err.unconfirmed).toEqual([]);
     });
 
+    test("NEO-345: an autograph-phase failure after a card was written throws FixAborted carrying the card and the rows saved before it", async () => {
+      const { client, svc } = setup();
+      const au = (n: string, home: string) => ({ ...teamless(n), selectorOptionId: home, teamOnCardIds: ["t1"], attributes: ["AU"] });
+      const formats: Record<string, Record<string, string>> = {};
+      client.on("selectorOptions:getCardChecklist", (a) =>
+        a.selectorOptionId === "vtB" ? [teamless("7"), au("8", "vtB")] : a.selectorOptionId === "pS" ? [au("S-1", "pS")] : [],
+      );
+      client.on("selectorOptions:getSelectorOptionById", (a) =>
+        ({ _id: a.id, _creationTime: 1, level: a.id === "vtB" ? "variantType" : "insert", value: String(a.id), platformData: {}, lastUpdated: 1, ...(formats[String(a.id)] ? { features: formats[String(a.id)] } : {}) }),
+      );
+      client.on("autographFormat:setAutographFormat", (a) => {
+        if (a.selectorOptionId === "pS") throw new Error("socket closed");
+        formats[String(a.selectorOptionId)] = { autographFormat: String(a.value) };
+        return null;
+      });
+      const mixed = {
+        cards: answers.cards,
+        autographs: [{ format: "On Card" as const }, { row: { type: "Parallel", name: "Sepia Refractors" }, format: "On Card" as const }],
+      };
+      const err = (await svc.write.fix(PATH, mixed, fixConfirmPhrase(FAKE_TARGET, PATH, mixed)).catch((e) => e)) as FixAborted;
+      expect(err).toBeInstanceOf(FixAborted);
+      expect(err.results.map((r) => [r.at, r.outcome])).toEqual([
+        ["cards[0]", "applied"],
+        ["autographs[0]", "applied"],
+      ]);
+      expect((err.results[1] as { warning?: string }).warning).toBe("The run stopped before this row's cards were checked; list attention again.");
+      expect(err.unconfirmed).toEqual([]);
+      expect((err.cause as Error).message).toBe("socket closed");
+      expect(client.callsTo("autographFormat:setAutographFormat").map((c) => c.args.selectorOptionId)).toEqual(["vtB", "pS"]);
+    });
+
     test("the closing re-read failing after the writes still returns every result", async () => {
       const { client, svc, phrase } = setup();
       let written = false;

@@ -291,7 +291,10 @@ with the set's path; the draft comes back with:
   (or `"Sticker/Label"`) at `at` and plan again: the commit stores it on the
   row and every new AU card is born marked. Left out, apply still commits and
   `nb_attention` lists the row until `nb_fix` answers it. A parallel built
-  from that insert copies each card's mark, so it does not ask again;
+  from that insert copies each card's mark, so it does not ask again. A
+  parallel built while its insert was unanswered copies "None" and asks on
+  its own, and answering the insert later does not reach it: `nb_attention`
+  lists it, and `nb_fix` answers it like any row;
 - between a draft and its apply the brand can change (another writer syncs
   a sibling set, a marketplace drops a set). A `leave` whose set apply no
   longer shows (now held by another NB row, or no longer listed) is a
@@ -393,13 +396,20 @@ checks the merge four ways:
   the brand); a committed `leave` the draft no longer shows is a moot no-op at
   apply. A drafted `leave` the committed spec lacks is a NEW pending set:
   drift, and the check names the type and ids.
-- every checklist the draft lists in `autographFormats` must carry an
-  `autographFormat` in the committed spec (the draft never drafts one; the
-  merge takes it from the committed file). Chrome Black's three autograph
-  inserts (Super Futures Autographs, Pitch Black Pairings Dual Autographs,
-  Ivory Autographs) are answered On Card (Jason, 2026-10-18); their parallels
-  are built from them and copy each card's mark. The expect file's
-  `attention.totals.autographRows` is 0 and is compared when present.
+- the draft's `autographFormats` must list exactly the expect file's
+  `draft.autographFormats` (Chrome Black's three autograph inserts), so an
+  empty list never passes, and each must be answered, in the committed spec
+  (the draft never drafts one; the merge takes it from the committed file)
+  or in the expect file's `fix.autographs`. Chrome Black's autographs are On
+  Card (Jason, 2026-10-18). Super Futures Autographs and Pitch Black Pairings
+  Dual Autographs are answered in the spec, and their parallels, built from
+  them, copy each card's mark. A read-back after apply checks each of those
+  rows holds `autographFormat` "On Card" and every AU card is marked.
+  Ivory Autographs is answered through `nb_fix` instead, so the live write is
+  proven too: it and its two parallels (built while it was unanswered, so
+  they ask on their own) are the 3 `autographRows` the first listing shows;
+  `nb_fix` answers all three, the second listing shows none, and the same
+  read-back checks each.
 The job summary shows all three: the leave counts drafted vs committed per
 type with the moot count, and the review answers drafted vs committed with
 the committed-only count. Then it runs `nb_plan`,
@@ -537,7 +547,8 @@ over the exact answers:
 - An autograph answer names its row (omitted = Base) and the format, and goes
   through the header prompt's own save (`setAutographFormat`). The server then
   marks the row's autographed cards in a scheduled walk; `nb_fix` waits for it
-  (30 s for the whole call) and gives a `warning` with the count for a row it
+  (once for the whole call, bounded at about 30 s, checked between polling
+  passes) and gives a `warning` with the count for a row it
   did not see finish. A row that already has a format, or whose autographed
   cards are all marked, is `moot`: change a format in Set details. At most 50
   per call. The format does not rebuild the cards' listing titles (Regenerate

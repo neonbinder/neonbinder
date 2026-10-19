@@ -134,7 +134,11 @@ operator says it once per row (Base, insert or parallel), stored on the row as
   list" (Jason, 2026-10-18): a spec without it still commits, and the rows are
   listed afterwards. `mergeDraftAnswers` takes a checklist's `autographFormat`
   from the answers file, like `pairing.unlink`. A parallel built from an
-  insert copies each card's `autographed` with it, so it does not ask again.
+  insert copies each card's `autographed` with it, so a parallel built after
+  a formatted commit does not ask again. A parallel built while the insert
+  was still unanswered copies "None" and asks on its own; answering the
+  insert later does not reach it (the server's walk covers the row's own
+  cards only), so `nb_attention` lists it and `nb_fix` answers it too.
 - **`nb_attention`'s `autographs`.** One item per row whose header asks:
   no `features.autographFormat` on the row and at least one AU card still
   marked "None". The rule, the count, the line ("17 autographed cards — on
@@ -150,8 +154,10 @@ operator says it once per row (Base, insert or parallel), stored on the row as
   `autographFormat.setAutographFormat`. A row that already has a format, or
   whose AU cards are all marked, is moot (changing a format is Set details'
   job). The carry-over to the cards is a scheduled server walk, so `nb_fix`
-  then waits, once for the whole call and bounded (`AUTOGRAPH_WAIT_MS`,
-  30 s), until each row's own AU cards stop showing "None", and gives a
+  then waits, once for the whole call, until each row's own AU cards stop
+  showing "None". The wait is bounded at about 30 s (`AUTOGRAPH_WAIT_MS`,
+  checked between polling passes, so a slow pass can run a little past it),
+  and gives a
   `warning` with the count for a row it did not see finish.
 
 Setting the format after the commit does not rebuild the cards' listing
@@ -333,8 +339,15 @@ still needs, answers it with the committed `fix` answers through `nb_fix`, and
 checks exactly those items are gone. The draft's only open decisions may be card conflicts and review
 names, answered by the committed spec; its leaves and review answers must be
 subsets of the committed spec's, and everything else must match exactly.
-Every checklist the draft lists in `autographFormats` must carry an
-`autographFormat` in the committed spec (2024 Topps Chrome Black's
-autographs are On Card, Jason 2026-10-18), and the expect file's
-`attention.totals.autographRows` (0) is compared when present. Placeholder fixture files (`"measured": false`) fail it on purpose.
+The autograph path is proven both ways (2024 Topps Chrome Black's
+autographs are On Card, Jason 2026-10-18). The draft must list exactly the
+expect file's `draft.autographFormats` (the three autograph inserts), and
+each must be answered by the committed spec or by the expect file's
+`fix.autographs`. Super Futures Autographs and Pitch Black Pairings Dual
+Autographs are answered in the spec, and a read-back after apply checks each
+holds `autographFormat` "On Card" with every AU card marked. Ivory Autographs
+is left out of the spec on purpose: it and its two built parallels are the
+`autographRows` (3) the first listing must show, `nb_fix` answers all three
+live through `setAutographFormat`, the second listing must show none, and
+the same read-back checks each row. Placeholder fixture files (`"measured": false`) fail it on purpose.
 Neither job prints the deployment: the host is masked and redacted.

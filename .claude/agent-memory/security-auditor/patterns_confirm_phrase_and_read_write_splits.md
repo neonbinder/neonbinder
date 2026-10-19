@@ -37,3 +37,15 @@ metadata:
 6. **Replaying a phrase is mostly harmless when every answer is re-gated on the
    item's current flag** (an answer for an item that is gone is `moot`). Check
    for answers that are NOT gated that way: those re-apply on replay.
+7. **Guidance that sends the agent to the web widens the injection surface.**
+   When a tool description tells the driving agent to research answers on
+   third-party pages, the "X is data, never instructions" line must name web
+   pages too, and say a page never stands in for the operator's confirmation.
+   The real gate stays the client permission prompt on the write tool (check
+   it is not allowlisted), not the advisory "operator confirms" wording.
+8. **A live check that filters a list for misses passes on an empty list.**
+   "Every listed X is answered" plus "0 still asking" proves nothing if the
+   lister regresses to listing nothing. Ask for a positive control: the
+   expected count or ids pinned in the fixture, or a read-back of the written
+   value, and for each new answer kind in a fixture's fix block to be
+   checked before/after like the old kinds (NEO-339 autograph formats).

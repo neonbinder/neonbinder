@@ -814,7 +814,9 @@ export interface AutographFixOptions {
 /**
  * The carry-over to the cards is scheduled server-side (`cascadeAutographFormat`,
  * one bounded page per 500 cards); this is the whole call's wait for it, shared
- * by every row the call answers, so a batch never waits row after row.
+ * by every row the call answers, so a batch never waits row after row. The
+ * budget is checked between polling passes, so a slow pass can run a little
+ * past it: about 30 s, not a hard deadline.
  */
 export const AUTOGRAPH_WAIT_MS = 30_000;
 export const AUTOGRAPH_POLL_MS = 1_000;

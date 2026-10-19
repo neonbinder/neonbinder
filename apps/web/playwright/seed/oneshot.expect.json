@@ -6,7 +6,13 @@
     "manufacturer": "Topps",
     "set": "Topps Chrome Black"
   },
-  "draft": {},
+  "draft": {
+    "autographFormats": [
+      "steps[0].variants[0].rows[0].checklist.autographFormat",
+      "steps[0].variants[0].rows[1].checklist.autographFormat",
+      "steps[0].variants[0].rows[2].checklist.autographFormat"
+    ]
+  },
   "apply": {
     "counts": {
       "reconciled": 21,
@@ -127,7 +133,7 @@
         "unreviewedName": 0
       },
       "namesToCheck": 14,
-      "autographRows": 0
+      "autographRows": 3
     },
     "fix": {
       "cards": [
@@ -151,6 +157,31 @@
           "side": "sportlots",
           "action": "decline",
           "label": "Chrome Black Ivory Autos"
+        }
+      ],
+      "autographs": [
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Ivory Autographs"
+          },
+          "format": "On Card"
+        },
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Ivory Autographs",
+            "parallel": "Ivory Autographs Red Trim Refractors"
+          },
+          "format": "On Card"
+        },
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Ivory Autographs",
+            "parallel": "Ivory Autographs Gold Trim Refractors"
+          },
+          "format": "On Card"
         }
       ]
     }
