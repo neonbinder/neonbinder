@@ -13,6 +13,7 @@ import ReconciliationModal, {
   reconciliationReducer,
   type PlatformItem,
 } from "./ReconciliationModal";
+import { pressSave } from "./press-save";
 
 type InitialData = Parameters<typeof ReconciliationModal>[0]["initialData"];
 
@@ -54,7 +55,7 @@ const keepAllSl = () =>
   screen.getByRole("button", { name: /^Keep all( \d+)?, SportLots sets?$/ });
 
 async function savedItems(onConfirm: ReturnType<typeof vi.fn>) {
-  fireEvent.click(screen.getByText(/^Save \d+ sets$/));
+  pressSave(screen.getByText(/^Save \d+ sets$/));
   await waitFor(() => expect(onConfirm).toHaveBeenCalled());
   return onConfirm.mock.calls[0][0].items as Array<{
     value: string;

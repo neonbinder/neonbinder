@@ -34,6 +34,7 @@ import {
   buildPairingResult,
   candidateKey,
   nameConflictOf,
+  openPairingConflicts,
   pairingReducer as reducer,
   playersConflictOf,
   seedMatched,
@@ -411,7 +412,13 @@ function ConflictRadioGroup({
   /** Names the radiogroup: "Name for #227c". */
   radioGroupLabel: string;
   options: Array<{ side: ConflictSide; label: string; ariaLabel: string }>;
-  chosen: ConflictSide;
+  /**
+   * The checked side, or null while the operator has not answered (NEO-339).
+   * The merged card still carries BSC's value until they do, but showing that
+   * pill checked made an unanswered conflict look answered — and Confirm now
+   * waits on every one. With none checked the first pill is the Tab stop.
+   */
+  chosen: ConflictSide | null;
   /**
    * `viaKeyboard` exists because the two ways of choosing need different
    * follow-through: an arrow key moves focus WITH selection (the APG pattern),
@@ -473,22 +480,32 @@ function ConflictRadioGroup({
           // The order matches the rendered order, so "next" means the pill to
           // the right.
           e.preventDefault();
-          const at = options.findIndex((o) => o.side === chosen);
+          // From the checked pill — or, while none is checked yet (NEO-339),
+          // from the focused one, as a native radio group with no selection
+          // moves from wherever focus is.
+          const focused = options.findIndex(
+            (o) => o.ariaLabel === (e.target as HTMLElement).getAttribute("aria-label"),
+          );
+          const at = chosen !== null ? options.findIndex((o) => o.side === chosen) : Math.max(focused, 0);
           const step = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
-          const next =
-            options[(at + step + options.length) % options.length];
+          const next = options[(at + step + options.length) % options.length];
           onChoose(next.side, true);
         }}
       >
-        {options.map((option) => (
+        {options.map((option, optionIndex) => (
           <button
             key={option.side}
             type="button"
             role="radio"
             aria-checked={chosen === option.side}
             // Roving tabindex: only the checked radio is a Tab stop, matching
-            // native radio-group behaviour and the APG pattern.
-            tabIndex={chosen === option.side ? 0 : -1}
+            // native radio-group behaviour and the APG pattern — the first one
+            // while none is checked (NEO-339).
+            tabIndex={
+              chosen === option.side || (chosen === null && optionIndex === 0)
+                ? 0
+                : -1
+            }
             // The accessible name STARTS WITH the visible label so it
             // satisfies WCAG 2.5.3 Label in Name — a speech-input user saying
             // "click <value>" has to match what is actually announced.
@@ -514,6 +531,17 @@ function ConflictRadioGroup({
     </div>
   );
 }
+
+/** NEO-339 — the footer line while a conflict is unanswered. DRAFT copy. */
+export function conflictsHoldText(count: number): string {
+  return count === 1
+    ? "Hold up — 1 conflict still needs your pick before these cards save."
+    : `Hold up — ${count} conflicts still need your pick before these cards save.`;
+}
+/** NEO-339 — the footer's way to the next one. DRAFT copy. */
+export const NEXT_CONFLICT_LABEL = "Go to the next conflict";
+/** NEO-339 — Confirm's tooltip while held on a conflict. DRAFT copy. */
+export const CONFLICTS_HOLD_TITLE = "Pick a value on every conflict first";
 
 /**
  * NEO-195 / NEO-330 a11y — the visible streaming sentence. Static text, NOT a
@@ -746,6 +774,15 @@ export default function CardPairingModal({
   const confirmBlocked =
     isStreaming === true ||
     (streamSettled !== undefined && !state.streamSettled);
+  /**
+   * NEO-339 — every disagreement still unanswered. Confirm waits on these too
+   * (the set-building tool refuses the same way, through the same
+   * `openPairingConflicts`): letting it through used to commit BSC's side
+   * over a disagreement nobody settled. Held, not hidden — pressing Confirm
+   * takes the operator to the next one.
+   */
+  const openConflicts = useMemo(() => openPairingConflicts(state), [state]);
+  const conflictsOpen = !confirmBlocked && openConflicts.length > 0;
   // Everything paired and nothing set aside: the columns and keep shelf have
   // nothing to show and only add noise. Derived from CURRENT state, not the
   // initial snapshot, so unlinking a pair brings the columns straight back.
@@ -1034,12 +1071,38 @@ export default function CardPairingModal({
     return card ? label(card) : null;
   }, [activeDragId, state.unmatchedBsc, state.unmatchedSl]);
 
+  /**
+   * NEO-339 — open the matched list and put focus on the next unanswered
+   * conflict's pills (the first pill: none is checked until the operator
+   * picks). Two frames: the first lets the expand render the row.
+   */
+  const showNextConflict = useCallback(() => {
+    const next = openConflicts[0];
+    const pair = next ? state.matched[next.index] : undefined;
+    if (!next || !pair) return;
+    setMatchedCollapsed(false);
+    const attr = next.field === "name" ? "data-name-conflict" : "data-players-conflict";
+    const key = domKey(pair.card);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        dialogRef.current
+          ?.querySelector<HTMLElement>(`[${attr}="${key}"] [role="radio"][tabindex="0"]`)
+          ?.focus();
+      }),
+    );
+  }, [openConflicts, state.matched]);
+
   const handleConfirm = useCallback(async () => {
     if (confirming) return;
     // NEO-195: never commit a partial checklist. The button is disabled while
     // streaming; this is the guard for a keyboard or programmatic path.
     // NEO-341: nor one whose last team lookups have not reached us yet.
     if (confirmBlocked) return;
+    // NEO-339: nor one with a conflict nobody answered — go to it instead.
+    if (openPairingConflicts(state).length > 0) {
+      showNextConflict();
+      return;
+    }
     setConfirming(true);
     try {
       // NEO-339: the payload is built in lib/set-build/pairing.ts — the same
@@ -1048,7 +1111,7 @@ export default function CardPairingModal({
     } finally {
       setConfirming(false);
     }
-  }, [confirming, confirmBlocked, onConfirm, state]);
+  }, [confirming, confirmBlocked, onConfirm, state, showNextConflict]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -1606,7 +1669,7 @@ export default function CardPairingModal({
                           warningId={`name-conflict-warning-${domKey(m.card)}`}
                           warning="Potential names for this card — pick the right one before it is listed."
                           radioGroupLabel={`Name for ${scope}`}
-                          chosen={m.nameConflict.chosen}
+                          chosen={m.nameConflict.decided ? m.nameConflict.chosen : null}
                           // NEO-272 — each pill's "which card is this
                           // for" qualifier is the row's SCOPE, the same
                           // one naming the group and the radiogroup
@@ -1676,7 +1739,9 @@ export default function CardPairingModal({
                           warningId={`players-conflict-warning-${domKey(m.card)}`}
                           warning="Potential players for this card — pick the right ones before it is listed."
                           radioGroupLabel={`Players for ${scope}`}
-                          chosen={m.playersConflict.chosen}
+                          chosen={
+                            m.playersConflict.decided ? m.playersConflict.chosen : null
+                          }
                           // Scoped exactly like the name pills above,
                           // and for the same NEO-272 reason — the two
                           // controls on one row have to agree about what
@@ -2151,6 +2216,24 @@ export default function CardPairingModal({
                   {teamsLateNotice}
                 </p>
               )}
+              {/* NEO-339 — why Confirm is holding, beside it, with the way
+                  forward one press away. Static (Confirm's description points
+                  at it); the count changes only as the operator answers. */}
+              {conflictsOpen && (
+                <p
+                  id="pairing-conflicts-open"
+                  className="flex flex-wrap items-center gap-x-2 text-xs text-[#FF6FCB]"
+                >
+                  <span>{conflictsHoldText(openConflicts.length)}</span>
+                  <button
+                    type="button"
+                    onClick={showNextConflict}
+                    className="underline underline-offset-2 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+                  >
+                    {NEXT_CONFLICT_LABEL}
+                  </button>
+                </p>
+              )}
             </div>
             <div className="flex gap-2">
               <NeonButton
@@ -2179,7 +2262,7 @@ export default function CardPairingModal({
                 // keeps it reachable; handleConfirm's own confirmBlocked guard
                 // (above) makes activating it a no-op, so this is safe.
                 disabled={confirming}
-                aria-disabled={confirmBlocked || undefined}
+                aria-disabled={confirmBlocked || conflictsOpen || undefined}
                 // Ties the reason to the control itself so it's available the
                 // moment Confirm receives focus, rather than depending on the
                 // operator having caught the coarse status announcements
@@ -2187,15 +2270,19 @@ export default function CardPairingModal({
                 aria-describedby={
                   confirmBlocked
                     ? "pairing-streaming-status"
-                    : teamsLate
-                      ? "pairing-teams-late"
-                      : undefined
+                    : conflictsOpen
+                      ? "pairing-conflicts-open"
+                      : teamsLate
+                        ? "pairing-teams-late"
+                        : undefined
                 }
                 aria-label="Confirm card matches"
                 title={
                   confirmBlocked
                     ? "Still loading teams…"
-                    : undefined
+                    : conflictsOpen
+                      ? CONFLICTS_HOLD_TITLE
+                      : undefined
                 }
               >
                 {confirming

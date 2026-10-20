@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   applyExplicitPairs,
+  seedReconciliationState,
   defaultSlPrefixes,
   inSlPrefixScope,
   type PlatformItem,
@@ -590,5 +591,74 @@ describe("the SportLots prefix filter (shared with the set-building tool, NEO-33
     expect(inSlPrefixScope("TOPPS CHROME Update", prefixes)).toBe(true);
     expect(inSlPrefixScope("Heritage Chrome", prefixes)).toBe(false);
     expect(inSlPrefixScope("Heritage Chrome", [])).toBe(true);
+  });
+});
+
+describe("applyExplicitPairs: the matcher's proposal on a restored row (NEO-339 live: 1988 Topps Baseball Autographs Red)", () => {
+  const red = item("1988 Topps Baseball Autographs Red", "red");
+  const flagship = item("1988 Topps Autos Red", "269998");
+  const chrome = item("Chrome 1988 Topps Autos Red", "283316");
+  const seeded = (stored: { sportlots?: string } = {}) =>
+    seedReconciliationState({
+      fetch: { autoMatched: [{ displayName: red.value, bsc: red, sl: flagship, confidence: 0.8 }], unmatchedBsc: [], unmatchedSl: [chrome] },
+      existingRows: [{ existingId: EXISTING, value: red.value, platformData: { bsc: "red", ...stored } }],
+    }).state;
+
+  it("the seed marks the attached half as a proposal, never a stored id", () => {
+    expect(seeded().ready).toEqual([expect.objectContaining({ existingId: EXISTING, proposed: { sl: ["269998"] } })]);
+    expect(ids(seeded().ready[0].sl)).toEqual(["269998"]);
+    expect(seeded({ sportlots: "269998" }).ready[0].proposed).toBeUndefined();
+  });
+
+  it("a BSC-only pair claims the row and sends the proposal to Pending", () => {
+    const out = applyExplicitPairs(seeded(), [{ name: red.value, bsc: ["red"] }], []);
+    expect(out.state.ready).toHaveLength(1);
+    expect(out.state.ready[0]).toMatchObject({ existingId: EXISTING });
+    expect(ids(out.state.ready[0].sl)).toEqual([]);
+    expect(ids(out.state.pendingSl).sort()).toEqual(["269998", "283316"]);
+    expect(out.unaddressedReady).toEqual([]);
+    expect(out.ambiguousPairs).toEqual([]);
+  });
+
+  it("a pair with another SportLots id swaps it in", () => {
+    const out = applyExplicitPairs(seeded(), [{ name: red.value, bsc: ["red"], sportlots: ["283316"] }], [
+      { side: "sportlots", id: "269998", decision: "leave" },
+    ]);
+    expect(out.state.ready).toHaveLength(1);
+    expect(ids(out.state.ready[0].sl)).toEqual(["283316"]);
+    expect(out.unmatchedPending).toEqual([]);
+    expect(out.unaddressedPending).toEqual([]);
+  });
+
+  it("a leave on the proposed id is accepted and declines it; the row is reported as it now stands", () => {
+    const out = applyExplicitPairs(seeded(), [], [
+      { side: "sportlots", id: "269998", decision: "leave" },
+      { side: "sportlots", id: "283316", decision: "leave" },
+    ]);
+    expect(out.unmatchedPending).toEqual([]);
+    expect(out.unaddressedReady.map((r) => ids(r.sl))).toEqual([[]]);
+  });
+
+  it("a stored SportLots id is never taken off: a pair without it does not claim the row", () => {
+    const out = applyExplicitPairs(seeded({ sportlots: "269998" }), [{ name: red.value, bsc: ["red"] }], []);
+    expect(out.unaddressedReady.map((r) => ids(r.sl))).toEqual([["269998"]]);
+  });
+
+  it("two rows the same pair could replace make it ambiguous", () => {
+    const state = seedReconciliationState({
+      fetch: {
+        autoMatched: [{ displayName: red.value, bsc: red, sl: flagship, confidence: 0.8 }],
+        unmatchedBsc: [],
+        unmatchedSl: [],
+      },
+      existingRows: [
+        { existingId: EXISTING, value: red.value, platformData: { bsc: "red" } },
+        { existingId: EXISTING_2, value: "Other", platformData: { bsc: "red" } },
+      ],
+    }).state;
+    // The proposal joins no row when two carry the BSC id (NEO-306): nothing to replace.
+    expect(state.ready.every((r) => r.proposed === undefined)).toBe(true);
+    const out = applyExplicitPairs(state, [{ name: red.value, bsc: ["red"] }], []);
+    expect(out.ambiguousPairs).toHaveLength(1);
   });
 });

@@ -343,8 +343,15 @@ describe("the post-review steps", () => {
     expect(screen.queryByText("Cards with no team")).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: NEXT_NAME }));
     // Shown, so the commit hears "kept" for the card.
+    // NEO-339 (Jason, 2026-10-19): the card number is the first identity
+    // piece to go, before any set word, so this exactly-80 title has no
+    // "#1". The sport goes first. (No review row and no context names Pete
+    // Rose here, so no player is on the card.)
     expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
-      { listingTitleKept: expect.stringMatching(/#1$/) },
+      {
+        listingTitleKept:
+          "2026 Topps Chrome Update Series Sapphire Edition Platinum Anniversary Collectors",
+      },
     ]);
     // Nothing decided in this sitting: no Back out of the first step.
     expect(screen.queryByRole("button", { name: "Back to previous step" })).toBeNull();
@@ -369,11 +376,20 @@ describe("the post-review steps", () => {
     expect(screen.getByText("Card titles")).toBeTruthy();
     // "Kept" carries the title the operator was shown, so the server keeps
     // exactly that one.
-    // NEO-339: the cut gives up set words, not the player, so a filler word
-    // can follow the number.
+    // NEO-339 (Jason, 2026-10-19): the player is never cut and the card
+    // number goes before any set word. Pete Rose leaves no room for "#1";
+    // Johnny Bench is three characters longer, "Anniversary" no longer fits
+    // even without the number, so the set words stop there and "#2" takes
+    // the room left over.
     expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
-      { listingTitleKept: expect.stringMatching(/ #1( |$)/) },
-      { listingTitleKept: expect.stringMatching(/ #2( |$)/) },
+      {
+        listingTitleKept:
+          "2026 Topps Chrome Update Series Sapphire Edition Platinum Anniversary Pete Rose",
+      },
+      {
+        listingTitleKept:
+          "2026 Topps Chrome Update Series Sapphire Edition Platinum Johnny Bench #2",
+      },
     ]);
   });
 

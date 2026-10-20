@@ -35,9 +35,11 @@ export type DetectionResult<TId extends string> = {
 export type DetectionOptions<TId extends string> = {
   /**
    * Family roots the caller has EVIDENCE stand apart from their prefix
-   * parent (the set-build draft: the two rows' previewed checklists share no
-   * card number). Each stays top level and its own family groups under it.
-   * Absent (the modal), the plain prefix rule decides every row.
+   * parent (the two rows' previewed checklists share no card number:
+   * `groupWithFamilyRootEvidence` in lib/set-build/family-roots.ts, which the
+   * set-build draft runs and the modal runs on "Check card numbers"). Each
+   * stays top level and its own family groups under it. Absent, the plain
+   * prefix rule decides every row.
    */
   holdFamilyRoots?: ReadonlySet<TId>;
 };

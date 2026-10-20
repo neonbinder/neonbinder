@@ -20,9 +20,9 @@
  * | what                    | proposal                                             | open decision                                  |
  * |-------------------------|------------------------------------------------------|------------------------------------------------|
  * | variant types           | the set's variant-type sync (always)                  | —                                              |
- * | Base mapping, per side  | the sole candidate, or the dialog's own pre-selection (a SOLE exact match; a tie pre-selects nothing) | several candidates, none pre-selected; an id two candidates carry |
- * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (saved rows, by marketplace id; an auto-match only when its cards confirm it, `pairCardEvidence`); a one-marketplace fetch the form stores without asking; an explicit `leave`, with the marketplace's name, for every pending marketplace set nobody pairs (what Save does with Pending; `own-set` is never proposed); a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash; an auto-match's SportLots set its cards do not confirm, or the brand's SportLots review holds (`reconcile-unsorted-sportlots`) |
- * | Group Parallels         | `detectGroupings`' prefix suggestions (insert types); a suggested child that roots its own family stays top level only when previews show it shares no card number with its parent | a suggested parent whose name another row shares |
+ * | Base mapping, per side  | exactly the dialog's own pre-selection (`listBaseCandidates`: a SOLE exact match, or BSC's set listing when it is BSC's only candidate; a tie pre-selects nothing) | every side the dialog would leave unselected, a lone candidate that is not an exact match included, with its candidates listed; an id two candidates carry |
+ * | Insert/Parallel sync    | the Reconcile dialog's Ready sets (saved rows, by marketplace id; an auto-match only when its cards confirm it, `pairCardEvidence`); a one-marketplace fetch the form stores without asking; a SportLots set outside the dialog's prefix filter, or one another type pairs, is counted in `leftUnasked`, not listed | a title clash; every pending set in the set's own scope (its BSC listing, its SportLots filter) nobody pairs (`reconcile-unpaired`: pair it, `own-set` or `leave`, never a silent `leave`; its likely partner suggested by name, `rankPairCandidates`, and checked against the cards); an auto-match's SportLots set its cards do not confirm, or the brand's SportLots review holds (`reconcile-unsorted-sportlots`) |
+ * | Group Parallels         | the modal's own suggestions (`groupWithFamilyRootEvidence`, insert types): `detectGroupings`' prefix rule, where a suggested child that roots its own family stays top level only when previews show it shares no card number with its parent | a suggested parent whose name another row shares (`tiedParents`: the modal suggests nothing under it either) |
  * | Match Cards             | keep every unmatched card on both sides (the dialog's defaults) | a name / players disagreement on a pair (answered with a side, or `pairing.unlink` when it is two cards) |
  * | entity review           | `create` for a name with ZERO NB candidates, on every checklist carrying it | a name with one or more candidates (never linked by name; a player's fill-in offers `{ link, birthYear }` and lists each candidate's birth year), on every checklist carrying it; a player only one side of an unanswered card conflict carries (`conflictDependentPlayers`), its fill-in naming that conflict |
  * | counts                  | `expectCards` / `expectRows` / `expectUngrouped` as observed | — |
@@ -77,13 +77,12 @@ import {
   autographPromptLine,
 } from "../../../components/SetSelector/autograph-prompt";
 import { listBaseCandidates } from "../../../lib/set-build/base-candidates";
-import { buildInitialState } from "../../../lib/set-build/grouping";
+import { familyRootStandsApart, groupWithFamilyRootEvidence, type RowCardSource } from "../../../lib/set-build/family-roots";
 import {
   applyExplicitPairs,
   seedReconciliationState,
   type ExplicitPair,
 } from "../../../lib/set-build/reconcile";
-import { normalizeName as groupingKey } from "../../../components/SetSelector/parallelDetection";
 import {
   heldIdSets,
   heldRowsReturnedBy,
@@ -108,7 +107,8 @@ import {
   type PendingSet,
 } from "../lib/reconcile-variants";
 import { cardCount } from "../lib/commit";
-import { evidenceText, pairCardEvidence, type PairEvidence } from "../lib/pair-evidence";
+import { evidenceText, pairCardEvidence, type PairEvidence } from "../../../lib/set-build/pair-evidence";
+import { rankPairCandidates, type PairCandidate } from "../../../lib/set-build/likely-pair";
 import { DECISION_PLACEHOLDER, SAME_NAME_PLAYER_PLACEHOLDER } from "../lib/review";
 import {
   countOpenDecisions,
@@ -176,6 +176,8 @@ export function isPlaceholder(v: unknown): v is string {
  * from `answers` wholesale: it sets up the run's account, not the set. A
  * checklist's `autographFormat` is taken from `answers` too (the draft never
  * drafts one: it is the operator's answer, listed in `autographFormats`).
+ * A `sync.pending` entry takes the answers' entry for the same set (side and
+ * id), not the one at its index (`pendingAnswer`).
  * A `pairing.unlink` in the answers is the other answer to a card conflict:
  * it is taken, and the template's conflict fill-ins for the pairs it names
  * are dropped (the answers file deletes them too).
@@ -184,7 +186,10 @@ export function isPlaceholder(v: unknown): v is string {
 export function mergeDraftAnswers(template: unknown, answers: unknown): unknown {
   const walk = (t: unknown, a: unknown, key?: string): unknown => {
     if (isPlaceholder(t)) return a === undefined ? t : structuredClone(a);
-    if (Array.isArray(t)) return t.map((v, i) => walk(v, Array.isArray(a) ? a[i] : undefined));
+    if (Array.isArray(t)) {
+      const arr = Array.isArray(a) ? a : [];
+      return t.map((v, i) => walk(v, key === "pending" ? pendingAnswer(v, arr, i) : arr[i]));
+    }
     if (t && typeof t === "object") {
       const ao = a && typeof a === "object" && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
       let to = key === "pairing" ? withUnlinkAnswers(t as Record<string, unknown>, ao) : (t as Record<string, unknown>);
@@ -199,6 +204,22 @@ export function mergeDraftAnswers(template: unknown, answers: unknown): unknown 
   const creds = answers && typeof answers === "object" ? (answers as Record<string, unknown>).credentials : undefined;
   if (creds !== undefined && merged && typeof merged === "object") return { ...merged, credentials: structuredClone(creds) };
   return merged;
+}
+
+/**
+ * The answer to one `sync.pending` entry: the answers' entry for the same
+ * marketplace set (side and id), wherever it sits in their list. Another
+ * writer can take a set out of Pending between the draft and the answers, so
+ * an index would hand one set another's decision. An entry with no id is
+ * read by index.
+ */
+function pendingAnswer(entry: unknown, answers: readonly unknown[], i: number): unknown {
+  const e = entry as { side?: unknown; id?: unknown } | null;
+  if (!e || typeof e !== "object" || typeof e.id !== "string" || isPlaceholder(e.id)) return answers[i];
+  return answers.find((x) => {
+    const o = x as { side?: unknown; id?: unknown } | null;
+    return !!o && typeof o === "object" && o.side === e.side && o.id === e.id;
+  });
 }
 
 /**
@@ -262,22 +283,6 @@ export function previewAsCandidates(p: Pick<CardPreview, "matched" | "bscOnly" |
   for (const c of p.bscOnly) push(c, "bscOnly");
   for (const c of p.slOnly) push(c, "slOnly");
   return { batchId: "preview", total: cards.length, ready: cards.length, cards } as unknown as ReadyCandidates;
-}
-
-/** Every card number a preview lists, matched, BSC-only and SportLots-only alike. */
-export function previewCardNumbers(p: Pick<CardPreview, "matched" | "bscOnly" | "slOnly">): string[] {
-  return [...p.matched.map((m) => m.card.cardNumber), ...p.bscOnly.map((c) => c.cardNumber), ...p.slOnly.map((c) => c.cardNumber)];
-}
-
-/**
- * Whether two checklists share at least one card number, folded the way a
- * parallel build matches them (`cardKey` in convex/lib/parallelCardLink.ts:
- * trimmed, upper-cased). Overlap only: no number is taken as a key. Pure.
- */
-export function sharesACardNumber(a: readonly string[], b: readonly string[]): boolean {
-  const fold = (n: string) => n.trim().toUpperCase();
-  const seen = new Set(a.map(fold).filter(Boolean));
-  return b.some((n) => seen.has(fold(n)));
 }
 
 /**
@@ -499,6 +504,32 @@ export function unsortedSlDetail(c: { id: string; name: string; row: string; why
   );
 }
 
+/** "3 shared card numbers, none naming different players". */
+function agreeText(e: PairEvidence): string {
+  const n = `${e.shared} shared card number${e.shared === 1 ? "" : "s"}`;
+  return e.differing === 0 ? `${n}, none naming different players` : `${n}, ${e.differing} naming different players`;
+}
+
+/** What an unpaired set is, how to answer it, and the likely pair when there is one. */
+export function unpairedDetail(
+  set: PendingSet,
+  type: string,
+  suggested: PairCandidate | undefined,
+  alsoAt: ReadonlyArray<{ type: string; at: string }> = [],
+): string {
+  const where = set.side === "bsc" ? "BSC lists it under this set" : "its name is inside this set's SportLots filter";
+  const otherSide = set.side === "bsc" ? "sportlots" : "bsc";
+  return (
+    `${sideName(set.side)} set ${set.id} ("${set.name}"): ${where}, and nothing pairs it. ` +
+    `Answer "leave" (it stays in Pending, no NB row), "own-set" (it becomes its own ${type} row, with ${sideName(set.side)} ids only), ` +
+    `or pair it: add "${set.id}" to a row's ${set.side} ids in sync.pairs (a row with ${otherSide} ids only, or a new pair with the other set's id) and drop this entry.` +
+    (suggested
+      ? ` Likely pair: ${suggested.row ? `the drafted row "${suggested.name}" (${suggested.id})` : `${sideName(suggested.side)} set ${suggested.id} ("${suggested.name}")`}; see its candidate detail.`
+      : "") +
+    (alsoAt.length > 0 ? ` SportLots lists it under ${alsoAt.map((w) => `${w.type} too (${w.at})`).join(" and ")}: answer each.` : "")
+  );
+}
+
 interface DraftRow {
   /** NB name the row has (or will have once the sync saves it). */
   name: string;
@@ -590,17 +621,18 @@ export async function draftSet(
       { bsc: "<the Base's BSC set id>", whenPaused: "bsc-only" });
   } else {
     const list = listBaseCandidates(baseType.candidates, setRow, manufacturer);
+    // Exactly the dialog's pre-selection (`listBaseCandidates().preselected`):
+    // a SOLE exact name match, or BSC's set listing when it is the only BSC
+    // candidate. Anything the dialog would leave unselected (one candidate
+    // that is not an exact match included) is the operator's pick: open, with
+    // every candidate listed.
     const decideSide = (side: "bsc" | "sportlots"): string | null | undefined => {
-      const ids = side === "bsc" ? list.bsc.map((c) => c.item.platformValue) : list.sl.map((c) => c.platformValue);
-      if (ids.length === 0) return undefined;
-      const pre =
-        side === "bsc"
-          ? list.bsc.find((c) => c.key === list.preselected.bsc)?.item.platformValue
-          : list.preselected.sl ?? undefined;
-      const sole = new Set(ids).size === 1;
-      const chosen = sole ? ids[0] : pre;
+      const count = side === "bsc" ? list.bsc.length : list.sl.length;
+      if (count === 0) return undefined;
+      const preBsc = side === "bsc" ? list.bsc.find((c) => c.key === list.preselected.bsc) : undefined;
+      const chosen = side === "bsc" ? preBsc?.item.platformValue : list.preselected.sl ?? undefined;
       if (chosen && pickCandidate(list, side, chosen).ok) {
-        why.push(`${side === "bsc" ? "BSC" : "SportLots"}: ${sole ? "the sole candidate" : "the candidate the dialog pre-selects (its sole exact match)"}`);
+        why.push(`${side === "bsc" ? "BSC" : "SportLots"}: the candidate the dialog pre-selects (${preBsc?.isSetListing ? "the set's own listing, its only candidate" : "its sole exact match"})`);
         return chosen;
       }
       return null;
@@ -699,7 +731,18 @@ export async function draftSet(
         ? [structure.baseSportlots.label]
         : [];
   /** Per type, the sets the dialog leaves in Pending: settled once every type's pairs are known. */
-  const pendingByType: Array<{ j: number; at: string; title: string; leave: PendingSet[]; outsideScope: PendingSet[]; cross: CrossProductSl[] }> = [];
+  const pendingByType: Array<{
+    j: number;
+    at: string;
+    title: string;
+    t: StructureType;
+    /** The type's SportLots prefix filter (`slPrefixesForFetch`): also how a SportLots name is read beside a BSC one. */
+    slPrefixes: string[];
+    /** In the set's own scope and nobody pairs it: each an open decision (settlePending). */
+    unpaired: PendingSet[];
+    outsideScope: PendingSet[];
+    cross: CrossProductSl[];
+  }> = [];
   for (const t of structure.types) {
     if (t.role === null) notes.push(`BSC lists a "${t.label}" variant whose title is not Base, Insert or Parallel; the variant-type sync creates it, the draft has no rows for it.`);
   }
@@ -799,6 +842,7 @@ export async function draftSet(
         sportlots: [...result.slOptions, ...result.unmatchedSl, ...result.autoMatched.map((m) => m.sl)].map((o) => o.platformValue),
       };
       const outcome = applyExplicitPairs(seed.state, pairs, [], { fetched });
+      const slPrefixes = slPrefixesForFetch({ setName: setRow.value, manufacturer, baseSlLabels }, result);
       const decisions = dialogOpenDecisions({
         outcome,
         pairs,
@@ -807,23 +851,27 @@ export async function draftSet(
         at,
         path: pathText,
         type: title,
-        slPrefixes: slPrefixesForFetch({ setName: setRow.value, manufacturer, baseSlLabels }, result),
+        slPrefixes,
       });
       open.names.push(...decisions.names);
       const clashed = new Set(decisions.names.filter((n) => n.kind === "reconcile-title").map((n) => n.name));
       const syncPairs = pairs.map((p) => ({ name: p.name, ...(p.bsc ? { bsc: [...p.bsc] } : {}), ...(p.sportlots ? { sportlots: [...p.sportlots] } : {}) }));
-      // Every marketplace set nobody pairs: an explicit `leave`, one line per
-      // id with the marketplace's name for it (Jason, 2026-10-11). It is what
-      // Save does with a set left in Pending; `own-set` is never proposed.
-      // Settled after the loop: a set another type pairs is not listed here.
-      // A SportLots set outside the dialog's prefix filter (another product
-      // of the brand-year) is not listed at all, only counted.
+      // Every marketplace set in the set's own scope that nobody pairs is an
+      // open decision for the operator, one per id with the marketplace's
+      // name for it: pair it, make it its own set, or leave it in Pending.
+      // Never a silent `leave` (NEO-339 live, 2023 Topps Chrome: 53 of the
+      // set's own BSC sets read as settled and were never built). Settled
+      // after the loop: a set another type pairs is not asked here. A
+      // SportLots set outside the dialog's prefix filter (another product of
+      // the brand-year) is not listed at all, only counted.
       entry.sync = { pairs: syncPairs, pending: [] };
       pendingByType.push({
         j,
         at,
         title,
-        leave: decisions.reconcile.pending.map((p) => ({
+        t,
+        slPrefixes,
+        unpaired: decisions.reconcile.pending.map((p) => ({
           side: p.side === "buysportscards" ? ("bsc" as const) : ("sportlots" as const),
           id: p.id,
           name: p.name,
@@ -916,33 +964,111 @@ export async function draftSet(
     }
     if (rowSpecs.length > 0) entry.rows = rowSpecs;
   }
-  settlePending();
+  await settlePending();
   if (variants.length > 0) step.variants = variants;
   return finish();
 
   // ── helpers (closures over the draft's state) ────────────────────────────
 
   /**
-   * Each type's `leave` list, now that every type's pairs are known: a set
+   * Each type's unpaired sets, now that every type's pairs are known. A set
    * another type of the set pairs (or makes its own set) is that type's to
-   * file, so it is not left here (apply leaves it unasked:
-   * `filedByOtherTypes`). One `reconcile-leave` proposal per type.
+   * file, so it is not asked here (apply leaves it unasked:
+   * `filedByOtherTypes`). Every other one in the set's own scope is an open
+   * decision (`reconcile-unpaired`) with its likely partners, never a silent
+   * `leave`; the SportLots sets the matcher paired by name alone are asked
+   * after them (`reconcile-unsorted-sportlots`).
    */
-  function settlePending() {
+  async function settlePending() {
     const asSteps = variants as unknown as Parameters<typeof filedByOtherTypes>[0];
-    for (const p of pendingByType) {
+    const settled = pendingByType.map((p) => {
       const elsewhere = filedByOtherTypes(asSteps, p.j);
       const filed = { bsc: new Set(elsewhere.bsc), sportlots: new Set(elsewhere.sportlots) };
-      // An unsorted SportLots set the matcher offered is asked below, not left.
+      // An unsorted SportLots set the matcher offered is asked as such, not twice.
       const cross = p.cross.filter((c) => !filed.sportlots.has(c.id));
       const asked = new Set(p.cross.map((c) => c.id));
-      const unfiled = p.leave.filter((l) => !(l.side === "sportlots" && asked.has(l.id)));
-      const leave = unfiled.filter((l) => !filed[l.side].has(l.id));
-      const pairedElsewhere = unfiled.length - leave.length;
-      const outsideScope = p.outsideScope.filter((o) => !asked.has(o.id));
-      (variants[p.j].sync as { pending: unknown[] }).pending = leave.map((l) => ({ side: l.side, id: l.id, name: l.name, decision: "leave" }));
+      const unfiled = p.unpaired.filter((l) => !(l.side === "sportlots" && asked.has(l.id)));
+      const unpaired = unfiled.filter((l) => !filed[l.side].has(l.id));
+      return { p, cross, unpaired, pairedElsewhere: unfiled.length - unpaired.length, outsideScope: p.outsideScope.filter((o) => !asked.has(o.id)) };
+    });
+    /** Where else each id waits unpaired (SportLots lists the brand-year flat, so one set can wait under two types). */
+    const waitsAt = new Map<string, Array<{ type: string; at: string }>>();
+    for (const { p, unpaired } of settled) {
+      unpaired.forEach((l, i) => {
+        const key = `${l.side}:${l.id}`;
+        waitsAt.set(key, [...(waitsAt.get(key) ?? []), { type: p.title, at: `${p.at}.sync.pending[${i}]` }]);
+      });
+    }
+    for (const { p, cross, unpaired, pairedElsewhere, outsideScope } of settled) {
+      (variants[p.j].sync as { pending: unknown[] }).pending = [];
+      const rows = ((variants[p.j].sync as { pairs: Array<{ name: string; bsc?: string[]; sportlots?: string[] }> }).pairs ?? []);
+      const pool: PairCandidate[] = [
+        ...unpaired.map((u) => ({ id: u.id, name: u.name, side: u.side, bsc: u.side === "bsc" ? [u.id] : [], sportlots: u.side === "sportlots" ? [u.id] : [] })),
+        // A drafted row with ids on one side only can take the other side's set.
+        ...rows.flatMap((r, k) => {
+          const bsc = r.bsc ?? [];
+          const sportlots = r.sportlots ?? [];
+          if ((bsc.length > 0) === (sportlots.length > 0)) return [];
+          return [{ id: `${p.at}.sync.pairs[${k}]`, name: r.name, side: bsc.length > 0 ? ("bsc" as const) : ("sportlots" as const), bsc, sportlots, row: true }];
+        }),
+      ];
+      const nameCtx = { manufacturer, slPrefixes: p.slPrefixes };
+      for (let i = 0; i < unpaired.length; i++) {
+        const l = unpaired[i];
+        const at = `${p.at}.sync.pending[${i}]`;
+        const ranked = rankPairCandidates(l, pool, unpaired, nameCtx);
+        let suggested = ranked.suggested;
+        let evidenceNote = "";
+        if (suggested) {
+          const s = suggested;
+          const row: DraftRow = {
+            name: l.side === "bsc" ? l.name : s.name,
+            bsc: [...s.bsc, ...(l.side === "bsc" ? [l.id] : [])],
+            sportlots: [...s.sportlots, ...(l.side === "sportlots" ? [l.id] : [])],
+          };
+          const why = await pairEvidenceOf(row, p.t);
+          if (why.kind === "cards" && why.evidence.verdict !== "agree") {
+            // The cards say no: listed, never suggested.
+            evidenceNote = `the cards do not confirm it: ${evidenceText(why.evidence)}`;
+            suggested = undefined;
+          } else {
+            evidenceNote = why.kind === "cards" ? `the cards agree: ${agreeText(why.evidence)}` : `their cards were not compared (${why.reason})`;
+          }
+        }
+        const others = (waitsAt.get(`${l.side}:${l.id}`) ?? []).filter((w) => w.at !== at);
+        const candidates: ResolveCandidate[] = ranked.listed.map((c) => ({
+          id: c.id,
+          name: c.name,
+          detail:
+            (c === ranked.suggested
+              ? suggested
+                ? `likely pair: the names read alike, and ${evidenceNote}`
+                : `the names read alike, but ${evidenceNote}`
+              : "a name like it") +
+            (c.row ? `; a drafted row with ${sideName(c.side)} ids only` : `; ${sideName(c.side)} set ${c.id}, unpaired too`),
+        }));
+        open.names.push({
+          at,
+          kind: "reconcile-unpaired",
+          name: l.name,
+          candidates,
+          detail: unpairedDetail(l, p.title, suggested, others),
+        });
+        fills.push({
+          at,
+          value: {
+            side: l.side,
+            id: l.id,
+            name: l.name,
+            decision:
+              `<"leave" | "own-set"> — ${l.name}: in this set's ${l.side === "bsc" ? "BSC listing" : "SportLots filter"} and nothing pairs it` +
+              (suggested ? `; likely pair: ${suggested.row ? `the row "${suggested.name}" (${suggested.id})` : `${sideName(suggested.side)} ${suggested.id} ("${suggested.name}")`}` : "") +
+              `; to pair it, move it into sync.pairs instead and drop this entry`,
+          },
+        });
+      }
       cross.forEach((c, i) => {
-        const at = `${p.at}.sync.pending[${leave.length + i}]`;
+        const at = `${p.at}.sync.pending[${unpaired.length + i}]`;
         open.names.push({
           at,
           kind: "reconcile-unsorted-sportlots",
@@ -961,21 +1087,6 @@ export async function draftSet(
           outsideScopeSets: outsideScope.map((o) => ({ id: o.id, name: o.name })),
         });
       }
-      if (leave.length + outsideScope.length + pairedElsewhere === 0) continue;
-      const count = (side: Side) => leave.filter((l) => l.side === side).length;
-      const sides = [count("bsc") ? `BSC ${count("bsc")}` : "", count("sportlots") ? `SportLots ${count("sportlots")}` : ""].filter(Boolean).join(", ");
-      const unasked = [
-        outsideScope.length ? `${outsideScope.length} SportLots set(s) outside this set's SportLots filter (other products of the brand-year)` : "",
-        pairedElsewhere ? `${pairedElsewhere} set(s) another variant type pairs` : "",
-      ].filter(Boolean);
-      propose(
-        `${p.at}.sync.pending`,
-        "reconcile-leave",
-        (leave.length
-          ? `${leave.length} ${p.title} set(s) not paired (${sides}); Save leaves them in Pending. Each is listed with its name: pair any that belong together.`
-          : `No ${p.title} set is left unpaired.`) +
-          (unasked.length ? ` Not asked about: ${unasked.join("; ")}.` : ""),
-      );
     }
   }
 
@@ -1038,14 +1149,18 @@ export async function draftSet(
    * checklist, so its evidence preview skips the BSC team lookup.
    */
   async function pairUnconfirmed(s: { title: string; bsc: Array<{ platformValue: string }>; sl: Array<{ platformValue: string }> }, t: StructureType): Promise<UnconfirmedWhy | null> {
+    const why = await pairEvidenceOf({ name: s.title, bsc: s.bsc.map((i) => i.platformValue), sportlots: s.sl.map((i) => i.platformValue) }, t);
+    return why.kind === "cards" && why.evidence.verdict === "agree" ? null : why;
+  }
+
+  /** The cards' verdict on a row of two sides' ids (its own preview, `pairCardEvidence`), or why there is none. */
+  async function pairEvidenceOf(r: DraftRow, t: StructureType): Promise<Exclude<UnconfirmedWhy, { kind: "review" }>> {
     if (!wantChecklists) return { kind: "no-evidence", reason: "this draft previews no checklists" };
-    const r: DraftRow = { name: s.title, bsc: s.bsc.map((i) => i.platformValue), sportlots: s.sl.map((i) => i.platformValue) };
     const request = rowPreviewRequest(r, t);
     if (typeof request === "string") return { kind: "no-evidence", reason: request };
-    const got = await fetchPreview(`${t.label} › ${s.title}`, request, rowSides(r), t.role === "insert" ? {} : { lookupTeams: false });
+    const got = await fetchPreview(`${t.label} › ${r.name}`, request, rowSides(r), t.role === "insert" ? {} : { lookupTeams: false });
     if (!got.ok) return { kind: "no-evidence", reason: got.detail };
-    const evidence = pairCardEvidence(got.preview);
-    return evidence.verdict === "agree" ? null : { kind: "cards", evidence };
+    return { kind: "cards", evidence: pairCardEvidence(got.preview) };
   }
 
   /** The brand's SportLots review ids (`readUnsortedSlIds`), read once per draft. */
@@ -1128,7 +1243,8 @@ export async function draftSet(
    * after the sync, as `group` entries. A row is named by a marketplace id
    * that only it holds among the type's rows (it survives a rename), else by
    * its name. A suggested parent whose grouping name another row shares is a
-   * tie: never taken, an open decision.
+   * tie (`buildInitialState`'s `tiedParents`, the modal's rule too): never
+   * taken, an open decision.
    *
    * A suggested child that roots a family of its own ("Future Stars
    * Autographs", which "Future Stars Autographs Red" extends, under "Future
@@ -1137,9 +1253,11 @@ export async function draftSet(
    * does it stay top level, the parent of its own family (`holdFamilyRoots`):
    * apply would otherwise find out only at the build (`no-shared-numbers`),
    * after the grouping had moved it. Sharing a number, or no preview to
-   * compare (checklists off, a row already holding cards, a failed preview),
-   * leaves the plain prefix rule: it and its family go under the parent
-   * (Jason, 2026-10-19: in X / X Orange / X Orange Wave, X is the root).
+   * compare (checklists off, a row already holding cards, a failed or empty
+   * preview), leaves the plain prefix rule: it and its family go under the
+   * parent (Jason, 2026-10-19: in X / X Orange / X Orange Wave, X is the
+   * root). The loop and the rule are lib/set-build/family-roots.ts, which the
+   * Group Parallels modal runs over its saved rows.
    */
   async function draftGrouping(
     rows: DraftRow[],
@@ -1170,30 +1288,18 @@ export async function draftSet(
       if (row.sportlots.length === 1 && holders("sportlots", row.sportlots[0]) === 1) return { sportlots: row.sportlots[0] };
       return row.value;
     };
-    const keyCount = new Map<string, number>();
-    for (const r of allRows) keyCount.set(groupingKey(r.value), (keyCount.get(groupingKey(r.value)) ?? 0) + 1);
-
-    // Family roots held apart only where previews show no shared card number.
+    // Family roots held apart only where previews show no shared card number
+    // (lib/set-build/family-roots.ts: the modal runs the same loop and rule).
     const draftRowOf = new Map<string, DraftRow>(rows.map((r, i) => [String(r.existingId ?? `draft:${i}`), r]));
-    const hold = new Set<Id<"selectorOptions">>();
-    const weighed = new Set<string>();
-    let init = buildInitialState(nodes, { holdFamilyRoots: hold });
-    for (;;) {
-      let held = false;
-      for (const [root, parent] of init.familyRoots) {
-        if (weighed.has(root)) continue;
-        weighed.add(root);
-        if ((await sharesNumbers(draftRowOf.get(parent), draftRowOf.get(root), t, title)) !== false) continue;
-        hold.add(root);
-        held = true;
-        propose(
-          `${at}.parents`,
-          "grouping",
-          `${title} › ${draftRowOf.get(root)?.name ?? root} shares no card number with ${draftRowOf.get(parent)?.name ?? parent}, so it stays its own insert and parents the rows that extend its name`,
-        );
-      }
-      if (!held) break;
-      init = buildInitialState(nodes, { holdFamilyRoots: hold });
+    const init = await groupWithFamilyRootEvidence(nodes, (root, parent) =>
+      wantChecklists ? familyRootStandsApart(draftRowOf.get(parent), draftRowOf.get(root), rowCards(t, title)) : Promise.resolve(undefined),
+    );
+    for (const { root, parent } of init.held) {
+      propose(
+        `${at}.parents`,
+        "grouping",
+        `${title} › ${draftRowOf.get(root)?.name ?? root} shares no card number with ${draftRowOf.get(parent)?.name ?? parent}, so it stays its own insert and parents the rows that extend its name`,
+      );
     }
     const kids = new Map<string, string[]>();
     for (const [id, placement] of init.placement) {
@@ -1209,25 +1315,29 @@ export async function draftSet(
     const childIds = new Set<string>();
     let moves = 0;
     const nameOf = (id: string) => allRows.find((r) => r._id === id)!.value;
+    // A tie (buildInitialState's `tiedParents`): nothing is suggested under a
+    // parent whose name another row shares; the operator picks. Only what is
+    // already grouped under it stays grouped.
+    for (const [parentId, tie] of init.tiedParents) {
+      const parent = allRows.find((r) => r._id === parentId)!;
+      const sharers = new Set<string>(tie.sharers);
+      open.names.push({
+        at: `${at}.parents`,
+        kind: "group-parent",
+        name: parent.value,
+        candidates: allRows.filter((r) => sharers.has(r._id)).map((r) => ({ id: r._id, name: r.value })),
+        detail: `${tie.children.length} row(s) would group under "${parent.value}", and another ${title} row shares its name`,
+      });
+      const already = kids.get(parentId) ?? [];
+      if (already.length > 0) {
+        parentIds.add(parentId);
+        for (const c of already) childIds.add(c);
+      }
+    }
     for (const [parentId, kidIds] of kids) {
+      if (init.tiedParents.has(parentId as Id<"selectorOptions">)) continue;
       const parent = allRows.find((r) => r._id === parentId)!;
       const suggested = kidIds.filter((c) => init.suggested.has(c as Id<"selectorOptions">));
-      if (suggested.length > 0 && (keyCount.get(groupingKey(parent.value)) ?? 0) > 1) {
-        open.names.push({
-          at: `${at}.parents`,
-          kind: "group-parent",
-          name: parent.value,
-          candidates: allRows.filter((r) => groupingKey(r.value) === groupingKey(parent.value)).map((r) => ({ id: r._id, name: r.value })),
-          detail: `${suggested.length} row(s) would group under "${parent.value}", and another ${title} row shares its name`,
-        });
-        // Only what is already grouped stays grouped.
-        const already = kidIds.filter((c) => !init.suggested.has(c as Id<"selectorOptions">));
-        if (already.length > 0) {
-          parentIds.add(parentId);
-          for (const c of already) childIds.add(c);
-        }
-        continue;
-      }
       parents.push({ insert: refOf(parent), parallels: kidIds.map((c) => refOf(allRows.find((r) => r._id === c)!)) });
       children.set(parent.value, kidIds.map(nameOf));
       parentIds.add(parentId);
@@ -1240,22 +1350,22 @@ export async function draftSet(
   }
 
   /**
-   * Whether two rows' previewed checklists share a card number: undefined
-   * when either cannot be previewed (checklists off, already holding cards,
-   * a request the cold preview cannot make, a failed preview).
+   * How the draft reaches a row's cards for the family-root evidence
+   * (`familyRootStandsApart`): the cards it already holds, and its preview by
+   * row or cold, through `fetchPreview`, so the evidence and the row's own
+   * checklist read one answer. A request the cold preview cannot make, or a
+   * failed preview, is no preview.
    */
-  async function sharesNumbers(a: DraftRow | undefined, b: DraftRow | undefined, t: StructureType, title: string): Promise<boolean | undefined> {
-    if (!wantChecklists || !a || !b) return undefined;
-    const numbers: string[][] = [];
-    for (const r of [a, b]) {
-      if (r.existingId && (await cardCount(client, r.existingId)) > 0) return undefined;
-      const request = rowPreviewRequest(r, t);
-      if (typeof request === "string") return undefined;
-      const got = await fetchPreview(`${title} › ${r.name}`, request, rowSides(r));
-      if (!got.ok) return undefined;
-      numbers.push(previewCardNumbers(got.preview));
-    }
-    return sharesACardNumber(numbers[0], numbers[1]);
+  function rowCards(t: StructureType, title: string): RowCardSource<DraftRow> {
+    return {
+      cardsHeld: async (r) => (r.existingId ? cardCount(client, r.existingId) : 0),
+      preview: async (r) => {
+        const request = rowPreviewRequest(r, t);
+        if (typeof request === "string") return undefined;
+        const got = await fetchPreview(`${title} › ${r.name}`, request, rowSides(r));
+        return got.ok ? got.preview : undefined;
+      },
+    };
   }
 
   /** A row the draft found already holding cards: apply skips its fetch. */

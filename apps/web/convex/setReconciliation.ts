@@ -10,6 +10,13 @@ import {
 } from "./features/deriveCardFeatures";
 import { platformServesLevel } from "./platformLevels";
 import {
+  brandFoldedKey,
+  isTokenSubsetOrSuperset,
+  levenshteinDistance,
+  normalizeForMatch,
+  stripSlBasePrefix,
+} from "./lib/setNameMatch";
+import {
   slotIds,
   idForSlot,
   initialSlots,
@@ -106,6 +113,7 @@ import {
 // NEO-287 — the operator switch, read here and threaded into `resolvableSides`
 // as an argument; the resolvability module itself never reads the environment.
 import { pausedSides } from "./marketplacePause";
+import { labelForId, platformLabelSideValidator } from "./lib/platformLabelPairs";
 import type { Doc } from "./_generated/dataModel";
 
 /**
@@ -173,103 +181,9 @@ const metadataValidator = v.optional(
 
 // ===== MATCHING HELPERS =====
 
-// Common marketplace abbreviations / aliases. Keys and values must be lowercase.
-// Applied token-by-token after basic normalization so "Autos" → "autographs" etc.
-const TOKEN_SYNONYMS: Record<string, string> = {
-  auto: "autograph",
-  autos: "autograph",
-  rc: "rookie",
-  rcs: "rookie",
-  sp: "shortprint",
-  sps: "shortprint",
-  ssp: "supershortprint",
-  ssps: "supershortprint",
-  // Plural-normalize common suffix words so "autograph" / "autographs" collapse too
-  autographs: "autograph",
-  rookies: "rookie",
-  inserts: "insert",
-  parallels: "parallel",
-  shortprints: "shortprint",
-  supershortprints: "supershortprint",
-  refractors: "refractor",
-  prizms: "prizm",
-  prisms: "prism",
-  variations: "variation",
-  variants: "variant",
-  patches: "patch",
-  relics: "relic",
-  jerseys: "jersey",
-  signatures: "signature",
-};
-
-// Words that take a simple "+s" plural. When a token ends in 's' and the
-// trimmed singular is in this set, the singular form is used for matching.
-// Lightweight, extensible alternative to listing each plural pair in
-// TOKEN_SYNONYMS — add new singulars here as marketplaces surface them.
-const PLURALIZABLE_WORDS: Set<string> = new Set(["prizm"]);
-
-function singularize(tok: string): string {
-  if (tok.length > 1 && tok.endsWith("s")) {
-    const singular = tok.slice(0, -1);
-    if (PLURALIZABLE_WORDS.has(singular)) return singular;
-  }
-  return tok;
-}
-
-function normalizeForMatch(s: string): string {
-  const base = s
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s]/g, "")
-    .replace(/\s+/g, " ");
-  if (!base) return base;
-  return base
-    .split(" ")
-    .map((tok) => TOKEN_SYNONYMS[tok] ?? singularize(tok))
-    .join(" ");
-}
-
-// Returns true when one normalized token-set is a subset of the other.
-// Used as a guard on fuzzy matches so a single differing meaningful token
-// (e.g. "red" vs "chrome") blocks the pair, while genuine super/subset
-// relationships ("Topps Chrome Update" vs "Chrome Update") still match.
-function tokensOf(s: string): Set<string> {
-  return new Set(normalizeForMatch(s).split(" ").filter(Boolean));
-}
-
-function isTokenSubsetOrSuperset(a: string, b: string): boolean {
-  const ta = tokensOf(a);
-  const tb = tokensOf(b);
-  if (ta.size === 0 || tb.size === 0) return false;
-  const [smaller, larger] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
-  for (const tok of smaller) {
-    if (!larger.has(tok)) return false;
-  }
-  return true;
-}
-
-function levenshteinDistance(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    Array(n + 1).fill(0),
-  );
-
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
-      } else {
-        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-      }
-    }
-  }
-
-  return dp[m][n];
-}
+// The name comparison itself (synonyms, accents, the Base-prefix strip, the
+// manufacturer fold) lives in convex/lib/setNameMatch.ts, shared with the
+// set-build draft so the dialog and the tool read names one way.
 
 type PlatformItem = { value: string; platformValue: string };
 
@@ -279,20 +193,6 @@ type MatchedPair = {
   sl: PlatformItem;
   confidence: number;
 };
-
-// Strips a leading SL Base prefix from an SL value (case-insensitive,
-// optional trailing whitespace) so matching can compare the variant tail
-// against the BSC name. Returns the original string when the prefix
-// doesn't lead — never lossy.
-function stripSlBasePrefix(value: string, prefix: string): string {
-  if (!prefix) return value;
-  const v = value.trim();
-  const p = prefix.trim();
-  if (v.toLowerCase().startsWith(p.toLowerCase())) {
-    return v.slice(p.length).trim();
-  }
-  return v;
-}
 
 /**
  * NEO-137: exported ONLY so `setReconciliation.computeMatches.test.ts` can pin
@@ -316,6 +216,14 @@ export function computeMatches(
     bsc?: ReadonlySet<string>;
     sportlots?: ReadonlySet<string>;
   },
+  /**
+   * NEO-339 — the NB manufacturer's name (the chain's display value, the one
+   * the SportLots adapter strips from its labels). A matching aid only: with
+   * it, a last pass pairs names that differ only by a leading manufacturer
+   * word one side carries ("Topps Chrome Authentics Relics" / "Chrome
+   * Authentics Relics"). Absent: that pass does not run.
+   */
+  context?: { manufacturer?: string },
 ): {
   autoMatched: MatchedPair[];
   unmatchedBsc: PlatformItem[];
@@ -496,6 +404,42 @@ export function computeMatches(
     }
   }
 
+  // Pass 4 (NEO-339): the manufacturer word. BSC sometimes names an insert
+  // with the set's full name ("Topps Chrome Authentics Relics") where
+  // SportLots' label has the brand dropped ("Chrome Authentics Relics"); the
+  // Base-prefix strip then leaves "Authentics Relics", which no earlier pass
+  // reaches. Here a leading manufacturer word one side has and the other
+  // lacks reads as equal, compared on the WHOLE SportLots name (no Base strip:
+  // the BSC name carries the set's name too). Exact on that key, with the
+  // same exactly-one guard on each side. It runs last and only over what the
+  // earlier passes left, so it never changes a pair they made.
+  const manufacturer = context?.manufacturer?.trim();
+  if (manufacturer) {
+    const bscKeys = remainingBsc.map((b) => brandFoldedKey(b.value, manufacturer));
+    const slKeys = remainingSl.map((sl) => brandFoldedKey(sl.value, manufacturer));
+    const bscCounts = countKeys(bscKeys);
+    const slCounts = countKeys(slKeys);
+    for (let i = remainingBsc.length - 1; i >= 0; i--) {
+      const key = bscKeys[i];
+      if (!key || bscCounts.get(key) !== 1 || slCounts.get(key) !== 1) continue;
+      const slIndex = slKeys.indexOf(key);
+      if (slIndex === -1) continue;
+      autoMatched.push({
+        displayName: remainingBsc[i].value,
+        bsc: remainingBsc[i],
+        sl: remainingSl[slIndex],
+        confidence: 0.9,
+      });
+      remainingBsc.splice(i, 1);
+      bscKeys.splice(i, 1);
+      remainingSl.splice(slIndex, 1);
+      slStripped.splice(slIndex, 1);
+      slKeys.splice(slIndex, 1);
+      dropKey(bscCounts, key);
+      dropKey(slCounts, key);
+    }
+  }
+
   // NEO-137: ranked candidates for the BSC rows that ended up with nothing.
   //
   // The three passes above splice each match out of BOTH arrays, so a
@@ -556,6 +500,30 @@ export function computeMatches(
     unmatchedBsc,
     unmatchedSl,
     slCandidates,
+  };
+}
+
+/**
+ * NEO-339 — `computeMatches`' result with every auto-match whose SportLots
+ * set is in `withheldSl` taken apart: both halves back in the unmatched
+ * lists, so no caller is offered the pair. Pure; nothing is linked or
+ * dropped, the sets are only no longer proposed together.
+ */
+export function withholdAutoMatches<
+  R extends {
+    autoMatched: MatchedPair[];
+    unmatchedBsc: PlatformItem[];
+    unmatchedSl: PlatformItem[];
+  },
+>(result: R, withheldSl: ReadonlySet<string>): R {
+  if (withheldSl.size === 0) return result;
+  const held = result.autoMatched.filter((m) => withheldSl.has(m.sl.platformValue));
+  if (held.length === 0) return result;
+  return {
+    ...result,
+    autoMatched: result.autoMatched.filter((m) => !withheldSl.has(m.sl.platformValue)),
+    unmatchedBsc: [...result.unmatchedBsc, ...held.map((m) => m.bsc)],
+    unmatchedSl: [...result.unmatchedSl, ...held.map((m) => m.sl)],
   };
 }
 
@@ -718,6 +686,8 @@ export type RawOptionsParentFilters = {
  * carries only an id BSC itself returned.
  */
 export type RawOptionsChainNode = ResolvableRow & {
+  /** The row's id; absent on the virtual node `previewSetStructure` builds. */
+  _id?: Id<"selectorOptions">;
   metadata?: { setNamePrefix?: string } | null;
 };
 
@@ -792,9 +762,12 @@ export async function fetchRawOptionsForChain(
     // No parent = nothing to scope by and nothing that can be missing —
     // except a paused marketplace (NEO-287), which is never asked.
     let resolution: ChainResolution = unscopedResolution({ paused });
+    // NEO-339 — the brand, for its SportLots review (below).
+    let manufacturerId: Id<"selectorOptions"> | undefined;
 
     if (loadChain) {
       const chain = await loadChain();
+      manufacturerId = chain.find((n) => n.level === "manufacturer")?._id;
 
       // NEO-239 — PER-SIDE resolvability replaces BOTH the custom-subtree
       // skip and the BSC precondition that used to follow it.
@@ -989,11 +962,36 @@ export async function fetchRawOptionsForChain(
     // matcher compare BSC names against SL values with the prefix stripped.
     // NEO-325 — twins are never auto-paired, including a twin whose
     // namesake left `slOptions` with the Base.
+    const matched =
+      computeMatches(
+        bscOptions,
+        slOptions,
+        baseSlPrefix,
+        {
+          bsc: new Set(twinIds.bsc),
+          sportlots: new Set(twinIds.sportlots),
+        },
+        // NEO-339 — the manufacturer word, as a matching aid (the same
+        // display value the SportLots adapter strips from its labels).
+        parentFilters?.manufacturer
+          ? { manufacturer: parentFilters.manufacturer }
+          : undefined,
+      );
+    // NEO-339 — a SportLots set still unsorted in the brand's review is no NB
+    // set's yet, so a name match is never proposed with it: both halves go
+    // back to unmatched for the operator (2023 Topps Chrome auto-matched the
+    // flagship's "1988 Topps Autos Red" this way). Every caller (the web
+    // dialog, the tool's apply and draft) reads this one result.
+    const unsortedSl =
+      level === "insert" && manufacturerId && matched.autoMatched.length > 0
+        ? new Set(
+            await ctx.runQuery(internal.slSetReview.unsortedSlIdsOfBrand, {
+              manufacturerId,
+            }),
+          )
+        : new Set<string>();
     const { autoMatched, unmatchedBsc, unmatchedSl, slCandidates } =
-      computeMatches(bscOptions, slOptions, baseSlPrefix, {
-        bsc: new Set(twinIds.bsc),
-        sportlots: new Set(twinIds.sportlots),
-      });
+      withholdAutoMatches(matched, unsortedSl);
 
     const warningSuffix =
       Object.keys(platformErrors).length > 0
@@ -2043,14 +2041,20 @@ export const storeReconciledOptions = mutation({
           bsc: v.optional(v.union(v.string(), v.array(v.string()))),
           sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
         }),
-        // NEO-137: marketplace-side display names, keyed by marketplace ID
-        // (the wire format — the client has no slot keys). Stored against the
-        // SLOT each ID lands in, which is what replaced
-        // `platformData.sportlotsDisplay`: a single display string had no
-        // meaning once one row could hold several SL sets.
+        // NEO-137: marketplace-side display names per marketplace ID (the
+        // client has no slot keys). Stored against the SLOT each ID lands in,
+        // which is what replaced `platformData.sportlotsDisplay`: a single
+        // display string had no meaning once one row could hold several SL
+        // sets.
+        //
+        // Sent as `{ id, label }` pairs. It used to be a record KEYED by the
+        // id, and a marketplace id is not a valid Convex field name: one BSC
+        // slug with an accent (`topps-chrome-exposé`) failed the whole Save.
+        // The record arm stays for an SPA tab open across the deploy; read
+        // both through `labelForId`. See convex/lib/platformLabelPairs.ts.
         platformLabels: v.optional(v.object({
-          bsc: v.optional(v.record(v.string(), v.string())),
-          sportlots: v.optional(v.record(v.string(), v.string())),
+          bsc: v.optional(platformLabelSideValidator),
+          sportlots: v.optional(platformLabelSideValidator),
         })),
         metadata: metadataValidator,
         /**
@@ -2772,7 +2776,7 @@ export const storeReconciledOptions = mutation({
           ) {
             relinkedAll.push({ id: row._id, value: w.value, side });
           }
-          const rawLabel = item.platformLabels?.[side]?.[refreshedId];
+          const rawLabel = labelForId(item.platformLabels?.[side], refreshedId);
           const labelCheck =
             rawLabel === undefined ? undefined : checkSelectorValue(rawLabel);
           const label =
@@ -2856,7 +2860,7 @@ export const storeReconciledOptions = mutation({
       }
       const insertValue = valueCheck.value;
       const safeLabel = (side: "bsc" | "sportlots", id: string) => {
-        const raw = item.platformLabels?.[side]?.[id];
+        const raw = labelForId(item.platformLabels?.[side], id);
         if (raw === undefined) return {};
         const checked = checkSelectorValue(raw);
         return checked.ok ? { label: checked.value } : {};

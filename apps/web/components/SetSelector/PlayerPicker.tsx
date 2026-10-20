@@ -10,6 +10,12 @@ import {
 } from "../../lib/entities/name-search";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import {
+  entityExistsRefusal,
+  existingPlayerLabel,
+  playerExistsText,
+  type ExistingPlayer,
+} from "../../lib/entities/entity-exists";
+import {
   contrastRatio,
   normalizeHexColor,
   parseHexColor,
@@ -363,7 +369,15 @@ export default function PlayerPicker({
    * `userFacingMessage`).
    */
   const [createError, setCreateError] = useState<string | null>(null);
+  /**
+   * NEO-339 — the players the last "+ Create" was refused for: the name is
+   * already on file (`players.findOrCreate` with `createOnly` never links).
+   * Shown with the refusal as "Use …" buttons, so linking the row on file is
+   * one press. Cleared with `createError`, always together.
+   */
+  const [onFile, setOnFile] = useState<ExistingPlayer[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const firstOnFileRef = useRef<HTMLButtonElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /**
@@ -418,6 +432,7 @@ export default function PlayerPicker({
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
+      setOnFile([]);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -520,14 +535,26 @@ export default function PlayerPicker({
     if (!name || disabled || creating) return;
     setCreating(true);
     setCreateError(null);
+    setOnFile([]);
     try {
       if (!activeSportId) return;
       // NEO-313: created in the sport being SEARCHED. After a switch that is
       // the operator's explicit choice, and the new player is filed under it —
       // never under the set's sport by default.
-      const id = await findOrCreate({ name, sportId: activeSportId });
+      // `createOnly`: "+ Create" means a NEW player. A name already on file
+      // is refused with the rows it names, never silently linked (NEO-339).
+      const id = await findOrCreate({ name, sportId: activeSportId, createOnly: true });
       addChip(id);
     } catch (err) {
+      const exists = entityExistsRefusal(err);
+      if (exists?.code === "PLAYER_EXISTS") {
+        setCreateError(playerExistsText(exists));
+        setOnFile(exists.players);
+        // Focus the first "Use …" button: linking the row on file is the
+        // likely next move, and the input is one Shift+Tab away for a retype.
+        setTimeout(() => firstOnFileRef.current?.focus(), 0);
+        return;
+      }
       // The ConvexError's `data`, never `.message`: production redacts a plain
       // Error, and a surviving message arrives wrapped in "[CONVEX M(...)]
       // [Request ID: ...]" noise. The query is left alone so "+ Create" stays
@@ -545,6 +572,7 @@ export default function PlayerPicker({
     setPopoverOpen(false);
     setQuery("");
     setCreateError(null);
+    setOnFile([]);
     setTimeout(() => triggerRef.current?.focus(), 0);
   };
 
@@ -577,6 +605,7 @@ export default function PlayerPicker({
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
+      setOnFile([]);
     }, 0);
   };
 
@@ -678,6 +707,7 @@ export default function PlayerPicker({
                 // The refusal described the name that was in this box; the
                 // next keystroke makes it stale, so it goes with the query.
                 setCreateError(null);
+                setOnFile([]);
                 setQuery(e.target.value);
               }}
               onKeyDown={(e) => {
@@ -723,6 +753,29 @@ export default function PlayerPicker({
               >
                 {createError}
               </p>
+            )}
+            {/* NEO-339 — the players the refusal named, one press to link.
+                Outside the alert so the alert stays a sentence; each name is
+                "Use …" (never "Add …", which the result options own). */}
+            {onFile.length > 0 && (
+              <div className="flex flex-col gap-1 px-2 pb-1">
+                {onFile.map((p, i) => (
+                  <button
+                    key={p.id}
+                    ref={i === 0 ? firstOnFileRef : undefined}
+                    type="button"
+                    onClick={() => {
+                      setCreateError(null);
+                      setOnFile([]);
+                      addChip(p.id as Id<"players">);
+                    }}
+                    aria-label={`Use ${existingPlayerLabel(p)}, already on file`}
+                    className="w-full rounded border border-[#00D558]/60 px-2 py-1 text-left text-xs text-gray-800 hover:bg-[#00D558]/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00D558] dark:text-gray-100"
+                  >
+                    Use {existingPlayerLabel(p)}
+                  </button>
+                ))}
+              </div>
             )}
 
             {!candidates && (
@@ -868,6 +921,7 @@ export default function PlayerPicker({
                     setSearchSportId(next);
                     setHighlightIdx(0);
                     setCreateError(null);
+                    setOnFile([]);
                   }}
                 />
               </div>

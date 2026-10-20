@@ -683,8 +683,6 @@ export interface DraftProposal {
   kind:
     | "base-map"
     | "reconcile-pairs"
-    /** Every pending marketplace set nobody pairs, left in Pending: one per type, with the counts (each set is in `sync.pending` with its name). */
-    | "reconcile-leave"
     | "grouping"
     | "pairing"
     | "review-create"

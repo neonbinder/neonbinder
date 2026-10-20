@@ -26,7 +26,7 @@
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
-import { planParallelBuildOrder } from "../../../lib/set-build/parallel-build";
+import { listedOnlyCounts, planParallelBuildOrder, sharesNoNumbers } from "../../../lib/set-build/parallel-build";
 import type { NbClient } from "../client/convex-client";
 import { pickExactlyOne } from "../spec/resolve";
 import { StepCheckError } from "./step-check";
@@ -68,14 +68,8 @@ export type BuildParallelOutcome =
       result: ParallelBuildResult;
     };
 
-/**
- * Cards the parallel's own listing returned that no source card matched, per
- * side. Read defensively: an older server's result may not carry the field.
- */
-export function listedOnlyCounts(result: Pick<ParallelBuildResult, "extraOnMarketplace">): { bsc: number; sportlots: number } {
-  const extra = result.extraOnMarketplace as Partial<ParallelBuildResult["extraOnMarketplace"]> | undefined;
-  return { bsc: extra?.bsc?.count ?? 0, sportlots: extra?.sportlots?.count ?? 0 };
-}
+// NEO-339 — the detection is the panel's too (lib/set-build/parallel-build.ts).
+export { listedOnlyCounts };
 
 /** What a build of `name` would do, without building (read-only). */
 export async function planParallelBuild(
@@ -134,7 +128,7 @@ export async function buildParallel(client: NbClient, input: BuildParallelInput)
   }
   const cards = await cardCount(client, parallelId);
   const listed = listedOnlyCounts(result);
-  if (result.copied === 0 && listed.bsc + listed.sportlots > 0 && input.expectCards !== 0) {
+  if (sharesNoNumbers(result) && input.expectCards !== 0) {
     // Before the count check: "expects 20, holds 0" would hide the reason.
     return { outcome: "no-shared-numbers", cards, listed, source: planned.source ?? "its source", parallelId, result };
   }

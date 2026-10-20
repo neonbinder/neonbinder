@@ -1140,8 +1140,11 @@ export default defineSchema({
     listingTitle: v.optional(v.string()),
     listingDescription: v.optional(v.string()),
     // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
-    // players) did not fit inside eBay's 80-character cap at creation time, so
-    // the generator cut it at a word boundary to keep room for the card number.
+    // insert / players / card number / parallel / print run) did not fit
+    // inside eBay's 80-character cap at creation time, so the generator left
+    // some of it out: set and maker words first, then the card number, then
+    // the year, and the players, insert and parallel names and print run only
+    // in a fallback (Jason, 2026-10-19; `generateListing.ts`).
     // The title is valid and listable — it is just missing identifying words a
     // human should put back, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.

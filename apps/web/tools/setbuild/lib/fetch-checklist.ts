@@ -24,11 +24,13 @@
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
+import { isChangedSyncCard, needsSyncReview } from "../../../lib/set-build/sync-review";
 import {
   buildPairingResult,
   candidateKey,
   candidateToPairingCard,
   candidatesToPairingCards,
+  openPairingConflicts,
   pairingReducer,
   seedPairingState,
   withConflicts,
@@ -339,6 +341,18 @@ export function pairCandidates(
       detail: `This ${a.field} answer (bsc ${a.bsc ?? "-"}, sportlots ${a.sportlots ?? "-"}) names no disagreeing pair.`,
     });
   });
+  // NEO-339 — the dialog's own Confirm gate, on the state as it now stands:
+  // every disagreement answered. The loop above answers each one it finds,
+  // so this only fires if an answer failed to reach the reducer — which would
+  // otherwise commit BSC's side over it, the defect the gate exists for.
+  for (const c of open.length === 0 ? openPairingConflicts(state) : []) {
+    open.push({
+      at: `${ctx.at}.pairing.conflicts`,
+      row: ctx.row,
+      cardNumber: c.cardNumber,
+      detail: `the ${c.field} conflict on #${c.cardNumber} is still unanswered; ${UNLINK_HINT}`,
+    });
+  }
   if (open.length > 0) {
     return { ok: false, conflicts: open, template: [...answers.map((a) => ({ ...a })), ...fillIns] };
   }
@@ -365,17 +379,11 @@ export function pairCandidates(
 // ---------------------------------------------------------------------------
 
 /**
- * Keep in step with `needsSyncReview` in
- * components/SetSelector/sync-review-modal.tsx (a component module this Node
- * tool cannot load). Same three conditions, same order.
+ * The sync-review dialog's own rule (`lib/set-build/sync-review.ts`, which
+ * `components/SetSelector/sync-review-modal.tsx` calls too). Re-exported under
+ * its old name for the tool's callers.
  */
-export function needsSyncReview(diff: SyncDiff): boolean {
-  return (
-    diff.conflicts.length > 0 ||
-    diff.removedUpstream.fullyOrphaned.length > 0 ||
-    diff.cards.some((c) => c.bucket === "formattingOnly" || c.bucket === "contentChanges")
-  );
-}
+export { needsSyncReview };
 
 /**
  * Refuse a checklist the sync-review dialog would have to settle. The diff is
@@ -394,7 +402,7 @@ export async function assertNoSyncReview(
     cards: withConflicts(result.cards, result.conflictsByIndex),
   });
   if (needsSyncReview(diff)) {
-    const changed = diff.cards.filter((c) => c.bucket === "formattingOnly" || c.bucket === "contentChanges").length;
+    const changed = diff.cards.filter(isChangedSyncCard).length;
     const link = await setBuilderLink(client, rowId);
     throw new ChecklistStepError(
       `${at}: this checklist already holds cards that differ from the fetch (${changed} changed, ` +

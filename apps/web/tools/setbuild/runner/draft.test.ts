@@ -240,27 +240,42 @@ async function drafted(client: FakeClient, opts = {}): Promise<DraftedReport> {
 }
 
 describe("draftSet: proposals vs open decisions", () => {
-  test("a cold set is drafted whole: proposals filled (pending sets left, explicitly), every name with candidates left open", async () => {
+  test("a cold set is drafted whole: proposals filled, every unpaired set and every name with candidates left open", async () => {
     const client = world();
     const r = await drafted(client);
     const spec = r.spec as unknown as Spec;
     const step = spec.steps[0];
 
-    // Base: the sole BSC candidate, SportLots' sole exact match.
+    // Base: what the dialog pre-selects on each side, its sole exact match
+    // (BSC's set listing beside the row is unscored).
     expect(step.base!.map).toEqual({ bsc: "topps-chrome-black", sportlots: "sl-black", whenPaused: "bsc-only" });
-    // Insert: the two auto-matches are pairs; the pending SportLots set is an
-    // explicit `leave` (what Save does with Pending; own-set is never
-    // proposed), and the set Topps Chrome holds is not pending at all.
+    // Insert: the two auto-matches are pairs. The pending SportLots set inside
+    // the set's filter is never a silent `leave`: it is an open decision, and
+    // the set Topps Chrome holds is not pending at all.
     const insert = step.variants!.find((v) => v.type === "Insert")!;
     expect(insert.sync).toEqual({
       pairs: [
         { name: "Future Stars", bsc: ["fs"], sportlots: ["sl-fs"] },
         { name: "Future Stars Gold", bsc: ["fs-gold"], sportlots: ["sl-fsg"] },
       ],
-      // Each with the marketplace's name, so it can be paired from the draft.
-      pending: [{ side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: "leave" }],
+      pending: [],
     });
     expect(r.openDecisions.reconcile).toEqual([]);
+    // Each with the marketplace's name, so it can be paired from the draft.
+    const unpaired = r.openDecisions.names.filter((n) => n.kind === "reconcile-unpaired");
+    expect(unpaired.map((n) => [n.at, n.name])).toEqual([
+      ["steps[0].variants[0].sync.pending[0]", "Chrome Black Something"],
+      ["steps[0].variants[1].sync.pending[0]", "Chrome Black Something"],
+    ]);
+    expect(unpaired[0].detail).toContain('Answer "leave"');
+    expect(unpaired[0].detail).toContain('"own-set"');
+    expect(unpaired[0].detail).toContain("add \"sl-other\" to a row's sportlots ids in sync.pairs");
+    // SportLots lists it under both types: each entry says where the other is.
+    expect(unpaired[0].detail).toContain("Parallel too (steps[0].variants[1].sync.pending[0])");
+    const tplInsert = (r.template as unknown as Spec).steps[0].variants!.find((v) => v.type === "Insert")!;
+    expect(tplInsert.sync!.pending).toEqual([
+      { side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: expect.stringMatching(/^<"leave" \| "own-set"> — Chrome Black Something/) },
+    ]);
     // Not listed, only counted: Heritage Chrome (another product: outside the
     // set's SportLots filter) and sl-gold (the Parallel type pairs it).
     expect(r.leftUnasked).toEqual([
@@ -279,23 +294,8 @@ describe("draftSet: proposals vs open decisions", () => {
         outsideScopeSets: [{ id: "sl-heritage", name: "Heritage Chrome" }],
       },
     ]);
-    expect(r.proposals.filter((p) => p.kind === "reconcile-leave")).toEqual([
-      {
-        at: "steps[0].variants[0].sync.pending",
-        kind: "reconcile-leave",
-        detail:
-          "1 Insert set(s) not paired (SportLots 1); Save leaves them in Pending. Each is listed with its name: pair any that belong together. " +
-          "Not asked about: 1 SportLots set(s) outside this set's SportLots filter (other products of the brand-year); 1 set(s) another variant type pairs.",
-      },
-      {
-        at: "steps[0].variants[1].sync.pending",
-        kind: "reconcile-leave",
-        detail:
-          "1 Parallel set(s) not paired (SportLots 1); Save leaves them in Pending. Each is listed with its name: pair any that belong together. " +
-          "Not asked about: 1 SportLots set(s) outside this set's SportLots filter (other products of the brand-year).",
-      },
-    ]);
     expect(JSON.stringify(r.spec)).not.toContain("own-set");
+    expect(JSON.stringify(r.spec)).not.toContain('"leave"');
     // With every pending set answered, the counts are proposals too.
     expect(insert.expectRows).toBe(2);
     expect(insert.group!.expectUngrouped).toBe(0);
@@ -325,13 +325,17 @@ describe("draftSet: proposals vs open decisions", () => {
 
     // Open → no phrase; the template carries every fill-in and nothing else is missing.
     expect(r.openCount).toBe(countOpenDecisions(r.openDecisions));
-    expect(r.openCount).toBe(1);
+    expect(r.openCount).toBe(3);
     expect(r.confirmPhrase).toBeNull();
-    expect(placeholdersIn(r.template)).toEqual(["steps[0].base.checklist.review.players[2].decision"]);
+    expect(placeholdersIn(r.template)).toEqual([
+      "steps[0].base.checklist.review.players[2].decision",
+      "steps[0].variants[0].sync.pending[0].decision",
+      "steps[0].variants[1].sync.pending[0].decision",
+    ]);
     // The partial spec is still a spec.
     expect(() => parseSpec(r.spec)).not.toThrow();
     expect(r.proposals.map((p) => p.kind)).toEqual(
-      expect.arrayContaining(["base-map", "reconcile-pairs", "reconcile-leave", "grouping", "review-create", "pairing", "expect", "build"]),
+      expect.arrayContaining(["base-map", "reconcile-pairs", "grouping", "review-create", "pairing", "expect", "build"]),
     );
   });
 
@@ -355,13 +359,15 @@ describe("draftSet: proposals vs open decisions", () => {
     const spec = r.spec as unknown as Spec;
     const parallel = spec.steps[0].variants!.find((v) => v.type === "Parallel")!;
     // sl-fs is paired by the Insert sync, which apply runs first: by the
-    // Parallel sync it is held (NEO-312), so it is not pending there and gets
-    // no `leave`. sl-other is still pending in both types.
-    expect(parallel.sync!.pending).toEqual([{ side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: "leave" }]);
+    // Parallel sync it is held (NEO-312), so it is not pending there and is
+    // not asked about. sl-other is still pending (asked) in both types.
+    const asked = (j: number) =>
+      r.openDecisions.names.filter((n) => n.kind === "reconcile-unpaired" && n.at.startsWith(`steps[0].variants[${j}].`)).map((n) => n.name);
+    expect(parallel.sync!.pending).toEqual([]);
+    expect(asked(1)).toEqual(["Chrome Black Something"]);
     // The other way round too: sl-gold waits in the Insert dialog's Pending,
-    // but the Parallel type pairs it, so the Insert sync does not leave it.
-    const insert = spec.steps[0].variants!.find((v) => v.type === "Insert")!;
-    expect(insert.sync!.pending.map((p) => (p as { id: string }).id)).toEqual(["sl-other"]);
+    // but the Parallel type pairs it, so the Insert sync does not ask it.
+    expect(asked(0)).toEqual(["Chrome Black Something"]);
     // And the engine makes apply honour that order: the Parallel sync waits
     // on an open Insert sync rather than run with sl-fs unheld (collect.test.ts).
     expect(spec.steps[0].variants!.map((v) => v.type)).toEqual(["Insert", "Parallel"]);
@@ -462,6 +468,22 @@ describe("draftSet: never guesses", () => {
     expect(client.callsTo("setReconciliation:previewSetStructure")).toHaveLength(1);
     expect(client.callsTo("selectorOptions:previewCardChecklist").every((c) => (c.args.cold as { insert?: unknown }).insert)).toBe(true);
     expect(r.openDecisions.names.map((n) => n.kind)).toContain("checklist-preview");
+  });
+
+  test("a lone Base candidate the dialog would not pre-select is open with it listed, never taken as the sole candidate (NEO-339)", async () => {
+    // "Chrome Black Base Set" scores 890: a likely match, not an exact one,
+    // so the dialog selects nothing and neither does the draft.
+    const client = world({ baseSl: [["Chrome Black Base Set", "sl-x"]] });
+    const r = await drafted(client);
+    expect((r.spec as unknown as Spec).steps[0].base).toBeUndefined();
+    expect(r.openDecisions.baseCandidates).toEqual([
+      expect.objectContaining({ side: "sportlots", at: "steps[0].base.map.sportlots", candidates: [expect.objectContaining({ id: "sl-x" })] }),
+    ]);
+    const tpl = r.template as unknown as Spec;
+    // BSC's sole exact match is still the dialog's pre-selection, so it is filled.
+    expect(tpl.steps[0].base!.map).toMatchObject({ bsc: "topps-chrome-black" });
+    expect(tpl.steps[0].base!.map.sportlots).toMatch(/^<one of: sl-x \(Chrome Black Base Set\)>$/);
+    expect(r.proposals.filter((p) => p.kind === "base-map")).toEqual([]);
   });
 
   test("a name with ZERO candidates is proposed create; one with any candidate is open with them", async () => {
@@ -595,9 +617,10 @@ describe("draftSet: SportLots' brand-year-wide list stays bounded (NEO-339 live:
   test("only the set's own sets are listed, each with its name; the brand-year's other products are counted", async () => {
     const r = await drafted(world({ brandYearSl: BRAND_YEAR }));
     const spec = r.spec as unknown as Spec;
-    for (const v of spec.steps[0].variants!) {
-      expect(v.sync!.pending).toEqual([{ side: "sportlots", id: "sl-other", name: "Chrome Black Something", decision: "leave" }]);
+    for (const v of (r.template as unknown as Spec).steps[0].variants!) {
+      expect(v.sync!.pending).toEqual([expect.objectContaining({ side: "sportlots", id: "sl-other", name: "Chrome Black Something" })]);
     }
+    for (const v of spec.steps[0].variants!) expect(v.sync!.pending).toEqual([]);
     expect(r.leftUnasked.map((l) => [l.type, l.outsideScope])).toEqual([
       ["Insert", BRAND_YEAR.length + 1],
       ["Parallel", BRAND_YEAR.length + 1],
@@ -789,12 +812,13 @@ describe("pure helpers", () => {
   test("mergeDraftAnswers fills every <…> from the answers and keeps the rest from the draft", async () => {
     const r = await drafted(world());
     const answers = mergeDraftAnswers(r.template, {}) as Record<string, unknown>;
-    // With no answers, the fill-in stays.
-    expect(placeholdersIn(answers)).toHaveLength(1);
+    // With no answers, the fill-ins stay.
+    expect(placeholdersIn(answers)).toHaveLength(3);
     // A committed answers file: the template with each fill-in answered.
     const committed = structuredClone(r.template) as Spec;
     const base = committed.steps[0].base!.checklist!.review as { players: Array<{ name: string; decision: unknown }> };
     base.players[2].decision = { link: "Aaron Judge" };
+    for (const v of committed.steps[0].variants!) for (const p of v.sync!.pending as Array<{ decision: string }>) p.decision = "leave";
     const withCreds = { ...committed, credentials: { seed: ["buysportscards", "sportlots"], warm: true } };
     const merged = mergeDraftAnswers(r.template, withCreds);
     expect(placeholdersIn(merged)).toEqual([]);
@@ -962,6 +986,35 @@ describe("draftSet: Group Parallels never swallows an insert's own family (NEO-3
   });
 });
 
+describe("draftSet: a tied Group Parallels parent is the operator's (NEO-339, invariant 8)", () => {
+  // "Future-Stars" and "Future Stars" are two rows with one grouping name.
+  const tied = raw({
+    autoMatched: [
+      ["Future Stars", "fs", "Chrome Black Future Stars", "sl-fs"],
+      ["Future-Stars", "fs2", "Chrome Black Future-Stars", "sl-fs2"],
+      ["Future Stars Gold", "fs-gold", "Chrome Black Future Stars Gold", "sl-fsg"],
+    ],
+  });
+
+  test("nothing is grouped under either: an open group-parent decision listing both, as the modal suggests nothing", async () => {
+    const r = await drafted(world({ insertCandidates: tied }), { checklists: false });
+    const insert = (r.spec as unknown as Spec).steps[0].variants!.find((v) => v.type === "Insert")!;
+    expect(insert.group?.parents ?? []).toEqual([]);
+    const open = r.openDecisions.names.filter((n) => n.kind === "group-parent");
+    expect(open).toEqual([
+      expect.objectContaining({
+        at: "steps[0].variants[0].group.parents",
+        name: "Future Stars",
+        candidates: [
+          { id: "draft:0", name: "Future Stars" },
+          { id: "draft:1", name: "Future-Stars" },
+        ],
+        detail: '1 row(s) would group under "Future Stars", and another Insert row shares its name',
+      }),
+    ]);
+  });
+});
+
 describe("draftSet: a SportLots set no NB set has placed is never paired by name (NEO-339: 2023 Topps Chrome took the flagship's 1988 Topps Autos Red)", () => {
   // BSC lists the autographs under this set; the matcher paired them with the
   // flagship's SportLots set 269998, which the brand's SportLots review still holds.
@@ -1075,5 +1128,89 @@ describe("draftSet: a SportLots set no NB set has placed is never paired by name
         "the draft could not compare their cards (this draft previews no checklists)",
       );
     });
+  });
+});
+
+describe("draftSet: every unpaired set in the set's own scope is the operator's to answer (NEO-339 live: 53 silent leaves on 2023 Topps Chrome)", () => {
+  // The matcher left BSC's full-name set and SportLots' brand-dropped one apart.
+  const apart = (sl: Array<[string, string]>) =>
+    raw({
+      autoMatched: [["Future Stars", "fs", "2024 Topps Chrome Black Future Stars", "sl-fs"]],
+      bsc: [["Topps Chrome Black Authentics Relics", "b-ar"]],
+      sl,
+    });
+  const insertOf = (r: DraftedReport) => (r.spec as unknown as Spec).steps[0].variants!.find((v) => v.type === "Insert")!;
+  const unpairedAt = (r: DraftedReport, id: string) =>
+    r.openDecisions.names.find((n) => n.kind === "reconcile-unpaired" && n.at.startsWith("steps[0].variants[0].") && /^(BSC|SportLots) set (\S+) /.exec(n.detail ?? "")?.[2] === id);
+
+  test("a likely pair is the suggested candidate on both sides, checked against the cards, and never drafted", async () => {
+    const client = world({ insertCandidates: apart([["Chrome Black Authentics Relics", "sl-ar"]]) });
+    const r = await drafted(client);
+    // Neither side is paired or left: both are open, each suggesting the other.
+    expect(insertOf(r).sync!.pairs).toEqual([{ name: "Future Stars", bsc: ["fs"], sportlots: ["sl-fs"] }]);
+    expect(insertOf(r).sync!.pending).toEqual([]);
+    const bsc = unpairedAt(r, "b-ar")!;
+    const sl = unpairedAt(r, "sl-ar")!;
+    expect(bsc.candidates[0]).toMatchObject({ id: "sl-ar", name: "Chrome Black Authentics Relics" });
+    expect(bsc.candidates[0].detail).toContain("likely pair: the names read alike, and the cards agree: 2 shared card numbers, none naming different players");
+    expect(bsc.detail).toContain('Likely pair: SportLots set sl-ar ("Chrome Black Authentics Relics")');
+    expect(sl.candidates[0]).toMatchObject({ id: "b-ar" });
+    // The evidence is the pair's own preview, both ids.
+    const sent = client.callsTo("selectorOptions:previewCardChecklist").map((c) => (c.args.cold as { insert?: unknown }).insert);
+    expect(sent).toContainEqual({ bscVariantNameIds: ["b-ar"], sportlotsIds: ["sl-ar"] });
+    const tpl = (r.template as unknown as Spec).steps[0].variants![0].sync!.pending as Array<{ id: string; decision: string }>;
+    expect(tpl.find((p) => p.id === "b-ar")!.decision).toContain('likely pair: SportLots sl-ar ("Chrome Black Authentics Relics")');
+    expect(r.confirmPhrase).toBeNull();
+  });
+
+  test("a tie suggests nothing: both alike names are listed, neither is the likely pair", async () => {
+    const r = await drafted(
+      world({ insertCandidates: apart([["Chrome Black Authentics Relics", "sl-ar"], ["Chrome Black Authentics Relics", "sl-ar2"]]) }),
+    );
+    const bsc = unpairedAt(r, "b-ar")!;
+    expect(bsc.candidates.map((c) => c.id)).toEqual(["sl-ar", "sl-ar2"]);
+    expect(bsc.candidates.every((c) => !c.detail?.startsWith("likely pair"))).toBe(true);
+    expect(bsc.detail).not.toContain("Likely pair");
+  });
+
+  test("cards that disagree demote the name match: listed with the evidence, never suggested", async () => {
+    const r = await drafted(
+      world({
+        insertCandidates: apart([["Chrome Black Authentics Relics", "sl-ar"]]),
+        insertPreview: (a) => {
+          const insert = (a.cold as { insert?: { sportlotsIds?: string[] } }).insert;
+          if (!insert?.sportlotsIds?.includes("sl-ar")) return undefined;
+          return {
+            ...preview([]),
+            matched: [
+              { confidence: 1, card: { ...card({ num: "AR-1", players: ["Aaron Judge"], bsc: "x1", sl: "y1" }), playersConflict: { bsc: ["Aaron Judge"], sportlots: ["Andruw Jones"] } } },
+            ],
+          };
+        },
+      }),
+    );
+    const bsc = unpairedAt(r, "b-ar")!;
+    expect(bsc.candidates[0].detail).toContain("the names read alike, but the cards do not confirm it: 1 of 1 shared card number names different players");
+    expect(bsc.detail).not.toContain("Likely pair");
+  });
+
+  test("answered leave, own-set or by pairing in the template, the spec plans; the answers merge by id", () => {
+    const tpl = {
+      version: 1,
+      steps: [{ variants: [{ sync: { pending: [
+        { side: "bsc", id: "a", name: "A", decision: "<\"leave\" | \"own-set\"> — A" },
+        { side: "sportlots", id: "b", name: "B", decision: "<\"leave\" | \"own-set\"> — B" },
+      ] } }] }],
+    };
+    // Another writer took a set out of Pending, so the answers list them in another order.
+    const answers = { version: 1, steps: [{ variants: [{ sync: { pending: [
+      { side: "sportlots", id: "b", decision: "leave" },
+      { side: "bsc", id: "a", decision: "own-set" },
+    ] } }] }] };
+    const merged = mergeDraftAnswers(tpl, answers) as typeof tpl;
+    expect(merged.steps[0].variants[0].sync.pending.map((p) => [p.id, p.decision])).toEqual([["a", "own-set"], ["b", "leave"]]);
+    // A set the answers do not name keeps its fill-in: never another set's answer.
+    const partial = mergeDraftAnswers(tpl, { steps: [{ variants: [{ sync: { pending: [{ side: "bsc", id: "a", decision: "leave" }] } }] }] });
+    expect(placeholdersIn(partial)).toEqual(["steps[0].variants[0].sync.pending[1].decision"]);
   });
 });

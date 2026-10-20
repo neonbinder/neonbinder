@@ -1,6 +1,11 @@
 /**
  * NEO-339 — card evidence for a name-only Reconcile pair.
  *
+ * Shared (lib/set-build): the rule is the Set Builder's, not the set-building
+ * tool's. The tool's draft applies it today (tools/setbuild/runner/draft.ts);
+ * anything the web Reconcile dialog does with a name-only pair must read the
+ * same function.
+ *
  * The server's matcher (`computeMatches`) pairs a BSC set with a SportLots
  * set by label similarity. SportLots names no product for a set, and a
  * brand's SportLots review often does not exist, so a label match can pair

@@ -21,6 +21,8 @@ vi.mock("../../convex/_generated/api", () => ({
     selectorOptions: {
       getInsertTreeByVariantType: "getInsertTreeByVariantType",
       applyParallelGroupings: "applyParallelGroupings",
+      getSlotCardCounts: "getSlotCardCounts",
+      previewCardChecklist: "previewCardChecklist",
     },
   },
 }));
@@ -28,10 +30,25 @@ vi.mock("../../convex/_generated/api", () => ({
 const mockApply = vi.fn().mockResolvedValue(undefined);
 let tree: unknown = undefined;
 
+/**
+ * NEO-339 — the client the card-number check reads through
+ * (`familyRootEvidence.ts`): `getSlotCardCounts` and `previewCardChecklist`
+ * by row. Nothing reaches it unless a test presses "Check card numbers".
+ */
+const mockClientQuery = vi.fn(async (_ref: string, _args: unknown) => ({ total: 0 }));
+const mockClientAction = vi.fn(async (_ref: string, _args: unknown): Promise<unknown> => ({
+  success: false,
+  matched: [],
+  bscOnly: [],
+  slOnly: [],
+}));
+const mockConvex = { query: mockClientQuery, action: mockClientAction };
+
 vi.mock("convex/react", () => ({
   useMutation: () => mockApply,
   useQuery: (ref: string) =>
     ref === "getInsertTreeByVariantType" ? tree : undefined,
+  useConvex: () => mockConvex,
 }));
 
 /**
@@ -1255,5 +1272,175 @@ describe("ParallelGroupingModal — a save larger than one transaction", () => {
     expect(screen.getByRole("alert").textContent).toBe(refusal);
     // No rebuild — the two pending moves are exactly as staged.
     expect(screen.getByText("Save 2 changes")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-339 — the modal follows the set-building draft's two grouping rules,
+ * from the shared code (lib/set-build/grouping.ts, family-roots.ts): a
+ * suggested parent whose name another row shares is a tie and suggests
+ * nothing, and a suggested parallel that roots its own family stands on its
+ * own when its card numbers share none with its parent. The card numbers are
+ * read only when the operator asks.
+ */
+describe("ParallelGroupingModal — the draft's grouping rules (NEO-339)", () => {
+  const boxTitle = (name: string) => `Parallels of "${name}"`;
+  const zoneOf = (name: string) =>
+    screen.getByText(boxTitle(name)).parentElement!.parentElement as HTMLElement;
+  const rowOf = (name: string) => screen.getByRole("group", { name });
+  const flat = (...names: string[]) =>
+    names.map((value) => ({ insert: { _id: value, value, lastUpdated: 1, platformData: {} }, parallels: [] }));
+  const checkButton = () => screen.queryByRole("button", { name: "Check card numbers" });
+  const strip = () =>
+    [...document.querySelectorAll('[role="status"]')].find((el) => /card numbers|parallels of its own/i.test(el.textContent ?? ""))
+      ?.textContent ?? "";
+
+  const FS = "Future Stars";
+  const FSA = "Future Stars Autographs";
+  const FAMILY = [FS, `${FS} Red`, FSA, `${FSA} Red`, `${FSA} Orange`];
+
+  /** A preview per row: the autographs are FSA-n unless `shared`. */
+  function previewsBy(o: { shared?: boolean; failFor?: string } = {}) {
+    mockClientAction.mockImplementation(async (_ref, args) => {
+      const id = (args as { selectorOptionId: string }).selectorOptionId;
+      if (id === o.failFor) return { success: false, matched: [], bscOnly: [], slOnly: [] };
+      const autos = id.startsWith(FSA) && !o.shared;
+      return {
+        success: true,
+        matched: [{ card: { cardNumber: autos ? "FSA-1" : "FS-1" }, confidence: 1 }],
+        bscOnly: [{ cardNumber: autos ? "FSA-2" : "FS-2" }],
+        slOnly: [],
+      };
+    });
+  }
+
+  async function pressCheck() {
+    await act(async () => {
+      fireEvent.click(checkButton()!);
+    });
+  }
+
+  beforeEach(async () => {
+    const { clearFamilyRootPreviewCache } = await import("./familyRootEvidence");
+    clearFamilyRootPreviewCache();
+    mockClientQuery.mockClear();
+    mockClientAction.mockReset();
+    mockClientQuery.mockImplementation(async () => ({ total: 0 }));
+  });
+
+  test("a tie: a parent whose name another row shares suggests nothing, so the operator picks", () => {
+    tree = [
+      ...flat("Gold", "Gold Refractor"),
+      // Another "Gold", saved as a parallel elsewhere: the same name twice.
+      { insert: { _id: "chrome", value: "Chrome" }, parallels: [{ _id: "gold-2", value: "Gold" }] },
+    ];
+    renderModal();
+    expect(screen.queryByText("Suggested")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Accept all suggestions/ })).toBeNull();
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+    // Still top level, not under either Gold.
+    expect(within(zoneOf("Gold")).queryByText("Gold Refractor")).toBeNull();
+    expect(rowOf("Gold Refractor")).toBeTruthy();
+  });
+
+  test("a family root opens on the plain prefix rule, offers the check, and reads nothing until asked", () => {
+    tree = flat(...FAMILY);
+    renderModal();
+    for (const name of FAMILY.slice(1)) expect(within(zoneOf(FS)).getByText(name)).toBeTruthy();
+    expect(strip()).toBe(
+      "1 suggested parallel has parallels of its own, so it might be an insert. Its card numbers will tell.",
+    );
+    expect(checkButton()).toBeTruthy();
+    expect(mockClientQuery).not.toHaveBeenCalled();
+    expect(mockClientAction).not.toHaveBeenCalled();
+  });
+
+  test("no shared card number: the root comes back up with its own parallels under it, still suggested", async () => {
+    tree = flat(...FAMILY);
+    previewsBy();
+    renderModal();
+    checkButton()!.focus();
+    await pressCheck();
+
+    expect(within(zoneOf(FS)).getByText(`${FS} Red`)).toBeTruthy();
+    expect(within(zoneOf(FS)).queryByText(FSA)).toBeNull();
+    expect(within(zoneOf(FSA)).getByText(`${FSA} Red`)).toBeTruthy();
+    expect(within(zoneOf(FSA)).getByText(`${FSA} Orange`)).toBeTruthy();
+    expect(within(rowOf(`${FSA} Red`)).getByText("Suggested")).toBeTruthy();
+    expect(within(rowOf(FSA)).queryByText("Suggested")).toBeNull();
+    expect(strip()).toBe(
+      "Card numbers checked: 1 suggested parallel is an insert of its own, so it stays on top with its parallels under it.",
+    );
+    // Only the root and its parent were read, by row, with no team lookups.
+    expect(mockClientAction.mock.calls.map(([ref, args]) => [ref, args])).toEqual([
+      ["previewCardChecklist", { selectorOptionId: FS }],
+      ["previewCardChecklist", { selectorOptionId: FSA }],
+    ]);
+    // The button went with the check; focus stays in the dialog.
+    expect(checkButton()).toBeNull();
+    expect(document.activeElement).toBe(heading());
+  });
+
+  test("a shared card number leaves the prefix rule's grouping as it was", async () => {
+    tree = flat(...FAMILY);
+    previewsBy({ shared: true });
+    renderModal();
+    await pressCheck();
+    for (const name of FAMILY.slice(1)) expect(within(zoneOf(FS)).getByText(name)).toBeTruthy();
+    expect(strip()).toBe("Card numbers checked: none is an insert of its own, so the suggestions stand.");
+  });
+
+  test("a preview that fails is no evidence: the name match stands", async () => {
+    tree = flat(...FAMILY);
+    previewsBy({ failFor: FSA });
+    renderModal();
+    await pressCheck();
+    expect(within(zoneOf(FS)).getByText(FSA)).toBeTruthy();
+    expect(strip()).toBe(
+      "Card numbers checked: none is an insert of its own, so the suggestions stand. 1 couldn't be compared and keeps its name match.",
+    );
+  });
+
+  test("a row already holding cards is no evidence and is never previewed", async () => {
+    tree = flat(...FAMILY);
+    previewsBy();
+    mockClientQuery.mockImplementation(async (_ref, args) => ({
+      total: (args as { selectorOptionId: string }).selectorOptionId === FSA ? 40 : 0,
+    }));
+    renderModal();
+    await pressCheck();
+    expect(within(zoneOf(FS)).getByText(FSA)).toBeTruthy();
+    expect(mockClientAction.mock.calls.map(([, args]) => args)).toEqual([{ selectorOptionId: FS }]);
+    expect(strip()).toMatch(/1 couldn't be compared and keeps its name match\.$/);
+  });
+
+  test("a row the operator moved while the check ran keeps their call", async () => {
+    tree = flat(...FAMILY);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    previewsBy();
+    const answer = mockClientAction.getMockImplementation()!;
+    mockClientAction.mockImplementation(async (ref, args) => {
+      await gate;
+      return answer(ref, args);
+    });
+    renderModal();
+    act(() => {
+      fireEvent.click(checkButton()!);
+    });
+    expect(strip()).toMatch(/^Checking card numbers…/);
+    expect(checkButton()!.getAttribute("aria-disabled")).toBe("true");
+    // The operator sends the root back to the top level by hand.
+    fireEvent.click(screen.getByLabelText(`Remove ${FSA} from parallels`));
+    await act(async () => {
+      release();
+      await gate;
+    });
+    await act(async () => {});
+    // The root is where the operator put it, and its family stays where the
+    // prefix rule put it: nothing moved under a row the operator handled.
+    expect(within(zoneOf(FS)).queryByText(FSA)).toBeNull();
+    expect(within(zoneOf(FS)).getByText(`${FSA} Red`)).toBeTruthy();
+    expect(within(zoneOf(FSA)).queryByText(`${FSA} Red`)).toBeNull();
   });
 });

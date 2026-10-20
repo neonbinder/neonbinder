@@ -306,7 +306,7 @@ describe("runOneshotSequence", () => {
     const checks = await run(service);
     const draft = checks.find((c) => c.label === "nb_draft_set")!;
     expect(draft.ok).toBe(false);
-    expect(draft.detail).toContain("1 open decision(s), 0 of them card conflicts / review names for the committed spec to answer; 1 the draft should have settled (Base sportlots at steps[0].base.map.sportlots)");
+    expect(draft.detail).toContain("1 open decision(s), 0 of them card conflicts / review names / unpaired sets for the committed spec to answer; 1 the draft should have settled (Base sportlots at steps[0].base.map.sportlots)");
     expect(service.write.apply).not.toHaveBeenCalled();
   });
 
@@ -332,6 +332,25 @@ describe("runOneshotSequence", () => {
     expect(ok.find((c) => c.label === "draft + answers")).toMatchObject({ ok: true });
     // The committed spec without the answer leaves a fill-in: fail.
     const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: DRAFTED, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
+    expect(bad.find((c) => c.label === "draft + answers")).toMatchObject({ ok: false, detail: expect.stringContaining("leaves 1 fill-in") });
+  });
+
+  test("an unpaired set the draft asks about is the operator's: answered by the committed spec's leave, it passes; unanswered, it fails", async () => {
+    const asked = { ...none(), names: [{ at: "steps[0].variants[0].sync.pending[0]", kind: "reconcile-unpaired", name: "X", candidates: [] }] };
+    const template = structuredClone(DRAFTED);
+    (template.steps[0].variants[0].sync.pending as Array<Record<string, unknown>>) = [
+      { side: "sportlots", id: "sl-x", name: "X", decision: '<"leave" | "own-set"> — X' },
+    ];
+    const spec = structuredClone(DRAFTED);
+    spec.steps[0].variants[0].sync.pending = [];
+    const service = fakeService({ open: asked, spec });
+    (service.read.draftSet as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "drafted", spec, template, openDecisions: asked, proposals: [], marketplaceCalls: 1, durationMs: 1 });
+    const ok = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: ANSWERS, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
+    expect(ok.find((c) => c.label === "nb_draft_set")).toMatchObject({ ok: true, detail: expect.stringContaining("1 open decision(s), 1 of them") });
+    expect(ok.find((c) => c.label === "draft + answers")).toMatchObject({ ok: true });
+    const noAnswer = structuredClone(ANSWERS);
+    noAnswer.steps[0].variants[0].sync.pending = [];
+    const bad = await runOneshotSequence(await connect(service), { answersPath: "/oneshot.spec.json", answers: noAnswer, expect: EXPECT, confirm: PHRASE, resolveDrill: knownResolver(), readAutographRow: READ_OK });
     expect(bad.find((c) => c.label === "draft + answers")).toMatchObject({ ok: false, detail: expect.stringContaining("leaves 1 fill-in") });
   });
 

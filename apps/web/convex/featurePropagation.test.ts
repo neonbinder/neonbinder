@@ -1153,12 +1153,14 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     );
 
     expect(card.listingTitleTruncated).toBe(true);
-    // Still a VALID, listable title — cut at a whole word, no ellipsis, card
-    // number intact. The flag says "a human should put the missing words
-    // back", not "this is broken".
+    // Still a VALID, listable title — no ellipsis, within the cap. The flag
+    // says "a human should put the missing words back", not "this is
+    // broken". Jason, 2026-10-19: the player is never dropped and the card
+    // number may be, so the 76-character name is the whole title and the
+    // number is what the operator is asked to put back.
     expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
     expect(card.listingTitle).not.toContain("…");
-    expect(card.listingTitle!.endsWith("#99999")).toBe(true);
+    expect(card.listingTitle).toBe(hugeName);
   });
 
   test("a card whose core fits omits listingTitleTruncated entirely", async () => {

@@ -325,6 +325,41 @@ describe("builtText — the per-side, never-summed phrasing", () => {
       "Rebuilt 5 cards, 2 without a BSC card, 1 matched more than one SportLots card, 3 left off — not on either marketplace's list",
     );
   });
+
+  /**
+   * NEO-339 — copied nothing while the parallel's marketplaces list cards:
+   * not one shares a number with the source, so it is probably its own
+   * insert. Said as that decision, with the way forward, on a first build and
+   * a rebuild alike (the set-building tool stops on the same signal).
+   */
+  test("no shared numbers says so, names the source and what to do", () => {
+    const result = {
+      ...builtResult(),
+      copied: 0,
+      notCopied: 48,
+      extraOnMarketplace: {
+        bsc: { count: 12, cards: [] },
+        sportlots: { count: 0, cards: [] },
+      },
+    } as ParallelBuildResult;
+    const text =
+      "No shared numbers — this parallel's marketplaces list 12 cards, but none share a number with Base. " +
+      "It's probably its own insert, not a parallel: file it with “Make insert of…” on its row, or take it out of Base's parallels";
+    expect(builtText(result, "Base")).toBe(text);
+    expect(builtText({ ...result, rebuilt: true }, "Base")).toBe(text);
+    // The fixture fetched BSC only, which the notice says after the line.
+    expect(buildNotice(result, "Gold Wave", "Base").text).toBe(`Gold Wave — ${text}. BSC only.`);
+  });
+
+  test("copied nothing and listed nothing keeps the plain 'Nothing copied' line", () => {
+    const result = {
+      ...builtResult(),
+      copied: 0,
+      notCopied: 4,
+      extraOnMarketplace: { bsc: { count: 0, cards: [] }, sportlots: { count: 0, cards: [] } },
+    } as ParallelBuildResult;
+    expect(builtText(result, "Anime")).toMatch(/^Nothing copied — none of Anime's 4 cards/);
+  });
 });
 
 function baseRun(overrides: Partial<ParallelRun> = {}): ParallelRun {

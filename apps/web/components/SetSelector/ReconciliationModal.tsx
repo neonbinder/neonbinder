@@ -934,6 +934,12 @@ function ReconciliationDialog({
    * offer to discard the work being saved.
    */
   const [discardOpen, setDiscardOpen] = useState(false);
+  /**
+   * NEO-339 — is the "leave these unpaired?" step on screen? Save never
+   * leaves the set's own Pending sets behind silently (the set-building
+   * tool's rule too): the operator leaves them on purpose, or goes back.
+   */
+  const [leaveOpen, setLeaveOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   /** What had focus before this opened, so it can go back there on close
    *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
@@ -1000,6 +1006,20 @@ function ReconciliationDialog({
       (item) => !usedBscSet.has(item.platformValue),
     );
   }, [state.pendingBsc, usedBscSet]);
+
+  // NEO-339 — the set's own sets nobody has paired: every BSC set this level
+  // lists, and every SportLots set inside the default prefix filter (the
+  // same scope the set-building tool asks about, whatever "Show all" shows).
+  // Save asks about these before it leaves them in Pending.
+  const unpairedInScope = useMemo(() => {
+    const prefixes = showAllSlInitially ? [] : defaultSlPrefixes;
+    return [
+      ...scopedPendingBsc.map((item) => ({ side: "bsc" as const, item })),
+      ...state.pendingSl
+        .filter((item) => !usedSlSet.has(item.platformValue) && inSlPrefixScope(item.value, prefixes))
+        .map((item) => ({ side: "sl" as const, item })),
+    ];
+  }, [scopedPendingBsc, state.pendingSl, usedSlSet, showAllSlInitially, defaultSlPrefixes]);
 
   const queriedPendingBsc = useMemo(() => {
     if (!bscQuery) return scopedPendingBsc;
@@ -1515,7 +1535,7 @@ function ReconciliationDialog({
     [resolveItem, refocusColumn],
   );
 
-  const handleConfirm = useCallback(async () => {
+  const handleConfirm = useCallback(async (opts: { leaveAcknowledged?: boolean } = {}) => {
     // NEO-325: Save is aria-disabled (not removed from the tab order) while
     // titles clash, so a press still arrives here. It must not save; it
     // takes the operator to the first title that needs a new name instead
@@ -1524,6 +1544,11 @@ function ReconciliationDialog({
       dialogRef.current
         ?.querySelector<HTMLElement>('input[aria-invalid="true"]')
         ?.focus();
+      return;
+    }
+    // NEO-339: the set's own sets still in Pending are asked about first.
+    if (!opts.leaveAcknowledged && unpairedInScope.length > 0) {
+      setLeaveOpen(true);
       return;
     }
     setConfirming(true);
@@ -1538,7 +1563,7 @@ function ReconciliationDialog({
     } finally {
       setConfirming(false);
     }
-  }, [state, onConfirm, saveBlockedByTitles]);
+  }, [state, onConfirm, saveBlockedByTitles, unpairedInScope]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -2031,7 +2056,7 @@ function ReconciliationDialog({
           // The discard confirm owns Escape while it is open. It is a sibling
           // in this portal rather than a descendant, so its own keypresses
           // never reach here; this covers focus left behind it.
-          if (discardOpen) return;
+          if (discardOpen || leaveOpen) return;
           // D8: inside a text field Escape already means something smaller —
           // clear the filter, revert the title — and those handlers stop
           // propagation. Anything arriving here from a field is a field with
@@ -2253,7 +2278,7 @@ function ReconciliationDialog({
             Cancel
           </NeonButton>
           <NeonButton
-            onClick={handleConfirm}
+            onClick={() => void handleConfirm()}
             disabled={confirming || saveCount === 0}
             // aria-disabled, not disabled: a disabled button leaves the tab
             // order, and the reason it is unavailable would be unreachable
@@ -2283,6 +2308,37 @@ function ReconciliationDialog({
     {/* NEO-220 — a SIBLING of the overlay, not a child of it. This overlay
         closes on backdrop click; a confirm nested inside it would hand its own
         backdrop click straight to the thing it is protecting. */}
+    {leaveOpen && (
+      <ConfirmDialog
+        title={`Leave ${plural(unpairedInScope.length, "set")} unpaired?`}
+        description={
+          "These are this set's own, and nothing pairs them yet. Save now and they stay in Pending with no NB row, " +
+          "so nothing can be listed under them. Go back to pair them or make them their own sets, or leave them on purpose."
+        }
+        confirmLabel={`Leave them, save ${plural(saveCount, "set")}`}
+        busyLabel="Saving..."
+        busy={confirming}
+        childrenLabel="Sets left in Pending"
+        onConfirm={() => {
+          setLeaveOpen(false);
+          void handleConfirm({ leaveAcknowledged: true });
+        }}
+        onCancel={() => setLeaveOpen(false)}
+      >
+        <ul className="divide-y divide-slate-800 text-sm">
+          {unpairedInScope.map(({ side, item }) => (
+            <li key={`${side}:${item.platformValue}`} className="flex items-baseline justify-between gap-3 px-3 py-2">
+              {/* A twin carries its id, as everywhere else in the dialog:
+                  two "Chrome Update Sapphire" rows must not read the same. */}
+              <span className="text-foreground">
+                <ItemName item={item} side={side} dups={dups} />
+              </span>
+              <span className="shrink-0 text-xs text-slate-400">{side === "bsc" ? "BSC" : "SportLots"}</span>
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
+    )}
     {discardOpen && (
       <ConfirmDialog
         title={`Discard ${plural(pendingEdits, "set change")}?`}

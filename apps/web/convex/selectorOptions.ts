@@ -41,7 +41,7 @@ import {
   generateListingDescription,
   type ListingCardInputs,
 } from "./features/generateListing";
-import { LISTING_TITLE_MAX } from "./features/listingLimits";
+import { listingTitleRefusal } from "../lib/cards/listing-title-gate";
 import {
   checkTitleAnswer,
   listingInputsForCard,
@@ -5968,11 +5968,12 @@ export const updateCard = mutation({
 
     if (typeof filtered.listingTitle === "string") {
       const trimmedTitle = filtered.listingTitle.trim();
-      if (trimmedTitle.length > LISTING_TITLE_MAX) {
-        throw new ConvexError(
-          `Listing title is ${trimmedTitle.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
-        );
-      }
+      // NEO-339 — and never BLANK. A card with no title cannot be listed, and
+      // a cleared one used to save silently. One rule for this mutation, the
+      // fixer, the drawer and the set-building tool (`lib/cards/
+      // listing-title-gate.ts`), with the over-length sentence unchanged.
+      const titleRefusal = listingTitleRefusal(trimmedTitle);
+      if (titleRefusal) throw new ConvexError(titleRefusal);
       filtered.listingTitle = trimmedTitle;
       // A human has now authored this title, so whether the GENERATOR's core
       // fit is no longer a question anyone is asking — `undefined` in a patch
@@ -6119,6 +6120,33 @@ export const updateCard = mutation({
       // operator unlinking every team, which leaves the typed name as the only
       // thing the row still knows about its team.
       filtered.pendingTeamNames = undefined;
+    }
+
+    // NEO-339 — a side's typed names are retired only by LINKING that side
+    // (`UnreviewedNameFixer`'s `clearsCard`, shared with the set-building tool
+    // in `lib/set-build/unreviewed-name-gate.ts`). A write that drops typed
+    // names while the side ends up with no link would make the card look
+    // answered with nothing on it — the half-answer that gate exists to stop —
+    // so it is refused here too, whoever sent it. Runs after the derived team
+    // clear above, which is itself a link.
+    for (const side of ["player", "team"] as const) {
+      const key = side === "player" ? "pendingPlayerNames" : "pendingTeamNames";
+      const written = filtered[key];
+      if (!Array.isArray(written)) continue;
+      const stored = (await loadStoredCard())[key] ?? [];
+      // Compared trimmed: `normalizePendingNames` above trims what was sent.
+      const kept = new Set((written as string[]).map((name) => name.trim()));
+      const dropsNames = stored.some((name) => name.trim() !== "" && !kept.has(name.trim()));
+      if (!dropsNames) continue;
+      const linkKey = side === "player" ? "playerIds" : "teamOnCardIds";
+      const ids = Array.isArray(filtered[linkKey])
+        ? (filtered[linkKey] as unknown[])
+        : ((await loadStoredCard())[linkKey] ?? []);
+      if (ids.length === 0) {
+        throw new ConvexError(
+          `Link a ${side} to this card before clearing the ${side} names typed on it.`,
+        );
+      }
     }
 
     // NEO-221 — an explicitly-emptied pending-name list is stored as the
@@ -21680,12 +21708,20 @@ export const commitCardChecklist = action({
     // an older or newer bundle's shape through to a readable error here, not to
     // fail with `ArgumentValidationError` at the last step of a 900-card
     // review. The card NUMBER is NB's own value; no marketplace text is echoed.
+    //
+    // NEO-339 — and the NAME conflict on the same terms. The Match Cards
+    // dialog (and the set-building tool, through the same reducer) now
+    // refuses Confirm while either disagreement is unanswered
+    // (`openPairingConflicts`), so a card arriving here still carrying one is
+    // a client that skipped that question.
     for (const [index, card] of args.cards.entries()) {
-      if (!card.playersConflict) continue;
+      if (!card.playersConflict && !card.nameConflict) continue;
       throw new ConvexError(
         `commitCardChecklist: ${
           card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
-        } still carries an unsettled players conflict. Settle it in the pairing dialog before committing.`,
+        } still carries an unsettled ${
+          card.playersConflict ? "players" : "name"
+        } conflict. Settle it in the pairing dialog before committing.`,
       );
     }
     // NEO-335 — the "Card titles" answers, held to the write path's caps before

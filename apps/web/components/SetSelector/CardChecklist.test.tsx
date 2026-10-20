@@ -3819,6 +3819,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(mockFindOrCreateTeam).toHaveBeenCalledWith({
       name: "Savannah Bananas",
       sportId: SPORT_ID,
+      createOnly: true,
     });
     // The picker's own "createAndAdd" chips it immediately — same as picking
     // an existing match.
@@ -4251,6 +4252,7 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
     expect(mockFindOrCreatePlayer).toHaveBeenCalledWith({
       name: "Rookie Nobody",
       sportId: SPORT_ID,
+      createOnly: true,
     });
     expect(screen.getByLabelText("Player: Rookie Nobody")).toBeTruthy();
 
@@ -5074,7 +5076,11 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     state.skippedNames = [];
   });
 
-  /** Stream one conflicted matched candidate and press Confirm. */
+  /**
+   * Stream one conflicted matched candidate, answer it with the merge's own
+   * default (NEO-339: Confirm holds until every conflict is answered), and
+   * press Confirm.
+   */
   async function confirmConflictedPairing() {
     state.liveCandidates = {
       ready: 1,
@@ -5108,21 +5114,21 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
     });
   }
 
-  it("hands the diff both marketplaces' rosters", async () => {
+  it("a row answered with the merge's default reaches the diff as a decision, with no conflict on it", async () => {
     await confirmConflictedPairing();
 
     await waitFor(() => expect(mockDiffChecklist).toHaveBeenCalled());
     const [, args] = mockDiffChecklist.mock.calls[0];
-    expect(args.cards[0].playersConflict).toEqual({
-      bsc: ["Mike Yastrzemski"],
-      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
-    });
-    // The card still carries the merge's default, exactly as the server sent
-    // it — the conflict ADDS the loser, it does not swap the winner.
+    // NEO-339: every conflict is answered before Confirm, and an answered row
+    // is a decision the diff must see — so nothing suppresses it.
+    expect(args.cards[0].playersConflict).toBeUndefined();
     expect(args.cards[0].players).toEqual(["Mike Yastrzemski"]);
   });
 

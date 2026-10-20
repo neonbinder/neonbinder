@@ -64,8 +64,23 @@ import {
   deriveCardAttention,
   type AttentionKind,
 } from "../../../components/SetSelector/card-attention";
-import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX, titleLengthState } from "../../../components/SetSelector/TitleLengthMeter";
+import { ASPECT_VALUE_MAX, titleLengthState } from "../../../components/SetSelector/TitleLengthMeter";
 import { teamOptionLabel } from "../../../lib/teams/team-era";
+import {
+  entityExistsRefusal,
+  existingPlayerLabel,
+  existingTeamLabel,
+  playerCreateRefusal,
+  playerExistsText,
+  teamExistsText,
+} from "../../../lib/entities/entity-exists";
+import { listingTitleRefusal } from "../../../lib/cards/listing-title-gate";
+import {
+  NOTHING_TO_CHANGE,
+  unreviewedNameGate,
+  unreviewedNameSidesOpen,
+  unreviewedNameWrite,
+} from "../../../lib/set-build/unreviewed-name-gate";
 import { teamFullName } from "../../../lib/teams/team-name";
 import type { NbClient } from "../client/convex-client";
 import { ResolveError, type ResolveCandidate } from "../service";
@@ -365,26 +380,31 @@ export async function resolvePlayerAnswer(client: NbClient, sportId: Id<"selecto
     const refuse = (message: string): never => {
       throw new ResolveError({ kind: "player", query: name, at, candidates: exact.map(playerCandidate), message });
     };
-    if (exact.length === 1) {
-      refuse(`"${name}" is already a player in this sport; link that player with { "link": "${name}" } instead of creating one.`);
-    }
-    if (exact.length > 1) {
-      if (birthYear === undefined) {
+    // The rule is the server's own (`playerCreateRefusal`, which
+    // `players.findOrCreate` enforces under `createOnly`); this is the plan's
+    // read-only look at it, so a refused create is reported before any write.
+    switch (playerCreateRefusal(exact, birthYear, PLAYER_LINK_SCAN_LIMIT)) {
+      case "sameName":
+        refuse(`"${name}" is already a player in this sport; link that player with { "link": "${name}" } instead of creating one.`);
+        break;
+      case "noBirthYear":
         refuse(
           `"${name}" already names ${exact.length} players; link one with { "link", "birthYear" } (born ${birthYearsText(exact)}), or add the new player's birthYear.`,
         );
-      }
-      if (exact.length >= PLAYER_LINK_SCAN_LIMIT) {
+        break;
+      case "tooMany":
         refuse(`"${name}" matches ${exact.length} or more players, too many to check birthYear ${birthYear} against all of them.`);
-      }
-      if (exact.some((h) => h.birthYear === birthYear)) {
+        break;
+      case "sameBirthYear":
         refuse(`A player named "${name}" born ${birthYear} is already on file; link that player with { "link", "birthYear" } instead of creating one.`);
-      }
-      if (exact.some((h) => h.birthYear === undefined)) {
+        break;
+      case "undatedRival":
         refuse(
           `"${name}" already names ${exact.length} players and one has no birth year on file, so a new one cannot be told apart from it; link one with { "link", "birthYear" }.`,
         );
-      }
+        break;
+      case null:
+        break;
     }
     return { kind: "create", name, ...(birthYear !== undefined ? { birthYear } : {}), onFile: exact.map((h) => String(h._id)) };
   }
@@ -500,6 +520,17 @@ function isRefusal(err: unknown): boolean {
 export function refusalText(err: unknown, subject?: string): string {
   const data = (err as { data?: unknown } | null)?.data;
   if (typeof data === "string") return data;
+  // NEO-339 — a create the server refused because the name is on file: its
+  // own sentence, plus how to answer with the row instead.
+  const exists = entityExistsRefusal(err);
+  if (exists?.code === "PLAYER_EXISTS") {
+    const rows = exists.players.map(existingPlayerLabel).join("; ");
+    return `${playerExistsText(exists)} On file: ${rows}. Answer with { "link", "birthYear" } instead of creating one.`;
+  }
+  if (exists?.code === "TEAM_EXISTS") {
+    const rows = exists.teams.map(existingTeamLabel).join("; ");
+    return `${teamExistsText(exists)} On file: ${rows}. Answer with that team instead of creating one.`;
+  }
   if (isObj(data) && data.code === "TEAM_ERA_EXISTS") {
     const eras = Array.isArray(data.eras) ? (data.eras as Array<{ years?: string }>).map((e) => e.years || "no years").join(", ") : "";
     return `"${subject ?? "That team"}" already names a team in this sport (${eras}); answer with that team instead of creating one.`;
@@ -623,11 +654,10 @@ async function applyOne(client: NbClient, set: ResolvedSet, r: ResolvedAnswer, c
         return done(answered, "refused", "This card's variation is not flagged; send the title alone.");
       }
       const trimmed = title.trim();
-      if (trimmed === "") return done(answered, "refused", "A card title can't be blank.");
-      if (trimmed.length > LISTING_TITLE_MAX) {
-        // The server's own sentence (`updateCard`), said before the write.
-        return done(answered, "refused", `Listing title is ${trimmed.length} characters; the limit is ${LISTING_TITLE_MAX}.`);
-      }
+      // The server's own rule and sentences (`updateCard`, through
+      // lib/cards/listing-title-gate.ts), said before the write.
+      const titleRefusal = listingTitleRefusal(trimmed);
+      if (titleRefusal) return done(answered, "refused", titleRefusal);
       const v = variation?.trim();
       await client.mutation(api.selectorOptions.updateCard, {
         id: r.cardId,
@@ -691,9 +721,9 @@ async function teamIdsOf(client: NbClient, set: ResolvedSet, plans: readonly Tea
       ids.push(p.id);
       continue;
     }
-    // Re-read at write time: a team created since the answer resolved would
-    // be handed back by find-or-create instead of a new one.
-    const before = (await client.query(api.teams.erasByNameAndSport, { name: p.fullName, sportId: set.sportId })).map((e) => String(e._id));
+    // `createOnly`: the server refuses (TEAM_EXISTS) rather than hand back a
+    // team on file — including one created since the answer resolved — so a
+    // create can never link (NEO-339). Atomic, unlike a re-read before it.
     let id: Id<"teams">;
     try {
       id = await client.mutation(api.teams.findOrCreate, {
@@ -701,13 +731,11 @@ async function teamIdsOf(client: NbClient, set: ResolvedSet, plans: readonly Tea
         sportId: set.sportId,
         ...(p.location ? { location: p.location } : {}),
         ...(p.league ? { leagueName: p.league } : {}),
+        createOnly: true,
       });
     } catch (err) {
       if (isRefusal(err)) throw new Refused(refusalText(err, p.fullName));
       throw err;
-    }
-    if (before.includes(String(id)) || p.onFile.includes(String(id))) {
-      throw new Refused(`"${p.fullName}" is already a team in this sport; answer with that team instead of creating one.`);
     }
     created.push({ kind: "team", name: p.fullName, id: String(id) });
     ids.push(id);
@@ -722,21 +750,19 @@ async function playerIdsOf(client: NbClient, set: ResolvedSet, plans: readonly P
       ids.push(p.id);
       continue;
     }
+    // `createOnly`: the server refuses (PLAYER_EXISTS) rather than hand back
+    // a player on file, so a create can never link (NEO-339).
     let id: Id<"players">;
     try {
       id = await client.mutation(api.players.findOrCreate, {
         name: p.name,
         sportId: set.sportId,
         ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+        createOnly: true,
       });
     } catch (err) {
       if (isRefusal(err)) throw new Refused(refusalText(err, p.name));
       throw err;
-    }
-    if (p.onFile.includes(String(id))) {
-      // find-or-create handed back a player that was on file: nothing was
-      // created, and the card is not linked to a row nobody named.
-      throw new Refused(`"${p.name}" is already a player in this sport; link that player with { "link", "birthYear" } instead of creating one.`);
     }
     created.push({ kind: "player", name: p.name, id: String(id) });
     ids.push(id);
@@ -793,7 +819,6 @@ async function linkPlayers(
   return done(answered, "applied", `Saved ${parts.join(" and ")} on this card.`);
 }
 
-const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i]);
 
 /**
  * UnreviewedNameFixer's Save. A side the answer gives is that side's whole
@@ -819,31 +844,20 @@ async function linkNames(
   if (teamCount > MAX_CARD_TEAMS) return done(answered, "refused", `That is the limit of ${MAX_CARD_TEAMS} teams on one card.`);
   if (playerCount > MAX_CARD_PLAYERS) return done(answered, "refused", `That is the limit of ${MAX_CARD_PLAYERS} players on one card.`);
 
-  // `clearsCard`, side by side with the rule: a side with typed names must gain a link.
-  const unlinkedPlayerNames = card.pendingPlayerNames ?? [];
-  const unlinkedTeamNames = rowTeams.length > 0 ? [] : (card.pendingTeamNames ?? []);
-  const playerSideOpen = unlinkedPlayerNames.length > 0 && playerCount === 0;
-  const teamSideOpen = unlinkedTeamNames.length > 0 && teamCount === 0;
-  if (playerSideOpen || teamSideOpen) {
-    const missing = [...(playerSideOpen ? ["a player"] : []), ...(teamSideOpen ? ["a team"] : [])];
-    return done(answered, "refused", `Link ${missing.join(" and ")} to clear this card.`);
-  }
+  // `clearsCard`, from the counts, before any create runs: the fixer's own
+  // gate (lib/set-build/unreviewed-name-gate.ts, NEO-339).
+  const sidesOpen = unreviewedNameSidesOpen(card, { players: playerCount, teams: teamCount });
+  if (sidesOpen) return done(answered, "refused", sidesOpen);
 
   const playerIds = r.players ? uniqueIds(await playerIdsOf(client, set, r.players, created)) : (card.playerIds ?? []);
   const teamIds = r.teams ? uniqueIds(await teamIdsOf(client, set, r.teams, created)) : (card.teamOnCardIds ?? []);
 
-  const idsChanged = !sameIds(playerIds.map(String), rowPlayers) || !sameIds(teamIds.map(String), rowTeams);
-  const retiresNames =
-    (playerIds.length > 0 && (card.pendingPlayerNames?.length ?? 0) > 0) ||
-    (teamIds.length > 0 && (card.pendingTeamNames?.length ?? 0) > 0);
-  if (!idsChanged && !retiresNames) return done(answered, "refused", "Nothing to change here — skip this card.");
+  const gate = unreviewedNameGate(card, { playerIds, teamIds });
+  if (!gate.canSave) return done(answered, "refused", gate.refusal ?? NOTHING_TO_CHANGE);
 
   await client.mutation(api.selectorOptions.updateCard, {
     id: r.cardId,
-    playerIds,
-    teamOnCardIds: teamIds,
-    pendingPlayerNames: playerIds.length > 0 ? [] : (card.pendingPlayerNames ?? []),
-    pendingTeamNames: teamIds.length > 0 ? [] : (card.pendingTeamNames ?? []),
+    ...unreviewedNameWrite(card, { playerIds, teamIds }),
   });
   touch();
   const parts = [

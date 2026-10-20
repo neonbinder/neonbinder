@@ -244,15 +244,13 @@ describe("previewListingTitle (NEO-101)", () => {
       cardId,
     });
     expect(preview.coreFits).toBe(false);
-    // NEO-339: the players outrank the set words, so a name too long to fit
-    // even alone keeps only the year beside it ("Topps Chrome" goes first) and
-    // is cut at a whole word. The 5-character " AUTO" then lands exactly on
-    // the cap, and the tokens behind it are dropped.
-    expect(preview.dropped).toEqual(["RC", "Rookie", "Baseball"]);
-    expect(preview.title).toBe(
-      "2024 An Absurdly Long Player Full Name That Alone Exceeds The Entire #99999 AUTO",
-    );
-    expect(preview.title.length).toBe(80);
+    // Jason, 2026-10-19: the player is never dropped and the card number may
+    // be. The 76-character name stays whole; the number, year and set words
+    // do not fit beside it; " RC" does (79), " AUTO" would not (81). The
+    // number is reported first among the dropped tokens.
+    expect(preview.dropped).toEqual(["#99999", "AUTO", "Rookie", "Baseball"]);
+    expect(preview.title).toBe(`${hugeName} RC`);
+    expect(preview.title.length).toBe(79);
     expect(preview.title).not.toContain("…");
   });
 

@@ -370,6 +370,7 @@ describe("PlayerPicker", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Bobby Witt Jr",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => {
@@ -391,6 +392,7 @@ describe("PlayerPicker", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Bobby Witt Jr",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => {
@@ -538,6 +540,42 @@ describe("PlayerPicker", () => {
     // No chip was added — the refusal is a refusal, not a silent no-op that
     // leaves the operator thinking it worked.
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("NEO-339: a name already on file is refused with the player named, and one press uses that player", async () => {
+    // `createOnly`: "+ Create" never links silently. The server names the row
+    // on file (it can be one the pool missed: an alias, another sport's
+    // member), and the picker offers it as the way forward.
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError({
+        code: "PLAYER_EXISTS",
+        reason: "sameName",
+        name: "Ron Artest",
+        count: 1,
+        players: [{ id: "p-metta", name: "Metta World Peace", birthYear: 1979 }],
+      }),
+    );
+    currentCandidates = [];
+    const { onChange } = renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Ron Artest" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Ron Artest"));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Ron Artest is already in the binder. Use that player instead of adding a second one.",
+      ),
+    );
+    expect(mockFindOrCreate).toHaveBeenCalledWith({ name: "Ron Artest", sportId: SPORT_ID, createOnly: true });
+    expect(onChange).not.toHaveBeenCalled();
+
+    const use = screen.getByRole("button", { name: "Use Metta World Peace (born 1979), already on file" });
+    await waitFor(() => expect(document.activeElement).toBe(use));
+    fireEvent.click(use);
+    expect(onChange).toHaveBeenCalledWith([pid("p-metta")]);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("clears the refusal on the next keystroke", async () => {

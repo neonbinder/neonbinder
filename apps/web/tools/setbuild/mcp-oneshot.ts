@@ -7,10 +7,11 @@
  *
  *   1. tools/list has `nb_draft_set`;
  *   2. `nb_draft_set` on the fixture: drafted, and every open decision is the
- *      operator's own (a card conflict, a review name with NB candidates),
- *      answered by a `<…>` fill-in the committed spec answers. Nothing else
- *      may be open (a pending marketplace set is a `leave` proposal, never an
- *      open question);
+ *      operator's own (a card conflict, a review name with NB candidates, a
+ *      marketplace set in the set's own scope nobody pairs:
+ *      `reconcile-unpaired`), answered by a `<…>` fill-in the committed spec
+ *      answers (an unpaired set by its `sync.pending` entry, matched by side
+ *      and id). Nothing else may be open;
  *   3. the draft MERGED with the committed answers (`mergeDraftAnswers`: each
  *      `<…>` fill-in taken from the answers file, everything else from the
  *      draft) matches the committed spec (`compareDraft`):
@@ -558,17 +559,23 @@ export async function runOneshotSequence(
     if (draft.status !== "drafted") return record(false, "nb_draft_set", `the set did not resolve (${draft.kind})`);
     const open = countOpenDecisions(draft.openDecisions);
     // The only open decisions a proof may carry are the operator's own: card
-    // conflicts and review names with NB candidates. Each comes back as a
+    // conflicts, review names with NB candidates, and the set's own unpaired
+    // marketplace sets (NEO-339: never a silent leave). Each comes back as a
     // `<…>` fill-in the committed spec answers (checked just below). Anything
     // else (a Base pick, a title clash, a checklist the draft could not see)
     // means the draft did not settle the set: fail.
-    const operatorOnly = { ...draft.openDecisions, conflicts: [], review: { players: [], teams: [], leagues: [] } };
+    const operatorOnly = {
+      ...draft.openDecisions,
+      names: draft.openDecisions.names.filter((n) => n.kind !== "reconcile-unpaired"),
+      conflicts: [],
+      review: { players: [], teams: [], leagues: [] },
+    };
     const unsettled = countOpenDecisions(operatorOnly);
     const okOpen = unsettled === 0;
     record(
       okOpen,
       "nb_draft_set",
-      `${open} open decision(s), ${open - unsettled} of them card conflicts / review names for the committed spec to answer` +
+      `${open} open decision(s), ${open - unsettled} of them card conflicts / review names / unpaired sets for the committed spec to answer` +
         `${okOpen ? "" : `; ${unsettled} the draft should have settled (${openSummary(operatorOnly)})`}; ${draft.proposals.length} proposals; ${draft.marketplaceCalls} marketplace requests in ${Math.round(draft.durationMs / 1000)}s`,
     );
     const merged = mergeDraftAnswers(draft.template ?? draft.spec, o.answers);

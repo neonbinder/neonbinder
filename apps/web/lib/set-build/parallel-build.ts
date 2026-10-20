@@ -145,3 +145,41 @@ export function planParallelBuildOrder(plan: Pick<ParallelBuildPlan, "parallels"
       .map((e) => e.id),
   };
 }
+
+// ---------------------------------------------------------------------------
+// NEO-339 — a build that copied nothing while the parallel's own listing has
+// cards. Shared by the panel (which says so) and the set-building tool (which
+// makes it an open decision), so both read the same signal.
+// ---------------------------------------------------------------------------
+
+/**
+ * Cards the parallel's own marketplace listing returned that no source card
+ * matched, per side. Read defensively: an older server's result may not carry
+ * the field.
+ */
+export function listedOnlyCounts(
+  result: Pick<ParallelBuildResult, "extraOnMarketplace">,
+): SideCounts {
+  const extra = result.extraOnMarketplace as
+    | Partial<ParallelBuildResult["extraOnMarketplace"]>
+    | undefined;
+  return {
+    bsc: extra?.bsc?.count ?? 0,
+    sportlots: extra?.sportlots?.count ?? 0,
+  };
+}
+
+/**
+ * Did this build copy nothing while the parallel's marketplaces list cards?
+ * Then not one of its cards shares a number with the source: it is probably
+ * its own insert, not a parallel, and the operator decides what it is. A build
+ * that copies some cards (a short-print subset) is an ordinary build, and so
+ * is one whose listing returned nothing.
+ */
+export function sharesNoNumbers(
+  result: Pick<ParallelBuildResult, "status" | "copied" | "extraOnMarketplace">,
+): boolean {
+  if (result.status !== "built" || result.copied !== 0) return false;
+  const listed = listedOnlyCounts(result);
+  return listed.bsc + listed.sportlots > 0;
+}

@@ -109,12 +109,15 @@ function chipValue(value: unknown, whenTrue: string): string | null {
 }
 
 /**
- * The chips for a preview, in the order the generator itself assembles a title:
- * core facts first (year, manufacturer, set, parallel, players, number), then
- * the optional tokens that get dropped from the end when it does not fit.
+ * The chips for a preview, in the order the generator lays a title out: core
+ * facts first (year, manufacturer, set, insert, players, number), then the
+ * rest (flags, parallel, print run, variation, RC, teams, sport).
  *
- * Reading the row left to right therefore reads the title left to right, which
- * is what makes "the last chips are the ones at risk" legible without saying so.
+ * Reading the row left to right therefore reads the title left to right. It
+ * is title order, not drop order: what gives way first is the sport and the
+ * attributes, then the card number, then the set words from the end, and
+ * never the players, insert, parallel or print run (Jason, 2026-10-19;
+ * `generateListing.ts`).
  */
 export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceChip[] {
   const chips: TitleSourceChip[] = [];
@@ -159,10 +162,11 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
   }
   if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
 
-  // Then the optional tokens, in the priority the generator appends them:
-  // AUTO → RELIC → parallel → /printRun → variation → RC → SP/SSP → team(s) →
-  // sport. The last chips are therefore the first to be dropped when a title
-  // does not fit, which is the whole reason this row is ordered at all.
+  // Then the rest, in the order the title lays them out: AUTO → RELIC →
+  // parallel → /printRun → variation → RC → SP/SSP → team(s) → sport. That is
+  // title order, not drop order (Jason, 2026-10-19): the parallel and the
+  // print run are never dropped, and the sport is the first word to go, then
+  // the attributes from RC/SP/teams back to AUTO, then the card number.
   push("Auto", inputs.autographed, "AUTO");
   push("Relic", inputs.isRelic, "RELIC");
   push("Parallel", inputs.parallelName);

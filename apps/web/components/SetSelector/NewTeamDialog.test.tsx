@@ -257,6 +257,7 @@ describe("NewTeamDialog — creating", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Savannah Bananas",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(tid("team-bananas")));
@@ -278,6 +279,7 @@ describe("NewTeamDialog — creating", () => {
         name: "Savannah Bananas",
         sportId: SPORT_ID,
         aliases: ["Bananas", "The Bananas"],
+        createOnly: true,
       });
     });
   });
@@ -307,6 +309,7 @@ describe("NewTeamDialog — creating", () => {
         name: "Padres",
         location: "San Diego",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
   });
@@ -336,6 +339,7 @@ describe("NewTeamDialog — creating", () => {
         name: "Padres",
         sportId: SPORT_ID,
         leagueId: lid("l1"),
+        createOnly: true,
       });
     });
   });
@@ -354,6 +358,7 @@ describe("NewTeamDialog — creating", () => {
         name: "Orix Buffaloes",
         sportId: SPORT_ID,
         leagueId: null,
+        createOnly: true,
       });
     });
     expect("leagueId" in mockFindOrCreate.mock.calls[0][0]).toBe(true);
@@ -752,6 +757,7 @@ describe("NewTeamDialog — end to end", () => {
       location: "San Diego",
       sportId: SPORT_ID,
       leagueId: lid("l1"),
+      createOnly: true,
     });
     expect(onCreated).toHaveBeenCalledWith(tid("team-padres"));
     expect(onClose).toHaveBeenCalled();
@@ -825,6 +831,61 @@ describe("NewTeamDialog — the panel fits the viewport", () => {
  * somebody will reword, and it would fail silently — the arming would stop
  * happening and the operator would meet a dead end where a question used to be.
  */
+describe("NewTeamDialog — a team already on file (NEO-339)", () => {
+  it("is refused with the team named, never linked silently, and one press uses it", async () => {
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError({
+        code: "TEAM_EXISTS",
+        name: "San Diego Padres",
+        teams: [{ id: "team-padres", name: "San Diego Padres", years: "1969–present" }],
+      }),
+    );
+    const { onCreated, onClose } = renderDialog({ initialName: "San Diego Padres" });
+    fireEvent.change(nameField(), { target: { value: "Padres" } });
+    fireEvent.change(locationField(), { target: { value: "San Diego" } });
+
+    await act(async () => {
+      fireEvent.keyDown(nameField(), { key: "Enter" });
+    });
+
+    expect(mockFindOrCreate.mock.calls[0][0].createOnly).toBe(true);
+    await waitFor(() =>
+      expect(within(dialog()).getByRole("alert").textContent).toBe(
+        "San Diego Padres is already a team in this sport. Use it instead of adding a second one.",
+      ),
+    );
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    const use = within(dialog()).getByRole("button", {
+      name: "Use San Diego Padres · 1969–present, already on file",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(use));
+    fireEvent.click(use);
+    expect(onCreated).toHaveBeenCalledWith(tid("team-padres"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("an edit clears the offer with the refusal", async () => {
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError({
+        code: "TEAM_EXISTS",
+        name: "San Diego Padres",
+        teams: [{ id: "team-padres", name: "San Diego Padres", years: "" }],
+      }),
+    );
+    renderDialog({ initialName: "San Diego Padres" });
+    await act(async () => {
+      fireEvent.keyDown(nameField(), { key: "Enter" });
+    });
+    await waitFor(() => expect(within(dialog()).getByRole("button", { name: /^Use San Diego Padres/ })).toBeTruthy());
+
+    fireEvent.change(nameField(), { target: { value: "Padres II" } });
+    expect(within(dialog()).queryByRole("button", { name: /^Use San Diego Padres/ })).toBeNull();
+    expect(within(dialog()).queryByRole("alert")).toBeNull();
+  });
+});
+
 describe("NewTeamDialog — a second era", () => {
   const eraRefusal = () =>
     new ConvexError({

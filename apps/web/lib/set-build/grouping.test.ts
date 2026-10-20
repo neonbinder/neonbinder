@@ -8,6 +8,7 @@ import { describe, expect, test } from "vitest";
 import { detectGroupings, normalizeName } from "../../components/SetSelector/parallelDetection";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
+  applyFamilyRootEvidence,
   buildInitialState,
   computeDiff,
   emptyGroupingState,
@@ -212,6 +213,97 @@ describe("buildInitialState — a row that roots its own family (NEO-339, 2023 T
 
   test("suggest: false reports no family roots", () => {
     expect(buildInitialState(family, { suggest: false }).familyRoots.size).toBe(0);
+  });
+});
+
+describe("buildInitialState — a tied parent suggests nothing (NEO-339, invariant 8)", () => {
+  const r = (id: string, value: string) => ({ _id: id as Id<"selectorOptions">, value });
+
+  test("two inserts carrying the parent's name: the rows that would go under it stay put, unsuggested", () => {
+    const init = buildInitialState([
+      { insert: r("g1", "Gold"), parallels: [] },
+      { insert: r("g2", "gold"), parallels: [] },
+      { insert: r("gr", "Gold Refractor"), parallels: [] },
+      { insert: r("s", "Stars"), parallels: [] },
+      { insert: r("sr", "Stars Red"), parallels: [] },
+    ]);
+    expect(init.placement.get("gr" as Id<"selectorOptions">)).toEqual({ kind: "ungrouped" });
+    expect(init.suggested.has("gr" as Id<"selectorOptions">)).toBe(false);
+    expect([...init.tiedParents]).toEqual([["g1", { children: ["gr"], sharers: ["g1", "g2"] }]]);
+    // An untied parent in the same tree is suggested as before.
+    expect(init.placement.get("sr" as Id<"selectorOptions">)).toEqual({ kind: "child", parentId: "s" });
+    expect([...init.suggested]).toEqual(["sr"]);
+  });
+
+  test("a parallel elsewhere carrying the name ties it too (every row of the tree counts)", () => {
+    const init = buildInitialState([
+      { insert: r("g", "Gold"), parallels: [] },
+      { insert: r("gw", "Gold Wave"), parallels: [] },
+      { insert: r("c", "Chrome"), parallels: [r("cg", "Gold")] },
+    ]);
+    expect(init.placement.get("gw" as Id<"selectorOptions">)).toEqual({ kind: "ungrouped" });
+    expect(init.tiedParents.get("g" as Id<"selectorOptions">)?.sharers).toEqual(["g", "cg"]);
+  });
+
+  test("suggest: false reports no tie", () => {
+    const init = buildInitialState(
+      [
+        { insert: r("g1", "Gold"), parallels: [] },
+        { insert: r("g2", "Gold"), parallels: [] },
+        { insert: r("gr", "Gold Refractor"), parallels: [] },
+      ],
+      { suggest: false },
+    );
+    expect(init.tiedParents.size).toBe(0);
+  });
+});
+
+describe("applyFamilyRootEvidence — the card-number answer folded into an open session (NEO-339)", () => {
+  const id = (s: string) => s as Id<"selectorOptions">;
+  const flat = (...names: string[]): InsertTree => names.map((n) => ({ insert: { _id: id(n), value: n }, parallels: [] }));
+  const family = flat("Future Stars", "Future Stars Red", "Future Stars Autographs", "Future Stars Autographs Red", "Future Stars Autographs Orange");
+  const open = () => groupingReducer(emptyGroupingState, { type: "INIT", ...buildInitialState(family) });
+  const evidence = {
+    placement: buildInitialState(family, { holdFamilyRoots: new Set([id("Future Stars Autographs")]) }).placement,
+    held: [{ root: id("Future Stars Autographs"), parent: id("Future Stars") }],
+  };
+  const parentOf = (s: GroupingState, n: string) => {
+    const p = s.placement.get(id(n));
+    return p?.kind === "child" ? p.parentId : null;
+  };
+
+  test("untouched: the root comes up, its family moves under it and stays suggested", () => {
+    const { state, applied } = applyFamilyRootEvidence(open(), evidence);
+    expect(applied).toEqual(["Future Stars Autographs"]);
+    expect(parentOf(state, "Future Stars Autographs")).toBeNull();
+    expect(state.suggested.has(id("Future Stars Autographs"))).toBe(false);
+    expect(parentOf(state, "Future Stars Autographs Red")).toBe("Future Stars Autographs");
+    expect(state.suggested.has(id("Future Stars Autographs Red"))).toBe(true);
+    expect(parentOf(state, "Future Stars Red")).toBe("Future Stars");
+  });
+
+  test("a root the operator already handled keeps their call, and so does its family", () => {
+    let s = open();
+    s = groupingReducer(s, { type: "MOVE", rowIds: [id("Future Stars Autographs")], placement: { kind: "child", parentId: id("Future Stars") }, fromSelection: false });
+    const { state, applied } = applyFamilyRootEvidence(s, evidence);
+    expect(applied).toEqual([]);
+    expect(state).toBe(s);
+  });
+
+  test("a family row the operator moved stays where they put it", () => {
+    let s = open();
+    s = groupingReducer(s, { type: "MOVE", rowIds: [id("Future Stars Autographs Red")], placement: { kind: "ungrouped" }, fromSelection: false });
+    const { state } = applyFamilyRootEvidence(s, evidence);
+    expect(parentOf(state, "Future Stars Autographs Red")).toBeNull();
+    expect(parentOf(state, "Future Stars Autographs Orange")).toBe("Future Stars Autographs");
+  });
+
+  test("a selected root that comes up holding parallels leaves the selection", () => {
+    let s = open();
+    s = groupingReducer(s, { type: "TOGGLE", rowId: id("Future Stars Autographs") });
+    s = groupingReducer(s, { type: "TOGGLE", rowId: id("Future Stars Red") });
+    const next = groupingReducer(s, { type: "APPLY_FAMILY_ROOT_EVIDENCE", grouping: evidence });
+    expect(next.selected).toEqual(["Future Stars Red"]);
   });
 });
 

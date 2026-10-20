@@ -434,12 +434,15 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
         "openDecisions (what the operator must answer: Base candidates when there is no sole or pre-selected one, card " +
         "conflicts (a side, or pairing.unlink when the pair is two different cards), any name with existing NB " +
         "candidates, a review name that rides on an unanswered card conflict, a " +
-        "checklist the draft could not preview); leftUnasked; notes; marketplaceCalls; and confirmPhrase only when " +
-        "nothing is open. Each variant type's sync.pending lists every marketplace set nobody pairs as an explicit " +
-        "\"leave\" with the marketplace's name for it, so sets that belong together can be paired from the draft " +
-        "(\"own-set\" is never proposed). SportLots lists a whole brand-year: its sets outside the set's SportLots " +
-        "filter (other products) and sets another variant type pairs are not listed, only counted in leftUnasked, and " +
-        'apply leaves them in Pending. detail "summary" (the default) cuts proposals, steps, notes and the ' +
+        "checklist the draft could not preview, and every marketplace set in the set's own scope that nobody pairs); " +
+        "leftUnasked; notes; marketplaceCalls; and confirmPhrase only when nothing is open. An unpaired set " +
+        "(reconcile-unpaired, its fill-in in sync.pending with the marketplace's name) is never left silently: take " +
+        "each to the operator, who answers \"leave\" (stays in Pending), \"own-set\", or pairs it (move its id into " +
+        "a row in sync.pairs and drop the entry). Its candidates list the names that read alike; a likely pair, when " +
+        "there is a single one, comes first and says whether the two sets' cards agree. A suggestion is not an " +
+        "answer: never pair from it without the operator. SportLots lists a whole brand-year: its sets outside the " +
+        "set's SportLots filter (other products) and sets another variant type pairs are not asked, only counted in " +
+        'leftUnasked, and apply leaves them in Pending. detail "summary" (the default) cuts proposals, steps, notes and the ' +
         'leftUnasked samples to the first few and says what it cut; detail "full" returns every entry (it drafts ' +
         "again). An unknown set comes back as status \"unresolved\" with candidates (and, when the brand's year or " +
         "its Sets were never synced, the prepare spec); nothing is created. autographFormats lists every drafted " +

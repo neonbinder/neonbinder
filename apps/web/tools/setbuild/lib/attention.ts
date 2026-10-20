@@ -38,7 +38,6 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import type { FunctionReturnType } from "convex/server";
 import {
   ATTENTION_LABELS,
-  MAX_CARD_TEAMS,
   deriveCardAttention,
   type AttentionCardRow,
   type AttentionItem,
@@ -56,6 +55,7 @@ import { titleSourceChips } from "../../../components/SetSelector/useTitlePrevie
 import { variantTypeKind } from "../../../convex/variantRole";
 import { compareCardNumbers } from "../../../lib/cards/card-number";
 import { teamFullName } from "../../../lib/teams/team-name";
+import { foldMissingTeamChips } from "../../../lib/set-build/missing-team-chips";
 import type { NbClient } from "../client/convex-client";
 import { ResolveError } from "../service";
 import { childrenOf, pickExactlyOne, resolveTypeRowRef, type ResolvedSet, type RowId, type SelectorRow } from "../spec/resolve";
@@ -544,48 +544,38 @@ export async function missingTeamFacts(
 ): Promise<
   Pick<CardAttentionItem, "listingSays" | "listingDisagrees" | "career" | "uncoveredSetYear" | "suggested">
 > {
-  const careerByTeam = new Map<string, { name: string; label: string; playerNames: string[]; inSetYear: boolean }>();
-  for (const s of suggestions) {
-    const id = String(s.teamId);
-    const existing = careerByTeam.get(id);
-    if (existing) {
-      if (!existing.playerNames.includes(s.playerName)) existing.playerNames.push(s.playerName);
-      existing.inSetYear = existing.inSetYear || s.inSetYear;
-    } else {
-      careerByTeam.set(id, { name: s.name, label: s.label, playerNames: [s.playerName], inSetYear: s.inSetYear });
-    }
-  }
-  const uncoveredSetYear = suggestions.find((s) => s.uncoveredSetYear !== undefined)?.uncoveredSetYear;
-
+  // NEO-339 — the fold is MissingTeamFixer's own (lib/set-build/missing-team-chips.ts).
   const listingName = card.bscTeamName?.trim() ?? "";
-  const listingRows = listingName !== "" ? (listingEras ?? []) : [];
-  const listingIds = new Set(listingRows.map((e) => String(e._id)));
+  const folded = foldMissingTeamChips({
+    suggestions,
+    listingName,
+    listingRows: listingEras ?? [],
+  });
+  const uncoveredSetYear = folded.uncoveredSetYear;
+  const listingRows = folded.listingChips.map((c) => c.era);
 
-  const listingChoices: TeamChoice[] = listingRows.map((era) => {
-    const career = careerByTeam.get(String(era._id));
-    const full = teamFullName(era);
+  const listingChoices: TeamChoice[] = folded.listingChips.map((chip) => {
+    const full = teamFullName(chip.era);
     return {
       team: full,
-      label: era.label,
-      answer: answerForEra(full, String(era._id), listingRows),
-      teamId: String(era._id),
-      playedHere: career?.playerNames ?? [],
-      inSetYear: career?.inSetYear ?? false,
+      label: chip.label,
+      answer: answerForEra(full, chip.teamId, listingRows),
+      teamId: chip.teamId,
+      playedHere: chip.playerNames,
+      inSetYear: chip.inSetYear,
     };
   });
 
   const careerChoices: TeamChoice[] = [];
-  for (const [teamId, c] of careerByTeam) {
-    if (listingIds.has(teamId)) continue;
+  for (const c of folded.careerChips) {
     // The label carries an era only when the sport holds the name more than
     // once (`teamOptionLabel`), so only then is the name alone not an answer.
-    const answer = c.label === c.name ? c.name : answerForEra(c.name, teamId, await eras(c.name));
-    careerChoices.push({ team: c.name, label: c.label, answer, teamId, playedHere: [...c.playerNames], inSetYear: c.inSetYear });
+    const answer = c.label === c.name ? c.name : answerForEra(c.name, c.teamId, await eras(c.name));
+    careerChoices.push({ team: c.name, label: c.label, answer, teamId: c.teamId, playedHere: [...c.playerNames], inSetYear: c.inSetYear });
   }
 
-  const setYearIds = [...careerByTeam.entries()].filter(([, c]) => c.inSetYear).map(([id]) => id);
-  const listingDisagrees = listingName !== "" && setYearIds.some((id) => !listingIds.has(id));
-  const preselect = listingDisagrees ? [] : setYearIds.slice(0, MAX_CARD_TEAMS);
+  const listingDisagrees = folded.listingDisagrees;
+  const preselect: string[] = folded.preselect;
   const choiceById = new Map([...listingChoices, ...careerChoices].map((c) => [c.teamId, c]));
 
   const out: Pick<CardAttentionItem, "listingSays" | "listingDisagrees" | "career" | "uncoveredSetYear" | "suggested"> = {

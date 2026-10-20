@@ -328,11 +328,12 @@ describe("NEO-335 — the short name on the step", () => {
     });
     const shown = titleGroups.flatMap((g) => g.cards);
     expect(shown.map((c) => c.index)).toEqual([1]);
-    // Titled with the short name, cut from its end (NEO-339: the set words go
-    // before the players).
+    // Titled with the short name. The card number goes first, then the short
+    // name's words from its end; never a player (NEO-339; Jason, 2026-10-19).
     for (const c of shown) {
       expect(c.title.startsWith("2026 Topps Chrome Update Series Sapphire ")).toBe(true);
-      expect(c.title).toContain("Shohei Ohtani & Dwight Gooden #3");
+      expect(c.title.endsWith("Shohei Ohtani & Dwight Gooden")).toBe(true);
+      expect(c.title).not.toContain("#3");
     }
   });
 

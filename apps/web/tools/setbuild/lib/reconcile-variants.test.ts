@@ -517,3 +517,103 @@ describe("splitMootLeaves (NEO-339: a leave with nothing to leave)", () => {
     expect(r.outcome.unmatchedPending).toEqual([ownSet, paired]);
   });
 });
+
+describe("reconcileVariants: the spec wins over the matcher's proposal on a saved row (NEO-339 live: 1988 Topps Baseball Autographs Red)", () => {
+  // The saved row stores only its BSC id. The matcher auto-matched it by name
+  // with the flagship's SportLots set 269998 (outside this set's filter); the
+  // right one is 283316. The seed attaches 269998 to the row as a proposal.
+  const RED = "1988-topps-baseball-autographs-red";
+  const NAME = "1988 Topps Baseball Autographs Red";
+  const redB = bsc(NAME, RED);
+  const flagship = sl("1988 Topps Autos Red", "269998");
+  const chrome = sl("Chrome 1988 Topps Autos Red", "283316");
+  // A second, unsaved set keeps the step from being already saved: the fetch runs.
+  const rookies = bsc("Rookie Autographs", "ra");
+  const ROOKIES = { name: "Rookie Autographs", bsc: ["ra"] };
+  const fetch = (): Fetch => ({
+    bscOptions: [redB, rookies],
+    slOptions: [flagship, chrome],
+    autoMatched: [{ displayName: NAME, bsc: redB, sl: flagship, confidence: 0.8 }],
+    unmatchedBsc: [rookies],
+    unmatchedSl: [chrome],
+  });
+  const saved = (sportlots?: string) =>
+    row("r-red", "insert", NAME, { platformData: { bsc: { b0: RED }, ...(sportlots ? { sportlots: { s0: sportlots } } : {}) } });
+  const items = (client: ReturnType<typeof world>) =>
+    client.callsTo(STORE)[0].args.reconciledItems as Array<{ existingId?: string; value: string; platformData: unknown }>;
+
+  test("a BSC-only pair for the row replaces the proposal: one row, no second row, no title clash", async () => {
+    const client = world({ fetch: fetch(), existing: [saved()] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", {
+      pairs: [{ name: NAME, bsc: [RED] }, ROOKIES],
+      pending: [{ side: "sportlots", id: "283316", decision: "leave" }],
+    }, opts);
+    expect(res).toMatchObject({ outcome: "saved", sent: 2, leftUnasked: { outsideScope: 1, pairedElsewhere: 0 } });
+    expect(items(client)).toEqual([
+      expect.objectContaining({ existingId: "r-red", value: NAME, platformData: { bsc: [RED] } }),
+      expect.objectContaining({ value: "Rookie Autographs", platformData: { bsc: ["ra"] } }),
+    ]);
+    expect(JSON.stringify(items(client))).not.toContain("269998");
+  });
+
+  test("a pair with another SportLots id replaces the proposal with it", async () => {
+    const client = world({ fetch: fetch(), existing: [saved()] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", { pairs: [{ name: NAME, bsc: [RED], sportlots: ["283316"] }, ROOKIES], pending: [] }, opts);
+    expect(res).toMatchObject({ outcome: "saved", sent: 2 });
+    expect(items(client)[0]).toEqual(
+      expect.objectContaining({ existingId: "r-red", platformData: { bsc: [RED], sportlots: ["283316"] } }),
+    );
+    expect(items(client)).toHaveLength(2);
+  });
+
+  test("a leave on the auto-matched SportLots id is accepted, beside the row's own pair", async () => {
+    const client = world({ fetch: fetch(), existing: [saved()] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", {
+      pairs: [{ name: NAME, bsc: [RED] }, ROOKIES],
+      pending: [
+        { side: "sportlots", id: "269998", decision: "leave" },
+        { side: "sportlots", id: "283316", decision: "leave" },
+      ],
+    }, opts);
+    expect(res).toMatchObject({ outcome: "saved", sent: 2 });
+    expect(items(client)[0].platformData).toEqual({ bsc: [RED] });
+  });
+
+  test("a leave alone declines the proposal: only the row itself is left to name, its own ids listed", async () => {
+    const client = world({ fetch: fetch(), existing: [saved()] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", {
+      pairs: [ROOKIES],
+      pending: [
+        { side: "sportlots", id: "269998", decision: "leave" },
+        { side: "sportlots", id: "283316", decision: "leave" },
+      ],
+    }, opts);
+    expect(res.outcome).toBe("open");
+    if (res.outcome !== "open") return;
+    expect(res.names.map((n) => n.kind)).toEqual(["reconcile-saved-row"]);
+    expect(res.names[0].candidates[0].detail).toBe(`bsc ${RED}`);
+  });
+
+  test("the matching pair still accepts the proposal, as before", async () => {
+    const client = world({ fetch: fetch(), existing: [saved()] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", {
+      pairs: [{ name: NAME, bsc: [RED], sportlots: ["269998"] }, ROOKIES],
+      pending: [{ side: "sportlots", id: "283316", decision: "leave" }],
+    }, opts);
+    expect(res).toMatchObject({ outcome: "saved", sent: 2 });
+    expect(items(client)[0].platformData).toEqual({ bsc: [RED], sportlots: ["269998"] });
+  });
+
+  test("a SportLots id the row STORES is never dropped by a pair that leaves it out (invariant 5)", async () => {
+    const client = world({ fetch: fetch(), existing: [saved("269998")] });
+    const res = await reconcileVariants(client, "set1" as never, "Insert", {
+      pairs: [{ name: NAME, bsc: [RED] }, ROOKIES],
+      pending: [{ side: "sportlots", id: "283316", decision: "leave" }],
+    }, opts);
+    // Not a proposal: the pair is not the row's, so nothing is saved and the row stands.
+    expect(res.outcome).toBe("open");
+    expect(client.callsTo(STORE)).toEqual([]);
+    if (res.outcome !== "open") return;
+    expect(res.names.map((n) => n.kind)).toContain("reconcile-saved-row");
+  });
+});

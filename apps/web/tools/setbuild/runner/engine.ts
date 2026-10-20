@@ -606,7 +606,7 @@ export async function runSpec(
             // A proposed pair is the matcher's NAME match (an auto-match the
             // spec left out): its SportLots half is a fill-in, never pre-filled,
             // so the template cannot pair two products unread. The draft
-            // confirms a pair by its cards (lib/pair-evidence.ts); apply sees
+            // confirms a pair by its cards (lib/set-build/pair-evidence.ts); apply sees
             // no cards before it saves.
             ...r.reconcile.proposedPairs.map((p) => ({ name: p.name, bsc: p.buysportscards, sportlots: nameOnlySlFill(p.sportlots) })),
           ],

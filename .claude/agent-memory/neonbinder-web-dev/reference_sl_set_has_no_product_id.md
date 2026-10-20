@@ -8,7 +8,7 @@ metadata:
 SportLots' `dealsets` list (convex/adapters/sportlots.ts `fetchSetNames`) holds every set of the brand-year as `{ value, platformValue }` only. It carries no product or parent id. The server's `computeMatches` auto-matches BSC to SL by label. That can pair Topps Chrome's "1988 Topps Baseball Autographs Red" with the flagship's "1988 Topps Autos Red".
 
 Evidence for "whose SL set is this", strongest first:
-- **Cards (always available).** Preview the pair with both ids (`previewCardChecklist`). Shared numbers are the `matched` entries with confidence 1. A shared number whose rosters disagree carries `playersConflict`. Code: `tools/setbuild/lib/pair-evidence.ts`. It needs at least one shared number, with at most 1/3 of them naming different players.
+- **Cards (always available).** Preview the pair with both ids (`previewCardChecklist`). Shared numbers are the `matched` entries with confidence 1. A shared number whose rosters disagree carries `playersConflict`. Code: `apps/web/lib/set-build/pair-evidence.ts` (shared lib; the rule is the Set Builder's, not only the tool's). It needs at least one shared number, with at most 1/3 of them naming different players.
 - **Another NB set of the brand holds it:** `setParallelConversion.getBrandSlHolders`.
 - **The brand's SportLots review still holds it:** `slSetReview.getSlSetReview` entries. Often there is NO review document at all; a NEO-339 preview had zero. Never make a guard depend on the review existing.
 

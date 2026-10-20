@@ -31,21 +31,34 @@ the server's three read-only previews (`previewSetStructure`,
 `previewCardChecklist`, `previewChecklistEntities`), through the same
 `lib/set-build` modules the UI runs. They return `{ spec, proposals,
 openDecisions, template, confirmPhrase, marketplaceCalls }`: proposals are
-what the UI settles without asking (and the three Jason ruled pre-filled:
-Group Parallels suggestions, `create` for a name with no NB candidate, and an
-explicit `leave` per id, with the marketplace's name, for every pending
-marketplace set nobody pairs, shown as one `reconcile-leave` proposal per
-type; `own-set` is never proposed); everything else is an open decision with
-a `<…>` fill-in. A player name only one side of an unanswered card conflict
+what the UI settles without asking (and the two Jason ruled pre-filled:
+Group Parallels suggestions, and `create` for a name with no NB candidate);
+everything else is an open decision with a `<…>` fill-in. Every pending
+marketplace set in the set's own scope (BSC's listing for the set, the
+SportLots prefix filter below) that nobody pairs is one of them
+(`reconcile-unpaired`, its fill-in at `sync.pending` with the marketplace's
+name): the draft never leaves one silently, and is not complete while any is
+open. The operator answers `leave`, `own-set`, or pairs it (its id moved into
+a row in `sync.pairs`, the entry dropped). Its candidates are the names that
+read alike (`lib/set-build/likely-pair.ts`, through the matcher's own
+`nameAffinity`); a single likely pair (no tie, and the set is its best match
+back) comes first, checked against the two sets' cards with one preview:
+cards that disagree demote it to a plain candidate. It is a suggestion,
+never a pair. A player name only one side of an unanswered card conflict
 carries is never pre-filled: its fill-in names the conflict it rides on.
 SportLots' insert-level list is brand-year wide, so a SportLots set outside
 the Reconcile dialog's own prefix filter (`defaultSlPrefixes` in
 `lib/set-build/reconcile.ts`), or one another variant type of the set pairs,
 is not listed: it is counted in `leftUnasked`, and apply leaves it in Pending
-unasked (`dialogOpenDecisions`' `left`). The matcher pairs BSC and SportLots
-sets by name, and SportLots names no product for a set, so a name-only pair
-(an auto-match no NB row already holds) is drafted only when the cards
-confirm it (`lib/pair-evidence.ts`): the pair's own preview must share at
+unasked (`dialogOpenDecisions`' `left`). The matcher (`computeMatches`,
+convex/setReconciliation.ts, shared with the web dialog; its name comparison
+in convex/lib/setNameMatch.ts) pairs BSC and SportLots sets by name: exact,
+same words, near spelling, and last a leading manufacturer word one side
+has and the other lacks (BSC "Topps Chrome Authentics Relics", SportLots
+"Chrome Authentics Relics"), always exactly one candidate per side; accents
+are folded ("Exposé"). SportLots names no product for a set, so a name-only
+pair (an auto-match no NB row already holds) is drafted only when the cards
+confirm it (`lib/set-build/pair-evidence.ts`): the pair's own preview must share at
 least one card number, and at most a third of the shared numbers may name
 different players (`MAX_DIFFERING_SHARE`). Otherwise, or with no preview to
 compare (checklists off, a failed preview), or while the brand's SportLots
@@ -57,14 +70,27 @@ insert row's evidence is its own checklist preview, read once; each other
 pair costs one preview (a Parallel type's with no team lookup). Apply sees no
 cards before it saves: it pairs only what the spec names, never offers an
 auto-match whose SportLots set the review holds, and its template leaves a
-proposed pair's SportLots half as a fill-in.
-Group Parallels' suggestions (`detectGroupings`) are the plain prefix rule,
-as in the modal. The draft weighs one case by card numbers: a suggested
-child that roots a family of its own ("Future Stars Autographs", which
-"Future Stars Autographs Red" extends, under "Future Stars"). It previews
-both rows, and only when their cards share no number does the row stay top
-level as the parent of its own family (`holdFamilyRoots`). A shared number,
-or no preview to compare, groups it and its family under the parent.
+proposed pair's SportLots half as a fill-in. When the matcher's pick lands on
+a saved row (the seed attaches an auto-matched half to the row holding the
+other id: `ReadySet.proposed`, never stored), the spec wins: a pair naming the
+row's stored ids, BSC-only or with another SportLots id, replaces the
+proposal on that row (no second row, no title clash), and a `leave` or
+`own-set` on the proposed id declines it. An id the row stores is never
+taken off it.
+Group Parallels' suggestions are the modal's own rules, from
+`lib/set-build/grouping.ts` and `lib/set-build/family-roots.ts`: the plain
+prefix rule (`detectGroupings`), with two refinements the modal applies too.
+A suggested parent whose name another row shares is a tie: nothing is
+suggested under it, and the draft leaves a `group-parent` open decision
+listing every row with that name. A suggested child that roots a family of
+its own ("Future Stars Autographs", which "Future Stars Autographs Red"
+extends, under "Future Stars") is weighed by card numbers
+(`groupWithFamilyRootEvidence`): the draft previews both rows, and only when
+their cards share no number does the row stay top level as the parent of its
+own family. A shared number, or no evidence (a row already holding cards, a
+failed or empty preview, checklists off), groups it and its family under the
+parent. The modal runs the same check over saved rows when the operator
+presses "Check card numbers".
 `nb_draft_set` returns a summary by
 default (`compactDraftReport`: the template or spec and every open decision
 whole, the other lists sampled with complete counts); `detail: "full"` /

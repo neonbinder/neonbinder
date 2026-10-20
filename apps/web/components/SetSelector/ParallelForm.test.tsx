@@ -80,6 +80,7 @@ import { RECONCILED_STORE_MAX_PAGES } from "./store-reconciled-until-done";
 import { twinReconcileNotice } from "./selector-sync-feedback";
 import { HOLDER_PATH_SEPARATOR } from "./held-elsewhere";
 import { titleClashMessage } from "./ready-title-clashes";
+import { pressSaveAsync } from "./press-save";
 
 const CHAIN = [
   { _id: "sport1", level: "sport", value: "Hockey" },
@@ -219,9 +220,7 @@ describe("ParallelForm — reconciliation confirm (NEO-211 F1)", () => {
     await renderForm();
 
     fireEvent.click(await screen.findByLabelText("Remove set Gold"));
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 1 sets/));
 
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
     const args = mockStore.mock.calls[0][0];
@@ -258,9 +257,7 @@ describe("ParallelForm — failed save (NEO-211)", () => {
     mockStore.mockRejectedValueOnce(new Error("[Request ID: xyz] cap exceeded"));
     await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 1 sets/));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(
@@ -519,9 +516,7 @@ describe("ParallelForm — the store is replayed until it is finished (NEO-296)"
     });
     const { onDone } = await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 1 sets/));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("1 of 1 not reached this time");
@@ -784,9 +779,7 @@ describe("ParallelForm — ids another variant type holds are left alone (NEO-31
       screen.getByRole("button", { name: `Make its own set: ${MOVED_BSC.value}` }),
     ).toBeTruthy();
 
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 1 sets/));
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
     const args = mockStore.mock.calls[0][0];
     const saved = args.reconciledItems.flatMap(

@@ -12,6 +12,9 @@
  *   1. exact match on normalised strings           -> confidence 1.0
  *   2. bag-of-words (same token multiset, any order) -> confidence 0.95
  *   3. Levenshtein ratio < 0.40 AND token subset/superset -> 1 - ratio
+ *   4. (NEO-339, only with a manufacturer) exact once a leading manufacturer
+ *      word one side has is taken off, whole SportLots name -> 0.9
+ * Accents are folded before every pass ("Exposé" is "Expose").
  */
 
 import { expect, test, describe } from "vitest";
@@ -406,5 +409,71 @@ describe("computeMatches — the blocked argument (NEO-325)", () => {
     expect(
       computeMatches(bsc, sl, undefined, { bsc: new Set(), sportlots: new Set() }),
     ).toEqual(plain);
+  });
+});
+
+describe("computeMatches — the manufacturer word (NEO-339, 2023 Topps Chrome)", () => {
+  const TOPPS = { manufacturer: "Topps" };
+  const pairs = (r: ReturnType<typeof computeMatches>) =>
+    r.autoMatched.map((m) => [m.bsc.platformValue, m.sl.platformValue, m.confidence]).sort();
+
+  test("BSC's 'Topps Chrome X' pairs SportLots' 'Chrome X' though the Base label is stripped from it", () => {
+    const bsc = [item("Topps Chrome Authentics Relics", "b-ar")];
+    const sl = [item("Chrome Authentics Relics", "s-ar")];
+    // Without the manufacturer the gap stands: "authentics relic" is too far.
+    expect(computeMatches(bsc, sl, "Chrome").autoMatched).toEqual([]);
+    const r = computeMatches(bsc, sl, "Chrome", undefined, TOPPS);
+    expect(pairs(r)).toEqual([["b-ar", "s-ar", 0.9]]);
+    expect(r.unmatchedBsc).toEqual([]);
+    expect(r.unmatchedSl).toEqual([]);
+  });
+
+  test("a tie is never paired: two SportLots names that fold the same leave the BSC set unmatched", () => {
+    const r = computeMatches(
+      [item("Topps Chrome Authentics Relics", "b-ar")],
+      [item("Chrome Authentics Relics", "s1"), item("chrome authentics relics", "s2")],
+      "Chrome",
+      undefined,
+      TOPPS,
+    );
+    expect(r.autoMatched).toEqual([]);
+    expect(r.unmatchedBsc.map((b) => b.platformValue)).toEqual(["b-ar"]);
+    expect(r.unmatchedSl.map((s) => s.platformValue)).toEqual(["s1", "s2"]);
+  });
+
+  test("two BSC names that fold the same are twins too: neither takes the SportLots set", () => {
+    const r = computeMatches(
+      [item("Topps Chrome Gems", "b1"), item("Chrome Gems", "b2")],
+      [item("Chrome Gems", "s1")],
+      "Chrome",
+      undefined,
+      TOPPS,
+    );
+    // Alone, either would pair (the first test); together they tie.
+    expect(computeMatches([item("Chrome Gems", "b2")], [item("Chrome Gems", "s1")], "Chrome", undefined, TOPPS).autoMatched).toHaveLength(1);
+    expect(r.autoMatched).toEqual([]);
+    expect(r.unmatchedBsc.map((b) => b.platformValue)).toEqual(["b1", "b2"]);
+  });
+
+  test("it never changes a pair an earlier pass made, and folds whole tokens only", () => {
+    const bsc = [item("Rookie Autographs", "b-ra"), item("Toppstown Chrome Relics", "b-tt")];
+    const sl = [item("Chrome Rookie Autographs", "s-ra"), item("Chrome Chrome Relics", "s-tt")];
+    expect(pairs(computeMatches(bsc, sl, "Chrome", undefined, TOPPS))).toEqual(pairs(computeMatches(bsc, sl, "Chrome")));
+    // "Toppstown" is not "Topps": nothing is folded off it.
+    const r = computeMatches([item("Toppstown Authentics Relics", "b-tt")], [item("Authentics Relics", "s-tt")], undefined, undefined, TOPPS);
+    expect(r.autoMatched.filter((m) => m.confidence === 0.9)).toEqual([]);
+  });
+
+  test("a name that is only the manufacturer is kept whole", () => {
+    const r = computeMatches([item("Topps", "b-t")], [item("Chrome", "s-c")], undefined, undefined, TOPPS);
+    expect(r.autoMatched).toEqual([]);
+  });
+
+  test("an accent one marketplace writes and the other does not is the same name (Exposé)", () => {
+    const r = computeMatches([item("Exposé", "b-ex"), item("Exposé Red Refractor", "b-exr")], [item("Expose", "s-ex"), item("Expose Red Refractors", "s-exr")]);
+    expect(pairs(r)).toEqual([
+      ["b-ex", "s-ex", 1],
+      ["b-exr", "s-exr", 1],
+    ]);
   });
 });

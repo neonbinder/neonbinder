@@ -101,6 +101,7 @@ function card(opts: {
   players?: string[];
   teams?: string[];
   playersConflict?: { bsc: string[]; sportlots: string[] };
+  nameConflict?: { bsc: string; sportlots: string };
 }) {
   return {
     cardNumber: opts.cardNumber ?? "1",
@@ -112,6 +113,7 @@ function card(opts: {
     ...(opts.playersConflict
       ? { playersConflict: opts.playersConflict }
       : {}),
+    ...(opts.nameConflict ? { nameConflict: opts.nameConflict } : {}),
   };
 }
 
@@ -332,6 +334,26 @@ describe("the commit refuses an unsettled roster conflict (NEO-251)", () => {
         ],
       }),
     ).rejects.toThrow(/unsettled players conflict/);
+  });
+
+  // NEO-339 — the NAME conflict on the same terms: the Match Cards dialog
+  // refuses Confirm while either is unanswered, so a payload still carrying
+  // one skipped that question.
+  test("a card still carrying nameConflict is rejected too", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await expect(
+      t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          card({
+            players: ["Mike Yastrzemski"],
+            nameConflict: { bsc: "Mike Yastrzemski", sportlots: "Carl Yastrzemski" },
+          }),
+        ],
+      }),
+    ).rejects.toThrow(/unsettled name conflict/);
   });
 
   test("the same card without the field commits normally", async () => {

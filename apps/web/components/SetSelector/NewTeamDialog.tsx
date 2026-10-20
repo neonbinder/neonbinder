@@ -10,6 +10,12 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import NeonButton from "../modules/NeonButton";
 import { parseAliases } from "./NewLeagueForm";
+import {
+  entityExistsRefusal,
+  existingTeamLabel,
+  teamExistsText,
+  type ExistingTeam,
+} from "../../lib/entities/entity-exists";
 import NewTeamForm, {
   draftFullName,
   newTeamPrefill,
@@ -126,6 +132,14 @@ export default function NewTeamDialog({
   );
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * NEO-339 — the teams the last Create was refused for: an era of this name
+   * (or a team answering to it) is already on file, and `createOnly` never
+   * links. Offered as "Use …" buttons beside the refusal, so taking the row on
+   * file is one press. Cleared whenever `error` is.
+   */
+  const [onFile, setOnFile] = useState<ExistingTeam[]>([]);
+  const firstOnFileRef = useRef<HTMLButtonElement | null>(null);
 
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -242,6 +256,7 @@ export default function NewTeamDialog({
     }
     setCreating(true);
     setError(null);
+    setOnFile([]);
     try {
       const location = draft.location.trim();
       const aliases = parseAliases(draft.aliases);
@@ -268,6 +283,9 @@ export default function NewTeamDialog({
         // empty, for the same reason `location` is; the server bounds the
         // list and refuses over it with a message rendered below.
         ...(aliases.length > 0 ? { aliases } : {}),
+        // NEO-339 — this dialog CREATES. A team already on file under this
+        // name and era is refused with the rows it names, never handed back.
+        createOnly: true,
       });
       onCreated(id);
       onClose();
@@ -286,8 +304,15 @@ export default function NewTeamDialog({
        * mirroring `NAME_TAKEN:<id>`) and the copy is composed here, which is
        * also where it belongs: the server does not write UI strings.
        */
+      const onFileRefusal = entityExistsRefusal(err);
       const existing = teamEraRefusal(err);
-      if (existing) {
+      if (onFileRefusal?.code === "TEAM_EXISTS") {
+        setError(teamExistsText(onFileRefusal));
+        setOnFile(onFileRefusal.teams);
+        // `creating` is still true for this render, and the effect that holds
+        // focus on Create runs first; the frame after puts it on "Use …".
+        requestAnimationFrame(() => firstOnFileRef.current?.focus());
+      } else if (existing) {
         setConfirmNewEra(true);
         setError(
           `${fullName || draft.name.trim()} already exists for ${existing
@@ -402,6 +427,7 @@ export default function NewTeamDialog({
                 // A refusal described the values that were in the boxes; the next
                 // keystroke makes it stale, so it goes with them.
                 setError(null);
+                setOnFile([]);
                 setDraft((prev) => ({ ...prev, ...patch }));
               }}
               leagueSuggestion={leagueSuggestion}
@@ -465,6 +491,29 @@ export default function NewTeamDialog({
               <p id={errorId} role="alert" className="text-sm text-[#FF2EB3]">
                 {error}
               </p>
+            )}
+            {/* NEO-339 — the teams the refusal named, one press to take.
+                Outside the alert so it stays a sentence; "Use …", never
+                "Create …", so no name here reads like the primary action. */}
+            {onFile.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {onFile.map((team, i) => (
+                  <NeonButton
+                    key={team.id}
+                    ref={i === 0 ? firstOnFileRef : undefined}
+                    type="button"
+                    secondary
+                    size="2"
+                    aria-label={`Use ${existingTeamLabel(team)}, already on file`}
+                    onClick={() => {
+                      onCreated(team.id as Id<"teams">);
+                      onClose();
+                    }}
+                  >
+                    Use {existingTeamLabel(team)}
+                  </NeonButton>
+                ))}
+              </div>
             )}
 
             <div className="flex items-center gap-3">

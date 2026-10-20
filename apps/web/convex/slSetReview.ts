@@ -660,6 +660,23 @@ export const getVariantTypesOfSet = query({
 // ───────────────────────────────────────────────────────────────────────────
 
 /** What the save reads once at the start. */
+/**
+ * NEO-339 — the SportLots ids still waiting in the brand's review: sets Sync
+ * Sets could not place under any NB set, so no NB set has them yet. The
+ * Reconcile matcher never proposes one by name (`fetchRawOptionsForChain`).
+ * Empty when the id is not a brand or nothing waits.
+ */
+export const unsortedSlIdsOfBrand = internalQuery({
+  args: { manufacturerId: v.id("selectorOptions") },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    const brand = await brandOf(ctx, args.manufacturerId);
+    if (!brand) return [];
+    const doc = await reviewDocFor(ctx, brand.parentId, brand._id);
+    return (doc?.entries ?? []).map((e) => e.slId);
+  },
+});
+
 export const readReviewForSave = internalQuery({
   args: { manufacturerId: v.id("selectorOptions") },
   returns: v.union(

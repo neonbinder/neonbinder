@@ -19,6 +19,7 @@ import {
   type HeldRow,
 } from "../../components/SetSelector/held-elsewhere";
 import type { ClashExistingRow } from "../../components/SetSelector/ready-title-clashes";
+import type { PlatformLabelPair } from "../../convex/lib/platformLabelPairs";
 
 // ===== TYPES =====
 
@@ -86,6 +87,14 @@ export type ReadySet = {
    * renames: the operator still meant it as its own set.
    */
   ownSet?: boolean;
+  /**
+   * NEO-339 — ids the seed attached to a RESTORED row from an auto-match
+   * (NEO-306's free half): the matcher's proposal, never stored on the row.
+   * The dialog shows them as ordinary chips; `applyExplicitPairs` lets a
+   * spec's pair for the row replace them, and a pending decision decline
+   * them. A stored id is never listed here.
+   */
+  proposed?: { bsc?: string[]; sl?: string[] };
 };
 
 export type ReconciliationState = {
@@ -188,9 +197,12 @@ export type ReconciledResult = {
     };
     // Marketplace display name per id, so each slot gets a meaningful label.
     // With several sets on a side, "which one is this" is otherwise unanswerable.
+    // `{ id, label }` pairs, never an object keyed by the id: a marketplace id
+    // is not a valid Convex field name (`topps-chrome-exposé`), and one such
+    // key fails the whole Save. See convex/lib/platformLabelPairs.ts.
     platformLabels?: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
+      bsc?: PlatformLabelPair[];
+      sportlots?: PlatformLabelPair[];
     };
     metadata?: ItemMetadata;
     /**
@@ -619,10 +631,14 @@ export function seedReconciliationState(
       }
       if (owners.length === 1) {
         const row = ready[owners[0]];
+        const proposed = {
+          ...row.proposed,
+          [side]: [...(row.proposed?.[side] ?? []), free.platformValue],
+        };
         ready[owners[0]] =
           side === "bsc"
-            ? { ...row, bsc: [...row.bsc, free] }
-            : { ...row, sl: [...row.sl, free] };
+            ? { ...row, bsc: [...row.bsc, free], proposed }
+            : { ...row, sl: [...row.sl, free], proposed };
         (side === "bsc" ? usedBsc : usedSl).add(free.platformValue);
       } else {
         (side === "bsc" ? releasedBsc : releasedSl).push(free);
@@ -670,10 +686,8 @@ export function buildReconciledItems(
   ready: readonly ReadySet[],
 ): ReconciledResult["items"] {
   return ready.map((set) => {
-    const bscLabels: Record<string, string> = {};
-    for (const i of set.bsc) bscLabels[i.platformValue] = i.value;
-    const slLabels: Record<string, string> = {};
-    for (const i of set.sl) slLabels[i.platformValue] = i.value;
+    const bscLabels = labelPairsOf(set.bsc);
+    const slLabels = labelPairsOf(set.sl);
 
     return {
       // Undefined for a set built in this dialog, which is exactly right:
@@ -703,6 +717,11 @@ export function buildReconciledItems(
       ...(set.ownSet ? { identityOnly: true as const } : {}),
     };
   });
+}
+
+/** One side's labels as `{ id, label }` pairs; the id stays a value. */
+function labelPairsOf(items: readonly PlatformItem[]): PlatformLabelPair[] {
+  return items.map((i) => ({ id: i.platformValue, label: i.value }));
 }
 
 // ===== EXPLICIT PAIRS (set-building tool only) =====
@@ -781,6 +800,13 @@ function sameIds(items: readonly PlatformItem[], ids: readonly string[]): boolea
  *    disbanded — the spec lists every set it wants, so one it leaves out is
  *    the operator's ✕ — and its ids land in Pending, where a pending decision
  *    has to name them;
+ *  - a restored row carrying the matcher's proposal (`ReadySet.proposed`, an
+ *    id the seed attached and the row never stored) is claimed by a pair that
+ *    names every id the row STORES and differs only on a proposal's side
+ *    ("BSC-only", or another SportLots id): the pair replaces the proposal
+ *    (its ids leave for Pending, the pair's own ids join), so no second row
+ *    and no title clash. Two such rows make the pair ambiguous. A stored id
+ *    is never taken off a row (invariant 5);
  *  - a restored row no pair claims is left alone and reported;
  *  - every other pair becomes a new set: `PROMOTE_PAIR` on its first id per
  *    side (or `PROMOTE_SOLO` when it has one side, which is "Make its own
@@ -789,7 +815,9 @@ function sameIds(items: readonly PlatformItem[], ids: readonly string[]): boolea
  *    number of NB sets, exactly as the dialog's "already mapped" reveal
  *    allows;
  *  - pending decisions run last, in order: "own-set" is `PROMOTE_SOLO`,
- *    "leave" does nothing.
+ *    "leave" does nothing. One naming an id that sits on an unclaimed
+ *    restored row only as the matcher's proposal declines it first (the
+ *    id goes back to Pending), so the spec wins over the auto-match.
  *
  * New sets are appended in pair order, which is the order Save sends them.
  */
@@ -863,13 +891,31 @@ export function applyExplicitPairs(
     }
   }
 
+  // A pair for a restored row that differs from it only by the matcher's
+  // proposal replaces the proposal (see the doc comment).
+  const replacing = new Map<ExplicitPair, string>();
+  for (const pair of valid) {
+    if (claimed.has(pair) || ambiguousPairs.includes(pair)) continue;
+    const matches = initial.ready.filter(
+      (set) => !claimedKeys.has(set.key) && replacesProposal(set, pair),
+    );
+    if (matches.length > 1) {
+      ambiguousPairs.push(pair);
+      continue;
+    }
+    if (matches.length === 1) {
+      replacing.set(pair, matches[0].key);
+      claimedKeys.add(matches[0].key);
+    }
+  }
+
   // Auto-matches the spec leaves out go back to Pending; restored rows stay.
   const disbanded: ReadySet[] = [];
-  const unaddressedReady: ReadySet[] = [];
+  const unaddressedKeys: string[] = [];
   for (const set of initial.ready) {
     if (claimedKeys.has(set.key)) continue;
     if (set.existingId) {
-      unaddressedReady.push(set);
+      unaddressedKeys.push(set.key);
       continue;
     }
     disbanded.push(set);
@@ -879,6 +925,26 @@ export function applyExplicitPairs(
   const ambiguous = new Set(ambiguousPairs);
   for (const pair of valid) {
     if (ambiguous.has(pair)) continue;
+    const replacedKey = replacing.get(pair);
+    if (replacedKey !== undefined) {
+      const set = state.ready.find((x) => x.key === replacedKey)!;
+      const want = { bsc: new Set(pair.bsc ?? []), sl: new Set(pair.sportlots ?? []) };
+      // The pair's own ids join first, so the row is never emptied on the way.
+      for (const side of ["bsc", "sl"] as const) {
+        const have = new Set(set[side].map((i) => i.platformValue));
+        for (const id of want[side]) {
+          if (!have.has(id)) dispatch({ type: "ATTACH", key: replacedKey, side, item: known[side].get(id)! });
+        }
+      }
+      for (const side of ["bsc", "sl"] as const) {
+        for (const id of set.proposed?.[side] ?? []) {
+          if (!want[side].has(id)) dispatch({ type: "DETACH", key: replacedKey, side, platformValue: id });
+        }
+      }
+      const now = state.ready.find((x) => x.key === replacedKey);
+      if (now && now.title !== pair.name) dispatch({ type: "RENAME", key: replacedKey, title: pair.name });
+      continue;
+    }
     const claimedKey = claimed.get(pair);
     if (claimedKey !== undefined) {
       const set = state.ready.find((s) => s.key === claimedKey);
@@ -914,6 +980,13 @@ export function applyExplicitPairs(
       unmatchedPending.push({ entry, reason: "not-in-fetch" });
       continue;
     }
+    // The matcher's proposal on a row the spec does not claim: declined.
+    for (const key of unaddressedKeys) {
+      const set = state.ready.find((x) => x.key === key);
+      if (set?.proposed?.[side]?.includes(entry.id) && set[side].some((i) => i.platformValue === entry.id)) {
+        dispatch({ type: "DETACH", key, side, platformValue: entry.id });
+      }
+    }
     const list = side === "bsc" ? state.pendingBsc : state.pendingSl;
     const item = list.find((i) => i.platformValue === entry.id);
     if (!item) {
@@ -937,6 +1010,11 @@ export function applyExplicitPairs(
     }
   }
 
+  // As they stand now (a declined proposal no longer on them).
+  const unaddressedReady = unaddressedKeys
+    .map((key) => state.ready.find((x) => x.key === key))
+    .filter((x): x is ReadySet => x !== undefined);
+
   return {
     state,
     unmatchedPairs,
@@ -946,4 +1024,27 @@ export function applyExplicitPairs(
     unaddressedReady,
     disbanded,
   };
+}
+
+/**
+ * Whether `pair` is a restored row's own answer to the matcher's proposal on
+ * it: the row carries a proposal, the pair names every id the row STORES
+ * (at least one), and on a side the matcher proposed nothing the pair names
+ * exactly the stored ids. On a proposal's side it may name the proposal,
+ * other ids, or none.
+ */
+function replacesProposal(set: ReadySet, pair: ExplicitPair): boolean {
+  if (!set.existingId || !set.proposed) return false;
+  const proposedOn = (side: Side) => new Set(set.proposed?.[side] ?? []);
+  if (proposedOn("bsc").size + proposedOn("sl").size === 0) return false;
+  let stored = 0;
+  for (const side of ["bsc", "sl"] as const) {
+    const proposals = proposedOn(side);
+    const storedIds = set[side].map((i) => i.platformValue).filter((id) => !proposals.has(id));
+    const want = new Set(side === "bsc" ? (pair.bsc ?? []) : (pair.sportlots ?? []));
+    stored += storedIds.length;
+    if (!storedIds.every((id) => want.has(id))) return false;
+    if (proposals.size === 0 && want.size !== storedIds.length) return false;
+  }
+  return stored > 0;
 }

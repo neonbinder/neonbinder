@@ -242,17 +242,13 @@ with the set's path; the draft comes back with:
 - `spec`: the whole set, every **proposal** filled in, every open decision
   left out. The default summary result carries `template` instead while
   anything is open (the spec plus a fill-in per open decision), never both;
-- `proposals`: what the draft filled and why (a sole or pre-selected Base
-  candidate, the Reconcile dialog's own auto-matches, an explicit `leave` for
-  every pending marketplace set nobody pairs, Group Parallels prefix
+- `proposals`: what the draft filled and why (the Base candidate the dialog
+  pre-selects, the Reconcile dialog's own auto-matches, Group Parallels'
   suggestions, Match Cards' keep-all defaults, `create` for a player or team
-  no NB row is named like, observed counts, parallel builds). The `leave`
-  entries are one spec line per marketplace id (no wildcard), each with the
-  marketplace's `name` for the set (display only; matched by id), so a BSC
-  set and a SportLots set that belong together can be paired from the draft
-  alone: replace their two `leave`s with one `sync.pairs` entry. One
-  `reconcile-leave` proposal per variant type gives the counts; `own-set` is
-  never proposed (Jason, 2026-10-11);
+  no NB row is named like, observed counts, parallel builds). A pending
+  marketplace set nobody pairs is never a proposal: inside the set's own
+  scope it is an open decision (below), outside it it is counted in
+  `leftUnasked`;
 - `leftUnasked`: per variant type, the Pending sets the draft does not list.
   SportLots lists a whole brand-year at the insert level, so every fetch
   returns every product of the brand-year (about a thousand sets for 2014
@@ -264,10 +260,21 @@ with the set's path; the draft comes back with:
   in Pending without asking, exactly as Save does, and says so in the step's
   detail;
 - `openDecisions` and `template`: what the operator must answer (a Base side
-  with several candidates and no pre-selection; a card disagreement; any
-  player or team with an existing NB candidate, never linked by name; a
-  checklist the draft could not preview), each as a `<…>` fill-in in the
-  template. A card disagreement is answered with a side (`choose: "bsc"` or
+  the dialog would not pre-select, a lone candidate that is not an exact name
+  match included, with its candidates listed; a Group Parallels parent whose
+  name another row shares; a card disagreement; any player or team with an
+  existing NB candidate, never linked by name; a
+  checklist the draft could not preview; every marketplace set in the set's
+  own scope, BSC's listing or the SportLots filter, that nobody pairs), each
+  as a `<…>` fill-in in the template. An unpaired set (`reconcile-unpaired`)
+  is one `sync.pending` entry per marketplace id, with the marketplace's
+  `name` (display only; matched by id). Answer `leave` (it stays in Pending),
+  `own-set` (raise that type's `expectRows`, and for an Insert type with a
+  `group`, `expectUngrouped`, by one), or pair it: move its id into a row in
+  `sync.pairs` (a row with the other marketplace's ids only, or a new pair
+  with both sets' ids) and drop the entry. Its candidates are the names that
+  read alike; a single likely pair comes first, with what the two sets' cards
+  say (one preview). It is a suggestion for the operator, never an answer. A card disagreement is answered with a side (`choose: "bsc"` or
   `"sportlots"`), or, when the pair is two different cards that share a
   number, by moving it to `pairing.unlink` (the Match Cards dialog's Unlink:
   both cards are kept apart). A player name that only one side of an unanswered card
@@ -279,9 +286,7 @@ with the set's path; the draft comes back with:
   candidate's birth year (`José Rodriguez (born 2001) [<id>]`): a link by a
   shared name alone stops as ambiguous, and `birthYear` names the one born
   that year (none or several born that year stops too, listing every
-  same-name birth year). To make a pending set its own set instead, change its `leave` to
-  `own-set` in the spec and raise that type's `expectRows` (and, for an
-  Insert type with a `group`, `expectUngrouped`) by one;
+  same-name birth year);
 - `autographFormats` (NEO-345): every drafted checklist whose cards carry
   "AU", which the Set Builder would ask "on card or sticker?", with `at` (where
   `autographFormat` goes in the spec), the row, the card count, the prompt's
@@ -366,9 +371,11 @@ other than the set's own listing (a NEO-189 extra), or any checklist on a set
 with no BSC listing; those checklists are open decisions. SportLots sets
 another set of the brand holds are read with the same walk the Reconcile
 dialog's held-id query makes. Group Parallels suggestions are drafted for
-Insert types only, and they go by name: a suggested parallel that shares no
-card number with its insert (an autograph insert named after its set) is
-only found when apply builds it, and comes back as a `no-shared-numbers`
+Insert types only, and they go by name. Only a suggested parallel that
+roots a family of its own is weighed by card numbers in the draft (it stays
+top level when its preview shares no number with its parent); any other
+suggested parallel that shares no card number with its insert (an autograph
+insert named after its set) is only found when apply builds it, and comes back as a `no-shared-numbers`
 open decision rather than an empty "done". Keep it its own set with
 `group.topLevel` and a row of its own. A name is decided at the first
 checklist apply reaches it in; a later checklist does not repeat it.
@@ -377,9 +384,11 @@ checklist apply reaches it in; a later checklist does not repeat it.
 parallel with the runner pool, required by the `e2e` gate. Fixture: 2024
 Topps Chrome Black (`apps/web/playwright/seed/oneshot.spec.json`, the committed spec;
 `oneshot.expect.json`, its expectations). `setbuild oneshot-smoke` drafts it,
-requires **no** open decision (the draft settles the whole fixture itself),
+requires every open decision to be the operator's own (a card conflict, a
+review name with NB candidates, an unpaired set in the set's own scope),
 merges the draft with the committed spec (any `<…>` from the committed file,
-everything else from the draft; `credentials` from the committed file), and
+an unpaired set's by its side and id; everything else from the draft;
+`credentials` from the committed file), and
 checks the merge four ways:
 - with every `leave` taken out of every `sync.pending`, and every checklist's
   review answers taken out, the merge must have the committed spec's digest

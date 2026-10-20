@@ -134,7 +134,7 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.listingDescription).toBe("Mint condition. Ships in a top loader.");
   });
 
-  test("clears fields via empty array / false / empty string", async () => {
+  test("clears fields via empty array / false / empty string (a title is never blank — NEO-339)", async () => {
     const { asAdmin, variantTypeId, cardId } = await seed();
 
     // First set values, then clear them.
@@ -151,9 +151,12 @@ describe("updateCard structured fields (NEO-25)", () => {
       attributes: [],
       isRookie: false,
       isRelic: false,
-      listingTitle: "",
       listingDescription: "",
     });
+    // NEO-339: the title is the one string field "" cannot clear.
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, { id: cardId, listingTitle: "" }),
+    ).rejects.toThrow(/can't be blank/);
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -163,7 +166,7 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.attributes).toEqual([]);
     expect(card.isRookie).toBe(false);
     expect(card.isRelic).toBe(false);
-    expect(card.listingTitle).toBe("");
+    expect(card.listingTitle).toBe("Some title");
     expect(card.listingDescription).toBe("");
   });
 
@@ -408,31 +411,30 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
     expect(cards.find((c) => c._id === cardId)!.cardVariation).toBe(longVariation);
   });
 
-  test("a whitespace-only title trims to empty and clears the field, same as sending \"\"", async () => {
-    // Trim happens BEFORE the field is stored, so "   " is not a 3-character
-    // title that happens to be invisible — it is the same write as "", which
-    // the panel already treats as "clear the title" (see the round-trip
-    // describe block above). Nothing about the cap logic should special-case
-    // whitespace: 0 <= 80 either way, so it is never the REJECTED path, only
-    // the "what gets stored" one.
+  test("a whitespace-only title trims to empty and is refused, same as sending \"\" (NEO-339)", async () => {
+    // Trim happens BEFORE the check, so "   " is not a 3-character title that
+    // happens to be invisible — it is the same write as "", and since NEO-339
+    // a blank title is refused rather than stored.
     const { asAdmin, variantTypeId, cardId } = await seed();
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
       listingTitle: "A real title",
     });
 
-    await asAdmin.mutation(api.selectorOptions.updateCard, {
-      id: cardId,
-      listingTitle: "    ",
-    });
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "    ",
+      }),
+    ).rejects.toThrow(/can't be blank/);
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
       selectorOptionId: variantTypeId,
     });
-    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe("");
+    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe("A real title");
   });
 
-  test("clearing to whitespace-only clears listingTitleTruncated too — it is a changed title", async () => {
+  test("a refused blank title leaves listingTitleTruncated alone — nothing was written", async () => {
     const { asAdmin, variantTypeId, cardId } = await seed();
     await asAdmin.run(async (ctx) => {
       await ctx.db.patch(cardId, {
@@ -441,17 +443,19 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
       });
     });
 
-    await asAdmin.mutation(api.selectorOptions.updateCard, {
-      id: cardId,
-      listingTitle: "   ",
-    });
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "   ",
+      }),
+    ).rejects.toThrow(/can't be blank/);
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
       selectorOptionId: variantTypeId,
     });
     const card = cards.find((c) => c._id === cardId)!;
-    expect(card.listingTitle).toBe("");
-    expect(card.listingTitleTruncated).toBeUndefined();
+    expect(card.listingTitle).toBe("2024 Topps Chrome An Absurdly Long Player Full Name #17");
+    expect(card.listingTitleTruncated).toBe(true);
   });
 });
 
@@ -806,8 +810,9 @@ describe("updateCard printRun — boundary values beyond the basic sweep", () =>
 // `pendingPlayerNames`/`pendingTeamNames` are names the card carries that link
 // to nothing: typed by an operator on a hand-added card, or left unresolved by
 // a commit whose review never ruled on them. The attention walker's fixer
-// resolves them — by linking a real player/team, or by deciding the name was
-// never one — and then has to be able to say so. These two arguments are how.
+// resolves them by linking a real player/team, and then has to be able to say
+// so. These two arguments are how. (NEO-339: retiring a side's names without
+// linking that side is refused; see convex/createOnly.test.ts.)
 // ===========================================================================
 
 describe("updateCard pending-name arguments (NEO-221)", () => {
@@ -816,15 +821,19 @@ describe("updateCard pending-name arguments (NEO-221)", () => {
     // (addCustomCard, the commit chunk), and `deriveCardAttention` reads `[]`
     // and absent identically — but a stored `[]` would still be a second
     // spelling of the same state for every future reader to get wrong.
-    const { asAdmin, cardId } = await seed();
+    const { asAdmin, cardId, playerA } = await seed();
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
       pendingPlayerNames: ["Never Reviewed"],
       pendingTeamNames: ["Reno Aces"],
     });
 
+    // NEO-339: a side's names are retired by LINKING it — the seed card has
+    // its team, and this write links the player (see convex/createOnly.test.ts
+    // for the refusal when it does not).
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
+      playerIds: [playerA],
       pendingPlayerNames: [],
       pendingTeamNames: [],
     });
@@ -1244,14 +1253,17 @@ describe("updateCard pending-name bounds (NEO-246)", () => {
   test("an all-whitespace list clears the field, exactly like []", async () => {
     // It normalises to `[]`, and `[]` is stored as the ABSENCE of the field —
     // the one spelling of "none" every other writer of these two uses.
-    const { asAdmin, cardId } = await seed();
+    const { asAdmin, cardId, playerA } = await seed();
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
       pendingPlayerNames: ["Never Reviewed"],
     });
 
+    // Linked in the same write: NEO-339 refuses retiring a side's names
+    // without a link on it.
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
+      playerIds: [playerA],
       pendingPlayerNames: ["   ", ""],
     });
 

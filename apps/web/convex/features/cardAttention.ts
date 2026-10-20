@@ -51,8 +51,10 @@ export type AttentionItem =
   // reaches this state is an operator edit made before `updateCard` gained its
   // cap, since the generator cannot produce one.
   | { kind: "titleOverLimit"; length: number }
-  // NEO-101: the auto-generated title's core was cut at a word boundary to fit
-  // (see `cardChecklist.listingTitleTruncated`). Listable as-is; a human should
+  // NEO-101: the auto-generated title's core gave way to fit: a set, maker or
+  // year word or the card number was left out (Jason, 2026-10-19: those go
+  // before the players, the insert's or parallel's name and the print run;
+  // see `cardChecklist.listingTitleTruncated`). Listable as-is; a human should
   // put the missing identifying words back.
   | { kind: "titleTruncated" }
   // NEO-101: an aspect-shaped field is longer than eBay's item-specific value

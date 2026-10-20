@@ -21,6 +21,7 @@ import {
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import { BLANK_LISTING_TITLE_MESSAGE } from "../../lib/cards/listing-title-gate";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 
 const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
@@ -468,6 +469,10 @@ export default function CardDetailPanel({
           `Not saved — the title is over the ${LISTING_TITLE_MAX}-character limit.`,
         );
       }
+      // NEO-339 — a blank title is refused before the write, in the server's
+      // own words (lib/cards/listing-title-gate.ts); `updateCard` refuses it
+      // too.
+      if (trimmed === "") throw new Error(BLANK_LISTING_TITLE_MESSAGE);
       await commitField({ listingTitle: trimmed }, "Saved Card title");
     },
   });

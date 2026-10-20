@@ -12,7 +12,7 @@
  */
 
 import type { Id } from "../../convex/_generated/dataModel";
-import { detectGroupings } from "../../components/SetSelector/parallelDetection";
+import { detectGroupings, normalizeName } from "../../components/SetSelector/parallelDetection";
 
 export type RowId = Id<"selectorOptions">;
 
@@ -95,7 +95,19 @@ export type GroupingAction =
    */
   | { type: "SELECT_RANGE"; rowId: RowId; list: RowId[]; from?: RowId }
   | { type: "CLEAR_SELECTION" }
-  | { type: "ACCEPT_ALL_SUGGESTIONS" };
+  | { type: "ACCEPT_ALL_SUGGESTIONS" }
+  /**
+   * NEO-339 — the card-number evidence came back after the session opened
+   * (`groupWithFamilyRootEvidence`, lib/set-build/family-roots.ts): its
+   * grouping for the same tree. Applied only to rows the operator has not
+   * touched (see `applyFamilyRootEvidence`).
+   */
+  | {
+      type: "APPLY_FAMILY_ROOT_EVIDENCE";
+      grouping: Pick<InitialGrouping, "placement"> & {
+        held: ReadonlyArray<{ root: RowId; parent: RowId }>;
+      };
+    };
 
 type Action = GroupingAction;
 
@@ -241,10 +253,58 @@ export function groupingReducer(state: State, action: Action): State {
       return { ...state, ...noSelection };
     case "ACCEPT_ALL_SUGGESTIONS":
       return { ...state, suggested: new Set() };
+    case "APPLY_FAMILY_ROOT_EVIDENCE":
+      return applyFamilyRootEvidence(state, action.grouping).state;
     default:
       return state;
   }
 }
+/**
+ * NEO-339 — fold the card-number evidence into a session already open: each
+ * held family root the operator has not touched (still `suggested`, where the
+ * plain prefix rule put it) comes back up to the top level, and each row the
+ * evidence groups under such a root moves there, still `suggested`, when the
+ * operator has not touched it either. A root the operator already moved,
+ * accepted or rejected keeps their call, and so do the rows of its family. A
+ * root that comes up holding parallels leaves the selection (it can no longer
+ * be picked up). Returns the roots it applied. Pure.
+ */
+export function applyFamilyRootEvidence(
+  state: State,
+  grouping: Pick<InitialGrouping, "placement"> & {
+    held: ReadonlyArray<{ root: RowId; parent: RowId }>;
+  },
+): { state: State; applied: RowId[] } {
+  const applied = grouping.held
+    .map((h) => h.root)
+    .filter((root) => state.suggested.has(root));
+  if (applied.length === 0) return { state, applied };
+  const roots = new Set(applied);
+  const placement = new Map(state.placement);
+  const suggested = new Set(state.suggested);
+  for (const root of roots) {
+    placement.set(root, { kind: "ungrouped" });
+    suggested.delete(root);
+  }
+  for (const [id, p] of grouping.placement) {
+    if (p.kind !== "child" || !roots.has(p.parentId)) continue;
+    if (!state.suggested.has(id)) continue;
+    placement.set(id, p);
+  }
+  const next: State = { ...state, placement, suggested };
+  const keep = (id: RowId) => isMovableIn(next, id);
+  const anchor = state.anchor && keep(state.anchor) ? state.anchor : null;
+  return {
+    state: {
+      ...next,
+      selected: state.selected.filter(keep),
+      anchor,
+      rangeBase: anchor ? state.rangeBase.filter(keep) : [],
+    },
+    applied,
+  };
+}
+
 /** One row of the tree, as much of it as the grouping reads. */
 export type InsertTreeRow = { _id: RowId; value: string };
 
@@ -270,6 +330,16 @@ export type InitialGrouping = {
    * with `suggest: false`.
    */
   familyRoots: Map<RowId, RowId>;
+  /**
+   * NEO-339 — a suggested parent whose name another row of the tree shares
+   * (`normalizeName`, inserts and parallels alike): a tie. The rows that
+   * would have grouped under it are left where they stand, unsuggested, so
+   * the operator picks the parent (CLAUDE.md invariant 8: a tie is never
+   * given to the first candidate). Parent id → the rows it would have taken,
+   * and every row carrying its name (itself included), in tree order. Empty
+   * with `suggest: false`.
+   */
+  tiedParents: Map<RowId, { children: RowId[]; sharers: RowId[] }>;
 };
 
 /**
@@ -277,9 +347,12 @@ export type InitialGrouping = {
  * `suggest: false` — the prefix suggestions (`detectGroupings`) placed and
  * marked `suggested`, which is what the modal opens on. The set-build tool's
  * apply passes `suggest: false`: a spec names every move it wants, and a row
- * it does not name stays where it is. Its draft passes `holdFamilyRoots`, the
- * family roots its previews show share no card number with their parent (see
- * `detectGroupings`); the modal never does, so it opens on the plain rule.
+ * it does not name stays where it is. `holdFamilyRoots` are the family roots
+ * whose cards share no card number with their parent (see `detectGroupings`);
+ * the modal and the draft both find them with
+ * `groupWithFamilyRootEvidence` (./family-roots.ts), which calls this. A
+ * suggested parent whose name another row shares is a tie (`tiedParents`):
+ * nothing is suggested under it.
  */
 export function buildInitialState(
   tree: InsertTree,
@@ -289,6 +362,7 @@ export function buildInitialState(
   const placement = new Map<RowId, Placement>();
   const suggested = new Set<RowId>();
   const familyRoots = new Map<RowId, RowId>();
+  const tiedParents = new Map<RowId, { children: RowId[]; sharers: RowId[] }>();
 
   for (const { insert, parallels } of tree) {
     rows.set(insert._id, {
@@ -311,7 +385,7 @@ export function buildInitialState(
     }
   }
 
-  if (opts.suggest === false) return { rows, placement, suggested, familyRoots };
+  if (opts.suggest === false) return { rows, placement, suggested, familyRoots, tiedParents };
 
   // Auto-suggest groupings only among currently-ungrouped inserts. Fixed
   // parents (had parallels at open) can be parents but can't themselves be
@@ -327,7 +401,21 @@ export function buildInitialState(
   const detection = detectGroupings(candidates, excludeAsChild, {
     holdFamilyRoots: opts.holdFamilyRoots,
   });
+  // Every row's name, inserts and parallels alike: a parent whose name
+  // another row carries is a tie, never suggested.
+  const byName = new Map<string, RowId[]>();
+  for (const info of rows.values()) {
+    const key = normalizeName(info.value);
+    const list = byName.get(key) ?? [];
+    list.push(info._id);
+    byName.set(key, list);
+  }
   for (const [parentId, childIds] of detection.suggestions) {
+    const sharers = byName.get(normalizeName(rows.get(parentId)!.value)) ?? [];
+    if (sharers.length > 1) {
+      tiedParents.set(parentId, { children: [...childIds], sharers });
+      continue;
+    }
     for (const childId of childIds) {
       placement.set(childId, { kind: "child", parentId });
       suggested.add(childId);
@@ -335,7 +423,7 @@ export function buildInitialState(
   }
   for (const [root, parent] of detection.familyRoots) familyRoots.set(root, parent);
 
-  return { rows, placement, suggested, familyRoots };
+  return { rows, placement, suggested, familyRoots, tiedParents };
 }
 
 export function computeDiff(state: State): {

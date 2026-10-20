@@ -131,3 +131,6 @@
 - [React Compiler lint flips on unrelated edits](reference_react_compiler_lint_flips_on_unrelated_edits.md) — CardChecklist: hook-derived local into an import at render = 8 far-away errors; bisect via eslint --stdin, run 3x
 - [SL set has no product id](reference_sl_set_has_no_product_id.md) — label auto-match can pair two products; confirm by the pair preview's cards; SL review often absent
 - [New attention kind fixture ripple](reference_new_attention_kind_fixture_ripple.md) — a kind firing on an empty field reds ~80 unit tests + E2E badge/pill/walker specs; fixture defaults; walker answered is per question
+- [Nested act defers the render a helper reads](reference_nested_act_defers_the_render_a_helper_reads.md) — click-then-query helpers fail inside an outer `await act`; ship a sync and an async form (press-save.ts)
+- [Listing title keep order](reference_listing_title_keep_order.md) — card number now droppable; squeeze title tests with long players, not a long number
+- [aria-disabled hold stalls shared E2E helpers](reference_aria_disabled_gate_stalls_shared_e2e_helpers.md) — getByRole disabled:false honours aria-disabled; a new hold on Confirm card matches stalls fetchChecklistToWizard

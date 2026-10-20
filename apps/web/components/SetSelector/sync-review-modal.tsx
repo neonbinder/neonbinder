@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../modules/confirm-dialog";
 import type { Id } from "../../convex/_generated/dataModel";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { MAX_OPERATOR_DELETE_IDS } from "../../lib/cards/commit-limits";
+import { needsSyncReview as sharedNeedsSyncReview } from "../../lib/set-build/sync-review";
 
 /**
  * NEO-203 phase C — the content-diff review.
@@ -167,13 +168,9 @@ const fieldKey = (index: number, name: string) => `${index}#${name}`;
  * exactly the kind of thing that must not happen silently.
  */
 export function needsSyncReview(diff: SyncDiff): boolean {
-  return (
-    diff.conflicts.length > 0 ||
-    diff.removedUpstream.fullyOrphaned.length > 0 ||
-    diff.cards.some(
-      (c) => c.bucket === "formattingOnly" || c.bucket === "contentChanges",
-    )
-  );
+  // NEO-339 — the rule lives in lib/set-build/sync-review.ts, shared with the
+  // set-building tool's re-sync guard, so the two cannot drift.
+  return sharedNeedsSyncReview(diff);
 }
 
 /**

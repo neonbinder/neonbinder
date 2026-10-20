@@ -9,7 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation, useQuery } from "convex/react";
 import {
   DndContext,
   DragOverlay,
@@ -38,6 +38,7 @@ import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { keyboardAwareCollision } from "../../lib/dnd/keyboard-aware-collision";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { chunkGroupingPlan } from "../../convex/parallelGroupingPlan";
+import { checkFamilyRoots } from "./familyRootEvidence";
 
 /** "1 pending move" / "2 pending moves". */
 function plural(n: number, noun: string): string {
@@ -306,6 +307,56 @@ function ModalSkeleton() {
   );
 }
 
+// ===== CARD-NUMBER CHECK =====
+
+type CheckState =
+  | { status: "idle" }
+  | { status: "checking"; done: number; total: number }
+  | { status: "done"; held: number; unknown: number };
+
+type CheckAction =
+  | { type: "RESET" }
+  | { type: "PROGRESS"; done: number; total: number }
+  | { type: "DONE"; held: number; unknown: number };
+
+function checkReducer(_state: CheckState, action: CheckAction): CheckState {
+  switch (action.type) {
+    case "RESET":
+      return { status: "idle" };
+    case "PROGRESS":
+      return { status: "checking", done: action.done, total: action.total };
+    case "DONE":
+      return { status: "done", held: action.held, unknown: action.unknown };
+  }
+}
+
+/** What the check strip says: the offer, the progress, or the answer. */
+function checkStripText(check: CheckState, unchecked: number): string {
+  if (check.status === "checking") {
+    return check.total > 0
+      ? `Checking card numbers… ${check.done} of ${check.total} checklists read`
+      : "Checking card numbers…";
+  }
+  if (check.status === "done") {
+    const held =
+      check.held === 0
+        ? "none is an insert of its own, so the suggestions stand."
+        : check.held === 1
+          ? "1 suggested parallel is an insert of its own, so it stays on top with its parallels under it."
+          : `${check.held} suggested parallels are inserts of their own, so they stay on top with their parallels under them.`;
+    const unknown =
+      check.unknown === 0
+        ? ""
+        : check.unknown === 1
+          ? " 1 couldn't be compared and keeps its name match."
+          : ` ${check.unknown} couldn't be compared and keep their name match.`;
+    return `Card numbers checked: ${held}${unknown}`;
+  }
+  return unchecked === 1
+    ? "1 suggested parallel has parallels of its own, so it might be an insert. Its card numbers will tell."
+    : `${unchecked} suggested parallels have parallels of their own, so they might be inserts. Their card numbers will tell.`;
+}
+
 // ===== MAIN =====
 
 type ParallelGroupingModalProps = {
@@ -324,7 +375,24 @@ export default function ParallelGroupingModal({
     isOpen ? { variantTypeId } : "skip",
   );
   const apply = useMutation(api.selectorOptions.applyParallelGroupings);
+  const convex = useConvex();
   const [state, dispatch] = useReducer(reducer, emptyState);
+  /**
+   * NEO-339 — the family roots this tree reports (`buildInitialState`'s
+   * `familyRoots`): a suggested parallel that longer names extend, which may
+   * be an insert of its own. The prefix rule places them; "Check card
+   * numbers" weighs them with the shared card-number rule
+   * (lib/set-build/family-roots.ts, the set-building draft's own), on the
+   * operator's press, never on open: a check previews marketplace checklists.
+   */
+  const familyRootsInTree = useMemo(
+    () => (tree ? buildInitialState(tree).familyRoots : new Map<RowId, RowId>()),
+    [tree],
+  );
+  const [check, checkDispatch] = useReducer(checkReducer, { status: "idle" });
+  /** Bumped on every (re)open and RESET, so a check that outlives its session lands nowhere. */
+  const sessionRef = useRef(0);
+  const checkButtonRef = useRef<HTMLButtonElement | null>(null);
   const [confirming, setConfirming] = useState(false);
   /**
    * NEO-300 (a11y) — Save stays FOCUSABLE while the save is in flight.
@@ -378,6 +446,8 @@ export default function ParallelGroupingModal({
     if (state.hasInitialized) return;
     if (!tree) return;
     const init = buildInitialState(tree);
+    sessionRef.current += 1;
+    checkDispatch({ type: "RESET" });
     dispatch({
       type: "INIT",
       rows: init.rows,
@@ -389,9 +459,45 @@ export default function ParallelGroupingModal({
   // Reset reducer when the modal closes so a re-open starts fresh.
   useEffect(() => {
     if (!isOpen && state.hasInitialized) {
+      sessionRef.current += 1;
       dispatch({ type: "RESET" });
     }
   }, [isOpen, state.hasInitialized]);
+
+  /** Family roots the operator has not touched yet: what a check can still move. */
+  const uncheckedRoots = useMemo(
+    () => [...familyRootsInTree.keys()].filter((r) => state.suggested.has(r)),
+    [familyRootsInTree, state.suggested],
+  );
+
+  const handleCheckCardNumbers = useCallback(async () => {
+    if (!tree || check.status === "checking") return;
+    const session = sessionRef.current;
+    checkDispatch({ type: "PROGRESS", done: 0, total: 0 });
+    const result = await checkFamilyRoots(
+      convex,
+      tree,
+      familyRootsInTree,
+      (done, total) => {
+        if (session === sessionRef.current) {
+          checkDispatch({ type: "PROGRESS", done, total });
+        }
+      },
+    );
+    if (session !== sessionRef.current) return;
+    // The reducer folds the answer into the CURRENT session: only rows the
+    // operator has not touched move (applyFamilyRootEvidence).
+    dispatch({ type: "APPLY_FAMILY_ROOT_EVIDENCE", grouping: result });
+    // The button goes once the check is done: keep focus in the dialog.
+    if (document.activeElement === checkButtonRef.current) {
+      headingRef.current?.focus();
+    }
+    checkDispatch({
+      type: "DONE",
+      held: result.held.length,
+      unknown: result.unknown.length,
+    });
+  }, [tree, check.status, convex, familyRootsInTree]);
 
   // NEO-300 — the body is NEVER scrolled by this component. An effect here
   // used to `scrollIntoView` the LAST ✕ in the list on open and on every
@@ -746,6 +852,7 @@ export default function ParallelGroupingModal({
   // without this the body painted zero rows for that commit.
   const isLoading = tree === undefined || !state.hasInitialized;
   const suggestionCount = state.suggested.size;
+  const showCheckStrip = check.status !== "idle" || uncheckedRoots.length > 0;
   const hasSuggestions = suggestionCount > 0;
 
   const activeDragValue = activeDragId
@@ -903,6 +1010,34 @@ export default function ParallelGroupingModal({
             </NeonButton>
           )}
         </div>
+
+        {/* NEO-339 — the card-number check: offered while a suggested
+            parallel that roots its own family is still untouched, run only
+            on the press. The status line is always mounted so the progress
+            and the answer are announced. */}
+        {!isLoading && (
+          <div
+            className={
+              showCheckStrip
+                ? "px-6 py-3 border-b border-gray-700 bg-gray-800/40 flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
+                : "sr-only"
+            }
+          >
+            <p role="status" className="text-sm text-gray-300">
+              {showCheckStrip ? checkStripText(check, uncheckedRoots.length) : ""}
+            </p>
+            {showCheckStrip && check.status !== "done" && (
+              <NeonButton
+                ref={checkButtonRef}
+                secondary
+                aria-disabled={check.status === "checking" || undefined}
+                onClick={() => void handleCheckCardNumbers()}
+              >
+                Check card numbers
+              </NeonButton>
+            )}
+          </div>
+        )}
 
         {/* Body */}
         <div

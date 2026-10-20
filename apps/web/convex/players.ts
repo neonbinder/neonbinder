@@ -63,6 +63,11 @@ import {
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
+import {
+  MAX_EXISTING_NAMED,
+  playerCreateRefusal,
+  type PlayerExistsRefusal,
+} from "../lib/entities/entity-exists";
 
 /**
  * The dedup key on `players.nameNormalized`.
@@ -1080,10 +1085,13 @@ export { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
  * NEO-220 corrected a stale claim here: this is NOT what the checklist
  * commit path calls. `commitCardChecklistFinalize` inserts into `players`
  * directly (see the player loop in `selectorOptions.ts`), already enriched.
- * The ONLY caller of this mutation is `SetSelector/PlayerPicker`'s "+ Create"
+ * The ONLY callers of this mutation are `SetSelector/PlayerPicker`'s "+ Create"
  * row, reached from the card drawer, the attention walker's
  * `UnreviewedNameFixer`, and the checklist quick-add form — every one of them
- * under `/admin/set-builder`.
+ * under `/admin/set-builder` — and the set-building tool's player `create`
+ * answer (`tools/setbuild/lib/attention-answers.ts`). Since NEO-339 every one
+ * of them sends `createOnly: true`; the find-or-create default remains for a
+ * caller that means "link or create".
  *
  * Cross-user note: the row this returns may have been created by a
  * different user. That's intentional — see playerDocPublicValidator's
@@ -1103,6 +1111,22 @@ export const findOrCreate = mutation({
      * this mutation exists for.
      */
     birthYear: v.optional(v.number()),
+    /**
+     * NEO-339 — "I mean a NEW player; never hand me one that is on file."
+     *
+     * The pickers' "+ Create" row and the set-building tool's `create` answer
+     * send it. With it this mutation never returns an existing row: a name
+     * the sport already holds is refused with a structured `PLAYER_EXISTS`
+     * (see `lib/entities/entity-exists.ts`), naming the rows on file so the
+     * caller can offer "use that one" instead. The rule is
+     * `playerCreateRefusal`: one same-name player always refuses; several
+     * allow a create only when every one is dated and none was born in
+     * `birthYear`.
+     *
+     * Absent (the default) keeps find-or-create exactly as it was, for
+     * callers that mean "link or create".
+     */
+    createOnly: v.optional(v.boolean()),
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
@@ -1163,9 +1187,33 @@ export const findOrCreate = mutation({
      * calling `.find` and taking whichever row came back first.
      */
     const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
+    if (args.createOnly) {
+      // NEO-339 — never adopt. Refused with the rows on file (reference
+      // rows the admin caller can already search for), or inserted below.
+      const reason = playerCreateRefusal(
+        candidates,
+        args.birthYear,
+        PLAYER_AMBIGUITY_SCAN_LIMIT,
+      );
+      if (reason) {
+        const refusal: PlayerExistsRefusal = {
+          code: "PLAYER_EXISTS",
+          reason,
+          name,
+          ...(args.birthYear !== undefined ? { birthYear: args.birthYear } : {}),
+          count: candidates.length,
+          players: candidates.slice(0, MAX_EXISTING_NAMED).map((p) => ({
+            id: p._id,
+            name: p.name,
+            ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+          })),
+        };
+        throw new ConvexError(refusal);
+      }
+    }
     // NOT enqueued — see the creation-only note on the insert below.
-    if (candidates.length === 1) return candidates[0]._id;
-    if (candidates.length > 1) {
+    if (!args.createOnly && candidates.length === 1) return candidates[0]._id;
+    if (!args.createOnly && candidates.length > 1) {
       /**
        * NEO-254 — two or more people are already filed under this name, and
        * this mutation has no way to know which one a typeahead meant.

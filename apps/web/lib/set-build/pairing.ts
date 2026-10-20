@@ -200,6 +200,14 @@ export type NameConflict = NameDisagreement & {
   /** Whose name the merged card is carrying right now. */
   chosen: "bsc" | "sportlots" | "custom";
   /**
+   * NEO-339 — the operator has answered THIS disagreement in this session (a
+   * pill, including the one already checked, or a typed name). Per field,
+   * unlike `MatchedPair.touched`: a row disagreeing on its name AND its
+   * roster is two questions, and answering one must not pass for both.
+   * Confirm waits until every conflict is decided (`openPairingConflicts`).
+   */
+  decided?: true;
+  /**
    * A name the OPERATOR typed, when neither marketplace had it right.
    *
    * Both marketplaces getting a card wrong is not hypothetical — that is the
@@ -246,6 +254,8 @@ export type NameConflict = NameDisagreement & {
 export type PlayersConflict = PlayersDisagreement & {
   /** Whose roster the merged card is carrying right now. */
   chosen: "bsc" | "sportlots" | "custom";
+  /** NEO-339 — answered in this session; see `NameConflict.decided`. */
+  decided?: true;
   /** A roster the OPERATOR typed, when neither marketplace had it right. */
   custom?: string[];
   /**
@@ -772,13 +782,31 @@ function canonicalTypedName(name: string): string {
  * Returns the SAME state object once the row is already touched, so a second
  * click on the same pill costs no render and no re-sort.
  */
-function markTouched(state: State, index: number): State {
+/**
+ * The re-pick of the side already chosen: the row is touched and that
+ * field's conflict is decided (NEO-339), with nothing else moved. Returns the
+ * same state when both were already true.
+ */
+function markTouched(state: State, index: number, field: "name" | "players"): State {
   const pair = state.matched[index];
-  if (!pair || pair.touched) return state;
+  if (!pair) return state;
+  const conflict = field === "name" ? pair.nameConflict : pair.playersConflict;
+  if (pair.touched && (!conflict || conflict.decided)) return state;
   return {
     ...state,
     matched: state.matched.map((m, i) =>
-      i === index ? { ...m, touched: true } : m,
+      i === index
+        ? {
+            ...m,
+            touched: true,
+            ...(field === "name" && m.nameConflict
+              ? { nameConflict: { ...m.nameConflict, decided: true as const } }
+              : {}),
+            ...(field === "players" && m.playersConflict
+              ? { playersConflict: { ...m.playersConflict, decided: true as const } }
+              : {}),
+          }
+        : m,
     ),
   };
 }
@@ -1004,9 +1032,10 @@ function baseReducer(state: State, action: Action): State {
      *
      * Both names are retained on the pair either way, so this is reversible
      * right up to Confirm, and after Confirm the name is editable in
-     * CardDetailPanel. Nothing here blocks Confirm: a conflict is recoverable,
-     * and blocking would mean one flagged row in a streamed 660-card set holds
-     * the entire commit hostage.
+     * CardDetailPanel. NEO-339 reversed NEO-189's "nothing here blocks
+     * Confirm": an unanswered conflict now holds Confirm
+     * (`openPairingConflicts`), because letting it through committed BSC's
+     * name over a disagreement nobody settled. This action is the answer.
      */
     case "CHOOSE_NAME": {
       const pair = state.matched[action.index];
@@ -1016,7 +1045,7 @@ function baseReducer(state: State, action: Action): State {
       // the whole decision. Recorded rather than dropped — see
       // `MatchedPair.touched`.
       if (pair.nameConflict.chosen === action.side) {
-        return markTouched(state, action.index);
+        return markTouched(state, action.index, "name");
       }
       const conflict = pair.nameConflict;
       const cardName =
@@ -1037,7 +1066,7 @@ function baseReducer(state: State, action: Action): State {
             ? {
                 ...pair,
                 card: { ...pair.card, cardName },
-                nameConflict: { ...conflict, chosen: action.side },
+                nameConflict: { ...conflict, chosen: action.side, decided: true },
                 touched: true,
               }
             : m,
@@ -1111,8 +1140,8 @@ function baseReducer(state: State, action: Action): State {
             : "custom";
       const nameConflict: NameConflict =
         chosen === "custom"
-          ? { ...conflict, chosen, custom: cardName }
-          : { ...conflict, chosen };
+          ? { ...conflict, chosen, custom: cardName, decided: true }
+          : { ...conflict, chosen, decided: true };
       // A typed match IS a click on that pill, so the card carries that
       // marketplace's own spelling — exactly what `CHOOSE_NAME` would set.
       const nextCardName =
@@ -1145,17 +1174,16 @@ function baseReducer(state: State, action: Action): State {
     /**
      * NEO-251 — the operator settles a roster disagreement.
      *
-     * `CHOOSE_NAME`'s shape exactly, one field over, and nothing here blocks
-     * Confirm for the same reason: a conflict is recoverable, and blocking
-     * would let one flagged row in a streamed 660-card set hold the whole
-     * commit hostage.
+     * `CHOOSE_NAME`'s shape exactly, one field over. Since NEO-339 an
+     * unanswered roster conflict holds Confirm, like a name conflict; this
+     * action is the answer.
      */
     case "CHOOSE_PLAYERS": {
       const pair = state.matched[action.index];
       if (!pair?.playersConflict) return state;
       // Same as `CHOOSE_NAME` above: the re-pick is the decision.
       if (pair.playersConflict.chosen === action.side) {
-        return markTouched(state, action.index);
+        return markTouched(state, action.index, "players");
       }
       const conflict = pair.playersConflict;
       const players =
@@ -1175,7 +1203,7 @@ function baseReducer(state: State, action: Action): State {
             ? {
                 ...pair,
                 card: { ...pair.card, players },
-                playersConflict: { ...conflict, chosen: action.side },
+                playersConflict: { ...conflict, chosen: action.side, decided: true },
                 touched: true,
               }
             : m,
@@ -1222,8 +1250,8 @@ function baseReducer(state: State, action: Action): State {
             : "custom";
       const playersConflict: PlayersConflict =
         chosen === "custom"
-          ? { ...conflict, chosen, custom: players }
-          : { ...conflict, chosen };
+          ? { ...conflict, chosen, custom: players, decided: true }
+          : { ...conflict, chosen, decided: true };
       // Retyping one of the two marketplace answers means "I pick that one",
       // so the card carries THAT side's spelling rather than the operator's
       // re-keying of it — the same rule `RENAME` follows.
@@ -1313,6 +1341,33 @@ function baseReducer(state: State, action: Action): State {
     default:
       return state;
   }
+}
+
+/** One disagreement on a matched pair nobody has answered yet. */
+export type OpenPairingConflict = {
+  /** The pair's index in `state.matched` (the CHOOSE_* actions' `index`). */
+  index: number;
+  field: "name" | "players";
+  cardNumber: string;
+};
+
+/**
+ * NEO-339 — every disagreement on a matched pair still waiting for the
+ * operator, in list order. Confirm is refused while this is non-empty, in the
+ * Match Cards dialog and in the set-building tool alike: a conflict left
+ * unanswered used to commit BSC's side over it in silence.
+ */
+export function openPairingConflicts(state: State): OpenPairingConflict[] {
+  const open: OpenPairingConflict[] = [];
+  state.matched.forEach((m, index) => {
+    if (m.nameConflict && !m.nameConflict.decided) {
+      open.push({ index, field: "name", cardNumber: m.card.cardNumber });
+    }
+    if (m.playersConflict && !m.playersConflict.decided) {
+      open.push({ index, field: "players", cardNumber: m.card.cardNumber });
+    }
+  });
+  return open;
 }
 
 export {

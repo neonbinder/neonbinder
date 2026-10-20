@@ -25,8 +25,11 @@ import {
 // NEO-325 — the ledger pieces moved to `modules/RunLedger` on their second
 // use; re-exported so every existing import of them from here keeps working.
 export { SLEEVE_TONE, pulseText } from "../modules/RunLedger";
+import { MAKE_INSERT_LABEL } from "./MakeInsertControl";
 import {
+  listedOnlyCounts,
   planParallelBuildOrder,
+  sharesNoNumbers,
   type ParallelBuildPlan,
   type ParallelBuildResult,
   type ParallelBuildSource,
@@ -227,6 +230,14 @@ export function builtText(
     ([side, count]) => `${count} on ${SIDE_LABEL[side]} that ${source} doesn't have`,
   );
 
+  // NEO-339 — the marketplaces list cards and not one shares a number with
+  // the source: probably its own insert, not a parallel. Said as the decision
+  // it is, with the way forward, rather than as "Nothing copied" and a count.
+  // The same signal the set-building tool makes an open decision of.
+  if (sharesNoNumbers(result)) {
+    return noSharedNumbersText(result, source);
+  }
+
   if (!result.rebuilt && result.copied === 0) {
     const total = result.copied + result.notCopied;
     return [
@@ -287,6 +298,25 @@ export function builtText(
   }
   parts.push(...extraClauses);
   return parts.join(", ");
+}
+
+/**
+ * NEO-339 — "No shared numbers — this parallel's marketplaces list 12 cards,
+ * but none share a number with Base. It's probably its own insert: …". DRAFT
+ * copy (NB voice). `Make insert of…` is the control's own label
+ * (`MAKE_INSERT_LABEL`), quoted so the operator can find it.
+ */
+export function noSharedNumbersText(
+  result: Pick<ParallelBuildResult, "extraOnMarketplace">,
+  source: string,
+): string {
+  const listed = listedOnlyCounts(result);
+  const n = listed.bsc + listed.sportlots;
+  return (
+    `No shared numbers — this parallel's marketplaces list ${plural(n, "card", "cards")}, ` +
+    `but none share a number with ${source}. It's probably its own insert, not a parallel: ` +
+    `file it with “${MAKE_INSERT_LABEL}” on its row, or take it out of ${possessive(source)} parallels`
+  );
 }
 
 /** "BSC only" / "SportLots only" when exactly one side was fetched. */

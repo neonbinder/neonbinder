@@ -774,7 +774,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     ).toEqual(["Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski"]);
   });
 
-  test("neither name is pre-resolved as correct — BSC is marked as the current default, SportLots is one click away", () => {
+  test("neither name is pre-resolved as correct — nothing is checked until the operator picks (NEO-339)", () => {
     renderModal({
       unmatchedBsc: [yastrzemskiBsc],
       unmatchedSl: [yastrzemskiSl],
@@ -787,8 +787,11 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     const slChoice = screen.getByRole("radio", {
       name: 'Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
     });
-    expect(bscChoice.getAttribute("aria-checked")).toBe("true");
+    expect(bscChoice.getAttribute("aria-checked")).toBe("false");
     expect(slChoice.getAttribute("aria-checked")).toBe("false");
+    // The first pill is the group's Tab stop while none is checked.
+    expect(bscChoice.tabIndex).toBe(0);
+    expect(slChoice.tabIndex).toBe(-1);
   });
 
   test("choosing SportLots commits Carl's name, not Mike's", async () => {
@@ -859,12 +862,13 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
   });
 
   /**
-   * Deliberately NOT a gate. The name is editable in CardDetailPanel after
-   * Confirm, so a conflict is recoverable; blocking would let one flagged row
-   * in a streamed 660-card set hold the whole commit hostage. The default is
-   * unchanged behaviour — what changed is that it is no longer silent.
+   * NEO-339 reversed NEO-189's "deliberately NOT a gate": letting an
+   * unanswered conflict through committed BSC's name over a disagreement
+   * nobody settled, and the set-building tool already refused it. Confirm
+   * holds (focusable, aria-disabled), says why beside itself, and pressing it
+   * goes to the conflict rather than doing nothing.
    */
-  test("an unresolved conflict does NOT block Confirm, and still defaults to BSC", async () => {
+  test("an unresolved conflict holds Confirm, says why, and Confirm takes the operator to it", async () => {
     const { onConfirm } = renderModal({
       unmatchedBsc: [yastrzemskiBsc],
       unmatchedSl: [yastrzemskiSl],
@@ -875,8 +879,28 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       "Confirm card matches",
     ) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
-    expect(confirm.hasAttribute("aria-disabled")).toBe(false);
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    const reason = document.getElementById(confirm.getAttribute("aria-describedby")!);
+    expect(reason?.textContent).toMatch(/1 conflict still needs your pick/);
 
+    // Focus somewhere else, then press Confirm: nothing saves, and focus lands
+    // on the conflict's first pill.
+    screen.getByLabelText("Cancel card matching").focus();
+    fireEvent.click(confirm);
+    const bscChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
+    await waitFor(() => expect(document.activeElement).toBe(bscChoice));
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    // "Go to the next conflict" does the same.
+    confirm.focus();
+    fireEvent.click(screen.getByRole("button", { name: "Go to the next conflict" }));
+    await waitFor(() => expect(document.activeElement).toBe(bscChoice));
+
+    // Picking BSC's name — the pill that used to be the silent default — is
+    // the answer, and Confirm then saves it.
+    fireEvent.click(bscChoice);
+    expect(confirm.hasAttribute("aria-disabled")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Go to the next conflict" })).toBeNull();
     fireEvent.click(confirm);
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike Yastrzemski");
@@ -1111,13 +1135,16 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       );
     });
 
-    /** Non-blocking, and BSC still wins by default: doing nothing commits what
-     *  it committed before this feature existed. */
-    test("doing nothing commits BSC's name, exactly as before", async () => {
+    /** NEO-339: doing nothing commits NOTHING — the server-found conflict
+     *  holds Confirm exactly like a hand-made one, until it is answered. */
+    test("doing nothing commits nothing; answering BSC commits BSC's name", async () => {
       const { onConfirm } = renderModal({ autoMatched: [yaz()] });
 
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      expect(onConfirm).not.toHaveBeenCalled();
 
+      fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
       await waitFor(() => expect(onConfirm).toHaveBeenCalled());
       expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
         "Mike Yastrzemski",
@@ -1137,6 +1164,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     test("the wire field is lifted onto the pair and never reaches the CARD", async () => {
       const { onConfirm } = renderModal({ autoMatched: [yaz()] });
 
+      fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
       await waitFor(() => expect(onConfirm).toHaveBeenCalled());
@@ -1146,25 +1174,21 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     });
 
     /**
-     * NEO-251 — the diff has to be told what the two marketplaces said, or it
-     * cannot tell an operator's settled answer apart from an upstream change.
-     * The two ANSWERS only: `chosen` and `custom` are this screen's state and
-     * the operator has already spent them.
+     * NEO-251 — `conflictsByIndex` carries a disagreement nobody settled, so
+     * the diff can tell last session's answer from an upstream change. Since
+     * NEO-339 every conflict is answered before Confirm, and an answered row
+     * contributes nothing: the operator's pick is a real decision the diff
+     * must see, not suppress. (`buildPairingResult`'s untouched shape is
+     * pinned beside it in lib/set-build.)
      */
-    test("the disagreement travels beside the cards, keyed by index", async () => {
+    test("an answered conflict leaves nothing beside the cards", async () => {
       const { onConfirm } = renderModal({ autoMatched: [yaz()] });
 
+      fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
       await waitFor(() => expect(onConfirm).toHaveBeenCalled());
-      expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({
-        0: {
-          nameConflict: {
-            bsc: "Mike Yastrzemski",
-            sportlots: "Mike Yastrzemski|Carl Yastrzemski",
-          },
-        },
-      });
+      expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
     });
 
     /**
@@ -1350,15 +1374,19 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     });
     linkYastrzemski();
 
-    // BSC is the default choice straight after LINK.
+    // Nothing is checked straight after LINK (NEO-339), so nothing is marked.
     const bscChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski — / });
     const slChoice = screen.getByRole("radio", { name: /^Mike Yastrzemski\|Carl Yastrzemski — / });
-    expect(bscChoice.textContent?.startsWith("✓")).toBe(true);
+    expect(bscChoice.textContent?.startsWith("✓")).toBe(false);
     expect(slChoice.textContent?.startsWith("✓")).toBe(false);
 
     fireEvent.click(slChoice);
     expect(slChoice.textContent?.startsWith("✓")).toBe(true);
     expect(bscChoice.textContent?.startsWith("✓")).toBe(false);
+
+    fireEvent.click(bscChoice);
+    expect(bscChoice.textContent?.startsWith("✓")).toBe(true);
+    expect(slChoice.textContent?.startsWith("✓")).toBe(false);
   });
 
   /**
@@ -3112,7 +3140,7 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
    * marketplace the data comes from." Nothing the operator sees or hears in
    * the name control says where a value came from — not the warning, not a
    * pill, not a pill's accessible name, and not the operator's own typed
-   * option either ("keep it bare"). BSC stays the preselected default.
+   * option either ("keep it bare"). Nothing is preselected (NEO-339).
    */
   test("the name choice never says which marketplace (or the operator) a value came from", () => {
     renderModal({ autoMatched: [conflicted()] });
@@ -3146,12 +3174,10 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     expect(group.textContent).not.toMatch(/\b(BSC|SportLots|SL|Custom)\b/i);
   });
 
-  test("BSC's value is still the preselected default (NEO-344 changed display only)", () => {
+  test("nothing is preselected until the operator answers (NEO-339; NEO-344 changed display only)", () => {
     renderModal({ autoMatched: [conflicted()] });
 
-    expect(checkedNames()).toEqual([
-      "Mike Yastrzemski — use this name for #227c",
-    ]);
+    expect(checkedNames()).toEqual([]);
   });
 
   describe("a11y — three options in the radiogroup", () => {
@@ -3275,11 +3301,11 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     // rediscover what they typed.
     expect(screen.getByLabelText("Edit name for #227c")).toBeTruthy();
     expect(editor().value).toBe("A".repeat(121));
-    // Nothing committed: the radiogroup still shows BSC's name winning.
+    // Nothing committed: the radiogroup is still unanswered (NEO-339).
     expect(
       screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
         .getAttribute("aria-checked"),
-    ).toBe("true");
+    ).toBe("false");
   });
 });
 
@@ -3767,7 +3793,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     );
   };
 
-  test("an auto-matched roster disagreement renders both lists, BSC winning", () => {
+  test("an auto-matched roster disagreement renders both lists, neither checked until answered (NEO-339)", () => {
     renderModal({ autoMatched: [autoPlayersConflict()] });
 
     expect(
@@ -3777,7 +3803,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       screen.getByRole("radio", {
         name: "Mike Yastrzemski — use these players for #227c",
       }).getAttribute("aria-checked"),
-    ).toBe("true");
+    ).toBe("false");
     expect(
       screen.getByRole("radio", {
         name: "Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
@@ -3825,6 +3851,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       autoMatched: [autoPlayersConflict()],
     });
 
+    fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
@@ -3834,29 +3861,24 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
   });
 
   /**
-   * ...but the disagreement itself is handed back BESIDE the cards, because
-   * the sync-review diff cannot tell a settled answer apart from an upstream
-   * change without it. `CardChecklist` puts the two back together for the diff
-   * query alone (`withConflicts`); nothing downstream of it sees the field.
+   * NEO-339 — an unanswered roster conflict holds Confirm, even with
+   * `preferred` saying what NB already stores: that is evidence, not an
+   * answer. Once answered the row is a decision, so nothing travels beside
+   * the cards for the diff to suppress.
    */
-  test("the disagreement travels in conflictsByIndex, not on the card", async () => {
+  test("an unanswered roster conflict holds Confirm; answered, nothing travels in conflictsByIndex", async () => {
     const { onConfirm } = renderModal({
       autoMatched: [autoPlayersConflict({ preferred: "sportlots" })],
     });
 
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    expect(onConfirm).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski \/ Carl/ }));
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
-    // The two ANSWERS only — no `chosen`, no `preferred`. Those are this
-    // screen's state and mean nothing to the diff.
-    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({
-      0: {
-        playersConflict: {
-          bsc: ["Mike Yastrzemski"],
-          sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
-        },
-      },
-    });
+    expect(onConfirm.mock.calls[0][0].cards[0]).not.toHaveProperty("playersConflict");
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
   });
 
   /**
@@ -3947,24 +3969,19 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
   });
 
   /**
-   * A row nobody touched still reports its disagreement — that is the whole
-   * point of the entry, and the half that stops the screen re-asking an
-   * answered question on every re-sync.
+   * NEO-339 — a row nobody touched can no longer be confirmed: it holds
+   * Confirm until answered. (`buildPairingResult` still reports an untouched
+   * row's disagreement; that shape is pinned in lib/set-build.)
    */
-  test("an untouched conflicted row still reports its disagreement", async () => {
+  test("an untouched conflicted row holds Confirm", async () => {
     const { onConfirm } = renderModal({
       autoMatched: [autoPlayersConflict()],
     });
 
-    fireEvent.click(screen.getByLabelText("Confirm card matches"));
-
-    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
-    expect(
-      onConfirm.mock.calls[0][0].conflictsByIndex[0].playersConflict,
-    ).toEqual({
-      bsc: ["Mike Yastrzemski"],
-      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
-    });
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(confirm);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   test("typing a custom roster also withholds the conflict", async () => {
@@ -4001,12 +4018,10 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     );
     fireEvent.change(field, { target: { value: "A".repeat(121) } });
     fireEvent.keyDown(field, { key: "Enter" });
+    // Still unanswered, so Confirm still holds (NEO-339).
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
-
-    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
-    expect(
-      onConfirm.mock.calls[0][0].conflictsByIndex[0].playersConflict,
-    ).toBeTruthy();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Confirm card matches").getAttribute("aria-disabled")).toBe("true");
   });
 
   /**
@@ -4022,12 +4037,15 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       ],
     });
 
+    // Answered (NEO-339: Confirm holds until it is), so it contributes
+    // nothing either; the agreeing pair never did.
+    fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     const byIndex = onConfirm.mock.calls[0][0].conflictsByIndex;
+    expect(Object.keys(byIndex)).toEqual([]);
     // #1 sorts before #227c, so the conflicted card is at index 1.
-    expect(Object.keys(byIndex)).toEqual(["1"]);
     expect(onConfirm.mock.calls[0][0].cards[1].cardNumber).toBe("227c");
   });
 
@@ -4098,10 +4116,13 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       // roster, so this is still BSC's answer.
       typeRoster("Mike Yastrzemski");
 
+      // No third pill. Typing the roster the card already carries changes
+      // nothing, so (like tabbing through the field) it does not answer the
+      // conflict: nothing is checked until a pill is pressed (NEO-339).
       expect(
         screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
-      ).toBe("true");
+      ).toBe("false");
       expect(screen.getAllByRole("radio")).toHaveLength(2);
     });
 
@@ -4121,10 +4142,11 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       renderModal({ autoMatched: [autoPlayersConflict()] });
       typeRoster("   ");
 
+      // Still unanswered (NEO-339): a no-op decides nothing.
       expect(
         screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
-      ).toBe("true");
+      ).toBe("false");
       expect(screen.getAllByRole("radio")).toHaveLength(2);
     });
 
@@ -4139,10 +4161,11 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       typeRoster("A".repeat(121));
 
       expect(screen.getAllByRole("radio")).toHaveLength(2);
+      // Refused, so still unanswered (NEO-339).
       expect(
         screen.getByRole("radio", { name: /^Mike Yastrzemski —/ })
           .getAttribute("aria-checked"),
-      ).toBe("true");
+      ).toBe("false");
     });
 
     /** NEO-344 — the roster control is as source-blind as the name one. */
@@ -4358,11 +4381,10 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
         /NeonBinder currently stores: Mike Yastrzemski \/ Carl Yastrzemski/,
       ),
     ).toBeTruthy();
+    // Nothing is pre-selected at all, the stored side included (NEO-339).
     expect(
-      screen
-        .getByRole("radio", { name: /^Mike Yastrzemski —/ })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
+      screen.getAllByRole("radio").map((r) => r.getAttribute("aria-checked")),
+    ).toEqual(["false", "false"]);
   });
 
   test("two conflicting rows on one number get distinct accessible names", () => {
@@ -4469,6 +4491,8 @@ describe("CardPairingModal — BSC's raw team value rides to the commit (NEO-335
       ],
     });
 
+    // NEO-339: the name conflict is answered first; Confirm holds until it is.
+    fireEvent.click(screen.getByRole("radio", { name: /^Carl Yastrzemski —/ }));
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));

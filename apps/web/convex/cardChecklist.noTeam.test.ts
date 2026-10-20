@@ -471,20 +471,19 @@ describe("updateCard and the no-team confirmation", () => {
       "Bosten Red Sox",
     ]);
 
-    // Clearing is an EMPTY array, stored as the absence of the field.
-    await asAdmin.mutation(api.selectorOptions.updateCard, {
-      id: cardId,
-      pendingTeamNames: [],
-    });
-    expect((await getCard(t, cardId))!.pendingTeamNames).toBeUndefined();
+    // NEO-339: clearing the typed name WITHOUT linking a team is refused —
+    // that is a card that looks answered with nothing on it.
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        pendingTeamNames: [],
+      }),
+    ).rejects.toThrow(/Link a team to this card before clearing/);
+    expect((await getCard(t, cardId))!.pendingTeamNames).toEqual(["Bosten Red Sox"]);
 
     // And the NEO-208 derivation is unchanged: linking a real team retires a
     // typed name whether or not the caller mentions it.
     const yankees = await insertTeam(t, sportId, "New York Yankees");
-    await asAdmin.mutation(api.selectorOptions.updateCard, {
-      id: cardId,
-      pendingTeamNames: ["Bosten Red Sox"],
-    });
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
       teamOnCardIds: [yankees],

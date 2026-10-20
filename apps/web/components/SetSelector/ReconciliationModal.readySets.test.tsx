@@ -26,6 +26,7 @@ import ReconciliationModal, {
 } from "./ReconciliationModal";
 import type { Id } from "../../convex/_generated/dataModel";
 import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
+import { pressSave } from "./press-save";
 
 const BSC_S1: PlatformItem = {
   value: "Dugout Collection Artist's Proofs Series 1",
@@ -73,8 +74,8 @@ async function itemsFromConfirm(onConfirm: ReturnType<typeof vi.fn>) {
     value: string;
     platformData: { bsc?: string[]; sportlots?: string[] };
     platformLabels?: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
+      bsc?: Array<{ id: string; label: string }>;
+      sportlots?: Array<{ id: string; label: string }>;
     };
   }>;
 }
@@ -96,7 +97,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     fireEvent.click(screen.getByText(BSC_S1.value));
     fireEvent.click(screen.getByText(SL_COMBINED.value));
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items).toHaveLength(1);
@@ -114,7 +115,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     // ...then Series 2 joins that same set rather than starting its own.
     attachToFirstSet(BSC_S2.value);
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items).toHaveLength(1);
@@ -125,10 +126,10 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     expect(items[0].platformData.sportlots).toEqual(["884412"]);
     // Each id carries the marketplace's own name so the slots stay tellable
     // apart once there is more than one on a side.
-    expect(items[0].platformLabels?.bsc).toEqual({
-      "dcap-series-1": BSC_S1.value,
-      "dcap-series-2": BSC_S2.value,
-    });
+    expect(items[0].platformLabels?.bsc).toEqual([
+      { id: "dcap-series-1", label: BSC_S1.value },
+      { id: "dcap-series-2", label: BSC_S2.value },
+    ]);
   });
 
   test("the set title is OURS — editable, and it is what gets saved", async () => {
@@ -148,7 +149,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     // how controlled inputs drop keystrokes here.
     fireEvent.blur(title);
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items[0].value).toBe("Dugout Collection Artists Proofs");
@@ -196,7 +197,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
       );
     fireEvent.click(add!);
 
-    fireEvent.click(screen.getByText(/Save 2 sets/));
+    pressSave(screen.getByText(/Save 2 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items).toHaveLength(2);
@@ -215,7 +216,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     fireEvent.click(
       screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items[0].platformData.bsc).toEqual(["dcap-series-2"]);
@@ -233,7 +234,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     fireEvent.click(
       screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     );
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items).toHaveLength(1);
@@ -277,7 +278,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
 
     expect(screen.getByText(/78%/)).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     // Only the auto-matched set is written; Series 1 sat in Pending untouched.
@@ -317,7 +318,7 @@ describe("ReconciliationModal — restoring saved rows", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     const items = onConfirm.mock.calls[0][0].items as Array<{
       platformData: { bsc?: string[]; sportlots?: string[] };
@@ -440,7 +441,7 @@ describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
   test("a saved row's id comes back out on save", async () => {
     const { onConfirm } = renderWithExistingRow(ROW_ID);
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect((items[0] as { existingId?: unknown }).existingId).toBe(ROW_ID);
   });
@@ -455,7 +456,7 @@ describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
     fireEvent.change(title, { target: { value: "Dugout Collection APs" } });
     fireEvent.blur(title);
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items[0].value).toBe("Dugout Collection APs");
     expect((items[0] as { existingId?: unknown }).existingId).toBe(ROW_ID);
@@ -466,7 +467,7 @@ describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
     fireEvent.click(screen.getByText(BSC_S1.value));
     fireEvent.click(screen.getByText(SL_COMBINED.value));
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect((items[0] as { existingId?: unknown }).existingId).toBeUndefined();
   });
@@ -474,7 +475,7 @@ describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
   test("a caller that omits existingId still works — the prop is additive", async () => {
     const { onConfirm } = renderWithExistingRow(undefined);
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect((items[0] as { existingId?: unknown }).existingId).toBeUndefined();
     expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
@@ -546,7 +547,7 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
     expect(screen.getByText(/Pending \(0\)/)).toBeTruthy();
     expect(screen.queryByText(LOOSE_BSC.value)).toBeNull();
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items.map((i) => i.value)).toEqual(["Chrome Stars"]);
   });
@@ -618,7 +619,7 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items[0].platformData.bsc).toEqual(["bsc-gold"]);
   });
@@ -724,7 +725,7 @@ describe("ReconciliationModal — a keyboard drop lands", () => {
       restore();
     }
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items).toHaveLength(1);
     expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
@@ -797,7 +798,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
       screen.getByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items).toHaveLength(1);
     // Our row, our title, now carrying both links.
@@ -805,7 +806,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
     expect(items[0].value).toBe("Blue");
     expect(items[0].platformData.bsc).toEqual(["bsc-blue"]);
     expect(items[0].platformData.sportlots).toEqual(["sl-blue"]);
-    expect(items[0].platformLabels?.bsc).toEqual({ "bsc-blue": BSC_BLUE.value });
+    expect(items[0].platformLabels?.bsc).toEqual([{ id: "bsc-blue", label: BSC_BLUE.value }]);
   });
 
   test("the attached half is one ✕ from Pending, like any attach", () => {
@@ -827,7 +828,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
     expect(screen.getByText("1 ready")).toBeTruthy();
     expect(screen.getByLabelText(`Remove ${SL_BLUE.value} from Blue`)).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items).toHaveLength(1);
     expect(items[0].platformData.bsc).toEqual(["bsc-blue"]);
@@ -842,7 +843,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
 
     expect(screen.getByText("2 ready")).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 2 sets/));
+    pressSave(screen.getByText(/Save 2 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items).toHaveLength(2);
     const blue = items.find((i) => i.value === "Blue")!;
@@ -880,7 +881,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
       screen.queryByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
     ).toBeNull();
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items[0].platformData.sportlots).toEqual(["sl-blue"]);
     expect(items[0].platformData.bsc).toBeUndefined();
@@ -897,7 +898,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
       screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 2 sets/));
+    pressSave(screen.getByText(/Save 2 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items.every((i) => i.platformData.bsc === undefined)).toBe(true);
   });
@@ -926,7 +927,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
     expect(
       screen.queryByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
     ).toBeNull();
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items[0].platformData.bsc).toBeUndefined();
   });
@@ -939,7 +940,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
     expect(screen.getByText("2 ready")).toBeTruthy();
     expect(screen.getByText(/90%/)).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 2 sets/));
+    pressSave(screen.getByText(/Save 2 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items).toHaveLength(2);
     const gold = items.find((i) => i.value === "Gold")!;
@@ -1004,7 +1005,7 @@ describe("ReconciliationModal — caller-held ids stay out of Ready (NEO-312)", 
     // The held SportLots set is offered nowhere.
     expect(screen.queryByText(SL_BLUE.value)).toBeNull();
 
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items).toHaveLength(1);
     expect(items[0].platformData.sportlots).toEqual(["sl-gold"]);
@@ -1040,7 +1041,7 @@ describe("ReconciliationModal — caller-held ids stay out of Ready (NEO-312)", 
       screen.getByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/Save 2 sets/));
+    pressSave(screen.getByText(/Save 2 sets/));
     const items = await itemsFromConfirm(onConfirm);
     const blue = items.find(
       (i) => (i as { existingId?: unknown }).existingId === BLUE_ROW_ID,

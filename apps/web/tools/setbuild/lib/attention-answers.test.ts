@@ -211,9 +211,10 @@ describe("MissingTeamFixer: { teams } and { noTeam }", () => {
     const [r] = await applyCardAnswers(client, SET, [
       { cardNumber: "1", answer: { teams: [{ create: { location: "Wisconsin", name: "Badgers", league: "Big Ten" } }, { create: { name: "Unattached" } }] } },
     ]);
+    // `createOnly` on every create: the server refuses a name on file (NEO-339).
     expect(minted).toEqual([
-      { name: "Badgers", sportId: SPORT, location: "Wisconsin", leagueName: "Big Ten" },
-      { name: "Unattached", sportId: SPORT },
+      { name: "Badgers", sportId: SPORT, location: "Wisconsin", leagueName: "Big Ten", createOnly: true },
+      { name: "Unattached", sportId: SPORT, createOnly: true },
     ]);
     expect(r.created).toEqual([
       { kind: "team", name: "Wisconsin Badgers", id: "t-new-1" },
@@ -255,25 +256,29 @@ describe("MissingTeamFixer: { teams } and { noTeam }", () => {
     expect(writesOf(client)).toEqual([]);
   });
 
-  test("a team create the server answers with a row that was on file is refused, and the card is not written", async () => {
-    let created = false;
+  test("a team created by another session after the answer resolved: the server's TEAM_EXISTS refuses it, and the card is not written", async () => {
     const client = attentionClient({
       store: teamless(),
       handlers: {
-        // Nothing on file while resolving; another session creates it before the write.
-        "teams:erasByNameAndSport": () => (created ? [era("t-race", "Monarchs", 1920, 1965, "Kansas City")] : []),
-        // The last read while resolving; from then on the team is on file.
-        "teams:nearMatches": () => {
-          created = true;
-          return [];
+        "teams:erasByNameAndSport": () => [],
+        "teams:nearMatches": () => [],
+        // NEO-339: `createOnly` — the server refuses rather than hand back the row.
+        "teams:findOrCreate": (a) => {
+          expect(a.createOnly).toBe(true);
+          throw new ConvexError({
+            code: "TEAM_EXISTS",
+            name: "Kansas City Monarchs",
+            teams: [{ id: "t-race", name: "Kansas City Monarchs", years: "1920–1965" }],
+          });
         },
-        "teams:findOrCreate": () => "t-race",
       },
     });
     const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { teams: [{ create: { location: "Kansas City", name: "Monarchs" } }] } }]);
     expect(r).toMatchObject({
       outcome: "refused",
-      detail: '"Kansas City Monarchs" is already a team in this sport; answer with that team instead of creating one.',
+      detail:
+        "Kansas City Monarchs is already a team in this sport. Use it instead of adding a second one. " +
+        "On file: Kansas City Monarchs · 1920–1965. Answer with that team instead of creating one.",
     });
     expect(r.created).toBeUndefined();
     expect(client.callsTo("selectorOptions:updateCard")).toEqual([]);
@@ -405,16 +410,33 @@ describe("UnreviewedNameFixer: { players?, teams? }", () => {
     // Several, all dated, none that year: a real create.
     const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { players: [{ create: "Will Smith", birthYear: 2001 }] } }]);
     expect(r.created).toEqual([{ kind: "player", name: "Will Smith", id: "p-new" }]);
-    expect(client.callsTo("players:findOrCreate")[0].args).toEqual({ name: "Will Smith", sportId: SPORT, birthYear: 2001 });
+    expect(client.callsTo("players:findOrCreate")[0].args).toEqual({ name: "Will Smith", sportId: SPORT, birthYear: 2001, createOnly: true });
   });
 
-  test("a player create the server answers with a player on file is refused, and the card is not written", async () => {
+  test("a player create the server refuses as on file (PLAYER_EXISTS) is refused, and the card is not written", async () => {
     const store: Store = { rows: { [BASE]: [card("c1", "1", "Typed", { pendingPlayerNames: ["Will Smith"], teamOnCardIds: ["t"], listingTitle: "T" })] } };
-    const client = attentionClient({ store, handlers: { ...players, "players:findOrCreate": () => "p-ws1" } });
+    const client = attentionClient({
+      store,
+      handlers: {
+        ...players,
+        "players:findOrCreate": () => {
+          throw new ConvexError({
+            code: "PLAYER_EXISTS",
+            reason: "sameBirthYear",
+            name: "Will Smith",
+            birthYear: 2001,
+            count: 3,
+            players: [{ id: "p-ws3", name: "Will Smith", birthYear: 2001 }],
+          });
+        },
+      },
+    });
     const [r] = await applyCardAnswers(client, SET, [{ cardNumber: "1", answer: { players: [{ create: "Will Smith", birthYear: 2001 }] } }]);
     expect(r).toMatchObject({
       outcome: "refused",
-      detail: '"Will Smith" is already a player in this sport; link that player with { "link", "birthYear" } instead of creating one.',
+      detail:
+        "A Will Smith born 2001 is already in the binder. Use that player instead. " +
+        'On file: Will Smith (born 2001). Answer with { "link", "birthYear" } instead of creating one.',
     });
     expect(client.callsTo("selectorOptions:updateCard")).toEqual([]);
   });

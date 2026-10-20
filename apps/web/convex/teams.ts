@@ -46,6 +46,10 @@ import {
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
+import {
+  MAX_EXISTING_NAMED,
+  type TeamExistsRefusal,
+} from "../lib/entities/entity-exists";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-330: the one definition of "this team matches what was typed", shared
 // with Team Management's own one-character filter.
@@ -845,6 +849,20 @@ export const findOrCreate = mutation({
      * Team Management, not a side effect of a lookup (the leagues precedent).
      */
     aliases: v.optional(v.array(v.string())),
+    /**
+     * NEO-339 — "I mean a NEW team; never hand me one that is on file."
+     *
+     * The New Team dialog and the set-building tool's team `create` answer
+     * send it. With it this mutation never returns an existing row: an era
+     * that overlaps (an undated row overlaps any, and a team answering to the
+     * name as an alias counts) is refused with a structured `TEAM_EXISTS`
+     * naming the rows on file, so the caller can offer "use that one"
+     * instead. Every other refusal below is unchanged, and a second era of
+     * the name is still created through `newEra`.
+     *
+     * Absent (the default) keeps find-or-create exactly as it was.
+     */
+    createOnly: v.optional(v.boolean()),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -923,6 +941,20 @@ export const findOrCreate = mutation({
       fullName,
       args.yearsActive,
     );
+    if (args.createOnly && colliding.length > 0) {
+      // NEO-339 — never adopt. The rows are reference data an admin can open,
+      // named in full with their eras; the client composes the copy.
+      const refusal: TeamExistsRefusal = {
+        code: "TEAM_EXISTS",
+        name: fullName,
+        teams: colliding.slice(0, MAX_EXISTING_NAMED).map((t) => ({
+          id: t._id,
+          name: teamFullName(t),
+          years: eraLabel(t.yearsActive),
+        })),
+      };
+      throw new ConvexError(refusal);
+    }
     if (colliding.length === 1) return colliding[0]._id;
     if (colliding.length > 1) {
       // Names the eras, because that is the information the operator needs to

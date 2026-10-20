@@ -366,26 +366,32 @@ describe("buildCardRowForInsert — the operator's pre-save answer", () => {
 
 describe("a generational suffix is never trimmed off a name (NEO-335 visual pass)", () => {
   /**
-   * Every prefix budget from "the core fits" down to "only the year fits",
-   * so the cut is tried at EVERY boundary inside the names, including the one
-   * right before the suffix. NEO-339: the players outrank the set words, so a
-   * name is only cut once the set words are all gone; the budget is squeezed
-   * with the card number, the one token that never gives way.
+   * Every players budget from "the core fits" down to "only a first name
+   * fits", so the cut is tried at EVERY boundary inside the names, including
+   * the one right before the suffix. The players are the last thing a title
+   * gives up (Jason, 2026-10-19: the set words, the number and the year all
+   * go first), so a name is only cut when the players ALONE exceed the cap:
+   * the budget is squeezed with an unbroken leading name of growing length.
    */
   function sweep(playerNames: string[]) {
-    const out: Array<{ title: string; coreFits: boolean; left: string[] }> = [];
-    for (let pad = 0; pad < 72; pad += 1) {
+    const out: Array<{ title: string; coreFits: boolean; left: string[]; players: string }> = [];
+    for (let pad = 0; pad < 79; pad += 1) {
       const inputs = listingInputsForCard(
-        { cardNumber: `1${"9".repeat(pad)}` },
+        { cardNumber: "19" },
         {
           sportValue: "Baseball",
           setNameValue: "Upper Deck",
           inheritedFeatures: { season: "1989" },
         },
-        { playerNames },
+        { playerNames: pad === 0 ? playerNames : ["Q".repeat(pad), ...playerNames] },
       );
       const a = assessListingTitle(inputs);
-      out.push({ title: a.title, coreFits: a.coreFits, left: leftOutOfTitle(inputs, a) });
+      out.push({
+        title: a.title,
+        coreFits: a.coreFits,
+        left: leftOutOfTitle(inputs, a),
+        players: (inputs.playerNames ?? []).join(" & "),
+      });
     }
     return out;
   }
@@ -406,11 +412,14 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
     expect(results.some((r) => r.left.includes("Ken Griffey Jr."))).toBe(true);
   });
 
-  test("NEO-339: no player word is lost while a set word is still in the title", () => {
+  test("NEO-339: a player word is lost only when the players alone exceed the cap", () => {
+    // Jason, 2026-10-19: the set words, the year and the number all go before
+    // any player word. (The few characters a whole-word cut leaves are still
+    // spent: a year or a short set word may fill them.)
     for (const names of [["Ken Griffey Jr.", "Ken Griffey Sr."], ["Shohei Ohtani"]]) {
-      for (const { title, left } of sweep(names)) {
+      for (const { left, players } of sweep(names)) {
         if (left.some((l) => names.includes(l))) {
-          expect(title).not.toMatch(/\b(Upper|Deck)\b/);
+          expect(players.length).toBeGreaterThan(LISTING_TITLE_MAX);
         }
       }
     }
@@ -433,12 +442,10 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
 
   test("a name with no suffix is cut exactly as before (a partial name is still possible)", () => {
     const results = sweep(["Shohei Ohtani"]);
-    expect(results.some((r) => /^1989 Shohei #19*( |$)/.test(r.title))).toBe(true);
+    expect(results.some((r) => / & Shohei$/.test(r.title))).toBe(true);
     // …and is reported whole.
     expect(
-      results
-        .filter((r) => /^1989 Shohei #19*( |$)/.test(r.title))
-        .every((r) => r.left.includes("Shohei Ohtani")),
+      results.filter((r) => / & Shohei$/.test(r.title)).every((r) => r.left.includes("Shohei Ohtani")),
     ).toBe(true);
   });
 });
@@ -447,15 +454,17 @@ describe("filler is never listed as a loss (collector review)", () => {
   test("a set or player word that reads like the sport is still reported; the sport TOKEN is not", () => {
     // NEO-339: the core gives up set words before the player, so the set's
     // last two words go and the player stays; the 9-character " Baseball"
-    // sport token then does not fit either.
+    // sport token then does not fit either. (A 60-character first word, so
+    // the set's "Baseball" does not fit even once " #1" is weighed: the
+    // number is kept after the set words, Jason 2026-10-19.)
     const inputs = listingInputsForCard(
       { cardNumber: "1" },
-      { sportValue: "Baseball", setNameValue: `${"x".repeat(55)} Baseball Heroes` },
+      { sportValue: "Baseball", setNameValue: `${"x".repeat(60)} Baseball Heroes` },
       { playerNames: ["Shohei Ohtani"] },
     );
     const a = assessListingTitle(inputs);
     expect(a.coreFits).toBe(false);
-    expect(a.title).toBe(`${"x".repeat(55)} Shohei Ohtani #1`);
+    expect(a.title).toBe(`${"x".repeat(60)} Shohei Ohtani #1`);
     expect(a.dropped).toContain("Baseball");
     const left = leftOutOfTitle(inputs, a);
     // "Baseball" here is a SET word the core cut lost, so it is a real loss;
@@ -512,9 +521,12 @@ describe("filler is never listed as a loss (collector review)", () => {
     expect(a.rookieAsRcUsed).toBe(true);
     const left = leftOutOfTitle(inputs, a);
     expect(left.some((entry) => /\bRookie\b/.test(entry))).toBe(false);
-    // NEO-339: the insert's tail is what the cut lost, not the player.
-    expect(a.title).toContain("Elly De La Cruz #RD-12");
-    expect(left).toEqual(["Platinum Anniversary Edition"]);
+    // Jason, 2026-10-19: the insert's name and the player are never cut, so
+    // the year, set words and number are what the core lost.
+    expect(a.title).toBe(
+      "RC Debut Patch Autographs Sapphire Platinum Anniversary Edition Elly De La Cruz",
+    );
+    expect(left).toEqual(["2026", "Topps", "Chrome", "#RD-12"]);
   });
 });
 
@@ -598,18 +610,20 @@ describe("NEO-335 — leftOutOfTitle reports the set and insert words", () => {
     insertIsRole: true,
   };
 
-  test("a cut core reports the insert's lost words", () => {
+  test("a cut core reports the set words it lost; the insert's name stays whole", () => {
     const inputs = listingInputsForCard({ cardNumber: "300" }, LONG_INSERT, {
       playerNames: ["Shohei Ohtani"],
     });
     const assessment = assessListingTitle(inputs);
     expect(assessment.coreFits).toBe(false);
-    // NEO-339: the insert's last words go first; the player stays.
+    // Jason, 2026-10-19: the insert's name is never cut. The card number
+    // goes first, then the set words from the end (before NEO-339's fix it
+    // was the insert's tail).
     expect(assessment.title).toBe(
-      "2026 Topps Chrome Update Series Sapphire Edition Platinum Shohei Ohtani #300",
+      "2026 Topps Sapphire Edition Platinum Anniversary Collectors Box Shohei Ohtani",
     );
     const left = leftOutOfTitle(inputs, assessment);
-    expect(left).toEqual(["Anniversary Collectors Box"]);
+    expect(left).toEqual(["Chrome Update Series", "#300"]);
   });
 
   test("with the short name in use, the full names are not reported — they were replaced", () => {
@@ -753,7 +767,7 @@ describe("NEO-345 — the leaf's autograph format, through mergeCardFeatures", (
   });
 });
 
-describe("NEO-339 — a long insert name never pushes the player out of the title", () => {
+describe("NEO-339 — a long insert name never pushes the player out of the title, nor loses its own words", () => {
   // 2023 Topps Chrome as the set builder files it: a flat insert whose name
   // carries its parallel's words ("Authentics Relics Orange Refractor").
   const chrome = (insert: string): ListingSetContext => ({
@@ -765,38 +779,47 @@ describe("NEO-339 — a long insert name never pushes the player out of the titl
   });
   const ORANGE_RELIC = "Authentics Relics Orange Refractor";
 
-  test("the tester's card: the insert's last word goes, the player stays, and the row is flagged", () => {
+  test("the tester's card: the number goes, the player and \"Orange Refractor\" stay, and the row is flagged", () => {
     const { assessment, inputs, items } = assessNewCardListing(
       { cardNumber: "TCA-VG", isRelic: true, printRun: 25 },
       chrome(ORANGE_RELIC),
       { playerNames: ["Vladimir Guerrero Jr."], teamNames: ["Toronto Blue Jays"] },
     );
-    // Before the fix this card came out as "2023 Topps Chrome Authentics
+    // Before NEO-339 this card came out as "2023 Topps Chrome Authentics
     // Relics Orange Refractor #TCA-VG RELIC /25 Baseball": every set word, no
-    // player.
+    // player. Then as "... Authentics Relics Orange Vladimir Guerrero Jr.
+    // #TCA-VG RELIC": the parallel's "Refractor" and the /25 lost. Jason,
+    // 2026-10-19: the insert's (and parallel's) name and the print run are
+    // never dropped, RELIC beside "Relics" is the redundant word, and the card
+    // number goes before a set word ("Topps Chrome" stays "Topps Chrome").
     expect(assessment.title).toBe(
-      "2023 Topps Chrome Authentics Relics Orange Vladimir Guerrero Jr. #TCA-VG RELIC",
+      "2023 Topps Chrome Authentics Relics Orange Refractor Vladimir Guerrero Jr. /25",
     );
     expect(assessment.title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
     // The core was still cut, so the row is born `listingTitleTruncated`.
     expect(assessment.coreFits).toBe(false);
     expect(items).toEqual([{ kind: "titleTruncated" }]);
-    // "Left out to fit" names the insert word the cut lost, then the tokens.
-    expect(leftOutOfTitle(inputs, assessment)).toEqual(["Refractor", "/25", "Toronto Blue Jays"]);
+    // "Left out to fit" names the number, then the real tokens; the redundant
+    // RELIC and the sport are filler, not listed.
+    expect(leftOutOfTitle(inputs, assessment)).toEqual(["#TCA-VG", "Toronto Blue Jays"]);
   });
 
-  test("a dual-player card keeps both names whole and gives up insert words instead", () => {
+  test("a dual-player card keeps both names whole; the number and the set words go first", () => {
     const { assessment, inputs, items } = assessNewCardListing(
       { cardNumber: "DR-GT", isRelic: true, printRun: 25 },
       chrome(ORANGE_RELIC),
       { playerNames: ["Vladimir Guerrero Jr.", "Fernando Tatis Jr."] },
     );
+    // The players, the insert and /25 alone are 81 characters: the fallback.
+    // The print run and the players stay whole, the insert keeps its leading
+    // words, the year takes what is left. Before: the insert kept only
+    // "Authentics", and RELIC and /25 were dropped.
     expect(assessment.title).toBe(
-      "2023 Topps Chrome Authentics Vladimir Guerrero Jr. & Fernando Tatis Jr. #DR-GT",
+      "2023 Authentics Relics Orange Vladimir Guerrero Jr. & Fernando Tatis Jr. /25",
     );
     expect(assessment.coreFits).toBe(false);
     expect(items).toEqual([{ kind: "titleTruncated" }]);
-    expect(leftOutOfTitle(inputs, assessment)).toEqual(["Relics Orange Refractor", "RELIC", "/25"]);
+    expect(leftOutOfTitle(inputs, assessment)).toEqual(["Topps", "Chrome", "Refractor", "#DR-GT"]);
   });
 
   test("an insert that fits is untouched and not flagged", () => {
@@ -813,15 +836,18 @@ describe("NEO-339 — a long insert name never pushes the player out of the titl
     expect(leftOutOfTitle(inputs, assessment)).toEqual([]);
   });
 
-  test("three players: the set words go from the end, the names and the year stay", () => {
+  test("three players: the names stay whole and the insert keeps its leading words", () => {
     const { assessment } = assessNewCardListing(
       { cardNumber: "1" },
       chrome(ORANGE_RELIC),
       { playerNames: ["Vladimir Guerrero Jr.", "Fernando Tatis Jr.", "Julio Rodriguez"] },
     );
     expect(assessment.coreFits).toBe(false);
+    // The fallback again (the names and the insert are 95 characters).
+    // Before: "2023 Topps <names> #1", the insert dropped whole.
     expect(assessment.title).toBe(
-      "2023 Topps Vladimir Guerrero Jr. & Fernando Tatis Jr. & Julio Rodriguez #1",
+      "Authentics Relics Vladimir Guerrero Jr. & Fernando Tatis Jr. & Julio Rodriguez",
     );
+    expect(assessment.dropped).toContain("#1");
   });
 });

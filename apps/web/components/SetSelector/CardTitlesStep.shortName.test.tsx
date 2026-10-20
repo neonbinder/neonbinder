@@ -128,10 +128,10 @@ describe("CardTitlesStep — typing recomputes every title live", () => {
     });
     const left = titleFields() as HTMLTextAreaElement[];
     expect(left).toHaveLength(1);
-    // Titled with the short name, which is cut from its end before any player
-    // is (NEO-339).
+    // Titled with the short name. The card number goes first, then the short
+    // name's words from its end; never a player (NEO-339; Jason, 2026-10-19).
     expect(left[0].value).toBe(
-      "2026 Topps Chrome Update Series Sapphire Shohei Ohtani & Shohei Ohtani #2",
+      "2026 Topps Chrome Update Series Sapphire Edition Shohei Ohtani & Shohei Ohtani",
     );
     expect(screen.getByText("1 title still trimmed.")).toBeTruthy();
   });
