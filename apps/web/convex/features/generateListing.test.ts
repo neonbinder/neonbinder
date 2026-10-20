@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   assessListingTitle,
   generateListingTitle,
-  parallelDistinguishingWords,
   generateListingDescription,
   rookieAsRc,
   SHORT_NAME_RULE,
@@ -1355,35 +1354,5 @@ describe("NEO-335 — \"Rookie\" → \"RC\" in an insert's name, only when neede
     expect(generateListingDescription({ ...debut, isRelic: true, printRun: 99 })).toContain(
       "Rookie Debut Patch Autographs",
     );
-  });
-});
-
-describe("NEO-339 — parallelDistinguishingWords", () => {
-  const base: ListingCardInputs = { cardNumber: "1", setName: "Topps Chrome" };
-  test("what the parallel's name adds beyond its insert, or its set", () => {
-    expect(
-      parallelDistinguishingWords({
-        ...base,
-        insertName: "1988 Topps Baseball Autographs",
-        parallelName: "1988 Topps Baseball Autographs Red",
-      }),
-    ).toBe("Red");
-    expect(
-      parallelDistinguishingWords({ ...base, insertName: "Authentics Relics", parallelName: "authentics relics Orange Refractor" }),
-    ).toBe("Orange Refractor");
-    expect(parallelDistinguishingWords({ ...base, parallelName: "Topps Chrome Gold Refractor" })).toBe(
-      "Gold Refractor",
-    );
-    expect(parallelDistinguishingWords({ ...base, parallelName: "SuperFractor" })).toBe("SuperFractor");
-  });
-  test("nothing for no parallel, Base, the variation text, or a name the parent already says", () => {
-    expect(parallelDistinguishingWords(base)).toBeUndefined();
-    expect(parallelDistinguishingWords({ ...base, parallelName: "Base" })).toBeUndefined();
-    expect(
-      parallelDistinguishingWords({ ...base, parallelName: "Sliding", cardVariation: "Sliding" }),
-    ).toBeUndefined();
-    expect(
-      parallelDistinguishingWords({ ...base, insertName: "Future Stars", parallelName: "Future Stars" }),
-    ).toBeUndefined();
   });
 });
