@@ -236,6 +236,13 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
   options object: `drillToSet(page, env, { set: "Topps Big League" })`.
+  The Reconcile dialog's Save goes through `saveReconcile(page, dialog, {
+  placed })` (NEO-339): Save asks "Leave N sets unpaired?" while the set's own
+  sets wait in Pending, so the helper reads the Pending columns first and
+  asserts the step (then presses "Leave them") or a save at once, whichever
+  they call for; never click `Save N sets` by hand. `openLeaveStep` stops ON
+  the step and refuses to press Save with nothing in Pending, for a read-only
+  dialog.
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
@@ -244,6 +251,17 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
+- `support/pairing.ts`: the Match Cards dialog's conflict hold (NEO-339). Confirm
+  is `aria-disabled` while any name or players conflict is unanswered, no pill
+  starts checked, and the footer says "Hold up — N conflicts still need your
+  pick before these cards save." beside "Go to the next conflict". A spec whose
+  feature is NOT a conflict decision calls `settleMatchCards(page, dialog, {
+  timeout })`: it waits for the dialog to settle, answers whatever conflicts the
+  live data raised (the first value each offers) and returns the released
+  Confirm to click; never wait on `Confirm card matches` with `disabled: false`
+  by hand, because on a set with a conflict that wait never ends. A spec whose
+  feature IS the decision drives the pills itself with `conflictsHoldLine`,
+  `releasedConfirm`, `unansweredConflicts` and `answerOpenConflicts`.
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
   `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,

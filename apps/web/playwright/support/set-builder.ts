@@ -20,6 +20,7 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 import type { FlowEnv } from "./env";
+import { expectAccessible } from "./fixtures";
 
 export type Column =
   | "Sports"
@@ -319,6 +320,148 @@ export async function openInsertsReconcile(page: Page): Promise<Locator> {
   if (!(await reconcile.isVisible())) await page.getByRole("button", { name: "Sync Inserts" }).click();
   await expect(reconcile).toBeVisible({ timeout: INSERT_FETCH });
   return reconcile;
+}
+
+/** One set the Reconcile Save asked about and the operator left in Pending. */
+export interface LeftUnpaired {
+  name: string;
+  side: "BSC" | "SportLots";
+}
+
+/** What `saveReconcile` did. */
+export interface ReconcileSave {
+  /** The sets written: the Save button's own count when it was pressed. */
+  saved: number;
+  /** The sets left in Pending on purpose; empty when Save went through at once. */
+  left: LeftUnpaired[];
+}
+
+export interface SaveReconcileOptions {
+  /** Sets the operator made Ready in this dialog: the step must not ask about them. */
+  placed?: string[];
+  /** Axe-check the "Leave N sets unpaired?" step under this label. Omit it in a spec that is not about the step. */
+  axe?: string;
+}
+
+/** The step's dialog: named by its title, "Leave N sets unpaired?". */
+const leaveStep = (page: Page): Locator =>
+  page.getByRole("dialog", { name: /^Leave [1-9][0-9]* sets? unpaired\?$/ });
+
+/**
+ * What the Reconcile Save must do, read off the dialog before it is pressed.
+ * The "Leave N sets unpaired?" step asks about every BSC set the level lists
+ * plus the SportLots sets inside the default prefix filter, whatever the
+ * search boxes show, so the view is first put on that scope (search boxes
+ * cleared, "Show all SportLots items" off) and the two Pending headings read.
+ */
+async function readSaveScope(dialog: Locator) {
+  await dialog.getByRole("textbox", { name: "Filter BSC items" }).clear();
+  await dialog.getByRole("textbox", { name: "Search SportLots items" }).clear();
+  await dialog.getByRole("checkbox", { name: "Show all SportLots items" }).uncheck();
+
+  const pendingIn = async (side: "BSC" | "SportLots") => {
+    // "BSC (3)", or "BSC (3 of 40)" when the column lists fewer than it holds.
+    const heading = dialog.getByText(new RegExp(`^${side} \\([0-9]+( of [0-9]+)?\\)$`));
+    await expect(heading).toBeVisible();
+    return Number(((await heading.textContent()) ?? "").match(/\(([0-9]+)/)?.[1]);
+  };
+  const inScope = (await pendingIn("BSC")) + (await pendingIn("SportLots"));
+  // A set the Base check set aside is hidden from the heading, never from the step.
+  const setAside = await dialog.getByRole("button", { name: /that don.t match the Base/ }).isVisible();
+  const save = dialog.getByRole("button", { name: /^Save [0-9]+ sets$/ });
+  const saved = Number(((await save.textContent()) ?? "").match(/[0-9]+/)?.[0]);
+  expect(saved, "the Save button names a count of Ready sets").toBeGreaterThan(0);
+  return { save, saved, inScope, setAside, mustAsk: inScope > 0 || setAside };
+}
+
+/** The open step is the right one: titled, listing, un-saved, focused. Returns the sets it lists. */
+async function expectLeaveStep(
+  page: Page,
+  dialog: Locator,
+  scope: Awaited<ReturnType<typeof readSaveScope>>,
+  { placed = [], axe }: SaveReconcileOptions,
+): Promise<LeftUnpaired[]> {
+  const leave = leaveStep(page);
+  await expect(leave).toBeVisible();
+  const title = (await leave.getByRole("heading").textContent()) ?? "";
+  const asked = Number(title.match(/^Leave ([0-9]+)/)?.[1]);
+  expect(asked, `the step asks about at least the ${scope.inScope} sets the Pending columns list`).toBeGreaterThanOrEqual(
+    scope.inScope,
+  );
+  const list = leave.getByRole("group", { name: "Sets left in Pending" });
+  const rows = list.getByRole("listitem");
+  await expect(rows).toHaveCount(asked);
+  await expect(rows.filter({ hasText: /(BSC|SportLots)$/ })).toHaveCount(asked);
+  for (const name of placed) await expect(list.getByText(name, { exact: true })).toHaveCount(0);
+  // The safe default has focus, and nothing is saved yet: the dialog behind is
+  // still up and its Save still reads "Save N sets", not "Saving...".
+  await expect(leave.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await expect(dialog).toBeVisible();
+  await expect(scope.save).toBeVisible();
+  if (axe) await expectAccessible(page, { within: leave, label: axe });
+
+  return (await rows.allTextContents()).map((text) => {
+    const [, name, side] = text.trim().match(/^(.*?)(BSC|SportLots)$/) ?? [];
+    return { name: name.trim(), side: side as LeftUnpaired["side"] };
+  });
+}
+
+/**
+ * Press the Reconcile dialog's `Save N sets` and, when the set's own sets are
+ * still in Pending, answer the "Leave N sets unpaired?" step (NEO-339) with
+ * `Leave them, save N sets`. Never a blind click-through: whether the step
+ * must open is read off the dialog BEFORE the press (`readSaveScope`), and
+ * both outcomes end in hard asserts (R2):
+ *  - nothing in scope (and no set aside by the Base check): the dialog must
+ *    close at once, with no step;
+ *  - anything in scope: the step must open (`expectLeaveStep`: titled with a
+ *    count of at least that many, one row per set with its marketplace, none
+ *    of the `placed` sets among them, focus on Cancel, nothing saved yet);
+ *    then Leave is pressed with the Ready count the Save button showed.
+ *
+ * Contract: ENTRY the dialog is open with its Save enabled. EXIT the dialog
+ * is closed (the save is our own write, the 7 s bar).
+ */
+export async function saveReconcile(
+  page: Page,
+  dialog: Locator,
+  options: SaveReconcileOptions = {},
+): Promise<ReconcileSave> {
+  const scope = await readSaveScope(dialog);
+  const leave = leaveStep(page);
+  await scope.save.click();
+
+  if (!scope.mustAsk) {
+    // Everything of its own is placed: Save writes at once, with nothing to ask.
+    await expect(dialog).toBeHidden();
+    await expect(leave).toBeHidden();
+    return { saved: scope.saved, left: [] };
+  }
+
+  const left = await expectLeaveStep(page, dialog, scope, options);
+  const { saved } = scope;
+  await leave
+    .getByRole("button", { name: `Leave them, save ${saved} ${saved === 1 ? "set" : "sets"}`, exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  await expect(leave).toBeHidden();
+  return { saved, left };
+}
+
+/**
+ * Press `Save N sets` on a dialog that must have sets in Pending, and stop on
+ * the step: for the spec whose feature IS the step, and for a READ-ONLY
+ * dialog, where neither Leave nor a save at once may happen. The press is
+ * refused (a hard assert BEFORE it) when the Pending columns list nothing, so
+ * this can never write. Returns the open step, the sets it lists and the Save
+ * button's count.
+ */
+export async function openLeaveStep(page: Page, dialog: Locator, options: SaveReconcileOptions = {}) {
+  const scope = await readSaveScope(dialog);
+  expect(scope.mustAsk, "precondition: the dialog lists sets in Pending, so Save has something to ask about").toBe(true);
+  await scope.save.click();
+  const left = await expectLeaveStep(page, dialog, scope, options);
+  return { step: leaveStep(page), left, saved: scope.saved, save: scope.save };
 }
 
 /** A never-synced level pays a cold marketplace sync (the flow's 150 s). */

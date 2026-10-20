@@ -1,7 +1,14 @@
 // Origin: .maestro/flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: the reconcile Save writes the two City Connect Swatch Relics sets.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { columnOption, columnSearch, drillToSet, setBuilderReady, readAttachedTwinId } from "../../support/set-builder";
+import {
+  columnOption,
+  columnSearch,
+  drillToSet,
+  readAttachedTwinId,
+  saveReconcile,
+  setBuilderReady,
+} from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
 const TWIN = "City Connect Swatch Collection";
@@ -26,7 +33,6 @@ function reconcile(page: Page) {
     ready: (n: string) => dialog.getByRole("heading", { name: new RegExp(`^Ready \\(${n} of [0-9]+\\)`) }),
     bsc: (n: string) => dialog.getByText(new RegExp(`BSC \\(${n} of [0-9]+\\)`)),
     ownSet: (id: string) => dialog.getByRole("button", { name: `Make its own set: ${TWIN} (#${id})` }),
-    save: dialog.getByRole("button", { name: /^Save [0-9]+ sets/ }),
   };
 }
 
@@ -88,7 +94,12 @@ test(
     await expect(r.dialog.getByText(/so you can tell them apart\./)).toBeHidden();
     await expectAccessible(page, { within: r.dialog, label: "Reconcile Inserts, twins paired to their own sets" });
 
-    await r.save.click();
+    // NEO-339: the flagship's other inserts (the "Black" relics and their twins
+    // among them) are still Pending, so Save asks "Leave N sets unpaired?" and
+    // `saveReconcile` asserts the step (the series rows and the twin are Ready, so
+    // none is among the sets it lists) before leaving them. What the step lists
+    // is what Save then does NOT write: read at the end of the flow.
+    const firstSave = await saveReconcile(page, r.dialog, { placed: [ONE, TWO, TWIN] });
     await expect(r.dialog).toBeHidden();
 
     // Each saved set holds only its own SportLots twin.
@@ -120,7 +131,7 @@ test(
       r.dialog.getByRole("button", { name: new RegExp(`^Make its own set: ${TWIN} \\(#[0-9]+\\)$`) }),
     ).toHaveCount(0);
     await expect(r.dialog.getByText(/so you can tell them apart\./)).toBeHidden();
-    await r.save.click();
+    await saveReconcile(page, r.dialog, { placed: [ONE, TWO, TWIN] });
     await expect(r.dialog).toBeHidden();
 
     // The saved rows are listed once each, and the bare twin name is not a row.
@@ -132,6 +143,15 @@ test(
     await expect(columnOption(page, "Inserts", ONE)).toHaveCount(1);
     await expect(columnOption(page, "Inserts", TWO)).toHaveCount(1);
     await expect(columnOption(page, "Inserts", TWIN)).toBeHidden();
+
+    // "Leave them, save N sets" saved the Ready sets and only those (NEO-339): a
+    // set the first Save's step listed was left in Pending, so it has no row. The
+    // rows asserted above are the positive: the column is alive and holds the saved
+    // sets. A BSC set is preferred: BSC's name is the title a row made from it would take.
+    const left = firstSave.left.find((set) => set.side === "BSC") ?? firstSave.left[0];
+    expect(left, "the first Save's step listed a set left in Pending").toBeDefined();
+    await columnSearch(page, "Inserts").fill(left.name);
+    await expect(columnOption(page, "Inserts", left.name)).toBeHidden();
 
     for (const t of TWINS) await readAttachedTwinId(page, env, { set: "Topps", twin: TWIN, ...t });
   },

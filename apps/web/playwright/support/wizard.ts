@@ -30,6 +30,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
+import { settleMatchCards } from "./pairing";
 import {
   columnHeading,
   columnOption,
@@ -165,6 +166,10 @@ export async function walkToAutographStep(page: Page): Promise<void> {
  * confirm the card pairing when both marketplaces answered, and land in the
  * entity-review wizard.
  *
+ * Match Cards conflicts the live data raises (NEO-339) are answered with the
+ * first value each offers (`settleMatchCards`, support/pairing.ts): this
+ * helper's product is the wizard, never a card-name decision.
+ *
  * Contract: EXIT the "Tidy up this set" dialog is open and axe-clean, every
  * row undecided ("Step 1 of N"; callers assert that themselves). Live, the
  * pairing session is PARKED behind it ("Back to Match Cards" is offered);
@@ -182,10 +187,11 @@ export async function fetchChecklistToWizard(
   const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
   if (!env.SL_PAUSED) {
     await expect(page.getByText(/Match Cards/).first()).toBeVisible({ timeout: FETCH });
-    // The button reads "Loading…" (aria-disabled) while cards still stream in;
-    // wait for the usable one (the flow's "^Confirm$" text).
-    const ready = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-    await expect(ready).toBeVisible({ timeout: FETCH });
+    // The button reads "Loading…" (aria-disabled) while cards still stream in,
+    // then is held on any conflict the live data raised (NEO-339): this helper's
+    // feature is the wizard, so it answers those with the first value each
+    // offers and clicks the released Confirm (support/pairing.ts).
+    const ready = await settleMatchCards(page, page.getByRole("dialog", { name: /^Match Cards/ }), { timeout: FETCH });
     await ready.click();
   } else {
     // One marketplace answered: the solo path keeps its cards without pairing.

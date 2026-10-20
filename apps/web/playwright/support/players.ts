@@ -59,12 +59,21 @@ export async function emptyListAndPickSport(page: Page, sport: string): Promise<
 /**
  * util-add-player-by-hand.yaml: on /admin/players (already loaded), add a
  * player under `sport`, ending with the new player's detail panel open.
+ * `otherNames` fills the form's "Other names (optional)" box (comma-separated),
+ * so the player is filed with an alias.
  */
-export async function addPlayerByHand(page: Page, name: string, sport: string): Promise<void> {
+export async function addPlayerByHand(
+  page: Page,
+  name: string,
+  sport: string,
+  { otherNames }: { otherNames?: string } = {},
+): Promise<void> {
   await emptyListAndPickSport(page, sport);
   await page.getByRole("button", { name: "Add player" }).click();
   await expect(page.getByRole("heading", { name: "Add a player" })).toBeVisible();
   await page.getByRole("textbox", { name: "New player name" }).fill(name);
+  // NEO-254's "Other names (optional)": a former name the player's cards also use.
+  if (otherNames) await page.getByRole("textbox", { name: "Other names (optional)" }).fill(otherNames);
   await page.getByRole("button", { name: `Create player ${name}` }).click();
 
   // The detail panel replaces the form: heading, the "Added" confirmation and

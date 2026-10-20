@@ -14,7 +14,7 @@ named `Name for <scope>` / `Players for <scope>`, inside a `group` named
 one. The typed option is bare too (no `Custom: `). Warnings (inside the group):
 `Potential names for this card — pick the right one before it is listed.` /
 `Potential players for this card — pick the right ones before it is listed.`
-BSC's value stays preselected (Jason). Select by VALUE, never by index.
+NEO-339 superseded the preselect: NO pill starts checked and Confirm is held until every conflict is answered, see [[match-cards-conflict-hold-needs-settle-helper]]. Select by VALUE, never by index.
 
 **Which value is whose:** read it BEFORE the link, from the unmatched columns,
 which still say which side a card is on. The `Select BSC card <label>` and

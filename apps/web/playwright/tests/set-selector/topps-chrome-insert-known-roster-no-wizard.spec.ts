@@ -32,6 +32,7 @@
 // PAUSED (NEO-287): SportLots is never asked, so the fetch takes the NEO-255
 // one-marketplace path (no dialog) and the claim is unchanged.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { settleMatchCards } from "../../support/pairing";
 import {
   columnOption,
   columnSearch,
@@ -82,9 +83,11 @@ test(
       // the same fetch on Future Stars; measured ~6 s).
       await expect(matchCards).toBeVisible({ timeout: CHECKLIST_FETCH });
       await expect(matchCards.getByRole("heading", { name: `Match Cards — ${INSERT}` })).toBeVisible();
-      // Confirm is inert ("Loading…") while the fetch streams (same exception).
-      const confirm = matchCards.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
+      // Confirm is inert ("Loading…") while the fetch streams (same exception),
+      // then (NEO-339) held on any conflict the live data raised, which this
+      // spec answers with the first value each offers: its feature is the known
+      // roster, not a card name.
+      const confirm = await settleMatchCards(page, matchCards, { timeout: CHECKLIST_FETCH });
       await expect(confirm).toHaveText("Confirm");
       // What Confirm will save: every one of the 50.
       await expect(matchCards.getByText(/50 cards will be saved/)).toBeVisible();

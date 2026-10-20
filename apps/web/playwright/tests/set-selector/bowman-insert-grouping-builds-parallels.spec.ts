@@ -2,11 +2,13 @@
 // Fresh-only: it saves 2026 Bowman's inserts as sets, groups them, and builds
 // Anime Kanji's cards from Anime.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { settleMatchCards } from "../../support/pairing";
 import {
   columnHeading,
   columnOption,
   columnSearch,
   drillToSet,
+  saveReconcile,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
@@ -79,7 +81,12 @@ test(
         reconcile.getByRole("textbox", { name: "NeonBinder set name for Anime Kanji", exact: true }),
       ).toBeVisible();
       await expect(animeSet).toBeVisible();
-      await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
+      // NEO-339: Keep all placed every BSC insert, so what is left to ask about is
+      // only a SportLots set inside the filter, if any. `saveReconcile` reads the
+      // Pending columns before the press and asserts whichever outcome they call
+      // for (a save at once, or the "Leave N sets unpaired?" step), with Anime and
+      // Anime Kanji never among the sets listed.
+      await saveReconcile(page, reconcile, { placed: ["Anime", "Anime Kanji"] });
       await expect(reconcile).toBeHidden();
       await openInserts();
     } else {
@@ -129,7 +136,8 @@ test(
     await expect(page.getByText("Show grouped")).toBeVisible();
     if (!env.SL_PAUSED) {
       await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog leaving grouped parallels be" });
-      await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
+      // The same Save as PART 1 (NEO-339).
+      await saveReconcile(page, reconcile, { placed: ["Anime"] });
       await expect(reconcile).toBeHidden();
     }
 
@@ -149,8 +157,11 @@ test(
     await expect(matchCards.or(kept)).toBeVisible({ timeout: 120_000 });
     if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
     if (await matchCards.isVisible()) {
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: 120_000 });
+      // Held on any conflict the live data raised (NEO-339): answered with the
+      // first value each offers, since this spec's feature is the grouping.
+      const confirm = await settleMatchCards(page, page.getByRole("dialog", { name: /^Match Cards/ }), {
+        timeout: 120_000,
+      });
       await expect(page.getByText(/Match Cards — Anime/)).toBeVisible();
       await expectAccessible(page, { within: page.getByRole("dialog", { name: /^Match Cards/ }), label: "Match Cards dialog" });
       await confirm.click();

@@ -25,6 +25,7 @@
 // to exactly one. It mints no names either, so no env-minted marker is
 // needed; the per-project run only differs in the signed-in worker.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { settleMatchCards } from "../../support/pairing";
 import {
   COLD_SYNC,
   columnHeading,
@@ -35,6 +36,7 @@ import {
   INSERT_FETCH,
   openInsertsReconcile,
   pick,
+  saveReconcile,
   setBuilderReady,
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
@@ -106,7 +108,11 @@ test(
       await expect(insertSet).toBeVisible();
       await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog (Prospect Dual Autographs)" });
 
-      await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
+      // NEO-339: an insert left in Pending makes Save ask "Leave N sets unpaired?".
+      // `saveReconcile` reads the dialog's Pending columns before the press and
+      // asserts whichever outcome they call for: the step listing those sets (this
+      // insert not among them), left on purpose, or a save at once.
+      await saveReconcile(page, reconcile, { placed: [INSERT] });
       await expect(reconcile).toBeHidden();
 
       // Saving leaves the columns at the offset the dialog opened from: re-drill
@@ -146,9 +152,12 @@ test(
     if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
     if (await matchCards.isVisible()) {
       // The dialog OPENING is not the fetch FINISHING: Confirm reads
-      // "Loading…" and is inert until the action resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
+      // "Loading…" and is inert until the action resolves, and (NEO-339) is
+      // held on any conflict the live data raised, which this spec answers with
+      // the first value each offers: its feature is the team split, not a name.
+      const confirm = await settleMatchCards(page, page.getByRole("dialog", { name: /^Match Cards/ }), {
+        timeout: CHECKLIST_FETCH,
+      });
       await expect(page.getByText(new RegExp(`Match Cards — ${INSERT}`))).toBeVisible();
       await expectAccessible(page, {
         within: page.getByRole("dialog", { name: /^Match Cards/ }),

@@ -1,9 +1,15 @@
 // Origin: .maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml (Maestro suite retired in NEO-341; see git history)
+// Listing-title rules on one hand-made card (R1: what a card title may be).
+// NEO-101: an over-long title is refused in the drawer, and an over-long variation is walked to a fix.
+// NEO-339: a BLANK title is refused too. The drawer takes the cleared field back to the stored title
+// (the field's own empty-commit rule: a blank is never written, and nothing says so), and the walker's
+// title step holds Save and says "A card title can't be blank." beside it. The server's own refusal of
+// a blank is covered by its unit tests: no control in the UI can send one.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 
 test(
-  "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix",
+  "Listing title limits — an over-long or blank card title is refused, and an over-long variation is walked to a fix",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const id = env.ATTEMPT_ID;
@@ -78,6 +84,16 @@ test(
     await expect(cardTitle).toHaveValue(generated);
     await expect(shorten).toBeHidden();
 
+    // ── A blank title is refused (NEO-339) ──
+    // Regenerate stored `generated`. Clearing the field and committing it does
+    // NOT write a blank: the field takes the stored title back. Cleared first
+    // (positive), so the revert is a real one.
+    await cardTitle.clear();
+    await expect(cardTitle).toHaveValue("");
+    await cardTitle.press("Enter");
+    await expect(cardTitle).toHaveValue(generated);
+    await expect(cardName).toBeVisible();
+
     // ── An over-long variation is saved, but flagged ──
     const variation = page.getByRole("textbox", { name: "Card variation", exact: true });
     await variation.fill("Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout");
@@ -120,10 +136,32 @@ test(
     await expect(fixer.getByText("Step 2 of 2", { exact: true })).toBeVisible();
     await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
-    await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
+    const fixerTitle = fixer.getByRole("textbox", { name: `Card title for #${num}` });
+    await expect(fixerTitle).toHaveValue(generated);
     await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
 
-    await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
+    const fixerSave = fixer.getByRole("button", { name: /Save \(Enter\)/ });
+    await expect(fixerSave).toBeVisible();
+    await expect(fixerSave).toBeEnabled();
+    await expect(fixer.getByText("Saves the title and variation on this card.")).toBeVisible();
+
+    // NEO-339: a cleared title holds Save and says why, beside the field.
+    const stored = await fixerTitle.inputValue();
+    await fixerTitle.clear();
+    const blankHint = fixer.getByText("A card title can't be blank.", { exact: true });
+    await expect(blankHint).toBeVisible();
+    await expect(fixerSave).toBeDisabled();
+    await expect(fixer.getByText("Saves the title and variation on this card.")).toBeHidden();
+    await expectAccessible(page, { within: fixer, label: "Attention walker, blank title held" });
+    // Enter in the field is the same refusal: the step stays put.
+    await fixerTitle.press("Enter");
+    await expect(blankHint).toBeVisible();
+    await expect(fixer.getByText("Step 2 of 2", { exact: true })).toBeVisible();
+    // Typing the title back releases Save.
+    await fixerTitle.fill(stored);
+    await expect(blankHint).toBeHidden();
+    await expect(fixer.getByText("Saves the title and variation on this card.")).toBeVisible();
+    await expect(fixerSave).toBeEnabled();
     await fixer.getByRole("textbox", { name: `Card variation for #${num}` }).clear();
     await expect(fixer.getByText(/a marketplace that caps this field will reject the value/)).toBeHidden();
     await fixer.getByRole("button", { name: /Save \(Enter\)/ }).click();

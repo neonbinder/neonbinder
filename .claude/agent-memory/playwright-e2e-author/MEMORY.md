@@ -75,3 +75,4 @@
 - [Probe fixture attribute tokens from BSC public catalogue](reference_probe_fixture_attribute_tokens_from_bsc_public_catalogue.md) — productName can say AU, SN99 while playerAttribute is empty; probe before asserting on a token
 - [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these players for <scope>`; read each side's value off the unmatched columns before linking; toBeChecked, exact scopes, no-source negatives
 - [Reconcile Save goes through the leave step](patterns_reconcile_save_goes_through_the_leave_step.md) — saveReconcile reads Pending headings first; withheld auto-matches; tie fixture is Y + Y.
+- [Match Cards conflict hold needs the settle helper](patterns_match_cards_conflict_hold_needs_settle_helper.md) — NEO-339: Confirm is aria-disabled while a conflict is open; use settleMatchCards, never wait on disabled:false alone

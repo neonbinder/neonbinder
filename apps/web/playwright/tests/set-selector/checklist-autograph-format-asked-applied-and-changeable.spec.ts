@@ -57,6 +57,7 @@
 // holds the wizard's) and it WILL change: update the strings, not the asserts.
 import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { settleMatchCards } from "../../support/pairing";
 import { editCardButton } from "../../support/cards";
 import {
   COLD_SYNC,
@@ -68,6 +69,7 @@ import {
   INSERT_FETCH,
   openInsertsReconcile,
   pick,
+  saveReconcile,
   setBuilderReady,
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
@@ -138,7 +140,11 @@ test(
       if (await makeOwn.isVisible()) await makeOwn.click();
       await expect(insertSet).toBeVisible();
       await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog (Bowman Draft Nights Autographs)" });
-      await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
+      // NEO-339: an insert left in Pending makes Save ask "Leave N sets unpaired?".
+      // `saveReconcile` reads the dialog's Pending columns before the press and
+      // asserts whichever outcome they call for: the step listing those sets (this
+      // insert not among them), left on purpose, or a save at once.
+      await saveReconcile(page, reconcile, { placed: [INSERT] });
       await expect(reconcile).toBeHidden();
 
       // Saving leaves the columns at the offset the dialog opened from: re-drill
@@ -166,9 +172,12 @@ test(
     // NEO-287: paused, nothing was asked of SportLots, so the pairing dialog is the bug.
     if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
     if (await matchCards.isVisible()) {
-      // The dialog OPENING is not the fetch FINISHING: Confirm reads "Loading…" and is inert until it resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
+      // The dialog OPENING is not the fetch FINISHING: Confirm reads "Loading…" and is inert until it
+      // resolves, and (NEO-339) is held on any conflict the live data raised, which this spec answers
+      // with the first value each offers: its feature is the autograph format, not a card name.
+      const confirm = await settleMatchCards(page, page.getByRole("dialog", { name: /^Match Cards/ }), {
+        timeout: CHECKLIST_FETCH,
+      });
       await expectAccessible(page, {
         within: page.getByRole("dialog", { name: /^Match Cards/ }),
         label: "Match Cards dialog (Bowman Draft Nights Autographs)",
