@@ -796,6 +796,14 @@ export default function ParallelGroupingModal({
     setActiveDragId(e.active.id as string);
   }, []);
 
+  // A drag cancelled by Escape or a pointercancel (a touch scroll, a tab
+  // switch) never reaches `onDragEnd`. Without this the carried rows stayed
+  // dimmed and the Escape guard below kept treating every later Escape as
+  // "cancel the drag", so the dialog stopped closing until another drag ran.
+  const handleDragCancel = useCallback(() => {
+    setActiveDragId(null);
+  }, []);
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       setActiveDragId(null);
@@ -1215,6 +1223,7 @@ export default function ParallelGroupingModal({
               collisionDetection={keyboardAwareCollision}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
             >
               <div className="space-y-4">
                 {/* Top-level / Ungrouped pool */}

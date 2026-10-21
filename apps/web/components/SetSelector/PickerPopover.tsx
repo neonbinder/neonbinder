@@ -314,8 +314,14 @@ export default function PickerPopover({
 
   useEffect(() => {
     // Capture phase: a scroll inside an ancestor div never bubbles to window,
-    // but it does pass through it on the way down.
-    window.addEventListener("scroll", measure, true);
+    // but it does pass through it on the way down. The popover scrolling
+    // inside itself moves nothing it is anchored to, so a wheel through a
+    // long list does not re-measure on every tick.
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && innerRef.current?.contains(e.target)) return;
+      measure();
+    };
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", measure);
     // Content that changes height without re-rendering this component — see
     // "Following the trigger". Child lists only: never attributes, so the
@@ -329,7 +335,7 @@ export default function PickerPopover({
       observer.observe(el, { childList: true, subtree: true, characterData: true });
     }
     return () => {
-      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", measure);
       observer?.disconnect();
     };

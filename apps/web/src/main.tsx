@@ -15,58 +15,69 @@ import ProtectedLayout from "@/src/layouts/ProtectedLayout";
 import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
 import AdminSectionLayout from "@/src/layouts/admin-section-layout";
-
-// Pages
-import Home from "@/app/page";
-import LandingPage from "@/app/landing";
-import About from "@/app/about/page";
-import BinderTracking from "@/app/binder-tracking/page";
-import AiCardIdentification from "@/app/ai-card-identification/page";
-import ManagingInventory from "@/app/managing-inventory/page";
-import ShippingLabelsMarketing from "@/app/shipping-labels/page";
-import PrintShopMarketing from "@/app/print-shop/page";
-import EasypostSetup from "@/app/easypost-setup/page";
-import SignInPage from "@/app/signin/[[...sign-in]]/page";
-import SignUpPage from "@/app/sign-up/[[...sign-up]]/page";
-import PublicProfile from "@/app/u/[username]/page";
-import SalePage from "@/app/u/[username]/sale/page";
-import TestSignIn from "@/app/testing/sign-in/page";
-import TestReset from "@/app/testing/reset/page";
-import TestSeedCredentials from "@/app/testing/seed-credentials/page";
-import TestNeedsReauth from "@/app/testing/needs-reauth/page";
-import TestSeedPlaceholderRun from "@/app/testing/seed-placeholder-run/page";
-import TestSeedPlaceholderUpload from "@/app/testing/seed-placeholder-upload/page";
-import Dashboard from "@/app/dashboard/page";
 import ProfileLayout from "@/src/layouts/profile-layout";
-import ProfilePublic from "@/app/profile/public/page";
-import ProfileCredentials from "@/app/profile/credentials/page";
-import ProfileShipping from "@/app/profile/shipping/page";
-import ProfilePostage from "@/app/profile/postage/page";
-import ProfilePrizes from "@/app/profile/prizes/page";
-import ProfileApiKeys from "@/app/profile/api-keys/page";
-import AdminHub from "@/app/admin/page";
-import AdminSetBuilder from "@/app/admin/set-builder/page";
-import AdminPlayers from "@/app/admin/players/page";
-import AdminTeams from "@/app/admin/teams/page";
-import AdminLeagues from "@/app/admin/leagues/page";
-import AdminFranchises from "@/app/admin/franchises/page";
-import PipelineRuns from "@/app/pipeline-runs/page";
-import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
-import PrintHub from "@/app/print/page";
-import PrintLabelHistory from "@/app/print/labels/page";
-import PrintPlaceholders from "@/app/print/placeholders/page";
-import PrintQrCode from "@/app/print/qr/page";
-import PrintShipping from "@/app/print/shipping/page";
-import PrintBlackoutLabel from "@/app/print/shipping/blackout/page";
-import PrintSpineLabel from "@/app/print/spine-label/page";
-import Inventory from "@/app/inventory/page";
+
+// The binder tabs' destinations, named so PrefetchBinderTabs can warm them.
+const loadDashboard = () => import("@/app/dashboard/page");
+const loadCollection = () => import("@/app/collection/page");
+const loadInventory = () => import("@/app/inventory/page");
+const loadAdminHub = () => import("@/app/admin/page");
+const loadPrintHub = () => import("@/app/print/page");
+const loadProfilePublic = () => import("@/app/profile/public/page");
+
+// Pages. Only Home (the landing page, and the first paint for most visitors)
+// ships in the entry bundle; every other page is its own chunk, fetched when
+// its route first renders (ui-audit 2026-10). Before this the entry carried
+// all ~45 pages, the /testing harness and the admin set builder included, to
+// every visitor of the landing page.
+import Home from "@/app/page";
+const About = lazy(() => import("@/app/about/page"));
+const BinderTracking = lazy(() => import("@/app/binder-tracking/page"));
+const AiCardIdentification = lazy(() => import("@/app/ai-card-identification/page"));
+const ManagingInventory = lazy(() => import("@/app/managing-inventory/page"));
+const ShippingLabelsMarketing = lazy(() => import("@/app/shipping-labels/page"));
+const PrintShopMarketing = lazy(() => import("@/app/print-shop/page"));
+const EasypostSetup = lazy(() => import("@/app/easypost-setup/page"));
+const SignInPage = lazy(() => import("@/app/signin/[[...sign-in]]/page"));
+const SignUpPage = lazy(() => import("@/app/sign-up/[[...sign-up]]/page"));
+const PublicProfile = lazy(() => import("@/app/u/[username]/page"));
+const SalePage = lazy(() => import("@/app/u/[username]/sale/page"));
+const TestSignIn = lazy(() => import("@/app/testing/sign-in/page"));
+const TestReset = lazy(() => import("@/app/testing/reset/page"));
+const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
+const TestNeedsReauth = lazy(() => import("@/app/testing/needs-reauth/page"));
+const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
+const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
+const Dashboard = lazy(loadDashboard);
+const ProfilePublic = lazy(loadProfilePublic);
+const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
+const ProfileShipping = lazy(() => import("@/app/profile/shipping/page"));
+const ProfilePostage = lazy(() => import("@/app/profile/postage/page"));
+const ProfilePrizes = lazy(() => import("@/app/profile/prizes/page"));
+const ProfileApiKeys = lazy(() => import("@/app/profile/api-keys/page"));
+const AdminHub = lazy(loadAdminHub);
+const AdminSetBuilder = lazy(() => import("@/app/admin/set-builder/page"));
+const AdminPlayers = lazy(() => import("@/app/admin/players/page"));
+const AdminTeams = lazy(() => import("@/app/admin/teams/page"));
+const AdminLeagues = lazy(() => import("@/app/admin/leagues/page"));
+const AdminFranchises = lazy(() => import("@/app/admin/franchises/page"));
+const PipelineRuns = lazy(() => import("@/app/pipeline-runs/page"));
+const DesignPrimitives = lazy(() => import("@/app/design/primitives/page"));
+const PrintHub = lazy(loadPrintHub);
+const PrintLabelHistory = lazy(() => import("@/app/print/labels/page"));
+const PrintPlaceholders = lazy(() => import("@/app/print/placeholders/page"));
+const PrintQrCode = lazy(() => import("@/app/print/qr/page"));
+const PrintShipping = lazy(() => import("@/app/print/shipping/page"));
+const PrintBlackoutLabel = lazy(() => import("@/app/print/shipping/blackout/page"));
+const PrintSpineLabel = lazy(() => import("@/app/print/spine-label/page"));
+const Inventory = lazy(loadInventory);
 
 // NEO-350 — the collection demo and its five reference prototypes are
 // lazy-loaded: ~300 fake cards, their art and their CSS stay out of the main
 // bundle until someone opens one. /binder-tracking lazy-loads the public copy
 // of the demo the same way (app/binder-tracking/page.tsx).
-const Collection = lazy(() => import("@/app/collection/page"));
+const Collection = lazy(loadCollection);
 const CollectionPrototype1 = lazy(() => import("@/app/collection/prototypes/p1/page"));
 const CollectionPrototype2 = lazy(() => import("@/app/collection/prototypes/p2/page"));
 const CollectionPrototype3 = lazy(() => import("@/app/collection/prototypes/p3/page"));
@@ -88,6 +99,39 @@ function Deferred({ children }: { children: ReactNode }) {
       {children}
     </Suspense>
   );
+}
+
+/**
+ * Warms the binder tabs' chunks once the signed-in shell is idle. A tab click
+ * runs inside a view transition (the page flip), which snapshots whatever the
+ * first synchronous render shows; a cold chunk would make that the Deferred
+ * line, so the flip would land on "Sleeving the cards…" and the page would pop
+ * in after it. Rendered only inside the binder shell, so the public pages
+ * never pay for it.
+ */
+function PrefetchBinderTabs() {
+  useEffect(() => {
+    const warm = () => {
+      for (const load of [
+        loadDashboard,
+        loadCollection,
+        loadInventory,
+        loadAdminHub,
+        loadPrintHub,
+        loadProfilePublic,
+      ]) {
+        // A failed prefetch is harmless: the route retries when it renders.
+        load().catch(() => {});
+      }
+    };
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(warm, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = setTimeout(warm, 1500);
+    return () => clearTimeout(id);
+  }, []);
+  return null;
 }
 
 /**
@@ -131,33 +175,33 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
         <Routes>
           {/* Public routes */}
           <Route path="/" element={<Home />} />
-          <Route path="/about" element={<About />} />
-          <Route path="/binder-tracking" element={<BinderTracking />} />
+          <Route path="/about" element={<Deferred><About /></Deferred>} />
+          <Route path="/binder-tracking" element={<Deferred><BinderTracking /></Deferred>} />
           <Route
             path="/ai-card-identification"
-            element={<AiCardIdentification />}
+            element={<Deferred><AiCardIdentification /></Deferred>}
           />
-          <Route path="/managing-inventory" element={<ManagingInventory />} />
+          <Route path="/managing-inventory" element={<Deferred><ManagingInventory /></Deferred>} />
           <Route
             path="/shipping-labels"
-            element={<ShippingLabelsMarketing />}
+            element={<Deferred><ShippingLabelsMarketing /></Deferred>}
           />
-          <Route path="/print-shop" element={<PrintShopMarketing />} />
-          <Route path="/easypost-setup" element={<EasypostSetup />} />
-          <Route path="/signin/*" element={<SignInPage />} />
-          <Route path="/sign-up/*" element={<SignUpPage />} />
-          <Route path="/u/:username/sale" element={<SalePage />} />
-          <Route path="/u/:username" element={<PublicProfile />} />
-          <Route path="/testing/sign-in" element={<TestSignIn />} />
-          <Route path="/testing/reset" element={<TestReset />} />
+          <Route path="/print-shop" element={<Deferred><PrintShopMarketing /></Deferred>} />
+          <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />
+          <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
+          <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
+          <Route path="/u/:username/sale" element={<Deferred><SalePage /></Deferred>} />
+          <Route path="/u/:username" element={<Deferred><PublicProfile /></Deferred>} />
+          <Route path="/testing/sign-in" element={<Deferred><TestSignIn /></Deferred>} />
+          <Route path="/testing/reset" element={<Deferred><TestReset /></Deferred>} />
           <Route
             path="/testing/seed-credentials"
-            element={<TestSeedCredentials />}
+            element={<Deferred><TestSeedCredentials /></Deferred>}
           />
-          <Route path="/testing/needs-reauth" element={<TestNeedsReauth />} />
+          <Route path="/testing/needs-reauth" element={<Deferred><TestNeedsReauth /></Deferred>} />
           <Route
             path="/testing/seed-placeholder-run"
-            element={<TestSeedPlaceholderRun />}
+            element={<Deferred><TestSeedPlaceholderRun /></Deferred>}
           />
           {/* The E2E suite's door into the real upload path: only the file
               picker is bypassed. Built because the retired maestro-web driver
@@ -165,13 +209,20 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               still enter through it. */}
           <Route
             path="/testing/seed-placeholder-upload"
-            element={<TestSeedPlaceholderUpload />}
+            element={<Deferred><TestSeedPlaceholderUpload /></Deferred>}
           />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>
-            <Route element={<BinderLayout />}>
-              <Route path="/dashboard" element={<Dashboard />} />
+            <Route
+              element={
+                <>
+                  <PrefetchBinderTabs />
+                  <BinderLayout />
+                </>
+              }
+            >
+              <Route path="/dashboard" element={<Deferred><Dashboard /></Deferred>} />
               {/* NEO-350 — the collection demo: a permanent, hard-coded
                   marketing demo (never Convex), the same page the public
                   plays with on /binder-tracking. Not the future real
@@ -186,7 +237,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/collection/3" element={<Deferred><CollectionPrototype3 /></Deferred>} />
               <Route path="/collection/4" element={<Deferred><CollectionPrototype4 /></Deferred>} />
               <Route path="/collection/5" element={<Deferred><CollectionPrototype5 /></Deferred>} />
-              <Route path="/inventory" element={<Inventory />} />
+              <Route path="/inventory" element={<Deferred><Inventory /></Deferred>} />
               {/* /placeholders was the NEO-170 stopgap intake. NEO-152 replaced
                   it with the real thing at /print/placeholders, so the old path
                   redirects rather than 404s: it was never in the nav, but it is
@@ -198,33 +249,33 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                   and is forwarded to Public Profile. */}
               <Route path="/profile" element={<ProfileLayout />}>
                 <Route index element={<Navigate to="/profile/public" replace />} />
-                <Route path="public" element={<ProfilePublic />} />
-                <Route path="credentials" element={<ProfileCredentials />} />
-                <Route path="shipping" element={<ProfileShipping />} />
-                <Route path="postage" element={<ProfilePostage />} />
-                <Route path="prizes" element={<ProfilePrizes />} />
+                <Route path="public" element={<Deferred><ProfilePublic /></Deferred>} />
+                <Route path="credentials" element={<Deferred><ProfileCredentials /></Deferred>} />
+                <Route path="shipping" element={<Deferred><ProfileShipping /></Deferred>} />
+                <Route path="postage" element={<Deferred><ProfilePostage /></Deferred>} />
+                <Route path="prizes" element={<Deferred><ProfilePrizes /></Deferred>} />
                 {/* NEO-172 — self-service Clerk API keys. Protected by the
                     same ProtectedLayout gate as the rest of /profile. */}
-                <Route path="api-keys" element={<ProfileApiKeys />} />
+                <Route path="api-keys" element={<Deferred><ProfileApiKeys /></Deferred>} />
               </Route>
               {/* Print Shop (NEO-145) — the print tools under one section.
                   Bare /print lists them; each tool is its own sub-route. */}
               <Route path="/print" element={<PrintLayout />}>
-                <Route index element={<PrintHub />} />
-                <Route path="shipping" element={<PrintShipping />} />
+                <Route index element={<Deferred><PrintHub /></Deferred>} />
+                <Route path="shipping" element={<Deferred><PrintShipping /></Deferred>} />
                 {/* NEO-349 — a solid black 4x6 label to cover the old label on a
                     reused mailer. Nested under shipping in the URL because it
                     goes on the same roll; a sibling route, not a child, so it
                     renders in PrintLayout's Outlet like every other tool. */}
-                <Route path="shipping/blackout" element={<PrintBlackoutLabel />} />
+                <Route path="shipping/blackout" element={<Deferred><PrintBlackoutLabel /></Deferred>} />
                 {/* NEO-213 — reprint a label already bought on /print/shipping.
                     Note the legacy top-level /labels below is the SHIPPING
                     redirect and predates this route; they are different pages
                     and the redirect deliberately stays where it points. */}
-                <Route path="labels" element={<PrintLabelHistory />} />
-                <Route path="qr" element={<PrintQrCode />} />
-                <Route path="placeholders" element={<PrintPlaceholders />} />
-                <Route path="spine-label" element={<PrintSpineLabel />} />
+                <Route path="labels" element={<Deferred><PrintLabelHistory /></Deferred>} />
+                <Route path="qr" element={<Deferred><PrintQrCode /></Deferred>} />
+                <Route path="placeholders" element={<Deferred><PrintPlaceholders /></Deferred>} />
+                <Route path="spine-label" element={<Deferred><PrintSpineLabel /></Deferred>} />
               </Route>
               {/* The old top-level routes. They are linked from outside the app
                   and sit in people's bookmarks, so they stay forever as
@@ -237,30 +288,30 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 path="/qr-code"
                 element={<Navigate to="/print/qr" replace />}
               />
-              <Route path="/design/primitives" element={<DesignPrimitives />} />
+              <Route path="/design/primitives" element={<Deferred><DesignPrimitives /></Deferred>} />
               {/* Admin-only routes — redirected to /dashboard for non-admins.
                   AdminLayout is the AUTHORIZATION gate; AdminSectionLayout
                   inside it is the visual shell with the sub-tabs (NEO-155). */}
               <Route element={<AdminLayout />}>
                 <Route path="/admin" element={<AdminSectionLayout />}>
-                  <Route index element={<AdminHub />} />
-                  <Route path="set-builder" element={<AdminSetBuilder />} />
-                  <Route path="players" element={<AdminPlayers />} />
-                  <Route path="teams" element={<AdminTeams />} />
+                  <Route index element={<Deferred><AdminHub /></Deferred>} />
+                  <Route path="set-builder" element={<Deferred><AdminSetBuilder /></Deferred>} />
+                  <Route path="players" element={<Deferred><AdminPlayers /></Deferred>} />
+                  <Route path="teams" element={<Deferred><AdminTeams /></Deferred>} />
                   {/* NEO-240 — leagues got a table in NEO-156 and no screen
                       until now; every row a mid-import find-or-create wrote
                       stayed exactly as that caller left it. */}
-                  <Route path="leagues" element={<AdminLeagues />} />
+                  <Route path="leagues" element={<Deferred><AdminLeagues /></Deferred>} />
                   {/* NEO-254 — franchises. Teams are one row per historical
                       name; this is where an operator says which of those rows
                       are one continuous club. */}
-                  <Route path="franchises" element={<AdminFranchises />} />
+                  <Route path="franchises" element={<Deferred><AdminFranchises /></Deferred>} />
                   {/* NEO-170 — operator view of every user's placeholder
                       pipeline runs, with the abort lever. The queries behind
                       it are requireAdmin server-side. Landed top-level while
                       this section didn't exist yet; its own header comment
                       planned this exact move. */}
-                  <Route path="pipeline-runs" element={<PipelineRuns />} />
+                  <Route path="pipeline-runs" element={<Deferred><PipelineRuns /></Deferred>} />
                 </Route>
                 {/* The old top-level routes. Kept forever rather than 404ing:
                     /set-selector is bookmarked, and most E2E specs navigate

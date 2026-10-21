@@ -573,7 +573,7 @@ export default function PrizesPanel() {
                   editingPrizeId !== null,
                 )
               }
-              className="hidden"
+              className="peer sr-only"
             />
             <label
               htmlFor={
@@ -581,9 +581,9 @@ export default function PrizesPanel() {
                   ? "edit-prize-pokemon-image"
                   : "prize-pokemon-image"
               }
-              className="cursor-pointer flex flex-col items-center justify-center gap-2"
+              className="cursor-pointer flex flex-col items-center justify-center gap-2 rounded-md peer-focus-visible:ring-2 peer-focus-visible:ring-neon-blue peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-gray-900"
             >
-              <div className="text-2xl">📸</div>
+              <div className="text-2xl" aria-hidden="true">📸</div>
               <div className="text-sm text-foreground font-medium">
                 Drag and drop your image here
               </div>
@@ -644,7 +644,7 @@ export default function PrizesPanel() {
                   editingPrizeId !== null,
                 )
               }
-              className="hidden"
+              className="peer sr-only"
             />
             <label
               htmlFor={
@@ -652,9 +652,9 @@ export default function PrizesPanel() {
                   ? "edit-prize-sports-image"
                   : "prize-sports-image"
               }
-              className="cursor-pointer flex flex-col items-center justify-center gap-2"
+              className="cursor-pointer flex flex-col items-center justify-center gap-2 rounded-md peer-focus-visible:ring-2 peer-focus-visible:ring-neon-blue peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-gray-900"
             >
-              <div className="text-2xl">⚽</div>
+              <div className="text-2xl" aria-hidden="true">⚽</div>
               <div className="text-sm text-foreground font-medium">
                 Drag and drop your image here
               </div>
@@ -695,9 +695,10 @@ export default function PrizesPanel() {
                     onClick={() =>
                       removeSportsImage(index, editingPrizeId !== null)
                     }
+                    aria-label={`Remove sports image ${index + 1}`}
                     className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm"
                   >
-                    ×
+                    <span aria-hidden="true">×</span>
                   </button>
                 </div>
               ))}

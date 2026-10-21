@@ -30,7 +30,7 @@ export default function LandingPage() {
     <>
       <header className="sticky top-0 z-10 bg-background p-4 border-b-2 border-slate-800 flex flex-row justify-between items-center">
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="flex items-center gap-3">

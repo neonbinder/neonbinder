@@ -3,6 +3,7 @@ import { useAuth } from "@clerk/clerk-react";
 import { useNavigate } from "react-router";
 import { Bars3Icon, KeyIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import NeonButton from "./NeonButton";
+import { MOBILE_NAV_ID } from "./mobile-nav";
 
 interface BinderHeaderProps {
   isMobileMenuOpen: boolean;
@@ -38,7 +39,7 @@ export default function BinderHeader({
   return (
     <header className="sm:sticky sm:top-0 z-20 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center pointer-events-none">
       <div className="flex items-center gap-2 pointer-events-auto">
-        <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+        <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
         <span className="neon-header neon-header-sm">Neon Binder</span>
       </div>
       <div className="flex items-center gap-3 pointer-events-auto">
@@ -68,15 +69,22 @@ export default function BinderHeader({
         <SignedOut>
           <SignInButton />
         </SignedOut>
+        {/* While the menu is open the page (this toggle included) is inert and
+            the menu's own Close button takes over, so the open-state label
+            and icon only ever show for the instant before the dialog mounts. */}
         <button
+          type="button"
           onClick={onMobileMenuToggle}
-          className="lg:hidden p-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+          className="lg:hidden min-h-11 min-w-11 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue transition-colors"
           aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={isMobileMenuOpen}
+          aria-controls={isMobileMenuOpen ? MOBILE_NAV_ID : undefined}
+          aria-haspopup="dialog"
         >
           {isMobileMenuOpen ? (
-            <XMarkIcon className="w-6 h-6" />
+            <XMarkIcon className="w-6 h-6" aria-hidden="true" />
           ) : (
-            <Bars3Icon className="w-6 h-6" />
+            <Bars3Icon className="w-6 h-6" aria-hidden="true" />
           )}
         </button>
       </div>

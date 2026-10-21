@@ -350,11 +350,17 @@ export function Autocomplete<T>({
     };
     place();
     // Capture: `scroll` does not bubble, and the ancestor that scrolls (a
-    // dialog body) is not known here.
-    window.addEventListener("scroll", place, true);
+    // dialog body) is not known here. The list scrolling inside itself does
+    // not move the field, and `place` clears and re-reads the list's
+    // max-height (a forced layout), so those scrolls are skipped.
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && listRef.current?.contains(e.target)) return;
+      place();
+    };
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", place);
     return () => {
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", place);
     };
   }, [showPopup, signature, layer]);

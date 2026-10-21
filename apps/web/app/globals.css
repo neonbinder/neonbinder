@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@400;700&display=swap');
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
@@ -67,9 +66,12 @@ body {
 
 @font-face {
   font-family: 'Neon';
-  src: url('/Neon.ttf') format('truetype');
+  src: url('/Neon.woff2') format('woff2'), url('/Neon.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
+  /* The wordmark is never set in a stand-in face: it waits briefly for the
+   * (preloaded) file, then shows Neon; a slow load past ~3s falls back. */
+  font-display: block;
 }
 
 .neon-header {
@@ -385,12 +387,33 @@ body {
   100% { transform: perspective(1200px) rotateY(0deg); opacity: 1; }
 }
 
+/* The old page turns away quickly (accelerating) and the new one settles in
+ * more slowly (decelerating): an exit that hangs around reads as latency. */
 ::view-transition-old(page-content) {
-  animation: page-flip-out 0.3s ease-in both;
+  animation: page-flip-out 0.2s cubic-bezier(0.7, 0, 0.84, 0) both;
 }
 
 ::view-transition-new(page-content) {
-  animation: page-flip-in 0.3s ease-out both;
+  animation: page-flip-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Reduced motion: the page still visibly changes, as a short crossfade with
+ * no rotation. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(page-content) {
+    animation: page-fade-out 0.12s linear both;
+  }
+  ::view-transition-new(page-content) {
+    animation: page-fade-in 0.15s linear both;
+  }
+}
+
+@keyframes page-fade-out {
+  to { opacity: 0; }
+}
+
+@keyframes page-fade-in {
+  from { opacity: 0; }
 }
 
 /* Neon glow utilities for binder tabs */
@@ -451,14 +474,55 @@ body {
   }
 }
 
-/* Mobile nav slide-in */
+/* Slide-in panels from the right edge: the mobile menu and the card detail
+ * drawer. Under reduced motion the panel fades in where it stands. */
 @keyframes slide-in-right {
   from { transform: translateX(100%); }
   to   { transform: translateX(0); }
 }
 
+@keyframes panel-fade-in {
+  from { opacity: 0; }
+}
+
 .animate-slide-in-right {
-  animation: slide-in-right 0.2s ease-out both;
+  animation: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-slide-in-right {
+    animation: panel-fade-in 0.15s linear both;
+  }
+}
+
+/* The hero logo switching on like a shop sign: dark, two flickers, lit, then
+ * it holds. It runs once; the old `animate-pulse` faded the logo in and out
+ * for as long as the page was open. Brightness rather than a glow because the
+ * logo's black ground is part of the image: a drop shadow would light up a
+ * square. Two dips in 0.8s stays well under WCAG 2.3.1's three flashes a
+ * second, on a 120px mark. Reduced motion shows it lit from the start. */
+@keyframes neon-sign-ignite {
+  0%   { filter: brightness(0.15); }
+  14%  { filter: brightness(1); }
+  22%  { filter: brightness(0.3); }
+  40%  { filter: brightness(1.15); }
+  100% { filter: brightness(1); }
+}
+
+.animate-neon-ignite {
+  animation: neon-sign-ignite 0.8s linear 0.15s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-neon-ignite {
+    animation: none;
+  }
+
+  /* A spinner is the only sign that something is loading, so it keeps
+   * turning, slowly. */
+  .animate-spin {
+    animation-duration: 2.4s;
+  }
 }
 
 :root, .light, .light-theme {

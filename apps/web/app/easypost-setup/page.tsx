@@ -89,7 +89,7 @@ export default function EasypostSetupPage() {
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="w-20" />
