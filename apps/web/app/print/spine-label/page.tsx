@@ -41,6 +41,10 @@ import {
   spineFontFamilyCss,
 } from "@/lib/print/spine-fonts";
 import { parseSpineLabelParams } from "@/lib/print/spine-label-params";
+import {
+  spinePreviewAlt,
+  spinePreviewImageSrc,
+} from "@/lib/print/spine-preview-image";
 import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
 import { teamFullName } from "@/lib/teams/team-name";
 
@@ -73,7 +77,9 @@ import { teamFullName } from "@/lib/teams/team-name";
  *
  * The preview and the printed page are the SAME markup (`spine-label-html.ts`),
  * scaled down here. Two renderers for one geometry would drift, and the one
- * that drifts is the one you cannot see.
+ * that drifts is the one you cannot see. The preview draws that markup as an
+ * image with an `alt` (`spine-preview-image.ts`): it is a picture of the page,
+ * in the collector's own colours, however low their contrast.
  */
 
 /** Fallbacks when a player has no resolvable team colors. Neutral, not branded. */
@@ -133,15 +139,21 @@ async function loadFontDataUrl(font: {
 }
 
 /**
- * `@font-face` rules for the PREVIEW, by URL (see `spineFontFacesCss`). Faces
- * are only downloaded when something on the page is set in them — which, with
- * the picker rendering each option in its own face, is when the picker first
- * renders.
+ * `@font-face` rules for the PAGE, by URL (see `spineFontFacesCss`): the face
+ * picker sets each option in its own face and the sheet list sets each queued
+ * name in its own. Faces are only downloaded when something on the page is set
+ * in them — which, with the picker rendering every option, is on arrival.
+ *
+ * The preview cannot use these: it is an image (see `spine-preview-image.ts`),
+ * and an SVG image fetches nothing, so it embeds `data:` URIs instead.
  */
-const PREVIEW_FONT_FACES = spineFontFacesCss();
+const PAGE_FONT_FACES = spineFontFacesCss();
 
 /** On-screen preview width. The sheet is 8.5in, so this is ~44% scale. */
 const PREVIEW_WIDTH_PX = 380;
+/** The preview's height, keeping the letter page's proportions. */
+const PREVIEW_HEIGHT_PX =
+  (PREVIEW_WIDTH_PX / LETTER_PAGE.widthIn) * LETTER_PAGE.heightIn;
 
 export default function SpineLabelPage() {
   // Read once, on arrival: later edits are the user's, not the link's.
@@ -171,6 +183,13 @@ export default function SpineLabelPage() {
   const [heightIn, setHeightIn] = useState(MAX_LABEL_HEIGHT_IN);
   const [fontId, setFontId] = useState(prefill.fontId ?? DEFAULT_SPINE_FONT_ID);
   const [printing, setPrinting] = useState(false);
+  /**
+   * Each face the preview has needed, as a `data:` URI, by font id; `null` when
+   * the fetch failed (the preview then falls back to the next family in the
+   * stack, as printing does). Kept for the page's lifetime: a face is fetched
+   * once however many times the collector switches back to it.
+   */
+  const [embeddedFonts, setEmbeddedFonts] = useState<Record<string, string | null>>({});
 
   const font = spineFontById(fontId);
 
@@ -439,7 +458,61 @@ export default function SpineLabelPage() {
 
   const sheetOptions = { labels: previewLabels, heightIn };
   const previewHtml = spineSheetHtml(sheetOptions);
-  const previewCss = spineSheetCss(sheetOptions);
+
+  // The preview is a picture of the first page (`spine-preview-image.ts`), and
+  // a picture cannot fetch its own fonts. Fetch each face it needs, once.
+  const previewFontsKey = [
+    ...new Set(previewLabels.filter((l) => l.font.file).map((l) => l.font.id)),
+  ].join(",");
+  const missingFontIds = previewFontsKey
+    .split(",")
+    .filter((id) => id && !(id in embeddedFonts));
+  const missingFontsKey = missingFontIds.join(",");
+  useEffect(() => {
+    if (!missingFontsKey) return;
+    let cancelled = false;
+    for (const id of missingFontsKey.split(",")) {
+      void loadFontDataUrl(spineFontById(id)).then((src) => {
+        if (cancelled) return;
+        setEmbeddedFonts((current) =>
+          id in current ? current : { ...current, [id]: src ?? null },
+        );
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [missingFontsKey]);
+
+  const fontSrcById: Record<string, string> = {};
+  for (const [id, src] of Object.entries(embeddedFonts)) {
+    if (src) fontSrcById[id] = src;
+  }
+  const previewCss = spineSheetCss({ ...sheetOptions, fontSrcById });
+  // The labels the first page holds: the only page the preview draws.
+  const firstPageNames = (packLabelsIntoSheets(previewLabels)[0] ?? []).map(
+    (label) => label.name,
+  );
+  const previewAlt = spinePreviewAlt(firstPageNames);
+  const nextPreview = useMemo(
+    () => ({
+      src: spinePreviewImageSrc({ html: previewHtml, css: previewCss }),
+      alt: previewAlt,
+    }),
+    [previewHtml, previewCss, previewAlt],
+  );
+  // While a face is still on its way, keep showing the last finished picture
+  // rather than flashing the label in the fallback face. (State adjusted
+  // during render: React's pattern for "remember the previous value".)
+  const [shownPreview, setShownPreview] = useState<typeof nextPreview | null>(null);
+  if (
+    previewLabels.length > 0 &&
+    missingFontIds.length === 0 &&
+    shownPreview?.src !== nextPreview.src
+  ) {
+    setShownPreview(nextPreview);
+  }
+  const preview = missingFontIds.length === 0 ? nextPreview : shownPreview;
 
   const perSheet = labelsPerSheet(widthIn);
   const pieces = splitHeightIntoSegments(heightIn);
@@ -482,6 +555,7 @@ export default function SpineLabelPage() {
 
   return (
     <div className="space-y-6">
+      <style>{PAGE_FONT_FACES}</style>
       <div className="sr-only" role="status" aria-live="polite">
         {addStatus}
       </div>
@@ -817,27 +891,21 @@ export default function SpineLabelPage() {
             ) : (
               <div
                 className="overflow-hidden rounded-md border border-slate-800 bg-white"
-                style={{
-                  width: PREVIEW_WIDTH_PX,
-                  // Scale the real 8.5in sheet down to the preview width. The
-                  // container height has to follow the scaled content or the
-                  // transform leaves a gap below it.
-                  height:
-                    (PREVIEW_WIDTH_PX / LETTER_PAGE.widthIn) *
-                    LETTER_PAGE.heightIn,
-                }}
+                style={{ width: PREVIEW_WIDTH_PX, height: PREVIEW_HEIGHT_PX }}
               >
-                <div
-                  aria-hidden="true"
-                  style={{
-                    transform: `scale(${PREVIEW_WIDTH_PX / (LETTER_PAGE.widthIn * 96)})`,
-                    transformOrigin: "top left",
-                  }}
-                >
-                  <style>{PREVIEW_FONT_FACES}</style>
-                  <style>{previewCss}</style>
-                  <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
-                </div>
+                {/* A picture of the printed page, not page copy: the
+                    collector's own colours, shown as they will print even
+                    when the pair reads poorly (the contrast line says so).
+                    See lib/print/spine-preview-image.ts for why an image. */}
+                {preview && (
+                  <img
+                    src={preview.src}
+                    alt={preview.alt}
+                    width={PREVIEW_WIDTH_PX}
+                    height={PREVIEW_HEIGHT_PX}
+                    className="block"
+                  />
+                )}
               </div>
             )}
             <p className="mt-2 text-xs text-slate-400">

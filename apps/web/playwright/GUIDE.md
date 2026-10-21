@@ -576,8 +576,14 @@ Years the pause is indistinguishable from a BSC-only tree**: a side counts as
 paused only where it is served AND its ids are complete, and because the Years
 sync never asked SportLots, the year rows carry no SportLots id, so every
 level beneath skips SportLots for want of ids. Manufacturers syncs to nothing
-with NO notice and its idle text ("No manufacturers available. Sync from
-marketplaces to populate."); a brand's Sets column ends "done" with "SportLots
+with NO notice, and on an untouched year its idle text ("No manufacturers
+available. Sync from marketplaces to populate.") sits under the pinned view.
+The idle text is NOT a readiness signal: the first year-wide Sets sync (any
+spec that drills the year through All Brands) mints the year's `Unknown` row
+and the text disappears, so a drill that waits for "idle text OR my brand"
+hangs on any year another spec has touched (CI run 39587731096, 1996 and 2025
+Baseball). Search for the brand instead and make it on "No matches found"
+(`selectOrCreate`); a brand's Sets column ends "done" with "SportLots
 skipped: no SportLots ids on this path."; the base picker's SportLots pane
 shows "SportLots returned no base set for <set>"; checklist fetches take the
 one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
