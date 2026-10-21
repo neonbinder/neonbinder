@@ -41,6 +41,13 @@
  * is not a spec check (network, auth, a marketplace fetch, a server fault)
  * ends the run with `RunFailed`, which carries the report so far.
  *
+ * Counts the spec expects (`expectCards`, `expectRows`,
+ * `group.expectUngrouped`) are measured with every marketplace live. With one
+ * paused for the run, each is asserted against its `…WhenPaused` sibling when
+ * the spec gives one, and otherwise not at all: the step says "count not
+ * asserted: <site> paused" (lib/expected-count.ts). Nothing paused, nothing
+ * changes.
+ *
  * Never writes to stdout: the MCP server's protocol runs over it.
  */
 
@@ -72,8 +79,9 @@ import {
 import { confirmMapping, findBaseVariantType } from "../lib/map-base";
 import { reconcileVariants } from "../lib/reconcile-variants";
 import { applySlReview } from "../lib/sl-review";
-import { cardCount, checklistDone, runChecklistStep, type ReviewSession } from "../lib/commit";
+import { cardCount, checklistCount, checklistDone, runChecklistStep, type ReviewSession } from "../lib/commit";
 import { buildParallel, planParallelBuild, type BuildParallelInput } from "../lib/build-parallel";
+import { countCheck, fieldAt, pausedNames, skipSuffix, specExpects } from "../lib/expected-count";
 import { groupParallels, planGrouping, type GroupOpen } from "../lib/group-parallels";
 import { setBuilderLink, setBuilderUrlForPath } from "../lib/set-builder-link";
 import { StepCheckError } from "../lib/step-check";
@@ -560,6 +568,8 @@ export async function runSpec(
     const typeKey = vt.type.trim().toLowerCase();
     let syncTodo = false;
     let syncOpen = false;
+    /** The sides this type's sync reported paused (it skipped them), for `expectRows`. */
+    let syncPausedSides: readonly string[] = [];
     const heldSync = deps.typeSync?.get(typeKey);
     if (collecting && heldSync) {
       // An earlier step naming this set left this type's sync open: its sync
@@ -619,6 +629,7 @@ export async function runSpec(
       });
       syncTodo = synced === undefined || synced.outcome === "open";
       syncOpen = isOpen(synced);
+      syncPausedSides = synced?.pausedSides ?? [];
     }
     // Plan, or a draft walk that stopped before the sync's write: no rows to read yet.
     if (syncTodo && readOnly && (!collecting || !syncOpen)) {
@@ -636,17 +647,24 @@ export async function runSpec(
     const type = await sub(i, "variant-type", path, `find ${vt.type}`, () => resolveVariantType(client, setId, vt.type, `${at}.type`), () => ({ status: "done" }));
     if (!type) return;
 
-    if (vt.expectRows !== undefined) {
+    const rowsCheck = countCheck("expectRows", vt.expectRows, vt.expectRowsWhenPaused, pausedNames(paused, syncPausedSides));
+    if (rowsCheck.kind !== "none") {
       // Top-level and grouped alike, so the count holds before and after `group`.
       const tree = await client.query(api.selectorOptions.getInsertTreeByVariantType, { variantTypeId: type._id });
       const n = tree.reduce((sum, t) => sum + 1 + t.parallels.length, 0);
-      const ok = n === vt.expectRows;
-      record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
-      if (!ok && !readOnly) {
-        stop(i, `${at}.expectRows: ${vt.type} holds ${n} rows; the spec expects ${vt.expectRows}.`);
-        // Collecting: the type's grouping and rows rest on the spec's view of its rows.
-        waits(i, "row", path, `${vt.type} rows`, `${at}.expectRows`);
-        return;
+      if (rowsCheck.kind === "skip") {
+        record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: "done", detail: `${n} now${skipSuffix(rowsCheck)}` });
+      } else {
+        const ok = n === rowsCheck.want;
+        const action = `${vt.type} holds ${rowsCheck.want} rows${rowsCheck.pausedBy ? ` (${rowsCheck.pausedBy} paused)` : ""}`;
+        record({ index: i, kind: "expect-rows", path, action, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
+        if (!ok && !readOnly) {
+          const field = fieldAt(at, rowsCheck);
+          stop(i, `${field}: ${vt.type} holds ${n} rows; ${specExpects(rowsCheck)}.`);
+          // Collecting: the type's grouping and rows rest on the spec's view of its rows.
+          waits(i, "row", path, `${vt.type} rows`, field);
+          return;
+        }
       }
     }
 
@@ -670,11 +688,19 @@ export async function runSpec(
         if (on) {
           waits(i, "build-parallel", path, action, on);
         } else {
-          const input = { sourceId: type._id, name: spec.name, rebuild: spec.buildFromBase.rebuild, expectCards: spec.expectCards, at: rowAt };
+          const input = {
+            sourceId: type._id,
+            name: spec.name,
+            rebuild: spec.buildFromBase.rebuild,
+            expectCards: spec.expectCards,
+            expectCardsWhenPaused: spec.expectCardsWhenPaused,
+            paused,
+            at: rowAt,
+          };
           await build(i, path, action, input, { type: vt.type });
         }
-      } else if (!spec.checklist && spec.expectCards !== undefined) {
-        await expectCards(i, path, label, row._id, spec.expectCards, `${rowAt}.expectCards`);
+      } else if (!spec.checklist && (spec.expectCards !== undefined || spec.expectCardsWhenPaused !== undefined)) {
+        await expectCards(i, path, label, row._id, spec, rowAt);
       }
       if (spec.parallels) {
         const on =
@@ -707,14 +733,22 @@ export async function runSpec(
      * land. Apply: a mismatch stops here (a failed spec check) and returns why
      * the rows' `parallels` wait; otherwise undefined.
      */
+    const ungrouped = countCheck("expectUngrouped", group.expectUngrouped, group.expectUngroupedWhenPaused, pausedNames(paused));
     const expect = (n: number, projected: boolean): string | undefined => {
-      if (group.expectUngrouped === undefined) return undefined;
-      const ok = n === group.expectUngrouped;
-      const what = `${vt.type} leaves ${group.expectUngrouped} rows ungrouped`;
-      record({ index: i, kind: "expect-ungrouped", path, action: what, status: ok ? "done" : "blocked", detail: `${n} ${projected ? "after the grouping" : "now"}` });
+      if (ungrouped.kind === "none") return undefined;
+      const seen = `${n} ${projected ? "after the grouping" : "now"}`;
+      if (ungrouped.kind === "skip") {
+        const what = `${vt.type} leaves ${group.expectUngrouped} rows ungrouped`;
+        record({ index: i, kind: "expect-ungrouped", path, action: what, status: "done", detail: `${seen}${skipSuffix(ungrouped)}` });
+        return undefined;
+      }
+      const ok = n === ungrouped.want;
+      const what = `${vt.type} leaves ${ungrouped.want} rows ungrouped${ungrouped.pausedBy ? ` (${ungrouped.pausedBy} paused)` : ""}`;
+      record({ index: i, kind: "expect-ungrouped", path, action: what, status: ok ? "done" : "blocked", detail: seen });
       if (ok || readOnly) return undefined;
-      stop(i, `${at}.group.expectUngrouped: ${vt.type} leaves ${n} rows ungrouped; the spec expects ${group.expectUngrouped}.`);
-      return `${at}.group.expectUngrouped`;
+      const field = fieldAt(`${at}.group`, ungrouped);
+      stop(i, `${field}: ${vt.type} leaves ${n} rows ungrouped; ${specExpects(ungrouped)}.`);
+      return field;
     };
 
     if (readOnly) {
@@ -767,11 +801,20 @@ export async function runSpec(
       return;
     }
     if (p.build) {
-      await build(i, path, action, { sourceId: insertId, name: p.name, rebuild: p.build.rebuild, expectCards: p.expectCards, at }, fix);
+      const input = {
+        sourceId: insertId,
+        name: p.name,
+        rebuild: p.build.rebuild,
+        expectCards: p.expectCards,
+        expectCardsWhenPaused: p.expectCardsWhenPaused,
+        paused,
+        at,
+      };
+      await build(i, path, action, input, fix);
       return;
     }
     const par = await sub(i, "parallel", path, action, () => resolveChild(client, "parallel", insertId, p.name, `${at}.name`), () => ({ status: "done" }));
-    if (par && p.expectCards !== undefined) await expectCards(i, path, label, par._id, p.expectCards, `${at}.expectCards`);
+    if (par && (p.expectCards !== undefined || p.expectCardsWhenPaused !== undefined)) await expectCards(i, path, label, par._id, p, at);
   }
 
   /** One parallel build, from Base or from an insert (`input.sourceId`). */
@@ -806,16 +849,41 @@ export async function runSpec(
     }
     if (r.outcome === "built") counts.built += r.built;
     else counts.skipped++;
-    record({ index: i, kind: "build-parallel", path, action, status: "done", detail: r.outcome === "built" ? `built ${r.built}, holds ${r.cards}` : r.detail });
+    record({
+      index: i,
+      kind: "build-parallel",
+      path,
+      action,
+      status: "done",
+      detail: r.outcome === "built" ? `built ${r.built}, holds ${r.cards}${r.note ? `; ${r.note}` : ""}` : r.detail,
+    });
   }
 
-  /** Assert a row's card count: plan reports, apply fails the run on a mismatch. */
-  async function expectCards(i: number, path: string, label: string, rowId: RowId, want: number, at: string): Promise<void> {
+  /**
+   * Assert a row's card count: plan reports, apply fails the run on a
+   * mismatch. `at` is the row's spec location; with a marketplace paused the
+   * paused value is asserted, or none (lib/expected-count.ts).
+   */
+  async function expectCards(
+    i: number,
+    path: string,
+    label: string,
+    rowId: RowId,
+    counts: { expectCards?: number; expectCardsWhenPaused?: number },
+    at: string,
+  ): Promise<void> {
+    const check = countCheck("expectCards", counts.expectCards, counts.expectCardsWhenPaused, pausedNames(paused));
+    if (check.kind === "none") return;
     const n = await cardCount(client, rowId);
-    const ok = n === want;
-    record({ index: i, kind: "expect-cards", path, action: `${label} holds ${want} cards`, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
+    if (check.kind === "skip") {
+      record({ index: i, kind: "expect-cards", path, action: `${label} holds ${counts.expectCards} cards`, status: "done", detail: `${n} now${skipSuffix(check)}` });
+      return;
+    }
+    const ok = n === check.want;
+    const action = `${label} holds ${check.want} cards${check.pausedBy ? ` (${check.pausedBy} paused)` : ""}`;
+    record({ index: i, kind: "expect-cards", path, action, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
     // A failed spec check: stops here like an open decision; nothing waits on a count.
-    if (!ok && !readOnly) stop(i, `${at}: ${label} holds ${n} cards; the spec expects ${want}.`);
+    if (!ok && !readOnly) stop(i, `${fieldAt(at, check)}: ${label} holds ${n} cards; ${specExpects(check)}.`);
   }
 
   // ---------------------------------------------------------------------
@@ -834,19 +902,20 @@ export async function runSpec(
     const autographs = spec.autographFormat ? `; autographs: ${spec.autographFormat}` : "";
     if (readOnly) {
       const n = await cardCount(client, rowId);
+      const count = checklistCount(spec, paused);
       let done: boolean;
       try {
-        done = checklistDone(n, spec.expectCards, at);
+        done = checklistDone(n, count, at);
       } catch (err) {
         record({ index: i, kind: "checklist", path, action, status: "blocked", detail: err instanceof Error ? err.message : String(err) });
         return "blocked";
       }
-      record({ index: i, kind: "checklist", path, action, status: done ? "done" : "todo", detail: done ? `holds ${n} cards` : `the review is only known once apply fetches it${autographs}` });
+      record({ index: i, kind: "checklist", path, action, status: done ? "done" : "todo", detail: done ? `holds ${n} cards${skipSuffix(count)}` : `the review is only known once apply fetches it${autographs}` });
       return done ? "done" : "todo";
     }
     let r: Awaited<ReturnType<typeof runChecklistStep>>;
     try {
-      r = await runChecklistStep(client, { rowId, sportId, checklist: spec, at, row });
+      r = await runChecklistStep(client, { rowId, sportId, checklist: spec, at, row, paused });
     } catch (err) {
       // A link target or a card ref that is not exactly one: an open name.
       failed(err, i, "checklist", path, action);

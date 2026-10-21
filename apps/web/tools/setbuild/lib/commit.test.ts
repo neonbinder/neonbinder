@@ -1,8 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { fakeClient } from "../runner/fake-client";
 import { buildParallel, BuildParallelError } from "./build-parallel";
-import { checklistDone, runChecklistStep } from "./commit";
+import { checklistCount, checklistDone, runChecklistStep } from "./commit";
 import { ChecklistStepError } from "./fetch-checklist";
+import { pausedContextOf } from "./sync-column";
 
 const CHECKLIST = {
   pairing: { unmatchedBsc: "keep" as const, unmatchedSportlots: "keep" as const },
@@ -280,5 +281,118 @@ describe("build-parallel", () => {
       .on("parallelChecklistBuild:buildParallelChecklist", { status: "built", copied: 299 })
       .on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: 299 });
     await expect(buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "x" })).rejects.toThrow(/expects 300/);
+  });
+});
+
+describe("counts with a marketplace paused (NEO-339: the seed under a SportLots pause)", () => {
+  const SL_PAUSED = pausedContextOf(["sportlots"]);
+  /** CI with SportLots paused: the Base is mapped BSC-only and its fetch keeps BSC's 335. */
+  function committing(saved: number, fetch: { attachedSides?: string[]; pausedSides?: string[] } = {}) {
+    let batch: string | undefined;
+    let cards = 0;
+    const client = fakeClient()
+      .on("selectorOptions:getSlotCardCounts", () => ({ bsc: {}, sportlots: {}, total: cards }))
+      .on("checklistCandidates:getReadyCandidates", () => ({
+        batchId: batch,
+        total: batch ? 1 : 0,
+        ready: 1,
+        cards: batch ? [{ _id: "c1", cardNumber: "1", cardName: "A", platformData: { bsc: { ref: "b1" } }, bucket: "bscOnly", stem: "1", teamResolved: true }] : [],
+      }))
+      .on("selectorOptions:fetchCardChecklist", () => {
+        batch = "cb";
+        return { success: true, message: "", candidateCount: 1, attachedSides: fetch.attachedSides ?? ["bsc"], pausedSides: fetch.pausedSides ?? [] };
+      })
+      .on("selectorOptions:diffChecklistAgainstExisting", { cards: [], removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 }, conflicts: [], collisionInsertCount: 0 })
+      .on("selectorOptions:resolveChecklistEntities", { unknownPlayers: [], unknownTeams: [] })
+      .on("selectorOptions:commitCardChecklist", () => {
+        cards = saved;
+        return { count: saved, conflicts: [] };
+      })
+      .on("checklistCandidates:discardCandidates", null);
+    return client;
+  }
+  const BASE = { ...CHECKLIST, expectCards: 336 };
+  const step = (client: ReturnType<typeof committing>, checklist: Record<string, unknown>, paused?: ReturnType<typeof pausedContextOf>) =>
+    runChecklistStep(client, { rowId: "vtB" as never, sportId: "sp" as never, checklist: checklist as never, at: "steps[1].base.checklist", row: null, paused });
+
+  test("not paused: the live count is asserted, exactly as before (the CI message)", async () => {
+    await expect(step(committing(335), { ...BASE, expectCardsWhenPaused: 335 })).rejects.toThrow(
+      "steps[1].base.checklist: saved 335 cards; the row now holds 335, the spec expects 336.",
+    );
+  });
+
+  test("paused with expectCardsWhenPaused: that value is asserted, and passes", async () => {
+    const r = await step(committing(335), { ...BASE, expectCardsWhenPaused: 335 }, SL_PAUSED);
+    expect(r).toMatchObject({ outcome: "committed", committed: 335, cards: 335 });
+    if (r.outcome === "committed") expect(r.notes.some((n) => n.includes("not asserted"))).toBe(false);
+  });
+
+  test("paused with expectCardsWhenPaused: a different count fails, naming the paused field", async () => {
+    await expect(step(committing(334), { ...BASE, expectCardsWhenPaused: 335 }, SL_PAUSED)).rejects.toThrow(
+      "steps[1].base.checklist: saved 334 cards; the row now holds 334, the spec expects 335 with sportlots paused (expectCardsWhenPaused).",
+    );
+  });
+
+  test("paused with no paused value: nothing asserted, never the live 336, and the step says so", async () => {
+    const r = await step(committing(335), BASE, SL_PAUSED);
+    expect(r).toMatchObject({ outcome: "committed", cards: 335 });
+    if (r.outcome === "committed") expect(r.notes).toContain("count not asserted: sportlots paused");
+  });
+
+  test("a side the fetch itself reports paused counts as paused too", async () => {
+    const r = await step(committing(335, { attachedSides: ["bsc", "sportlots"], pausedSides: ["sportlots"] }), { ...BASE, expectCardsWhenPaused: 335 });
+    expect(r).toMatchObject({ outcome: "committed", cards: 335 });
+  });
+
+  test("the idempotent pre-check: a paused re-run of a row holding the paused count is skipped before any fetch", async () => {
+    const client = fakeClient().on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: 335 });
+    expect(await step(client as never, { ...BASE, expectCardsWhenPaused: 335 }, SL_PAUSED)).toMatchObject({ outcome: "skipped", detail: "already holds 335 cards" });
+    // No paused value: any cards count as done, and the detail says the count was not asserted.
+    expect(await step(client as never, BASE, SL_PAUSED)).toMatchObject({
+      outcome: "skipped",
+      detail: "already holds 335 cards; count not asserted: sportlots paused",
+    });
+    expect(client.calls.map((c) => c.fn)).toEqual(["selectorOptions:getSlotCardCounts", "selectorOptions:getSlotCardCounts"]);
+    // Not paused, the same row is refused as before.
+    await expect(step(client as never, BASE)).rejects.toThrow("the row already holds 335 cards and the spec expects 336. ");
+  });
+
+  test("checklistDone takes the run's check: a paused value that differs is refused, naming it", () => {
+    expect(() => checklistDone(300, checklistCount({ expectCards: 336, expectCardsWhenPaused: 335 }, SL_PAUSED), "x")).toThrow(
+      "x: the row already holds 300 cards and the spec expects 335 with sportlots paused (expectCardsWhenPaused). ",
+    );
+    expect(checklistDone(300, checklistCount({ expectCards: 336 }, SL_PAUSED), "x")).toBe(true);
+  });
+
+  describe("build-parallel", () => {
+    const plan = (hasCards: boolean) => ({
+      source: { id: "vtB", value: "Base", kind: "base", hasCards: true },
+      parallels: [{ _id: "p2", value: "Sepia Refractors", sides: { bsc: true, sportlots: false }, hasCards }],
+      truncated: false,
+    });
+    const building = (built: number) =>
+      fakeClient()
+        .on("parallelChecklistBuild:getParallelsForBuild", plan(false))
+        .on("parallelChecklistBuild:buildParallelChecklist", { status: "built", copied: built })
+        .on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: built });
+    const input = { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "steps[0].variants[1].rows[0]" };
+
+    test("paused with no paused value: built, nothing asserted, a note", async () => {
+      const r = await buildParallel(building(250), { ...input, paused: SL_PAUSED });
+      expect(r).toMatchObject({ outcome: "built", built: 250, note: "count not asserted: sportlots paused" });
+    });
+
+    test("paused with a paused value: asserted (pass and mismatch)", async () => {
+      expect(await buildParallel(building(250), { ...input, expectCardsWhenPaused: 250, paused: SL_PAUSED })).toMatchObject({ outcome: "built", cards: 250 });
+      await expect(buildParallel(building(249), { ...input, expectCardsWhenPaused: 250, paused: SL_PAUSED })).rejects.toThrow(
+        'built 249 cards onto "Sepia Refractors"; it now holds 249, the spec expects 250 with sportlots paused (expectCardsWhenPaused).',
+      );
+    });
+
+    test("not paused: the live count, as before (the paused value is not read)", async () => {
+      await expect(buildParallel(building(250), { ...input, expectCardsWhenPaused: 250 })).rejects.toThrow(
+        'built 250 cards onto "Sepia Refractors"; it now holds 250, the spec expects 300.',
+      );
+    });
   });
 });

@@ -456,7 +456,8 @@
               {"name": "Atlantic Coast Conference", "decision": "create", "level": "other"}
             ]
           },
-          "expectCards": 336
+          "expectCards": 336,
+          "expectCardsWhenPaused": 335
         }
       },
       "variants": [

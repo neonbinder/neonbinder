@@ -56,6 +56,29 @@
  * and prints what it measured (the totals and every item's address) so the
  * block can be filled in from the run.
  *
+ * A marketplace PAUSED for the run (`--paused-platforms`, else env
+ * PAUSED_PLATFORMS). The committed spec and this file are measured with every
+ * marketplace live, so a check whose expected value depends on the paused one
+ * is never compared against the live value. It checks the file's paused value
+ * when the file gives one, or reports "not checked: sportlots paused" without
+ * failing:
+ *  - step 3 (the merge against the committed spec: digest, leave lists,
+ *    autograph formats, review answers) is not checked: the draft of a
+ *    one-sided fetch is a different spec by construction. The spec-answered
+ *    autograph rows for 6b are then read from the committed spec itself;
+ *  - `apply.counts`: only `apply.countsWhenPaused`;
+ *  - `after`: only each expectation's `whenPaused` (`inspectExpectFor`);
+ *  - the Parallel rows built from Base: only the rows the committed spec
+ *    builds from Base (a one-sided sync also stores the sets it would leave);
+ *  - `attention.totals` / `afterAutographRows`: only `attention.whenPaused`'s;
+ *  - `attention.fix`: an answer about a paused side's name (or link) is not
+ *    sent, and the check says which.
+ * Everything else (tools/list, the draft's own open decisions, nb_plan,
+ * nb_apply's stops, attention line and links, nb_inspect links, an insert
+ * with a built parallel, the autograph read-backs, the team lookup draining,
+ * nb_fix applying what it is sent, and the before/after listing diff) runs as
+ * always.
+ *
  * Output never names the deployment: the host is redacted with the secrets.
  */
 
@@ -75,7 +98,15 @@ import { queryOnlyClient } from "./runner/read-only-client";
 import { resolveSetPath, type ResolvedSet } from "./spec/resolve";
 import { canonicalJson, contentDigest } from "./client/target";
 import { drillResolverOf, inspectLinkProblems, setLinkProblems, type DrillResolver } from "./link-checks";
-import { APPLY_TIMEOUT_MS, connectToSpawnedServer, inspectExpectSchema, inspectMismatches } from "./mcp-smoke";
+import {
+  APPLY_TIMEOUT_MS,
+  applyExpectSchema,
+  connectToSpawnedServer,
+  inspectExpectFor,
+  inspectExpectSchema,
+  inspectMismatches,
+} from "./mcp-smoke";
+import { countsFor, declaredPausedNames, notCheckedNote, pausedNames, uncheckedNote } from "./lib/expected-count";
 import { mergeDraftAnswers, placeholdersIn } from "./runner/draft";
 import { getAt } from "./runner/engine";
 import {
@@ -101,6 +132,17 @@ const READ_TIMEOUT_MS = 2 * 60_000;
 
 export const NOT_MEASURED = "fixture not measured yet";
 
+/** `attention.totals`: what nb_attention lists for the built set. */
+const attentionTotalsSchema = z
+  .object({
+    cards: z.number().int().min(0),
+    byKind: z.record(z.string(), z.number().int().min(0)),
+    namesToCheck: z.number().int().min(0),
+    /** NEO-345: rows still asking "on card or sticker?". Compared when given. */
+    autographRows: z.number().int().min(0).optional(),
+  })
+  .strict();
+
 export const oneshotExpectSchema = z
   .object({
     /** A measured file says so; `false` is the placeholder, refused before this schema. */
@@ -125,7 +167,7 @@ export const oneshotExpectSchema = z
       })
       .strict()
       .default({}),
-    apply: z.object({ counts: z.record(z.string(), z.number()) }).strict(),
+    apply: applyExpectSchema,
     /** The Parallel type's title whose rows are built from Base (all must hold cards). */
     builtFromBaseType: z.string().min(1).default("Parallel"),
     after: z.array(inspectExpectSchema).default([]),
@@ -143,15 +185,7 @@ export const oneshotExpectSchema = z
             measured: z.literal(true),
             /** How long to wait for the BSC team lookup to finish before listing. */
             lookupWaitMs: z.number().int().min(0).max(30 * 60_000).default(10 * 60_000),
-            totals: z
-              .object({
-                cards: z.number().int().min(0),
-                byKind: z.record(z.string(), z.number().int().min(0)),
-                namesToCheck: z.number().int().min(0),
-                /** NEO-345: rows still asking "on card or sticker?". Compared when given. */
-                autographRows: z.number().int().min(0).optional(),
-              })
-              .strict(),
+            totals: attentionTotalsSchema,
             /** The answers nb_fix gives (nb_fix's own shape); each must apply, and its item must be gone after. */
             fix: FixAnswersSchema,
             /**
@@ -160,6 +194,18 @@ export const oneshotExpectSchema = z
              * alone must also clear its listed parallels. Compared when given.
              */
             afterAutographRows: z.number().int().min(0).optional(),
+            /**
+             * What holds with a marketplace PAUSED (measured so, never
+             * guessed): checked instead of `totals` / `afterAutographRows`
+             * then. One it leaves out is not checked on a paused run.
+             */
+            whenPaused: z
+              .object({
+                totals: attentionTotalsSchema.optional(),
+                afterAutographRows: z.number().int().min(0).optional(),
+              })
+              .strict()
+              .optional(),
           })
           .strict(),
       ]),
@@ -247,14 +293,32 @@ function checklistsOf(spec: AnySpec): Array<{ at: string; checklist: AnyChecklis
   return out;
 }
 
+/** A count measured with a marketplace paused (`expectCardsWhenPaused`, …): no draft ever proposes one. */
+const PAUSED_COUNT_KEY = /^expect[A-Za-z]+WhenPaused$/;
+
+function dropPausedCounts(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const x of node) dropPausedCounts(x);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  for (const key of Object.keys(node)) {
+    if (PAUSED_COUNT_KEY.test(key)) delete (node as Record<string, unknown>)[key];
+    else dropPausedCounts((node as Record<string, unknown>)[key]);
+  }
+}
+
 /**
  * The spec with what another writer can legitimately change taken out: every
  * `leave` in every `sync.pending`, and every checklist's review answers
  * (each review reads "none-expected"; the answers are compared on their own).
- * Pure.
+ * Also every count measured with a marketplace paused (`expectCardsWhenPaused`
+ * and its siblings): the committed spec's own measurement, which no draft
+ * proposes. Pure.
  */
 export function withoutVolatile<T>(spec: T): T {
   const copy = structuredClone(spec) as AnySpec;
+  dropPausedCounts(copy);
   for (const step of copy.steps ?? []) {
     for (const v of step.variants ?? []) {
       if (v.sync?.pending) v.sync.pending = v.sync.pending.filter((p) => p.decision !== "leave");
@@ -380,6 +444,41 @@ export function insertWithBuiltParallel(report: InspectReport): string | undefin
   return undefined;
 }
 
+/**
+ * The rows the committed spec answers "on card or sticker?" for, read from the
+ * spec itself (a paused run does not compare the draft): Base by its type
+ * alone, a variant row by type and name. Pure.
+ */
+export function specAutographRows(spec: unknown): Array<{ label: string; row: { type: string; name: string } | undefined; format: string }> {
+  type Rowish = { name?: string; checklist?: { autographFormat?: unknown } };
+  type Stepish = { base?: { checklist?: { autographFormat?: unknown } }; variants?: Array<{ type?: string; rows?: Rowish[] }> };
+  const out: Array<{ label: string; row: { type: string; name: string } | undefined; format: string }> = [];
+  for (const step of ((spec as { steps?: Stepish[] }).steps ?? [])) {
+    const base = step.base?.checklist?.autographFormat;
+    if (typeof base === "string") out.push({ label: "Base", row: undefined, format: base });
+    for (const v of step.variants ?? []) {
+      for (const r of v.rows ?? []) {
+        const f = r.checklist?.autographFormat;
+        if (typeof f === "string" && v.type && r.name) out.push({ label: `${v.type} › ${r.name}`, row: { type: v.type, name: r.name }, format: f });
+      }
+    }
+  }
+  return out;
+}
+
+/** The names of the rows of `type` the committed spec builds from Base (`buildFromBase`). Pure. */
+export function specBuiltFromBase(spec: unknown, type: string): Set<string> {
+  type Stepish = { variants?: Array<{ type?: string; rows?: Array<{ name?: string; buildFromBase?: unknown }> }> };
+  const out = new Set<string>();
+  for (const step of ((spec as { steps?: Stepish[] }).steps ?? [])) {
+    for (const v of step.variants ?? []) {
+      if (v.type !== type) continue;
+      for (const r of v.rows ?? []) if (r.buildFromBase !== undefined && r.name) out.add(r.name);
+    }
+  }
+  return out;
+}
+
 class ToolCallFailed extends Error {}
 
 type FixAnswerSet = MeasuredAttention["fix"];
@@ -482,6 +581,31 @@ export function namesAnswered(listing: readonly NameSuggestionItem[], answer: No
     .map((n) => `${n.rowId}:${answer.side}`);
 }
 
+/**
+ * The fix answers a run sends: all of them, or with a marketplace paused,
+ * none about that side's names or links (nothing on that side was fetched
+ * to answer). `dropped` names what was left out. Pure.
+ */
+export function fixForRun(fix: FixAnswerSet, paused: readonly string[]): { fix: FixAnswerSet; dropped: string[] } {
+  if (paused.length === 0) return { fix, dropped: [] };
+  const isPaused = (side: string) => pausedNames(undefined, [side]).some((s) => paused.includes(s));
+  const dropped: string[] = [];
+  const keep = <T extends { side: string }>(key: string, list: readonly T[] | undefined): T[] | undefined => {
+    if (!list) return undefined;
+    return list.filter((a, i) => {
+      if (!isPaused(a.side)) return true;
+      dropped.push(`${key}[${i}] (${a.side})`);
+      return false;
+    });
+  };
+  const names = keep("names", fix.names);
+  const detach = keep("detach", fix.detach);
+  return {
+    fix: { ...fix, ...(names ? { names } : {}), ...(detach ? { detach } : {}) },
+    dropped,
+  };
+}
+
 /** Every item's address, for a person filling the fixture in from a run. */
 function attentionInventory(r: AttentionReport): string {
   const cards = r.cards.map((c) => `${c.rowLabel} #${c.cardNumber} (${c.kinds.join("+")})`);
@@ -519,8 +643,11 @@ export async function runOneshotSequence(
     resolveDrill: DrillResolver;
     /** NEO-345: reads a row's stored format and its AU cards straight from NB, for the positive read-back. */
     readAutographRow: AutographRowReader;
+    /** The marketplaces paused for this run (`declaredPausedNames`); empty or absent = none. */
+    paused?: readonly string[];
   },
 ): Promise<OneshotCheck[]> {
+  const paused = o.paused ?? [];
   const checks: OneshotCheck[] = [];
   const record = (ok: boolean, label: string, detail: string) => {
     const c = { ok, label, detail };
@@ -578,6 +705,15 @@ export async function runOneshotSequence(
       `${open} open decision(s), ${open - unsettled} of them card conflicts / review names / unpaired sets for the committed spec to answer` +
         `${okOpen ? "" : `; ${unsettled} the draft should have settled (${openSummary(operatorOnly)})`}; ${draft.proposals.length} proposals; ${draft.marketplaceCalls} marketplace requests in ${Math.round(draft.durationMs / 1000)}s`,
     );
+    if (paused.length > 0) {
+      // The committed spec was drafted with every marketplace live; a draft of
+      // a one-sided fetch is a different spec by construction, so the merge
+      // and everything compared against it are not checked.
+      const why = `${notCheckedNote(paused)} (the committed spec was drafted with every marketplace live)`;
+      for (const label of ["draft + answers", "leave lists", "autograph formats", "review answers"]) record(true, label, why);
+      specAutographs.push(...specAutographRows(o.answers));
+      return okOpen;
+    }
     const merged = mergeDraftAnswers(draft.template ?? draft.spec, o.answers);
     const left = placeholdersIn(merged);
     if (left.length > 0) return record(false, "draft + answers", `the answers file leaves ${left.length} fill-in(s): ${left.slice(0, 5).join(", ")}`);
@@ -668,15 +804,21 @@ export async function runOneshotSequence(
     for (const kind of ["players", "teams", "leagues"] as const) {
       for (const r of review?.[kind] ?? []) problems.push(`${kind.slice(0, -1)} "${r.name}" ${r.reason} at ${r.at}`);
     }
-    for (const [key, want] of Object.entries(o.expect.apply.counts)) {
+    const { counts, unchecked } = countsFor(o.expect.apply.counts, o.expect.apply.countsWhenPaused, paused);
+    for (const [key, want] of Object.entries(counts)) {
       const got = report.counts?.[key];
-      if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}`);
+      if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}${paused.length ? ` with ${paused.join(", ")} paused` : ""}`);
     }
-    const shown = Object.keys(o.expect.apply.counts).map((k) => `${k} ${report.counts?.[k]}`).join(", ");
+    const shown = Object.keys(counts).map((k) => `${k} ${report.counts?.[k]}`).join(", ");
     applyLine = report.attentionLine;
     applyAttention = report.setLinks?.find((l) => l.attention)?.attention;
     applyLinks = report.setLinks;
-    return record(problems.length === 0, "nb_apply", problems.length === 0 ? `${shown} in ${Math.round((report.durationMs ?? 0) / 1000)}s` : problems.join("; "));
+    const note = unchecked.length > 0 ? `; ${uncheckedNote(paused, unchecked)}` : "";
+    return record(
+      problems.length === 0,
+      "nb_apply",
+      `${problems.length === 0 ? `${shown || (paused.length ? "no count asserted" : "")} in ${Math.round((report.durationMs ?? 0) / 1000)}s` : problems.join("; ")}${note}`,
+    );
   });
   if (!applied) return checks;
   record(
@@ -698,16 +840,23 @@ export async function runOneshotSequence(
     record(linkBad.length === 0, "nb_inspect links", linkBad.length === 0 ? "every link is a Set Builder link that opens its row" : linkBad.join("; "));
     const insert = insertWithBuiltParallel(report);
     record(!!insert, "insert with a built parallel", insert ?? "no insert holds a parallel with cards");
-    const parallels = (report.variantTypes ?? []).filter((t) => t.type === o.expect.builtFromBaseType).flatMap((t) => t.rows);
+    const typeRows = (report.variantTypes ?? []).filter((t) => t.type === o.expect.builtFromBaseType).flatMap((t) => t.rows);
+    // Paused: a one-sided sync also stores the sets the committed spec leaves,
+    // and nothing builds those; only the rows the spec builds are checked.
+    const built = paused.length > 0 ? specBuiltFromBase(o.answers, o.expect.builtFromBaseType) : undefined;
+    const parallels = built ? typeRows.filter((r) => built.has(r.name)) : typeRows;
+    const scope = built ? `; ${uncheckedNote(paused, [`${typeRows.length - parallels.length} row(s) the spec does not build from Base`])}` : "";
     const empty = parallels.filter((r) => r.cards === 0).map((r) => r.name);
     record(
       parallels.length > 0 && empty.length === 0,
       `${o.expect.builtFromBaseType} rows built from Base`,
-      parallels.length === 0 ? "no such rows" : empty.length === 0 ? `${parallels.length} rows, all with cards` : `${empty.length} without cards: ${empty.slice(0, 5).join(", ")}`,
+      (parallels.length === 0 ? "no such rows" : empty.length === 0 ? `${parallels.length} rows, all with cards` : `${empty.length} without cards: ${empty.slice(0, 5).join(", ")}`) + scope,
     );
     for (const exp of o.expect.after) {
-      const bad = inspectMismatches(report, exp);
-      record(bad.length === 0, "after", bad.length === 0 ? "as expected" : bad.join("; "));
+      const { exp: checked, unchecked } = inspectExpectFor(exp, paused);
+      const bad = inspectMismatches(report, checked);
+      const note = unchecked.length > 0 ? `; ${uncheckedNote(paused, unchecked)}` : "";
+      record(bad.length === 0, "after", `${bad.length === 0 ? "as expected" : bad.join("; ")}${note}`);
     }
     return true;
   });
@@ -727,7 +876,7 @@ export async function runOneshotSequence(
   });
 
   // 7. attention
-  await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep, o.readAutographRow);
+  await attentionSequence(client, path, o.expect.attention, record, attempt, o.sleep, o.readAutographRow, paused);
   return checks;
 }
 
@@ -740,6 +889,7 @@ async function attentionSequence(
   attempt: (label: string, fn: () => Promise<boolean>) => Promise<boolean>,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   readAutographRow?: AutographRowReader,
+  paused: readonly string[] = [],
 ): Promise<void> {
   const waitMs = expect.measured === true ? expect.lookupWaitMs : 10 * 60_000;
   let before: AttentionReport | undefined;
@@ -756,19 +906,30 @@ async function attentionSequence(
     if (expect.measured !== true) {
       return record(false, "nb_attention", `attention ${NOT_MEASURED}; measured ${seen}. ${attentionInventory(before)}`);
     }
-    const want = expect.totals;
+    const want = paused.length > 0 ? expect.whenPaused?.totals : expect.totals;
+    if (!want) return record(true, "nb_attention", `${seen}: ${before.summary}; ${uncheckedNote(paused, ["totals"])}`);
     const nonzero = (m: Record<string, number>) => canonicalJson(Object.fromEntries(Object.entries(m).filter(([, n]) => n > 0)));
     const ok =
       t.cards === want.cards &&
       t.namesToCheck === want.namesToCheck &&
       nonzero(t.byKind) === nonzero(want.byKind) &&
       (want.autographRows === undefined || t.autographRows === want.autographRows);
-    const wanted = `expected cards ${want.cards}, byKind ${canonicalJson(want.byKind)}, namesToCheck ${want.namesToCheck}${want.autographRows === undefined ? "" : `, autographRows ${want.autographRows}`}`;
+    const wanted = `expected${paused.length > 0 ? ` with ${paused.join(", ")} paused` : ""} cards ${want.cards}, byKind ${canonicalJson(want.byKind)}, namesToCheck ${want.namesToCheck}${want.autographRows === undefined ? "" : `, autographRows ${want.autographRows}`}`;
     return record(ok, "nb_attention", ok ? `${seen}: ${before.summary}` : `${seen}; ${wanted}. ${attentionInventory(before)}`);
   });
   if (!listed || !before || expect.measured !== true) return;
-  const fix = expect.fix;
-  const afterAutographRows = expect.afterAutographRows;
+  const { fix, dropped } = fixForRun(expect.fix, paused);
+  const droppedNote = dropped.length > 0 ? `; ${uncheckedNote(paused, dropped)}` : "";
+  const afterAutographRows = paused.length > 0 ? expect.whenPaused?.afterAutographRows : expect.afterAutographRows;
+  const afterNote =
+    paused.length > 0 && expect.afterAutographRows !== undefined && afterAutographRows === undefined
+      ? `; ${uncheckedNote(paused, ["afterAutographRows"])}`
+      : "";
+  const sent = (fix.cards ?? []).length + (fix.names ?? []).length + (fix.autographs ?? []).length + (fix.detach ?? []).length;
+  if (dropped.length > 0 && sent === 0) {
+    record(true, "nb_fix", `${notCheckedNote(paused)}: every fix answer is about a paused side${droppedNote}`);
+    return;
+  }
 
   // What each answer addresses, before: it must be listed, once.
   const goneCards = new Set<string>();
@@ -803,7 +964,7 @@ async function attentionSequence(
     return record(
       problems.length === 0,
       "nb_fix answers",
-      problems.length === 0 ? `${goneCards.size} cards, ${goneNames.size} names, ${goneAutographs.size} autograph rows, each listed once` : problems.join("; "),
+      (problems.length === 0 ? `${goneCards.size} cards, ${goneNames.size} names, ${goneAutographs.size} autograph rows, each listed once` : problems.join("; ")) + droppedNote,
     );
   });
   if (!addressed) return;
@@ -856,9 +1017,9 @@ async function attentionSequence(
     return record(
       ok,
       "nb_attention after nb_fix",
-      ok
+      (ok
         ? after.summary
-        : `${stillThere + autographsLeft} answered item(s) still listed, ${appeared + autographsNew} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}, autograph rows ${before!.totals.autographRows} → ${after.totals.autographRows}${afterAutographRows === undefined ? "" : ` (expected ${afterAutographRows} after)`}`,
+        : `${stillThere + autographsLeft} answered item(s) still listed, ${appeared + autographsNew} new; cards ${before!.totals.cards} → ${after.totals.cards}, names ${before!.totals.namesToCheck} → ${after.totals.namesToCheck}, autograph rows ${before!.totals.autographRows} → ${after.totals.autographRows}${afterAutographRows === undefined ? "" : ` (expected ${afterAutographRows} after)`}`) + afterNote,
     );
   });
 
@@ -947,8 +1108,16 @@ export const oneshotSmokeCommand: CommandSpec = {
       return 2;
     }
 
-    const conn = ctx.connect();
     const flag = (k: string) => (typeof ctx.values[k] === "string" ? (ctx.values[k] as string) : undefined);
+    // The run's pause, as the server will read it: the flag, else env.
+    let paused: string[];
+    try {
+      paused = declaredPausedNames(flag("paused-platforms") ?? ctx.io.env.PAUSED_PLATFORMS);
+    } catch (err) {
+      ctx.io.stderr(`setbuild oneshot-smoke: ${err instanceof Error ? err.message : String(err)}`);
+      return 2;
+    }
+    const conn = ctx.connect();
     const flagEnv: Record<string, string | undefined> = {
       NB_SETBUILD_CONVEX_URL: conn.target.convexUrl,
       NB_SETBUILD_CONVEX_SITE_URL: flag("convex-site-url"),
@@ -978,6 +1147,7 @@ export const oneshotSmokeCommand: CommandSpec = {
         answers,
         expect: parsed.data,
         confirm,
+        paused,
         onCheck: ctx.json ? undefined : (c) => say(`${c.ok ? "ok  " : "FAIL"}  ${c.label}: ${c.detail}`),
       });
     } finally {

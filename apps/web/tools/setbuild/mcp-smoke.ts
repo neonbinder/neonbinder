@@ -23,6 +23,16 @@
  * `--paused-platforms` (default: env PAUSED_PLATFORMS) reaches the server as
  * its PAUSED_PLATFORMS, exactly as `apply` reads it.
  *
+ * The expectations are measured with every marketplace live. With one paused,
+ * a value that depends on it is never compared against the live number: an
+ * inspect expectation checks only what its `whenPaused` restates, `apply`
+ * only its `countsWhenPaused`, and every value left out is named in the
+ * check's detail ("not checked (sportlots paused): Base cards"). A
+ * `variationParents` check (SportLots-only cards) is reported "not checked".
+ * What does not depend on a marketplace (tools/list, the plan's phrase and
+ * open decisions, the apply's stops, attentionLine and links, a set being
+ * found, nb_attention's shape) runs as always.
+ *
  * Expectations file (--expect), e.g. for the seeded Topps Chrome:
  *
  *   {
@@ -56,6 +66,7 @@ import { drillResolverOf, inspectLinkProblems, parseDrillLink, setLinkProblems, 
 import { api } from "../../convex/_generated/api";
 import type { NbClient } from "./client/convex-client";
 import { READ_TOOLS, WRITE_TOOLS } from "./mcp-tools";
+import { countsFor, declaredPausedNames, notCheckedNote, uncheckedNote } from "./lib/expected-count";
 import {
   countOpenDecisions,
   formatPath,
@@ -80,26 +91,51 @@ const pathSchema = z
   })
   .strict();
 
+const baseExpectSchema = z
+  .object({
+    cards: z.number().int().min(0).optional(),
+    /** Linked to at least one marketplace. */
+    mapped: z.boolean().optional(),
+    /** Per side: linked (true) or not (false). */
+    linked: z
+      .object({ buysportscards: z.boolean().optional(), sportlots: z.boolean().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
+const rowsExpectSchema = z.array(
+  z.object({ type: z.string().min(1), name: z.string().min(1), cards: z.number().int().min(0) }).strict(),
+);
+const rowCountsExpectSchema = z.array(z.object({ type: z.string().min(1), count: z.number().int().min(0) }).strict());
+
 export const inspectExpectSchema = z
   .object({
     path: pathSchema,
-    base: z
+    base: baseExpectSchema.optional(),
+    rows: rowsExpectSchema.optional(),
+    rowCounts: rowCountsExpectSchema.optional(),
+    /**
+     * What holds with a marketplace PAUSED for the run (measured so, never
+     * guessed): the same fields, checked instead of the live ones then. A
+     * live value it does not restate is not checked on a paused run, and the
+     * check names it.
+     */
+    whenPaused: z
       .object({
-        cards: z.number().int().min(0).optional(),
-        /** Linked to at least one marketplace. */
-        mapped: z.boolean().optional(),
-        /** Per side: linked (true) or not (false). */
-        linked: z
-          .object({ buysportscards: z.boolean().optional(), sportlots: z.boolean().optional() })
-          .strict()
-          .optional(),
+        base: baseExpectSchema.optional(),
+        rows: rowsExpectSchema.optional(),
+        rowCounts: rowCountsExpectSchema.optional(),
       })
       .strict()
       .optional(),
-    rows: z
-      .array(z.object({ type: z.string().min(1), name: z.string().min(1), cards: z.number().int().min(0) }).strict())
-      .optional(),
-    rowCounts: z.array(z.object({ type: z.string().min(1), count: z.number().int().min(0) }).strict()).optional(),
+  })
+  .strict();
+
+/** `apply.counts`, plus the counts that hold with a marketplace paused (checked instead, then). */
+export const applyExpectSchema = z
+  .object({
+    counts: z.record(z.string(), z.number()),
+    countsWhenPaused: z.record(z.string(), z.number()).optional(),
   })
   .strict();
 
@@ -107,7 +143,7 @@ export const smokeExpectSchema = z
   .object({
     before: z.array(inspectExpectSchema).default([]),
     plan: z.object({ openDecisions: z.number().int().min(0).default(0) }).strict().default({}),
-    apply: z.object({ counts: z.record(z.string(), z.number()) }).strict(),
+    apply: applyExpectSchema,
     after: z.array(inspectExpectSchema).default([]),
     /**
      * A variation only one marketplace lists must hang off the set's ONE
@@ -132,7 +168,7 @@ export const smokeExpectSchema = z
   .strict();
 
 export type SmokeExpect = z.infer<typeof smokeExpectSchema>;
-type InspectExpect = z.infer<typeof inspectExpectSchema>;
+export type InspectExpect = z.infer<typeof inspectExpectSchema>;
 
 export interface SmokeCheck {
   ok: boolean;
@@ -232,6 +268,29 @@ export function cardReaderOf(client: NbClient): CardReader {
     client.query(api.selectorOptions.getCardChecklist, { selectorOptionId: selectorOptionId as never });
 }
 
+/**
+ * The inspect expectation a run checks: as written when nothing is paused;
+ * with a marketplace paused, only what `whenPaused` restates, and every live
+ * value it leaves out named in `unchecked`. Pure.
+ */
+export function inspectExpectFor(exp: InspectExpect, paused: readonly string[]): { exp: InspectExpect; unchecked: string[] } {
+  if (paused.length === 0) return { exp, unchecked: [] };
+  const wp = exp.whenPaused ?? {};
+  const unchecked: string[] = [];
+  if (exp.base?.cards !== undefined && wp.base?.cards === undefined) unchecked.push("Base cards");
+  if (exp.base?.mapped !== undefined && wp.base?.mapped === undefined) unchecked.push("Base mapped");
+  for (const side of ["buysportscards", "sportlots"] as const) {
+    if (exp.base?.linked?.[side] !== undefined && wp.base?.linked?.[side] === undefined) unchecked.push(`Base ${side} link`);
+  }
+  for (const r of exp.rows ?? []) {
+    if (!(wp.rows ?? []).some((w) => w.type === r.type && w.name === r.name)) unchecked.push(`${r.type} › ${r.name} cards`);
+  }
+  for (const c of exp.rowCounts ?? []) {
+    if (!(wp.rowCounts ?? []).some((w) => w.type === c.type)) unchecked.push(`${c.type} rows`);
+  }
+  return { exp: { path: exp.path, ...wp }, unchecked };
+}
+
 function inspectSummary(report: InspectReport, exp: InspectExpect): string {
   const parts: string[] = [];
   if (exp.base && report.base) parts.push(`Base ${report.base.cards}${isLinked(report.base) ? " linked" : " unlinked"}`);
@@ -275,8 +334,11 @@ export async function runSmokeSequence(
     resolveDrill: DrillResolver;
     /** Reads one row's cards (read-only), for the variation-parent check. */
     readCards: CardReader;
+    /** The marketplaces paused for this run (`declaredPausedNames`); empty or absent = none. */
+    paused?: readonly string[];
   },
 ): Promise<SmokeCheck[]> {
+  const paused = o.paused ?? [];
   const checks: SmokeCheck[] = [];
   const record = (ok: boolean, label: string, detail: string) => {
     const c = { ok, label, detail };
@@ -309,13 +371,15 @@ export async function runSmokeSequence(
     for (const exp of list) {
       const path = exp.path as NodePath;
       const label = `${phase} nb_inspect ${formatPath(path)}`;
+      const { exp: checked, unchecked } = inspectExpectFor(exp, paused);
+      const note = unchecked.length > 0 ? `; ${uncheckedNote(paused, unchecked)}` : "";
       await attempt(label, async () => {
         const report = await call<InspectReport>(client, "nb_inspect", { path }, READ_TIMEOUT_MS);
         const bad = [
-          ...inspectMismatches(report, exp),
+          ...inspectMismatches(report, checked),
           ...(await inspectLinkProblems(report, { appOrigin: o.appOrigin, resolve: o.resolveDrill })),
         ];
-        return record(bad.length === 0, label, bad.length === 0 ? inspectSummary(report, exp) : bad.join("; "));
+        return record(bad.length === 0, label, `${bad.length === 0 ? inspectSummary(report, checked) : bad.join("; ")}${note}`);
       });
     }
   };
@@ -353,20 +417,22 @@ export async function runSmokeSequence(
     );
     const problems: string[] = [];
     if (report.stoppedAt) problems.push(`stopped at step ${report.stoppedAt.step}: ${report.stoppedAt.reason}`);
-    for (const [key, want] of Object.entries(o.expect.apply.counts)) {
+    const { counts, unchecked } = countsFor(o.expect.apply.counts, o.expect.apply.countsWhenPaused, paused);
+    for (const [key, want] of Object.entries(counts)) {
       const got = report.counts?.[key];
-      if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}`);
+      if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}${paused.length ? ` with ${paused.join(", ")} paused` : ""}`);
     }
     // A build always ends by saying what is left for a person, and where.
     if (!report.attentionLine) problems.push("the report has no attentionLine");
     problems.push(...(await setLinkProblems(report.setLinks, { appOrigin: o.appOrigin, resolve: o.resolveDrill })));
-    const shown = Object.keys(o.expect.apply.counts)
+    const shown = Object.keys(counts)
       .map((k) => `${k} ${report.counts?.[k]}`)
       .join(", ");
+    const note = unchecked.length > 0 ? `; ${uncheckedNote(paused, unchecked)}` : "";
     return record(
       problems.length === 0,
       "nb_apply",
-      problems.length === 0 ? `${shown} in ${Math.round((report.durationMs ?? 0) / 1000)}s` : problems.join("; "),
+      `${problems.length === 0 ? `${shown || (paused.length ? "no count asserted" : "")} in ${Math.round((report.durationMs ?? 0) / 1000)}s` : problems.join("; ")}${note}`,
     );
   });
   if (!applied) return checks;
@@ -377,6 +443,11 @@ export async function runSmokeSequence(
   // 5b. a one-marketplace variation hangs off the set's one plain card
   for (const exp of o.expect.variationParents) {
     const label = `variation parent ${formatPath(exp.path as NodePath)} #${exp.cardNumber}`;
+    if (paused.length > 0) {
+      // SportLots-only cards, counted with every marketplace live.
+      record(true, label, `${notCheckedNote(paused)} (${exp.slOnlyVariations} SportLots-only variation(s) measured live)`);
+      continue;
+    }
     await attempt(label, async () => {
       const report = await call<InspectReport>(client, "nb_inspect", { path: exp.path }, READ_TIMEOUT_MS);
       if (!report.found || !report.base) return record(false, label, `${report.pathText} has no Base row`);
@@ -509,6 +580,16 @@ export const mcpSmokeCommand: CommandSpec = {
       return 2;
     }
 
+    // The run's pause, as the server will read it: the flag, else env.
+    const pausedRaw = typeof ctx.values["paused-platforms"] === "string" ? ctx.values["paused-platforms"] : ctx.io.env.PAUSED_PLATFORMS;
+    let paused: string[];
+    try {
+      paused = declaredPausedNames(pausedRaw);
+    } catch (err) {
+      ctx.io.stderr(`setbuild mcp-smoke: ${err instanceof Error ? err.message : String(err)}`);
+      return 2;
+    }
+
     // Resolve here first: a config error fails fast, and the server is given
     // the same answers through env (it reads env only).
     const conn = ctx.connect();
@@ -533,7 +614,7 @@ export const mcpSmokeCommand: CommandSpec = {
     const secrets = [...secretValues(env), conn.target.host, conn.target.convexUrl];
     const say = (line: string) => ctx.io.stdout(scrub(line, secrets));
 
-    if (!ctx.json) say(`mcp-smoke  spec ${specArg}`);
+    if (!ctx.json) say(`mcp-smoke  spec ${specArg}${paused.length ? `  (paused: ${paused.join(", ")})` : ""}`);
     const server = await connectToSpawnedServer(env);
     // The page's resolver, through this process's own client (the server mints its own).
     const nb = makeClient(conn.target, conn.tokens, { transport: conn.transport });
@@ -546,6 +627,7 @@ export const mcpSmokeCommand: CommandSpec = {
         appOrigin: conn.target.appOrigin,
         resolveDrill: drillResolverOf(nb),
         readCards: cardReaderOf(nb),
+        paused,
         onCheck: ctx.json ? undefined : (c) => say(`${c.ok ? "ok  " : "FAIL"}  ${c.label}: ${c.detail}`),
       });
     } finally {

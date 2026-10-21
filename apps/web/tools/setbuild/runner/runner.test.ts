@@ -911,3 +911,67 @@ describe("NEO-339: nb_fix detach, the Sources panel's × as an answer", () => {
     expect(client.callsTo("selectorOptions:detachPlatformId")).toEqual([]);
   });
 });
+
+describe("counts with a marketplace paused (NEO-339: the seed under a SportLots pause)", () => {
+  /** The spec's counts, measured live: Base 3, the Parallel type 5 rows, Sepia 2. */
+  function pausedSpec(extra: { base?: Record<string, unknown>; type?: Record<string, unknown>; row?: Record<string, unknown> } = {}) {
+    const raw = spec();
+    const step = raw.steps[0] as unknown as {
+      base: { checklist: Record<string, unknown> };
+      variants: Array<Record<string, unknown> & { rows: Array<Record<string, unknown>> }>;
+    };
+    Object.assign(step.base.checklist, { expectCards: 3 }, extra.base);
+    Object.assign(step.variants[0], { expectRows: 5 }, extra.type);
+    Object.assign(step.variants[0].rows[0], extra.row);
+    return raw;
+  }
+  /** The finished world (Base 2, Sepia 2, one Parallel row), with SportLots paused on the deployment or not. */
+  const pausedWorld = (pausedOnServer: boolean) =>
+    world(done())
+      .on("marketplacePause:getPausedPlatforms", pausedOnServer ? ["sportlots"] : [])
+      .on("selectorOptions:getInsertTreeByVariantType", [{ _id: "pS", value: "Sepia Refractors", parallels: [] }]);
+  const stepOf = (r: { steps: Array<{ kind: string; status: string; detail?: string; action: string }> }, kind: string) => r.steps.find((s) => s.kind === kind)!;
+
+  test("not paused: the live counts are asserted as before (Base 2 against 3 is refused)", async () => {
+    const raw = pausedSpec({ base: { expectCardsWhenPaused: 2 }, type: { expectRowsWhenPaused: 1 } });
+    const r = await applySpec(pausedWorld(false), FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(stepOf(r, "checklist")).toMatchObject({ status: "blocked" });
+    expect(stepOf(r, "checklist").detail).toContain("the row already holds 2 cards and the spec expects 3. ");
+    expect(r.stops?.map((s) => s.reason)).toContain("steps[0].variants[0].expectRows: Parallel holds 1 rows; the spec expects 5.");
+  });
+
+  test("paused, no paused values: no count is asserted, each step says so, and nothing stops", async () => {
+    const raw = pausedSpec();
+    const r = await applySpec(pausedWorld(true), FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "sportlots", stopAt: "end" });
+    expect(r.stops).toBeUndefined();
+    expect(stepOf(r, "checklist")).toMatchObject({ status: "done", detail: "already holds 2 cards; count not asserted: sportlots paused" });
+    expect(stepOf(r, "expect-rows")).toMatchObject({ status: "done", detail: "1 now; count not asserted: sportlots paused" });
+    expect(stepOf(r, "build-parallel")).toMatchObject({ status: "done", detail: "already holds 2 cards; count not asserted: sportlots paused" });
+  });
+
+  test("paused, paused values given: they are asserted (pass)", async () => {
+    const raw = pausedSpec({ base: { expectCardsWhenPaused: 2 }, type: { expectRowsWhenPaused: 1 }, row: { expectCardsWhenPaused: 2 } });
+    const r = await applySpec(pausedWorld(true), FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "sportlots", stopAt: "end" });
+    expect(r.stops).toBeUndefined();
+    expect(stepOf(r, "checklist")).toMatchObject({ status: "done", detail: "already holds 2 cards" });
+    expect(stepOf(r, "expect-rows")).toMatchObject({ status: "done", action: "Parallel holds 1 rows (sportlots paused)", detail: "1 now" });
+  });
+
+  test("paused, paused values given: a mismatch stops, naming the paused field", async () => {
+    const raw = pausedSpec({ base: { expectCardsWhenPaused: 4 }, type: { expectRowsWhenPaused: 3 }, row: { expectCardsWhenPaused: 7 } });
+    const r = await applySpec(pausedWorld(true), FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "sportlots", stopAt: "end" });
+    const reasons = r.stops?.map((s) => s.reason) ?? [];
+    expect(reasons).toContain(
+      "steps[0].base.checklist: the row already holds 2 cards and the spec expects 4 with sportlots paused (expectCardsWhenPaused). " +
+        "The set-build tool builds checklists; it does not re-sync them.",
+    );
+    expect(reasons).toContain("steps[0].variants[0].expectRowsWhenPaused: Parallel holds 1 rows; the spec expects 3 with sportlots paused (expectRowsWhenPaused).");
+  });
+
+  test("plan, paused: the same judgement, read-only", async () => {
+    const raw = pausedSpec();
+    const r = await planSpec(pausedWorld(true), FAKE_TARGET, raw, { pausedPlatforms: "sportlots" });
+    expect(stepOf(r, "checklist")).toMatchObject({ status: "done", detail: "holds 2 cards; count not asserted: sportlots paused" });
+    expect(stepOf(r, "expect-rows")).toMatchObject({ status: "done", detail: "1 now; count not asserted: sportlots paused" });
+  });
+});

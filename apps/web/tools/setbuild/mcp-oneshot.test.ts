@@ -20,9 +20,12 @@ import {
   reachedAutographRows,
   compareDraft,
   differingPaths,
+  fixForRun,
   NOT_MEASURED,
   oneshotExpectSchema,
   runOneshotSequence,
+  specAutographRows,
+  specBuiltFromBase,
   type AutographRowReader,
   type OneshotExpect,
 } from "./mcp-oneshot";
@@ -805,5 +808,179 @@ describe("runOneshotSequence — NEO-345 the autograph path, proven live", () =>
     expect(autographsAnswered(items, { format: "On Card" }).map((x: { rowId: string }) => x.rowId)).toEqual(["b"]);
     expect(autographsAnswered(items, { row: IVORY, format: "On Card" }).map((x: { rowId: string }) => x.rowId)).toEqual(["i"]);
     expect(autographsAnswered(items, { row: { ...IVORY, parallel: "Gold" }, format: "On Card" }).map((x: { rowId: string }) => x.rowId)).toEqual(["g"]);
+  });
+});
+
+describe("runOneshotSequence — SportLots paused (NEO-339)", () => {
+  /** The committed spec as measured live: an insert answered "On Card", one Parallel row built from Base. */
+  const PAUSED_ANSWERS = {
+    ...ANSWERS,
+    steps: [
+      {
+        ...ANSWERS.steps[0],
+        variants: [
+          {
+            ...ANSWERS.steps[0].variants[0],
+            rows: [{ name: "Future Stars", checklist: { pairing: { unmatchedBsc: "keep", unmatchedSportlots: "keep" }, review: "none-expected", autographFormat: "On Card" } }],
+          },
+          { type: "Parallel", rows: [{ name: "Gold", buildFromBase: {} }] },
+        ],
+      },
+    ],
+  };
+  /** A one-sided build: the sync also stored a BSC set the committed spec leaves (no cards), and the Base is BSC-only. */
+  const pausedBuild: InspectReport = {
+    ...built,
+    base: { ...built.base!, cards: 90, links: { buysportscards: ["b"], sportlots: [] } },
+    variantTypes: [
+      built.variantTypes![0],
+      {
+        type: "Parallel",
+        link: LINK_ROW,
+        rows: [
+          built.variantTypes![1].rows[0],
+          { name: "Left Alone", cards: 0, isBase: false, links: { buysportscards: ["la"], sportlots: [] }, link: LINK_ROW },
+        ],
+      },
+    ],
+  };
+  /** Paused: no SportLots name to check is listed; one more card than measured live. */
+  function pausedAttention(): ReturnType<typeof attentionWorld> {
+    let fixed = false;
+    const card = (n: string, kind: string) => ({ row: { type: "Base" }, rowLabel: "Base", cardNumber: n, cardName: `Card ${n}`, cardId: `card-${n}`, kinds: [kind] });
+    const before = () => ({
+      pathText: SCOPE,
+      totals: { cards: 2, byKind: { missingTeam: 1, titleTruncated: 1 }, awaitingTeamLookup: 0, namesToCheck: 0, slSetsToSort: 0, autographRows: 0 },
+      summary: "2 cards need you on Topps Chrome Black.",
+      cards: [card("7", "missingTeam"), card("8", "titleTruncated")],
+      names: [],
+      autographs: [],
+      notices: [],
+    });
+    const after = () => ({
+      ...before(),
+      totals: { ...before().totals, cards: 1, byKind: { titleTruncated: 1 } },
+      summary: "1 card needs you on Topps Chrome Black.",
+      cards: [card("8", "titleTruncated")],
+    });
+    // The listing's shape is the fake world's own; only its values differ.
+    return {
+      attention: vi.fn(async () => (fixed ? after() : before())),
+      fix: vi.fn(async (_p: unknown, a: { cards?: unknown[]; names?: unknown[] }) => {
+        fixed = true;
+        const n = (a.cards?.length ?? 0) + (a.names?.length ?? 0);
+        return { results: Array.from({ length: n }, (_, i) => ({ at: `x[${i}]`, outcome: "applied", detail: "d" })), summary: "1 card needs you." };
+      }),
+    } as unknown as ReturnType<typeof attentionWorld>;
+  }
+  const go = (service: ReturnType<typeof fakeService>, expect: OneshotExpect, paused: string[]) =>
+    connect(service).then((client) =>
+      runOneshotSequence(client, {
+        answersPath: "/oneshot.spec.json",
+        answers: PAUSED_ANSWERS,
+        expect,
+        confirm: PHRASE,
+        sleep: async () => {},
+        resolveDrill: knownResolver(),
+        readAutographRow: READ_OK,
+        paused,
+      }),
+    );
+  const by = (checks: Awaited<ReturnType<typeof go>>, label: string) => checks.find((c) => c.label === label)!;
+  const LIVE = oneshotExpectSchema.parse({
+    ...BASE_EXPECT,
+    after: [{ path: PATH, base: { cards: 100, linked: { buysportscards: true, sportlots: true } } }],
+    attention: { ...MEASURED, afterAutographRows: 0 },
+  });
+  /** A one-sided draft: not the committed spec, and its own counts. */
+  const drifted = () => {
+    const d = structuredClone(DRAFTED) as typeof DRAFTED;
+    d.steps[0].variants[0].sync.pairs.push({ name: "BSC Only Insert", bsc: ["bsc-only"] });
+    return d;
+  };
+
+  test("paused: the draft comparison, live counts, live totals and SportLots answers are not checked; the rest runs green", async () => {
+    const att = pausedAttention();
+    const service = fakeService({ spec: drifted(), counts: { reconciled: 1, grouped: 0, committed: 90, built: 90 }, inspect: pausedBuild, attention: att });
+    const checks = await go(service, LIVE, ["sportlots"]);
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    const why = "not checked: sportlots paused (the committed spec was drafted with every marketplace live)";
+    for (const label of ["draft + answers", "leave lists", "autograph formats", "review answers"]) expect(by(checks, label)).toMatchObject({ ok: true, detail: why });
+    expect(by(checks, "nb_apply").detail).toMatch(/^no count asserted in 9s; not checked \(sportlots paused\): counts\.reconciled, counts\.grouped, counts\.committed, counts\.built$/);
+    expect(by(checks, "Parallel rows built from Base").detail).toBe("1 rows, all with cards; not checked (sportlots paused): 1 row(s) the spec does not build from Base");
+    expect(by(checks, "after").detail).toBe("as expected; not checked (sportlots paused): Base cards, Base buysportscards link, Base sportlots link");
+    expect(by(checks, "autograph read-back (spec)").detail).toBe("1 row(s) hold their format, every AU card marked");
+    expect(by(checks, "nb_attention").detail).toMatch(/; not checked \(sportlots paused\): totals$/);
+    expect(by(checks, "nb_fix answers").detail).toBe("1 cards, 0 names, 0 autograph rows, each listed once; not checked (sportlots paused): names[0] (sportlots)");
+    expect(by(checks, "nb_attention after nb_fix").detail).toBe("1 card needs you on Topps Chrome Black.; not checked (sportlots paused): afterAutographRows");
+    // The SportLots name answer is never sent.
+    expect(att.fix.mock.calls.at(-1)![1]).toMatchObject({ cards: FIX.cards, names: [] });
+    expect(service.write.apply).toHaveBeenCalledTimes(1);
+  });
+
+  test("not paused, the same build fails where it should (drift stops before any write)", async () => {
+    const service = fakeService({ spec: drifted(), inspect: pausedBuild, attention: pausedAttention() });
+    const checks = await go(service, LIVE, []);
+    expect(by(checks, "draft + answers").ok).toBe(false);
+    expect(service.write.apply).not.toHaveBeenCalled();
+  });
+
+  test("paused with paused values in the file: they are checked (pass and mismatch)", async () => {
+    const withPaused = (countsWhenPaused: Record<string, number>, totals: Record<string, unknown>) =>
+      oneshotExpectSchema.parse({
+        ...BASE_EXPECT,
+        apply: { ...BASE_EXPECT.apply, countsWhenPaused },
+        after: [{ path: PATH, base: { cards: 100 }, whenPaused: { base: { cards: 90, linked: { sportlots: false } } } }],
+        attention: { ...MEASURED, whenPaused: { totals } },
+      });
+    const service = () => fakeService({ spec: drifted(), counts: { reconciled: 1, grouped: 0, committed: 90, built: 90 }, inspect: pausedBuild, attention: pausedAttention() });
+    const ok = await go(service(), withPaused({ committed: 90 }, { cards: 2, byKind: { missingTeam: 1, titleTruncated: 1 }, namesToCheck: 0 }), ["sportlots"]);
+    expect(ok.filter((c) => !c.ok)).toEqual([]);
+    expect(by(ok, "nb_apply").detail).toMatch(/^committed 90 in 9s; not checked \(sportlots paused\): counts\.reconciled, counts\.grouped, counts\.built$/);
+    expect(by(ok, "after").detail).toBe("as expected");
+
+    const bad = await go(service(), withPaused({ committed: 91 }, { cards: 3, byKind: {}, namesToCheck: 0 }), ["sportlots"]);
+    expect(by(bad, "nb_apply")).toMatchObject({ ok: false });
+    expect(by(bad, "nb_apply").detail).toMatch(/^counts\.committed is 90, expected 91 with sportlots paused/);
+  });
+
+  test("paused: a stop in the apply still fails", async () => {
+    const service = fakeService({ spec: drifted(), inspect: pausedBuild, attention: pausedAttention() });
+    service.write.apply.mockResolvedValueOnce({ counts: {}, durationMs: 1, stops: [{ step: 0, reason: "Base: the entity review has rows the spec does not answer" }], setLinks: [{ path: SCOPE, link: SET_LINK, attention: SUMMARY }], attentionLine: "x" } as never);
+    const checks = await go(service, LIVE, ["sportlots"]);
+    expect(by(checks, "nb_apply")).toMatchObject({ ok: false });
+    expect(by(checks, "nb_apply").detail).toMatch(/^stopped at step 0: Base: the entity review/);
+  });
+
+  test("a paused count in the committed spec is its own measurement: the live digest check ignores it", () => {
+    const committed = structuredClone(PAUSED_ANSWERS) as unknown as {
+      steps: Array<{ variants: Array<Record<string, unknown> & { rows: Array<Record<string, unknown>> }> }>;
+    };
+    Object.assign(committed.steps[0].variants[1], { expectRows: 1, expectRowsWhenPaused: 2 });
+    Object.assign(committed.steps[0].variants[1].rows[0], { expectCards: 5, expectCardsWhenPaused: 4 });
+    const drafted = structuredClone(PAUSED_ANSWERS) as unknown as typeof committed;
+    Object.assign(drafted.steps[0].variants[1], { expectRows: 1 });
+    Object.assign(drafted.steps[0].variants[1].rows[0], { expectCards: 5 });
+    expect(compareDraft(drafted, committed).restSame).toBe(true);
+    // A live count that differs still fails.
+    Object.assign(drafted.steps[0].variants[1].rows[0], { expectCards: 6 });
+    expect(compareDraft(drafted, committed).restDiffers).toEqual(["steps[0].variants[1].rows[0].expectCards"]);
+  });
+
+  test("specBuiltFromBase, specAutographRows and fixForRun read the committed spec and answers", () => {
+    expect([...specBuiltFromBase(PAUSED_ANSWERS, "Parallel")]).toEqual(["Gold"]);
+    expect(specAutographRows(PAUSED_ANSWERS)).toEqual([{ label: "Insert › Future Stars", row: { type: "Insert", name: "Future Stars" }, format: "On Card" }]);
+    const fix = { ...FIX, detach: [{ side: "bsc", id: "x" }] } as never;
+    expect(fixForRun(fix, [])).toEqual({ fix, dropped: [] });
+    expect(fixForRun(fix, ["sportlots"])).toEqual({
+      fix: { ...FIX, names: [], detach: [{ side: "bsc", id: "x" }] },
+      dropped: ["names[0] (sportlots)"],
+    });
+  });
+
+  test("the committed fixture still parses", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const raw = JSON.parse(await readFile(new URL("../../playwright/seed/oneshot.expect.json", import.meta.url), "utf8"));
+    expect(oneshotExpectSchema.safeParse(raw).success).toBe(true);
   });
 });

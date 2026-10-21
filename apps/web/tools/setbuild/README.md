@@ -273,6 +273,53 @@ error still carries the report so far: the CLI prints it (and writes it to
 `mcp-smoke` passes it to the server it spawns, and the MCP server reads
 `PAUSED_PLATFORMS` from its own environment.
 
+**Counts under a pause (`lib/expected-count.ts`).** A spec's counts are
+measured with every marketplace live, and a paused run fetches less (a Base
+mapped `whenPaused: "bsc-only"` gets BSC's cards only; a one-sided variant
+sync stores every BSC set). So the live number is never asserted against a
+paused run. Each count has an optional paused sibling:
+
+| Live | Paused | Where |
+|---|---|---|
+| `expectCards` | `expectCardsWhenPaused` | a checklist, a variant row (`buildFromBase` or a plain count), an insert's parallel |
+| `expectRows` | `expectRowsWhenPaused` | a variant type |
+| `group.expectUngrouped` | `group.expectUngroupedWhenPaused` | Group Parallels |
+
+With nothing paused the live value is asserted exactly as before (the paused
+one is not read). With a marketplace paused (the run's declared pause, which
+`checkPausedPlatforms` has agreed with the deployment, plus any side a fetch
+reported paused) the paused value is asserted when the spec gives one, and
+otherwise no count is: the step stays `done` and its detail says
+`count not asserted: sportlots paused`. This covers the idempotent pre-check
+too, so a paused re-run of a row holding the paused count is skipped, not
+refused. A paused value is a measurement taken on a paused run; never
+estimate one (the seed's 2024 Topps Chrome Base, 335 with SportLots paused,
+is measured from CI). No draft proposes a paused value, so the one-shot's
+digest comparison (`withoutVolatile`) leaves every `…WhenPaused` count out
+on both sides: adding one to `oneshot.spec.json` is never drift.
+
+The smokes' expectation files work the same way. In `mcp-smoke.expect.json`
+and `oneshot.expect.json` an inspect expectation (`before` / `after`) may carry
+`whenPaused` (the same `base` / `rows` / `rowCounts` fields) and `apply` may
+carry `countsWhenPaused`; `oneshot.expect.json`'s `attention` block may carry
+`whenPaused: { totals, afterAutographRows }`. On a paused run only those are
+checked, and every live value left out is named in the check's detail
+(`not checked (sportlots paused): Base cards, counts.built`). Checks the pause
+cannot change still run: tools/list, the plan's phrase and open decisions,
+an apply's stops, attention line and links, a set being found, nb_attention's
+shape, the one-shot draft's own open decisions, an insert with a built
+parallel, the autograph read-backs and the before/after listing diff. What a
+paused run reports as `not checked: sportlots paused` instead:
+`variationParents` (SportLots-only cards); the one-shot's whole comparison
+against the committed spec (`draft + answers`, `leave lists`,
+`autograph formats`, `review answers`: a draft of a one-sided fetch is a
+different spec by construction, so the spec-answered autograph rows are read
+from the committed spec instead); and any `fix` answer about a paused side's
+name or link, which is not sent. The one-shot's "Parallel rows built from
+Base" check is narrowed instead, to the rows the committed spec builds from
+Base (a one-sided sync also stores the sets the spec leaves), and names how
+many rows it left out.
+
 ## Connection (shared by the CLI and the MCP server)
 
 | Flag | Env | Purpose |

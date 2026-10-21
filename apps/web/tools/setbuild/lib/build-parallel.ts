@@ -31,6 +31,8 @@ import type { NbClient } from "../client/convex-client";
 import { pickExactlyOne } from "../spec/resolve";
 import { StepCheckError } from "./step-check";
 import { cardCount } from "./commit";
+import { countCheck, pausedNames, skipSuffix, specExpects, type CountCheck } from "./expected-count";
+import type { PausedContext } from "./sync-column";
 
 export type ParallelBuildResult = FunctionReturnType<typeof api.parallelChecklistBuild.buildParallelChecklist>;
 export type ParallelsPlan = FunctionReturnType<typeof api.parallelChecklistBuild.getParallelsForBuild>;
@@ -50,12 +52,28 @@ export interface BuildParallelInput {
   name: string;
   rebuild?: boolean;
   expectCards?: number;
+  /** `expectCards` with a marketplace paused (see `lib/expected-count.ts`). */
+  expectCardsWhenPaused?: number;
+  /** The run's paused marketplaces; absent = nothing paused. */
+  paused?: PausedContext;
   at: string;
+}
+
+/** The build's count check in this run (`expectCards`, its paused value, or none). Pure. */
+export function buildCount(input: Pick<BuildParallelInput, "expectCards" | "expectCardsWhenPaused" | "paused">): CountCheck {
+  return countCheck("expectCards", input.expectCards, input.expectCardsWhenPaused, pausedNames(input.paused));
 }
 
 export type BuildParallelOutcome =
   | { outcome: "skipped"; cards: number; detail: string }
-  | { outcome: "built"; built: number; cards: number; result: ParallelBuildResult }
+  | {
+      outcome: "built";
+      built: number;
+      cards: number;
+      result: ParallelBuildResult;
+      /** A paused run that asserted no count says so ("count not asserted: sportlots paused"). */
+      note?: string;
+    }
   | {
       outcome: "no-shared-numbers";
       cards: number;
@@ -105,15 +123,16 @@ export async function planParallelBuild(
 export async function buildParallel(client: NbClient, input: BuildParallelInput): Promise<BuildParallelOutcome> {
   const planned = await planParallelBuild(client, input);
   const parallelId = planned.parallelId!;
+  const count = buildCount(input);
   if (planned.status === "done") {
     const cards = await cardCount(client, parallelId);
-    if (input.expectCards !== undefined && cards !== input.expectCards) {
+    if (count.kind === "assert" && cards !== count.want) {
       throw new BuildParallelError(
-        `${input.at}: "${input.name}" already holds ${cards} cards and the spec expects ${input.expectCards}; ` +
+        `${input.at}: "${input.name}" already holds ${cards} cards and ${specExpects(count)}; ` +
           "set rebuild: true on its build (buildFromBase, or the parallel's build) to rebuild it.",
       );
     }
-    return { outcome: "skipped", cards, detail: `already holds ${cards} cards` };
+    return { outcome: "skipped", cards, detail: `already holds ${cards} cards${skipSuffix(count)}` };
   }
   if (planned.status === "blocked") {
     throw new BuildParallelError(`${input.at}: cannot build "${input.name}": ${planned.detail}.`);
@@ -128,14 +147,17 @@ export async function buildParallel(client: NbClient, input: BuildParallelInput)
   }
   const cards = await cardCount(client, parallelId);
   const listed = listedOnlyCounts(result);
-  if (sharesNoNumbers(result) && input.expectCards !== 0) {
+  // "Expects 0" is the operator saying the row stays empty: the value this run
+  // asserts, or (a paused run asserting nothing) the live one.
+  const expectsZero = count.kind === "assert" ? count.want === 0 : input.expectCards === 0;
+  if (sharesNoNumbers(result) && !expectsZero) {
     // Before the count check: "expects 20, holds 0" would hide the reason.
     return { outcome: "no-shared-numbers", cards, listed, source: planned.source ?? "its source", parallelId, result };
   }
-  if (input.expectCards !== undefined && cards !== input.expectCards) {
+  if (count.kind === "assert" && cards !== count.want) {
     throw new BuildParallelError(
-      `${input.at}: built ${result.copied} cards onto "${input.name}"; it now holds ${cards}, the spec expects ${input.expectCards}.`,
+      `${input.at}: built ${result.copied} cards onto "${input.name}"; it now holds ${cards}, ${specExpects(count)}.`,
     );
   }
-  return { outcome: "built", built: result.copied, cards, result };
+  return { outcome: "built", built: result.copied, cards, result, ...(count.kind === "skip" ? { note: count.note } : {}) };
 }

@@ -29,6 +29,8 @@ import {
   pairCandidates,
   type FetchedCandidates,
 } from "./fetch-checklist";
+import { countCheck, pausedNames, skipSuffix, specExpects, type CountCheck } from "./expected-count";
+import type { PausedContext } from "./sync-column";
 import {
   readReviewRows,
   reviewTemplate,
@@ -48,6 +50,12 @@ export interface ChecklistStepInput {
   row: RowRef | null;
   /** Read-only: report what the step would do without fetching. */
   dryRun?: boolean;
+  /**
+   * The run's paused marketplaces. With one paused, `expectCardsWhenPaused`
+   * is asserted instead of `expectCards`, or no count at all (see
+   * `lib/expected-count.ts`). Absent = nothing paused.
+   */
+  paused?: PausedContext;
 }
 
 /** An open entity review, by what `decide` / `reviewItems` need to reach it again. */
@@ -85,17 +93,33 @@ export async function cardCount(client: NbClient, rowId: Id<"selectorOptions">):
 }
 
 /**
- * Is the step already done? A row holding exactly `expectCards` (or any cards,
- * when the spec does not say) is; a row holding a different number is refused
- * — the tool builds checklists, it does not re-sync them.
+ * Is the step already done? A row holding exactly the expected count (or any
+ * cards, when the spec does not say, or when a paused run asserts no count) is;
+ * a row holding a different number is refused — the tool builds checklists,
+ * it does not re-sync them. `expect` is the live `expectCards`, or the run's
+ * `CountCheck` for it (`checklistCount`).
  */
-export function checklistDone(cards: number, expectCards: number | undefined, at: string): boolean {
+export function checklistDone(cards: number, expect: number | undefined | CountCheck, at: string): boolean {
   if (cards === 0) return false;
-  if (expectCards === undefined || cards === expectCards) return true;
+  const check: CountCheck =
+    typeof expect === "object" ? expect : countCheck("expectCards", expect, undefined, []);
+  if (check.kind !== "assert" || cards === check.want) return true;
   throw new ChecklistStepError(
-    `${at}: the row already holds ${cards} cards and the spec expects ${expectCards}. ` +
+    `${at}: the row already holds ${cards} cards and ${specExpects(check)}. ` +
       "The set-build tool builds checklists; it does not re-sync them.",
   );
+}
+
+/**
+ * A checklist's count check in this run: `expectCards`, or with a marketplace
+ * paused `expectCardsWhenPaused` or nothing (`lib/expected-count.ts`). Pure.
+ */
+export function checklistCount(
+  checklist: Pick<Checklist, "expectCards" | "expectCardsWhenPaused">,
+  paused: PausedContext | undefined,
+  reportedSides: readonly string[] = [],
+): CountCheck {
+  return countCheck("expectCards", checklist.expectCards, checklist.expectCardsWhenPaused, pausedNames(paused, reportedSides));
 }
 
 const emptyReviewOpen = (): ReviewOpen => ({ players: [], teams: [], leagues: [] });
@@ -108,6 +132,7 @@ function templateOf(checklist: Checklist, extra: { conflicts?: Array<Record<stri
     },
     review: extra.review ?? checklist.review,
     ...(checklist.expectCards !== undefined ? { expectCards: checklist.expectCards } : {}),
+    ...(checklist.expectCardsWhenPaused !== undefined ? { expectCardsWhenPaused: checklist.expectCardsWhenPaused } : {}),
     ...(checklist.autographFormat !== undefined ? { autographFormat: checklist.autographFormat } : {}),
   };
 }
@@ -120,12 +145,15 @@ export async function runChecklistStep(
 ): Promise<ChecklistStepResult> {
   const { rowId, sportId, checklist, at, row } = input;
   const before = await cardCount(client, rowId);
-  if (checklistDone(before, checklist.expectCards, at)) {
-    return { outcome: "skipped", cards: before, detail: `already holds ${before} cards` };
+  const pre = checklistCount(checklist, input.paused);
+  if (checklistDone(before, pre, at)) {
+    return { outcome: "skipped", cards: before, detail: `already holds ${before} cards${skipSuffix(pre)}` };
   }
 
   const fetched = await fetchCandidates(client, rowId);
   hooks.onFetched?.(fetched);
+  // The run's declared pause, plus any side this fetch itself skipped as paused.
+  const count = checklistCount(checklist, input.paused, fetched.fetch.pausedSides ?? []);
 
   // Match Cards. Nothing fetched = the UI's "nothing to pair" path: straight to
   // entity resolution with no cards.
@@ -217,11 +245,12 @@ export async function runChecklistStep(
   if (result.unreviewedNameCount) notes.push(`${result.unreviewedNameCount} names were not reviewed`);
   if (result.staleDecisions) notes.push(`${result.staleDecisions} changed under review — not applied`);
   if (mootAnswers) notes.push(`${mootAnswers} review answer${mootAnswers === 1 ? "" : "s"} had nothing to answer (the name is known or not staged)`);
+  if (count.kind === "skip") notes.push(count.note);
 
   const after = await cardCount(client, rowId);
-  if (checklist.expectCards !== undefined && after !== checklist.expectCards) {
+  if (count.kind === "assert" && after !== count.want) {
     throw new ChecklistStepError(
-      `${at}: saved ${result.count} cards; the row now holds ${after}, the spec expects ${checklist.expectCards}.`,
+      `${at}: saved ${result.count} cards; the row now holds ${after}, ${specExpects(count)}.`,
       { committed: result.count, progress: pairingNote },
     );
   }

@@ -265,6 +265,13 @@ export const ChecklistSchema = z
     /** Cards the checklist must hold after the commit (asserted, never used to decide). */
     expectCards: z.number().int().nonnegative().optional(),
     /**
+     * The cards the checklist must hold with a marketplace PAUSED for this run (`--paused-platforms`):
+     * asserted instead of `expectCards` then. Without it a paused run asserts no
+     * count here and says so in the step ("count not asserted: sportlots
+     * paused"); the live `expectCards` is never asserted against a paused run.
+     */
+    expectCardsWhenPaused: z.number().int().nonnegative().optional(),
+    /**
      * NEO-345 — how this checklist's autographed ("AU") cards are signed, the
      * Set Builder wizard's "Autographed cards" answer: sent as the commit's
      * own `autographFormat`, stored on the row, and every new AU card is born
@@ -409,6 +416,8 @@ export const InsertParallelSchema = z
       .strict()
       .optional(),
     expectCards: z.number().int().nonnegative().optional(),
+    /** `expectCards` with a marketplace paused (see `ChecklistSchema.expectCardsWhenPaused`). */
+    expectCardsWhenPaused: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -426,6 +435,8 @@ export const VariantRowSchema = z
       .strict()
       .optional(),
     expectCards: z.number().int().nonnegative().optional(),
+    /** `expectCards` with a marketplace paused (see `ChecklistSchema.expectCardsWhenPaused`). */
+    expectCardsWhenPaused: z.number().int().nonnegative().optional(),
     /** This insert's parallels, handled after its checklist (see `InsertParallelSchema`). */
     parallels: z.array(InsertParallelSchema).optional(),
   })
@@ -478,6 +489,8 @@ export const GroupSchema = z
      * (asserted, never used to decide).
      */
     expectUngrouped: z.number().int().nonnegative().optional(),
+    /** `expectUngrouped` with a marketplace paused (see `ChecklistSchema.expectCardsWhenPaused`). */
+    expectUngroupedWhenPaused: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -493,6 +506,8 @@ export const VariantTypeStepSchema = z
      * decide).
      */
     expectRows: z.number().int().nonnegative().optional(),
+    /** `expectRows` with a marketplace paused (see `ChecklistSchema.expectCardsWhenPaused`). */
+    expectRowsWhenPaused: z.number().int().nonnegative().optional(),
     /** Group Parallels, after the sync and before `rows`. */
     group: GroupSchema.optional(),
     rows: z.array(VariantRowSchema).optional(),

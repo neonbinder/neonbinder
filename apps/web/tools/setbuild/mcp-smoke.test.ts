@@ -10,7 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { parseTarget } from "./client/target";
 import { registerTools } from "./mcp-tools";
-import { inspectMismatches, runSmokeSequence, smokeExpectSchema, variationParentProblems, type SmokeExpect, type VariationCheckCard } from "./mcp-smoke";
+import { inspectExpectFor, inspectMismatches, runSmokeSequence, smokeExpectSchema, variationParentProblems, type SmokeExpect, type VariationCheckCard } from "./mcp-smoke";
 import { specConfirmPhrase, type InspectReport, type InspectRow, type OpenDecisions, type SetBuildService } from "./service";
 import { parseSpec } from "./spec/schema";
 import { APP, CHAIN, knownResolver, linkAt, SET_LINK, SET_LINK_ABS } from "./link-checks.fixture";
@@ -442,5 +442,89 @@ describe("inspectMismatches", () => {
     expect(inspectMismatches(report, { path: BIG_LEAGUE, base: { mapped: true } })).toEqual([
       "Base is not linked to any marketplace",
     ]);
+  });
+});
+
+describe("runSmokeSequence — SportLots paused (NEO-339)", () => {
+  /** The committed file: measured live (Base 336), the paused Base restated (335). */
+  const LIVE_EXPECT: SmokeExpect = smokeExpectSchema.parse({
+    before: [
+      {
+        path: CHROME,
+        base: { cards: 336, linked: { buysportscards: true, sportlots: true } },
+        whenPaused: { base: { cards: 335 } },
+        rows: [{ type: "Insert", name: "Future Stars", cards: 20 }],
+        rowCounts: [{ type: "Parallel", count: 41 }],
+      },
+      { path: BIG_LEAGUE, base: { cards: 0, mapped: true } },
+    ],
+    apply: { counts: { built: 300 } },
+    after: [{ path: CHROME, rows: [{ type: "Parallel", name: "Seed Built Refractors", cards: 300 }] }],
+    variationParents: [{ path: CHROME, cardNumber: "122", slOnlyVariations: 1 }],
+  });
+  const go = async (service: ReturnType<typeof fakeService>, expect: SmokeExpect, paused: string[]) =>
+    runSmokeSequence(await connect(service), { specPath: "/seed/parallel.spec.json", expect, confirm: PHRASE, ...WORLD, paused });
+  const by = (checks: Awaited<ReturnType<typeof go>>, label: string) => checks.find((c) => c.label === label)!;
+
+  test("not paused: the live values are checked (the fixture's Base 335 fails against 336)", async () => {
+    const checks = await go(fakeService(), LIVE_EXPECT, []);
+    expect(by(checks, `before nb_inspect ${SCOPE}`)).toMatchObject({ ok: false, detail: "Base has 335 cards, expected 336" });
+  });
+
+  test("paused: only what whenPaused restates is checked; the rest is named, never failed; independent checks still run", async () => {
+    // A paused apply builds fewer than the live 300: never compared.
+    const checks = await go(fakeService({ built: 250 }), LIVE_EXPECT, ["sportlots"]);
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    expect(by(checks, `before nb_inspect ${SCOPE}`).detail).toBe(
+      "Base 335 linked; not checked (sportlots paused): Base buysportscards link, Base sportlots link, Insert › Future Stars cards, Parallel rows",
+    );
+    expect(by(checks, "before nb_inspect Baseball/2024/Topps/Big League").detail).toBe("found; not checked (sportlots paused): Base cards, Base mapped");
+    expect(by(checks, "nb_apply").detail).toMatch(/^no count asserted in 4s; not checked \(sportlots paused\): counts\.built$/);
+    expect(by(checks, `variation parent ${SCOPE} #122`)).toMatchObject({ ok: true, detail: "not checked: sportlots paused (1 SportLots-only variation(s) measured live)" });
+    // What does not depend on a marketplace still runs.
+    expect(checks.map((c) => c.label)).toEqual([
+      "tools/list",
+      `before nb_inspect ${SCOPE}`,
+      "before nb_inspect Baseball/2024/Topps/Big League",
+      "nb_plan",
+      "nb_apply",
+      `after nb_inspect ${SCOPE}`,
+      `variation parent ${SCOPE} #122`,
+      `nb_attention ${SCOPE}`,
+    ]);
+  });
+
+  test("paused: a restated value that differs fails, and so does a paused count", async () => {
+    const wrong = smokeExpectSchema.parse({
+      ...LIVE_EXPECT,
+      before: [{ ...LIVE_EXPECT.before[0], whenPaused: { base: { cards: 334 } } }],
+      apply: { counts: { built: 300 }, countsWhenPaused: { built: 260 } },
+    });
+    const checks = await go(fakeService({ built: 250 }), wrong, ["sportlots"]);
+    expect(by(checks, `before nb_inspect ${SCOPE}`)).toMatchObject({ ok: false });
+    expect(by(checks, `before nb_inspect ${SCOPE}`).detail).toMatch(/^Base has 335 cards, expected 334; not checked \(sportlots paused\)/);
+    expect(by(checks, "nb_apply")).toMatchObject({ ok: false, detail: "counts.built is 250, expected 260 with sportlots paused" });
+  });
+
+  test("paused: a stopped apply still fails (a stop is never a count)", async () => {
+    const service = fakeService();
+    service.write.apply.mockResolvedValueOnce({ counts: { built: 0 }, durationMs: 1, stoppedAt: { step: 0, reason: "boom" }, setLinks: [{ path: SCOPE, link: SET_LINK }], attentionLine: "x" } as never);
+    const checks = await go(service, LIVE_EXPECT, ["sportlots"]);
+    expect(by(checks, "nb_apply")).toMatchObject({ ok: false });
+    expect(by(checks, "nb_apply").detail).toMatch(/^stopped at step 0: boom/);
+  });
+
+  test("inspectExpectFor: nothing paused is the expectation as written", () => {
+    const exp = LIVE_EXPECT.before[0];
+    expect(inspectExpectFor(exp, [])).toEqual({ exp, unchecked: [] });
+    expect(inspectExpectFor(exp, ["sportlots"]).exp).toEqual({ path: exp.path, base: { cards: 335 } });
+  });
+
+  test("the committed fixture parses, and restates only the measured paused Base", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const raw = JSON.parse(await readFile(new URL("../../playwright/seed/mcp-smoke.expect.json", import.meta.url), "utf8"));
+    const parsed = smokeExpectSchema.parse(raw);
+    expect(parsed.before[0].whenPaused).toEqual({ base: { cards: 335 } });
+    expect(parsed.after[0].whenPaused).toEqual({ base: { cards: 335 } });
   });
 });
