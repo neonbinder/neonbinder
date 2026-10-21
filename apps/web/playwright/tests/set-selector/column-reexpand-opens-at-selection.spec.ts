@@ -28,11 +28,17 @@ test(
 
     const racing = columnOption(page, "Sports", "Racing");
     const baseball = columnOption(page, "Sports", "Baseball");
+    await expect(columnHeading(page, "Sports")).toBeVisible();
     if (!env.SL_PAUSED) {
       await expect(page.getByRole("button", { name: "Add custom Sports" })).toBeVisible();
     } else {
-      await expect(page.getByRole("button", { name: "Dismiss Sports notice" })).toBeVisible();
-      await expect(columnHeading(page, "Sports")).toBeVisible();
+      // The pause strip adds a wrapped line above the cascade, which pushes the
+      // centred row (the list's fold sits past the 629 px viewport) out of
+      // view, so a reader dismisses it first. Session-only: nothing is written
+      // server-side. The Sports column's own notice is NOT asserted either way:
+      // it exists only after some spec forced a Sports sync, which is order.
+      await page.getByRole("button", { name: "Dismiss pause notice" }).click();
+      await expect(page.getByText("SportLots is on pause.")).toBeHidden();
     }
     await expect(racing).toBeInViewport();
     await expect(baseball).not.toBeInViewport();

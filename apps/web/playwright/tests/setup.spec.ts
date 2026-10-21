@@ -136,7 +136,14 @@ test(
     if (!env.SL_PAUSED) {
       await expect(page.getByText(SL_PAUSE_NOTICE)).toBeHidden();
     } else {
-      await expect(page.getByText(SL_PAUSE_NOTICE)).toBeVisible({ timeout: 10_000 });
+      // Paused: the Set Builder strip is the pause's proof at the root. The
+      // Sports column's own "done" notice only exists when a Sports sync RAN,
+      // and the reference-seed bundle (NEO-330) loads the sport rows, ids and
+      // all, so there is nothing to sync and no per-column notice is asserted here (one
+      // may exist if a forced Sync Sports ran earlier, which is order). The
+      // per-column paused sentence now shows under Years, the first sync that
+      // runs with SportLots' ids in hand (asserted below).
+      await expect(page.getByText("SportLots is on pause.")).toBeVisible();
     }
     await pick(page, "Sports", "Baseball", { search: false });
 
@@ -144,6 +151,18 @@ test(
     await expect(columnHeading(page, "Years")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("listbox", { name: "Years" })).toBeVisible({ timeout: 90_000 });
     await expectNoSyncFailure(page);
+    if (env.SL_PAUSED) {
+      // Baseball carries SportLots' id from the seeded catalogue, so SportLots
+      // is resolvable here and the pause is what kept it from being asked.
+      // Scoped to Years' own notice (the one carrying "Dismiss Years notice"),
+      // so a Sports notice left by a forced Sports sync cannot make it ambiguous.
+      await expect(
+        page
+          .getByRole("status")
+          .filter({ has: page.getByRole("button", { name: "Dismiss Years notice" }) })
+          .getByText(SL_PAUSE_NOTICE),
+      ).toBeVisible();
+    }
     await pick(page, "Years", "2024");
 
     // ── Manufacturers → Topps ──────────────────────────────────────────────
@@ -159,7 +178,6 @@ test(
       await expect(
         page.getByText("No manufacturers available. Sync from marketplaces to populate."),
       ).toBeVisible({ timeout: 45_000 });
-      await expect(page.getByText("SportLots skipped: no SportLots ids on this path.")).toBeVisible();
       await expectNoSyncFailure(page);
       await addCustomManufacturer(page, "Topps");
       await columnOption(page, "Manufacturers", "Topps").click();
