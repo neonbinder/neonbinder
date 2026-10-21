@@ -216,8 +216,8 @@ describe("spine labels", () => {
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
     fireEvent.change(within(dialog).getByLabelText("Lettering"), { target: { value: "#EF3E42" } });
-    expect(within(dialog).getByText(/hard to read at a distance/)).toBeTruthy();
-    expect(within(dialog).getByText(/it'll letter in white there/)).toBeTruthy();
+    expect(within(dialog).getByText(/hard to read on a shelf\. Try a lighter or darker lettering color\./)).toBeTruthy();
+    expect(within(dialog).getByText(/the shelf letters it in white/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Save label" }));
     expect(screen.queryByRole("dialog")).toBeNull();
 
@@ -226,6 +226,69 @@ describe("spine labels", () => {
     const label = spine.querySelector<HTMLElement>(".nb-label")!;
     expect(label.dataset.inkSwapped).toBe("true");
     expect(label.style.color).toMatch(/255, 255, 255|#ffffff/i);
+  });
+});
+
+describe("a smart binder's label follows the team on most of its cards", () => {
+  const color = (el: Element | null) => (el as HTMLElement).style.background;
+
+  it("dresses All Reggie White in Packers colors, and offers his teams as quick picks", () => {
+    renderBinders();
+    const spine = screen.getByRole("button", { name: /^All Reggie White,/ });
+    // Packers green (#203731), not the Eagles he played longest for.
+    expect(color(spine.querySelector(".nb-label"))).toMatch(/32, 55, 49|#203731/i);
+
+    fireEvent.click(spine);
+    fireEvent.click(screen.getByRole("button", { name: "Edit label for All Reggie White" }));
+    const dialog = screen.getByRole("dialog");
+    const picks = within(dialog).getByRole("group", { name: "Teams on its cards" });
+    const names = within(picks).getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    expect(names).toEqual(["Packers, 3 cards", "Eagles, 1 card", "Panthers, 1 card"]);
+    expect(within(picks).getByRole("button", { name: "Packers, 3 cards" }).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(within(picks).getByRole("button", { name: "Eagles, 1 card" }));
+    expect((within(dialog).getByLabelText("Background") as HTMLInputElement).value).toBe("#004C54");
+    expect((within(dialog).getByLabelText("Lettering") as HTMLInputElement).value).toBe("#A5ACAF");
+    expect(within(picks).getByRole("button", { name: "Eagles, 1 card" }).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back to the default" }));
+    expect((within(dialog).getByLabelText("Background") as HTMLInputElement).value).toBe("#203731");
+  });
+
+  it("stores the collector's pick, and Back to the default goes back to following the cards", () => {
+    renderBinders("/collection?tab=binders&b=smart-reggie-white");
+    fireEvent.click(screen.getByRole("button", { name: "Edit label for All Reggie White" }));
+    fireEvent.click(screen.getByRole("button", { name: "Eagles, 1 card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save label" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
+    const spine = () => screen.getByRole("button", { name: /^All Reggie White,/ }).querySelector(".nb-label");
+    expect(color(spine())).toMatch(/0, 76, 84|#004c54/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /^All Reggie White,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit label for All Reggie White" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to the default" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save label" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
+    expect(color(spine())).toMatch(/32, 55, 49|#203731/i);
+  });
+});
+
+describe("Print this label", () => {
+  it("links the cover to the Print Shop with the binder's name, colors and face", () => {
+    renderBinders("/collection?tab=binders&b=smart-reggie-white");
+    const link = screen.getAllByRole("link", { name: "Print label for All Reggie White" })[0];
+    expect(link.getAttribute("href")).toBe("/print/spine-label?name=All+Reggie+White&bg=203731&fg=ffb612&font=anton");
+  });
+
+  it("links from the label editor with the label as it stands there", () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Teko" }));
+    expect(within(dialog).getByRole("link", { name: "Print this label" }).getAttribute("href")).toBe(
+      "/print/spine-label?name=%2796+Contenders&bg=005a9c&fg=ffffff&font=teko",
+    );
   });
 });
 

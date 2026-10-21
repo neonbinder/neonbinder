@@ -1,4 +1,6 @@
 import type { CSSProperties } from "react";
+import { Link } from "react-router";
+import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
 import { describeRule, getSet, setLabel } from "../../prototypes/_shared/data";
 import {
   type LayoutMode,
@@ -7,6 +9,7 @@ import {
   type ViewKey,
 } from "../../prototypes/p2/model";
 import type { CollectionBinder, CollectionStore } from "../store";
+import { labelOf } from "./label";
 import { binderTally } from "./model";
 
 /**
@@ -192,6 +195,32 @@ export function EditLabelButton({ name, onClick }: { name: string; onClick: () =
   );
 }
 
+/**
+ * The cover's "Print label": the Print Shop's spine-label designer with this
+ * binder's name, colours and face filled in. The label it wears, exactly
+ * (the collector's pick, else its default), never the shelf's readable swap.
+ */
+export function PrintLabelLink({ binder }: { binder: CollectionBinder }) {
+  return (
+    <Link
+      to={spineLabelPrintHref({ name: binder.name, ...labelOf(binder) })}
+      aria-label={`Print label for ${binder.name}`}
+      className={`inline-flex min-h-8 items-center rounded-md px-1 text-xs font-medium text-neon-blue underline underline-offset-2 hover:text-white max-sm:min-h-11 ${FOCUS}`}
+    >
+      Print label
+    </Link>
+  );
+}
+
+function LabelControls({ binder, onEditLabel }: { binder: CollectionBinder; onEditLabel: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 self-start">
+      <EditLabelButton name={binder.name} onClick={onEditLabel} />
+      <PrintLabelLink binder={binder} />
+    </div>
+  );
+}
+
 export function Cover({
   view,
   binder,
@@ -221,7 +250,7 @@ export function Cover({
       >
         {viewTitle(view, binder)}
       </p>
-      {binder && onEditLabel && <EditLabelButton name={binder.name} onClick={onEditLabel} />}
+      {binder && onEditLabel && <LabelControls binder={binder} onEditLabel={onEditLabel} />}
       <Tally {...t} want={want} />
       {blurb(view, binder, mode).map((line) => (
         <p key={line}>{line}</p>
@@ -249,7 +278,7 @@ export function MobileSummary({
     <div className="mb-3 space-y-1 text-sm text-slate-300">
       {binder && onEditLabel && (
         <div className="float-right ml-3">
-          <EditLabelButton name={binder.name} onClick={onEditLabel} />
+          <LabelControls binder={binder} onEditLabel={onEditLabel} />
         </div>
       )}
       <Tally {...t} want={binder?.system === "want"} />

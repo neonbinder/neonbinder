@@ -8,19 +8,26 @@
  * gets, and when the shelf has to swap the lettering to stay readable.
  *
  * Every choice is keyed on ids and roles, never a display name: a system
- * binder by `binder.system`, a smart binder by the team or player its rule
- * names.
+ * binder by `binder.system`, a smart binder by the team its rule names or,
+ * failing that, the team on most of its cards.
  *
  * Kept apart from `model.ts` (and the shelf's `SpineLabel.tsx` +
  * `spine-label.css`) so the whole look can be rolled back in one place.
  */
 
-import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { DEFAULT_SPINE_FONT_ID, spineFontById, type SpineFont } from "@/lib/print/spine-fonts";
 import { fitFontSizeIn } from "@/lib/print/spine-formats";
-import { getPlayer, getTeam, inkOn, type BinderRule, type TeamId } from "../../prototypes/_shared/data";
-import { binderLivery as p2Livery } from "../../prototypes/p2/model";
+import {
+  binderCards,
+  getSet,
+  getTeam,
+  inkOn,
+  type BinderRule,
+  type Card,
+  type Team,
+  type TeamId,
+} from "../../prototypes/_shared/data";
 import type { BinderLabel, CollectionBinder } from "../store";
 
 export type { BinderLabel };
@@ -62,25 +69,54 @@ export function ruleTeamId(rule: BinderRule): TeamId | null {
   return null;
 }
 
-/**
- * A player's team for the label: the one they spent longest with, ties to
- * the more recent. The Print Shop's `pickDefaultTeamYear`, so a player's
- * binder and their printed spine label agree.
- */
-export function playerTeamId(playerId: string): TeamId | null {
-  const player = getPlayer(playerId);
-  const best = pickDefaultTeamYear(
-    player.stints.map((s) => ({ teamId: s.teamId, fromYear: s.from, toYear: s.to ?? undefined })),
-    new Date().getFullYear(),
-  );
-  return best?.teamId ?? null;
+/** A team on a smart binder's cards, and how many of them it is on. */
+export interface TeamOnCards {
+  team: Team;
+  /** Cards (each parallel its own card) with this team on the front. */
+  cards: number;
+  /** The newest of those cards' set years: the first tie-break. */
+  latestYear: number;
 }
 
-function ruleLabelTeam(rule: BinderRule): TeamId | null {
-  const team = ruleTeamId(rule);
-  if (team) return team;
-  if (rule.kind === "player") return playerTeamId(rule.playerId);
-  return null;
+/**
+ * The teams on these cards, most cards first. A card with two teams on it
+ * counts for both. Ties go to the team with the more recent card, then to
+ * the lower team id, so the order never depends on catalog order.
+ */
+export function teamsOnCards(cards: Card[]): TeamOnCards[] {
+  const tally = new Map<TeamId, { cards: number; latestYear: number }>();
+  for (const card of cards) {
+    const year = getSet(card.setId).year;
+    for (const teamId of new Set(card.teamIds)) {
+      const row = tally.get(teamId);
+      if (row) {
+        row.cards += 1;
+        row.latestYear = Math.max(row.latestYear, year);
+      } else {
+        tally.set(teamId, { cards: 1, latestYear: year });
+      }
+    }
+  }
+  return [...tally.entries()]
+    .sort(
+      ([idA, a], [idB, b]) =>
+        b.cards - a.cards || b.latestYear - a.latestYear || (idA < idB ? -1 : idA > idB ? 1 : 0),
+    )
+    .map(([teamId, row]) => ({ team: getTeam(teamId), ...row }));
+}
+
+/**
+ * The teams on a smart binder's cards, most first: the label editor's quick
+ * picks. Catalog cards, owned or not, so the list (and the default it leads)
+ * never moves as copies come and go. Empty for any other binder.
+ */
+export function binderTeamsOnCards(binder: CollectionBinder): TeamOnCards[] {
+  if (binder.kind !== "smart") return [];
+  return teamsOnCards(binderCards(binder));
+}
+
+function teamLabel(team: Team): BinderLabel {
+  return { background: team.primary, text: team.secondary, fontId: DEFAULT_SPINE_FONT_ID };
 }
 
 /** What a binder's label is until the collector picks one. */
@@ -88,17 +124,29 @@ export function defaultLabel(binder: CollectionBinder | "all"): BinderLabel {
   if (binder === "all") return ALL_LABEL;
   if (binder.system) return SYSTEM_LABEL[binder.system];
   if (binder.kind === "smart") {
-    const teamId = ruleLabelTeam(binder.rule);
-    if (teamId) {
-      const team = getTeam(teamId);
-      return { background: team.primary, text: team.secondary, fontId: DEFAULT_SPINE_FONT_ID };
-    }
-    // No team or player in the rule: the team most of its catalog cards wear
-    // (p2's pick, which never moves as copies come and go).
-    const liv = p2Livery(binder);
-    return { background: liv.primary, text: liv.secondary, fontId: DEFAULT_SPINE_FONT_ID };
+    // A rule that names a team wears it. Anything else (a player, a brand, a
+    // set, Hall of Famers) wears the team on most of its cards: Reggie
+    // White's binder is Packers green because most of his cards are.
+    const teamId = ruleTeamId(binder.rule);
+    if (teamId) return teamLabel(getTeam(teamId));
+    const [most] = binderTeamsOnCards(binder);
+    return most ? teamLabel(most.team) : PLAIN_LABEL;
   }
   return PLAIN_LABEL;
+}
+
+/** A team's colors as a label, keeping the lettering face already chosen. */
+export function teamColorsOn(label: BinderLabel, team: Team): BinderLabel {
+  return { ...label, background: team.primary, text: team.secondary };
+}
+
+/** Same colours (either case) and the same face. */
+export function sameLabel(a: BinderLabel, b: BinderLabel): boolean {
+  return (
+    a.background.toLowerCase() === b.background.toLowerCase() &&
+    a.text.toLowerCase() === b.text.toLowerCase() &&
+    a.fontId === b.fontId
+  );
 }
 
 /** The label a binder wears: the collector's, else its default. */

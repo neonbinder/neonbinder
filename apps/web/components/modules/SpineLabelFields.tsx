@@ -31,6 +31,10 @@ export interface SpineLabelColorsProps {
  * Contrast is shown, never enforced: a collector choosing their team's livery
  * is making a legitimate choice. The readout grades on WCAG's large-text
  * thresholds (see `gradeContrast`).
+ *
+ * A poor pair's advice is to move the lettering lighter or darker, never to
+ * Invert: swapping the two colours leaves the ratio exactly where it was.
+ * Invert stays because it changes the look, not the legibility.
  */
 export function SpineLabelColors({
   background,
@@ -82,7 +86,7 @@ export function SpineLabelColors({
           >
             Contrast {ratio.toFixed(1)}:1 —{" "}
             {gradeContrast(ratio) === "poor"
-              ? "hard to read at a distance. Invert may help."
+              ? "hard to read on a shelf. Try a lighter or darker lettering color."
               : "easy to read on a shelf."}
           </span>
         )}

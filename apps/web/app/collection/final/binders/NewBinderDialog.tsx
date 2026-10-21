@@ -5,7 +5,7 @@ import { players, teams, type BinderRule } from "../../prototypes/_shared/data";
 import type { NewBinder } from "../../prototypes/_shared/usePrototypeStore";
 import Modal from "../../prototypes/p2/Modal";
 import type { BinderLabel } from "../store";
-import { defaultLabelForNew, shelfColors, validLabel } from "./label";
+import { binderTeamsOnCards, defaultLabelForNew, sameLabel, shelfColors, validLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
 
@@ -18,9 +18,10 @@ import { teamRule } from "./model";
  * anyone who played for them" is an opt-in that widens it to the team's
  * alumni on any card.
  *
- * Its spine label follows the rule (the team's, or the player's team's
- * colors; black for a binder you fill yourself) until the collector styles
- * it under "Style the spine".
+ * Its spine label follows the rule (the team it names, or the team on most of
+ * the player's cards; black for a binder you fill yourself) until the
+ * collector styles it under "Style the spine", where a smart binder's teams
+ * are offered as quick picks.
  */
 
 type RuleKind = "player" | "team";
@@ -62,17 +63,22 @@ export default function NewBinderDialog({
   const rule: BinderRule = ruleKind === "player" ? { kind: "player", playerId } : teamRule(teamId, alumni);
   const ruleLabel = defaultLabelForNew(kind === "manual" ? { kind: "manual" } : { kind: "smart", rule });
   const draft = custom ?? ruleLabel;
+  const teamsOnCards =
+    kind === "smart" ? binderTeamsOnCards({ id: "new", kind: "smart", name: trimmed, rule }) : [];
 
   function submit(e: FormEvent) {
     e.preventDefault();
     setTried(true);
     if (!trimmed) return;
-    const label = custom ? validLabel(custom) : undefined;
-    if (label === null) {
+    const valid = custom ? validLabel(custom) : undefined;
+    if (valid === null) {
       setStyling(true);
       setLabelError(true);
       return;
     }
+    // A pick that IS the rule's default stores nothing, so the binder keeps
+    // following its rule (as "Edit label" does).
+    const label = valid && !sameLabel(valid, ruleLabel) ? valid : undefined;
     if (kind === "manual") {
       onCreate({ kind: "manual", name: trimmed, pages: pages ? 1 : undefined }, label);
       return;
@@ -230,7 +236,9 @@ export default function NewBinderDialog({
               {custom
                 ? "Your colors and lettering."
                 : kind === "smart"
-                  ? "Wears the colors of the team its rule names. Change it any time."
+                  ? ruleKind === "team"
+                    ? "Wears the colors of the team its rule names. Change it any time."
+                    : "Wears the colors of the team on most of the player's cards. Change it any time."
                   : "Black vinyl, white lettering. Change it any time."}
             </p>
           )}
@@ -239,6 +247,7 @@ export default function NewBinderDialog({
               <LabelDesigner
                 name={trimmed}
                 draft={draft}
+                teamsOnCards={teamsOnCards}
                 onChange={(next) => {
                   setCustom(next);
                   setLabelError(false);

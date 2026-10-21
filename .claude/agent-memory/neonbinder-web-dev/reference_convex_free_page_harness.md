@@ -24,3 +24,10 @@ Only for pages with no Convex/Clerk hooks; for those see
 [[visual-harness-fake-convex-client]]. Reading `aria-current` straight after a
 Link click shows the OLD tab: router navigation commits in a transition
 ([[reference_router_navigation_is_a_transition]]); wait a tick.
+
+A page that reads `window.location.search` (the Print Shop's prefill) never
+sees MemoryRouter's location: use `<BrowserRouter basename="/app/<path>/zz-harness.html">`
+and `history.replaceState(null, "", BASE + start)` before render, so in-app
+Links change the real URL. One harness can then mount several routes,
+Convex-backed ones under the 3-method fake client from
+[[visual-harness-fake-convex-client]] (PrintLayout's four queries return null/[]).

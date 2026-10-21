@@ -1,22 +1,16 @@
 import { useId, useState, type FormEvent } from "react";
 import Modal from "../../prototypes/p2/Modal";
 import type { CollectionBinder } from "../store";
-import { defaultLabel, labelOf, validLabel, type BinderLabel } from "./label";
+import { binderTeamsOnCards, defaultLabel, labelOf, sameLabel, validLabel, type BinderLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
 
 /**
  * "Edit label", from an open binder's cover: restyle its spine. Saving a
  * label that matches the binder's default stores nothing, so a smart binder
- * keeps following its rule's team.
+ * keeps following its rule: the team it names, else the team on most of its
+ * cards. A smart binder's teams are offered as quick picks; picking the one
+ * that is already its default and saving stores nothing either.
  */
-
-function sameLabel(a: BinderLabel, b: BinderLabel): boolean {
-  return (
-    a.background.toLowerCase() === b.background.toLowerCase() &&
-    a.text.toLowerCase() === b.text.toLowerCase() &&
-    a.fontId === b.fontId
-  );
-}
 
 export default function LabelEditorDialog({
   binder,
@@ -32,6 +26,7 @@ export default function LabelEditorDialog({
   const [draft, setDraft] = useState<BinderLabel>(() => labelOf(binder));
   const [error, setError] = useState<string | null>(null);
   const fallback = defaultLabel(binder);
+  const [teamsOnCards] = useState(() => binderTeamsOnCards(binder));
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -55,6 +50,7 @@ export default function LabelEditorDialog({
           <LabelDesigner
             name={binder.name}
             draft={draft}
+            teamsOnCards={teamsOnCards}
             onChange={(next) => {
               setDraft(next);
               setError(null);

@@ -1,19 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { contrastRatio } from "@/lib/print/contrast";
 import { spineFontById } from "@/lib/print/spine-fonts";
-import { getTeam } from "../../prototypes/_shared/data";
+import { cards, getSet, getTeam, type Card } from "../../prototypes/_shared/data";
 import { initialCollectionState, MAIN_BINDER_ID, TRADE_BINDER_ID, WANT_BINDER_ID, type CollectionBinder } from "../store";
 import {
   ALL_LABEL,
   LARGE_TEXT_PX,
   PLAIN_LABEL,
+  binderTeamsOnCards,
   defaultLabel,
   defaultLabelForNew,
   labelOf,
   letteringSizeCss,
-  playerTeamId,
   shelfColors,
   smallestLetteringPx,
+  teamColorsOn,
+  teamsOnCards,
   validLabel,
 } from "./label";
 
@@ -46,12 +48,29 @@ describe("which label a binder wears", () => {
     expect(defaultLabel(smart({ kind: "playedFor", teamId: "wisconsin" })).background).toBe(team.primary);
   });
 
-  it("a player rule wears the team they spent longest with, as the Print Shop picks it", () => {
-    // Reggie White: Eagles 1985-92 outlasts Packers 1993-98.
-    expect(playerTeamId("reggie-white")).toBe("eagles");
-    expect(defaultLabel(smart({ kind: "player", playerId: "reggie-white" })).background).toBe(
-      getTeam("eagles").primary,
-    );
+  it("a player rule wears the team on most of the binder's cards, not the longest stint", () => {
+    // Reggie White spent longest with the Eagles, but most of his cards are Packers.
+    const reggie = smart({ kind: "player", playerId: "reggie-white" });
+    expect(binderTeamsOnCards(reggie).map((t) => [t.team.id, t.cards])).toEqual([
+      ["packers", 3],
+      ["eagles", 1],
+      ["panthers", 1],
+    ]);
+    expect(defaultLabel(reggie)).toMatchObject({
+      background: getTeam("packers").primary,
+      text: getTeam("packers").secondary,
+    });
+  });
+
+  it("any other rule that names no team wears the team on most of its cards", () => {
+    const hof = smart({ kind: "hallOfFame" });
+    const [most] = binderTeamsOnCards(hof);
+    expect(defaultLabel(hof).background).toBe(most.team.primary);
+  });
+
+  it("a rule with no cards at all starts plain", () => {
+    expect(defaultLabel(smart({ kind: "printRunBelow", max: 0 }))).toEqual(PLAIN_LABEL);
+    expect(binderTeamsOnCards({ id: "m", kind: "manual", name: "Mine" })).toEqual([]);
   });
 
   it("a binder you fill yourself starts black with white lettering; All my cards is its own", () => {
@@ -63,6 +82,44 @@ describe("which label a binder wears", () => {
   it("the collector's own label wins over the default", () => {
     const label = { background: "#203731", text: "#FFB612", fontId: "teko" };
     expect(labelOf({ id: "m", kind: "manual", name: "Packers PC", label })).toEqual(label);
+  });
+});
+
+describe("teams on a binder's cards", () => {
+  // Fake cards built from real ones, so only the teams and the set differ.
+  const old = cards.find((c) => getSet(c.setId).year === 1996)!;
+  const recent = cards.find((c) => getSet(c.setId).year === 2024)!;
+  const card = (teamIds: string[], from: Card = old): Card => ({ ...from, teamIds });
+
+  it("counts a card for every team on it", () => {
+    const tally = teamsOnCards([card(["red-wings", "whalers"]), card(["red-wings"])]);
+    expect(tally.map((t) => [t.team.id, t.cards])).toEqual([
+      ["red-wings", 2],
+      ["whalers", 1],
+    ]);
+  });
+
+  it("breaks a tie by the most recent card year, then by team id", () => {
+    // One card each: the Whalers' card is newer, so they lead.
+    expect(teamsOnCards([card(["red-wings"]), card(["whalers"], recent)]).map((t) => t.team.id)).toEqual([
+      "whalers",
+      "red-wings",
+    ]);
+    // Same count, same year: team id order, whatever order the cards came in.
+    expect(teamsOnCards([card(["whalers"]), card(["red-wings"])]).map((t) => t.team.id)).toEqual([
+      "red-wings",
+      "whalers",
+    ]);
+    expect(teamsOnCards([card(["red-wings"]), card(["whalers"])])[0]).toMatchObject({ cards: 1, latestYear: 1996 });
+  });
+
+  it("a team pick sets both colors and keeps the lettering face", () => {
+    const packers = getTeam("packers");
+    expect(teamColorsOn({ background: "#000000", text: "#ffffff", fontId: "teko" }, packers)).toEqual({
+      background: packers.primary,
+      text: packers.secondary,
+      fontId: "teko",
+    });
   });
 });
 

@@ -40,6 +40,7 @@ import {
   spineFontFacesCss,
   spineFontFamilyCss,
 } from "@/lib/print/spine-fonts";
+import { parseSpineLabelParams } from "@/lib/print/spine-label-params";
 import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
 import { teamFullName } from "@/lib/teams/team-name";
 
@@ -63,6 +64,12 @@ import { teamFullName } from "@/lib/teams/team-name";
  *     low contrast. This is ink on paper and the user is deliberately choosing
  *     their team's livery, so blocking would be wrong — but showing the number
  *     before they spend a sheet is not.
+ *
+ * NEO-350: another page can open the designer with a label filled in
+ * (`?name=&bg=&fg=&font=`, see `lib/print/spine-label-params.ts`). Those seed
+ * the form once, on arrival; each is checked and an invalid one is ignored.
+ * Nothing is added to the sheet, and with no params the page starts as it
+ * always has.
  *
  * The preview and the printed page are the SAME markup (`spine-label-html.ts`),
  * scaled down here. Two renderers for one geometry would drift, and the one
@@ -137,6 +144,8 @@ const PREVIEW_FONT_FACES = spineFontFacesCss();
 const PREVIEW_WIDTH_PX = 380;
 
 export default function SpineLabelPage() {
+  // Read once, on arrival: later edits are the user's, not the link's.
+  const [prefill] = useState(() => parseSpineLabelParams(window.location.search));
   const [labels, setLabels] = useState<SpineLabel[]>([]);
 
   const [player, setPlayer] = useState<PlayerSearchResult | null>(null);
@@ -152,15 +161,15 @@ export default function SpineLabelPage() {
     return () => clearTimeout(timer);
   }, [teamQuery]);
   const [leagueFilter, setLeagueFilter] = useState<string>("all");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(prefill.name ?? "");
   const [selectedTeamId, setSelectedTeamId] = useState<Id<"teams"> | null>(null);
 
-  const [background, setBackground] = useState(FALLBACK_BACKGROUND);
-  const [text, setText] = useState(FALLBACK_TEXT);
+  const [background, setBackground] = useState(prefill.background ?? FALLBACK_BACKGROUND);
+  const [text, setText] = useState(prefill.text ?? FALLBACK_TEXT);
 
   const [widthIn, setWidthIn] = useState(DEFAULT_SPINE_PRESET.widthIn);
   const [heightIn, setHeightIn] = useState(MAX_LABEL_HEIGHT_IN);
-  const [fontId, setFontId] = useState(DEFAULT_SPINE_FONT_ID);
+  const [fontId, setFontId] = useState(prefill.fontId ?? DEFAULT_SPINE_FONT_ID);
   const [printing, setPrinting] = useState(false);
 
   const font = spineFontById(fontId);

@@ -25,9 +25,18 @@ describe("SpineLabelColors", () => {
     expect(screen.getByText(/Contrast 7\.2:1/).textContent).toContain("easy to read on a shelf.");
   });
 
-  it("warns on a pair below 3:1", () => {
+  it("warns on a pair below 3:1 and says what will fix it", () => {
     colors("#005A9C", "#EF3E42");
-    expect(screen.getByText(/Contrast 1\.8:1/).textContent).toContain("hard to read at a distance. Invert may help.");
+    expect(screen.getByText(/Contrast 1\.8:1/).textContent).toContain(
+      "hard to read on a shelf. Try a lighter or darker lettering color.",
+    );
+  });
+
+  it("never offers Invert as the fix: swapping the pair cannot change the ratio", () => {
+    colors("#EF3E42", "#005A9C");
+    const readout = screen.getByText(/Contrast 1\.8:1/).textContent ?? "";
+    expect(readout).toContain("Try a lighter or darker lettering color.");
+    expect(readout).not.toMatch(/invert/i);
   });
 
   it("asks for two hex colours while one is mid-edit", () => {
