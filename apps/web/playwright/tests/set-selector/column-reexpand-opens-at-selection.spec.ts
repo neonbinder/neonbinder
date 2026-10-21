@@ -21,6 +21,16 @@ test(
     await columnSearch(page, "Sports").fill("Racing");
     await columnOption(page, "Sports", "Racing").click();
     await expect(columnHeading(page, "Years")).toBeVisible();
+    // Wait for Years to hold its rows before collapsing Sports. On a phone the
+    // cascade row scrolls sideways, and the freshly revealed Years column
+    // re-centres itself once its first rows land (EntityColumn's reveal
+    // settle). Re-expanding Sports before that lands means the late scroll
+    // carries the row back to Years, and Racing sits off screen to the left
+    // however well its list was scrolled. The Years heading is up in the first
+    // frame, so only a Years row proves the column has settled.
+    await expect(
+      page.getByRole("listbox", { name: "Years" }).getByRole("option").first(),
+    ).toBeVisible();
 
     // Collapse the column, then re-expand it.
     await columnSelection(page, "Sports", "Racing").click();
