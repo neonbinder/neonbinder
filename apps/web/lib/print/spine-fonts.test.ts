@@ -13,6 +13,8 @@ import {
   SPINE_FONTS,
   SYSTEM_SPINE_FONT,
   spineFontById,
+  spineFontFacesCss,
+  spineFontFamilyCss,
   spineFontUrl,
 } from "./spine-fonts";
 import { fitFontSizeIn } from "./spine-formats";
@@ -101,5 +103,24 @@ describe("font width feeding the fitter", () => {
     // Callers that predate the picker fall back rather than dividing by zero.
     expect(fitFontSizeIn(NAME, 2, 10.5)).toBeGreaterThan(0);
     expect(fitFontSizeIn(NAME, 2, 10.5, 0)).toBeGreaterThan(0);
+  });
+});
+
+describe("naming a face in CSS", () => {
+  it("single-quotes a self-hosted family, so it survives a double-quoted style attribute", () => {
+    expect(spineFontFamilyCss(spineFontById("anton"))).toBe("'Anton', sans-serif");
+    expect(spineFontFamilyCss(spineFontById("anton"))).not.toContain('"');
+  });
+
+  it("leaves the system stack bare: it is already a family list", () => {
+    expect(spineFontFamilyCss(SYSTEM_SPINE_FONT)).toBe(SYSTEM_SPINE_FONT.family);
+  });
+
+  it("declares one on-screen @font-face per face with a file, and none for the system stack", () => {
+    const css = spineFontFacesCss();
+    const withFiles = SPINE_FONTS.filter((f) => f.file);
+    expect(css.match(/@font-face/g)?.length).toBe(withFiles.length);
+    for (const f of withFiles) expect(css).toContain(`url("${spineFontUrl(f)}")`);
+    expect(css).not.toContain("BlinkMacSystemFont");
   });
 });

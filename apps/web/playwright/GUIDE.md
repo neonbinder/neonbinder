@@ -559,11 +559,11 @@ that needs the paused marketplace has a paused branch asserting the paused
 behaviour (copy in `lib/marketplace/pause-notice.ts`), and live coverage
 returns by itself when the variable is unset.
 
-**Today the switch is OFF.** SportLots was unpaused on 2026-09-21 (the
-automated-access handshake, NEO-288, replaced the reason), so every CI run
-passes `PAUSED_PLATFORMS` empty and every spec takes its LIVE branch. The
-paused branches stay: they are what the suite does the day an operator
-pauses a marketplace again, and both branches end in hard asserts (R2).
+**The switch flips with the marketplace's health,** so either branch may be
+the one CI runs today. Both branches end in hard asserts (R2) and both stay:
+the paused branch is what the suite does whenever an operator pauses a
+marketplace, and the live branch returns by itself when the variable is
+unset.
 Never write a comment, registry entry or memory saying the suite "is"
 paused; check the run you are reading:
 
@@ -589,20 +589,32 @@ screenshot). Paused-specific UI exists at exactly three places: the Profile
 SportLots tab shows the amber "SportLots is on pause" card instead of the
 connected/re-auth card; `/admin/set-builder` opens for a BSC-only admin (a
 paused platform is not a required credential) with an amber "SportLots is on
-pause." strip above its heading; and the ROOT Sports column's "done" notice
-carries "SportLots is on pause: nothing from SportLots was asked for or
-changed." (stored per column, shown to every worker; never dismiss it from a
-shared helper). **Below the root, on a fresh deployment, the pause is
-indistinguishable from a BSC-only tree**: a side counts as paused only where
-it is served AND its ids are complete, and because the Sports sync never
-asked SportLots, `Baseball` is written with no SportLots id, so every level
-beneath skips SportLots for want of ids. Years reads "SportLots skipped: no
-SportLots ids on this path."; Manufacturers syncs to nothing with NO notice
-and its idle text ("No manufacturers available. Sync from marketplaces to
-populate."); the base picker's SportLots pane shows "SportLots returned no
-base set for <set>"; checklist fetches take the one-marketplace path ("Kept
-all N cards from BSC. Nothing to match, no other marketplace attached.").
-Paused branches below the root assert THAT state, never the paused sentence.
+pause." strip above its heading; and a per-column "done" notice carrying
+"SportLots is on pause: nothing from SportLots was asked for or changed."
+(stored per column, shown to every worker; never dismiss it from a shared
+helper). That notice exists only where a sync RAN with SportLots' id in hand.
+The seeded catalogue (NEO-330) loads the sport rows with their SportLots ids,
+so the Sports column is already populated on first visit and shows NO column
+notice (the strip is the root's proof); the first sync that runs is Years
+(`Baseball` carries the id), and it carries the sentence. An explicit "Sync
+Sports" (`custom-entry-survives-resync`) also shows it at the root. **Below
+Years the pause is indistinguishable from a BSC-only tree**: a side counts as
+paused only where it is served AND its ids are complete, and because the Years
+sync never asked SportLots, the year rows carry no SportLots id, so every
+level beneath skips SportLots for want of ids. Manufacturers syncs to nothing
+with NO notice, and on an untouched year its idle text ("No manufacturers
+available. Sync from marketplaces to populate.") sits under the pinned view.
+The idle text is NOT a readiness signal: the first year-wide Sets sync (any
+spec that drills the year through All Brands) mints the year's `Unknown` row
+and the text disappears, so a drill that waits for "idle text OR my brand"
+hangs on any year another spec has touched (CI run 39587731096, 1996 and 2025
+Baseball). Search for the brand instead and make it on "No matches found"
+(`selectOrCreate`); a brand's Sets column ends "done" with "SportLots
+skipped: no SportLots ids on this path."; the base picker's SportLots pane
+shows "SportLots returned no base set for <set>"; checklist fetches take the
+one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
+marketplace attached.").
+Paused branches below Years assert THAT state, never the paused sentence.
 Consequences for drills: the Manufacturers column holds only the pinned "All
 Brands" view entry on a fresh deployment (see `SET-REGISTRY.md` -> "When
 SportLots is paused"), a brand's Sets column ends "done" with "SportLots

@@ -1,0 +1,82 @@
+/*
+ * NEO-350 — My Cards (the Checklist Wall, ported from prototype 3): the few
+ * things Tailwind classes can't say. The LED board texture, the glowing
+ * percentage, a lit tile, the number box's spotlight and the need list's
+ * print sheet. Prefixed `mc-` so it never meets prototype 3's own `p3-`
+ * copy, which loads on the same page bundle.
+ */
+
+.mc-led {
+  background-color: #020617;
+  background-image: radial-gradient(rgba(0, 194, 255, 0.09) 1px, transparent 1.6px);
+  background-size: 7px 7px;
+}
+
+.mc-percent {
+  font-family: "Neon", "Lexend", sans-serif;
+  line-height: 0.9;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 14px rgba(0, 194, 255, 0.55), 0 0 2px rgba(0, 194, 255, 0.9);
+}
+.mc-percent[data-complete="true"] {
+  text-shadow: 0 0 14px rgba(0, 213, 88, 0.55), 0 0 2px rgba(0, 213, 88, 0.9);
+}
+
+.mc-lit {
+  box-shadow: 0 0 12px 2px rgba(0, 194, 255, 0.4), inset 0 0 8px rgba(0, 194, 255, 0.1);
+}
+
+/* The number box's match: a yellow ring that blinks twice, then holds. */
+.mc-spot {
+  outline: 3px solid #ffe600;
+  outline-offset: 2px;
+  animation: mc-blink 0.5s steps(2, jump-none) 2;
+}
+@keyframes mc-blink {
+  50% {
+    outline-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-spot {
+    animation: none;
+  }
+}
+
+/* "Take it to the show": only the need list prints, black on white. */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+  html:root:has([data-mc-print]),
+  html:root:has([data-mc-print]) body {
+    background: #fff !important;
+  }
+  body:has([data-mc-print]) * {
+    visibility: hidden !important;
+  }
+  /* Same :has() weight as the hide rule above, so these win by order. */
+  body:has([data-mc-print]) [data-mc-print],
+  body:has([data-mc-print]) [data-mc-print] * {
+    visibility: visible !important;
+    color: #000 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    border-color: #000 !important;
+  }
+  [data-mc-print] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+  body:has([data-mc-print]) [data-mc-print] .mc-noprint {
+    display: none !important;
+  }
+  [data-mc-print] .mc-print-columns {
+    columns: 3;
+    column-gap: 8mm;
+  }
+}

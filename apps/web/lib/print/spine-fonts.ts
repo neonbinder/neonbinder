@@ -191,3 +191,36 @@ export function spineFontById(id: string): SpineFont {
 export function spineFontUrl(font: SpineFont): string {
   return font.file ? `/fonts/${font.file}` : "";
 }
+
+/**
+ * The CSS `font-family` value for a label set in this face.
+ *
+ * SINGLE quotes around the family, never double: the print sheet interpolates
+ * this into a double-quoted `style="..."` attribute, where a double quote would
+ * close the attribute early and silently drop every declaration after it. The
+ * system stack is left bare because it IS a family list, and quoting it would
+ * look for one absurdly-named font. Shared by the print sheet, the designer's
+ * picker and the collection page's shelf spines, so all three name the same
+ * family the same way.
+ */
+export function spineFontFamilyCss(font: SpineFont): string {
+  return font.id === SYSTEM_SPINE_FONT.id ? font.family : `'${font.family}', sans-serif`;
+}
+
+/**
+ * `@font-face` rules for ON-SCREEN use, by URL: every face with a file.
+ *
+ * Every face is declared at once rather than only the selected one, so
+ * switching fonts does not wait on a fetch mid-interaction. They are
+ * `font-display: swap` and only actually downloaded when something on the
+ * page is set in them. (Printing inlines data URIs instead; see
+ * `spine-label-html.ts`.)
+ */
+export function spineFontFacesCss(): string {
+  return SPINE_FONTS.filter((f) => f.file)
+    .map(
+      (f) =>
+        `@font-face{font-family:"${f.family}";src:url("${spineFontUrl(f)}") format("woff2");font-weight:400 900;font-display:swap;}`,
+    )
+    .join("");
+}

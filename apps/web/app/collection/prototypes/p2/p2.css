@@ -1,0 +1,496 @@
+/*
+ * NEO-350 prototype 2, "Nine-Pocket". The physical stuff: vinyl spines with
+ * printed labels, a ledge, an open binder with rings, polypropylene sleeves
+ * with a top lip, ghost needs, the price-tag sticker and a crimped foil pack.
+ *
+ * Colours that come from a team (the vinyl, the label stripe) arrive as CSS
+ * variables set inline; everything else is the app's dark neon palette.
+ */
+
+/* ------------------------------------------------------------------ shelf */
+
+.p2-shelf {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 18px 14px 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+/* The ledge the spines stand on: a lit edge in the Collection accent. */
+.p2-ledge {
+  height: 14px;
+  border-radius: 0 0 6px 6px;
+  background: linear-gradient(#1e293b, #0f172a 70%);
+  box-shadow:
+    0 -1px 0 #00c2ff inset,
+    0 10px 24px rgba(0, 194, 255, 0.12),
+    0 2px 0 rgba(0, 0, 0, 0.6);
+}
+
+.p2-spine {
+  --vinyl: #334155;
+  --stripe: #94a3b8;
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 7px 12px;
+  border-radius: 5px 5px 2px 2px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.22) 0%,
+      rgba(255, 255, 255, 0.04) 18%,
+      rgba(0, 0, 0, 0) 60%,
+      rgba(0, 0, 0, 0.38) 100%
+    ),
+    var(--vinyl);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    0 8px 18px rgba(0, 0, 0, 0.55);
+  transform-origin: 50% 100%;
+  transition: transform 160ms ease-out;
+  cursor: pointer;
+}
+.p2-spine:hover {
+  transform: translateY(-6px);
+}
+.p2-spine:focus-visible {
+  outline: none;
+  transform: translateY(-6px);
+  box-shadow:
+    0 0 0 2px #00c2ff,
+    0 0 18px rgba(0, 194, 255, 0.55),
+    0 8px 18px rgba(0, 0, 0, 0.55);
+}
+
+/* The paper insert in the spine's clear window. */
+.p2-spine-label {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 8px;
+  border-radius: 2px;
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+}
+.p2-spine-label::before {
+  content: "";
+  align-self: stretch;
+  height: 10px;
+  background: var(--stripe);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+}
+.p2-spine-name {
+  writing-mode: vertical-rl;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+.p2-spine-count {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The catalog shelf: clear, unfilled binders. */
+.p2-spine--clear {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.02) 40%, rgba(0, 0, 0, 0.25)),
+    #111827;
+  box-shadow:
+    0 0 0 1px #64748b,
+    0 8px 18px rgba(0, 0, 0, 0.55);
+}
+.p2-spine--new {
+  background: transparent;
+  box-shadow: none;
+  border: 2px dashed #64748b;
+}
+
+/* ----------------------------------------------------------- open binder */
+
+.p2-desk {
+  container-type: inline-size;
+}
+
+/* One pocket's width: limited by the screen's height on a laptop and by the
+   column's width everywhere, so a whole spread fits the fold at 1024x629. */
+.p2-binder {
+  --vinyl: #334155;
+  --pocket: min(clamp(76px, calc((100dvh - 245px) / 4.2), 132px), calc((100cqw - 228px) / 6));
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: max-content;
+  max-width: 100%;
+  margin-inline: auto;
+  padding: 10px;
+  border-radius: 14px;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 30%, rgba(0, 0, 0, 0.35)),
+    var(--vinyl);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 24px 50px rgba(0, 0, 0, 0.6);
+  perspective: 1800px;
+}
+.p2-binder--single {
+  --pocket: min(132px, calc((100cqw - 56px) / 3));
+}
+
+.p2-page {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, var(--pocket));
+  gap: 7px;
+  padding: 22px 10px 24px;
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
+    #0b1220;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.28) inset;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+}
+.p2-page-head,
+.p2-page-foot {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.p2-page-head {
+  top: 5px;
+}
+.p2-page-foot {
+  bottom: 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The inside front cover: same footprint as a page. */
+.p2-cover {
+  width: calc(var(--pocket) * 3 + 34px);
+  padding: 18px 16px;
+  border-radius: 6px;
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.025) 0 6px, transparent 6px 12px),
+    #0a0f1c;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.2) inset;
+  overflow: auto;
+}
+
+.p2-rings {
+  flex: none;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  align-items: center;
+  padding: 30px 0;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.15) 50%, rgba(0, 0, 0, 0.55));
+}
+.p2-ring {
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f1f5f9, #94a3b8 45%, #475569 55%, #e2e8f0);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+/* -------------------------------------------------------------- sleeves */
+
+.p2-sleeve {
+  position: relative;
+  display: block;
+  width: var(--pocket);
+  aspect-ratio: 5 / 7;
+  padding: 7% 5% 5%;
+  border-radius: 4px;
+  background: rgba(226, 232, 240, 0.045);
+  box-shadow:
+    0 0 0 1px rgba(203, 213, 225, 0.3) inset,
+    0 1px 0 rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+/* The pocket's opening: a slightly brighter lip along the top. */
+.p2-sleeve::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 6%;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.04));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+  z-index: 2;
+}
+/* The plastic's sheen, over whatever is inside. */
+.p2-sleeve::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: linear-gradient(
+    118deg,
+    transparent 32%,
+    rgba(255, 255, 255, 0.13) 42%,
+    rgba(255, 255, 255, 0.03) 50%,
+    transparent 58%
+  );
+  pointer-events: none;
+  z-index: 2;
+}
+button.p2-sleeve {
+  cursor: pointer;
+}
+button.p2-sleeve:focus-visible,
+.p2-sleeve:has(> button:focus-visible) {
+  outline: none;
+  box-shadow:
+    0 0 0 2px #00c2ff,
+    0 0 16px rgba(0, 194, 255, 0.5);
+}
+.p2-sleeve--over {
+  box-shadow:
+    0 0 0 2px #00d558,
+    0 0 18px rgba(0, 213, 88, 0.55);
+}
+.p2-sleeve--target {
+  box-shadow:
+    0 0 0 2px #00c2ff,
+    0 0 0 5px rgba(0, 194, 255, 0.25);
+}
+
+/* An empty pocket that should hold a specific card. */
+.p2-ghost {
+  position: absolute;
+  inset: 7% 5% 5%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 2px dashed #64748b;
+  border-radius: 5% / 3.6%;
+  color: #94a3b8;
+  container-type: inline-size;
+  text-align: center;
+}
+.p2-ghost-number {
+  font-weight: 700;
+  font-size: 24cqw;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+}
+.p2-ghost-need {
+  font-size: 12cqw;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+.p2-ghost-who {
+  font-size: 10cqw;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.p2-sleeve:hover .p2-ghost {
+  border-color: #00d558;
+  color: #e2e8f0;
+}
+
+/* A slab label riding the top of a graded copy. */
+.p2-slab {
+  position: absolute;
+  top: 3%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.p2-qty {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  z-index: 3;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #00c2ff;
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The price-tag sticker on a for-sale copy. */
+.p2-tag {
+  position: absolute;
+  top: 11%;
+  right: -6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px 1px 10px;
+  background: #ffe600;
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  clip-path: polygon(7px 0, 100% 0, 100% 100%, 7px 100%, 0 50%);
+  transform: rotate(9deg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.p2-tag::before {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: #0f172a;
+}
+
+/* ------------------------------------------------------------- the pack */
+
+.p2-pack {
+  position: relative;
+  border: 1px solid #334155;
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  background:
+    linear-gradient(115deg, rgba(0, 194, 255, 0.07), rgba(164, 74, 255, 0.06) 45%, rgba(0, 213, 88, 0.05)),
+    rgba(2, 6, 23, 0.97);
+  box-shadow: 0 -14px 40px rgba(0, 0, 0, 0.6);
+}
+/* The crimp along the top of a wax pack. */
+.p2-pack::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: -6px;
+  height: 7px;
+  background:
+    linear-gradient(135deg, transparent 50%, #475569 50%) 0 0 / 8px 7px repeat-x,
+    linear-gradient(225deg, transparent 50%, #475569 50%) 4px 0 / 8px 7px repeat-x;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.p2-results {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px 8px;
+  scrollbar-width: thin;
+}
+@media (max-width: 639px) {
+  .p2-results {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+    overflow-x: visible;
+    overflow-y: auto;
+    max-height: 46dvh;
+    justify-items: center;
+  }
+}
+
+.p2-handle {
+  cursor: grab;
+  touch-action: manipulation;
+  border-radius: 6px;
+}
+.p2-handle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #00c2ff;
+}
+.p2-handle--lifted {
+  opacity: 0.35;
+}
+.p2-overlay {
+  transform: rotate(-4deg);
+  filter: drop-shadow(0 14px 18px rgba(0, 0, 0, 0.7));
+  cursor: grabbing;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes p2-slide-out {
+  from {
+    transform: translateY(34%) scale(0.9);
+    opacity: 0.2;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.p2-slide-out {
+  animation: p2-slide-out 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes p2-spines-in {
+  from {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.p2-shelf .p2-spine {
+  animation: p2-spines-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 35ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .p2-spine,
+  .p2-shelf .p2-spine,
+  .p2-slide-out {
+    animation: none;
+    transition: none;
+  }
+  .p2-spine:hover,
+  .p2-spine:focus-visible {
+    transform: none;
+  }
+}

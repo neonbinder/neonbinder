@@ -78,3 +78,4 @@
 - [Playwright report exposure](patterns_playwright_report_exposure.md) — blob/HTML reports embed error-context (ARIA snapshot, password values in plaintext); results/ glob is not a scope; .playwright-mcp; host guard
 - [Patterns neo345 attribute fill](patterns_neo345_attribute_fill.md) — node-only feature key needs every copy-down door; Proxy-recorded dry run; unarmed enqueuer grew a live re-ask mode
 - [Patterns neo339 format reach](patterns_neo339_format_reach.md) — door-txn flag + serial walk strands targets on throw; strict title-token parse shape; equality-gated text rebuild
+- [Patterns neo350 public demo and prefill](patterns_neo350_public_demo_and_prefill.md) — client-only demo on a public route: import-graph grep; URL prefill allowlisted at parse and interpolation; branch author email

@@ -208,17 +208,22 @@ test(
     await expectAccessible(page, { label: "Anime parallels build ledger" });
 
     // Kanji stays attached to BSC as a variant; detaching asks first and can be cancelled.
+    // Live, the Reconcile Save above stored each source's name, so the chip
+    // reads "Anime Kanji". Paused, the sets arrive through the drill's own sync
+    // with no reconcile (above), nothing stores a name, and the chip falls back
+    // to BSC's slug: that is what the operator sees, so that is the handle.
+    const chip = env.SL_PAUSED ? "anime-kanji" : "Anime Kanji";
     await columnOption(page, "Parallels", "Anime Kanji").click();
     await expect(page.getByText("Multi-source sets")).toBeVisible();
-    const remove = page.getByRole("button", { name: "Remove Anime Kanji", exact: true });
+    const remove = page.getByRole("button", { name: `Remove ${chip}`, exact: true });
     await expect(remove).toBeVisible();
-    await expect(page.getByLabel("Anime Kanji is attached as a BSC variant")).toBeVisible();
+    await expect(page.getByLabel(`${chip} is attached as a BSC variant`)).toBeVisible();
     await expect(page.getByText("Needs re-mapping")).toBeHidden();
     await remove.click();
     const warning = page.getByText(/(1 card was|[1-9][0-9]* cards were) fetched from it; (its|their) BSC link will be dropped/);
     await expect(warning).toBeVisible();
     await expectAccessible(page, { label: "Detach Anime Kanji confirmation" });
-    await page.getByRole("button", { name: "Cancel detach Anime Kanji" }).click();
+    await page.getByRole("button", { name: `Cancel detach ${chip}` }).click();
     await expect(warning).toBeHidden();
     await expect(remove).toBeVisible();
     await expect(page.getByRole("button", { name: "Rebuild from Anime" })).toBeVisible();

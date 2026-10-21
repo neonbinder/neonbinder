@@ -174,11 +174,15 @@ test(
       await saveReconcile(page, reconcile, { placed: [COLOUR, SOURCE_ROW] });
       await expect(reconcile).toBeHidden();
     } else {
-      const outcome = page.getByText(
-        /Stored [0-9]+ variants \(single platform\)|Some variants were not stored|Sync failed: could not load variants/,
-      );
-      await expect(outcome.first()).toBeVisible({ timeout: PARALLELS_FETCH });
-      await expect(page.getByText(/Stored [0-9]+ variants \(single platform\)/)).toBeVisible();
+      // The form announces itself while it runs, then closes by itself when the
+      // store had nothing to report (the usual re-sync); a store with something
+      // to say keeps its message instead. Either way: it ran, and did not fail.
+      await expect(page.getByText("Syncing Parallels")).toBeVisible();
+      await expect(page.getByText("Syncing Parallels")).toBeHidden({ timeout: PARALLELS_FETCH });
+      await expect(page.getByText(/Sync failed: could not load (variants|parallels)/)).toBeHidden();
+      await expect(
+        syncParallels.or(page.getByText(/Stored [0-9]+ (variants|parallels) \(single platform\)|Some (variants|parallels) were not stored/)).first(),
+      ).toBeVisible();
       await expect(reconcile).toBeHidden();
     }
 
