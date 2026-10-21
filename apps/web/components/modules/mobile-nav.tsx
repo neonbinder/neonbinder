@@ -124,7 +124,6 @@ export default function MobileNav({ onClose }: MobileNavProps) {
             <NavLink
               key={item.path}
               to={item.path}
-              viewTransition
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue
                 ${isActive

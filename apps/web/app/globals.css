@@ -376,46 +376,6 @@ body {
   --color-background: #fff;
 }
 
-/* Page flip animation via View Transitions API */
-@keyframes page-flip-out {
-  0%   { transform: perspective(1200px) rotateY(0deg); opacity: 1; }
-  100% { transform: perspective(1200px) rotateY(-15deg); opacity: 0; }
-}
-
-@keyframes page-flip-in {
-  0%   { transform: perspective(1200px) rotateY(15deg); opacity: 0; }
-  100% { transform: perspective(1200px) rotateY(0deg); opacity: 1; }
-}
-
-/* The old page turns away quickly (accelerating) and the new one settles in
- * more slowly (decelerating): an exit that hangs around reads as latency. */
-::view-transition-old(page-content) {
-  animation: page-flip-out 0.2s cubic-bezier(0.7, 0, 0.84, 0) both;
-}
-
-::view-transition-new(page-content) {
-  animation: page-flip-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-/* Reduced motion: the page still visibly changes, as a short crossfade with
- * no rotation. */
-@media (prefers-reduced-motion: reduce) {
-  ::view-transition-old(page-content) {
-    animation: page-fade-out 0.12s linear both;
-  }
-  ::view-transition-new(page-content) {
-    animation: page-fade-in 0.15s linear both;
-  }
-}
-
-@keyframes page-fade-out {
-  to { opacity: 0; }
-}
-
-@keyframes page-fade-in {
-  from { opacity: 0; }
-}
-
 /* Neon glow utilities for binder tabs */
 .binder-tab-glow-green {
   box-shadow: 0 0 12px 2px rgba(0, 213, 88, 0.4), inset 0 0 8px rgba(0, 213, 88, 0.1);

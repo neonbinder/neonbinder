@@ -102,12 +102,10 @@ function Deferred({ children }: { children: ReactNode }) {
 }
 
 /**
- * Warms the binder tabs' chunks once the signed-in shell is idle. A tab click
- * runs inside a view transition (the page flip), which snapshots whatever the
- * first synchronous render shows; a cold chunk would make that the Deferred
- * line, so the flip would land on "Sleeving the cards…" and the page would pop
- * in after it. Rendered only inside the binder shell, so the public pages
- * never pay for it.
+ * Warms the binder tabs' chunks once the signed-in shell is idle, so a tab
+ * click shows its page straight away rather than "Sleeving the cards…" while
+ * the chunk downloads. Rendered only inside the binder shell, so the public
+ * pages never pay for it.
  */
 function PrefetchBinderTabs() {
   useEffect(() => {

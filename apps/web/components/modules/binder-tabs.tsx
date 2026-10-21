@@ -111,7 +111,6 @@ export default function BinderTabs() {
         <NavLink
           key={item.path}
           to={item.path}
-          viewTransition
           className={({ isActive }) =>
             `binder-tab flex items-center gap-3 rounded-l-xl cursor-pointer
             transition-[transform,background-color,color,box-shadow] duration-200 ease-out
