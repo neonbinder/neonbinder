@@ -6,7 +6,8 @@ import {
   DragOverlay,
   useSensor,
   useSensors,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   KeyboardSensor,
   useDroppable,
   type Active,
@@ -613,7 +614,7 @@ function FilterInput({
           type="button"
           onClick={clear}
           aria-label={`Clear ${ariaLabel.toLowerCase()}`}
-          className="absolute right-1 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
         >
           <span aria-hidden="true">×</span>
         </button>
@@ -991,7 +992,7 @@ function ReadySetRow({
       <button
         type="button"
         onClick={() => onDetach(side, item.platformValue)}
-        className="text-pink-400 hover:text-pink-300 px-0.5 rounded"
+        className="hit-area-24 text-pink-400 hover:text-pink-300 px-0.5 rounded"
         title="Remove this mapping"
         aria-label={`Remove ${itemLabel(item, side, dups[side])} from ${label}`}
       >
@@ -1060,16 +1061,18 @@ function ReadySetRow({
         )}
         {showMetadata && (
           <button
+            type="button"
             onClick={() => setExpanded(!expanded)}
-            className="text-xs text-gray-400 hover:text-gray-200 px-2"
+            className="hit-area-24 text-xs text-gray-400 hover:text-gray-200 px-2"
             aria-label={`Toggle details for ${label}`}
+            aria-expanded={expanded}
           >
             {expanded ? "▲" : "▼"}
           </button>
         )}
         <button
           onClick={onDisband}
-          className="text-xs text-pink-400 hover:text-pink-300 px-2 py-1 rounded hover:bg-pink-900/20 shrink-0"
+          className="hit-area-24 text-xs text-pink-400 hover:text-pink-300 px-2 py-1 rounded hover:bg-pink-900/20 shrink-0"
           title="Remove this set (its mappings return to Pending)"
           aria-label={`Remove set ${label}`}
         >
@@ -1771,8 +1774,12 @@ function ReconciliationDialog({
   );
   const twinNoticeId = useId();
 
+  // Mouse and touch, not PointerSensor: a touch drag starts on a 180ms hold,
+  // so a swipe still scrolls the list and a tap still clicks. PointerSensor
+  // lost every touch drag to the browser's own scroll (no `touch-action`).
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
     useSensor(KeyboardSensor),
   );
 

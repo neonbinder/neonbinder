@@ -442,7 +442,8 @@ export default function CardChecklistItem({
           but the edit panel never opened. Always-on also keeps the
           flow keyboard-accessible (feedback_keyboard_navigation).
           Subtle text-only buttons stay visually quiet enough not
-          to clutter the row. */}
+          to clutter the row. They are drawn ~20px tall; `hit-area-24`
+          takes taps across 24px without making the row any taller. */}
       <div className="flex gap-1 shrink-0">
         <button
           onClick={(e) => {
@@ -450,7 +451,7 @@ export default function CardChecklistItem({
             onEdit(card._id);
           }}
           aria-label={`Edit card ${cardIdentity}`}
-          className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
+          className="hit-area-24 px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
           title="Edit"
         >
           Edit
@@ -466,7 +467,7 @@ export default function CardChecklistItem({
                 ? `Confirm remove card ${cardIdentity} from this set`
                 : `Confirm delete card ${cardIdentity}`
             }
-            className="px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
           >
             Confirm?
           </button>
@@ -482,7 +483,7 @@ export default function CardChecklistItem({
                 ? `Remove card ${cardIdentity} from this set`
                 : `Delete card ${cardIdentity}`
             }
-            className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
             title={
               isCrossListed
                 ? "Remove from this set — the card stays in the set it was printed in"

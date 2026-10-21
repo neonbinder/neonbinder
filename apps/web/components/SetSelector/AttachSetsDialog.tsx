@@ -983,7 +983,7 @@ function BreadcrumbButton({
       type="button"
       onClick={onClick}
       aria-label={ariaLabel}
-      className="text-xs px-2 py-0.5 rounded border border-gray-700 bg-gray-800 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+      className="hit-area-24 text-xs px-2 py-0.5 rounded border border-gray-700 bg-gray-800 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
     >
       ‹ {label}
     </button>
@@ -1133,7 +1133,7 @@ function CandidateRow({
           type="button"
           onClick={() => onBrowse(candidate)}
           aria-label={`Browse BSC set ${label}`}
-          className="shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+          className="hit-area-24 shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
         >
           Browse ›
         </button>

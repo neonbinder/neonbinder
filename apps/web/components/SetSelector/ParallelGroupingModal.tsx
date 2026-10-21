@@ -14,7 +14,8 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -429,8 +430,8 @@ function DraggableRow({
   // that, dnd-kit accepts a Space/Enter bubbling up from any child, calls
   // preventDefault and starts a drag, so pressing Enter on ✕ or on the
   // select button picked the row up instead of pressing the button.
-  // Pointer taps on the inner buttons are unaffected: PointerSensor's
-  // activationConstraint needs 5px of movement before a drag starts.
+  // Taps on the inner buttons are unaffected: a drag needs 5px of mouse
+  // movement or a 180ms touch hold before it starts.
   return (
     <div
       ref={(el) => {
@@ -751,8 +752,12 @@ export default function ParallelGroupingModal({
     [childrenByParent],
   );
 
+  // Mouse and touch, not PointerSensor: a touch drag starts on a 180ms hold,
+  // so a swipe still scrolls the list and a tap still clicks. PointerSensor
+  // lost every touch drag to the browser's own scroll (no `touch-action`).
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
     useSensor(KeyboardSensor),
   );
 

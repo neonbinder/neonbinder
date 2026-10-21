@@ -5116,7 +5116,7 @@ export default function EntityReviewWizard({
                                         // the gray-800 chip), and a real focus
                                         // ring rather than a colour swap behind
                                         // `focus:outline-none` (SC 2.4.7).
-                                        className="text-gray-400 hover:text-[#FF2EB3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800 rounded"
+                                        className="hit-area-24 text-gray-400 hover:text-[#FF2EB3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800 rounded"
                                       >
                                         ×
                                       </button>

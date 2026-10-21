@@ -613,7 +613,7 @@ export default function PlayerPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
-            className="text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            className="hit-area-24 text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
           >
             ×
           </button>

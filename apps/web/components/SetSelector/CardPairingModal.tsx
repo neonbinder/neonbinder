@@ -13,7 +13,8 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -608,11 +609,11 @@ function plural(n: number, noun: string): string {
  *   - `tabIndex=0` would add one dead tab stop per row to the dialog's focus
  *     trap (its Tab handler queries `[tabindex]:not([tabindex="-1"])`), so a
  *     900-row set would grow 900 stops that do nothing when activated.
- * The listeners alone are what the PointerSensor needs; the accessible
+ * The listeners alone are what the mouse and touch sensors need; the accessible
  * affordance for the same action is the click path, which is untouched.
  *
- * Plain clicks on the inner buttons still work because the PointerSensor's
- * 5px activation constraint means a drag never starts from a stationary press
+ * Plain clicks on the inner buttons still work because a drag needs 5px of
+ * mouse movement or a 180ms touch hold, so it never starts from a plain press
  * (same reasoning as ParallelGroupingModal).
  *
  * NEO-300 — the <li> is also the drag's ACTIVATOR node. Without one, dnd-kit's
@@ -2255,12 +2256,16 @@ export default function CardPairingModal({
   );
 
   // ── Drag-and-drop linking ────────────────────────────────────────────────
-  // The 5px activation constraint is load-bearing, not cosmetic: without it a
+  // The activation constraints are load-bearing, not cosmetic: without them a
   // stationary press on a row's inner <button> starts a drag and the button's
   // onClick never fires, which would break the click-to-select path (and the
   // Maestro flow that drives it) the moment the listeners went on.
+  // Mouse and touch, not PointerSensor: a touch drag starts on a 180ms hold,
+  // so a swipe still scrolls the list and a tap still clicks. PointerSensor
+  // lost every touch drag to the browser's own scroll (no `touch-action`).
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
     useSensor(KeyboardSensor),
   );
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
