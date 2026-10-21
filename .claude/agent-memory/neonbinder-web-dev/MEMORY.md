@@ -145,3 +145,4 @@
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
 - [Post-await focus needs an effect](reference_post_await_focus_needs_an_effect.md) — setTimeout/rAF focus loses to a post-await render in Chrome; ref flag + effect; fake-timer test recipe
+- [Blob report times one expect across runs](reference_blob_report_times_one_expect_across_runs.md) — budget miss: regression or variance? sample the step duration from pw-report blobs, branch vs other PRs
