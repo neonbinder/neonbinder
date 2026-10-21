@@ -55,7 +55,10 @@ re-deriving them:
 The coordinator gives you the PR preview URL and the test sign-in path. Use
 the browser tools if they are available to you; if not, say so and stop.
 Work the happy path as a collector would, then the edges: long names,
-duplicate card numbers, empty states, keyboard only. Preview data is shared
+duplicate card numbers, empty states, keyboard only. Then go through
+several views (tabs, a drill-down, an opened item) and press browser Back:
+each press must return to the previous view, and a refresh must keep you
+where you were. Report any Back that skips views or leaves the page. Preview data is shared
 with the CI suite that runs against the same preview: never attach a
 marketplace to a hand-made row ("Add as New" on a real set's children),
 never edit a set listed in `apps/web/playwright/SET-REGISTRY.md`, and create

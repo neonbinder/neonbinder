@@ -86,6 +86,17 @@ No `"use client"` (delete it when you touch a file that still has one), no
 `next/*` imports. Copy is user-facing: draft it in the brand voice and flag
 every new string in your report for sign-off.
 
+**Navigation lives in the URL so Back works (Jason, 2026-10-20, all UI).**
+Any move a user would call "going somewhere" pushes a history entry, using
+router search params or a route. That includes switching tabs, opening an
+item, a sub-view, a drill-down step, a wall or a list, and a selected
+record. Browser Back must step back through those moves one at a time, and
+a refresh or a pasted link must reopen the same view. In-view tweaks
+(filters, sort, page turns, a drawer or dialog, a scope picker) use
+`replace` or stay out of history, so Back is never a chore. Never hold
+navigation in `useState` or a context only. Doing that is exactly how the
+NEO-350 public demo threw users out of the page on the first Back.
+
 ## Testing and gates
 
 Tests are co-located. Collection is narrow and enforced by
