@@ -82,7 +82,7 @@
 - [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition
 - [New string locator collision sweep](reference_new_string_locator_collision_sweep.md) — Playwright name/text matching is a substring; grep the specs for the new copy and check the page each hit runs on
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
-- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe; measure heights per case matrix
+- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe; measure heights per case matrix; tsx `.css` import stub loader
 - [Live validation without keystroke renders](reference_live_validation_without_keystroke_renders.md) — drafts in a ref + snapshot state swapped on answer change; ref.current in useMemo fails react-hooks/refs; blocked button gets title for Maestro
 - [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
@@ -120,3 +120,4 @@
 - [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
+- [Container's own cqw resolves upward](reference_container_own_cqw_resolves_upward.md) — size the container itself in %, cqw only on children; a cqw radius on the root made a pill (NEO-350)

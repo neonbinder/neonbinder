@@ -61,6 +61,11 @@ import PrintShipping from "@/app/print/shipping/page";
 import PrintBlackoutLabel from "@/app/print/shipping/blackout/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
+import CollectionPrototype1 from "@/app/collection/prototypes/p1/page";
+import CollectionPrototype2 from "@/app/collection/prototypes/p2/page";
+import CollectionPrototype3 from "@/app/collection/prototypes/p3/page";
+import CollectionPrototype4 from "@/app/collection/prototypes/p4/page";
+import CollectionPrototype5 from "@/app/collection/prototypes/p5/page";
 import Inventory from "@/app/inventory/page";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -148,6 +153,14 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             <Route element={<BinderLayout />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/collection" element={<Collection />} />
+              {/* NEO-350 — five UI-only prototypes of the collection tracker,
+                  on hard-coded data (no Convex). Under /collection so the
+                  Collection tab stays lit (NavLink matches the prefix). */}
+              <Route path="/collection/1" element={<CollectionPrototype1 />} />
+              <Route path="/collection/2" element={<CollectionPrototype2 />} />
+              <Route path="/collection/3" element={<CollectionPrototype3 />} />
+              <Route path="/collection/4" element={<CollectionPrototype4 />} />
+              <Route path="/collection/5" element={<CollectionPrototype5 />} />
               <Route path="/inventory" element={<Inventory />} />
               {/* /placeholders was the NEO-170 stopgap intake. NEO-152 replaced
                   it with the real thing at /print/placeholders, so the old path
