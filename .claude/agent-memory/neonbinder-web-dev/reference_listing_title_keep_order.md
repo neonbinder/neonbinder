@@ -1,6 +1,6 @@
 ---
 name: listing-title-keep-order
-description: Since 2026-10-19 the listing-title builder keeps pieces in priority order (players/insert/parallel/print run first, card number droppable); tests that squeeze the budget with a long card number no longer reach a core cut
+description: Listing-title builder keeps pieces in priority order (card number droppable); the parallel's repeat of its insert is one strict, all-or-nothing redundant group (2026-10-21)
 metadata:
   type: reference
 ---
@@ -25,3 +25,16 @@ Baseball Autographs") swallows the sport token via `alreadySaid`, so a
 "sport dropped first" assertion needs an insert without it.
 
 Related: [[convex-typecheck-excludes-test-files]].
+
+**2026-10-21 (NEO-339 preview fixes):** a parallel leaf's value usually
+carries its insert's name ("Rookie Autographs Black & White Mini-Diamond
+Refractor"). `parallelRepeat` marks that leading insert repeat (in-order word
+match, rookie/RC one word via `wordKey`) plus set words anywhere as one
+redundant GROUP: `TitleLayout.keepAll`, kept only when nothing real was lost
+(strict tier, AUTO/RELIC included). An insert that starts with the set's name
+now splits into set words + its own words. The Rookie→RC build is taken only
+when it loses fewer core pieces (`coreLost`) or, tied, fewer real tokens.
+Fastest way to see what a rule change does to real titles: copy the HEAD and
+working versions of generateListing.ts (+ listingLimits.ts) to the scratchpad
+and run an old-vs-new differential with `tsx` over realistic name combos;
+then copy HEAD back over the worktree file once to prove new tests go red.

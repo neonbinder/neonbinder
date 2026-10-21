@@ -652,7 +652,15 @@ describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
       // appended after a drop, so the final title is at least as long as the
       // one the token was measured against — if it does not fit now, it did
       // not fit then either.
+      //
+      // Except a redundant AUTO or RELIC (one the title says anyway) on a
+      // title that lost something real: that is withheld even from room left
+      // over, the redundant words being strictly the first to go.
+      const lostReal = !coreFits || dropped.some((t) => !isFillerToken(t, inputs, title));
       for (const token of dropped) {
+        if (lostReal && (token === "AUTO" || token === "RELIC") && isFillerToken(token, inputs, title)) {
+          continue;
+        }
         expect(
           title.length + 1 + token.length,
           `${context} :: dropped ${token}`,
@@ -1657,5 +1665,269 @@ describe("shortening an over-limit title (Jason, 2026-10-19)", () => {
       coreFits: true,
       dropped: [],
     });
+  });
+});
+
+// ===========================================================================
+// The parallel's repeat of its insert (NEO-339 preview, 2023 Topps Chrome)
+// ===========================================================================
+
+describe("the parallel's repeat of its insert goes first, and whole", () => {
+  // A BSC parallel leaf carries its insert's name in its own: "Rookie
+  // Autographs Black & White Mini-Diamond Refractor" under "Rookie
+  // Autographs". `titleChainFacts` hands that value through as the parallel
+  // token (`parallelLeafValue`). Printing plates carry no print run.
+  const chrome: ListingCardInputs = {
+    cardNumber: "1",
+    year: "2023",
+    manufacturer: "Topps",
+    setName: "Topps Chrome",
+    sport: "Baseball",
+    parallelIsRole: true,
+  };
+
+  test("no stray \"Topps\": the Authentics Relics repeat goes as one", () => {
+    const vlad: ListingCardInputs = {
+      ...chrome,
+      cardNumber: "TCAR-VG",
+      insertName: "Topps Chrome Authentics Relics",
+      parallelName: "Topps Chrome Authentics Relics Green Refractor",
+      playerNames: ["Vladimir Guerrero Jr."],
+      isRelic: true,
+      teamNames: ["Toronto Blue Jays"],
+    };
+    // Before: "... Vladimir Guerrero Jr. Topps Green Refractor".
+    const a = assessListingTitle(vlad);
+    expect(a.title).toBe(
+      "2023 Topps Chrome Authentics Relics Vladimir Guerrero Jr. Green Refractor",
+    );
+    // The number is the real loss; RELIC beside "Relics" is redundant.
+    expect(a.coreFits).toBe(false);
+    expect(a.dropped).toEqual(["#TCAR-VG", "Toronto Blue Jays", "RELIC", "Baseball", "Parallel"]);
+    // The same card named the other way round: before, "... Jr. Relics Green
+    // Refractor".
+    expect(
+      assessListingTitle({
+        ...vlad,
+        insertName: "Authentics Relics",
+        parallelName: "Authentics Relics Topps Green Refractor",
+      }).title,
+    ).toBe("2023 Topps Chrome Authentics Relics Vladimir Guerrero Jr. Green Refractor");
+  });
+
+  test("no stray \"1988\": the 1988 Topps Baseball Autographs repeat goes as one", () => {
+    const a = assessListingTitle({
+      ...chrome,
+      cardNumber: "88BA-AR",
+      insertName: "1988 Topps Baseball Autographs",
+      parallelName: "1988 Topps Baseball Autographs Printing Plate Cyan",
+      playerNames: ["Austin Riley"],
+      autographed: "On Card",
+      teamNames: ["Atlanta Braves"],
+    });
+    // Before: "... Austin Riley 1988 Printing Plate Cyan".
+    expect(a.title).toBe(
+      "2023 Topps Chrome 1988 Baseball Autographs Austin Riley Printing Plate Cyan",
+    );
+    expect(a.title).toContain("Printing Plate Cyan");
+    expect(a.dropped).toEqual(["#88BA-AR", "Atlanta Braves", "AUTO", "Parallel"]);
+  });
+
+  test("no stray \"in\": the in Technicolor Autographs repeat goes as one", () => {
+    const a = assessListingTitle({
+      ...chrome,
+      cardNumber: "TA-AJ",
+      insertName: "Topps Chrome in Technicolor Autographs",
+      parallelName: "Topps Chrome in Technicolor Autographs Printing Plate Black",
+      playerNames: ["Aaron Judge"],
+      autographed: "On Card",
+      teamNames: ["New York Yankees"],
+    });
+    // Before: "... Aaron Judge in Printing Plate Black".
+    expect(a.title).toBe(
+      "2023 Topps Chrome in Technicolor Autographs Aaron Judge Printing Plate Black",
+    );
+  });
+
+  test("a parallel's \"Rookie\" repeats an insert shortened to RC (Dual Rookie Autographs)", () => {
+    const a = assessListingTitle({
+      ...chrome,
+      cardNumber: "DRA-CG",
+      insertName: "Dual Rookie Autographs",
+      parallelName: "Dual Rookie Autographs Red",
+      playerNames: ["Corbin Carroll", "Riley Greene"],
+      autographed: "On Card",
+      isRookie: true,
+      printRun: 5,
+      teamNames: ["Arizona Diamondbacks", "Detroit Tigers"],
+    });
+    // Before: "2023 Topps Chrome Dual RC Autographs Corbin Carroll & Riley
+    // Greene Rookie Red /5". Shortening to RC would win nothing now (the
+    // number misses either way), so the insert keeps its printed name and
+    // the parallel reads its own word.
+    expect(a.title).toBe(
+      "2023 Topps Chrome Dual Rookie Autographs Corbin Carroll & Riley Greene Red /5 RC",
+    );
+    expect(a.rookieAsRcUsed).toBeUndefined();
+  });
+
+  test("a parallel's \"Rookies\" repeats an insert shortened to RCs (Radiating Rookies)", () => {
+    const a = assessListingTitle({
+      ...chrome,
+      cardNumber: "RRA-AR",
+      insertName: "Topps Chrome Radiating Rookies Autographs",
+      parallelName: "Radiating Rookies Autographs SuperFractor",
+      playerNames: ["Adley Rutschman"],
+      autographed: "On Card",
+      isRookie: true,
+      printRun: 1,
+      teamNames: ["Baltimore Orioles"],
+    });
+    // Before: "Topps Chrome Radiating RCs Autographs Adley Rutschman Rookies
+    // SuperFractor /1 RC", the year lost to the set words the insert's name
+    // starts with. They are set words: the year now leads.
+    expect(a.title).toBe(
+      "2023 Topps Chrome Radiating RCs Autographs Adley Rutschman SuperFractor /1 RC",
+    );
+    expect(a.rookieAsRcUsed).toBe(true);
+  });
+
+  test("the worst case: a redundant \"Rookie\" never outlasts a set word", () => {
+    const burleson: ListingCardInputs = {
+      ...chrome,
+      cardNumber: "RA-AB",
+      insertName: "Rookie Autographs",
+      parallelName: "Rookie Autographs Black & White Mini-Diamond Refractor",
+      playerNames: ["Alec Burleson"],
+      autographed: "On Card",
+      isRookie: true,
+      teamNames: ["St. Louis Cardinals"],
+    };
+    const a = assessListingTitle(burleson);
+    // Before: "2023 RC Autographs Alec Burleson Rookie Black & White
+    // Mini-Diamond Refractor", "Topps Chrome" lost while "Rookie" stayed.
+    expect(a.title).toBe(
+      "2023 Topps RC Autographs Alec Burleson Black & White Mini-Diamond Refractor",
+    );
+    expect(a.title).not.toMatch(/\bRookie\b/);
+    // "Chrome" (7 with its space) does not fit beside the never-dropped
+    // pieces with either spelling of the insert: 82 characters with "RC".
+    expect(`${a.title.slice(0, 10)} Chrome${a.title.slice(10)}`.length).toBeGreaterThan(
+      LISTING_TITLE_MAX,
+    );
+    expect(a.coreFits).toBe(false);
+    expect(a.title).toContain("Black & White Mini-Diamond Refractor");
+  });
+
+  test("Ultraviolet: \"Chrome\" goes before \"Topps\" because set words go from the end", () => {
+    const uv: ListingCardInputs = {
+      ...chrome,
+      cardNumber: "UV-JR",
+      insertName: "Ultraviolet All-Stars Autographs",
+      parallelName: "Ultraviolet All-Stars Autographs Printing Plate Black",
+      playerNames: ["Julio Rodriguez"],
+      autographed: "On Card",
+      teamNames: ["Seattle Mariners"],
+    };
+    // Not the redundant-word bug: no redundant word is in the title, and the
+    // whole title is 87 characters with "Chrome". Unchanged by the fix.
+    expect(assessListingTitle(uv).title).toBe(
+      "2023 Topps Ultraviolet All-Stars Autographs Julio Rodriguez Printing Plate Black",
+    );
+    // An insert stored with the set's name ahead of its own reads those
+    // words as SET words: given up before the year, never the parallel's
+    // "Black". Before: "Topps Chrome Ultraviolet All-Stars Autographs Julio
+    // Rodriguez Printing Plate /1".
+    const a = assessListingTitle({
+      ...uv,
+      insertName: "Topps Chrome Ultraviolet All-Stars Autographs",
+      parallelName: "Topps Chrome Ultraviolet All-Stars Autographs Printing Plate Black",
+      printRun: 1,
+    });
+    expect(a.title).toBe(
+      "2023 Ultraviolet All-Stars Autographs Julio Rodriguez Printing Plate Black /1",
+    );
+  });
+
+  test("with room, the repeat reads whole in its own place; short of room, it goes whole", () => {
+    const ohtani: ListingCardInputs = {
+      ...chrome,
+      insertName: "Rookie Autographs",
+      parallelName: "Rookie Autographs Black Refractor",
+      playerNames: ["Ohtani"],
+    };
+    expect(assessListingTitle(ohtani).title).toBe(
+      "2023 Topps Chrome Rookie Autographs Ohtani #1 Rookie Autographs Black Refractor",
+    );
+    // Before: "... Ohtani #1 Rookie Black Refractor Reds", half the repeat.
+    const a = assessListingTitle({ ...ohtani, teamNames: ["Reds"] });
+    expect(a.title).toBe("2023 Topps Chrome Rookie Autographs Ohtani #1 Black Refractor Reds Baseball");
+    expect(a.coreFits).toBe(true);
+    expect(a.dropped).toEqual(["Parallel", "Insert"]);
+  });
+
+  test("a redundant word never spends room a real loss left over", () => {
+    // The team does not fit; "Topps" would (6 of the 6 characters left), and
+    // before it took them: "... #FS-VG Topps Gold Refractor".
+    const a = assessListingTitle({
+      ...chrome,
+      cardNumber: "FS-VG",
+      insertName: "Future Stars",
+      parallelName: "Topps Gold Refractor",
+      playerNames: ["Vladimir Guerrero Jr."],
+      teamNames: ["Toronto Blue Jays"],
+    });
+    expect(a.title).toBe("2023 Topps Chrome Future Stars Vladimir Guerrero Jr. #FS-VG Gold Refractor");
+    expect(a.dropped).toContain("Toronto Blue Jays");
+  });
+
+  test("a parallel that only shares a word with its insert keeps it", () => {
+    // "Gold Refractor" under "Gold Rush" repeats no insert. Before: "...
+    // AUTO Refractor Toronto Blue Jays", the parallel's own "Gold" gone.
+    const goldRush: ListingCardInputs = {
+      ...chrome,
+      setName: "Topps",
+      cardNumber: "88BA-VGJ",
+      insertName: "Gold Rush",
+      parallelName: "Gold Refractor",
+      playerNames: ["Elly De La Cruz"],
+      autographed: "On Card",
+      teamNames: ["Toronto Blue Jays"],
+    };
+    expect(assessListingTitle(goldRush).title).toBe(
+      "2023 Topps Gold Rush Elly De La Cruz #88BA-VGJ AUTO Gold Refractor Baseball",
+    );
+    // The repeat is the leading insert name only: the second "Gold" of
+    // "Gold Rush Gold Refractor" is the parallel's own.
+    expect(
+      assessListingTitle({ ...goldRush, parallelName: "Gold Rush Gold Refractor", cardNumber: "GR-5" }).title,
+    ).toBe("2023 Topps Gold Rush Elly De La Cruz #GR-5 AUTO Gold Refractor Toronto Blue Jays");
+  });
+
+  test("the little words of a repeated name go with it: no lone \"&\" or \"of the\"", () => {
+    // Before: "... Aaron Judge #1 & Orange Refractor SP".
+    expect(
+      assessListingTitle({
+        ...chrome,
+        insertName: "Black & White Autographs",
+        parallelName: "Black & White Autographs Orange Refractor",
+        playerNames: ["Aaron Judge"],
+        shortPrint: "SP",
+      }).title,
+    ).toBe("2023 Topps Chrome Black & White Autographs Aaron Judge #1 Orange Refractor SP");
+    // Before: "... Ohtani #250 RELIC of the Silver Prizm /99".
+    expect(
+      assessListingTitle({
+        ...chrome,
+        manufacturer: "Bowman",
+        setName: "Bowman Chrome",
+        cardNumber: "250",
+        insertName: "Stars of the Game",
+        parallelName: "Stars of the Game Silver Prizm",
+        playerNames: ["Ohtani"],
+        isRelic: true,
+        printRun: 99,
+      }).title,
+    ).toBe("2023 Bowman Chrome Stars of the Game Ohtani #250 RELIC Silver Prizm /99 Baseball");
   });
 });

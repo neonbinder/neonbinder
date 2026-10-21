@@ -41,6 +41,7 @@ import {
   assessListingTitle,
   isFillerToken,
   rookieAsRc,
+  wordKey,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./generateListing";
@@ -372,7 +373,9 @@ export function leftOutOfTitle(
   inputs: ListingCardInputs,
   assessment: ListingTitleAssessment,
 ): string[] {
-  const present = new Set(wordsOf(assessment.title));
+  // Compared as the redundant-word rule compares: a parallel's "Rookie" is
+  // said by an insert the title reads as "RC Autographs".
+  const present = new Set(wordsOf(assessment.title).map(wordKey));
   const out: string[] = [];
   if (!assessment.coreFits) {
     // NEO-335 — the insert's name is core identity now, so its words are
@@ -403,7 +406,7 @@ export function leftOutOfTitle(
     for (const segment of segments) {
       const words = (segment ?? "").split(/\s+/).filter(Boolean);
       const missing = words.filter(
-        (w) => w !== "&" && !present.has(w.toLowerCase()) && !reported.has(w.toLowerCase()),
+        (w) => w !== "&" && !present.has(wordKey(w)) && !reported.has(w.toLowerCase()),
       );
       if (missing.length > 0) {
         for (const w of missing) reported.add(w.toLowerCase());

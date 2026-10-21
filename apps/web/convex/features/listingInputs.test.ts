@@ -851,3 +851,31 @@ describe("NEO-339 — a long insert name never pushes the player out of the titl
     expect(assessment.dropped).toContain("#1");
   });
 });
+
+describe("NEO-339 — a parallel leaf named for its insert, through the set context", () => {
+  // The chain as `titleChainFacts` reads a BSC parallel leaf under an insert:
+  // the insert row's value on the insert role, the leaf's own value as the
+  // parallel token.
+  const chrome: ListingSetContext = {
+    sportValue: "Baseball",
+    setNameValue: "Topps Chrome",
+    inheritedFeatures: { manufacturer: "Topps", season: "2023", autographed: "On Card" },
+    insertNameValue: "Rookie Autographs",
+    insertIsRole: true,
+    parallelLeafValue: "Rookie Autographs Black & White Mini-Diamond Refractor",
+  };
+
+  test("the repeat goes, the set words outlast it, and a \"Rookie\" said as RC is not left out", () => {
+    const inputs = listingInputsForCard({ cardNumber: "RA-AB", isRookie: true }, chrome, {
+      playerNames: ["Alec Burleson"],
+      teamNames: ["St. Louis Cardinals"],
+    });
+    expect(inputs.parallelName).toBe("Rookie Autographs Black & White Mini-Diamond Refractor");
+    const a = assessListingTitle(inputs);
+    expect(a.title).toBe(
+      "2023 Topps RC Autographs Alec Burleson Black & White Mini-Diamond Refractor",
+    );
+    // "Chrome" is a real loss; the parallel's "Rookie" is said by "RC".
+    expect(leftOutOfTitle(inputs, a)).toEqual(["Chrome", "#RA-AB", "St. Louis Cardinals"]);
+  });
+});

@@ -36,10 +36,18 @@
  *   then:          AUTO, RELIC, <cardVariation>, RC, SP|SSP, teams
  *                  (the NEO-101 priority order).
  *   first to go:   redundant words (a word of the insert's or parallel's name
- *                  the set already says, such as "Topps"; AUTO beside an
- *                  "Autographs", RELIC beside a "Relics"), then the filler:
- *                  the second "Rookie", the sport, and the "Insert" /
- *                  "Parallel" labels.
+ *                  the set already says, such as "Topps"; the parallel's
+ *                  repeat of its insert's name, "1988 Topps Baseball
+ *                  Autographs" in "1988 Topps Baseball Autographs Printing
+ *                  Plate Cyan"; a "Rookie" beside an insert that says RC or
+ *                  Rookie; AUTO beside an "Autographs", RELIC beside a
+ *                  "Relics"), then the filler: the second "Rookie", the sport,
+ *                  and the "Insert" / "Parallel" labels.
+ *
+ * The redundant words are strictly first: kept only when nothing else was
+ * given up, and each name's are kept or dropped together, so a title never
+ * strands a lone "1988", "in" or "Topps" between the players and the
+ * parallel's own words (`parallelRepeat`).
  *
  * So when room runs out the labels, the sport, the second "Rookie" and the
  * redundant words go first, then the attributes from the lowest-value end,
@@ -337,11 +345,26 @@ function setIdentitySplit(
   const insert = inputs.insertName?.trim();
   if (!insert) return { set: tokens };
   if (tokens.length === 0) return { set: [], insert };
-  if (startsWithWord(insert, tokens.join(" "))) return { set: [], insert };
-  const last = tokens[tokens.length - 1];
-  if (startsWithWord(insert, last)) return { set: tokens.slice(0, -1), insert };
+  // An insert that starts with the set's name reads the set's words once, and
+  // they stay SET words: given up like any set word (from the end, after the
+  // card number), while the insert's own words after them are never cut. So
+  // "Topps Chrome Ultraviolet All-Stars Autographs" is the set's "Topps
+  // Chrome" and the insert's "Ultraviolet All-Stars Autographs", which read
+  // the same in a title that fits.
+  const rest = withoutLeadingWords(insert, tokens.join(" "))
+    ?? withoutLeadingWords(insert, tokens[tokens.length - 1]);
+  if (rest !== undefined) return rest ? { set: tokens, insert: rest } : { set: tokens };
   if (alreadySaid(tokens.join(" "), insert)) return { set: tokens };
   return { set: tokens, insert };
+}
+
+/**
+ * `name` without `prefix` when it starts with it as whole words (the rest,
+ * trimmed; "" when the name is the prefix); undefined when it does not.
+ */
+function withoutLeadingWords(name: string, prefix: string): string | undefined {
+  if (!prefix || !startsWithWord(name, prefix)) return undefined;
+  return name.slice(prefix.length).trim();
 }
 
 /**
@@ -428,6 +451,94 @@ const NEVER_REDUNDANT = new Set(["&", "and", "of", "the", "a", "de", "la", "el",
 function canBeRedundant(word: string): boolean {
   const lower = word.toLowerCase();
   return /[\p{L}\p{N}]/u.test(lower) && !NEVER_REDUNDANT.has(lower);
+}
+
+/**
+ * A word as the redundant-word rule compares it: case-folded, with the four
+ * spellings of rookie one word. "Rookie", "Rookies", "RC" and "RCs" say the
+ * same thing, so a parallel's "Rookie" repeats an insert that reads "RC
+ * Autographs" once "Rookie" → "RC" has shortened it (Jason's rule 2).
+ */
+export function wordKey(word: string): string {
+  const lower = word.toLowerCase();
+  return /^(rookies?|rcs?)$/.test(lower) ? "rc" : lower;
+}
+
+/**
+ * Which words of the parallel's name are its REPEAT of the set and insert
+ * names: redundant words, the first to go, and only ever together.
+ *
+ *   - The insert's name at the head of the parallel's. Marketplaces name an
+ *     insert's parallel by its insert, "1988 Topps Baseball Autographs
+ *     Printing Plate Cyan" under "1988 Topps Baseball Autographs", and those
+ *     leading words are the repeat. Matched word for word, in order, so the
+ *     "&" of "Black & White" and the "of the" of "Stars of the Game" go with
+ *     it; a set or maker word may sit among them ("Topps Chrome Authentics
+ *     Relics Green Refractor" under "Authentics Relics") and an insert word
+ *     the set already says may be missing. Only a WHOLE insert name counts: a
+ *     parallel that merely shares a word with it ("Gold Refractor" under "Gold
+ *     Rush") repeats nothing, and the second "Gold" of "Gold Rush Gold
+ *     Refractor" is the parallel's own.
+ *   - A word the set or maker words say, anywhere in the name ("Topps", the
+ *     "Prizm" of "Silver Prizm"; Jason's rule 2).
+ *   - A rookie word ("Rookie", "Rookies") when the insert or set says one
+ *     ("RC Autographs", after "Rookie" → "RC"), anywhere in the name.
+ *
+ * The insert's words are the ones this build's title says (`insertWords`:
+ * the insert's own words, "RC" for "Rookie" when shortened, or the short name
+ * standing in for it), so a repeated word is still in the title once the set
+ * words are.
+ *
+ * A name EVERY word of which would be repeated is not stripped at all: the
+ * parallel's name is never dropped (Jason, 2026-10-19).
+ *
+ * `head` is how many leading words repeat the insert's or the set's name
+ * whole ("Topps Chrome Ultraviolet All-Stars Autographs" ahead of "Printing
+ * Plate Black"). Those are a copy of names the title already lays out, so,
+ * unlike a set word inside the parallel's own name (the "Prizm" of "Silver
+ * Prizm"), they lend the set words no protection (`setCarries`).
+ */
+function parallelRepeat(
+  parallelWords: readonly string[],
+  setWords: readonly string[],
+  insertWords: readonly string[],
+): { redundant: boolean[]; head: number } {
+  const setSays = new Set(setWords.map(wordKey));
+  const rookieSaid = setSays.has("rc") || insertWords.some((w) => wordKey(w) === "rc");
+  const repeated = parallelWords.map((w) => {
+    if (!canBeRedundant(w)) return false;
+    const key = wordKey(w);
+    return setSays.has(key) || (key === "rc" && rookieSaid);
+  });
+  // The insert's name at the head: walk both names together.
+  let next = 0;
+  let head = 0;
+  while (head < parallelWords.length) {
+    const key = wordKey(parallelWords[head]);
+    while (
+      next < insertWords.length &&
+      key !== wordKey(insertWords[next]) &&
+      setSays.has(wordKey(insertWords[next]))
+    ) {
+      next += 1;
+    }
+    if (next < insertWords.length && key === wordKey(insertWords[next])) {
+      next += 1;
+    } else if (!(canBeRedundant(parallelWords[head]) && setSays.has(key))) {
+      break;
+    }
+    head += 1;
+  }
+  while (next < insertWords.length && setSays.has(wordKey(insertWords[next]))) next += 1;
+  const insertRepeated = insertWords.length > 0 && next === insertWords.length;
+  if (insertRepeated) repeated.fill(true, 0, head);
+  if (repeated.every(Boolean)) return { redundant: repeated.map(() => false), head: 0 };
+  // Without a whole insert at its head, only a leading run of set words is.
+  let setHead = 0;
+  while (setHead < parallelWords.length && repeated[setHead] && setSays.has(wordKey(parallelWords[setHead]))) {
+    setHead += 1;
+  }
+  return { redundant: repeated, head: insertRepeated ? head : setHead };
 }
 
 function isRealParallel(inputs: ListingCardInputs): boolean {
@@ -742,6 +853,21 @@ class TitleLayout {
     return true;
   }
 
+  /**
+   * Keep every piece of a group, or none of them: a group that is read whole
+   * or not at all (a name's redundant words). True when all were kept.
+   */
+  keepAll(group: readonly TitlePiece[]): boolean {
+    const pending = group.filter((piece) => !piece.kept);
+    const cost = pending.reduce((sum, piece) => sum + piece.text.length + 1, 0);
+    if (pending.length === 0) return true;
+    if (pending.some((piece) => !piece.text)) return false;
+    // `room()` already pays one piece's separating space.
+    if (cost - 1 > this.room()) return false;
+    for (const piece of pending) this.keep(piece);
+    return true;
+  }
+
   private unkeep(piece: TitlePiece): void {
     if (!piece.kept) return;
     piece.kept = false;
@@ -839,22 +965,29 @@ export function assessListingTitle(
     a.dropped.filter((token) => !isFillerToken(token, inputs, a.title)).length;
   const fitsWhole = (a: ListingTitleAssessment) => a.coreFits && lost(a) === 0;
 
-  let best = buildTitle(inputs, false);
+  let full = buildTitle(inputs, false);
+  let best = full.assessment;
   // NEO-335 — "Rookie" → "RC" in the insert's name, only when the title does
   // not fit otherwise (Jason, 2026-10-13: "Rookie->RC should shorten only when
   // needed"). The old builder's position: after the optional words are lost,
   // BEFORE any shorter set or insert name is tried.
   //
-  // "Needed" is held to its word: the shortened name is taken when the core
-  // was cut (four characters back for the card's own identity), or when it
-  // keeps a real token the full name lost. When it buys nothing — the same
-  // tokens are lost either way — the insert keeps its printed name. (The old
-  // builder kept it regardless, but it never re-tried a lost token after.)
+  // "Needed" is held to its word: the shortened name is taken when it keeps
+  // more of the core (four characters back for the card's own identity), or,
+  // losing as much of the core, when it keeps a real token the full name
+  // lost. When it buys nothing — the same core and tokens are lost either
+  // way, as when "Chrome" does not fit beside either spelling — the insert
+  // keeps its printed name. (The old builder kept it regardless, but it never
+  // re-tried a lost token after.)
   const insert = inputs.insertName?.trim();
   if (!fitsWhole(best) && insert && rookieAsRc(insert) !== insert) {
     const rc = buildTitle({ ...inputs, insertName: rookieAsRc(insert) }, false);
-    if (!best.coreFits || lost(rc) < lost(best)) {
-      best = { ...rc, rookieAsRcUsed: true };
+    const better =
+      rc.coreLost < full.coreLost ||
+      (rc.coreLost === full.coreLost && lost(rc.assessment) < lost(best));
+    if (better) {
+      full = rc;
+      best = { ...rc.assessment, rookieAsRcUsed: true };
     }
   }
   if (!inputs.setShortName?.trim()) return best;
@@ -863,7 +996,7 @@ export function assessListingTitle(
   const useShortName =
     rule === "C" || !best.coreFits || (rule === "A" && !fitsWhole(best));
   if (!useShortName) return best;
-  return { ...buildTitle(inputs, true), shortNameUsed: true };
+  return { ...buildTitle(inputs, true).assessment, shortNameUsed: true };
 }
 
 /**
@@ -881,17 +1014,21 @@ export function assessListingTitle(
  *   3. AUTO, RELIC, the variation, RC, SP/SSP, each team.
  *   4. the redundant words: a word of the insert's or parallel's name the set
  *      words already say ("Topps" in "1988 Topps Baseball Autographs" under
- *      Topps Chrome), an AUTO or RELIC the title already says; then the
- *      second "Rookie" (filler: a printed word of a name is not given up for
- *      it); then the sport.
+ *      Topps Chrome), the parallel's repeat of the insert (`parallelRepeat`),
+ *      an AUTO or RELIC the title already says. Only when nothing in 2 or 3
+ *      was lost, and each name's words together. Then the second "Rookie"
+ *      (filler: a printed word of a name is not given up for it); then the
+ *      sport.
  *   5. the "Parallel" and "Insert" labels.
  *
- * `coreFits` is false when anything in 1 or 2 is not in the title whole.
+ * `coreFits` is false when anything in 1 or 2 is not in the title whole;
+ * `coreLost` counts those pieces (a word, a whole name, the number), so two
+ * builds that both cut the core can be told apart.
  */
 function buildTitle(
   inputs: ListingCardInputs,
   useShortName: boolean,
-): ListingTitleAssessment {
+): { assessment: ListingTitleAssessment; coreLost: number } {
   const layout = new TitleLayout(LISTING_TITLE_MAX);
   const { set, insert } = setIdentitySplit(inputs, useShortName);
   const playerNames = inputs.playerNames ?? [];
@@ -927,23 +1064,19 @@ function buildTitle(
   // the name's word, so it is kept with the name.
   const setWords = splitWords(set.join(" "));
   const insertWords = insert ? splitWords(insert) : [];
-  const setSays = new Set(setWords.map((w) => w.toLowerCase()));
-  const insertSays = new Set(insertWords.map((w) => w.toLowerCase()));
+  const setSays = new Set(setWords.map(wordKey));
+  const insertRedundant = insertWords.map((w) => canBeRedundant(w) && setSays.has(wordKey(w)));
+  const repeat = parallelRepeat(parallelWords, setWords, insertWords);
+  const parallelRedundant = repeat.redundant;
   const nameSays = new Set(
     [
       ...splitWords(insert ?? (useShortName ? "" : (inputs.insertName ?? ""))),
-      ...splitWords(parallel ?? ""),
+      ...parallelWords.slice(repeat.head),
     ]
       .filter(canBeRedundant)
-      .map((w) => w.toLowerCase()),
+      .map(wordKey),
   );
-  const isRedundantIn = (says: ReadonlySet<string>) => (w: string) =>
-    canBeRedundant(w) && says.has(w.toLowerCase());
-  const insertRedundant = insertWords.map(isRedundantIn(setSays));
-  const parallelRedundant = parallelWords.map(
-    (w) => isRedundantIn(setSays)(w) || isRedundantIn(insertSays)(w),
-  );
-  const setCarries = setWords.map((w) => canBeRedundant(w) && nameSays.has(w.toLowerCase()));
+  const setCarries = setWords.map((w) => canBeRedundant(w) && nameSays.has(wordKey(w)));
 
   // The layout, left to right.
   const yearPiece = inputs.year ? layout.place(inputs.year) : undefined;
@@ -961,6 +1094,18 @@ function buildTitle(
   const tailPieces = attributes.filter((t) => t.slot === "tail").map(placed);
   const sport = inputs.sport?.trim();
   const sportPiece = sport ? layout.place(sport) : undefined;
+
+  // The core pieces as laid down, to count what of them the title loses.
+  const corePieces = [
+    printRunPiece,
+    playersPiece,
+    ...insertPieces.filter((_, i) => !insertRedundant[i]),
+    ...parallelPieces.filter((_, i) => !parallelRedundant[i]),
+    yearPiece,
+    ...setPieces,
+    numberPiece,
+  ].filter((p): p is TitlePiece => p !== undefined);
+  const coreText = new Map(corePieces.map((p) => [p, p.text]));
 
   // 1. Never dropped.
   let coreFits = true;
@@ -1028,16 +1173,32 @@ function buildTitle(
     if (!layout.keep(piece)) dropped.push(text);
   }
 
-  // 4. The redundant words, kept only after every real token has had its
-  // chance (Jason: "removed when necessary"), then the filler: the second
-  // "Rookie", then the sport, which is always safe to remove.
-  insertPieces.forEach((piece, i) => {
-    if (insertRedundant[i]) layout.keep(piece);
-  });
-  parallelPieces.forEach((piece, i) => {
-    if (parallelRedundant[i]) layout.keep(piece);
-  });
-  for (const piece of redundantFlags) keepToken(piece);
+  // 4. The redundant words (Jason: "removed when necessary"), then the
+  // filler: the second "Rookie", then the sport, which is always safe to
+  // remove.
+  //
+  // Strictly last among the words that say something: a name's redundant
+  // word is kept only when nothing above it was given up — every year, set
+  // and maker word, the card number and every attribute is in. Otherwise all
+  // of them go, even from room left over, so a title that lost "Chrome", its
+  // number or a team never still spends characters on a word it already says.
+  //
+  // And each name's redundant words go or stay TOGETHER: the parallel's
+  // repeat of its insert ("1988 Topps Baseball Autographs" in "1988 Topps
+  // Baseball Autographs Printing Plate Cyan") is read whole in its own place
+  // or not at all, never a stray "1988", "in" or "Topps" stranded between the
+  // players and the parallel's own words.
+  //
+  // AUTO and RELIC beside a name that says them are the same tier: kept only
+  // when nothing real was lost, and reported as dropped when withheld (as
+  // filler: `isFillerToken` reads them so against the title).
+  if (coreFits && dropped.length === 0) {
+    layout.keepAll(insertPieces.filter((_, i) => insertRedundant[i]));
+    layout.keepAll(parallelPieces.filter((_, i) => parallelRedundant[i]));
+    for (const piece of redundantFlags) keepToken(piece);
+  } else {
+    for (const piece of redundantFlags) dropped.push(piece.text);
+  }
   if (secondRookie) keepToken(secondRookie);
   if (sportPiece) keepToken(sportPiece);
 
@@ -1064,7 +1225,8 @@ function buildTitle(
     if (!layout.keep(label)) dropped.push(label.text);
   }
 
-  return { title: layout.render(), coreFits, dropped };
+  const coreLost = corePieces.filter((p) => !p.kept || p.text !== coreText.get(p)).length;
+  return { assessment: { title: layout.render(), coreFits, dropped }, coreLost };
 }
 
 /**
