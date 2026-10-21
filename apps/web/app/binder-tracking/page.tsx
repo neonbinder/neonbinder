@@ -464,7 +464,7 @@ function TakeItForASpin({ linkRef }: { linkRef: RefObject<HTMLAnchorElement | nu
           Take it for a spin
         </h2>
         <p className="text-lg text-slate-200">
-          A whole collection, already sleeved. Rip a pack, fill a page, light up a checklist.
+          A whole collection, already sleeved. Hunt down a card, fill a page, light up a checklist.
         </p>
         <p className="text-slate-400">It&apos;s all pretend cards, so go wild.</p>
         <Link
