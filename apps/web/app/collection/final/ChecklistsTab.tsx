@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MagnifyingGlassIcon } from "@heroicons/react/20/solid";
 import { Input } from "@/components/primitives/Input";
 import { getSet, searchCards, type Card, type CardId } from "../prototypes/_shared/data";
 import Cascade from "../prototypes/p1/Cascade";
+import { DRILL_ROW_ATTR } from "../prototypes/p1/StaticColumn";
 import { drillTo, terminalFilter, type Drill } from "../prototypes/p1/drill";
 import { FOCUS } from "../prototypes/p1/ui";
 import CardRowGroup, { type RowActions } from "./CardRows";
@@ -56,6 +57,15 @@ export default function ChecklistsTab({
   const focusChecklist = useCallback(() => {
     checklistHeading.current?.focus();
   }, []);
+
+  // A cascade rebuilt from outside (a deep link, Back or Forward, a search
+  // jump) starts scrolled to its first column; on a narrow row that leaves
+  // the open column out of sight. Show the deepest one, as a pick would.
+  const browseRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const row = browseRef.current?.querySelector<HTMLElement>(`[${DRILL_ROW_ATTR}]`);
+    if (row) row.scrollLeft = row.scrollWidth;
+  }, [cascadeKey]);
 
   const filter = terminalFilter(drill);
   const scoped = store.fileableBinders.find((b) => b.id === store.selectedBinderId);
@@ -159,7 +169,7 @@ export default function ChecklistsTab({
         )}
       </section>
 
-      <section aria-label="Browse sets" className="space-y-4">
+      <section ref={browseRef} aria-label="Browse sets" className="space-y-4">
         <p className="text-sm text-slate-300">
           Or drill down: sport, year, brand, set, then base, an insert or a parallel.
         </p>

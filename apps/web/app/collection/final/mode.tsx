@@ -26,12 +26,24 @@ import type { BinderSelection, CollectionBinder } from "./store";
  *   the public tour page for it instead (`PUBLIC_DESTINATIONS`), and the
  *   demo bar adds Sign up and Back to the tour.
  *
- * In both, where you are (tab, set wall, need list, open binder) rides on the
- * page URL with the same params (`?tab=…&set=…&view=…&for=…&b=…`), so Back
- * steps back through the views, a refresh stays put and a deep link opens
- * straight there. Every view change pushes a history entry; in-view tweaks
- * (page turns, filters, the binder-scope picker, the card drawer) stay in
- * local state and push nothing. Public mode also keeps its own params on
+ * In both, where you are rides on the page URL, so Back steps back through
+ * the views, a refresh stays put and a deep link opens straight there. The
+ * params, all ids and never display names:
+ *
+ * - `tab`: `cards`, `binders` or `checklists`.
+ * - My Cards: `set` (a set wall), or `view=needs` with an optional `for`.
+ * - My Binders: `b` (an open binder), `set` (a set to browse) or `all=1`.
+ * - Checklists: the drill (`checklistParams.ts`): above a set, `sport`,
+ *   `year` and `brand`; from a set down, `set` (the rest follows from it),
+ *   `type` (Base, Inserts or Parallels) and `variant` (an insert or parallel
+ *   name). Also `q`, the search box, and `card`, a row a search jumped to.
+ *
+ * Every view change pushes a history entry (`useCollectionParams`,
+ * `ParamLink`), each Checklists drill step included. In-view tweaks replace
+ * the current entry instead (`useReplaceParams`): the search box's `q` as
+ * you type, a jump that only rings another row of the checklist on screen,
+ * the binder-scope picker. Page turns, filters and the card drawer stay in
+ * local state and touch no URL. Public mode also keeps its own params on
  * every view URL (`keepParams`, the marketing page's `demo=on`) and counts
  * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
  * tour" can return to the entry the visitor came from in one step.
@@ -41,7 +53,8 @@ import type { BinderSelection, CollectionBinder } from "./store";
  * (`scopeFromParams`) and the store's `selectedBinderId` follows. Picking a
  * scope replaces the current entry (`useSetScope`); every view change carries
  * the scope of the moment on, so Back restores the scope each view had. An
- * unknown or deleted binder id reads as All.
+ * unknown or deleted binder id reads as All, and an unknown id anywhere else
+ * falls back the same quiet way: to the deepest level that still makes sense.
  *
  * Both modes are hard-coded data and never reach Convex or Clerk.
  */
@@ -213,22 +226,41 @@ function useViewTarget() {
 }
 
 /**
- * The Binder picker's setter: the same view at another scope. It REPLACES
- * the current entry (keeping its history state), so a scope change is never
- * a Back step of its own.
+ * Changes the current entry's params in place: `update` edits a copy of the
+ * newest URL the page has asked for, and the result REPLACES the current
+ * entry (keeping its history state), so the change is never a Back step of
+ * its own. Nothing happens when `update` leaves the params as they were.
  */
-export function useSetScope(): (scope: BinderSelection) => void {
+export function useReplaceParams(): (update: (params: URLSearchParams) => void) => void {
   const navigate = useNavigate();
   const latestRef = useLatestEntry();
   return useCallback(
-    (scope) => {
+    (update) => {
       const next = new URLSearchParams(latestRef.current.search);
-      putScope(next, scope);
+      const before = next.toString();
+      update(next);
+      if (next.toString() === before) return;
       const search = `?${next.toString()}`;
-      latestRef.current = { ...latestRef.current, search, scope };
+      latestRef.current = { ...latestRef.current, search };
       void navigate({ search }, { replace: true, state: latestRef.current.state });
     },
     [navigate, latestRef],
+  );
+}
+
+/**
+ * The Binder picker's setter: the same view at another scope, replacing the
+ * current entry (`useReplaceParams`), so a scope change is never a Back step.
+ */
+export function useSetScope(): (scope: BinderSelection) => void {
+  const replace = useReplaceParams();
+  const latestRef = useLatestEntry();
+  return useCallback(
+    (scope) => {
+      latestRef.current = { ...latestRef.current, scope };
+      replace((params) => putScope(params, scope));
+    },
+    [replace, latestRef],
   );
 }
 
