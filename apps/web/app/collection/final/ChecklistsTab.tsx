@@ -7,6 +7,7 @@ import { drillTo, terminalFilter, type Drill } from "../prototypes/p1/drill";
 import { FOCUS } from "../prototypes/p1/ui";
 import CardRowGroup, { type RowActions } from "./CardRows";
 import Checklist from "./Checklist";
+import { useSetScope } from "./mode";
 import RequestCardDialog from "./RequestCardDialog";
 import type { CollectionTabProps } from "./store";
 
@@ -43,6 +44,7 @@ export default function ChecklistsTab({
   highlightCardId: CardId | null;
   selectedCardId: CardId | null;
 }) {
+  const setScope = useSetScope();
   const [showAll, setShowAll] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const hits = query.trim() ? searchCards(query) : [];
@@ -123,7 +125,7 @@ export default function ChecklistsTab({
                 Have, Want and Trade below are for <span className="text-neon-blue">{scoped.name}</span>.{" "}
                 <button
                   type="button"
-                  onClick={() => store.setSelectedBinder("all")}
+                  onClick={() => setScope("all")}
                   className={`rounded-sm text-neon-blue underline underline-offset-2 hover:text-white ${FOCUS}`}
                 >
                   Show all binders

@@ -1,6 +1,16 @@
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
 import { MOCK_HANDLE } from "./binders/model";
+import type { BinderSelection, CollectionBinder } from "./store";
 
 /**
  * NEO-350 — where the collection demo is running, and what that changes.
@@ -24,6 +34,13 @@ import { MOCK_HANDLE } from "./binders/model";
  * every view URL (`keepParams`, the marketing page's `demo=on`) and counts
  * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
  * tour" can return to the entry the visitor came from in one step.
+ *
+ * The Binder picker's scope rides there too, as `scope=<binderId>` (left off
+ * for All), and the URL is its one source: the page reads it
+ * (`scopeFromParams`) and the store's `selectedBinderId` follows. Picking a
+ * scope replaces the current entry (`useSetScope`); every view change carries
+ * the scope of the moment on, so Back restores the scope each view had. An
+ * unknown or deleted binder id reads as All.
  *
  * Both modes are hard-coded data and never reach Convex or Clerk.
  */
@@ -103,31 +120,114 @@ export function CollectionModeProvider({
           },
     [mode, keepKey],
   );
-  return <CollectionModeContext.Provider value={value}>{children}</CollectionModeContext.Provider>;
+  // The URL the page is headed to. The router commits a navigation inside a
+  // transition, so for a moment after a push the rendered params are the old
+  // ones; a scope pick or a second push in that moment builds on this.
+  const location = useLocation();
+  const latestRef = useRef<LatestEntry>({ search: location.search, state: location.state });
+  useLayoutEffect(() => {
+    latestRef.current = { search: location.search, state: location.state };
+  }, [location]);
+  return (
+    <CollectionModeContext.Provider value={value}>
+      <LatestEntryContext.Provider value={latestRef}>{children}</LatestEntryContext.Provider>
+    </CollectionModeContext.Provider>
+  );
+}
+
+/** The newest history entry the page has asked for, committed or not. */
+interface LatestEntry {
+  search: string;
+  state: unknown;
+  /** The scope to carry on: set while a navigation of ours is still pending. */
+  scope?: BinderSelection;
+}
+const LatestEntryContext = createContext<MutableRefObject<LatestEntry> | null>(null);
+
+function useLatestEntry(): MutableRefObject<LatestEntry> {
+  const ref = useContext(LatestEntryContext);
+  if (!ref) throw new Error("useLatestEntry: outside CollectionModeProvider");
+  return ref;
 }
 
 export function useCollectionMode(): CollectionModeValue {
   return useContext(CollectionModeContext);
 }
 
+/** The scope param: a binder id, or absent for All. */
+export const SCOPE_PARAM = "scope";
+
+/** A binder the picker can scope to (the store refuses anything else). */
+function scopable(binders: CollectionBinder[], id: string): boolean {
+  return binders.some((b) => b.id === id && b.kind === "manual");
+}
+
+/**
+ * The scope a URL stands for. `scope=` names it; an unknown or deleted id is
+ * All. With no `scope` on the URL, an open binder (`tab=binders&b=…`, as a
+ * shared link has it) scopes the page the way opening it does: a binder that
+ * holds copies scopes to itself, a smart binder to All.
+ */
+export function scopeFromParams(params: URLSearchParams, binders: CollectionBinder[]): BinderSelection {
+  const id = params.get(SCOPE_PARAM);
+  if (id !== null) return scopable(binders, id) ? id : "all";
+  const open = params.get("tab") === "binders" ? params.get("b") : null;
+  return open && scopable(binders, open) ? open : "all";
+}
+
+/** The page's scope as its URL has it, for view links to carry on. */
+const ViewScopeContext = createContext<BinderSelection>("all");
+export const ViewScopeProvider = ViewScopeContext.Provider;
+
+/** Writes a scope into a view's params: the id, or nothing for All. */
+function putScope(params: URLSearchParams, scope: BinderSelection) {
+  if (scope === "all") params.delete(SCOPE_PARAM);
+  else params.set(SCOPE_PARAM, scope);
+}
+
 /**
  * Where a view link or a view change goes: the next view's search (with the
- * mode's kept params) and, in the demo, the history state one level deeper.
+ * mode's kept params and the scope of the moment, unless `next` sets its
+ * own: `"all"` for All) and, in the demo, the history state one level deeper.
  */
 function useViewTarget() {
   const { mode, keepParams } = useCollectionMode();
-  const location = useLocation();
+  const scope = useContext(ViewScopeContext);
+  const latestRef = useLatestEntry();
   return useCallback(
     (next: ParamsInit) => {
       const params = new URLSearchParams(keepParams);
-      new URLSearchParams(next).forEach((value, key) => params.set(key, value));
+      const view = new URLSearchParams(next);
+      view.forEach((value, key) => params.set(key, value));
+      const carried = view.get(SCOPE_PARAM) ?? latestRef.current.scope ?? scope;
+      putScope(params, carried);
       const search = `?${params.toString()}`;
-      if (mode !== "public") return { search, state: undefined };
-      const current = (location.state ?? {}) as DemoHistoryState;
+      if (mode !== "public") return { search, state: undefined, scope: carried };
+      const current = (latestRef.current.state ?? {}) as DemoHistoryState;
       const state: DemoHistoryState = { ...current, demoDepth: (current.demoDepth ?? 0) + 1 };
-      return { search, state };
+      return { search, state, scope: carried };
     },
-    [mode, keepParams, location.state],
+    [mode, keepParams, scope, latestRef],
+  );
+}
+
+/**
+ * The Binder picker's setter: the same view at another scope. It REPLACES
+ * the current entry (keeping its history state), so a scope change is never
+ * a Back step of its own.
+ */
+export function useSetScope(): (scope: BinderSelection) => void {
+  const navigate = useNavigate();
+  const latestRef = useLatestEntry();
+  return useCallback(
+    (scope) => {
+      const next = new URLSearchParams(latestRef.current.search);
+      putScope(next, scope);
+      const search = `?${next.toString()}`;
+      latestRef.current = { ...latestRef.current, search, scope };
+      void navigate({ search }, { replace: true, state: latestRef.current.state });
+    },
+    [navigate, latestRef],
   );
 }
 
@@ -140,18 +240,38 @@ export function useCollectionParams(): [URLSearchParams, SetParams] {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const target = useViewTarget();
+  const latestRef = useLatestEntry();
   const setParams = useCallback<SetParams>(
     (next) => {
-      const { search, state } = target(next);
+      const { search, state, scope } = target(next);
+      latestRef.current = { search, state, scope };
       void navigate({ search }, { state });
     },
-    [navigate, target],
+    [navigate, target, latestRef],
   );
   return [params, setParams];
 }
 
 /** A link to another view of the collection page (`?tab=…`): a router link that pushes. */
-export function ParamLink({ search, ...rest }: Omit<LinkProps, "to" | "state"> & { search: ParamsInit }) {
+export function ParamLink({
+  search,
+  onClick,
+  ...rest
+}: Omit<LinkProps, "to" | "state"> & { search: ParamsInit }) {
   const target = useViewTarget()(search);
-  return <Link to={{ search: target.search }} state={target.state} {...rest} />;
+  const latestRef = useLatestEntry();
+  return (
+    <Link
+      to={{ search: target.search }}
+      state={target.state}
+      onClick={(e) => {
+        onClick?.(e);
+        // A plain click navigates here; record it as where the page is headed.
+        if (!e.defaultPrevented && e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
+          latestRef.current = target;
+        }
+      }}
+      {...rest}
+    />
+  );
 }

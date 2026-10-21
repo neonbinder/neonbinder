@@ -1,27 +1,27 @@
 import { useId, useRef, useState } from "react";
 import { LinkIcon } from "@heroicons/react/24/outline";
 import { useCollectionMode } from "../mode";
-import type { CollectionBinder } from "../store";
-import { shareLink } from "./model";
+import { shareUrl, type ShareTarget } from "./model";
 
 /**
- * "Share": a binder's public link, readable by a human
- * (`neonbinder.io/@jason/binders/ohtani-rainbow`, `.../@jason/want-list`).
- * Pressing it shows the link and copies it. Mock: no such page exists yet,
- * and the handle is a stand-in for the collector's own.
+ * "Share": the open view's public link, readable by a human
+ * (`neonbinder.io/@jason/binders/ohtani-rainbow`, `.../@jason/want-list`,
+ * `.../@jason/sets/2000-topps`). What it shares comes in as data (see
+ * `openView.ts`). Pressing it shows the link and copies it. Mock: no such
+ * page exists yet, and the handle is a stand-in for the collector's own.
  */
-export default function ShareLink({ binder }: { binder: CollectionBinder }) {
+export default function ShareLink({ target }: { target: ShareTarget }) {
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"yes" | "no" | null>(null);
   const { mode, shareHandle } = useCollectionMode();
-  const link = shareLink(binder, shareHandle);
+  const link = shareUrl(target, shareHandle);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const close = () => {
     setOpen(false);
     buttonRef.current?.focus();
   };
-  const what = binder.system === "want" ? "your Want List" : binder.name;
+  const { what } = target;
 
   const copy = async () => {
     try {

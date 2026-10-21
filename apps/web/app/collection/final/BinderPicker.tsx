@@ -1,4 +1,5 @@
 import { FOCUS } from "../prototypes/p1/ui";
+import { useSetScope } from "./mode";
 import type { CollectionStore } from "./store";
 
 /**
@@ -9,9 +10,12 @@ import type { CollectionStore } from "./store";
  * - A binder: only its copies count, Have adds to it, Want is for it.
  * - Want List: reads like All (it holds cards, not copies).
  *
- * Sticky (it lives in the store), so every tab sees the same choice.
+ * Sticky, so every tab sees the same choice. It lives on the page URL
+ * (`scope=`, see `./mode`): a pick replaces the current history entry, and
+ * the store follows the URL.
  */
 export default function BinderPicker({ store }: { store: CollectionStore }) {
+  const setScope = useSetScope();
   const options = store.state.binders.filter((b) => b.kind === "manual");
   return (
     <label className="flex items-center gap-2 text-sm">
@@ -19,7 +23,7 @@ export default function BinderPicker({ store }: { store: CollectionStore }) {
       <select
         aria-label="Binder"
         value={store.selectedBinderId}
-        onChange={(e) => store.setSelectedBinder(e.target.value)}
+        onChange={(e) => setScope(e.target.value)}
         className={`min-h-8 rounded-md border bg-slate-900 py-1 pl-2 pr-8 text-sm font-medium text-slate-100 hover:border-neon-blue ${FOCUS} ${
           store.selectedBinderId === "all" ? "border-slate-600" : "border-neon-blue"
         }`}

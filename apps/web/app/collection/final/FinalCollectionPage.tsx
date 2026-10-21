@@ -11,7 +11,15 @@ import ChecklistsTab, { drillToCard } from "./ChecklistsTab";
 import { lineSummary } from "./lineItems";
 import MyBindersTab from "./MyBindersTab";
 import MyCardsTab from "./MyCardsTab";
-import { CollectionModeProvider, ParamLink, useCollectionMode, useCollectionParams, type CollectionMode } from "./mode";
+import {
+  CollectionModeProvider,
+  ParamLink,
+  scopeFromParams,
+  useCollectionMode,
+  useCollectionParams,
+  ViewScopeProvider,
+  type CollectionMode,
+} from "./mode";
 import {
   PUBLIC_STORAGE_KEY,
   useCollectionStore,
@@ -80,6 +88,11 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
   const [params, setParams] = useCollectionParams();
   const tabParam = params.get("tab");
   const tab: CollectionTab = TABS.some((t) => t.key === tabParam) ? (tabParam as CollectionTab) : "cards";
+
+  // The Binder picker's scope comes from the URL; the store follows it in
+  // this same render, so the two never disagree on screen.
+  const scope = scopeFromParams(params, store.state.binders);
+  if (store.selectedBinderId !== scope) store.setSelectedBinder(scope);
 
   // --- Status line -----------------------------------------------------------
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -191,100 +204,102 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
   };
 
   return (
-    <div className="text-slate-100">
-      <div className="space-y-4">
-        {isPublic && <DemoBar onReset={resetDemo} onExit={onExit} />}
-        <h1 className="text-2xl font-bold">Collection</h1>
+    <ViewScopeProvider value={scope}>
+      <div className="text-slate-100">
+        <div className="space-y-4">
+          {isPublic && <DemoBar onReset={resetDemo} onExit={onExit} />}
+          <h1 className="text-2xl font-bold">Collection</h1>
 
-        <nav aria-label="Collection sections" className="border-b border-slate-800">
-          <ul className="flex flex-wrap gap-x-6 gap-y-2">
-            {TABS.map((t) => {
-              const active = t.key === tab;
-              return (
-                <li key={t.key}>
-                  <ParamLink
-                    search={{ tab: t.key }}
-                    aria-current={active ? "page" : undefined}
-                    className={
-                      "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] " +
-                      (active
-                        ? "border-neon-blue text-neon-blue"
-                        : "border-transparent text-slate-400 hover:border-slate-600 hover:text-white")
-                    }
-                  >
-                    {t.label}
-                  </ParamLink>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
+          <nav aria-label="Collection sections" className="border-b border-slate-800">
+            <ul className="flex flex-wrap gap-x-6 gap-y-2">
+              {TABS.map((t) => {
+                const active = t.key === tab;
+                return (
+                  <li key={t.key}>
+                    <ParamLink
+                      search={{ tab: t.key }}
+                      aria-current={active ? "page" : undefined}
+                      className={
+                        "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] " +
+                        (active
+                          ? "border-neon-blue text-neon-blue"
+                          : "border-transparent text-slate-400 hover:border-slate-600 hover:text-white")
+                      }
+                    >
+                      {t.label}
+                    </ParamLink>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
 
-        {tab === "cards" && <MyCardsTab {...tabProps} />}
-        {tab === "binders" && (
-          // My Binders' pack tray is pinned to the bottom, where the floating
-          // toast would sit on its search box, so the tray shows the notice.
-          <MyBindersTab
-            {...tabProps}
+          {tab === "cards" && <MyCardsTab {...tabProps} />}
+          {tab === "binders" && (
+            // My Binders' pack tray is pinned to the bottom, where the floating
+            // toast would sit on its search box, so the tray shows the notice.
+            <MyBindersTab
+              {...tabProps}
+              notice={notice}
+              onUndo={undo}
+              onDismissNotice={() => setNotice(null)}
+            />
+          )}
+          {tab === "checklists" && (
+            <ChecklistsTab
+              {...tabProps}
+              actions={actions}
+              query={query}
+              onQuery={setQuery}
+              drill={drill}
+              cascadeKey={cascadeKey}
+              onDrill={(next) => {
+                setDrill(next);
+                setHighlightCardId(null);
+              }}
+              onJump={jumpTo}
+              highlightCardId={highlightCardId}
+              selectedCardId={drawer?.cardId ?? null}
+            />
+          )}
+
+          {/* The public demo's Reset lives in the demo bar up top. */}
+          {!isPublic && (
+            <div className="border-t border-slate-800 pt-4">
+              <button
+                type="button"
+                onClick={resetDemo}
+                className={`rounded px-1 py-1 text-xs text-slate-400 underline underline-offset-2 hover:text-white ${FOCUS}`}
+              >
+                Reset demo data
+              </button>
+            </div>
+          )}
+        </div>
+
+        {isPublic && <DemoRail onExit={onExit} />}
+
+        {!drawer && tab !== "binders" && (
+          <NoticeLine notice={notice} onUndo={undo} onDismiss={() => setNotice(null)} floating />
+        )}
+        {drawer && (
+          <CardDrawer
+            card={getCard(drawer.cardId)}
+            store={store}
+            mode={drawer.mode}
+            focusCopyId={drawer.copyId}
+            addBinderId={drawer.binderId}
+            openKey={drawer.key}
+            notify={notify}
             notice={notice}
             onUndo={undo}
             onDismissNotice={() => setNotice(null)}
+            onClose={() => setDrawer(null)}
+            onPrev={step(-1)}
+            onNext={step(1)}
           />
-        )}
-        {tab === "checklists" && (
-          <ChecklistsTab
-            {...tabProps}
-            actions={actions}
-            query={query}
-            onQuery={setQuery}
-            drill={drill}
-            cascadeKey={cascadeKey}
-            onDrill={(next) => {
-              setDrill(next);
-              setHighlightCardId(null);
-            }}
-            onJump={jumpTo}
-            highlightCardId={highlightCardId}
-            selectedCardId={drawer?.cardId ?? null}
-          />
-        )}
-
-        {/* The public demo's Reset lives in the demo bar up top. */}
-        {!isPublic && (
-          <div className="border-t border-slate-800 pt-4">
-            <button
-              type="button"
-              onClick={resetDemo}
-              className={`rounded px-1 py-1 text-xs text-slate-400 underline underline-offset-2 hover:text-white ${FOCUS}`}
-            >
-              Reset demo data
-            </button>
-          </div>
         )}
       </div>
-
-      {isPublic && <DemoRail onExit={onExit} />}
-
-      {!drawer && tab !== "binders" && (
-        <NoticeLine notice={notice} onUndo={undo} onDismiss={() => setNotice(null)} floating />
-      )}
-      {drawer && (
-        <CardDrawer
-          card={getCard(drawer.cardId)}
-          store={store}
-          mode={drawer.mode}
-          focusCopyId={drawer.copyId}
-          addBinderId={drawer.binderId}
-          openKey={drawer.key}
-          notify={notify}
-          notice={notice}
-          onUndo={undo}
-          onDismissNotice={() => setNotice(null)}
-          onClose={() => setDrawer(null)}
-          onPrev={step(-1)}
-          onNext={step(1)}
-        />
-      )}
-    </div>
+    </ViewScopeProvider>
   );
 }

@@ -86,41 +86,66 @@ describe("the public collection demo", () => {
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
-  it("puts each view on the URL beside demo=on, and Back steps back through them", () => {
+  it("puts each view on the URL beside demo=on, and Back steps back through them, scope and all", () => {
     renderDemo();
     const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    const scope = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
 
-    // My Cards, scoped to Up for Trade: the scope is an in-view choice, not a step.
+    // My Cards, scoped to Up for Trade: the scope rides on the URL, but a
+    // pick replaces the entry rather than adding a Back step.
     openTab("My Cards");
     expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
-    const scope = screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
-    const trade = within(scope).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement;
-    fireEvent.change(scope, { target: { value: trade.value } });
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
+    const trade = (within(scope()).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement).value;
+    fireEvent.change(scope(), { target: { value: trade } });
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
+    expect(scope().value).toBe(trade);
 
-    // The 1996-97 Upper Deck wall.
+    // The 1996-97 Upper Deck wall: the push carries the scope on.
     fireEvent.click(screen.getByRole("link", { name: "1996-97 Upper Deck" }));
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey");
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey&scope=${trade}`);
     expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
 
-    // My Binders, then All Reggie White.
+    // My Binders, then All Reggie White: a smart binder scopes to All.
     openTab("My Binders");
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=binders&scope=${trade}`);
     fireEvent.click(screen.getByRole("button", { name: /^All Reggie White,/ }));
-    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=[\w-]+$/);
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders&b=smart-reggie-white");
     expect(screen.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeTruthy();
 
     back();
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
-    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=binders&scope=${trade}`);
+    expect(screen.getByText("Up for Trade", { selector: "strong" })).toBeTruthy();
     back();
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey");
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey&scope=${trade}`);
     expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
     back();
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
-    expect(screen.queryByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeNull();
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
+    expect(scope().value).toBe(trade);
+    expect((within(scope()).getByRole("option", { selected: true }) as HTMLOptionElement).text).toBe("Up for Trade");
     back();
     expect(pageUrl()).toBe(DEMO_URL);
+    expect(scope().value).toBe("all");
+  });
+
+  it("a scope pick is not a Back step: Back goes to the view before, not the unscoped one", () => {
+    renderDemo();
+    openTab("My Cards");
+    openTab("Checklists");
+    openTab("My Cards");
+    const scope = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    const main = (within(scope()).getByRole("option", { name: "Main" }) as HTMLOptionElement).value;
+    fireEvent.change(scope(), { target: { value: main } });
+    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${main}`);
+    fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=checklists");
+  });
+
+  it("a deep link with a scope opens scoped; an unknown binder id reads as All", () => {
+    renderDemo(vi.fn(), ["/binder-tracking?demo=on&tab=cards&scope=binder-ohtani-rainbow"]);
+    expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).value).toBe("binder-ohtani-rainbow");
+    cleanup();
+    renderDemo(vi.fn(), ["/binder-tracking?demo=on&tab=cards&scope=binder-gone"]);
+    expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).value).toBe("all");
   });
 
   it("opens a shared deep link straight into that view", () => {
@@ -168,6 +193,14 @@ describe("the public collection demo", () => {
     expect(screen.getByText("neonbinder.io/@you/binders/ohtani-rainbow")).toBeTruthy();
     expect(screen.getByText("Just an example: demo binders don't get a real page.")).toBeTruthy();
     expect(screen.queryByText(/@jason/)).toBeNull();
+  });
+
+  it("shares a browsed set at @you too", () => {
+    renderDemo();
+    openTab("My Binders");
+    fireEvent.click(screen.getByRole("button", { name: /^Browse 2000 Topps,/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Share 2000 Topps" }));
+    expect(screen.getByText("neonbinder.io/@you/sets/2000-topps")).toBeTruthy();
   });
 
   it("keeps its state under its own storage key, never the signed-in page's", () => {

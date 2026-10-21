@@ -222,12 +222,24 @@ export function guardPocket(
 }
 
 /**
- * p2's pages, except a manual binder laid out like the real one: its
- * numbered pages keep their Need sleeves whatever sits on the Extras pages,
- * and those pages say "Extras".
+ * p2's pages, except:
+ * - a manual binder laid out like the real one: its numbered pages keep
+ *   their Need sleeves whatever sits on the Extras pages, and those pages
+ *   say "Extras";
+ * - a browsed set as "Just a stack": every card in checklist order, packed
+ *   tight (laid out like a binder, each insert starts a fresh page).
  */
 export function buildBinderPages(input: BuildInput): PageModel[] {
   const { view, mode, copies, binders } = input;
+  if (view.kind === "set" && mode === "stack") {
+    return paginate(
+      cardsInSet(view.setId).map((card): PocketModel => {
+        const mine = copiesOf(card.id, copies);
+        return { content: mine.length ? { kind: "have", card, copies: mine } : { kind: "need", card } };
+      }),
+      null,
+    );
+  }
   const binder = view.kind === "binder" ? binders.find((b) => b.id === view.binderId) : undefined;
   if (!binder || binder.kind !== "manual" || !binder.layout || mode !== "pockets") {
     return p2BuildPages(input);
@@ -332,10 +344,32 @@ export function slugify(name: string): string {
   return slug || "binder";
 }
 
+/** What a Share button shares: its name in words, and its path after the handle. */
+export interface ShareTarget {
+  /** "Ohtani rainbow", "your Want List", "2000 Topps". */
+  what: string;
+  /** "binders/ohtani-rainbow", "want-list", "sets/2000-topps". */
+  path: string;
+}
+
+export function binderShareTarget(binder: CollectionBinder): ShareTarget {
+  if (binder.system === "want") return { what: "your Want List", path: "want-list" };
+  return { what: binder.name, path: `binders/${slugify(binder.name)}` };
+}
+
+/** A set you are flipping through: your copy of its checklist. */
+export function setShareTarget(set: CardSet): ShareTarget {
+  return { what: setLabel(set), path: `sets/${slugify(setLabel(set))}` };
+}
+
+/** The human-readable public link for a share target. */
+export function shareUrl(target: ShareTarget, handle = MOCK_HANDLE): string {
+  return `neonbinder.io/@${handle}/${target.path}`;
+}
+
 /** A human-readable public link to a binder, or to the Want List. */
 export function shareLink(binder: CollectionBinder, handle = MOCK_HANDLE): string {
-  if (binder.system === "want") return `neonbinder.io/@${handle}/want-list`;
-  return `neonbinder.io/@${handle}/binders/${slugify(binder.name)}`;
+  return shareUrl(binderShareTarget(binder), handle);
 }
 
 // ---------------------------------------------------------------------------

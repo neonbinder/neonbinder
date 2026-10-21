@@ -407,5 +407,81 @@ describe("the views on the URL (app mode)", () => {
     back();
     expect(search()).toBe("");
   });
+
+  it("the Binder scope rides on the URL: a pick replaces, opening a binder pushes its scope, Back restores", () => {
+    renderBinders("/collection?tab=cards");
+    const search = () => screen.getByRole("status", { name: "Page search" }).textContent;
+    const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    const picker = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    const trade = (within(picker()).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement).value;
+
+    fireEvent.change(picker(), { target: { value: trade } });
+    expect(search()).toBe(`?tab=cards&scope=${trade}`);
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Collection sections" })).getByRole("link", { name: "My Binders" }));
+    expect(search()).toBe(`?tab=binders&scope=${trade}`);
+    fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
+    expect(search()).toBe("?tab=binders&b=binder-contenders-96&scope=binder-contenders-96");
+
+    back();
+    expect(screen.getByText("Up for Trade", { selector: "strong" })).toBeTruthy();
+    back();
+    expect(search()).toBe(`?tab=cards&scope=${trade}`);
+    expect(picker().value).toBe(trade);
+  });
+});
+
+describe("one open-binder view for binders and browsed sets", () => {
+  const header = (title: string) => {
+    const heading = screen.getByRole("heading", { level: 2, name: title });
+    return heading.closest("div")!.parentElement!;
+  };
+
+  it("a browsed set gets the binder's Share and layout toggle, from the same view, and no label controls", () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    const binderControls = within(header("'96 Contenders"))
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(binderControls).toEqual([
+      "Back to the shelf",
+      "Share '96 Contenders",
+      "Lay out like my real binder",
+      "Just a stack",
+    ]);
+    expect(screen.getAllByRole("button", { name: "Edit label for '96 Contenders" }).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to the shelf" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Browse 2000 Topps,/ }));
+    const setControls = within(header("2000 Topps"))
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(setControls).toEqual([
+      "Back to the shelf",
+      "Share 2000 Topps",
+      "Lay out like my real binder",
+      "Just a stack",
+    ]);
+    expect(within(header("2000 Topps")).getByText("Browsing")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Edit label for/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^Print label for/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Share 2000 Topps" }));
+    expect(screen.getByText("neonbinder.io/@jason/sets/2000-topps")).toBeTruthy();
+  });
+
+  it("Just a stack packs a browsed set tight, and the toggle is not a history step", () => {
+    renderBinders("/collection?tab=binders&set=2000-topps-football");
+    const search = () => screen.getByRole("status", { name: "Page search" }).textContent;
+    const before = search();
+    const pockets = screen.getByRole("button", { name: "Lay out like my real binder" });
+    const stack = screen.getByRole("button", { name: "Just a stack" });
+    expect(pockets.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getAllByText("Every card in the set, in checklist order. Each insert starts a fresh page.").length).toBeGreaterThan(0);
+
+    fireEvent.click(stack);
+    expect(stack.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getAllByText("Every card in the set, in checklist order, packed tight.").length).toBeGreaterThan(0);
+    expect(search()).toBe(before);
+    expect(screen.getAllByRole("button", { name: /^Add / }).length).toBeGreaterThan(0);
+  });
 });
 

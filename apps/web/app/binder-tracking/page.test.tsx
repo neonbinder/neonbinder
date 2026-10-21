@@ -104,13 +104,15 @@ describe("Take it for a spin", () => {
     const back = () => fireEvent.click(screen.getByRole("button", { name: "← Back" }));
 
     back();
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&scope=[\w-]+$/);
     expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
     back();
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey");
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=cards&set=1996-97-upper-deck-hockey&scope=[\w-]+$/);
     expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
     back();
-    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=cards&scope=[\w-]+$/);
+    const picked = screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    expect(picked.options[picked.selectedIndex].text).toBe("Up for Trade");
     back();
     expect(pageUrl()).toBe("/binder-tracking?demo=on");
     expect(screen.getByRole("region", { name: "About this demo" })).toBeTruthy();

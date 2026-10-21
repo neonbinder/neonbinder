@@ -1,24 +1,19 @@
 import type { CSSProperties } from "react";
 import { Link } from "react-router";
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
-import { describeRule, getSet, setLabel } from "../../prototypes/_shared/data";
-import {
-  type LayoutMode,
-  type PileFilters,
-  type SortKey,
-  type ViewKey,
-} from "../../prototypes/p2/model";
+import { type LayoutMode, type PileFilters, type SortKey } from "../../prototypes/p2/model";
 import { useCollectionMode } from "../mode";
-import type { CollectionBinder, CollectionStore } from "../store";
+import type { CollectionBinder } from "../store";
 import { labelOf } from "./label";
-import { binderTally } from "./model";
+import type { OpenView, Tally } from "./openView";
 
 /**
  * The open binder's furniture, from prototype 2's page: the layout toggle,
  * the master pile's sort and filters, the inside front cover (name, tally,
  * a few lines of how-to) and its phone-width summary. Plus one thing p2
  * never needed: the scope line saying what Checklists and My Cards look
- * through now that this binder is open.
+ * through now that this binder is open. All of it reads the open view's
+ * data (`OpenView`); `BinderView.tsx` puts it together.
  */
 
 const FOCUS = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
@@ -91,34 +86,11 @@ export function PileTools({
 }
 
 // ---------------------------------------------------------------------------
-// The cover and its summary
+// The cover and its summary (what they show comes from `OpenView`)
 // ---------------------------------------------------------------------------
 
-interface Summary {
-  have: number | null;
-  need: number | null;
-  cards: number | null;
-}
-
-function summaryFor(view: ViewKey, binder: CollectionBinder | undefined, store: CollectionStore): Summary {
-  const { copies } = store.state;
-  if (view.kind === "set") {
-    const c = store.completion(view.setId);
-    return { have: c.owned, need: c.total - c.owned, cards: null };
-  }
-  if (view.kind === "all") {
-    return { have: null, need: null, cards: copies.reduce((n, c) => n + c.quantity, 0) };
-  }
-  if (!binder) return { have: null, need: null, cards: 0 };
-  if (binder.system === "want") {
-    const landed = store.wantCardIds.filter((id) => store.ownedCount(id) > 0).length;
-    return { have: landed, need: store.wantCardIds.length - landed, cards: null };
-  }
-  const count = binderTally(binder, copies);
-  return { have: count.have ?? null, need: count.need ?? null, cards: count.cards };
-}
-
-function Tally({ have, need, cards, want }: Summary & { want: boolean }) {
+function TallyLine({ tally, want }: { tally: Tally; want: boolean }) {
+  const { have, need, cards } = tally;
   if (have !== null && need !== null) {
     const total = have + need;
     return (
@@ -140,46 +112,6 @@ function Tally({ have, need, cards, want }: Summary & { want: boolean }) {
       {cards} {cards === 1 ? "card" : "cards"}
     </p>
   );
-}
-
-function blurb(view: ViewKey, binder: CollectionBinder | undefined, mode: LayoutMode): string[] {
-  if (view.kind === "set") {
-    return [
-      "Every card in the set, in checklist order. Each insert starts a fresh page.",
-      "Got one? Hit Add on its sleeve.",
-    ];
-  }
-  if (view.kind === "all") {
-    return [
-      "Every card you own, one pocket per copy. A yellow tag means it's for sale.",
-      "Press a card to pull it out of the sleeve and see the details.",
-    ];
-  }
-  if (!binder) return [];
-  if (binder.system === "want") {
-    return [
-      "Cards you're chasing, grouped by the binder they're for.",
-      "Land one? Press its sleeve to add it.",
-      "While this is open, the hunt below adds to your Want List.",
-    ];
-  }
-  const lines: string[] = [];
-  if (binder.description) lines.push(binder.description);
-  if (binder.kind === "smart") {
-    lines.push(`Fills itself: ${describeRule(binder.rule)}.`);
-    if (mode === "pockets") lines.push("Empty sleeves are your needs. Got one? Press it.");
-  } else if (mode === "pockets") {
-    lines.push("Hunt for a card below and drag it into any pocket, or press an empty pocket to fill that one.");
-  } else {
-    lines.push("Hunt for a card below and drag it onto the binder to file it here.");
-  }
-  return lines;
-}
-
-export function viewTitle(view: ViewKey, binder: CollectionBinder | undefined): string {
-  if (view.kind === "binder") return binder?.name ?? "Binder";
-  if (view.kind === "set") return setLabel(getSet(view.setId));
-  return "All my cards";
 }
 
 /** The cover's small "Edit label" control: restyles the binder's spine. */
@@ -223,22 +155,8 @@ function LabelControls({ binder, onEditLabel }: { binder: CollectionBinder; onEd
   );
 }
 
-export function Cover({
-  view,
-  binder,
-  store,
-  mode,
-  onEditLabel,
-}: {
-  view: ViewKey;
-  binder: CollectionBinder | undefined;
-  store: CollectionStore;
-  mode: LayoutMode;
-  /** Offered on a binder's cover: restyle its spine label. */
-  onEditLabel?: () => void;
-}) {
-  const t = summaryFor(view, binder, store);
-  const want = binder?.system === "want";
+/** The inside front cover: name, label controls when it has a label, tally, how-to. */
+export function Cover({ open, onEditLabel }: { open: OpenView; onEditLabel: () => void }) {
   return (
     <div className="flex h-full flex-col gap-3 text-sm text-slate-300">
       <p
@@ -246,15 +164,15 @@ export function Cover({
         className="neon-header !text-[26px] leading-tight text-white"
         style={
           {
-            textShadow: want ? "0 0 14px rgba(255,46,154,0.7)" : "0 0 14px rgba(0,194,255,0.6)",
+            textShadow: open.want ? "0 0 14px rgba(255,46,154,0.7)" : "0 0 14px rgba(0,194,255,0.6)",
           } as CSSProperties
         }
       >
-        {viewTitle(view, binder)}
+        {open.title}
       </p>
-      {binder && onEditLabel && <LabelControls binder={binder} onEditLabel={onEditLabel} />}
-      <Tally {...t} want={want} />
-      {blurb(view, binder, mode).map((line) => (
+      {open.label && <LabelControls binder={open.label} onEditLabel={onEditLabel} />}
+      <TallyLine tally={open.tally} want={open.want} />
+      {open.blurb.map((line) => (
         <p key={line}>{line}</p>
       ))}
       <p className="mt-auto text-xs text-slate-400">PageUp and PageDown turn the pages.</p>
@@ -262,29 +180,17 @@ export function Cover({
   );
 }
 
-export function MobileSummary({
-  view,
-  binder,
-  store,
-  mode,
-  onEditLabel,
-}: {
-  view: ViewKey;
-  binder: CollectionBinder | undefined;
-  store: CollectionStore;
-  mode: LayoutMode;
-  onEditLabel?: () => void;
-}) {
-  const t = summaryFor(view, binder, store);
+/** The cover's phone-width summary. */
+export function MobileSummary({ open, onEditLabel }: { open: OpenView; onEditLabel: () => void }) {
   return (
     <div className="mb-3 space-y-1 text-sm text-slate-300">
-      {binder && onEditLabel && (
+      {open.label && (
         <div className="float-right ml-3">
-          <LabelControls binder={binder} onEditLabel={onEditLabel} />
+          <LabelControls binder={open.label} onEditLabel={onEditLabel} />
         </div>
       )}
-      <Tally {...t} want={binder?.system === "want"} />
-      <p>{blurb(view, binder, mode)[0]}</p>
+      <TallyLine tally={open.tally} want={open.want} />
+      <p>{open.blurb[0]}</p>
     </div>
   );
 }
@@ -292,19 +198,6 @@ export function MobileSummary({
 // ---------------------------------------------------------------------------
 // What the rest of the page is looking through
 // ---------------------------------------------------------------------------
-
-export function scopeText(view: ViewKey, binder: CollectionBinder | undefined): string | null {
-  if (view.kind === "set") return null;
-  if (view.kind === "all") return "Checklists and My Cards are looking through everything.";
-  if (!binder) return null;
-  if (binder.system === "want") {
-    return "Checklists and My Cards are looking through everything, with your wants lit up.";
-  }
-  if (binder.kind === "smart") {
-    return `${binder.name} fills itself, so Checklists and My Cards look through everything.`;
-  }
-  return `Checklists and My Cards are looking through ${binder.name}.`;
-}
 
 export function ScopeLine({ text, onGo }: { text: string; onGo: () => void }) {
   return (

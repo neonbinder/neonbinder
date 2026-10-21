@@ -12,7 +12,6 @@ import {
   type DragStartEvent,
   type UniqueIdentifier,
 } from "@dnd-kit/core";
-import { ArrowLeftIcon } from "@heroicons/react/24/outline";
 import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 import { isEditableTarget } from "@/lib/dom/is-editable-target";
 import CardFace from "../prototypes/_shared/CardFace";
@@ -39,7 +38,8 @@ import {
   type ViewKey,
 } from "../prototypes/p2/model";
 import "../prototypes/p2/p2.css";
-import BinderDesk, { SPREAD_DROP_ID, stepCount, stepOfPage, whereLabel } from "./binders/BinderDesk";
+import { SPREAD_DROP_ID, stepCount, stepOfPage } from "./binders/BinderDesk";
+import BinderView from "./binders/BinderView";
 import "./binders/binders.css";
 import { parseSlotId, pocketHop, slotCopyId } from "./binders/dnd";
 import type { BinderLabel } from "./binders/label";
@@ -48,7 +48,6 @@ import {
   buildBinderPages,
   cardsOnPages,
   guardPocket,
-  liveryOf,
   movableCopies,
   placesOf,
   placeWords,
@@ -59,8 +58,7 @@ import {
 } from "./binders/model";
 import NewBinderDialog from "./binders/NewBinderDialog";
 import PackTray, { AIMED_TARGET, type MoveTarget, type SlotTarget } from "./binders/PackTray";
-import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine, scopeText, viewTitle } from "./binders/parts";
-import ShareLink from "./binders/ShareLink";
+import { defaultLayout, openView, viewKey } from "./binders/openView";
 import Shelf from "./binders/Shelf";
 import { useCollectionParams } from "./mode";
 import type { NewBinder } from "../prototypes/_shared/usePrototypeStore";
@@ -76,8 +74,9 @@ import type { BinderSelection, CollectionBinder, CollectionTabProps } from "./st
  * one. A card pressed in its sleeve slides out into the page's shared card
  * drawer.
  *
- * Opening a binder scopes the whole page to it (`setSelectedBinder`), so
- * Checklists and My Cards then show that binder's Have / Want / Trade.
+ * Opening a binder scopes the whole page to it (the `scope` param on the
+ * push that opens it, see `./mode`), so Checklists and My Cards then show
+ * that binder's Have / Want / Trade.
  *
  * The status line is the page's (passed in as `notice`): the pack shows it,
  * so it never floats over the pack's search box.
@@ -119,32 +118,10 @@ export default function MyBindersTab({
     if (params.get("all")) return { kind: "all" };
     return null;
   }, [params, binders]);
-  const viewId = view
-    ? view.kind === "binder"
-      ? view.binderId
-      : view.kind === "set"
-        ? `set:${view.setId}`
-        : "all"
-    : "shelf";
+  const viewId = view ? viewKey(view) : "shelf";
   const binder: CollectionBinder | undefined =
     view?.kind === "binder" ? store.getBinder(view.binderId) : undefined;
   const isWant = binder?.system === "want";
-
-  // Opening a binder scopes the page to it. A smart binder fills itself (no
-  // copy is filed in it), so it scopes to everything; a set to browse leaves
-  // the scope alone.
-  const { setSelectedBinder } = store;
-  const scopeTo: BinderSelection | null =
-    view?.kind === "all"
-      ? "all"
-      : view?.kind === "binder" && binder
-        ? binder.kind === "manual"
-          ? binder.id
-          : "all"
-        : null;
-  useEffect(() => {
-    if (scopeTo) setSelectedBinder(scopeTo);
-  }, [scopeTo, setSelectedBinder]);
 
   const [stepState, setStepState] = useState<{ view: string; at: number }>({ view: "shelf", at: 0 });
   const [modes, setModes] = useState<Record<string, LayoutMode>>({});
@@ -164,9 +141,7 @@ export default function MyBindersTab({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  const defaultMode = (b: CollectionBinder | undefined): LayoutMode =>
-    !b ? "stack" : b.kind === "smart" || b.layout ? "pockets" : "stack";
-  const mode: LayoutMode = binder ? (modes[binder.id] ?? defaultMode(binder)) : "stack";
+  const mode: LayoutMode = view ? (modes[viewId] ?? defaultLayout(view, binder)) : "stack";
 
   const pages = useMemo(() => {
     if (!view) return [];
@@ -189,6 +164,18 @@ export default function MyBindersTab({
     if (next?.kind === "binder") p.set("b", next.binderId);
     if (next?.kind === "set") p.set("set", next.setId);
     if (next?.kind === "all") p.set("all", "1");
+    // Opening a binder scopes the page to it, on the same push: a binder that
+    // holds copies to itself, a smart binder (it fills itself) and All my
+    // cards to everything. A set to browse, or the shelf, keeps the scope.
+    const scopeTo: BinderSelection | null =
+      next?.kind === "all"
+        ? "all"
+        : next?.kind === "binder"
+          ? store.getBinder(next.binderId)?.kind === "manual"
+            ? next.binderId
+            : "all"
+          : null;
+    if (scopeTo) p.set("scope", scopeTo);
     setParams(p);
   };
 
@@ -510,9 +497,10 @@ export default function MyBindersTab({
     );
   };
 
+  /** The layout toggle: local to this view, never a history step. */
   const setMode = (next: LayoutMode) => {
-    if (!binder) return;
-    if (next === "pockets" && binder.kind === "manual" && !binder.layout) {
+    if (!view) return;
+    if (next === "pockets" && binder?.kind === "manual" && !binder.layout) {
       // Give it real pages, filled in checklist order, so it can match the shelf.
       const filed = [...binderCopies(binder, copies)].sort((a, b) =>
         compareCards(getCard(a.cardId), getCard(b.cardId)),
@@ -520,15 +508,12 @@ export default function MyBindersTab({
       if (filed.length === 0) store.placeInSlot(binder.id, 0, 0, null);
       filed.forEach((c, i) => store.placeInSlot(binder.id, Math.floor(i / 9), i % 9, c.id));
     }
-    setModes((m) => ({ ...m, [binder.id]: next }));
+    setModes((m) => ({ ...m, [viewId]: next }));
   };
 
-  const pocketVariant = view?.kind === "set" ? "browse" : "binder";
   const wholeBinderDrop = !(binder?.kind === "manual" && !isWant && mode === "pockets");
-  const vinyl = view?.kind === "set" ? "#1e293b" : liveryOf(binder ?? "all").primary;
   const moveTo: MoveTarget | null =
     moveTarget && !isWant ? { id: moveTarget.id, name: moveTarget.name } : null;
-  const scope = view ? scopeText(view, binder) : null;
 
   return (
     <div ref={rootRef} className="scroll-mt-4">
@@ -549,96 +534,38 @@ export default function MyBindersTab({
         {!view ? (
           <Shelf store={store} onOpen={open} onNewBinder={() => setNewBinder(true)} />
         ) : (
-          <div>
-            <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-              <button
-                type="button"
-                onClick={() => open(null)}
-                className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-slate-600 px-3 text-sm font-medium text-slate-100 hover:border-neon-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
-              >
-                <ArrowLeftIcon aria-hidden="true" className="h-4 w-4" />
-                Back to the shelf
-              </button>
-              <div className="flex min-w-0 items-center gap-2">
-                <h2
-                  ref={headingRef}
-                  tabIndex={-1}
-                  className="truncate text-2xl font-bold text-white focus:outline-none sm:text-3xl"
-                >
-                  {viewTitle(view, binder)}
-                </h2>
-                {binder?.kind === "smart" && (
-                  <span className="rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-black">Smart</span>
-                )}
-                {view.kind === "set" && (
-                  <span className="rounded border border-neon-blue px-1.5 text-xs font-bold leading-5 text-neon-blue">
-                    Browsing
-                  </span>
-                )}
-              </div>
-              <p aria-live="polite" className="text-sm tabular-nums text-slate-300">
-                {whereLabel(pages.length, wide, at)}
-              </p>
-              <div className="ml-auto flex flex-wrap items-center gap-2">
-                {binder && <ShareLink key={binder.id} binder={binder} />}
-                {binder && !isWant && <ModeToggle mode={mode} onChange={setMode} />}
-                {view.kind === "all" && (
-                  <PileTools
-                    sort={sort}
-                    onSort={(s) => {
-                      setSort(s);
-                      turn(0);
-                    }}
-                    filters={filters}
-                    onFilters={(f) => {
-                      setFilters(f);
-                      setStepState({ view: viewId, at: 0 });
-                    }}
-                  />
-                )}
-              </div>
-            </div>
-
-            {scope && <ScopeLine text={scope} onGo={() => goToTab("checklists")} />}
-
-            {!wide && (
-              <MobileSummary
-                view={view}
-                binder={binder}
-                store={store}
-                mode={mode}
-                onEditLabel={binder ? () => setEditingLabel(true) : undefined}
-              />
-            )}
-
-            <div ref={deskRef} className="scroll-mt-2">
-              <BinderDesk
-                pages={pages}
-                wide={wide}
-                at={at}
-                onTurn={turn}
-                vinyl={vinyl}
-                cover={
-                  <Cover
-                    view={view}
-                    binder={binder}
-                    store={store}
-                    mode={mode}
-                    onEditLabel={binder ? () => setEditingLabel(true) : undefined}
-                  />
-                }
-                variant={pocketVariant}
-                aimed={aimed}
-                found={found}
-                wholeBinderDrop={wholeBinderDrop}
-                reducedMotion={reducedMotion}
-                name={viewTitle(view, binder)}
-                onOpen={openPocket}
-                onAdd={addFromPocket}
-                onAim={aim}
-              />
-            </div>
-          </div>
+          <BinderView
+            open={openView(view, binder, store, mode)}
+            pages={pages}
+            wide={wide}
+            at={at}
+            onTurn={turn}
+            onBack={() => open(null)}
+            onLayout={setMode}
+            onEditLabel={() => setEditingLabel(true)}
+            onGoChecklists={() => goToTab("checklists")}
+            pile={{
+              sort,
+              onSort: (next) => {
+                setSort(next);
+                turn(0);
+              },
+              filters,
+              onFilters: (next) => {
+                setFilters(next);
+                setStepState({ view: viewId, at: 0 });
+              },
+            }}
+            aimed={aimed}
+            found={found}
+            wholeBinderDrop={wholeBinderDrop}
+            reducedMotion={reducedMotion}
+            headingRef={headingRef}
+            deskRef={deskRef}
+            onOpen={openPocket}
+            onAdd={addFromPocket}
+            onAim={aim}
+          />
         )}
 
         <PackTray
