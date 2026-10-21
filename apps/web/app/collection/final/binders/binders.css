@@ -1,0 +1,341 @@
+/*
+ * NEO-350 — My Binders on the consolidated page: what p2.css does not have.
+ * The special shelf (a cabinet under a pink neon sign, with its own lit
+ * ledge), the Inventory long box, the Trade sticker on a spine, the "this is
+ * the binder in scope" marker and the found pocket's ring. Everything else is p2.css, imported as is.
+ */
+
+/* ------------------------------------------------------- special shelf */
+
+.nb-special {
+  position: relative;
+  padding: 14px 12px 0;
+  border-radius: 14px 14px 6px 6px;
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgba(255, 46, 154, 0.14), transparent 70%),
+    linear-gradient(#0d0a18, #07060d);
+  box-shadow:
+    0 0 0 1px rgba(255, 46, 154, 0.35) inset,
+    0 18px 36px rgba(0, 0, 0, 0.5);
+}
+
+/* The sign: a bent neon tube, pink, with a slow warm-up on load. */
+.nb-special-sign {
+  display: inline-block;
+  padding: 2px 10px;
+  border: 2px solid #ff2e9a;
+  border-radius: 999px;
+  color: #ffd1ea;
+  font-family: "Neon", sans-serif;
+  font-size: 22px;
+  line-height: 1.2;
+  text-shadow:
+    0 0 6px rgba(255, 46, 154, 0.9),
+    0 0 18px rgba(255, 46, 154, 0.55);
+  box-shadow:
+    0 0 10px rgba(255, 46, 154, 0.55),
+    0 0 10px rgba(255, 46, 154, 0.35) inset;
+  animation: nb-sign-on 900ms steps(1, end) 1 both;
+}
+@keyframes nb-sign-on {
+  0% {
+    opacity: 0.35;
+  }
+  18% {
+    opacity: 1;
+  }
+  26% {
+    opacity: 0.4;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.nb-special-shelf {
+  padding-top: 14px;
+}
+
+/* Its ledge glows pink, not blue: a different shelf, at a glance. */
+.nb-special-ledge {
+  height: 14px;
+  margin: 0 -12px;
+  border-radius: 0 0 6px 6px;
+  background: linear-gradient(#2a1023, #12070f 70%);
+  box-shadow:
+    0 -1px 0 #ff2e9a inset,
+    0 10px 24px rgba(255, 46, 154, 0.16),
+    0 2px 0 rgba(0, 0, 0, 0.6);
+}
+
+/* The Trade sticker riding the top of the Up for Trade spine. */
+.nb-spine-tag {
+  position: absolute;
+  top: 4px;
+  right: -8px;
+  z-index: 3;
+  padding: 1px 6px 1px 10px;
+  background: #ffe600;
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  clip-path: polygon(7px 0, 100% 0, 100% 100%, 7px 100%, 0 50%);
+  transform: rotate(-12deg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* -------------------------------------------------- the Inventory long box */
+
+/* A dealer's long box, end on: white corrugated cardboard, tabbed dividers
+   standing up out of it, a strip of tape with the name in marker, and the
+   yellow price tag a for-sale card wears in its sleeve. Shorter than the
+   binders beside it, as a box on a shelf would be. */
+.nb-longbox {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 140px;
+  height: 168px;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: transform 160ms ease-out;
+}
+@media (min-width: 640px) {
+  .nb-longbox {
+    height: 184px;
+  }
+}
+.nb-longbox:hover {
+  transform: translateY(-6px);
+}
+.nb-longbox:focus-visible {
+  outline: none;
+  transform: translateY(-6px);
+  box-shadow:
+    0 0 0 2px #020617,
+    0 0 0 5px #00c2ff,
+    0 0 20px rgba(0, 194, 255, 0.5);
+}
+
+/* The cards inside: a row of white card tops, with the dividers taller. */
+.nb-longbox-stock {
+  position: relative;
+  height: 52px;
+  margin: 0 10px -6px;
+  background: repeating-linear-gradient(
+    90deg,
+    #f1f5f9 0 3px,
+    #cbd5e1 3px 4px
+  );
+  background-size: 100% 26px;
+  background-position: bottom;
+  background-repeat: no-repeat;
+}
+.nb-longbox-divider {
+  position: absolute;
+  bottom: 0;
+  left: var(--at);
+  width: 34px;
+  height: 40px;
+  background: #e2e8f0;
+  border-left: 1px solid #94a3b8;
+}
+/* The divider's tab, in a neon file colour. */
+.nb-longbox-divider::after {
+  content: "";
+  position: absolute;
+  top: -10px;
+  left: 6px;
+  width: 20px;
+  height: 12px;
+  border-radius: 3px 3px 0 0;
+  background: var(--tab);
+}
+
+.nb-longbox-box {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 112px;
+  padding-top: 18px;
+  border-radius: 3px;
+  background:
+    linear-gradient(#ffffff, #ffffff 9px, #d6d0c2 9px, #d6d0c2 10px, transparent 10px),
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.03) 0 2px, transparent 2px 5px),
+    linear-gradient(90deg, #ece6d8, #f6f1e6 30%, #e4ddcc);
+  box-shadow:
+    0 0 0 1px #8a8170,
+    0 8px 18px rgba(0, 0, 0, 0.55);
+}
+@media (min-width: 640px) {
+  .nb-longbox-box {
+    height: 124px;
+  }
+}
+
+/* Masking tape, the name in black marker. */
+.nb-longbox-tape {
+  padding: 2px 10px;
+  background: #f3e3a6;
+  color: #111827;
+  font-family: "Luckiest Guy", "Lexend", sans-serif;
+  font-size: 15px;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  transform: rotate(-2deg);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+
+/* The hand hole cut in the end of the box. */
+.nb-longbox-handle {
+  width: 46px;
+  height: 14px;
+  margin-top: 14px;
+  border-radius: 999px;
+  background: #1f1b14;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.8);
+}
+
+/* The price tag, string hole and all, stuck on the front corner. */
+.nb-longbox-tag {
+  position: absolute;
+  z-index: 2;
+  right: -8px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 13px;
+  background: #ffe600;
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  clip-path: polygon(9px 0, 100% 0, 100% 100%, 9px 100%, 0 50%);
+  transform: rotate(-7deg);
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.5));
+}
+.nb-longbox-tag::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #0f172a;
+}
+
+/* ------------------------------------------------ the binder in scope */
+
+/* Stands a little proud, with a lit pip at its foot (inside the spine: the
+   shelf scrolls sideways, so anything hanging below it would be clipped). */
+.p2-spine.nb-spine--current {
+  transform: translateY(-10px);
+}
+.nb-pip {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 22px;
+  height: 4px;
+  margin-left: -11px;
+  border-radius: 999px;
+  background: #00c2ff;
+  box-shadow: 0 0 10px #00c2ff;
+}
+
+/* The scope line under an open binder's toolbar. */
+.nb-scope-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #00c2ff;
+  box-shadow: 0 0 8px #00c2ff;
+}
+
+/* ------------------------------------------------------- the hunt tray */
+
+/* Results never take the whole screen: the binder stays in view above. */
+.nb-hunt-results {
+  max-height: 52dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Your own cards: wider tiles, the card beside where it lives. */
+.nb-owned-results {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px 8px;
+  scrollbar-width: thin;
+}
+.nb-owned {
+  flex: none;
+  width: 272px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  box-shadow: 0 0 0 1px #334155;
+}
+@media (max-width: 639px) {
+  .nb-hunt-results {
+    max-height: 50dvh;
+  }
+  .nb-owned-results {
+    flex-direction: column;
+    overflow-x: visible;
+  }
+  .nb-owned {
+    width: auto;
+  }
+  /* One scroller for both groups on a phone, not one inside another. */
+  .nb-hunt-results .p2-results {
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
+/* ------------------------------------------------ the pocket a hunt found */
+
+/* Pink, so it never reads as the blue "filling this pocket" ring: two quick
+   flashes to catch the eye, then it stays lit until the binder closes. */
+.p2-sleeve.nb-sleeve--found {
+  /* Scrolled to clear of the hunt tray pinned along the bottom. */
+  scroll-margin-bottom: 150px;
+  box-shadow:
+    0 0 0 3px #ff2e9a,
+    0 0 0 6px rgba(255, 46, 154, 0.3),
+    0 0 22px rgba(255, 46, 154, 0.55);
+  animation: nb-found 520ms ease-in-out 2;
+}
+@keyframes nb-found {
+  50% {
+    box-shadow:
+      0 0 0 3px #ff2e9a,
+      0 0 0 10px rgba(255, 46, 154, 0.15),
+      0 0 34px rgba(255, 46, 154, 0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-special-sign {
+    animation: none;
+  }
+  .nb-longbox,
+  .p2-spine.nb-spine--current {
+    transition: none;
+  }
+  .nb-longbox:hover,
+  .nb-longbox:focus-visible {
+    transform: none;
+  }
+  .p2-sleeve.nb-sleeve--found {
+    animation: none;
+  }
+}

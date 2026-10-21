@@ -1,0 +1,106 @@
+/*
+ * NEO-350 — binder spines in the Print Shop's spine-label look.
+ *
+ * The spine's vinyl takes the label's own background, and the label fills
+ * nearly all of it: a solid team-colour field, the name lettered down it
+ * (vertical-rl, top to bottom with the binder upright, as the Print Shop
+ * prints it), and a paper count sticker at the foot. Colours arrive inline
+ * from `SpineLabel.tsx`; this file is geometry, the sticker and the focus
+ * ring. Remove this file, `SpineLabel.tsx` and `label.ts` to roll the look
+ * back.
+ */
+
+/* A thinner rim than p2's spine: the label is the spine now. */
+.p2-spine.nb-spine {
+  padding: 6px 5px 8px;
+}
+
+/* Two rings, dark then cyan, so focus reads on any livery and on the page. */
+.p2-spine.nb-spine:focus-visible {
+  box-shadow:
+    0 0 0 2px #020617,
+    0 0 0 5px #00c2ff,
+    0 0 20px rgba(0, 194, 255, 0.55),
+    0 8px 18px rgba(0, 0, 0, 0.55);
+}
+
+.nb-label {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 6px;
+  border-radius: 2px;
+  /* A hairline where the insert meets the vinyl, so a label the same colour
+     as its binder still reads as a label. */
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+/* The lettering's box: a size container, so the fitter's limits can be set
+   in its own cqw (across) and cqh (along). */
+.nb-label-field {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nb-label-name {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 100%;
+}
+
+/* The count, on a paper sticker: black on white whatever the livery. */
+.nb-label-count {
+  flex: none;
+  min-width: 24px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* The label editor's preview: one spine standing on its own. */
+.nb-label-preview {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 5px 8px;
+  border-radius: 5px 5px 2px 2px;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    0 8px 18px rgba(0, 0, 0, 0.55);
+}
+
+@media (forced-colors: active) {
+  .nb-label {
+    border: 1px solid CanvasText;
+  }
+  .p2-spine.nb-spine:focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}

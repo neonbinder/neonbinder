@@ -71,13 +71,17 @@ BuySportsCards alone for the whole run:
 * Everything that says "MAPPED on BOTH sides" below is mapped on the BSC side
   only under the pause, and every `SL only` / `SportLots only` expectation is
   vacuous. Flows branch on `output.SL_PAUSED`, never on the screen (R10).
-* **Below the root the tree looks BSC-only, not paused** (README → "Operator
-  switches"): `Baseball` carries no SportLots id, so every lower level skips
-  SportLots for want of ids — Years says "SportLots skipped: no SportLots ids
-  on this path.", Manufacturers holds only the pinned All Brands view entry
-  over its idle empty text, the base picker's SportLots pane reads
-  "SportLots returned no base set for <set>". Only the root Sports notice
-  carries the paused sentence. A brand's Sets column (a hand-made brand, or
+* **Below Years the tree looks BSC-only, not paused** (GUIDE → "Operator
+  switches"). The seeded catalogue (NEO-330) loads the sport rows with their
+  SportLots ids, so `Baseball` HAS a SportLots id and the Sports column never
+  syncs on first visit (no per-column notice at the root). Years is the first
+  sync that runs with SportLots' id in hand, so it carries the paused sentence
+  ("SportLots is on pause: nothing from SportLots was asked for or changed.").
+  The year rows it writes carry no SportLots id, so every level beneath skips
+  SportLots for want of ids: Manufacturers holds only the pinned All Brands
+  view entry over its idle empty text with no notice, the base picker's
+  SportLots pane reads "SportLots returned no base set for <set>". A brand's
+  Sets column (a hand-made brand, or
   any brand under the pause) ends "done" with "SportLots skipped: no
   SportLots ids on this path." since NEO-237 made Sync Sets two-sided — a
   notice, not a failure; the seed's strict asserts key on failure copy only.

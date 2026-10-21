@@ -112,7 +112,10 @@ test-fixtures, test-parallel and test-sharding. Read the installed
    tools (`generator_setup_page`, then the `browser_*` actions) to see what
    the user sees, signing in the way the GUIDE's `signIn` does.
 2. **Write** the spec to the GUIDE, beside the nearest existing spec in
-   `tests/<area>/`, one `test()` per file. Take `generator_read_log` as
+   `tests/<area>/`, one `test()` per file. When the flow moves through views
+   (tabs, a drill-down, an opened item), add a `page.goBack()` and check
+   that the previous view is back. It is a house rule that navigation lives
+   in the URL and Back steps through it. Take `generator_read_log` as
    input, never as the final text; rewrite it to the support helpers and the
    perceivable-only rule before `generator_write_test` or a plain Write.
 3. **Run only the specs you authored or changed**, with `test_run` or

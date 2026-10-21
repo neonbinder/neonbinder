@@ -1,0 +1,29 @@
+/* NEO-350 prototype 5: motion that answers the collector's own action. */
+
+@keyframes p5-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@keyframes p5-toast-in {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .p5-anim {
+    animation: none !important;
+  }
+}

@@ -217,18 +217,22 @@ export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget =
   await pick(page, "Years", year);
   await expect(columnHeading(page, "Manufacturers")).toBeVisible();
 
-  if (env.SL_PAUSED) {
-    // Nothing syncs the manufacturer list from SportLots: the column either
-    // already holds it or says it is empty.
+  if (env.SL_PAUSED && createManufacturer) {
+    // The brand list is never synced from SportLots, so the column holds
+    // whatever earlier writers left: the pinned "All Brands" view over its
+    // idle text, or data rows (the year's `Unknown` row from a year-wide Sets
+    // sync, hand-made brands), none of which need be this brand. The idle
+    // text vanishes as soon as one such row exists, so it is no signal; the
+    // column's own search says whether it holds the brand ("No matches
+    // found" otherwise), and only then is it made through "+ Custom".
     await expect(page.getByText("Syncing Manufacturer Options")).toBeHidden();
-    const option = columnOption(page, "Manufacturers", manufacturer);
-    await expect(
-      page.getByText("No manufacturers available. Sync from marketplaces to populate.").or(option),
-    ).toBeVisible();
-    if (createManufacturer && !(await option.isVisible())) {
-      await addCustomManufacturer(page, manufacturer);
-    }
-    await option.click();
+    await selectOrCreate(page, "Manufacturers", manufacturer);
+  } else if (env.SL_PAUSED) {
+    // Nothing syncs the manufacturer list from SportLots, so the brand is a
+    // row some earlier writer made; it is picked like any other and its
+    // absence fails the click.
+    await expect(page.getByText("Syncing Manufacturer Options")).toBeHidden();
+    await pick(page, "Manufacturers", manufacturer);
   } else {
     await pick(page, "Manufacturers", manufacturer);
   }
@@ -353,12 +357,11 @@ export async function drillToColdManufacturer(
     // The pinned view is always listed; with SportLots live the real brands
     // land under it.
     const allBrands = columnOption(page, "Manufacturers", "All Brands");
-    if (!env.SL_PAUSED) {
-      await expect(allBrands).toBeVisible();
-      await expect(empty).toBeHidden({ timeout: 60_000 });
-    } else {
-      await expect(empty.or(columnOption(page, "Manufacturers", "Unknown"))).toBeVisible();
-    }
+    await expect(allBrands).toBeVisible();
+    if (!env.SL_PAUSED) await expect(empty).toBeHidden({ timeout: 60_000 });
+    // Paused, the pinned view is the column's only guaranteed entry: the rest
+    // (the year's `Unknown` row, hand-made brands) depend on which specs ran
+    // first, so none of it is asserted here.
     await allBrands.click();
   } else if (!env.SL_PAUSED) {
     await columnSearch(page, "Manufacturers").fill(manufacturer);
@@ -366,10 +369,9 @@ export async function drillToColdManufacturer(
     await expect(option).toBeVisible({ timeout: 60_000 });
     await option.click();
   } else {
-    const option = columnOption(page, "Manufacturers", manufacturer);
-    await expect(empty.or(option)).toBeVisible();
-    if (!(await option.isVisible())) await addCustomManufacturer(page, manufacturer);
-    await option.click();
+    // Same reading as drillToSet's paused branch: search for the brand, make
+    // it when the column does not hold it.
+    await selectOrCreate(page, "Manufacturers", manufacturer);
   }
   await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("Syncing Sets")).toBeHidden({ timeout: COLD_SYNC });

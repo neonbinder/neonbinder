@@ -5,8 +5,9 @@
  * often low contrast (navy on black, gold on white), and a collector choosing
  * their own team's livery is making a legitimate choice that an accessibility
  * threshold has no business overriding — this is ink on paper, not a UI. The
- * readout exists so the user can see the problem before spending ink, with
- * invert one click away as the remedy.
+ * readout exists so the user can see the problem before spending ink. The
+ * remedy is lighter or darker lettering: swapping the two colours (Invert)
+ * gives exactly the same ratio, since contrast is symmetric.
  *
  * Implements WCAG 2.x relative luminance and contrast ratio exactly, so the
  * numbers shown match any other checker the user might compare against.

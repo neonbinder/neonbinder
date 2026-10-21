@@ -50,6 +50,13 @@ rows carry `aria-label` equal to the exact resource id because the E2E
 driver keys on it (fix hidden state via `aria-describedby`, never the
 label); mutually exclusive toggles are a roving-tabindex radiogroup.
 
+Navigation must live in the URL (a house rule for all UI, not only a11y).
+Every tab, drill-down or opened item pushes a history entry, so browser Back
+steps back one view at a time and a refresh or shared link restores the
+view. View state held only in component state or context is a
+**should-fix**. Lost Back history is also a 2.4.3/3.2.3 consistency problem
+for keyboard and screen-reader users, who rely on Back the most.
+
 Contrast comes from the measured table in memory (the real background is
 darker than the palette prose suggests). Never re-derive ratios by hand when
 the pair is already measured; add a pair to the table when it is not.

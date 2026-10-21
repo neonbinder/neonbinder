@@ -60,3 +60,13 @@ Vite, an iframe, a fake Convex client) is overkill. This takes about a minute:
 Limits: no React state, no live data, and the page's own container padding is
 whatever you write. A layout problem the mock shows in markup you did NOT
 change is a lead to check in the real app, not proof.
+
+**A component that imports a `.css` file** (`import "./card-face.css"`) makes
+`npx tsx` die with `ERR_UNKNOWN_FILE_EXTENSION ".css"`. Stub it with a loader
+in the scratchpad: `css-loader.mjs` exporting
+`load(url, ctx, next)` that returns `{ format: "module", source: "export {}",
+shortCircuit: true }` for `.css`, plus `register.mjs` calling
+`register("./css-loader.mjs", import.meta.url)`; run
+`npx tsx --import <scratch>/register.mjs probe.tsx`. Inline the CSS file into
+the scratch HTML's `<style>`: the build only bundles it once a routed page
+imports the component (NEO-350).

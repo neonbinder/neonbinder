@@ -23,6 +23,7 @@ import {
 } from "./spine-formats";
 import {
   SYSTEM_SPINE_FONT,
+  spineFontFamilyCss,
   type SpineFont,
 } from "./spine-fonts";
 
@@ -248,15 +249,10 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
           // closes the `style="` attribute early and every declaration after it
           // — background, colour, font-size — is silently dropped. The label
           // renders as a white box in the default face, which is exactly what
-          // it did before this comment existed. Single quotes are valid CSS
-          // string delimiters and do not terminate the attribute.
-          //
-          // The system stack is left bare: it IS a family LIST, and quoting it
-          // would look for one absurdly-named font.
-          const family =
-            font.id === SYSTEM_SPINE_FONT.id
-              ? font.family
-              : `'${font.family}', sans-serif`;
+          // it did before this comment existed. `spineFontFamilyCss` quotes
+          // with single quotes, which are valid CSS string delimiters and do
+          // not terminate the attribute, and leaves the system stack bare.
+          const family = spineFontFamilyCss(font);
           return (
             `<div class="label" style="width:${label.widthIn}in;height:${segmentHeight}in;">` +
             `<div class="label-face" style="margin-top:-${pieceOffset}in;` +

@@ -21,7 +21,7 @@ The pure reducer MUST return the same object when nothing changed, or the
 render loops. Used for NEO-335's "Step x of y" (never-shrinking y,
 `entity-review-steps.ts` `trackSteps`) and WizardChrome's forward-only rail.
 
-Two traps from that build:
+Three traps (the third from NEO-350's collection page):
 - It must sit ABOVE any early `return null`, like any hook-adjacent state.
 - A transient line keyed on the value it describes can vanish in the same
   commit: the render that grows the wizard's y is often the one where the nav
@@ -29,6 +29,14 @@ Two traps from that build:
   screen), so keying the growth line on x wiped it. Key it on operator
   progress (decided count + requested step) instead. See
   [[e2e-viewport-is-the-ux-constraint]] for why status text stays near its cause.
+
+- Under the React Compiler lint, a render-phase `setX` placed BELOW a
+  component's `useCallback`s makes those earlier callbacks fail
+  `react-hooks/preserve-manual-memoization` ("inferred dependency was
+  `setNotice`"), even untouched ones. And a `useCallback` that calls a setter
+  which is also called during render fails the same rule. Fix: put every
+  render-phase block above the first `useCallback`, and write handlers that
+  call those setters as plain functions (the compiler memoizes them).
 
 Related focus trap (NEO-335 a11y audit): `useEffect(() => ref.current?.focus(), [screenKey])`
 fires ONCE, so if the target mounts a render later (dialog opened after the

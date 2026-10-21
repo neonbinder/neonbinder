@@ -21,7 +21,7 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/convex/_generated/api", () => ({
   api: {
@@ -249,5 +249,74 @@ describe("SpineLabelPage — the team picker reaches every team (NEO-330)", () =
     });
     await new Promise((resolve) => setTimeout(resolve, 300));
     await waitFor(() => expect(searchCalls).toEqual([]));
+  });
+});
+
+/**
+ * NEO-350 — a binder's "Print this label" opens the designer with its name,
+ * colours and face filled in (`?name=&bg=&fg=&font=`). Each param is checked
+ * on its own; an invalid one falls back to the usual default, silently.
+ */
+describe("SpineLabelPage — prefilled from the link", () => {
+  beforeEach(() => {
+    careerTeams = [];
+    allTeams = [];
+    searchedTeams = undefined;
+    searchCalls = [];
+  });
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
+  function open(search: string) {
+    window.history.replaceState(null, "", `/print/spine-label${search}`);
+    render(<SpineLabelPage />);
+  }
+  const field = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).value;
+  const checkedFace = () =>
+    screen.getAllByRole("radio").find((r) => r.getAttribute("aria-checked") === "true")?.textContent;
+
+  it("seeds the name, both colours and the face, and adds nothing to the sheet", () => {
+    open("?name=All+Reggie+White&bg=203731&fg=FFB612&font=teko");
+    expect(field("Name on the label")).toBe("All Reggie White");
+    expect(field("Background")).toBe("#203731");
+    expect(field("Lettering")).toBe("#ffb612");
+    expect(checkedFace()).toBe("Teko");
+    expect(screen.getByText(/Contrast 7\.2:1/)).toBeTruthy();
+    expect(screen.getByText(/^Sheet \(0 labels/)).toBeTruthy();
+  });
+
+  it("leaves every field editable after seeding", () => {
+    open("?name=Packers+PC&bg=203731&fg=FFB612");
+    fireEvent.change(screen.getByLabelText("Name on the label"), { target: { value: "Packers PC 2" } });
+    fireEvent.change(screen.getByLabelText("Background"), { target: { value: "#000000" } });
+    expect(field("Name on the label")).toBe("Packers PC 2");
+    expect(field("Background")).toBe("#000000");
+    fireEvent.click(screen.getByRole("button", { name: "Add to sheet" }));
+    expect(screen.getByText(/^Sheet \(1 label,/)).toBeTruthy();
+  });
+
+  it("ignores invalid values and keeps the usual defaults for them", () => {
+    open("?name=%20%20&bg=red&fg=12345&font=comic-sans");
+    expect(field("Name on the label")).toBe("");
+    expect(field("Background")).toBe("#101820");
+    expect(field("Lettering")).toBe("#ffffff");
+    expect(checkedFace()).toBe("Anton");
+  });
+
+  it("keeps a valid param when its neighbours are not", () => {
+    open("?name=Red+Wings&bg=not-a-colour&fg=fff");
+    expect(field("Name on the label")).toBe("Red Wings");
+    expect(field("Background")).toBe("#101820");
+    expect(field("Lettering")).toBe("#ffffff");
+  });
+
+  it("starts exactly as before with no params", () => {
+    open("");
+    expect(field("Name on the label")).toBe("");
+    expect(field("Background")).toBe("#101820");
+    expect(field("Lettering")).toBe("#ffffff");
+    expect(checkedFace()).toBe("Anton");
+    expect(screen.getByText("Pick a player, or type a name, to see the label.")).toBeTruthy();
   });
 });

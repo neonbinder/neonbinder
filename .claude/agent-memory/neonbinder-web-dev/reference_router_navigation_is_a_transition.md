@@ -25,4 +25,11 @@ an UNOWNED child makes in the same event (e.g. a column's own `setExpanded`)
 still renders first — expect a one-frame stale render there, and do not
 "fix" it with a timeout; `flushSync` cannot flush a transition either.
 
+When the unowned child also moves FOCUS on that beat (the p1 `Cascade`
+focuses the next column's combobox in a rAF after `onDrill`), the column
+does not exist yet if the drill comes only from the URL. Hold an optimistic
+`pending` value in plain state, render `pending ?? urlValue`, and clear it
+when the location changes to a URL that matches it (or on any POP). The
+NEO-350 collection demo's Checklists drill does this.
+
 Related: [[url-state-trusted-id-gate]] (NEO-224's `useDrillUrlState`).

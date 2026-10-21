@@ -61,6 +61,12 @@ an operator flow with no obvious undo, a change that invalidates the E2E
 fixtures. Say which are worth resolving before building and which are worth
 discovering in the build.
 
+For UI work, say which views a user navigates between and the URL each one
+gets: a route or search params. Browser Back has to step back through them
+and a refresh has to restore them. Navigation is never held only in
+component state. In-view tweaks such as filters, sort, drawers and dialogs
+replace the current history entry or stay out of the URL.
+
 Sets are fixed and never deleted; there is no delete-set path, and recovery
 rides on backups. A plan that needs one is a plan to rethink.
 
