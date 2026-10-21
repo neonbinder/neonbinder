@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   MAIN_BINDER_ID,
+  NO_BROWSE_FILTER,
   TRADE_BINDER_ID,
   WANT_BINDER_ID,
   collectionReducer,
   copyScope,
   initialCollectionState,
+  movedFrom,
   sameLineItem,
   targetFor,
   type CollectionState,
@@ -75,5 +77,76 @@ describe("final collection store", () => {
     expect(sameLineItem(a, { ...a, serialNumber: "3/50" })).toBe(false);
     const slab = { ...a, condition: undefined, graded: { grader: "PSA" as const, grade: "10", cert: "1" } };
     expect(sameLineItem(slab, slab)).toBe(false);
+  });
+});
+
+describe("moving a copy", () => {
+  const CONTENDERS = "binder-contenders-96";
+  const copyIn = (s: CollectionState, id: string) => s.copies.find((c) => c.id === id)!;
+  const slotsOf = (s: CollectionState, binderId: string) => {
+    const b = s.binders.find((x) => x.id === binderId);
+    return b?.kind === "manual" ? (b.layout ?? []).flatMap((p) => p.slots) : [];
+  };
+
+  it("files it in the destination instead, and empties its old pocket", () => {
+    const s0 = initialCollectionState();
+    const copyId = slotsOf(s0, CONTENDERS).find(Boolean)!;
+    const s = collectionReducer(s0, { type: "moveCopy", copyId, to: SLAB });
+    expect(copyIn(s, copyId).binderIds).toEqual([SLAB]);
+    expect(slotsOf(s, CONTENDERS)).not.toContain(copyId);
+  });
+
+  it("puts it in the pocket asked for", () => {
+    const [s0, copy] = withCopy(initialCollectionState(), [MAIN_BINDER_ID]);
+    const s = collectionReducer(s0, { type: "moveCopy", copyId: copy.id, to: CONTENDERS, slot: { page: 6, slot: 2 } });
+    expect(copyIn(s, copy.id).binderIds).toEqual([CONTENDERS]);
+    const b = s.binders.find((x) => x.id === CONTENDERS);
+    expect(b?.kind === "manual" && b.layout?.[6]?.slots[2]).toBe(copy.id);
+  });
+
+  it("leaves Up for Trade alone, unless that is where it goes or all it has", () => {
+    const base = { ...emptyCopyDetails(), id: "c", cardId: "x" };
+    expect(movedFrom({ ...base, binderIds: [MAIN_BINDER_ID, TRADE_BINDER_ID] }, SLAB)).toEqual([MAIN_BINDER_ID]);
+    expect(movedFrom({ ...base, binderIds: [TRADE_BINDER_ID] }, SLAB)).toEqual([TRADE_BINDER_ID]);
+    expect(movedFrom({ ...base, binderIds: [MAIN_BINDER_ID] }, TRADE_BINDER_ID)).toEqual([MAIN_BINDER_ID]);
+    expect(movedFrom({ ...base, binderIds: [SLAB, MAIN_BINDER_ID] }, SLAB)).toEqual([]);
+  });
+
+  it("never moves into the Want List", () => {
+    const [s0, copy] = withCopy(initialCollectionState(), [MAIN_BINDER_ID]);
+    expect(collectionReducer(s0, { type: "moveCopy", copyId: copy.id, to: WANT_BINDER_ID })).toBe(s0);
+  });
+
+  it("restorePlacement puts the copy and the pages back as they were", () => {
+    const s0 = initialCollectionState();
+    const copyId = slotsOf(s0, CONTENDERS).find(Boolean)!;
+    const before = s0.binders.find((b) => b.id === CONTENDERS);
+    const moved = collectionReducer(s0, { type: "moveCopy", copyId, to: SLAB });
+    const back = collectionReducer(moved, {
+      type: "restorePlacement",
+      copyId,
+      binderIds: copyIn(s0, copyId).binderIds,
+      layouts: [[CONTENDERS, before?.kind === "manual" ? before.layout : undefined]],
+    });
+    expect(copyIn(back, copyId).binderIds).toEqual(copyIn(s0, copyId).binderIds);
+    expect(slotsOf(back, CONTENDERS)).toEqual(slotsOf(s0, CONTENDERS));
+  });
+});
+
+describe("spine labels and the Browse shelf's filters", () => {
+  it("sets a label on a binder and clears it back to the default", () => {
+    const label = { background: "#203731", text: "#FFB612", fontId: "anton" };
+    let s = collectionReducer(initialCollectionState(), { type: "setLabel", binderId: SLAB, label });
+    expect(s.binders.find((b) => b.id === SLAB)?.label).toEqual(label);
+    s = collectionReducer(s, { type: "setLabel", binderId: SLAB, label: null });
+    expect(s.binders.find((b) => b.id === SLAB)).not.toHaveProperty("label");
+  });
+
+  it("merges filter changes and starts unfiltered", () => {
+    let s = initialCollectionState();
+    expect(s.browseFilter).toEqual(NO_BROWSE_FILTER);
+    s = collectionReducer(s, { type: "setBrowseFilter", patch: { sport: "hockey" } });
+    s = collectionReducer(s, { type: "setBrowseFilter", patch: { from: 1990 } });
+    expect(s.browseFilter).toEqual({ ...NO_BROWSE_FILTER, sport: "hockey", from: 1990 });
   });
 });

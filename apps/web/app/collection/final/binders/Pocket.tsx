@@ -22,6 +22,8 @@ import type { BinderPocket } from "./model";
  *
  * In "browse" (a catalog set), every card shows its face and has an Add
  * button instead: the faces are the point of flipping through a set.
+ *
+ * `found` rings a pocket the hunt tray led the collector to.
  */
 
 export type PocketVariant = "binder" | "browse";
@@ -39,6 +41,8 @@ interface PocketProps extends PocketHandlers {
   index: number;
   pageNumber: number;
   aimed: boolean;
+  /** The pocket a hunt in the tray just found: ringed, and focused. */
+  found?: boolean;
 }
 
 export function pocketDropId(slot: SlotRef): string {
@@ -76,6 +80,7 @@ export default function Pocket({
   index,
   pageNumber,
   aimed,
+  found = false,
   onOpen,
   onAdd,
   onAim,
@@ -88,7 +93,7 @@ export default function Pocket({
     disabled: !slot || content.kind === "have",
     data: { slot, pageNumber, index },
   });
-  const ring = `${isOver ? " p2-sleeve--over" : ""}${aimed ? " p2-sleeve--target" : ""}`;
+  const ring = `${isOver ? " p2-sleeve--over" : ""}${aimed ? " p2-sleeve--target" : ""}${found ? " nb-sleeve--found" : ""}`;
   const where = `pocket ${index + 1} on page ${pageNumber}`;
 
   if (content.kind === "have") {
@@ -141,6 +146,7 @@ export default function Pocket({
         type="button"
         aria-haspopup="dialog"
         aria-label={havePocketLabel(card, copies)}
+        data-found={found ? "true" : undefined}
         onClick={open}
         className={`p2-sleeve${ring}`}
       >

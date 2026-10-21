@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cards,
   evaluateRule,
+  setsInOrder,
   getCard,
   searchCards,
   type Copy,
@@ -9,16 +10,27 @@ import {
   type SearchHit,
 } from "../../prototypes/_shared/data";
 import { cardCaption } from "../captions";
-import { initialCollectionState, MAIN_BINDER_ID, TRADE_BINDER_ID, WANT_BINDER_ID } from "../store";
+import {
+  initialCollectionState,
+  MAIN_BINDER_ID,
+  NO_BROWSE_FILTER,
+  TRADE_BINDER_ID,
+  WANT_BINDER_ID,
+} from "../store";
 import {
   binderTally,
   buildBinderPages,
   cardsOnPages,
   EXTRAS,
   extrasStart,
+  filterSets,
   followedChecklist,
   guardPocket,
+  isFiltering,
   liveryOf,
+  movableCopies,
+  placesOf,
+  placeWords,
   pocketFor,
   resolveTyped,
   shareLink,
@@ -209,5 +221,51 @@ describe("the caption under a thumbnail", () => {
       (c) => c.setId === "2024-topps-chrome-baseball" && c.variantPath.name === "Gold Refractor",
     )!;
     expect(cardCaption(gold)).toBe("2024 Topps Chrome Gold Refractor");
+  });
+});
+
+describe("where a card lives (the hunt tray)", () => {
+  const s = initialCollectionState();
+  // #4 Reggie White, '96 Contenders: one in its pocket, one PSA 9 in the slab case.
+  const reggie = s.copies.find((c) => c.binderIds.includes("binder-slab-case") && c.graded?.grade === "9")!.cardId;
+
+  it("lists a pocket with its page and number, and a binder without pages by name", () => {
+    expect(placesOf(reggie, s.copies, s.binders).map(placeWords)).toEqual([
+      "'96 Contenders, page 1, pocket 4",
+      "Slab case",
+    ]);
+  });
+
+  it("counts a stack in one binder as one place", () => {
+    const yzerman = s.copies.find((c) => c.quantity === 3)!;
+    const places = placesOf(yzerman.cardId, s.copies, s.binders);
+    expect(places.map(placeWords)).toContain("Up for Trade ×3");
+  });
+
+  it("offers only the copies not already in the binder to move", () => {
+    expect(movableCopies(reggie, s.copies, "binder-slab-case").map((c) => c.binderIds)).toEqual([
+      ["binder-contenders-96"],
+    ]);
+    expect(movableCopies(reggie, s.copies, MAIN_BINDER_ID)).toHaveLength(2);
+  });
+});
+
+describe("Browse a set's filters", () => {
+  const all = setsInOrder();
+
+  it("narrows by sport, by an inclusive year range either way round, and by every word of the name", () => {
+    expect(filterSets(all, NO_BROWSE_FILTER)).toHaveLength(all.length);
+    expect(filterSets(all, { ...NO_BROWSE_FILTER, sport: "hockey" }).every((x) => x.sportId === "hockey")).toBe(true);
+    const range = filterSets(all, { ...NO_BROWSE_FILTER, from: 2000, to: 1996 });
+    expect(range.length).toBeGreaterThan(0);
+    expect(range.every((x) => x.year >= 1996 && x.year <= 2000)).toBe(true);
+    expect(filterSets(all, { ...NO_BROWSE_FILTER, q: "96 playoff" }).map((x) => x.name)).toEqual(["Playoff Contenders"]);
+    expect(filterSets(all, { ...NO_BROWSE_FILTER, q: "zzz" })).toEqual([]);
+  });
+
+  it("knows when it is filtering", () => {
+    expect(isFiltering(NO_BROWSE_FILTER)).toBe(false);
+    expect(isFiltering({ ...NO_BROWSE_FILTER, q: " " })).toBe(false);
+    expect(isFiltering({ ...NO_BROWSE_FILTER, to: 2000 })).toBe(true);
   });
 });

@@ -16,10 +16,12 @@ import {
   compareCards,
   copiesOf,
   getCard,
+  setLabel,
   type Binder,
   type BinderId,
   type BinderRule,
   type Card,
+  type CardSet,
   type Copy,
   type ManualBinder,
   type SearchHit,
@@ -27,7 +29,6 @@ import {
 } from "../../prototypes/_shared/data";
 import {
   binderCount as p2BinderCount,
-  binderLivery as p2Livery,
   buildPages as p2BuildPages,
   type BinderCount,
   type BuildInput,
@@ -36,7 +37,8 @@ import {
   type PocketModel,
   type SlotRef,
 } from "../../prototypes/p2/model";
-import type { CollectionBinder } from "../store";
+import type { BrowseFilter, CollectionBinder } from "../store";
+import { labelOf, ruleTeamId } from "./label";
 
 // ---------------------------------------------------------------------------
 // Pages
@@ -285,37 +287,17 @@ export function buildBinderPages(input: BuildInput): PageModel[] {
 // Colours
 // ---------------------------------------------------------------------------
 
-/** The special shelf's vinyl: picked by role, never by name. */
-const SYSTEM_LIVERY: Record<NonNullable<CollectionBinder["system"]>, Livery> = {
-  main: { primary: "#14532d", secondary: "#00D558" },
-  want: { primary: "#4a0b33", secondary: "#FF2E9A" },
-  trade: { primary: "#5c4a00", secondary: "#FFE600" },
-};
-
-/** The rule's team, when a smart binder is "a team" (with or without alumni). */
-export function ruleTeamId(rule: BinderRule): TeamId | null {
-  if (rule.kind === "teamOnCard" || rule.kind === "playedFor") return rule.teamId;
-  if (rule.kind === "or") {
-    for (const r of rule.rules) {
-      const id = ruleTeamId(r);
-      if (id) return id;
-    }
-  }
-  return null;
-}
-
+/**
+ * A binder's colours: its spine label's (see `label.ts`), so the open
+ * binder's vinyl matches the spine it was pulled by. By role or by rule,
+ * never by name.
+ */
 export function liveryOf(binder: CollectionBinder | "all"): Livery {
-  if (binder === "all") return p2Livery("all");
-  if (binder.system) return SYSTEM_LIVERY[binder.system];
-  if (binder.kind === "smart") {
-    const teamId = ruleTeamId(binder.rule);
-    if (teamId && binder.rule.kind === "or") {
-      // p2 only knows a bare team rule; hand it the same team.
-      return p2Livery({ ...binder, rule: { kind: "teamOnCard", teamId } });
-    }
-  }
-  return p2Livery(binder);
+  const label = labelOf(binder);
+  return { primary: label.background, secondary: label.text };
 }
+
+export { ruleTeamId };
 
 // ---------------------------------------------------------------------------
 // The smart binder's team rule
@@ -354,6 +336,115 @@ export function slugify(name: string): string {
 export function shareLink(binder: CollectionBinder, handle = MOCK_HANDLE): string {
   if (binder.system === "want") return `neonbinder.io/@${handle}/want-list`;
   return `neonbinder.io/@${handle}/binders/${slugify(binder.name)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Browse a set: the shelf's filters
+// ---------------------------------------------------------------------------
+
+function foldText(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/['\u2019]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The sets the Browse shelf shows: one sport (or all), a year range (either
+ * end open, ends inclusive and swapped if typed backwards) and every word of
+ * the name typed ("96 contenders", "chrome").
+ */
+export function filterSets(sets: CardSet[], filter: BrowseFilter): CardSet[] {
+  let { from, to } = filter;
+  if (from !== null && to !== null && from > to) [from, to] = [to, from];
+  const words = foldText(filter.q).split(" ").filter(Boolean);
+  return sets.filter((set) => {
+    if (filter.sport !== "all" && set.sportId !== filter.sport) return false;
+    if (from !== null && set.year < from) return false;
+    if (to !== null && set.year > to) return false;
+    if (words.length === 0) return true;
+    const label = foldText(setLabel(set));
+    return words.every((w) => label.includes(w));
+  });
+}
+
+/** True when any filter is narrowing the shelf. */
+export function isFiltering(filter: BrowseFilter): boolean {
+  return filter.sport !== "all" || filter.from !== null || filter.to !== null || filter.q.trim() !== "";
+}
+
+// ---------------------------------------------------------------------------
+// Where a card lives (the hunt tray)
+// ---------------------------------------------------------------------------
+
+/** One place a card lives: a binder, and a pocket when it sits in one. */
+export interface Place {
+  binderId: BinderId;
+  binderName: string;
+  /** The pocket on the binder's pages, or null when it is just filed there. */
+  pocket: { page: number; slot: number } | null;
+  /** The line items in this place (one, for a pocket). */
+  copyIds: string[];
+  /** Cards in this place, counting a line item's quantity. */
+  quantity: number;
+}
+
+/**
+ * Every place the collector's copies of a card live, binder by binder in
+ * shelf order. A copy in a pocket is its own place ("'96 Contenders, page 2,
+ * pocket 4"); copies just filed in a binder share one ("Main", ×2). A copy
+ * filed in two binders (Main and Up for Trade) is in both.
+ */
+export function placesOf(cardId: string, copies: Copy[], binders: CollectionBinder[]): Place[] {
+  const mine = copies.filter((c) => c.cardId === cardId);
+  const places: Place[] = [];
+  for (const binder of binders) {
+    const here = mine.filter((c) => c.binderIds.includes(binder.id));
+    if (here.length === 0) continue;
+    const loose: Copy[] = [];
+    const pocketed: Place[] = [];
+    for (const copy of here) {
+      let pocket: Place["pocket"] = null;
+      if (binder.kind === "manual") {
+        binder.layout?.forEach((page, p) =>
+          page.slots.forEach((id, slot) => {
+            if (id === copy.id && !pocket) pocket = { page: p, slot };
+          }),
+        );
+      }
+      if (pocket) {
+        pocketed.push({ binderId: binder.id, binderName: binder.name, pocket, copyIds: [copy.id], quantity: copy.quantity });
+      } else {
+        loose.push(copy);
+      }
+    }
+    pocketed.sort((a, b) => a.pocket!.page - b.pocket!.page || a.pocket!.slot - b.pocket!.slot);
+    places.push(...pocketed);
+    if (loose.length) {
+      places.push({
+        binderId: binder.id,
+        binderName: binder.name,
+        pocket: null,
+        copyIds: loose.map((c) => c.id),
+        quantity: loose.reduce((n, c) => n + c.quantity, 0),
+      });
+    }
+  }
+  return places;
+}
+
+/** "'96 Contenders, page 2, pocket 4", "Main", "Main ×2". */
+export function placeWords(place: Place): string {
+  if (place.pocket) return `${place.binderName}, page ${place.pocket.page + 1}, pocket ${place.pocket.slot + 1}`;
+  return place.quantity > 1 ? `${place.binderName} ×${place.quantity}` : place.binderName;
+}
+
+/** The copies of a card that "Move here" may move into `to`: any not already there. */
+export function movableCopies(cardId: string, copies: Copy[], to: BinderId): Copy[] {
+  return copies.filter((c) => c.cardId === cardId && !c.binderIds.includes(to));
 }
 
 // ---------------------------------------------------------------------------

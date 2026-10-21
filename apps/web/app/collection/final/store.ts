@@ -77,6 +77,20 @@
  *
  * Card requests ("Can't find it? Ask us to add it"): `cardRequests`,
  * `requestCard(input)`. Local only, private to this collector.
+ *
+ * Spine labels (the Print Shop look on the shelf): `binder.label` is the
+ * collector's own `{ background, text, fontId }`, or absent for the default
+ * (`binders/label.ts` decides it). `setBinderLabel(id, label | null)`;
+ * `createBinder(input, label?)` takes one up front.
+ *
+ * Moving a copy: `moveCopy(copyId, toBinderId, slot?)` files it in the
+ * destination instead of where it was (and into that pocket, when given).
+ * It leaves Up for Trade alone unless that is where it goes, or the only
+ * other place it lives. Never into the Want List, never zero binders. Returns
+ * the binders it left and its undo, or null when nothing moved.
+ *
+ * Browse a set's filters: `browseFilter` / `setBrowseFilter(patch)`, kept in
+ * the store so leaving the tab keeps them.
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
@@ -102,8 +116,10 @@ import {
   type CopyDetails,
   type CopyId,
   type SetId,
+  type SportId,
   type VariantFilter,
 } from "../prototypes/_shared/data";
+import type { BinderPage } from "../prototypes/_shared/types";
 import type {
   NewBinder,
   PrototypeState,
@@ -116,7 +132,36 @@ import type {
 
 export type SystemKind = "main" | "want" | "trade";
 
-export type CollectionBinder = Binder & { system?: SystemKind };
+/** A spine label in the Print Shop's look: `#rrggbb` pair and a spine font id. */
+export interface BinderLabel {
+  background: string;
+  text: string;
+  fontId: string;
+}
+
+export type CollectionBinder = Binder & { system?: SystemKind; label?: BinderLabel };
+
+/** Browse a set's filters. `from` / `to` are years, inclusive; null is open. */
+export interface BrowseFilter {
+  sport: SportId | "all";
+  from: number | null;
+  to: number | null;
+  q: string;
+}
+
+export const NO_BROWSE_FILTER: BrowseFilter = { sport: "all", from: null, to: null, q: "" };
+
+/** Where a copy is put when it moves: a pocket of the destination's pages. */
+export interface PocketRef {
+  page: number;
+  slot: number;
+}
+
+export interface MoveResult {
+  /** The binders the copy left (empty when it was only somewhere else too). */
+  from: BinderId[];
+  undo: () => void;
+}
 
 /** A card on the Want List, for one binder or (null) for the collection. */
 export interface Want {
@@ -145,6 +190,7 @@ export interface CollectionState extends PrototypeState {
   wants: Want[];
   selectedBinderId: BinderSelection;
   cardRequests: CardRequest[];
+  browseFilter: BrowseFilter;
   /** Bumped when the stored shape changes; a mismatch reseeds. */
   version: number;
 }
@@ -226,13 +272,20 @@ export interface CollectionStore extends PrototypeStore {
 
   cardRequests: CardRequest[];
   requestCard: (input: NewCardRequest) => CardRequest;
+
+  createBinder: (input: NewBinder, label?: BinderLabel) => CollectionBinder;
+  setBinderLabel: (binderId: BinderId, label: BinderLabel | null) => void;
+  moveCopy: (copyId: CopyId, toBinderId: BinderId, slot?: PocketRef) => MoveResult | null;
+
+  browseFilter: BrowseFilter;
+  setBrowseFilter: (patch: Partial<BrowseFilter>) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const STORAGE_KEY = "nb-collection-final";
 
 export const MAIN_BINDER_ID = "binder-main";
@@ -240,6 +293,17 @@ export const WANT_BINDER_ID = "binder-want";
 /** The seed's "Trade bait" binder, renamed and made a system binder. */
 export const TRADE_BINDER_ID = "binder-trade-bait";
 const OHTANI_BINDER_ID = "binder-ohtani-rainbow";
+const SLAB_BINDER_ID = "binder-slab-case";
+
+/**
+ * Labels the collector picked for two seed binders, so the shelf shows a
+ * chosen label beside the defaults: the Ohtani binder in Dodger blue, and the
+ * slab case lettered like an equipment crate.
+ */
+const SEED_LABELS: Record<BinderId, BinderLabel> = {
+  [OHTANI_BINDER_ID]: { background: "#005A9C", text: "#FFFFFF", fontId: "anton" },
+  [SLAB_BINDER_ID]: { background: "#101820", text: "#FFE600", fontId: "stardos-stencil" },
+};
 
 const SYSTEM_ORDER: Record<SystemKind, number> = { main: 0, trade: 1, want: 2 };
 
@@ -270,7 +334,9 @@ function seedState(): CollectionState {
           description: "Copies you'd move at a show or a swap.",
           system: "trade",
         }
-      : b,
+      : SEED_LABELS[b.id]
+        ? { ...b, label: SEED_LABELS[b.id] }
+        : b,
   );
   const system: CollectionBinder[] = [
     {
@@ -301,6 +367,7 @@ function seedState(): CollectionState {
     ],
     selectedBinderId: "all",
     cardRequests: [],
+    browseFilter: NO_BROWSE_FILTER,
     version: STATE_VERSION,
   };
 }
@@ -333,6 +400,15 @@ export type CollectionAction =
   | { type: "setWants"; wants: Want[] }
   | { type: "select"; selection: BinderSelection }
   | { type: "requestCard"; request: CardRequest }
+  | { type: "setLabel"; binderId: BinderId; label: BinderLabel | null }
+  | { type: "moveCopy"; copyId: CopyId; to: BinderId; slot?: PocketRef }
+  | {
+      type: "restorePlacement";
+      copyId: CopyId;
+      binderIds: BinderId[];
+      layouts: [BinderId, BinderPage[] | undefined][];
+    }
+  | { type: "setBrowseFilter"; patch: Partial<BrowseFilter> }
   | { type: "reset" };
 
 /** Binders a copy may be filed in: manual, and not the Want List. */
@@ -376,6 +452,21 @@ function unslot(
       layout: b.layout.map((p) => ({ slots: p.slots.map((id) => (id === copyId ? null : id)) })),
     };
   });
+}
+
+/**
+ * The binders a copy leaves when it moves to `to`. Up for Trade is a status
+ * as much as a place, so a move leaves it alone, unless the move IS into Up
+ * for Trade, or Up for Trade is the only other place the copy lives. A copy
+ * already filed in `to` leaves nothing (the move only pockets it).
+ */
+export function movedFrom(copy: Copy, to: BinderId): BinderId[] {
+  // Already filed there: a move only puts it in a pocket.
+  if (copy.binderIds.includes(to)) return [];
+  const others = copy.binderIds.filter((id) => id !== to);
+  if (to === TRADE_BINDER_ID) return others;
+  const homes = others.filter((id) => id !== TRADE_BINDER_ID);
+  return homes.length > 0 ? homes : others;
 }
 
 export function collectionReducer(
@@ -516,6 +607,46 @@ export function collectionReducer(
     }
     case "requestCard":
       return { ...state, cardRequests: [action.request, ...state.cardRequests] };
+    case "setLabel":
+      return {
+        ...state,
+        binders: state.binders.map((b) => {
+          if (b.id !== action.binderId) return b;
+          if (action.label) return { ...b, label: action.label };
+          const plain = { ...b };
+          delete plain.label;
+          return plain;
+        }),
+      };
+    case "moveCopy": {
+      const { copyId, to, slot } = action;
+      const copy = state.copies.find((c) => c.id === copyId);
+      if (!copy || !isFileable(state.binders.find((b) => b.id === to))) return state;
+      const from = movedFrom(copy, to);
+      let binders = state.binders;
+      for (const id of from) binders = unslot(binders, copyId, id);
+      const binderIds = [...copy.binderIds.filter((id) => id !== to && !from.includes(id)), to];
+      const moved: CollectionState = {
+        ...state,
+        binders,
+        copies: state.copies.map((c) => (c.id === copyId ? { ...c, binderIds } : c)),
+      };
+      return slot
+        ? collectionReducer(moved, { type: "placeInSlot", binderId: to, page: slot.page, slot: slot.slot, copyId })
+        : moved;
+    }
+    case "restorePlacement": {
+      const layouts = new Map(action.layouts);
+      return {
+        ...state,
+        copies: state.copies.map((c) => (c.id === action.copyId ? { ...c, binderIds: action.binderIds } : c)),
+        binders: state.binders.map((b) =>
+          b.kind === "manual" && layouts.has(b.id) ? { ...b, layout: layouts.get(b.id) } : b,
+        ),
+      };
+    }
+    case "setBrowseFilter":
+      return { ...state, browseFilter: { ...state.browseFilter, ...action.patch } };
     case "reset":
       return seedState();
   }
@@ -664,9 +795,9 @@ export function useCollectionStore(): CollectionStore {
     [],
   );
 
-  const createBinder = useCallback((input: NewBinder) => {
+  const createBinder = useCallback((input: NewBinder, label?: BinderLabel) => {
     const id = newId("binder");
-    const binder: CollectionBinder =
+    const made: CollectionBinder =
       input.kind === "smart"
         ? { id, kind: "smart", name: input.name, description: input.description, rule: input.rule }
         : {
@@ -678,9 +809,44 @@ export function useCollectionStore(): CollectionStore {
               ? Array.from({ length: input.pages }, () => ({ slots: Array(9).fill(null) }))
               : undefined,
           };
+    const binder = label ? { ...made, label } : made;
     dispatch({ type: "createBinder", binder });
     return binder;
   }, []);
+
+  const setBinderLabel = useCallback(
+    (binderId: BinderId, label: BinderLabel | null) => dispatch({ type: "setLabel", binderId, label }),
+    [],
+  );
+
+  const moveCopy = useCallback((copyId: CopyId, to: BinderId, slot?: PocketRef): MoveResult | null => {
+    const before = stateRef.current;
+    const copy = before.copies.find((c) => c.id === copyId);
+    if (!copy || !isFileable(before.binders.find((b) => b.id === to))) return null;
+    if (copy.binderIds.includes(to) && !slot) return null;
+    const from = movedFrom(copy, to);
+    // Everything the move can touch, as it was: the copy's binders and every
+    // layout it leaves or lands in.
+    const touched = new Set([...from, to]);
+    const layouts = before.binders
+      .filter((b) => touched.has(b.id))
+      .map((b): [BinderId, BinderPage[] | undefined] => [b.id, b.kind === "manual" ? b.layout : undefined]);
+    const binderIds = [...copy.binderIds];
+    const next = collectionReducer(before, { type: "moveCopy", copyId, to, slot });
+    stateRef.current = next;
+    dispatch({ type: "moveCopy", copyId, to, slot });
+    return {
+      from,
+      undo: () => {
+        dispatch({ type: "restorePlacement", copyId, binderIds, layouts });
+      },
+    };
+  }, []);
+
+  const setBrowseFilter = useCallback(
+    (patch: Partial<BrowseFilter>) => dispatch({ type: "setBrowseFilter", patch }),
+    [],
+  );
 
   const renameBinder = useCallback((binderId: BinderId, name: string) => {
     const b = stateRef.current.binders.find((x) => x.id === binderId);
@@ -877,6 +1043,11 @@ export function useCollectionStore(): CollectionStore {
 
       cardRequests: state.cardRequests,
       requestCard,
+
+      setBinderLabel,
+      moveCopy,
+      browseFilter: state.browseFilter,
+      setBrowseFilter,
     };
   }, [
     state,
@@ -899,5 +1070,8 @@ export function useCollectionStore(): CollectionStore {
     addHave,
     addLineItem,
     requestCard,
+    setBinderLabel,
+    moveCopy,
+    setBrowseFilter,
   ]);
 }

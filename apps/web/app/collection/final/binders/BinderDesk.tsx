@@ -23,6 +23,8 @@ interface BinderDeskProps extends PocketHandlers {
   cover: ReactNode;
   variant: PocketVariant;
   aimed: SlotRef | null;
+  /** The pocket a hunt found, ringed until the binder closes. */
+  found?: SlotRef | null;
   /** Accept a drop anywhere on the binder (no real pockets to aim at). */
   wholeBinderDrop: boolean;
   reducedMotion: boolean;
@@ -201,6 +203,7 @@ function Page({
   number,
   variant,
   aimed,
+  found,
   onOpen,
   onAdd,
   onAim,
@@ -226,6 +229,13 @@ function Page({
             aimed.binderId === pocket.slot.binderId &&
             aimed.page === pocket.slot.page &&
             aimed.slot === pocket.slot.slot
+          }
+          found={
+            !!found &&
+            !!pocket.slot &&
+            found.binderId === pocket.slot.binderId &&
+            found.page === pocket.slot.page &&
+            found.slot === pocket.slot.slot
           }
           onOpen={onOpen}
           onAdd={onAdd}

@@ -12,10 +12,10 @@ import {
   type PlayerSearchResult,
 } from "@/components/PlayerAutocomplete";
 import {
-  contrastRatio,
-  gradeContrast,
-  normalizeHexColor,
-} from "@/lib/print/contrast";
+  SpineLabelColors,
+  SpineLabelLettering,
+} from "@/components/modules/SpineLabelFields";
+import { normalizeHexColor } from "@/lib/print/contrast";
 import { printHtmlDocument } from "@/lib/print/print-html";
 import {
   DEFAULT_SPINE_PRESET,
@@ -36,9 +36,9 @@ import {
 } from "@/lib/print/spine-label-html";
 import {
   DEFAULT_SPINE_FONT_ID,
-  SPINE_FONTS,
   spineFontById,
-  spineFontUrl,
+  spineFontFacesCss,
+  spineFontFamilyCss,
 } from "@/lib/print/spine-fonts";
 import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
 import { teamFullName } from "@/lib/teams/team-name";
@@ -126,19 +126,12 @@ async function loadFontDataUrl(font: {
 }
 
 /**
- * `@font-face` rules for the PREVIEW, by URL.
- *
- * Every face is declared once here rather than only the selected one, so
- * switching fonts does not wait on a fetch mid-interaction. They are
- * `font-display: swap` and only actually downloaded when something on the page
- * is set in them — which, with the picker rendering each option in its own
- * face, is when the picker first renders.
+ * `@font-face` rules for the PREVIEW, by URL (see `spineFontFacesCss`). Faces
+ * are only downloaded when something on the page is set in them — which, with
+ * the picker rendering each option in its own face, is when the picker first
+ * renders.
  */
-const PREVIEW_FONT_FACES = SPINE_FONTS.filter((f) => f.file)
-  .map(
-    (f) => `@font-face{font-family:"${f.family}";src:url("${spineFontUrl(f)}") format("woff2");font-weight:400 900;font-display:swap;}`,
-  )
-  .join("");
+const PREVIEW_FONT_FACES = spineFontFacesCss();
 
 /** On-screen preview width. The sheet is 8.5in, so this is ~44% scale. */
 const PREVIEW_WIDTH_PX = 380;
@@ -311,9 +304,6 @@ export default function SpineLabelPage() {
   const normalizedBackground = normalizeHexColor(activeBackground);
   const normalizedText = normalizeHexColor(activeText);
   const colorsValid = normalizedBackground !== null && normalizedText !== null;
-
-  const ratio =
-    colorsValid ? contrastRatio(normalizedText!, normalizedBackground!) : null;
 
   const invert = () => {
     setColorsTouched(true);
@@ -662,94 +652,22 @@ export default function SpineLabelPage() {
           </section>
           )}
 
-          <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-slate-300">Colors</h3>
-            <div className="flex flex-wrap items-end gap-3">
-              <Input
-                label="Background"
-                value={activeBackground}
-                onChange={(e) => {
-                  setColorsTouched(true);
-                  setBackground(e.target.value);
-                }}
-                className="w-32"
-              />
-              <Input
-                label="Lettering"
-                value={activeText}
-                onChange={(e) => {
-                  setColorsTouched(true);
-                  setText(e.target.value);
-                }}
-                className="w-32"
-              />
-              <NeonButton type="button" secondary onClick={invert}>
-                Invert
-              </NeonButton>
-            </div>
+          <SpineLabelColors
+            background={activeBackground}
+            text={activeText}
+            onBackgroundChange={(value) => {
+              setColorsTouched(true);
+              setBackground(value);
+            }}
+            onTextChange={(value) => {
+              setColorsTouched(true);
+              setText(value);
+            }}
+            onInvert={invert}
+          />
 
-            <p className="text-xs" aria-live="polite">
-              {ratio === null ? (
-                <span className="text-amber-400">
-                  Enter two hex colors (e.g. #01214b) to see contrast.
-                </span>
-              ) : (
-                <span
-                  className={
-                    gradeContrast(ratio) === "poor"
-                      ? "text-amber-400"
-                      : "text-slate-400"
-                  }
-                >
-                  Contrast {ratio.toFixed(1)}:1 —{" "}
-                  {gradeContrast(ratio) === "poor"
-                    ? "hard to read at a distance. Invert may help."
-                    : "easy to read on a shelf."}
-                </span>
-              )}
-            </p>
-          </section>
-
-          <section className="space-y-2">
-            <h3 className="text-sm font-semibold text-slate-300">Lettering</h3>
-            {/* Each option is set in its OWN face, which is the whole point —
-                a list of ten names in one font tells you nothing about how a
-                spine will look. Rendering them here is also what triggers the
-                downloads, so nothing is fetched until this is on screen. */}
-            <div
-              className="flex flex-wrap gap-2"
-              role="radiogroup"
-              aria-label="Label typeface"
-            >
-              {SPINE_FONTS.map((option) => {
-                const isActive = option.id === fontId;
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={isActive}
-                    onClick={() => setFontId(option.id)}
-                    title={option.note}
-                    className={`rounded-md border px-3 py-1.5 text-lg leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                      isActive
-                        ? "border-neon-teal text-neon-teal"
-                        : "border-slate-700 text-slate-300 hover:border-slate-500"
-                    }`}
-                    style={{
-                      fontFamily:
-                        option.id === "system"
-                          ? option.family
-                          : `"${option.family}", sans-serif`,
-                    }}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-xs text-slate-400">{font.note}</p>
-          </section>
+          {/* Each option is set in its OWN face; see SpineLabelLettering. */}
+          <SpineLabelLettering fontId={fontId} onFontChange={setFontId} />
 
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-300">
@@ -861,12 +779,7 @@ export default function SpineLabelPage() {
                       sizes and fonts would otherwise read as identical rows. */}
                   <span
                     className="flex-1 truncate"
-                    style={{
-                      fontFamily:
-                        label.font.id === "system"
-                          ? label.font.family
-                          : `"${label.font.family}", sans-serif`,
-                    }}
+                    style={{ fontFamily: spineFontFamilyCss(label.font) }}
                   >
                     {label.name}
                   </span>

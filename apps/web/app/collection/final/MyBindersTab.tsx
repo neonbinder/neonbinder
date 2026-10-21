@@ -43,17 +43,23 @@ import "../prototypes/p2/p2.css";
 import BinderDesk, { SPREAD_DROP_ID, stepCount, stepOfPage, whereLabel } from "./binders/BinderDesk";
 import "./binders/binders.css";
 import { parseSlotId, pocketHop, slotCopyId } from "./binders/dnd";
+import type { BinderLabel } from "./binders/label";
+import LabelEditorDialog from "./binders/LabelEditorDialog";
 import {
   buildBinderPages,
   cardsOnPages,
   guardPocket,
   liveryOf,
+  movableCopies,
+  placesOf,
+  placeWords,
   pocketFor,
   soleCopyId,
   wantPages,
+  type Place,
 } from "./binders/model";
 import NewBinderDialog from "./binders/NewBinderDialog";
-import PackTray, { AIMED_TARGET, type SlotTarget } from "./binders/PackTray";
+import PackTray, { AIMED_TARGET, type MoveTarget, type SlotTarget } from "./binders/PackTray";
 import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine, scopeText, viewTitle } from "./binders/parts";
 import ShareLink from "./binders/ShareLink";
 import Shelf from "./binders/Shelf";
@@ -62,10 +68,13 @@ import type { BinderSelection, CollectionBinder, CollectionTabProps } from "./st
 
 /**
  * My Binders: prototype 2, "Nine-Pocket", on the consolidated page. A shelf
- * of spines (yours, plus the special shelf: Want List, Up for Trade and the
- * door to Inventory), an open binder of nine-pocket pages, and a pack tray to
- * rip new cards from. A card pressed in its sleeve slides out into the page's
- * shared card drawer.
+ * of spines in the Print Shop's spine-label look (yours, plus the special
+ * shelf: All my cards, Want List, Up for Trade and the Inventory long box),
+ * an open binder of nine-pocket pages, and the hunt tray, where you look for
+ * one of your cards: it shows where each copy lives and takes you there
+ * (ringing the pocket), moves a copy into the open binder, or adds a new
+ * one. A card pressed in its sleeve slides out into the page's shared card
+ * drawer.
  *
  * Opening a binder scopes the whole page to it (`setSelectedBinder`), so
  * Checklists and My Cards then show that binder's Have / Want / Trade.
@@ -144,7 +153,12 @@ export default function MyBindersTab({
   const [query, setQuery] = useState("");
   const [aimed, setAimed] = useState<SlotRef | null>(null);
   const [newBinder, setNewBinder] = useState(false);
+  const [editingLabel, setEditingLabel] = useState(false);
   const [dragging, setDragging] = useState<Card | null>(null);
+  /** The pocket a hunt led to: ringed (and focused) until the binder closes. */
+  const [found, setFound] = useState<SlotRef | null>(null);
+  /** An owned card waiting on "which copy moves?", and the pocket it was dropped on. */
+  const [moving, setMoving] = useState<{ card: Card; slot: SlotRef | null } | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -169,6 +183,8 @@ export default function MyBindersTab({
 
   const open = (next: ViewKey | null) => {
     setAimed(null);
+    setFound(null);
+    setMoving(null);
     const p = new URLSearchParams({ tab: "binders" });
     if (next?.kind === "binder") p.set("b", next.binderId);
     if (next?.kind === "set") p.set("set", next.setId);
@@ -196,11 +212,20 @@ export default function MyBindersTab({
     else rootRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
   }, [viewId, wide]);
 
+  // A hunt that found a pocket hands focus to it, so Enter opens the card.
+  useEffect(() => {
+    if (!found) return;
+    const el = rootRef.current?.querySelector<HTMLElement>('[data-found="true"]');
+    el?.focus({ preventScroll: true });
+    el?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }, [found, viewId]);
+
   // PageUp / PageDown turn pages while a binder is open, unless focus is in
   // a field or somewhere else entirely (the card drawer, a dialog).
   const isOpen = view !== null;
+  const dialogOpen = newBinder || editingLabel;
   useEffect(() => {
-    if (!isOpen || newBinder) return;
+    if (!isOpen || dialogOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (isEditableTarget(e.target)) return;
       const t = e.target as Node | null;
@@ -212,7 +237,7 @@ export default function MyBindersTab({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, newBinder, viewId, at, steps]);
+  }, [isOpen, dialogOpen, viewId, at, steps]);
 
   // -- adding ---------------------------------------------------------------
   const undoAdd = (copy: Copy) => () => {
@@ -283,6 +308,71 @@ export default function MyBindersTab({
     notify(`${name} is on your Want List. Happy hunting!`, () => store.setWant(card.id, null, false));
   };
 
+  // -- moving a copy you own ----------------------------------------------------
+  /** The open binder a copy can move into: a manual one you file in. */
+  const moveTarget: CollectionBinder | null =
+    binder && store.fileableBinders.some((b) => b.id === binder.id) ? binder : null;
+  const canMoveHere = (card: Card) =>
+    !!moveTarget && movableCopies(card.id, copies, moveTarget.id).length > 0;
+
+  /** Move this copy into the open binder: the pocket given, aimed, or its own. */
+  const moveInto = (card: Card, copyId: string, dropped: SlotRef | null = null) => {
+    if (!moveTarget || moveTarget.kind !== "manual") return;
+    let slot: SlotRef | null = dropped ?? (aimed && aimed.binderId === moveTarget.id ? aimed : null);
+    let savedFor: Card | null = null;
+    if (slot) {
+      const guarded = guardPocket(moveTarget, slot, card, copies);
+      slot = guarded.slot;
+      savedFor = guarded.savedFor;
+      if (slotCopyId(moveTarget, slot)) {
+        notify(`That pocket's full. Pick an empty one for ${shortName(card)}.`);
+        return;
+      }
+    } else if (moveTarget.layout && mode === "pockets") {
+      slot = pocketFor(moveTarget, card, copies);
+    }
+    const result = store.moveCopy(
+      copyId,
+      moveTarget.id,
+      slot ? { page: slot.page, slot: slot.slot } : undefined,
+    );
+    if (!result) return;
+    setAimed(null);
+    setMoving(null);
+    if (slot) jumpTo(slot);
+    const fromNames = result.from.map((id) => store.getBinder(id)?.name).filter(Boolean);
+    const from = fromNames.length ? ` from ${fromNames.join(" and ")}` : "";
+    const where = slot ? `, page ${slot.page + 1}, pocket ${slot.slot + 1}` : "";
+    const why = savedFor ? ` (that pocket's saved for ${shortName(savedFor)})` : "";
+    notify(`Moved ${shortName(card)}${from} to ${moveTarget.name}${where}${why}.`, result.undo);
+  };
+
+  /** "Move here": straight away with one copy to move; otherwise ask which. */
+  const askMove = (card: Card, dropped: SlotRef | null = null) => {
+    if (!moveTarget) return;
+    const movable = movableCopies(card.id, copies, moveTarget.id);
+    if (movable.length === 0) return;
+    if (movable.length === 1) return moveInto(card, movable[0].id, dropped);
+    setMoving({ card, slot: dropped });
+  };
+
+  /** Go to where a copy lives: the pocket, ringed, or the drawer on that copy. */
+  const findAt = (card: Card, place: Place) => {
+    const target = store.getBinder(place.binderId);
+    if (place.pocket && target?.kind === "manual" && target.layout) {
+      const ref: SlotRef = { binderId: target.id, page: place.pocket.page, slot: place.pocket.slot };
+      if (!(view?.kind === "binder" && view.binderId === target.id)) open({ kind: "binder", binderId: target.id });
+      setModes((m) => ({ ...m, [target.id]: "pockets" }));
+      setStepState({ view: target.id, at: stepOfPage(ref.page, wide) });
+      setFound(ref);
+      // Found it: fold the results away so the ringed pocket is in view.
+      setQuery("");
+      notify(`Found ${shortName(card)}: ${placeWords(place)}.`);
+      return;
+    }
+    openCard(card.id, { copyId: place.copyIds.length === 1 ? place.copyIds[0] : undefined });
+  };
+
   const onSlot = (card: Card, targetId: string) => {
     if (targetId === AIMED_TARGET && aimed) return placeIn(card, aimed);
     const target = store.getBinder(targetId);
@@ -334,6 +424,7 @@ export default function MyBindersTab({
     const raw = String(id);
     return raw.startsWith("card:") ? getCard(raw.slice(5)) : null;
   };
+  const moves = (c: Card) => !isWant && canMoveHere(c);
   const describeOver = (id: UniqueIdentifier): string => {
     if (id === SPREAD_DROP_ID) return isWant ? "your Want List" : "the open binder";
     const slot = parseSlotId(id);
@@ -344,29 +435,32 @@ export default function MyBindersTab({
   const announcements: Announcements = {
     onDragStart: ({ active }) => {
       const c = cardOf(active.id);
-      return c
-        ? `Picked up ${shortName(c)}. Arrow keys hop between pockets, Space drops it in, Escape puts it back.`
-        : undefined;
+      if (!c) return undefined;
+      if (moves(c)) {
+        const from = placesOf(c.id, copies, binders).map(placeWords).join(", ");
+        return `Picked up ${shortName(c)}, now in ${from}. Dropping it moves it to ${moveTarget?.name}. Arrow keys hop between pockets, Space moves it in, Escape puts it back.`;
+      }
+      return `Picked up ${shortName(c)}. Arrow keys hop between pockets, Space drops it in, Escape puts it back.`;
     },
     onDragOver: ({ active, over }) => {
       const c = cardOf(active.id);
-      return c
-        ? over
-          ? `${shortName(c)} is over ${describeOver(over.id)}.`
-          : `${shortName(c)} is not over a pocket.`
-        : undefined;
+      if (!c) return undefined;
+      if (!over) return `${shortName(c)} is not over a pocket.`;
+      return moves(c)
+        ? `${shortName(c)} would move to ${describeOver(over.id)}.`
+        : `${shortName(c)} is over ${describeOver(over.id)}.`;
     },
     onDragEnd: ({ active, over }) => {
       const c = cardOf(active.id);
-      return c
-        ? over
-          ? `Dropped ${shortName(c)} on ${describeOver(over.id)}.`
-          : `${shortName(c)} went back in the pack.`
-        : undefined;
+      if (!c) return undefined;
+      if (!over) return `${shortName(c)} went back in the tray.`;
+      return moves(c)
+        ? `Moving ${shortName(c)} to ${describeOver(over.id)}.`
+        : `Dropped ${shortName(c)} on ${describeOver(over.id)}.`;
     },
     onDragCancel: ({ active }) => {
       const c = cardOf(active.id);
-      return c ? `${shortName(c)} went back in the pack.` : undefined;
+      return c ? `${shortName(c)} went back in the tray.` : undefined;
     },
   };
 
@@ -376,10 +470,16 @@ export default function MyBindersTab({
     const card = cardOf(e.active.id);
     if (!card) return;
     if (!e.over) {
-      notify(`Missed! Drop ${shortName(card)} on an empty pocket, or press ${isWant ? "Want it" : "Slot in"}.`);
+      notify(
+        `Missed! Drop ${shortName(card)} on an empty pocket, or press ${
+          isWant ? "Want it" : moves(card) ? "Move here" : "Slot in"
+        }.`,
+      );
       return;
     }
     const slot = parseSlotId(e.over.id);
+    // A card you own moves into the open binder; a new one is added.
+    if (moves(card) && (slot || e.over.id === SPREAD_DROP_ID)) return askMove(card, slot);
     if (slot) return placeIn(card, slot);
     if (e.over.id === SPREAD_DROP_ID) {
       if (isWant) return addWant(card);
@@ -391,11 +491,23 @@ export default function MyBindersTab({
   // -- the rest --------------------------------------------------------------
   const hits = useMemo(() => (query.trim() ? searchCards(query) : []), [query]);
 
-  const createBinder = (input: NewBinder) => {
-    const b = store.createBinder(input);
+  const createBinder = (input: NewBinder, label?: BinderLabel) => {
+    const b = store.createBinder(input, label);
     setNewBinder(false);
     open({ kind: "binder", binderId: b.id });
-    notify(`${b.name} is on the shelf. Rip a pack and start slotting.`);
+    notify(`${b.name} is on the shelf. Hunt for a card below and start slotting.`);
+  };
+
+  const saveLabel = (label: BinderLabel | null) => {
+    if (!binder) return;
+    const before = binder.label ?? null;
+    const id = binder.id;
+    store.setBinderLabel(id, label);
+    setEditingLabel(false);
+    notify(
+      label ? `New label on the ${binder.name} spine. Looking sharp.` : `${binder.name} is back to its default label.`,
+      () => store.setBinderLabel(id, before),
+    );
   };
 
   const setMode = (next: LayoutMode) => {
@@ -414,6 +526,8 @@ export default function MyBindersTab({
   const pocketVariant = view?.kind === "set" ? "browse" : "binder";
   const wholeBinderDrop = !(binder?.kind === "manual" && !isWant && mode === "pockets");
   const vinyl = view?.kind === "set" ? "#1e293b" : liveryOf(binder ?? "all").primary;
+  const moveTo: MoveTarget | null =
+    moveTarget && !isWant ? { id: moveTarget.id, name: moveTarget.name } : null;
   const scope = view ? scopeText(view, binder) : null;
 
   return (
@@ -487,7 +601,15 @@ export default function MyBindersTab({
 
             {scope && <ScopeLine text={scope} onGo={() => goToTab("checklists")} />}
 
-            {!wide && <MobileSummary view={view} binder={binder} store={store} mode={mode} />}
+            {!wide && (
+              <MobileSummary
+                view={view}
+                binder={binder}
+                store={store}
+                mode={mode}
+                onEditLabel={binder ? () => setEditingLabel(true) : undefined}
+              />
+            )}
 
             <div ref={deskRef} className="scroll-mt-2">
               <BinderDesk
@@ -496,9 +618,18 @@ export default function MyBindersTab({
                 at={at}
                 onTurn={turn}
                 vinyl={vinyl}
-                cover={<Cover view={view} binder={binder} store={store} mode={mode} />}
+                cover={
+                  <Cover
+                    view={view}
+                    binder={binder}
+                    store={store}
+                    mode={mode}
+                    onEditLabel={binder ? () => setEditingLabel(true) : undefined}
+                  />
+                }
                 variant={pocketVariant}
                 aimed={aimed}
+                found={found}
                 wholeBinderDrop={wholeBinderDrop}
                 reducedMotion={reducedMotion}
                 name={viewTitle(view, binder)}
@@ -515,10 +646,17 @@ export default function MyBindersTab({
           query={query}
           onQuery={setQuery}
           hits={hits}
-          ownedCount={store.ownedCount}
+          copies={copies}
+          binders={binders}
           isWanted={(cardId) => store.wants.some((w) => w.cardId === cardId && w.binderId === null)}
           targets={targets}
+          moveTo={moveTo}
+          moving={moving?.card ?? null}
+          onAskMove={(card) => askMove(card)}
+          onCancelMove={() => setMoving(null)}
           onSlot={onSlot}
+          onMove={(card, copyId) => moveInto(card, copyId, moving?.card.id === card.id ? moving.slot : null)}
+          onFind={findAt}
           onWant={addWant}
           aimedAt={aimedAt}
           onCancelAim={() => setAimed(null)}
@@ -540,6 +678,9 @@ export default function MyBindersTab({
       </DndContext>
 
       {newBinder && <NewBinderDialog onCreate={createBinder} onClose={() => setNewBinder(false)} />}
+      {editingLabel && binder && (
+        <LabelEditorDialog binder={binder} onSave={saveLabel} onClose={() => setEditingLabel(false)} />
+      )}
     </div>
   );
 }

@@ -35,3 +35,9 @@ with `PlayerPickerLabels` in `PlayerPicker.tsx`, and (NEO-277)
 alongside the card drawer's — a pre-existing collision nobody has rewired yet.
 
 Related: [[e2e-viewport-is-the-ux-constraint]].
+
+**Playwright too (NEO-341 on):** `getByRole(..., { name })` is a case-insensitive
+substring match unless `exact: true`, so a one-word name inside a sibling's name
+collides: a sport filter's "All" matched "Baseball" and "Football" (NEO-350). Give the
+short one a fuller name ("All sports" as its `aria-label`, visible text "All").
+

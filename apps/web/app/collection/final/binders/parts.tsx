@@ -156,7 +156,7 @@ function blurb(view: ViewKey, binder: CollectionBinder | undefined, mode: Layout
     return [
       "Cards you're chasing, grouped by the binder they're for.",
       "Land one? Press its sleeve to add it.",
-      "While this is open, the pack adds to your Want List.",
+      "While this is open, the hunt below adds to your Want List.",
     ];
   }
   const lines: string[] = [];
@@ -165,9 +165,9 @@ function blurb(view: ViewKey, binder: CollectionBinder | undefined, mode: Layout
     lines.push(`Fills itself: ${describeRule(binder.rule)}.`);
     if (mode === "pockets") lines.push("Empty sleeves are your needs. Got one? Press it.");
   } else if (mode === "pockets") {
-    lines.push("Drag a card from the pack into any pocket, or press an empty pocket to fill that one.");
+    lines.push("Hunt for a card below and drag it into any pocket, or press an empty pocket to fill that one.");
   } else {
-    lines.push("Drag a card from the pack onto the binder to file it here.");
+    lines.push("Hunt for a card below and drag it onto the binder to file it here.");
   }
   return lines;
 }
@@ -178,16 +178,33 @@ export function viewTitle(view: ViewKey, binder: CollectionBinder | undefined): 
   return "All my cards";
 }
 
+/** The cover's small "Edit label" control: restyles the binder's spine. */
+export function EditLabelButton({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Edit label for ${name}`}
+      className={`inline-flex min-h-8 items-center self-start rounded-md border border-slate-600 px-2.5 text-xs font-medium text-slate-100 hover:border-neon-blue hover:text-white max-sm:min-h-11 ${FOCUS}`}
+    >
+      Edit label
+    </button>
+  );
+}
+
 export function Cover({
   view,
   binder,
   store,
   mode,
+  onEditLabel,
 }: {
   view: ViewKey;
   binder: CollectionBinder | undefined;
   store: CollectionStore;
   mode: LayoutMode;
+  /** Offered on a binder's cover: restyle its spine label. */
+  onEditLabel?: () => void;
 }) {
   const t = summaryFor(view, binder, store);
   const want = binder?.system === "want";
@@ -204,6 +221,7 @@ export function Cover({
       >
         {viewTitle(view, binder)}
       </p>
+      {binder && onEditLabel && <EditLabelButton name={binder.name} onClick={onEditLabel} />}
       <Tally {...t} want={want} />
       {blurb(view, binder, mode).map((line) => (
         <p key={line}>{line}</p>
@@ -218,15 +236,22 @@ export function MobileSummary({
   binder,
   store,
   mode,
+  onEditLabel,
 }: {
   view: ViewKey;
   binder: CollectionBinder | undefined;
   store: CollectionStore;
   mode: LayoutMode;
+  onEditLabel?: () => void;
 }) {
   const t = summaryFor(view, binder, store);
   return (
     <div className="mb-3 space-y-1 text-sm text-slate-300">
+      {binder && onEditLabel && (
+        <div className="float-right ml-3">
+          <EditLabelButton name={binder.name} onClick={onEditLabel} />
+        </div>
+      )}
       <Tally {...t} want={binder?.system === "want"} />
       <p>{blurb(view, binder, mode)[0]}</p>
     </div>

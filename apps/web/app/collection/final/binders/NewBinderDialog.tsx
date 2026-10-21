@@ -1,8 +1,12 @@
 import { useId, useState, type FormEvent } from "react";
 import { Input } from "@/components/primitives/Input";
+import { spineFontById, spineFontFamilyCss } from "@/lib/print/spine-fonts";
 import { players, teams, type BinderRule } from "../../prototypes/_shared/data";
 import type { NewBinder } from "../../prototypes/_shared/usePrototypeStore";
 import Modal from "../../prototypes/p2/Modal";
+import type { BinderLabel } from "../store";
+import { defaultLabelForNew, shelfColors, validLabel } from "./label";
+import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
 
 /**
@@ -13,6 +17,10 @@ import { teamRule } from "./model";
  * A team rule means cards SHOWING the team, in that jersey. "Also count
  * anyone who played for them" is an opt-in that widens it to the team's
  * alumni on any card.
+ *
+ * Its spine label follows the rule (the team's, or the player's team's
+ * colors; black for a binder you fill yourself) until the collector styles
+ * it under "Style the spine".
  */
 
 type RuleKind = "player" | "team";
@@ -32,7 +40,7 @@ export default function NewBinderDialog({
   onCreate,
   onClose,
 }: {
-  onCreate: (input: NewBinder) => void;
+  onCreate: (input: NewBinder, label?: BinderLabel) => void;
   onClose: () => void;
 }) {
   const titleId = useId();
@@ -44,21 +52,32 @@ export default function NewBinderDialog({
   const [teamId, setTeamId] = useState(sortedTeams[0].id);
   const [alumni, setAlumni] = useState(false);
   const [tried, setTried] = useState(false);
+  const [styling, setStyling] = useState(false);
+  /** The collector's own label, once they touch it; until then the rule's. */
+  const [custom, setCustom] = useState<BinderLabel | null>(null);
+  const [labelError, setLabelError] = useState(false);
 
   const trimmed = name.trim();
   const team = sortedTeams.find((t) => t.id === teamId);
+  const rule: BinderRule = ruleKind === "player" ? { kind: "player", playerId } : teamRule(teamId, alumni);
+  const ruleLabel = defaultLabelForNew(kind === "manual" ? { kind: "manual" } : { kind: "smart", rule });
+  const draft = custom ?? ruleLabel;
 
   function submit(e: FormEvent) {
     e.preventDefault();
     setTried(true);
     if (!trimmed) return;
-    if (kind === "manual") {
-      onCreate({ kind: "manual", name: trimmed, pages: pages ? 1 : undefined });
+    const label = custom ? validLabel(custom) : undefined;
+    if (label === null) {
+      setStyling(true);
+      setLabelError(true);
       return;
     }
-    const rule: BinderRule =
-      ruleKind === "player" ? { kind: "player", playerId } : teamRule(teamId, alumni);
-    onCreate({ kind: "smart", name: trimmed, rule });
+    if (kind === "manual") {
+      onCreate({ kind: "manual", name: trimmed, pages: pages ? 1 : undefined }, label);
+      return;
+    }
+    onCreate({ kind: "smart", name: trimmed, rule }, label);
   }
 
   return (
@@ -191,6 +210,47 @@ export default function NewBinderDialog({
           </div>
         )}
 
+        <section aria-labelledby={`${titleId}-spine`} className="mt-5 border-t border-slate-700 pt-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <h3 id={`${titleId}-spine`} className="text-sm font-medium text-slate-300">
+              Spine label
+            </h3>
+            {!styling && <LabelChip name={trimmed || "Your binder"} label={draft} />}
+            <button
+              type="button"
+              aria-expanded={styling}
+              onClick={() => setStyling((v) => !v)}
+              className="ml-auto min-h-10 rounded-md border border-slate-600 px-3 text-sm font-medium text-slate-100 hover:border-neon-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            >
+              {styling ? "Done styling" : "Style the spine"}
+            </button>
+          </div>
+          {!styling && (
+            <p className="mt-1 text-xs text-slate-400">
+              {custom
+                ? "Your colors and lettering."
+                : kind === "smart"
+                  ? "Wears the colors of the team its rule names. Change it any time."
+                  : "Black vinyl, white lettering. Change it any time."}
+            </p>
+          )}
+          {styling && (
+            <div className="mt-3">
+              <LabelDesigner
+                name={trimmed}
+                draft={draft}
+                onChange={(next) => {
+                  setCustom(next);
+                  setLabelError(false);
+                }}
+              />
+            </div>
+          )}
+          <p role="alert" className="mt-2 text-sm text-amber-300 empty:hidden">
+            {labelError ? "Both label colors need to be hex, like #203731." : ""}
+          </p>
+        </section>
+
         <div className="mt-6 flex flex-wrap justify-end gap-3">
           <button
             type="button"
@@ -208,5 +268,26 @@ export default function NewBinderDialog({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/** The label, lettered across: what the spine will wear, at a glance. */
+function LabelChip({ name, label }: { name: string; label: BinderLabel }) {
+  const valid = validLabel(label);
+  if (!valid) return null;
+  const colors = shelfColors(valid, 16);
+  return (
+    <span
+      aria-hidden="true"
+      className="max-w-[12rem] truncate rounded-sm px-2 py-0.5 text-base font-bold leading-6"
+      style={{
+        background: colors.background,
+        color: colors.text,
+        fontFamily: spineFontFamilyCss(spineFontById(valid.fontId)),
+        boxShadow: "0 0 0 1px rgba(255,255,255,0.18)",
+      }}
+    >
+      {name}
+    </span>
   );
 }
