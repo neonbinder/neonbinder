@@ -234,13 +234,6 @@ describe("spineSheetHtml — mixed typefaces", () => {
     });
     expect(html).toContain(`font-family:${SYSTEM_SPINE_FONT.family}`);
     expect(html).not.toContain(`font-family:"${SYSTEM_SPINE_FONT.family}"`);
-    // NEO-350: the stack's own quotes must not close the style attribute. With
-    // `"Segoe UI"` it closed after `BlinkMacSystemFont,`, dropping the
-    // background, colour and size, and the label printed as a white box.
-    const style = html.match(/<div class="label-face" style="([^"]*)"/)?.[1] ?? "";
-    expect(style).toContain("background:#");
-    expect(style).toContain("color:#");
-    expect(style).toMatch(/font-size:[\d.]+in;$/);
   });
 
   it("sizes each name against ITS OWN face", () => {

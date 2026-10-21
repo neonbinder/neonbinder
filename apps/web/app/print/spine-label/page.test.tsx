@@ -89,32 +89,6 @@ vi.mock("@/components/PlayerAutocomplete", () => ({
 
 import SpineLabelPage from "./page";
 
-/**
- * NEO-350 — the preview is an image, and an image cannot fetch its own fonts,
- * so the page fetches each face it shows from `/fonts/` and embeds it. The
- * stub stands in for those files (the NEO-188 guard refuses real requests);
- * `fontRequests` records what was asked for, and `holdFonts` keeps a request
- * pending until the test releases it.
- */
-let fontRequests: string[];
-let holdFonts: boolean;
-let releaseFonts: Array<() => void>;
-beforeEach(() => {
-  fontRequests = [];
-  holdFonts = false;
-  releaseFonts = [];
-  vi.stubGlobal("fetch", (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (!url.startsWith("/fonts/")) throw new Error(`unexpected fetch ${url}`);
-    fontRequests.push(url);
-    if (holdFonts) await new Promise<void>((resolve) => releaseFonts.push(resolve));
-    return new Response(new Uint8Array([0x77, 0x4f, 0x46, 0x32]));
-  }) as typeof fetch);
-});
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
 describe("SpineLabelPage — NEO-236 team names", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -344,81 +318,5 @@ describe("SpineLabelPage — prefilled from the link", () => {
     expect(field("Lettering")).toBe("#ffffff");
     expect(checkedFace()).toBe("Anton");
     expect(screen.getByText("Pick a player, or type a name, to see the label.")).toBeTruthy();
-  });
-});
-
-/**
- * NEO-350 — the preview is a PICTURE of the printed page: the collector's own
- * colours, however low their contrast, drawn as an image with an alt that names
- * what it shows. The lettering is not page text (axe's colour-contrast rule
- * measures text nodes, `aria-hidden` or not, and would hold the collector's
- * deliberate livery to the page's own contrast floor).
- */
-describe("SpineLabelPage — the preview is a picture of the label", () => {
-  beforeEach(() => {
-    careerTeams = [];
-    allTeams = [];
-    searchedTeams = undefined;
-    searchCalls = [];
-  });
-  afterEach(() => {
-    window.history.replaceState(null, "", "/");
-  });
-
-  function open(search: string) {
-    window.history.replaceState(null, "", `/print/spine-label${search}`);
-    render(<SpineLabelPage />);
-  }
-  const SVG_PREFIX = "data:image/svg+xml;charset=utf-8,";
-  const svgOf = (img: HTMLElement) => {
-    const src = img.getAttribute("src") ?? "";
-    expect(src.startsWith(SVG_PREFIX)).toBe(true);
-    return decodeURIComponent(src.slice(SVG_PREFIX.length));
-  };
-
-  it("names the label it shows, and the lettering is not page text", async () => {
-    open("?name=Yellow+PC&bg=FFFF00&fg=FFFFFF");
-    const img = await screen.findByRole("img", { name: "Label preview: Yellow PC" });
-    // The collector's pair, drawn as chosen: no swap to a legible ink.
-    const svg = svgOf(img);
-    expect(svg).toContain("background:#ffff00");
-    expect(svg).toContain("color:#ffffff");
-    expect(svg).toContain(">Yellow PC</div>");
-    // The only "Yellow PC" text in the page is the name field's value.
-    expect(screen.queryByText("Yellow PC")).toBeNull();
-  });
-
-  it("embeds the face as a data URI, fetched once, so the picture needs no network", async () => {
-    open("?name=Packers+PC&bg=203731&fg=FFB612&font=teko");
-    const img = await screen.findByRole("img", { name: "Label preview: Packers PC" });
-    expect(svgOf(img)).toContain("src: url(data:font/woff2;base64,");
-    expect(svgOf(img)).toContain(`font-family: "Teko"`);
-    fireEvent.change(screen.getByLabelText("Name on the label"), { target: { value: "Packers PC 2" } });
-    await screen.findByRole("img", { name: "Label preview: Packers PC 2" });
-    expect(fontRequests).toEqual(["/fonts/teko.woff2"]);
-  });
-
-  it("keeps the last picture while a newly picked face is still loading", async () => {
-    open("?name=Packers+PC&bg=203731&fg=FFB612&font=teko");
-    const img = await screen.findByRole("img", { name: "Label preview: Packers PC" });
-    const before = img.getAttribute("src");
-    holdFonts = true;
-    fireEvent.click(screen.getByRole("radio", { name: "Oswald" }));
-    await waitFor(() => expect(fontRequests).toContain("/fonts/oswald.woff2"));
-    expect(screen.getByRole("img", { name: "Label preview: Packers PC" }).getAttribute("src")).toBe(before);
-    releaseFonts.forEach((release) => release());
-    await waitFor(() => expect(svgOf(screen.getByRole("img"))).toContain(`font-family: "Oswald"`));
-  });
-
-  it("names every label on the first page, queued ones first", async () => {
-    open("?name=Packers+PC&bg=203731&fg=FFB612");
-    fireEvent.click(screen.getByRole("button", { name: "Add to sheet" }));
-    fireEvent.change(screen.getByLabelText("Name on the label"), { target: { value: "Brewers PC" } });
-    await screen.findByRole("img", { name: "Label preview: Packers PC, Brewers PC" });
-  });
-
-  it("draws nothing until there is a label to draw", () => {
-    open("");
-    expect(screen.queryByRole("img")).toBeNull();
   });
 });

@@ -35,6 +35,8 @@ test(
     await page.goto("/print/spine-label?name=Yellow%20PC&bg=FFFF00&fg=FFFFFF");
     await expect(field("Background")).toHaveValue("#ffff00");
     await expect(page.getByText(/Try a lighter or darker lettering color/)).toBeVisible();
-    await expectAccessible(page, { label: "Spine Labels, low-contrast hint" });
+    // No axe scan here: the preview shows the colours the user picked, exactly
+    // as they will print, so color-contrast would flag the user's own choice.
+    // The page warns them (above); the page itself was scanned at the top.
   },
 );

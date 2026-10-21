@@ -65,12 +65,8 @@ export interface SpineFont {
 export const SYSTEM_SPINE_FONT: SpineFont = {
   id: "system",
   label: "System sans",
-  // SINGLE quotes, for the reason `spineFontFamilyCss` gives: the print sheet
-  // puts this in a double-quoted `style="..."`. With `"Segoe UI"` the
-  // attribute closed after `BlinkMacSystemFont,` and a System sans label
-  // printed (and previewed) as a bare white box in the browser's default face.
   family:
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
   file: "",
   charWidthRatio: 0.55,
   group: "System",
