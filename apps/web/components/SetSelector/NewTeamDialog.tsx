@@ -213,6 +213,30 @@ export default function NewTeamDialog({
     if (creating) createButtonRef.current?.focus();
   }, [creating]);
 
+  /**
+   * NEO-339 — armed by a TEAM_EXISTS refusal; the effect below spends it.
+   *
+   * Focus goes to the first "Use …" button in an EFFECT on `onFile`, never a
+   * timer or an animation frame. The refusal's state updates land after an
+   * `await`, outside any React event, so React renders them on its own
+   * scheduler task — and a `requestAnimationFrame` queued beside them can fire
+   * first, find the button not yet rendered (`firstOnFileRef` still null) and
+   * leave focus on Create. Unit tests never saw that because they flush
+   * renders synchronously; CI's browser did. An effect runs after the commit
+   * that rendered the button, by construction.
+   *
+   * Ordering with the hold-focus effect above: `setCreating(false)` (in
+   * `finally`) commits in the SAME render as `setOnFile`, so that effect runs
+   * first and does nothing (`creating` is false), then this one moves focus.
+   * Declared after it so the order holds even if that ever changes.
+   */
+  const focusFirstOnFileRef = useRef(false);
+  useEffect(() => {
+    if (!focusFirstOnFileRef.current || onFile.length === 0) return;
+    focusFirstOnFileRef.current = false;
+    firstOnFileRef.current?.focus();
+  }, [onFile]);
+
   const fullName = draftFullName(draft);
   /**
    * Why Create cannot fire, or null. Only ever a blank name: it is the one
@@ -308,10 +332,11 @@ export default function NewTeamDialog({
       const existing = teamEraRefusal(err);
       if (onFileRefusal?.code === "TEAM_EXISTS") {
         setError(teamExistsText(onFileRefusal));
+        // Focus the first "Use …": taking the team on file is the likely next
+        // move. Moved by the `onFile` effect once the button is committed, not
+        // by a frame callback here (see `focusFirstOnFileRef`).
+        focusFirstOnFileRef.current = onFileRefusal.teams.length > 0;
         setOnFile(onFileRefusal.teams);
-        // `creating` is still true for this render, and the effect that holds
-        // focus on Create runs first; the frame after puts it on "Use …".
-        requestAnimationFrame(() => firstOnFileRef.current?.focus());
       } else if (existing) {
         setConfirmNewEra(true);
         setError(

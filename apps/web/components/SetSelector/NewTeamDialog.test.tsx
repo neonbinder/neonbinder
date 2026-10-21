@@ -866,6 +866,50 @@ describe("NewTeamDialog — a team already on file (NEO-339)", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("focuses the first \"Use\" even when a frame callback would fire before the render", async () => {
+    // The CI failure this pins: the refusal's state updates land after an
+    // `await`, outside any React event, so React renders them on its own
+    // scheduler task. A `requestAnimationFrame` focus queued beside them fired
+    // FIRST in Chrome, found no button yet and left focus on Create. Here the
+    // window is forced open: the rejection settles under fake timers (React's
+    // scheduler keeps the real `setImmediate` it captured at load), every
+    // pending timer and frame is run while the render is still queued, and
+    // only then is React let through. Focus must still end on "Use".
+    let rejectCreate!: (err: unknown) => void;
+    mockFindOrCreate.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectCreate = reject;
+      }),
+    );
+    renderDialog({ initialName: "San Diego Padres" });
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+    });
+    try {
+      rejectCreate(
+        new ConvexError({
+          code: "TEAM_EXISTS",
+          name: "San Diego Padres",
+          teams: [{ id: "team-padres", name: "San Diego Padres", years: "1969–present" }],
+        }),
+      );
+      // Microtasks only: the catch block runs, React's render stays queued.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      // R2: the window really is open — the refusal is not on screen yet.
+      expect(within(dialog()).queryByRole("alert")).toBeNull();
+      vi.runOnlyPendingTimers();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const use = await within(dialog()).findByRole("button", {
+      name: "Use San Diego Padres · 1969–present, already on file",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(use));
+  });
+
   it("an edit clears the offer with the refusal", async () => {
     mockFindOrCreate.mockRejectedValue(
       new ConvexError({

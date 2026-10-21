@@ -411,6 +411,27 @@ export default function PlayerPicker({
   }, [popoverOpen]);
 
   /**
+   * NEO-339 — armed by a refused "+ Create"; the effect below spends it.
+   *
+   * Focus goes to the first "Use …" button in an EFFECT on `onFile`, never a
+   * timer. The refusal's state updates land after an `await`, outside any
+   * React event, so React renders them on its own scheduler task — and a
+   * `setTimeout(…, 0)` queued beside them can fire first, find the button not
+   * yet rendered (`firstOnFileRef` still null) and move focus nowhere. Unit
+   * tests never saw that because they flush renders synchronously; CI's
+   * browser did. An effect runs after the commit that rendered the button, by
+   * construction. A flag rather than "whenever `onFile` fills" because
+   * `onFile` is only ever filled by the refusal today, and focus should not
+   * start jumping if a future path fills it some other way.
+   */
+  const focusFirstOnFileRef = useRef(false);
+  useEffect(() => {
+    if (!focusFirstOnFileRef.current || onFile.length === 0) return;
+    focusFirstOnFileRef.current = false;
+    firstOnFileRef.current?.focus();
+  }, [onFile]);
+
+  /**
    * Close on a pointerdown outside the picker — see `TeamPicker`, where the
    * same effect is documented at length. This picker had no outside-close at
    * all, which was survivable while its only homes were the card drawer and
@@ -549,10 +570,12 @@ export default function PlayerPicker({
       const exists = entityExistsRefusal(err);
       if (exists?.code === "PLAYER_EXISTS") {
         setCreateError(playerExistsText(exists));
-        setOnFile(exists.players);
         // Focus the first "Use …" button: linking the row on file is the
         // likely next move, and the input is one Shift+Tab away for a retype.
-        setTimeout(() => firstOnFileRef.current?.focus(), 0);
+        // Moved by the `onFile` effect once the button is committed, not by a
+        // timer here (see `focusFirstOnFileRef`).
+        focusFirstOnFileRef.current = exists.players.length > 0;
+        setOnFile(exists.players);
         return;
       }
       // The ConvexError's `data`, never `.message`: production redacts a plain
