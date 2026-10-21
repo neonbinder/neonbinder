@@ -69,6 +69,27 @@ describe("My Binders", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
+  it("a want for a binder opens the add form with that binder ticked, not Main", () => {
+    renderBinders("/collection?tab=binders&b=binder-want");
+    fireEvent.click(screen.getByRole("button", { name: /^Next pages?$/ }));
+    expect(screen.getByRole("group", { name: /^Page 2, For Ohtani rainbow/ })).toBeTruthy();
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: /, need\. Add it$/ })[0]);
+    });
+    const dialog = screen.getByRole("dialog");
+    expect((within(dialog).getByRole("checkbox", { name: "Ohtani rainbow" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(dialog).getByRole("checkbox", { name: "Main" }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("an unscoped want still opens the add form on Main", () => {
+    renderBinders("/collection?tab=binders&b=binder-want");
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: /, need\. Add it$/ })[0]);
+    });
+    const dialog = screen.getByRole("dialog");
+    expect((within(dialog).getByRole("checkbox", { name: "Main" }) as HTMLInputElement).checked).toBe(true);
+  });
+
   it("while the Want List is open, the pack adds a want, never a filed copy", () => {
     renderBinders("/collection?tab=binders&b=binder-want");
     const search = screen.getByRole("searchbox", { name: "Rip a pack: search for a card you want" });

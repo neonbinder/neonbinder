@@ -6,6 +6,7 @@ import CardFace from "../../prototypes/_shared/CardFace";
 import { cardLabel, type Card, type SearchHit } from "../../prototypes/_shared/data";
 import type { Notice } from "../../prototypes/p1/notice";
 import { shortName } from "../../prototypes/p2/model";
+import { cardCaption } from "../captions";
 import { resolveTyped } from "./model";
 
 /**
@@ -318,6 +319,9 @@ function TrayCard({
       >
         <CardFace card={card} size="sm" />
       </div>
+      <p aria-hidden="true" title={cardCaption(card)} className="line-clamp-3 h-[3.75em] w-full text-center text-[11px] leading-tight text-slate-300">
+        {cardCaption(card)}
+      </p>
       <p className="text-center text-[11px] leading-tight text-slate-300">
         {owned ? <span className="font-bold text-white">Have {owned}</span> : "Need"}
       </p>

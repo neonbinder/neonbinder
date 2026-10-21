@@ -1,14 +1,14 @@
 import { useRef } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import CardFace from "../../prototypes/_shared/CardFace";
-import { cardLabel, getPlayer, type Card, type Copy } from "../../prototypes/_shared/data";
+import { cardLabel, getPlayer, type BinderId, type Card, type Copy } from "../../prototypes/_shared/data";
 import {
   havePocketLabel,
   money,
   slabLabel,
-  type PocketModel,
   type SlotRef,
 } from "../../prototypes/p2/model";
+import type { BinderPocket } from "./model";
 
 /**
  * One sleeve of a nine-pocket page (p2's Pocket, on the consolidated page).
@@ -28,12 +28,13 @@ export type PocketVariant = "binder" | "browse";
 
 export interface PocketHandlers {
   onOpen: (card: Card, copies: Copy[]) => void;
-  onAdd: (card: Card, slot?: SlotRef) => void;
+  /** `wantFor`: on the Want List, the binder the want is for (null: none). */
+  onAdd: (card: Card, slot?: SlotRef, wantFor?: BinderId | null) => void;
   onAim: (slot: SlotRef) => void;
 }
 
 interface PocketProps extends PocketHandlers {
-  pocket: PocketModel;
+  pocket: BinderPocket;
   variant: PocketVariant;
   index: number;
   pageNumber: number;
@@ -164,7 +165,7 @@ export default function Pocket({
         ref={setNodeRef}
         type="button"
         aria-label={`${cardLabel(card)}, need. Add it`}
-        onClick={() => onAdd(card, slot)}
+        onClick={() => onAdd(card, slot, pocket.wantFor)}
         className={`p2-sleeve${ring}`}
       >
         <span aria-hidden="true" className="p2-ghost">

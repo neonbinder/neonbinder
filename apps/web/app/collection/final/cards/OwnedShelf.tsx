@@ -10,7 +10,6 @@ import {
   leadPlayer,
   leadTeam,
   searchCards,
-  teamTextColor,
   type Binder,
   type Card,
   type Copy,
@@ -19,6 +18,7 @@ import {
 import Chip from "../../prototypes/p3/Chip";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT } from "../../prototypes/p3/classes";
 import { useRoving } from "../../prototypes/p3/hooks";
+import { cardCaption } from "../captions";
 import { useMyCards } from "./context";
 
 /**
@@ -331,7 +331,6 @@ function RailItem({
 
 function ShelfCard({ item, tabIndex, onOpen }: { item: Item; tabIndex: number; onOpen: () => void }) {
   const { card, count } = item;
-  const team = leadTeam(card);
   const name = `${cardLabel(card)}, ${count === 0 ? "need" : count > 1 ? `have ${count}` : "have"}`;
   return (
     <li className="flex flex-col items-center">
@@ -353,9 +352,12 @@ function ShelfCard({ item, tabIndex, onOpen }: { item: Item; tabIndex: number; o
           </span>
         )}
       </button>
-      <p aria-hidden="true" className="mt-1 w-[5.5rem] truncate text-center text-xs">
-        <span className="text-slate-400">#{card.cardNumber} </span>
-        <span style={{ color: teamTextColor(team, "#000000") }}>{team.name}</span>
+      <p
+        aria-hidden="true"
+        title={cardCaption(card)}
+        className="mt-1 line-clamp-2 w-[5.5rem] text-center text-xs leading-tight text-slate-300"
+      >
+        {cardCaption(card)}
       </p>
     </li>
   );

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
-import { getCard, type Card, type CardId, type CopyId } from "../prototypes/_shared/data";
+import { getCard, type BinderId, type Card, type CardId, type CopyId } from "../prototypes/_shared/data";
 import { EMPTY_DRILL, type Drill } from "../prototypes/p1/drill";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import { FOCUS, shortCardName } from "../prototypes/p1/ui";
@@ -40,6 +40,8 @@ interface DrawerState {
   listIds: CardId[];
   mode: "view" | "add";
   copyId?: CopyId;
+  /** The binder the add form ticks instead of the page's target. */
+  binderId?: BinderId;
   key: number;
 }
 
@@ -73,6 +75,7 @@ export default function FinalCollectionPage() {
       listIds: opts.list && opts.list.includes(cardId) ? opts.list : [cardId],
       mode: opts.mode ?? "view",
       copyId: opts.copyId,
+      binderId: opts.binderId,
       key: (prev?.key ?? 0) + 1,
     }));
   }, []);
@@ -85,6 +88,7 @@ export default function FinalCollectionPage() {
             cardId: drawer.listIds[drawerIndex + delta],
             mode: "view",
             copyId: undefined,
+            binderId: undefined,
             key: drawer.key + 1,
           })
       : null;
@@ -234,6 +238,7 @@ export default function FinalCollectionPage() {
           store={store}
           mode={drawer.mode}
           focusCopyId={drawer.copyId}
+          addBinderId={drawer.binderId}
           openKey={drawer.key}
           notify={notify}
           notice={notice}

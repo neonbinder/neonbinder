@@ -11,6 +11,7 @@ import {
   getTeam,
   setLabel,
   variantLabel,
+  type BinderId,
   type Card,
   type Copy,
   type CopyDetails,
@@ -35,6 +36,7 @@ export default function CardDetail({
   onCancelAdd,
   mode = "view",
   focusCopyId,
+  addBinderId,
 }: {
   card: Card;
   store: CollectionStore;
@@ -45,6 +47,11 @@ export default function CardDetail({
   mode?: "view" | "add";
   /** Ring this line item in "Your copies". */
   focusCopyId?: CopyId;
+  /**
+   * Tick this binder in the add form instead of the page's target (the
+   * binder a want is for). Ignored unless a copy can be filed there.
+   */
+  addBinderId?: BinderId;
 }) {
   const copies = store.copiesOf(card.id);
   const owned = store.ownedCount(card.id);
@@ -58,7 +65,9 @@ export default function CardDetail({
   const wanted = store.isWanted(card.id);
   const wantsFor = store.wants.filter((w) => w.cardId === card.id);
 
-  const freshDraft = (): CopyDetails => ({ ...emptyCopyDetails(), binderIds: [store.targetBinderId] });
+  const addTo =
+    addBinderId && formBinders.some((b) => b.id === addBinderId) ? addBinderId : store.targetBinderId;
+  const freshDraft = (): CopyDetails => ({ ...emptyCopyDetails(), binderIds: [addTo] });
   const [draft, setDraft] = useState<CopyDetails>(freshDraft);
   const [editing, setEditing] = useState<{ id: string; value: CopyDetails } | null>(null);
 

@@ -23,16 +23,15 @@ import {
   getCard,
   getSet,
   searchCards,
+  type BinderId,
   type Card,
   type Copy,
 } from "../prototypes/_shared/data";
 import type { Notice } from "../prototypes/p1/notice";
 import { useReducedMotion, useWideDesk } from "../prototypes/p2/hooks";
 import {
-  buildPages,
   fitsBinder,
   NO_FILTERS,
-  pocketFor,
   shortName,
   type LayoutMode,
   type PileFilters,
@@ -44,7 +43,15 @@ import "../prototypes/p2/p2.css";
 import BinderDesk, { SPREAD_DROP_ID, stepCount, stepOfPage, whereLabel } from "./binders/BinderDesk";
 import "./binders/binders.css";
 import { parseSlotId, pocketHop, slotCopyId } from "./binders/dnd";
-import { cardsOnPages, liveryOf, soleCopyId, wantPages } from "./binders/model";
+import {
+  buildBinderPages,
+  cardsOnPages,
+  guardPocket,
+  liveryOf,
+  pocketFor,
+  soleCopyId,
+  wantPages,
+} from "./binders/model";
 import NewBinderDialog from "./binders/NewBinderDialog";
 import PackTray, { AIMED_TARGET, type SlotTarget } from "./binders/PackTray";
 import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine, scopeText, viewTitle } from "./binders/parts";
@@ -152,7 +159,7 @@ export default function MyBindersTab({
     if (isWant) {
       return wantPages(store.wantsByBinder(), copies, (id) => store.getBinder(id)?.name);
     }
-    return buildPages({ view, mode, copies, binders, sort, filters });
+    return buildBinderPages({ view, mode, copies, binders, sort, filters });
   }, [view, isWant, store, mode, copies, binders, sort, filters]);
   const listIds = useMemo(() => cardsOnPages(pages), [pages]);
   const steps = stepCount(pages.length, wide);
@@ -218,8 +225,15 @@ export default function MyBindersTab({
     }
   };
 
-  const placeIn = (card: Card, slot: SlotRef) => {
-    const target = store.getBinder(slot.binderId);
+  const placeIn = (card: Card, aimedSlot: SlotRef) => {
+    const target = store.getBinder(aimedSlot.binderId);
+    // A checklist binder's numbered pocket is saved for its own card: anything
+    // else (a second copy, a stray) goes to its own pocket or the Extras pages.
+    const guarded =
+      target?.kind === "manual"
+        ? guardPocket(target, aimedSlot, card, copies)
+        : { slot: aimedSlot, savedFor: null };
+    const slot = guarded.slot;
     if (slotCopyId(target, slot)) {
       notify(`That pocket's full. Pick an empty one for ${shortName(card)}.`);
       return;
@@ -228,8 +242,11 @@ export default function MyBindersTab({
     store.placeInSlot(slot.binderId, slot.page, slot.slot, copy.id);
     setAimed(null);
     jumpTo(slot);
+    const where = `page ${slot.page + 1}, pocket ${slot.slot + 1}`;
     notify(
-      `Slid ${shortName(card)} into ${target?.name ?? "the binder"}, page ${slot.page + 1}, pocket ${slot.slot + 1}.`,
+      guarded.savedFor
+        ? `That pocket's saved for ${shortName(guarded.savedFor)}, so ${shortName(card)} went to ${where}.`
+        : `Slid ${shortName(card)} into ${target?.name ?? "the binder"}, ${where}.`,
       undoAdd(copy),
     );
   };
@@ -287,9 +304,10 @@ export default function MyBindersTab({
   const openPocket = (card: Card, pocketCopies: Copy[]) =>
     openCard(card.id, { copyId: soleCopyId(pocketCopies), list: listIds });
 
-  const addFromPocket = (card: Card, slot?: SlotRef) => {
+  const addFromPocket = (card: Card, slot?: SlotRef, wantFor?: BinderId | null) => {
     if (isWant) {
-      openCard(card.id, { mode: "add", list: listIds });
+      // Landed a want for a binder: the add form ticks that binder.
+      openCard(card.id, { mode: "add", list: listIds, binderId: wantFor ?? undefined });
       return;
     }
     if (slot) placeIn(card, slot);

@@ -1,9 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { cards, evaluateRule, getCard, searchCards, type SearchHit } from "../../prototypes/_shared/data";
+import {
+  cards,
+  evaluateRule,
+  getCard,
+  searchCards,
+  type Copy,
+  type ManualBinder,
+  type SearchHit,
+} from "../../prototypes/_shared/data";
+import { cardCaption } from "../captions";
 import { initialCollectionState, MAIN_BINDER_ID, TRADE_BINDER_ID, WANT_BINDER_ID } from "../store";
 import {
+  binderTally,
+  buildBinderPages,
   cardsOnPages,
+  EXTRAS,
+  extrasStart,
+  followedChecklist,
+  guardPocket,
   liveryOf,
+  pocketFor,
   resolveTyped,
   shareLink,
   slugify,
@@ -123,5 +139,75 @@ describe("the Want List, opened", () => {
 
   it("names a group whose binder is gone without crashing", () => {
     expect(wantSection("binder-gone", () => undefined)).toBe("For a binder");
+  });
+});
+
+describe("a checklist binder keeps its numbers when a second copy goes in", () => {
+  const CONTENDERS = "binder-contenders-96";
+  const state = initialCollectionState();
+  const binder = state.binders.find((b) => b.id === CONTENDERS) as ManualBinder;
+  const list = followedChecklist(binder, state.copies)!;
+
+  /** File one more copy of `card` where pocketFor sends it. */
+  function slotAnother(cardId: string) {
+    const card = getCard(cardId);
+    const at = pocketFor(binder, card, state.copies);
+    const copy: Copy = { ...state.copies[0], id: "extra-copy", cardId, quantity: 1, binderIds: [CONTENDERS] };
+    const layout = (binder.layout ?? []).map((p) => ({ slots: [...p.slots] }));
+    while (layout.length <= at.page) layout.push({ slots: Array(9).fill(null) });
+    layout[at.page].slots[at.slot] = copy.id;
+    return { at, binder: { ...binder, layout }, copies: [...state.copies, copy] };
+  }
+
+  it("follows the set before anything is added", () => {
+    expect(list).not.toBeNull();
+    expect(binderTally(binder, state.copies)).toMatchObject({ have: 24, need: 16 });
+  });
+
+  it("sends a duplicate to the first Extras page, never a numbered pocket", () => {
+    const owned = list[0];
+    const { at, binder: after, copies } = slotAnother(owned.id);
+    expect(at.page * 9 + at.slot).toBe(extrasStart(list));
+    expect(followedChecklist(after, copies)).toEqual(list);
+    const tally = binderTally(after, copies);
+    expect(tally).toMatchObject({ have: 24, need: 16 });
+    expect(tally.cards).toBe(binderTally(binder, state.copies).cards + 1);
+
+    const pages = buildBinderPages({
+      view: { kind: "binder", binderId: CONTENDERS },
+      mode: "pockets",
+      copies,
+      binders: state.binders.map((b) => (b.id === CONTENDERS ? after : b)),
+      sort: "checklist",
+      filters: { graded: false, forSale: false, rookies: false },
+    });
+    expect(pages[at.page].section).toBe(EXTRAS);
+    expect(pages[0].section).toBe("Base");
+    const needs = pages.flatMap((p) => p.pockets).filter((p) => p.content.kind === "need");
+    expect(needs).toHaveLength(16);
+  });
+
+  it("a card dropped on another card's numbered pocket goes to its own spot", () => {
+    const needIndex = list.findIndex((c) => !state.copies.some((cp) => cp.cardId === c.id));
+    const stranger = list[0];
+    const aimed = { binderId: CONTENDERS, page: Math.floor(needIndex / 9), slot: needIndex % 9 };
+    const { slot, savedFor } = guardPocket(binder, aimed, stranger, state.copies);
+    expect(savedFor?.id).toBe(list[needIndex].id);
+    expect(slot.page * 9 + slot.slot).toBe(extrasStart(list));
+    // The card that pocket is saved for goes straight in.
+    expect(guardPocket(binder, aimed, list[needIndex], state.copies)).toEqual({ slot: aimed, savedFor: null });
+  });
+});
+
+describe("the caption under a thumbnail", () => {
+  it("reads season, set, then the insert or parallel; base says just the set", () => {
+    const base = cards.find((c) => c.variantPath.type === "Base" && !c.variation)!;
+    expect(cardCaption(base)).not.toMatch(/Base|#/);
+    const parallel = cards.find((c) => c.variantPath.type === "Parallels" && c.variantPath.name)!;
+    expect(cardCaption(parallel).endsWith(parallel.variantPath.name!)).toBe(true);
+    const gold = cards.find(
+      (c) => c.setId === "2024-topps-chrome-baseball" && c.variantPath.name === "Gold Refractor",
+    )!;
+    expect(cardCaption(gold)).toBe("2024 Topps Chrome Gold Refractor");
   });
 });

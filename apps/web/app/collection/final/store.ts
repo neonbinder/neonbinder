@@ -22,7 +22,10 @@
  * - `openCard(cardId)` opens the one right-side card drawer.
  *   `opts.mode: "add"` opens it straight on the "Add a copy" form;
  *   `opts.copyId` highlights that line item in "Your copies";
- *   `opts.list` (optional) is the card ids the drawer's ↑ ↓ step through.
+ *   `opts.list` (optional) is the card ids the drawer's ↑ ↓ step through;
+ *   `opts.binderId` (optional) is the binder the add form ticks in place of
+ *   the page's target (e.g. the binder a want is for). Ignored unless a copy
+ *   can be filed there.
  * - `goToTab("checklists", { q })` opens Checklists with that search
  *   prefilled; `goToTab("checklists", { cardId })` opens that card's
  *   checklist and rings its row. Any tab may be passed without params.
@@ -153,6 +156,8 @@ export interface OpenCardOptions {
   copyId?: CopyId;
   /** Card ids the drawer's ↑ ↓ step through; defaults to just this card. */
   list?: CardId[];
+  /** The binder the add form ticks instead of the page's target. */
+  binderId?: BinderId;
 }
 
 export interface GoToTabParams {

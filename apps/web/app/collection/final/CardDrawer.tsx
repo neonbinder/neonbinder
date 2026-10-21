@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { cardLabel, type Card, type CopyId } from "../prototypes/_shared/data";
+import { cardLabel, type BinderId, type Card, type CopyId } from "../prototypes/_shared/data";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import Overlay from "../prototypes/p1/Overlay";
 import { FOCUS, setAndVariant, shortCardName } from "../prototypes/p1/ui";
@@ -18,6 +18,7 @@ export default function CardDrawer({
   store,
   mode,
   focusCopyId,
+  addBinderId,
   openKey,
   notify,
   notice,
@@ -31,6 +32,8 @@ export default function CardDrawer({
   store: CollectionStore;
   mode: "view" | "add";
   focusCopyId?: CopyId;
+  /** The binder the add form ticks instead of the page's target. */
+  addBinderId?: BinderId;
   /** Bumps on every openCard, so the detail remounts and re-runs its focus. */
   openKey: number;
   notify: Notify;
@@ -100,6 +103,7 @@ export default function CardDrawer({
           notify={notify}
           mode={mode}
           focusCopyId={focusCopyId}
+          addBinderId={addBinderId}
           onCancelAdd={onClose}
         />
       </div>

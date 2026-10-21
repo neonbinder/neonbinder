@@ -2,9 +2,9 @@ import type { CSSProperties, ReactNode } from "react";
 import { Link } from "react-router";
 import { PlusIcon } from "@heroicons/react/24/outline";
 import { setLabel, setsInOrder } from "../../prototypes/_shared/data";
-import { binderCount, type ViewKey } from "../../prototypes/p2/model";
+import type { ViewKey } from "../../prototypes/p2/model";
 import type { CollectionBinder, CollectionStore } from "../store";
-import { liveryOf } from "./model";
+import { binderTally, liveryOf } from "./model";
 
 /**
  * The landing of My Binders (p2's shelf): the collector's binders standing
@@ -189,7 +189,7 @@ function BinderSpine({
 }) {
   const { copies } = store.state;
   const isWant = binder.system === "want";
-  const count = isWant ? { cards: store.wantCardIds.length } : binderCount(binder, copies);
+  const count = isWant ? { cards: store.wantCardIds.length } : binderTally(binder, copies);
   const liv = liveryOf(binder);
   const tracked = count.have !== undefined && count.need !== undefined;
   const current = store.selectedBinderId === binder.id;

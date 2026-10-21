@@ -1,13 +1,13 @@
 import type { CSSProperties } from "react";
 import { describeRule, getSet, setLabel } from "../../prototypes/_shared/data";
 import {
-  binderCount,
   type LayoutMode,
   type PileFilters,
   type SortKey,
   type ViewKey,
 } from "../../prototypes/p2/model";
 import type { CollectionBinder, CollectionStore } from "../store";
+import { binderTally } from "./model";
 
 /**
  * The open binder's furniture, from prototype 2's page: the layout toggle,
@@ -110,7 +110,7 @@ function summaryFor(view: ViewKey, binder: CollectionBinder | undefined, store: 
     const landed = store.wantCardIds.filter((id) => store.ownedCount(id) > 0).length;
     return { have: landed, need: store.wantCardIds.length - landed, cards: null };
   }
-  const count = binderCount(binder, copies);
+  const count = binderTally(binder, copies);
   return { have: count.have ?? null, need: count.need ?? null, cards: count.cards };
 }
 
