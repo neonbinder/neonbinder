@@ -39,6 +39,7 @@ test(
     // Open one binder; browser Back returns to the shelf.
     await binders.getByRole("button", { name: /^All Reggie White,/ }).click();
     await expect(page.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeVisible();
+    await expectAccessible(page, { label: "Collection demo, an open binder" });
     await page.goBack();
     await expect(binders).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeHidden();

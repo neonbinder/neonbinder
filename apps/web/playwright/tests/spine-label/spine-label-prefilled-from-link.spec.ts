@@ -30,5 +30,11 @@ test(
     await expect(field("Lettering")).toHaveValue("#ffffff");
     await expect(page.getByRole("radio", { name: "Anton" })).toBeChecked();
     await expect(sheetEmpty).toBeVisible();
+
+    // A prefilled pair under 3:1 raises the reworded low-contrast hint.
+    await page.goto("/print/spine-label?name=Yellow%20PC&bg=FFFF00&fg=FFFFFF");
+    await expect(field("Background")).toHaveValue("#ffff00");
+    await expect(page.getByText(/Try a lighter or darker lettering color/)).toBeVisible();
+    await expectAccessible(page, { label: "Spine Labels, low-contrast hint" });
   },
 );
