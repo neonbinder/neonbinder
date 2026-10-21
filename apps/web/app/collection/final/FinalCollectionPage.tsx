@@ -183,7 +183,16 @@ export default function FinalCollectionPage() {
         </nav>
 
         {tab === "cards" && <MyCardsTab {...tabProps} />}
-        {tab === "binders" && <MyBindersTab {...tabProps} />}
+        {tab === "binders" && (
+          // My Binders' pack tray is pinned to the bottom, where the floating
+          // toast would sit on its search box, so the tray shows the notice.
+          <MyBindersTab
+            {...tabProps}
+            notice={notice}
+            onUndo={undo}
+            onDismissNotice={() => setNotice(null)}
+          />
+        )}
         {tab === "checklists" && (
           <ChecklistsTab
             {...tabProps}
@@ -216,7 +225,7 @@ export default function FinalCollectionPage() {
         </div>
       </div>
 
-      {!drawer && (
+      {!drawer && tab !== "binders" && (
         <NoticeLine notice={notice} onUndo={undo} onDismiss={() => setNotice(null)} floating />
       )}
       {drawer && (

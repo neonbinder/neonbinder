@@ -1,0 +1,197 @@
+/*
+ * NEO-350 — My Binders on the consolidated page: what p2.css does not have.
+ * The special shelf (a cabinet under a pink neon sign, with its own lit
+ * ledge), the Inventory door, the Trade sticker on a spine, and the "this is
+ * the binder in scope" marker. Everything else is p2.css, imported as is.
+ */
+
+/* ------------------------------------------------------- special shelf */
+
+.nb-special {
+  position: relative;
+  padding: 14px 12px 0;
+  border-radius: 14px 14px 6px 6px;
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgba(255, 46, 154, 0.14), transparent 70%),
+    linear-gradient(#0d0a18, #07060d);
+  box-shadow:
+    0 0 0 1px rgba(255, 46, 154, 0.35) inset,
+    0 18px 36px rgba(0, 0, 0, 0.5);
+}
+
+/* The sign: a bent neon tube, pink, with a slow warm-up on load. */
+.nb-special-sign {
+  display: inline-block;
+  padding: 2px 10px;
+  border: 2px solid #ff2e9a;
+  border-radius: 999px;
+  color: #ffd1ea;
+  font-family: "Neon", sans-serif;
+  font-size: 22px;
+  line-height: 1.2;
+  text-shadow:
+    0 0 6px rgba(255, 46, 154, 0.9),
+    0 0 18px rgba(255, 46, 154, 0.55);
+  box-shadow:
+    0 0 10px rgba(255, 46, 154, 0.55),
+    0 0 10px rgba(255, 46, 154, 0.35) inset;
+  animation: nb-sign-on 900ms steps(1, end) 1 both;
+}
+@keyframes nb-sign-on {
+  0% {
+    opacity: 0.35;
+  }
+  18% {
+    opacity: 1;
+  }
+  26% {
+    opacity: 0.4;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.nb-special-shelf {
+  padding-top: 14px;
+}
+
+/* Its ledge glows pink, not blue: a different shelf, at a glance. */
+.nb-special-ledge {
+  height: 14px;
+  margin: 0 -12px;
+  border-radius: 0 0 6px 6px;
+  background: linear-gradient(#2a1023, #12070f 70%);
+  box-shadow:
+    0 -1px 0 #ff2e9a inset,
+    0 10px 24px rgba(255, 46, 154, 0.16),
+    0 2px 0 rgba(0, 0, 0, 0.6);
+}
+
+/* The Trade sticker riding the top of the Up for Trade spine. */
+.nb-spine-tag {
+  position: absolute;
+  top: 4px;
+  right: -8px;
+  z-index: 3;
+  padding: 1px 6px 1px 10px;
+  background: #ffe600;
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  clip-path: polygon(7px 0, 100% 0, 100% 100%, 7px 100%, 0 50%);
+  transform: rotate(-12deg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------- the Inventory door */
+
+.nb-door {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 8px 10px;
+  border-radius: 48px 48px 3px 3px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 40%, rgba(0, 0, 0, 0.35)),
+    #161b26;
+  box-shadow:
+    0 0 0 2px #ffe600,
+    0 0 16px rgba(255, 230, 0, 0.35),
+    0 8px 18px rgba(0, 0, 0, 0.55);
+  color: #0f172a;
+  text-decoration: none;
+  transition: transform 160ms ease-out;
+}
+.nb-door:hover {
+  transform: translateY(-6px);
+}
+.nb-door:focus-visible {
+  outline: none;
+  transform: translateY(-6px);
+  box-shadow:
+    0 0 0 2px #ffe600,
+    0 0 0 5px #00c2ff,
+    0 0 20px rgba(0, 194, 255, 0.5);
+}
+/* Light spilling out of the back room through the glass. */
+.nb-door-window {
+  width: 52px;
+  height: 34px;
+  border-radius: 26px 26px 3px 3px;
+  background: linear-gradient(#fff6a8, #ffe600 60%, #d4b800);
+  box-shadow: 0 0 14px rgba(255, 230, 0, 0.6);
+}
+.nb-door-sign {
+  margin-top: 14px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #ffe600;
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.nb-door-knob {
+  position: absolute;
+  right: 12px;
+  top: 58%;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, #fff, #cbd5e1 45%, #64748b);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+.nb-door-count {
+  margin-top: auto;
+  color: #fef9c3;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------ the binder in scope */
+
+/* Stands a little proud, with a lit pip at its foot (inside the spine: the
+   shelf scrolls sideways, so anything hanging below it would be clipped). */
+.p2-spine.nb-spine--current {
+  transform: translateY(-10px);
+}
+.nb-pip {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 22px;
+  height: 4px;
+  margin-left: -11px;
+  border-radius: 999px;
+  background: #00c2ff;
+  box-shadow: 0 0 10px #00c2ff;
+}
+
+/* The scope line under an open binder's toolbar. */
+.nb-scope-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #00c2ff;
+  box-shadow: 0 0 8px #00c2ff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-special-sign {
+    animation: none;
+  }
+  .nb-door,
+  .p2-spine.nb-spine--current {
+    transition: none;
+  }
+  .nb-door:hover,
+  .nb-door:focus-visible {
+    transform: none;
+  }
+}
