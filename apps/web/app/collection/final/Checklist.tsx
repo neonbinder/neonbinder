@@ -19,6 +19,7 @@ import { CHIP, CHIP_OFF, CHIP_ON, FOCUS, shortCardName } from "../prototypes/p1/
 import CardRowGroup, { type RowActions } from "./CardRows";
 import type { CollectionStore, Notify } from "./store";
 import BinderPicker from "./BinderPicker";
+import { blockedMessage, pickFirstLabel, runPlan } from "./cards/model";
 
 type Show = "all" | "have" | "need";
 
@@ -73,20 +74,14 @@ const Checklist = forwardRef<
   });
 
   // A card number is never unique: `parseRange` hands back every number two
-  // cards share in `shared`, and only the cards ticked below are added.
+  // cards share in `shared`. Stop and ask: until each one is picked (or taken
+  // out with -N) the whole run is held, the same rule as My Cards' Quick add.
   const range = rangeText.trim() ? parseRange(rangeText, cards) : null;
-  const rangeCards = range
-    ? [
-        ...range.single,
-        ...range.shared.flatMap((s) => s.cards.filter((c) => sharedPicks.has(c.id))),
-      ]
-    : [];
-  const toAdd = rangeCards.filter((c) => !ownedIds.has(c.id));
-  const alreadyHave = rangeCards.length - toAdd.length;
-  const unanswered = range ? range.shared.filter((s) => !s.cards.some((c) => sharedPicks.has(c.id))) : [];
+  const plan = runPlan(range, sharedPicks, (id) => ownedIds.has(id));
+  const { cards: rangeCards, toAdd, already: alreadyHave, blocked } = plan;
 
   const markRange = () => {
-    if (toAdd.length === 0) return;
+    if (blocked || toAdd.length === 0) return;
     const added = toAdd.map((c) => store.addHave(c.id));
     notify(
       `Marked ${added.length} ${added.length === 1 ? "card" : "cards"} as Have, into ${target?.name ?? "Main"}`,
@@ -210,11 +205,11 @@ const Checklist = forwardRef<
             <Button
               type="button"
               variant="primary"
-              disabled={toAdd.length === 0}
+              disabled={blocked || toAdd.length === 0}
               onClick={markRange}
               className={FOCUS}
             >
-              {toAdd.length > 0 ? `Mark ${toAdd.length} as Have` : "Mark as Have"}
+              {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Mark ${toAdd.length} as Have` : "Mark as Have")}
             </Button>
           </div>
           {range && (
@@ -225,9 +220,8 @@ const Checklist = forwardRef<
                   : `${toAdd.length} to add to ${target?.name ?? "Main"}`}
                 {alreadyHave > 0 && `, ${alreadyHave} already in your collection`}
                 {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
-                {unanswered.length > 0 &&
-                  `. ${unanswered.length === 1 ? "One number needs" : `${unanswered.length} numbers need`} you to pick below; nothing's added for ${unanswered.length === 1 ? "it" : "them"} until you do.`}
               </p>
+              {blocked && <p className="text-neon-yellow">{blockedMessage(plan)}</p>}
               {range.shared.map((s) => (
                 <div
                   key={s.number}

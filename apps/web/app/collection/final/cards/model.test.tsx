@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cardsInSet, emptyCopyDetails, type Card, type Copy } from "../../prototypes/_shared/data";
 import { parseRange } from "../../prototypes/p1/range";
-import { rangeSelection, tilePress, wantedFirst } from "./model";
+import { blockedMessage, pickFirstLabel, rangeSelection, runPlan, tilePress, wantedFirst } from "./model";
 
 const CHROME = "2024-topps-chrome-baseball";
 
@@ -61,6 +61,49 @@ describe("rangeSelection", () => {
 
   it("is empty with no range", () => {
     expect(rangeSelection(null, new Set())).toEqual({ cards: [], unanswered: [] });
+  });
+});
+
+describe("runPlan (stop and ask)", () => {
+  const none = () => false;
+
+  it("holds the whole run, singles too, while a shared number is unanswered", () => {
+    const { row, number } = sharedNumber();
+    const plan = runPlan(parseRange(`1-3, ${number}`, row), new Set(), none);
+    expect(plan.blocked).toBe(true);
+    expect(plan.unanswered.map((s) => s.number)).toEqual([number]);
+    expect(pickFirstLabel(plan)).toBe(`Pick your #${number} first`);
+    expect(blockedMessage(plan)).toBe(
+      `One number is on more than one card. Pick yours below and the run goes in. Got neither? Add -${number} to leave it out.`,
+    );
+  });
+
+  it("lets the run go once the shared number is picked", () => {
+    const { row, number } = sharedNumber();
+    const range = parseRange(`1-3, ${number}`, row);
+    const pick = range.shared[0].cards[0];
+    const plan = runPlan(range, new Set([pick.id]), none);
+    expect(plan.blocked).toBe(false);
+    expect(pickFirstLabel(plan)).toBeNull();
+    expect(blockedMessage(plan)).toBeNull();
+    expect(plan.toAdd).toContain(pick);
+    expect(plan.toAdd).toHaveLength(range.single.length + 1);
+  });
+
+  it("lets the run go once the shared number is taken out with -N", () => {
+    const { row, number } = sharedNumber();
+    const plan = runPlan(parseRange(`1-3, ${number}, -${number}`, row), new Set(), none);
+    expect(plan.blocked).toBe(false);
+    expect(plan.toAdd.some((c) => c.cardNumber === number)).toBe(false);
+  });
+
+  it("counts owned cards as already had, not to add", () => {
+    const row = cardsInSet(CHROME, { type: "Base" });
+    const range = parseRange("1-3", row);
+    const owned = new Set([range.single[0].id]);
+    const plan = runPlan(range, new Set(), (id) => owned.has(id));
+    expect(plan.already).toBe(1);
+    expect(plan.toAdd).toHaveLength(range.single.length - 1);
   });
 });
 

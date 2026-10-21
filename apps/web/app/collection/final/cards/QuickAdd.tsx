@@ -5,7 +5,7 @@ import { parseRange } from "../../prototypes/p1/range";
 import { FOCUS, LABEL, PRIMARY_BUTTON, SELECT } from "../../prototypes/p3/classes";
 import { cardsNumbered, variantFilterOf, variantKey } from "../../prototypes/p3/wallModel";
 import { useMyCards } from "./context";
-import { rangeSelection } from "./model";
+import { blockedMessage, pickFirstLabel, runPlan } from "./model";
 
 /**
  * NEO-350 — the two fast lanes onto the wall.
@@ -75,15 +75,10 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
     () => (rangeText.trim() ? parseRange(rangeText, rowCards) : null),
     [rangeText, rowCards],
   );
-  const { cards: picked, unanswered } = rangeSelection(range, picks);
-  const toAdd = picked.filter((c) => store.ownedInScope(c.id) === 0);
-  const already = picked.length - toAdd.length;
+  const plan = runPlan(range, picks, (id) => store.ownedInScope(id) > 0);
+  const { toAdd, already, blocked } = plan;
   const rowName = variantLabel(row.path);
   const target = store.getBinder(store.targetBinderId)?.name ?? "Main";
-
-  // Stop and ask: a shared number nobody has answered holds the whole run
-  // back, so pressing Enter can never quietly skip it.
-  const blocked = unanswered.length > 0;
 
   function commitRange() {
     if (blocked || toAdd.length === 0) return;
@@ -93,11 +88,11 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
     setPicks(new Set());
   }
 
-  const addLabel = blocked
-    ? `Pick your #${unanswered[0].number} first`
-    : toAdd.length === 0
+  const addLabel =
+    pickFirstLabel(plan) ??
+    (toAdd.length === 0
       ? "Nothing new to add"
-      : `Add ${toAdd.length} ${toAdd.length === 1 ? "card" : "cards"}`;
+      : `Add ${toAdd.length} ${toAdd.length === 1 ? "card" : "cards"}`);
 
   return (
     <section
@@ -212,13 +207,7 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
                 {range.unknown.length > 0 && (
                   <p className="mt-1 text-sm text-slate-400">Not on this checklist: {range.unknown.join(", ")}.</p>
                 )}
-                {blocked && (
-                  <p className="mt-1 text-sm text-neon-yellow">
-                    {unanswered.length === 1 ? "One number is" : `${unanswered.length} numbers are`} on more than one
-                    card. Pick yours below and the run goes in. Got neither? Add -{unanswered[0].number} to leave it
-                    out.
-                  </p>
-                )}
+                {blocked && <p className="mt-1 text-sm text-neon-yellow">{blockedMessage(plan)}</p>}
                 {range.shared.map((group) => (
                   <div
                     key={group.number}

@@ -49,6 +49,50 @@ export function rangeSelection(
   return { cards, unanswered };
 }
 
+/**
+ * Everything a "run of numbers" box needs to decide, shared by My Cards'
+ * Quick add and the Checklists tab's "Mark a range as Have" so the two can
+ * never drift.
+ *
+ * Stop and ask (Jason's rule): while any shared number is unanswered the
+ * whole run is `blocked`. Nothing is added, not even the numbers that
+ * matched one card, so pressing Enter can never quietly skip one. The
+ * collector picks theirs, or types `-N` to leave the number out.
+ */
+export interface RunPlan {
+  /** Every card the run names (singles plus picks), owned or not. */
+  cards: Card[];
+  /** The ones not already owned: what committing would add. */
+  toAdd: Card[];
+  /** How many named cards are already owned and stay as they are. */
+  already: number;
+  /** Shared numbers with no card picked yet. */
+  unanswered: RangePick["shared"];
+  blocked: boolean;
+}
+
+export function runPlan(
+  range: RangePick | null,
+  picks: ReadonlySet<CardId>,
+  owned: (cardId: CardId) => boolean,
+): RunPlan {
+  const { cards, unanswered } = rangeSelection(range, picks);
+  const toAdd = cards.filter((c) => !owned(c.id));
+  return { cards, toAdd, already: cards.length - toAdd.length, unanswered, blocked: unanswered.length > 0 };
+}
+
+/** The commit button while blocked: "Pick your #13 first". */
+export function pickFirstLabel(plan: RunPlan): string | null {
+  return plan.blocked ? `Pick your #${plan.unanswered[0].number} first` : null;
+}
+
+/** Why the run is held, and the two ways out. Null when nothing is held. */
+export function blockedMessage(plan: RunPlan): string | null {
+  if (!plan.blocked) return null;
+  const n = plan.unanswered.length;
+  return `${n === 1 ? "One number is" : `${n} numbers are`} on more than one card. Pick yours below and the run goes in. Got neither? Add -${plan.unanswered[0].number} to leave it out.`;
+}
+
 /** Wanted cards first, each half kept in checklist order. */
 export function wantedFirst(cards: Card[], isWanted: (cardId: CardId) => boolean): Card[] {
   const wanted: Card[] = [];
