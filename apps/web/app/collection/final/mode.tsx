@@ -9,21 +9,22 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
-import { MOCK_HANDLE } from "./binders/model";
 import type { BinderSelection, CollectionBinder } from "./store";
 
 /**
  * NEO-350 — where the collection demo is running, and what that changes.
  *
- * The same page ships twice:
+ * The same page ships twice, and it is a demo both times: the cards are
+ * fake, share links use a neutral `@you` handle (`DEMO_HANDLE`) and say they
+ * are examples, a card request stays on the page, and a demo bar says so.
  *
  * - `"app"`: `/collection`, inside the signed-in binder shell. Links go to
- *   the real tools.
+ *   the real tools; "Print label" opens the Print Shop in a new tab, so the
+ *   label being edited here survives.
  * - `"public"`: the no-login demo on the `/binder-tracking` marketing page.
- *   Nothing it does may need an account:
- *   - a link to a signed-in tool goes to the public tour page for it instead
- *     (`PUBLIC_DESTINATIONS`);
- *   - share links use a neutral `@you` handle and say they are examples.
+ *   Nothing it does may need an account: a link to a signed-in tool goes to
+ *   the public tour page for it instead (`PUBLIC_DESTINATIONS`), and the
+ *   demo bar adds Sign up and Back to the tour.
  *
  * In both, where you are (tab, set wall, need list, open binder) rides on the
  * page URL with the same params (`?tab=…&set=…&view=…&for=…&b=…`), so Back
@@ -71,17 +72,17 @@ export const PUBLIC_DESTINATIONS = {
   signUp: "/sign-up",
 } as const;
 
-/** The demo's share-link handle: anyone's, so it reads as an example. */
-export const PUBLIC_SHARE_HANDLE = "you";
-
 interface CollectionModeValue {
   mode: CollectionMode;
   /** Where the Inventory long box leads. */
   inventoryHref: string;
   /** Where a "Print label" link leads, given the Print Shop link the app uses. */
   printLabelHref: (appHref: string) => string;
-  /** The handle in a binder's share link. */
-  shareHandle: string;
+  /**
+   * The app's "Print label" opens the Print Shop in a new tab, so a label
+   * mid-edit here is still here. The public tour page opens in place.
+   */
+  printLabelInNewTab: boolean;
   /** Params every view URL keeps (public mode's `demo=on`). Empty in the app. */
   keepParams: Record<string, string>;
 }
@@ -90,7 +91,7 @@ const APP_MODE: CollectionModeValue = {
   mode: "app",
   inventoryHref: "/inventory",
   printLabelHref: (appHref) => appHref,
-  shareHandle: MOCK_HANDLE,
+  printLabelInNewTab: true,
   keepParams: {},
 };
 
@@ -115,7 +116,7 @@ export function CollectionModeProvider({
             mode,
             inventoryHref: PUBLIC_DESTINATIONS.inventory,
             printLabelHref: () => PUBLIC_DESTINATIONS.printShop,
-            shareHandle: PUBLIC_SHARE_HANDLE,
+            printLabelInNewTab: false,
             keepParams: Object.fromEntries(new URLSearchParams(keepKey)),
           },
     [mode, keepKey],

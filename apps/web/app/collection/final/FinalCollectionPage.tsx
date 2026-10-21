@@ -3,7 +3,7 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import { getCard, type BinderId, type Card, type CardId, type CopyId } from "../prototypes/_shared/data";
 import { EMPTY_DRILL, type Drill } from "../prototypes/p1/drill";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
-import { FOCUS, shortCardName } from "../prototypes/p1/ui";
+import { shortCardName } from "../prototypes/p1/ui";
 import CardDrawer from "./CardDrawer";
 import { DemoBar, DemoRail } from "./DemoChrome";
 import type { RowActions } from "./CardRows";
@@ -39,11 +39,11 @@ import {
  *
  * It runs in two places (see `./mode`):
  * - `mode="app"` (default): `/collection`, for signed-in collectors, in the
- *   binder shell; where you are rides on the URL.
+ *   binder shell; where you are rides on the URL. Still the demo: the demo
+ *   bar marks it as sample data and holds Reset.
  * - `mode="public"`: the no-login demo on `/binder-tracking`, through
- *   `PublicCollectionDemo`. Its own persist key, local view state, public
- *   destinations for signed-in links, and the demo bar (what this is, Reset,
- *   Sign up, Back to the tour).
+ *   `PublicCollectionDemo`. Its own persist key, public destinations for
+ *   signed-in links, and the demo bar's exits (Sign up, Back to the tour).
  */
 
 const TABS: { key: CollectionTab; label: string }[] = [
@@ -207,7 +207,7 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     <ViewScopeProvider value={scope}>
       <div className="text-slate-100">
         <div className="space-y-4">
-          {isPublic && <DemoBar onReset={resetDemo} onExit={onExit} />}
+          <DemoBar onReset={resetDemo} onExit={onExit} />
           <h1 className="text-2xl font-bold">Collection</h1>
 
           <nav aria-label="Collection sections" className="border-b border-slate-800">
@@ -261,19 +261,6 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
               highlightCardId={highlightCardId}
               selectedCardId={drawer?.cardId ?? null}
             />
-          )}
-
-          {/* The public demo's Reset lives in the demo bar up top. */}
-          {!isPublic && (
-            <div className="border-t border-slate-800 pt-4">
-              <button
-                type="button"
-                onClick={resetDemo}
-                className={`rounded px-1 py-1 text-xs text-slate-400 underline underline-offset-2 hover:text-white ${FOCUS}`}
-              >
-                Reset demo data
-              </button>
-            </div>
           )}
         </div>
 

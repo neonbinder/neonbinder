@@ -147,11 +147,16 @@ describe("My Binders", () => {
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
-  it("Share shows a human-readable link and who can see it", () => {
+  it("Share shows a human-readable link at the neutral @you handle, and says it is an example", () => {
     renderBinders("/collection?tab=binders&b=binder-ohtani-rainbow");
     fireEvent.click(screen.getByRole("button", { name: "Share Ohtani rainbow" }));
-    expect(screen.getByText("neonbinder.io/@jason/binders/ohtani-rainbow")).toBeTruthy();
-    expect(screen.getByText("Anyone with the link can see it. Only you can change it.")).toBeTruthy();
+    expect(screen.getByText("neonbinder.io/@you/binders/ohtani-rainbow")).toBeTruthy();
+    expect(
+      screen.getByText("Just an example: share links arrive when your real collection does."),
+    ).toBeTruthy();
+    // Signed in is still the demo: no real collector's handle, no promise of a real page.
+    expect(screen.queryByText(/@jason/)).toBeNull();
+    expect(screen.queryByText("Anyone with the link can see it. Only you can change it.")).toBeNull();
   });
 });
 
@@ -298,11 +303,63 @@ describe("a smart binder's label follows the team on most of its cards", () => {
   });
 });
 
+/** A Print Shop link that opens a new tab, and says so without renaming itself. */
+function expectNewTab(link: HTMLElement) {
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener");
+  const hint = document.getElementById(link.getAttribute("aria-describedby") ?? "");
+  expect(hint?.textContent).toBe("Opens in a new tab");
+}
+
+describe("a team-rule smart binder's quick picks", () => {
+  it("offers the rule's own team first, even when no card shows it", () => {
+    renderBinders("/collection?tab=binders&b=smart-badgers-alumni");
+    fireEvent.click(screen.getByRole("button", { name: "Edit label for Badgers alumni" }));
+    const dialog = screen.getByRole("dialog");
+    const picks = within(within(dialog).getByRole("group", { name: "Teams on its cards" })).getAllByRole("button");
+    expect(picks[0].getAttribute("aria-label")).toBe("Wisconsin Badgers, the binder's team");
+    expect(picks[0].textContent).toBe("Wisconsin Badgers· the binder's team");
+    // It is the binder's default, so it starts pressed; the rest are the pro teams on its cards.
+    expect(picks[0].getAttribute("aria-pressed")).toBe("true");
+    expect(picks.slice(1).every((b) => / cards?$/.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
+
+    fireEvent.click(picks[1]);
+    expect(picks[0].getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(picks[0]);
+    expect((within(dialog).getByLabelText("Background") as HTMLInputElement).value).toBe("#C5050C");
+    expect(picks[0].getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
 describe("Print this label", () => {
   it("links the cover to the Print Shop with the binder's name, colors and face", () => {
     renderBinders("/collection?tab=binders&b=smart-reggie-white");
-    const link = screen.getAllByRole("link", { name: "Print label for All Reggie White" })[0];
-    expect(link.getAttribute("href")).toBe("/print/spine-label?name=All+Reggie+White&bg=203731&fg=ffb612&font=anton");
+    const links = screen.getAllByRole("link", { name: "Print label for All Reggie White" });
+    expect(links[0].getAttribute("href")).toBe(
+      "/print/spine-label?name=All+Reggie+White&bg=203731&fg=ffb612&font=anton",
+    );
+    // A new tab, so the open binder is still here when the collector comes back.
+    links.forEach(expectNewTab);
+  });
+
+  it("opens the Print Shop in a new tab from the label editor, so the unsaved edits survive", () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Background"), { target: { value: "#005A9C" } });
+    const link = within(dialog).getByRole("link", { name: "Print this label" });
+    expectNewTab(link);
+    // Following it in a new tab leaves this page alone: the dialog and its draft are still here.
+    // (The click's default, a new happy-dom window fetching the URL, is held back here.)
+    const holdBack = (e: Event) => e.preventDefault();
+    document.addEventListener("click", holdBack);
+    try {
+      fireEvent.click(link);
+    } finally {
+      document.removeEventListener("click", holdBack);
+    }
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect((within(dialog).getByLabelText("Background") as HTMLInputElement).value).toBe("#005A9C");
   });
 
   it("links from the label editor with the label as it stands there", () => {
@@ -465,7 +522,7 @@ describe("one open-binder view for binders and browsed sets", () => {
     expect(screen.queryByRole("link", { name: /^Print label for/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Share 2000 Topps" }));
-    expect(screen.getByText("neonbinder.io/@jason/sets/2000-topps")).toBeTruthy();
+    expect(screen.getByText("neonbinder.io/@you/sets/2000-topps")).toBeTruthy();
   });
 
   it("Just a stack packs a browsed set tight, and the toggle is not a history step", () => {

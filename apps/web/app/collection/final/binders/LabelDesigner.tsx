@@ -1,5 +1,4 @@
 import { useId, useState, type CSSProperties } from "react";
-import { Link } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import { SpineLabelColors, SpineLabelLettering } from "@/components/modules/SpineLabelFields";
 import { spineFontById } from "@/lib/print/spine-fonts";
@@ -12,18 +11,22 @@ import {
   teamColorsOn,
   validLabel,
   type BinderLabel,
-  type TeamOnCards,
+  type TeamPick,
 } from "./label";
+import PrintShopLink from "./PrintShopLink";
 import SpineLabel, { SpineFontFaces } from "./SpineLabel";
 
 /**
  * Pick a binder's spine label: the Print Shop's own colour fields, Invert,
  * contrast readout and lettering picker (`SpineLabelFields`), beside a live
  * spine. A team's colours are one pick away, as in the Print Shop; for a
- * smart binder, the teams on its cards come first, most cards first.
+ * smart binder, quick picks come first: the team its rule names (if any,
+ * marked "the binder's team", even when no card shows it), then the teams
+ * on its cards, most cards first.
  *
  * "Print this label" opens the Print Shop with this label filled in: the
- * name, both colours and the face, exactly as they stand here.
+ * name, both colours and the face, exactly as they stand here. In the app it
+ * opens a new tab (`PrintShopLink`), so the edits here are not lost.
  *
  * When the pair falls short of AA for the size the shelf draws it at, the
  * Print Shop's warning shows, and a line says what the shelf will do about
@@ -43,29 +46,35 @@ export const PREVIEW_SPINE = 76;
 /** Quick picks shown at most; every other team is in the list below them. */
 export const MAX_TEAM_PICKS = 6;
 
+/** What marks the quick pick for the team a binder's rule names. */
+export const NAMED_TEAM_NOTE = "the binder's team";
+
 const sameHex = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 export default function LabelDesigner({
   name,
   draft,
   onChange,
-  teamsOnCards = [],
+  teamPicks = [],
 }: {
   /** The name on the spine (the binder's, or what is typed so far). */
   name: string;
   /** The label being designed; colours may be mid-edit. */
   draft: BinderLabel;
   onChange: (next: BinderLabel) => void;
-  /** A smart binder's teams, most cards first: offered as quick picks. */
-  teamsOnCards?: TeamOnCards[];
+  /** A smart binder's quick picks: its rule's team, then its cards' teams (`binderTeamPicks`). */
+  teamPicks?: TeamPick[];
 }) {
-  const { mode, printLabelHref } = useCollectionMode();
+  const { mode } = useCollectionMode();
   const teamSelectId = useId();
   const picksLabelId = useId();
-  const picks = teamsOnCards.slice(0, MAX_TEAM_PICKS);
-  // A nickname twice over (Cardinals and Cardinals) reads with its place.
-  const pickName = (team: Team) =>
-    picks.filter((p) => p.team.name === team.name).length > 1 ? `${team.location} ${team.name}` : team.name;
+  const picks = teamPicks.slice(0, MAX_TEAM_PICKS);
+  // The rule's own team reads in full (Wisconsin Badgers), and so does a
+  // nickname twice over (Cardinals and Cardinals); the rest by nickname.
+  const pickName = ({ team, named }: TeamPick) =>
+    named || picks.filter((p) => p.team.name === team.name).length > 1
+      ? `${team.location} ${team.name}`
+      : team.name;
   const [teamId, setTeamId] = useState("");
   const shown = name.trim() || "Your binder";
   const valid = validLabel(draft);
@@ -116,15 +125,16 @@ export default function LabelDesigner({
               Teams on its cards
             </p>
             <div role="group" aria-labelledby={picksLabelId} className="flex flex-wrap gap-2">
-              {picks.map(({ team, cards }) => {
+              {picks.map((pick) => {
+                const { team, cards, named } = pick;
                 const on = sameHex(draft.background, team.primary) && sameHex(draft.text, team.secondary);
-                const count = `${cards} card${cards === 1 ? "" : "s"}`;
+                const why = named ? NAMED_TEAM_NOTE : `${cards} card${cards === 1 ? "" : "s"}`;
                 return (
                   <button
                     key={team.id}
                     type="button"
                     aria-pressed={on}
-                    aria-label={`${pickName(team)}, ${count}`}
+                    aria-label={`${pickName(pick)}, ${why}`}
                     onClick={() => pickQuick(team)}
                     className={`inline-flex min-h-9 items-center gap-2 rounded-md border px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
                       on
@@ -139,9 +149,9 @@ export default function LabelDesigner({
                         background: `linear-gradient(135deg, ${team.primary} 0 55%, ${team.secondary} 55% 100%)`,
                       }}
                     />
-                    <span>{pickName(team)}</span>
+                    <span>{pickName(pick)}</span>
                     <span aria-hidden="true" className="text-slate-400">
-                      · {count}
+                      · {why}
                     </span>
                   </button>
                 );
@@ -190,12 +200,12 @@ export default function LabelDesigner({
 
         <p className="text-xs text-slate-400">
           Want it on the real binder?{" "}
-          <Link
-            to={printLabelHref(spineLabelPrintHref({ name: name.trim(), ...draft }))}
+          <PrintShopLink
+            appHref={spineLabelPrintHref({ name: name.trim(), ...draft })}
             className="rounded-sm text-neon-blue underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
           >
             Print this label
-          </Link>{" "}
+          </PrintShopLink>{" "}
           {mode === "public"
             ? "in the Print Shop once you've signed up."
             : "in the Print Shop. Its name, colors and lettering come along."}

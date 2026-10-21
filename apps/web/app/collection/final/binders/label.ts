@@ -115,6 +115,30 @@ export function binderTeamsOnCards(binder: CollectionBinder): TeamOnCards[] {
   return teamsOnCards(binderCards(binder));
 }
 
+/** A label editor quick pick: a team, and why it is offered. */
+export interface TeamPick extends TeamOnCards {
+  /** The team the binder's rule names: offered first, on a card or not. */
+  named: boolean;
+}
+
+/**
+ * The label editor's quick picks for a binder: the teams on its cards, most
+ * first, led by the team its rule names when it names one. A rule's team
+ * comes first even when no card shows it (Badgers alumni play on in pro
+ * uniforms), since it is the team the binder wears by default. Empty for a
+ * binder you fill yourself.
+ */
+export function binderTeamPicks(binder: CollectionBinder): TeamPick[] {
+  const onCards = binderTeamsOnCards(binder).map((t) => ({ ...t, named: false }));
+  const named = binder.kind === "smart" ? ruleTeamId(binder.rule) : null;
+  if (!named) return onCards;
+  const own = onCards.find((t) => t.team.id === named);
+  return [
+    { team: getTeam(named), cards: own?.cards ?? 0, latestYear: own?.latestYear ?? 0, named: true },
+    ...onCards.filter((t) => t.team.id !== named),
+  ];
+}
+
 function teamLabel(team: Team): BinderLabel {
   return { background: team.primary, text: team.secondary, fontId: DEFAULT_SPINE_FONT_ID };
 }

@@ -5,17 +5,18 @@ import { shareUrl, type ShareTarget } from "./model";
 
 /**
  * "Share": the open view's public link, readable by a human
- * (`neonbinder.io/@jason/binders/ohtani-rainbow`, `.../@jason/want-list`,
- * `.../@jason/sets/2000-topps`). What it shares comes in as data (see
- * `openView.ts`). Pressing it shows the link and copies it. Mock: no such
- * page exists yet, and the handle is a stand-in for the collector's own.
+ * (`neonbinder.io/@you/binders/ohtani-rainbow`, `.../@you/want-list`,
+ * `.../@you/sets/2000-topps`). What it shares comes in as data (see
+ * `openView.ts`). Pressing it shows the link and copies it. Demo: no such
+ * page exists yet, so the handle is anyone's (`DEMO_HANDLE`) and the panel
+ * says the link is an example, signed in or not.
  */
 export default function ShareLink({ target }: { target: ShareTarget }) {
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"yes" | "no" | null>(null);
-  const { mode, shareHandle } = useCollectionMode();
-  const link = shareUrl(target, shareHandle);
+  const { mode } = useCollectionMode();
+  const link = shareUrl(target);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const close = () => {
     setOpen(false);
@@ -84,7 +85,7 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
         <p className="mt-1 text-slate-300">
           {mode === "public"
             ? "Just an example: demo binders don't get a real page."
-            : "Anyone with the link can see it. Only you can change it."}
+            : "Just an example: share links arrive when your real collection does."}
         </p>
         <div className="mt-2 flex gap-2">
           <button

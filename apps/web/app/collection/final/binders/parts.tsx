@@ -1,11 +1,10 @@
 import type { CSSProperties } from "react";
-import { Link } from "react-router";
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
 import { type LayoutMode, type PileFilters, type SortKey } from "../../prototypes/p2/model";
-import { useCollectionMode } from "../mode";
 import type { CollectionBinder } from "../store";
 import { labelOf } from "./label";
 import type { OpenView, Tally } from "./openView";
+import PrintShopLink from "./PrintShopLink";
 
 /**
  * The open binder's furniture, from prototype 2's page: the layout toggle,
@@ -132,17 +131,17 @@ export function EditLabelButton({ name, onClick }: { name: string; onClick: () =
  * The cover's "Print label": the Print Shop's spine-label designer with this
  * binder's name, colours and face filled in. The label it wears, exactly
  * (the collector's pick, else its default), never the shelf's readable swap.
+ * In the app it opens a new tab (`PrintShopLink`).
  */
 export function PrintLabelLink({ binder }: { binder: CollectionBinder }) {
-  const { printLabelHref } = useCollectionMode();
   return (
-    <Link
-      to={printLabelHref(spineLabelPrintHref({ name: binder.name, ...labelOf(binder) }))}
+    <PrintShopLink
+      appHref={spineLabelPrintHref({ name: binder.name, ...labelOf(binder) })}
       aria-label={`Print label for ${binder.name}`}
       className={`inline-flex min-h-8 items-center rounded-md px-1 text-xs font-medium text-neon-blue underline underline-offset-2 hover:text-white max-sm:min-h-11 ${FOCUS}`}
     >
       Print label
-    </Link>
+    </PrintShopLink>
   );
 }
 

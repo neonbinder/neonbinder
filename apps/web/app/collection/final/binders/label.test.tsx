@@ -7,6 +7,7 @@ import {
   ALL_LABEL,
   LARGE_TEXT_PX,
   PLAIN_LABEL,
+  binderTeamPicks,
   binderTeamsOnCards,
   defaultLabel,
   defaultLabelForNew,
@@ -82,6 +83,51 @@ describe("which label a binder wears", () => {
   it("the collector's own label wins over the default", () => {
     const label = { background: "#203731", text: "#FFB612", fontId: "teko" };
     expect(labelOf({ id: "m", kind: "manual", name: "Packers PC", label })).toEqual(label);
+  });
+});
+
+describe("the label editor's quick picks", () => {
+  it("leads with the rule's team even when no card shows it", () => {
+    // Badgers alumni: every card is a pro uniform, so Wisconsin is on none.
+    const badgers = binder("smart-badgers-alumni");
+    expect(binderTeamsOnCards(badgers).some((t) => t.team.id === "wisconsin")).toBe(false);
+    const picks = binderTeamPicks(badgers);
+    expect(picks[0]).toMatchObject({ team: getTeam("wisconsin"), cards: 0, named: true });
+    expect(picks.slice(1).map((p) => p.team.id)).toEqual(binderTeamsOnCards(badgers).map((t) => t.team.id));
+    expect(picks.slice(1).every((p) => !p.named)).toBe(true);
+  });
+
+  it("moves the rule's team to the front once, keeping its card count", () => {
+    const redWings = binder("smart-red-wings");
+    const onCards = binderTeamsOnCards(redWings);
+    const own = onCards.find((t) => t.team.id === "red-wings")!;
+    const picks = binderTeamPicks(redWings);
+    expect(picks[0]).toMatchObject({ team: getTeam("red-wings"), cards: own.cards, named: true });
+    expect(picks.filter((p) => p.team.id === "red-wings")).toHaveLength(1);
+    expect(picks).toHaveLength(onCards.length);
+  });
+
+  it("finds the team inside an alumni rule's either-or", () => {
+    const picks = binderTeamPicks(
+      smart({
+        kind: "or",
+        rules: [
+          { kind: "teamOnCard", teamId: "wisconsin" },
+          { kind: "playedFor", teamId: "wisconsin" },
+        ],
+      }),
+    );
+    expect(picks[0]).toMatchObject({ team: getTeam("wisconsin"), named: true });
+  });
+
+  it("is just the cards' teams for a rule that names no team, and nothing for a binder you fill", () => {
+    const reggie = smart({ kind: "player", playerId: "reggie-white" });
+    expect(binderTeamPicks(reggie).map((p) => [p.team.id, p.named])).toEqual([
+      ["packers", false],
+      ["eagles", false],
+      ["panthers", false],
+    ]);
+    expect(binderTeamPicks(binder(MAIN_BINDER_ID))).toEqual([]);
   });
 });
 

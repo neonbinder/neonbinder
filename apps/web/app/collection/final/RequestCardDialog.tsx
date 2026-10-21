@@ -8,10 +8,10 @@ import { useCollectionMode } from "./mode";
 import type { CollectionStore } from "./store";
 
 /**
- * "Can't find it? Ask us to add it." The collector describes the card; it
- * goes to an admin for review and stays private to them until it's added.
- * On this page it only lands in the store's local request list, shown below
- * the form as "Requested". The public demo says so, rather than promise a
+ * "Can't find it? Ask us to add it." The collector describes the card. In a
+ * real collection it would go to our crew to add; this page is a demo in
+ * both modes, so it only lands in the store's local request list, shown
+ * below the form as "Requested". Every line says so, rather than promise a
  * review that never happens.
  */
 export default function RequestCardDialog({
@@ -47,11 +47,7 @@ export default function RequestCardDialog({
     setCardNumber("");
     setPlayer("");
     setNotes("");
-    setSent(
-      mode === "public"
-        ? "Got it! This is the demo, so it stays right here on the list."
-        : "Sent! An admin will give it a look.",
-    );
+    setSent("Got it! This is the demo, so it stays right here on the list.");
   };
 
   return (
@@ -64,10 +60,10 @@ export default function RequestCardDialog({
           <p className="text-sm text-slate-300">
             {mode === "public"
               ? "Tell us what you've got. With an account, your requests go to our crew to add."
-              : "Tell us what you've got. It goes to an admin for review, and it stays private to you until it's added."}
+              : "Tell us what you've got. These binders are a demo, so for now your request stays on the list below."}
           </p>
           {searched.trim() && (
-            <p className="text-xs text-slate-400">You searched “{searched.trim()}”. We&apos;ll send that along too.</p>
+            <p className="text-xs text-slate-400">You searched “{searched.trim()}”. We&apos;ll keep that with it.</p>
           )}
         </div>
 
@@ -128,7 +124,7 @@ export default function RequestCardDialog({
                     {[r.set, r.cardNumber && `#${r.cardNumber}`, r.player].filter(Boolean).join(" ") ||
                       r.notes}
                   </span>
-                  <span className="block text-xs text-slate-400">Waiting on review · only you can see it</span>
+                  <span className="block text-xs text-slate-400">Demo request · only you can see it</span>
                 </li>
               ))}
             </ul>

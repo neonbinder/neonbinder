@@ -328,8 +328,12 @@ export function teamRule(teamId: TeamId, alsoPlayedFor: boolean): BinderRule {
 // Share links (mock: no such route yet)
 // ---------------------------------------------------------------------------
 
-/** The collector's public handle. Mock: the real one comes from their profile. */
-export const MOCK_HANDLE = "jason";
+/**
+ * The share links' handle. The page is a demo in both of its homes (public
+ * and signed in), so the handle is anyone's, never a real collector's, and
+ * the link reads as an example. The real one will come from a profile.
+ */
+export const DEMO_HANDLE = "you";
 
 /** "'96 Contenders" -> "96-contenders", "Ohtani rainbow" -> "ohtani-rainbow". */
 export function slugify(name: string): string {
@@ -363,12 +367,12 @@ export function setShareTarget(set: CardSet): ShareTarget {
 }
 
 /** The human-readable public link for a share target. */
-export function shareUrl(target: ShareTarget, handle = MOCK_HANDLE): string {
+export function shareUrl(target: ShareTarget, handle = DEMO_HANDLE): string {
   return `neonbinder.io/@${handle}/${target.path}`;
 }
 
 /** A human-readable public link to a binder, or to the Want List. */
-export function shareLink(binder: CollectionBinder, handle = MOCK_HANDLE): string {
+export function shareLink(binder: CollectionBinder, handle = DEMO_HANDLE): string {
   return shareUrl(binderShareTarget(binder), handle);
 }
 

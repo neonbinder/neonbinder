@@ -80,10 +80,10 @@ describe("share links", () => {
   it("gives the Want List its own path, by role not by name", () => {
     const state = initialCollectionState();
     const want = state.binders.find((b) => b.id === WANT_BINDER_ID)!;
-    expect(shareLink(want)).toBe("neonbinder.io/@jason/want-list");
-    expect(shareLink({ ...want, name: "Renamed somehow" })).toBe("neonbinder.io/@jason/want-list");
+    expect(shareLink(want)).toBe("neonbinder.io/@you/want-list");
+    expect(shareLink({ ...want, name: "Renamed somehow" })).toBe("neonbinder.io/@you/want-list");
     const ohtani = state.binders.find((b) => b.name === "Ohtani rainbow")!;
-    expect(shareLink(ohtani)).toBe("neonbinder.io/@jason/binders/ohtani-rainbow");
+    expect(shareLink(ohtani)).toBe("neonbinder.io/@you/binders/ohtani-rainbow");
   });
 });
 

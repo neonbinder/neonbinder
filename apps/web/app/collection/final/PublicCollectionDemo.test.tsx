@@ -175,13 +175,15 @@ describe("the public collection demo", () => {
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
     for (const link of screen.getAllByRole("link", { name: "Print label for '96 Contenders" })) {
       expect(link.getAttribute("href")).toBe(PUBLIC_DESTINATIONS.printShop);
+      // The tour page opens in place, like every other tour link.
+      expect(link.getAttribute("target")).toBeNull();
     }
 
     fireEvent.click(screen.getByRole("button", { name: "Edit label for '96 Contenders" }));
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByRole("link", { name: "Print this label" }).getAttribute("href")).toBe(
-      PUBLIC_DESTINATIONS.printShop,
-    );
+    const printThis = within(dialog).getByRole("link", { name: "Print this label" });
+    expect(printThis.getAttribute("href")).toBe(PUBLIC_DESTINATIONS.printShop);
+    expect(printThis.getAttribute("target")).toBeNull();
     expect(within(dialog).getByText(/in the Print Shop once you've signed up\./)).toBeTruthy();
   });
 

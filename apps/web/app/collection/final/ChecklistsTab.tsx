@@ -112,7 +112,7 @@ export default function ChecklistsTab({
           <div className="max-w-2xl rounded-lg border border-dashed border-neon-blue/50 bg-gray-800 p-4 text-sm text-slate-200">
             <p className="font-semibold text-slate-100">Not in the binder yet.</p>
             <p className="mt-1 text-slate-300">
-              {askLink("Ask us to add it")} and an admin will check it out. Only you see it until it&apos;s in.
+              {askLink("Ask us to add it")}. It&apos;s a demo, so your request stays right here with you.
             </p>
           </div>
         ) : (

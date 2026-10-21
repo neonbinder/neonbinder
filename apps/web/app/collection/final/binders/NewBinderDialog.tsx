@@ -5,7 +5,7 @@ import { players, teams, type BinderRule } from "../../prototypes/_shared/data";
 import type { NewBinder } from "../../prototypes/_shared/usePrototypeStore";
 import Modal from "../../prototypes/p2/Modal";
 import type { BinderLabel } from "../store";
-import { binderTeamsOnCards, defaultLabelForNew, sameLabel, shelfColors, validLabel } from "./label";
+import { binderTeamPicks, defaultLabelForNew, sameLabel, shelfColors, validLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
 
@@ -63,8 +63,7 @@ export default function NewBinderDialog({
   const rule: BinderRule = ruleKind === "player" ? { kind: "player", playerId } : teamRule(teamId, alumni);
   const ruleLabel = defaultLabelForNew(kind === "manual" ? { kind: "manual" } : { kind: "smart", rule });
   const draft = custom ?? ruleLabel;
-  const teamsOnCards =
-    kind === "smart" ? binderTeamsOnCards({ id: "new", kind: "smart", name: trimmed, rule }) : [];
+  const teamPicks = kind === "smart" ? binderTeamPicks({ id: "new", kind: "smart", name: trimmed, rule }) : [];
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -247,7 +246,7 @@ export default function NewBinderDialog({
               <LabelDesigner
                 name={trimmed}
                 draft={draft}
-                teamsOnCards={teamsOnCards}
+                teamPicks={teamPicks}
                 onChange={(next) => {
                   setCustom(next);
                   setLabelError(false);
