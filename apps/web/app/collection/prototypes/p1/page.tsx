@@ -24,6 +24,10 @@ import WantList from "./WantList";
  *
  * Tabs are `?tab=` on one route (no new routes), drawn like the admin
  * section strip. Everything lives in this page's own prototype store.
+ *
+ * Kept as a signed-in reference at its own `/collection/<n>` route
+ * (lazy-loaded). The shipped collection demo is `../../final`, built from
+ * prototypes 1-3; this page is not developed further.
  */
 
 const TABS = [

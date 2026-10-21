@@ -26,6 +26,10 @@ import "./p3.css";
  * with binders down the side. Checklists (the catalogue) is a separate
  * top-level area, shown here as a stand-in view. Selling is left out on
  * purpose: "for sale" lives only in the copy details form.
+ *
+ * Kept as a signed-in reference at its own `/collection/<n>` route
+ * (lazy-loaded). The shipped collection demo is `../../final`, built from
+ * prototypes 1-3; this page is not developed further.
  */
 
 interface Toast {

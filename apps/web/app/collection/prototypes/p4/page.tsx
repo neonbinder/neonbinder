@@ -22,6 +22,10 @@ import { RING } from "./ui";
  *
  * The Counter stays mounted while another section shows (`hidden`), so the
  * session ledger, scope and sticky details survive a trip to My Cards.
+ *
+ * Kept as a signed-in reference at its own `/collection/<n>` route
+ * (lazy-loaded). The shipped collection demo is `../../final`, built from
+ * prototypes 1-3; this page is not developed further.
  */
 
 const TABS = [

@@ -4,13 +4,15 @@ import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import Overlay from "../prototypes/p1/Overlay";
 import { OUTLINE_BUTTON } from "../prototypes/p1/ui";
+import { useCollectionMode } from "./mode";
 import type { CollectionStore } from "./store";
 
 /**
  * "Can't find it? Ask us to add it." The collector describes the card; it
  * goes to an admin for review and stays private to them until it's added.
  * On this page it only lands in the store's local request list, shown below
- * the form as "Requested".
+ * the form as "Requested". The public demo says so, rather than promise a
+ * review that never happens.
  */
 export default function RequestCardDialog({
   store,
@@ -22,6 +24,7 @@ export default function RequestCardDialog({
   searched: string;
   onClose: () => void;
 }) {
+  const { mode } = useCollectionMode();
   const headingId = useId();
   const [set, setSet] = useState("");
   const [cardNumber, setCardNumber] = useState("");
@@ -44,7 +47,11 @@ export default function RequestCardDialog({
     setCardNumber("");
     setPlayer("");
     setNotes("");
-    setSent("Sent! An admin will give it a look.");
+    setSent(
+      mode === "public"
+        ? "Got it! This is the demo, so it stays right here on the list."
+        : "Sent! An admin will give it a look.",
+    );
   };
 
   return (
@@ -55,8 +62,9 @@ export default function RequestCardDialog({
             Ask us to add a card
           </h2>
           <p className="text-sm text-slate-300">
-            Tell us what you&apos;ve got. It goes to an admin for review, and it stays private to you
-            until it&apos;s added.
+            {mode === "public"
+              ? "Tell us what you've got. With an account, your requests go to our crew to add."
+              : "Tell us what you've got. It goes to an admin for review, and it stays private to you until it's added."}
           </p>
           {searched.trim() && (
             <p className="text-xs text-slate-400">You searched “{searched.trim()}”. We&apos;ll send that along too.</p>

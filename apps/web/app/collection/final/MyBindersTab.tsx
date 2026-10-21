@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router";
 import {
   DndContext,
   DragOverlay,
@@ -63,6 +62,7 @@ import PackTray, { AIMED_TARGET, type MoveTarget, type SlotTarget } from "./bind
 import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine, scopeText, viewTitle } from "./binders/parts";
 import ShareLink from "./binders/ShareLink";
 import Shelf from "./binders/Shelf";
+import { useCollectionParams } from "./mode";
 import type { NewBinder } from "../prototypes/_shared/usePrototypeStore";
 import type { BinderSelection, CollectionBinder, CollectionTabProps } from "./store";
 
@@ -103,7 +103,7 @@ export default function MyBindersTab({
   const reducedMotion = useReducedMotion();
 
   // -- what is open ---------------------------------------------------------
-  const [params, setParams] = useSearchParams();
+  const [params, setParams] = useCollectionParams();
   const view: ViewKey | null = useMemo(() => {
     const b = params.get("b");
     if (b && binders.some((x) => x.id === b)) return { kind: "binder", binderId: b };

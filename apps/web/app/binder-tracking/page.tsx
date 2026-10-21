@@ -1,25 +1,99 @@
-import { useNavigate } from "react-router";
+import { lazy, Suspense, useEffect, useRef, type CSSProperties, type RefObject } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
+
+/**
+ * NEO-350 — the collection demo, playable right here with no account.
+ *
+ * `?demo=on` swaps the tour for the demo (the same page signed-in collectors
+ * see at `/collection`, in public mode). The flag is in the URL so Back
+ * closes the demo and a link can open it straight away; everything the demo
+ * does inside (tabs, open binder) stays out of the URL. The demo's code,
+ * fake catalog and CSS load only when it opens.
+ */
+const DEMO_PARAM = "demo";
+const DEMO_HREF = `/binder-tracking?${DEMO_PARAM}=on`;
+const loadDemo = () => import("@/app/collection/final/PublicCollectionDemo");
+const PublicCollectionDemo = lazy(loadDemo);
+
+/** Fetch the demo early when a visitor is about to open it. */
+function warmDemo() {
+  void loadDemo().catch(() => {
+    // A failed warm-up is retried by lazy() when the demo actually opens.
+  });
+}
 
 export default function BinderTrackingPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [params] = useSearchParams();
+  const demoOpen = params.get(DEMO_PARAM) === "on";
+  const openedFromTour = (location.state as { demoFrom?: string } | null)?.demoFrom === "tour";
+
+  // Opening starts the demo at the top; closing comes back to the spin
+  // section and its link, so the keyboard lands where it left.
+  const spinLinkRef = useRef<HTMLAnchorElement>(null);
+  const wasOpen = useRef(demoOpen);
+  useEffect(() => {
+    if (demoOpen === wasOpen.current) return;
+    wasOpen.current = demoOpen;
+    if (demoOpen) {
+      window.scrollTo({ top: 0 });
+      return;
+    }
+    const link = spinLinkRef.current;
+    link?.closest("section")?.scrollIntoView({ block: "center" });
+    link?.focus({ preventScroll: true });
+  }, [demoOpen]);
+
+  const closeDemo = () => {
+    if (openedFromTour) navigate(-1);
+    else navigate({ search: "" }, { replace: true });
+  };
+
+  // In the demo the header only sticks from `sm` up, like the signed-in
+  // shell's: on a phone the pack tray already holds the bottom of the screen.
+  const header = (
+    <header
+      className={`${demoOpen ? "sm:sticky" : "sticky"} top-0 z-10 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center`}
+    >
+      <button
+        onClick={() => navigate(-1)}
+        className="flex items-center gap-2 px-4 py-2 rounded-md hover:bg-slate-700 transition-colors"
+      >
+        <span className="text-xl">←</span>
+        <span>Back</span>
+      </button>
+      <div className="flex items-center gap-2">
+        <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+        <span className="neon-header">Neon Binder</span>
+      </div>
+      <div className="w-20" />
+    </header>
+  );
+
+  if (demoOpen) {
+    return (
+      <>
+        {header}
+        <Suspense
+          fallback={
+            <main className="min-h-screen bg-background p-6">
+              <p role="status" className="text-slate-400">
+                Sleeving the cards…
+              </p>
+            </main>
+          }
+        >
+          <PublicCollectionDemo onExit={closeDemo} entryHref={DEMO_HREF} />
+        </Suspense>
+      </>
+    );
+  }
 
   return (
     <>
-      <header className="sticky top-0 z-10 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center">
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-2 px-4 py-2 rounded-md hover:bg-slate-700 transition-colors"
-        >
-          <span className="text-xl">←</span>
-          <span>Back</span>
-        </button>
-        <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
-          <span className="neon-header">Neon Binder</span>
-        </div>
-        <div className="w-20" />
-      </header>
+      {header}
 
       <main className="min-h-screen bg-background p-8">
         <div className="max-w-5xl mx-auto">
@@ -33,6 +107,17 @@ export default function BinderTrackingPage() {
             </p>
             <p className="text-lg font-semibold text-neon-green mt-6">
               Free Tier: Track your collection for Free Forever
+            </p>
+            <p className="mt-4">
+              <Link
+                to={{ search: `?${DEMO_PARAM}=on` }}
+                state={{ demoFrom: "tour" }}
+                onPointerEnter={warmDemo}
+                onFocus={warmDemo}
+                className="rounded-sm text-neon-blue underline underline-offset-4 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+              >
+                Try the demo binder, no sign-up needed
+              </Link>
             </p>
           </div>
 
@@ -311,6 +396,8 @@ export default function BinderTrackingPage() {
             </div>
           </div>
 
+          <TakeItForASpin linkRef={spinLinkRef} />
+
           {/* CTA Section */}
           <div className="text-center py-16 border-t border-slate-800">
             <h2 className="text-3xl font-bold mb-4">Ready to Get Totally Radical?</h2>
@@ -332,5 +419,66 @@ export default function BinderTrackingPage() {
         <div aria-hidden="true" className="h-[208px]" />
       </main>
     </>
+  );
+}
+
+/**
+ * The demo binder's own shelf, as a teaser: the spines a visitor will find
+ * when it opens, in the colours they wear there. Pure decoration; the link
+ * beside it is the way in.
+ */
+const SHELF: { name: string; bg: string; ink: string; tall: number }[] = [
+  { name: "Main", bg: "#0f3d20", ink: "#00D558", tall: 92 },
+  { name: "'96 Contenders", bg: "#14161c", ink: "#ffffff", tall: 100 },
+  { name: "Slab case", bg: "#14161c", ink: "#FFE600", tall: 84 },
+  { name: "Ohtani rainbow", bg: "#005A9C", ink: "#ffffff", tall: 100 },
+  { name: "Red Wings", bg: "#CE1126", ink: "#ffffff", tall: 94 },
+  { name: "Want List", bg: "#3a0a24", ink: "#FF2E9A", tall: 88 },
+];
+
+function TakeItForASpin({ linkRef }: { linkRef: RefObject<HTMLAnchorElement | null> }) {
+  return (
+    <section
+      aria-labelledby="take-it-for-a-spin"
+      className="mb-20 grid items-center gap-10 rounded-2xl border border-neon-blue/30 bg-[radial-gradient(120%_70%_at_30%_0%,rgba(0,194,255,0.12),transparent_70%),linear-gradient(#0a0f18,#05070c)] p-6 sm:p-10 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+    >
+      <div aria-hidden="true" className="flex h-56 items-end justify-center gap-1.5 border-b-4 border-neon-blue/70 pb-0 shadow-[0_14px_24px_-12px_rgba(0,194,255,0.55)] sm:h-64 sm:gap-2">
+        {SHELF.map((spine) => (
+          <span
+            key={spine.name}
+            style={{ height: `${spine.tall}%`, backgroundColor: spine.bg, color: spine.ink } as CSSProperties}
+            className="flex w-10 items-center justify-center rounded-t-md border border-white/10 py-3 shadow-[inset_-6px_0_10px_rgba(0,0,0,0.35)] sm:w-12"
+          >
+            <span className="rotate-180 truncate text-lg font-extrabold leading-none tracking-tight [writing-mode:vertical-rl] sm:text-xl">
+              {spine.name}
+            </span>
+          </span>
+        ))}
+      </div>
+
+      <div className="space-y-4">
+        <h2
+          id="take-it-for-a-spin"
+          className="inline-block rounded-full border-2 border-neon-blue px-4 py-1 font-['Neon',sans-serif] text-3xl text-[#d6f6ff] shadow-[0_0_12px_rgba(0,194,255,0.55),inset_0_0_10px_rgba(0,194,255,0.35)] [text-shadow:0_0_6px_rgba(0,194,255,0.9),0_0_18px_rgba(0,194,255,0.5)] sm:text-4xl"
+        >
+          Take it for a spin
+        </h2>
+        <p className="text-lg text-slate-200">
+          A whole collection, already sleeved. Rip a pack, fill a page, light up a checklist.
+        </p>
+        <p className="text-slate-400">It&apos;s all pretend cards, so go wild.</p>
+        <Link
+          ref={linkRef}
+          to={{ search: `?${DEMO_PARAM}=on` }}
+          state={{ demoFrom: "tour" }}
+          onPointerEnter={warmDemo}
+          onFocus={warmDemo}
+          className="inline-flex min-h-12 items-center rounded-lg bg-neon-blue px-6 text-lg font-semibold text-black transition-colors hover:bg-[#4dd5ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+        >
+          Open the demo binder
+        </Link>
+        <p className="text-sm text-slate-400">No sign-up. Your changes stay in this tab.</p>
+      </div>
+    </section>
   );
 }

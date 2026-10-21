@@ -31,6 +31,10 @@ import "./p5.css";
  * career, year by year, have and need → a card's rainbow, copies and details.
  * Rainbows and Binders hang off the same idea; Checklists is a mock of the
  * separate read-only catalog tab. Fake data, no Convex.
+ *
+ * Kept as a signed-in reference at its own `/collection/<n>` route
+ * (lazy-loaded). The shipped collection demo is `../../final`, built from
+ * prototypes 1-3; this page is not developed further.
  */
 
 const SEED_FOLLOWED: PcRef[] = [

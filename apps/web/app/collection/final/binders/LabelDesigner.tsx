@@ -5,6 +5,7 @@ import { SpineLabelColors, SpineLabelLettering } from "@/components/modules/Spin
 import { spineFontById } from "@/lib/print/spine-fonts";
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
 import { teams, type Team } from "../../prototypes/_shared/data";
+import { useCollectionMode } from "../mode";
 import {
   shelfColors,
   smallestLetteringPx,
@@ -58,6 +59,7 @@ export default function LabelDesigner({
   /** A smart binder's teams, most cards first: offered as quick picks. */
   teamsOnCards?: TeamOnCards[];
 }) {
+  const { mode, printLabelHref } = useCollectionMode();
   const teamSelectId = useId();
   const picksLabelId = useId();
   const picks = teamsOnCards.slice(0, MAX_TEAM_PICKS);
@@ -189,12 +191,14 @@ export default function LabelDesigner({
         <p className="text-xs text-slate-400">
           Want it on the real binder?{" "}
           <Link
-            to={spineLabelPrintHref({ name: name.trim(), ...draft })}
+            to={printLabelHref(spineLabelPrintHref({ name: name.trim(), ...draft }))}
             className="rounded-sm text-neon-blue underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
           >
             Print this label
           </Link>{" "}
-          in the Print Shop. Its name, colors and lettering come along.
+          {mode === "public"
+            ? "in the Print Shop once you've signed up."
+            : "in the Print Shop. Its name, colors and lettering come along."}
         </p>
       </div>
     </Theme>

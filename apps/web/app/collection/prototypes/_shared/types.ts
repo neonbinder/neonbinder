@@ -1,5 +1,7 @@
 /**
- * NEO-350 — types for the collection-tracker UI prototypes.
+ * NEO-350 — types for the collection-tracker UI prototypes (kept as a
+ * signed-in reference) and the permanent collection demo built from them
+ * (`../../final`, at `/collection` and on `/binder-tracking`).
  *
  * Hard-coded fake data only: nothing here touches Convex. The shape mirrors
  * NB's own hierarchy (sport → year → brand → set → variant type → insert or

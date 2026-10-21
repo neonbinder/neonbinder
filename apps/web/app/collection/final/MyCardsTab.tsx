@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
 import { ListBulletIcon } from "@heroicons/react/24/outline";
 import { playerNames, sets, type Card, type CardId, type SetId } from "../prototypes/_shared/data";
 import { QUIET_BUTTON } from "../prototypes/p3/classes";
@@ -12,6 +11,7 @@ import Wall from "./cards/Wall";
 import { MyCardsContext, type MyCardsApi, type MyCardsView } from "./cards/context";
 import { tilePress, wallName } from "./cards/model";
 import { lineSummary } from "./lineItems";
+import { useCollectionParams } from "./mode";
 import type { CollectionTabProps } from "./store";
 import "./cards/cards.css";
 
@@ -25,14 +25,15 @@ import "./cards/cards.css";
  * light to one binder, and Have files into it.
  *
  * Where you are inside the tab rides on the URL next to `?tab=cards`:
- * `&set=<id>` is a set's wall, `&view=needs[&for=<id>]` the need list.
+ * `&set=<id>` is a set's wall, `&view=needs[&for=<id>]` the need list. The
+ * public demo keeps the same params in local state instead (`./mode`).
  */
 
 const knownSet = (id: string | null): id is SetId => !!id && sets.some((s) => s.id === id);
 
 export default function MyCardsTab(props: CollectionTabProps) {
   const { store, openCard, goToTab, notify } = props;
-  const [params, setParams] = useSearchParams();
+  const [params, setParams] = useCollectionParams();
 
   const setParam = params.get("set");
   const view: "wall" | MyCardsView = knownSet(setParam)

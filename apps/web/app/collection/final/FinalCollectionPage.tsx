@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import { getCard, type BinderId, type Card, type CardId, type CopyId } from "../prototypes/_shared/data";
 import { EMPTY_DRILL, type Drill } from "../prototypes/p1/drill";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import { FOCUS, shortCardName } from "../prototypes/p1/ui";
 import CardDrawer from "./CardDrawer";
+import { DemoBar, DemoRail } from "./DemoChrome";
 import type { RowActions } from "./CardRows";
 import ChecklistsTab, { drillToCard } from "./ChecklistsTab";
 import { lineSummary } from "./lineItems";
 import MyBindersTab from "./MyBindersTab";
 import MyCardsTab from "./MyCardsTab";
+import { CollectionModeProvider, ParamLink, useCollectionMode, useCollectionParams, type CollectionMode } from "./mode";
 import {
+  PUBLIC_STORAGE_KEY,
   useCollectionStore,
   type CollectionTab,
   type CollectionTabProps,
@@ -20,11 +22,20 @@ import {
 } from "./store";
 
 /**
- * NEO-350 — the consolidated collection page at `/collection`.
+ * NEO-350 — the collection demo: a permanent, hard-coded marketing demo, not
+ * the future real collection. It never reaches Convex or Clerk.
  *
  * Three tabs on `?tab=` (My Cards, My Binders, Checklists), drawn like the
  * admin section strip, sharing one store, one status line with Undo, and one
  * right-side card drawer opened through `openCard`. Fake data only.
+ *
+ * It runs in two places (see `./mode`):
+ * - `mode="app"` (default): `/collection`, for signed-in collectors, in the
+ *   binder shell; where you are rides on the URL.
+ * - `mode="public"`: the no-login demo on `/binder-tracking`, through
+ *   `PublicCollectionDemo`. Its own persist key, local view state, public
+ *   destinations for signed-in links, and the demo bar (what this is, Reset,
+ *   Sign up, Back to the tour).
  */
 
 const TABS: { key: CollectionTab; label: string }[] = [
@@ -45,10 +56,28 @@ interface DrawerState {
   key: number;
 }
 
-export default function FinalCollectionPage() {
-  useDocumentTitle("Collection");
-  const store = useCollectionStore();
-  const [params, setParams] = useSearchParams();
+export interface FinalCollectionPageProps {
+  /** `"app"` (default): `/collection`. `"public"`: the no-login demo. */
+  mode?: CollectionMode;
+  /** Public mode: the href a demo-internal link carries if opened on its own. */
+  entryHref?: string;
+  /** Public mode: leave the demo ("Back to the tour"). */
+  onExit?: () => void;
+}
+
+export default function FinalCollectionPage({ mode = "app", entryHref, onExit }: FinalCollectionPageProps) {
+  return (
+    <CollectionModeProvider mode={mode} entryHref={entryHref}>
+      <CollectionPage onExit={onExit} />
+    </CollectionModeProvider>
+  );
+}
+
+function CollectionPage({ onExit }: { onExit?: () => void }) {
+  const isPublic = useCollectionMode().mode === "public";
+  useDocumentTitle(isPublic ? "Collection demo" : "Collection");
+  const store = useCollectionStore(isPublic ? PUBLIC_STORAGE_KEY : undefined);
+  const [params, setParams] = useCollectionParams();
   const tabParam = params.get("tab");
   const tab: CollectionTab = TABS.some((t) => t.key === tabParam) ? (tabParam as CollectionTab) : "cards";
 
@@ -156,10 +185,15 @@ export default function FinalCollectionPage() {
   };
 
   const tabProps: CollectionTabProps = { store, openCard, goToTab, notify };
+  const resetDemo = () => {
+    store.reset();
+    notify("Back to the starting stack.");
+  };
 
   return (
     <div className="text-slate-100">
       <div className="space-y-4">
+        {isPublic && <DemoBar onReset={resetDemo} onExit={onExit} />}
         <h1 className="text-2xl font-bold">Collection</h1>
 
         <nav aria-label="Collection sections" className="border-b border-slate-800">
@@ -168,8 +202,8 @@ export default function FinalCollectionPage() {
               const active = t.key === tab;
               return (
                 <li key={t.key}>
-                  <Link
-                    to={`?tab=${t.key}`}
+                  <ParamLink
+                    search={{ tab: t.key }}
                     aria-current={active ? "page" : undefined}
                     className={
                       "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] " +
@@ -179,7 +213,7 @@ export default function FinalCollectionPage() {
                     }
                   >
                     {t.label}
-                  </Link>
+                  </ParamLink>
                 </li>
               );
             })}
@@ -215,19 +249,21 @@ export default function FinalCollectionPage() {
           />
         )}
 
-        <div className="border-t border-slate-800 pt-4">
-          <button
-            type="button"
-            onClick={() => {
-              store.reset();
-              notify("Back to the starting stack.");
-            }}
-            className={`rounded px-1 py-1 text-xs text-slate-400 underline underline-offset-2 hover:text-white ${FOCUS}`}
-          >
-            Reset demo data
-          </button>
-        </div>
+        {/* The public demo's Reset lives in the demo bar up top. */}
+        {!isPublic && (
+          <div className="border-t border-slate-800 pt-4">
+            <button
+              type="button"
+              onClick={resetDemo}
+              className={`rounded px-1 py-1 text-xs text-slate-400 underline underline-offset-2 hover:text-white ${FOCUS}`}
+            >
+              Reset demo data
+            </button>
+          </div>
+        )}
       </div>
+
+      {isPublic && <DemoRail onExit={onExit} />}
 
       {!drawer && tab !== "binders" && (
         <NoticeLine notice={notice} onUndo={undo} onDismiss={() => setNotice(null)} floating />

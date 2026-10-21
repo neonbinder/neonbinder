@@ -2,7 +2,9 @@ import { Link } from "react-router";
 
 /**
  * NEO-350 — the slim bar at the top of every collection prototype: says it is
- * a prototype on fake data, and jumps between the five.
+ * a prototype on fake data, and jumps between the five. The prototypes are
+ * kept signed-in only as a reference; the shipped demo (`../../final`) has no
+ * such bar.
  */
 
 export type PrototypeNumber = 1 | 2 | 3 | 4 | 5;

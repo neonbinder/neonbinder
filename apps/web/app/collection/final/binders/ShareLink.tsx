@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { LinkIcon } from "@heroicons/react/24/outline";
+import { useCollectionMode } from "../mode";
 import type { CollectionBinder } from "../store";
 import { shareLink } from "./model";
 
@@ -13,7 +14,8 @@ export default function ShareLink({ binder }: { binder: CollectionBinder }) {
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"yes" | "no" | null>(null);
-  const link = shareLink(binder);
+  const { mode, shareHandle } = useCollectionMode();
+  const link = shareLink(binder, shareHandle);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const close = () => {
     setOpen(false);
@@ -79,7 +81,11 @@ export default function ShareLink({ binder }: { binder: CollectionBinder }) {
               ? "Couldn't reach your clipboard. Copy the link above by hand."
               : ""}
         </p>
-        <p className="mt-1 text-slate-300">Anyone with the link can see it. Only you can change it.</p>
+        <p className="mt-1 text-slate-300">
+          {mode === "public"
+            ? "Just an example: demo binders don't get a real page."
+            : "Anyone with the link can see it. Only you can change it."}
+        </p>
         <div className="mt-2 flex gap-2">
           <button
             type="button"

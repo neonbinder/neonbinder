@@ -1,10 +1,13 @@
 /**
  * NEO-350 — the consolidated collection page's store (`/collection`).
  *
- * Fake data only: seeded from the prototypes' shared catalog and collector
- * (`../prototypes/_shared/`), kept in sessionStorage under
- * `nb-collection-final`. Nothing reaches a server. Prototypes 1-5 keep their
- * own stores; nothing here changes theirs.
+ * A permanent, hard-coded marketing demo: signed-in collectors see it at
+ * `/collection` and visitors play with it on `/binder-tracking`. Fake data
+ * only, seeded from the shared catalog and collector
+ * (`../prototypes/_shared/`) and kept in sessionStorage: under
+ * `nb-collection-final` in the app and `PUBLIC_STORAGE_KEY` in the public
+ * demo, so the two never mix. Nothing reaches a server. The reference
+ * prototypes (1-5) keep their own stores; nothing here changes theirs.
  *
  * ---------------------------------------------------------------------------
  * Props contract for the three tabs (My Cards, My Binders, Checklists)
@@ -287,6 +290,8 @@ export interface CollectionStore extends PrototypeStore {
 
 const STATE_VERSION = 3;
 const STORAGE_KEY = "nb-collection-final";
+/** The public demo's own sessionStorage key (never the app's). */
+export const PUBLIC_STORAGE_KEY = "nb-collection-demo-public";
 
 export const MAIN_BINDER_ID = "binder-main";
 export const WANT_BINDER_ID = "binder-want";
@@ -666,9 +671,9 @@ export function initialCollectionState(): CollectionState {
   return seedState();
 }
 
-function loadState(): CollectionState {
+function loadState(storageKey: string): CollectionState {
   try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    const raw = window.sessionStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as CollectionState;
       if (parsed.version === STATE_VERSION) return parsed;
@@ -715,8 +720,9 @@ function newId(prefix: string): string {
 // Hook
 // ---------------------------------------------------------------------------
 
-export function useCollectionStore(): CollectionStore {
-  const [state, dispatch] = useReducer(collectionReducer, undefined, loadState);
+/** `storageKey`: where the state persists; the public demo passes its own. */
+export function useCollectionStore(storageKey: string = STORAGE_KEY): CollectionStore {
+  const [state, dispatch] = useReducer(collectionReducer, storageKey, loadState);
 
   // Callbacks read the latest state through a ref so removeCopy can hand back
   // what it removed without re-creating every action on each change.
@@ -727,11 +733,11 @@ export function useCollectionStore(): CollectionStore {
 
   useEffect(() => {
     try {
-      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      window.sessionStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
       // Storage full or blocked: the page keeps working in memory.
     }
-  }, [state]);
+  }, [state, storageKey]);
 
   const removedAt = useRef(
     new Map<CopyId, { index: number; pockets: [BinderId, number, number][] }>(),

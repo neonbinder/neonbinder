@@ -1,5 +1,7 @@
 /**
- * NEO-350 — the one module a collection prototype imports for data.
+ * NEO-350 — the one module a collection prototype imports for data. The
+ * permanent collection demo (`../../final`) reads the same data, so what is
+ * here is public: it ships on the `/binder-tracking` marketing page.
  *
  * Re-exports the fake catalog (catalog.ts), the collector's seed state
  * (collector.ts) and search (search.ts), and adds the typed helpers every

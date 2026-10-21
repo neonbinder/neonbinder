@@ -60,6 +60,10 @@ import "./p2.css";
  * NEO-350 — collection prototype 2, "Nine-Pocket". The collection IS binders:
  * a shelf of spines, an open binder of nine-pocket pages, a pack tray to rip
  * new cards from, and a card that slides out of its sleeve for details.
+ *
+ * Kept as a signed-in reference at its own `/collection/<n>` route
+ * (lazy-loaded). The shipped collection demo is `../../final`, built from
+ * prototypes 1-3; this page is not developed further.
  */
 
 const JUST_ADD = "none";

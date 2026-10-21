@@ -1,5 +1,7 @@
 /**
- * NEO-350 — the fake catalog every collection prototype shares.
+ * NEO-350 — the fake catalog every collection prototype shares, and the
+ * permanent collection demo (`../../final`) with them. It ships publicly on
+ * `/binder-tracking`: keep it free of marketplace names and internal words.
  *
  * Six sets, about 300 cards. Long base checklists are generated from compact
  * `[number, player, team, flags]` lines; the cards a prototype is likely to

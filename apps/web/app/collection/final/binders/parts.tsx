@@ -8,6 +8,7 @@ import {
   type SortKey,
   type ViewKey,
 } from "../../prototypes/p2/model";
+import { useCollectionMode } from "../mode";
 import type { CollectionBinder, CollectionStore } from "../store";
 import { labelOf } from "./label";
 import { binderTally } from "./model";
@@ -201,9 +202,10 @@ export function EditLabelButton({ name, onClick }: { name: string; onClick: () =
  * (the collector's pick, else its default), never the shelf's readable swap.
  */
 export function PrintLabelLink({ binder }: { binder: CollectionBinder }) {
+  const { printLabelHref } = useCollectionMode();
   return (
     <Link
-      to={spineLabelPrintHref({ name: binder.name, ...labelOf(binder) })}
+      to={printLabelHref(spineLabelPrintHref({ name: binder.name, ...labelOf(binder) }))}
       aria-label={`Print label for ${binder.name}`}
       className={`inline-flex min-h-8 items-center rounded-md px-1 text-xs font-medium text-neon-blue underline underline-offset-2 hover:text-white max-sm:min-h-11 ${FOCUS}`}
     >

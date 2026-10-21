@@ -4,6 +4,7 @@ import { PlusIcon } from "@heroicons/react/24/outline";
 import { Input } from "@/components/primitives/Input";
 import { setLabel, setsInOrder, sports } from "../../prototypes/_shared/data";
 import type { ViewKey } from "../../prototypes/p2/model";
+import { useCollectionMode } from "../mode";
 import { NO_BROWSE_FILTER, type BrowseFilter, type CollectionBinder, type CollectionStore } from "../store";
 import { labelOf } from "./label";
 import { binderTally, filterSets, isFiltering } from "./model";
@@ -226,9 +227,10 @@ function BinderSpine({
  * says how many are for sale.
  */
 function InventoryBox({ forSale }: { forSale: number }) {
+  const { inventoryHref } = useCollectionMode();
   return (
     <Link
-      to="/inventory"
+      to={inventoryHref}
       aria-label={`Inventory, ${forSale} ${forSale === 1 ? "card" : "cards"} for sale`}
       className="nb-longbox"
     >

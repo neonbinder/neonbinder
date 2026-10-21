@@ -2,7 +2,7 @@ import "./sentry";
 import "@/app/globals.css";
 import "@radix-ui/themes/styles.css";
 
-import { StrictMode, useEffect } from "react";
+import { lazy, StrictMode, Suspense, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router";
 import { ClerkProvider } from "@clerk/clerk-react";
@@ -60,15 +60,35 @@ import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
 import PrintBlackoutLabel from "@/app/print/shipping/blackout/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
-import Collection from "@/app/collection/page";
-import CollectionPrototype1 from "@/app/collection/prototypes/p1/page";
-import CollectionPrototype2 from "@/app/collection/prototypes/p2/page";
-import CollectionPrototype3 from "@/app/collection/prototypes/p3/page";
-import CollectionPrototype4 from "@/app/collection/prototypes/p4/page";
-import CollectionPrototype5 from "@/app/collection/prototypes/p5/page";
 import Inventory from "@/app/inventory/page";
 
+// NEO-350 — the collection demo and its five reference prototypes are
+// lazy-loaded: ~300 fake cards, their art and their CSS stay out of the main
+// bundle until someone opens one. /binder-tracking lazy-loads the public copy
+// of the demo the same way (app/binder-tracking/page.tsx).
+const Collection = lazy(() => import("@/app/collection/page"));
+const CollectionPrototype1 = lazy(() => import("@/app/collection/prototypes/p1/page"));
+const CollectionPrototype2 = lazy(() => import("@/app/collection/prototypes/p2/page"));
+const CollectionPrototype3 = lazy(() => import("@/app/collection/prototypes/p3/page"));
+const CollectionPrototype4 = lazy(() => import("@/app/collection/prototypes/p4/page"));
+const CollectionPrototype5 = lazy(() => import("@/app/collection/prototypes/p5/page"));
+
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+
+/** A lazy route's element: a quiet line while its chunk loads. */
+function Deferred({ children }: { children: ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <p role="status" className="text-sm text-slate-400">
+          Sleeving the cards…
+        </p>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}
 
 /**
  * The old /placeholders stopgap URL, forwarded to the real tool.
@@ -152,15 +172,20 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route element={<ProtectedLayout />}>
             <Route element={<BinderLayout />}>
               <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/collection" element={<Collection />} />
-              {/* NEO-350 — five UI-only prototypes of the collection tracker,
-                  on hard-coded data (no Convex). Under /collection so the
-                  Collection tab stays lit (NavLink matches the prefix). */}
-              <Route path="/collection/1" element={<CollectionPrototype1 />} />
-              <Route path="/collection/2" element={<CollectionPrototype2 />} />
-              <Route path="/collection/3" element={<CollectionPrototype3 />} />
-              <Route path="/collection/4" element={<CollectionPrototype4 />} />
-              <Route path="/collection/5" element={<CollectionPrototype5 />} />
+              {/* NEO-350 — the collection demo: a permanent, hard-coded
+                  marketing demo (never Convex), the same page the public
+                  plays with on /binder-tracking. Not the future real
+                  collection. */}
+              <Route path="/collection" element={<Deferred><Collection /></Deferred>} />
+              {/* NEO-350 — the five collection prototypes the demo was built
+                  from, kept signed-in only as a reference. Hard-coded data
+                  (no Convex). Under /collection so the Collection tab stays
+                  lit (NavLink matches the prefix). */}
+              <Route path="/collection/1" element={<Deferred><CollectionPrototype1 /></Deferred>} />
+              <Route path="/collection/2" element={<Deferred><CollectionPrototype2 /></Deferred>} />
+              <Route path="/collection/3" element={<Deferred><CollectionPrototype3 /></Deferred>} />
+              <Route path="/collection/4" element={<Deferred><CollectionPrototype4 /></Deferred>} />
+              <Route path="/collection/5" element={<Deferred><CollectionPrototype5 /></Deferred>} />
               <Route path="/inventory" element={<Inventory />} />
               {/* /placeholders was the NEO-170 stopgap intake. NEO-152 replaced
                   it with the real thing at /print/placeholders, so the old path

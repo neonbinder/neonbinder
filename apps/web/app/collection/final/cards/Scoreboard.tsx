@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
 import { PlusIcon } from "@heroicons/react/24/outline";
 import {
   cardsInSet,
@@ -12,6 +11,7 @@ import {
 } from "../../prototypes/_shared/data";
 import { FOCUS } from "../../prototypes/p3/classes";
 import { printRunText, variantFilterOf, variantKey } from "../../prototypes/p3/wallModel";
+import { ParamLink } from "../mode";
 import { useMyCards } from "./context";
 import SetPicker from "./SetPicker";
 
@@ -86,13 +86,13 @@ function ScoreCard({ setId }: { setId: SetId }) {
           {scopedName && <span className="text-neon-blue">, in {scopedName}</span>}
         </p>
         <h3 className="text-lg font-bold leading-tight text-white">
-          <Link
-            to={{ search: `?tab=cards&set=${encodeURIComponent(setId)}` }}
+          <ParamLink
+            search={{ tab: "cards", set: setId }}
             data-board={setId}
             className="after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-none"
           >
             {setLabel(set)}
-          </Link>
+          </ParamLink>
         </h3>
       </div>
 

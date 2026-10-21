@@ -126,3 +126,4 @@
 - [Parallel builders share the scratchpad](reference_parallel_builders_share_the_scratchpad.md) — per-agent subdir for scripts/shots; own Vite port; check root for stray folders
 - [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word
 - [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — hand-rolled modal portals to body lose Radix tokens; nest <Theme hasBackground={false}>
+- [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
