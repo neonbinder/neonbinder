@@ -59,15 +59,15 @@ interface DrawerState {
 export interface FinalCollectionPageProps {
   /** `"app"` (default): `/collection`. `"public"`: the no-login demo. */
   mode?: CollectionMode;
-  /** Public mode: the href a demo-internal link carries if opened on its own. */
-  entryHref?: string;
+  /** Public mode: params every view URL keeps (the marketing page's `demo=on`). */
+  keepParams?: Record<string, string>;
   /** Public mode: leave the demo ("Back to the tour"). */
   onExit?: () => void;
 }
 
-export default function FinalCollectionPage({ mode = "app", entryHref, onExit }: FinalCollectionPageProps) {
+export default function FinalCollectionPage({ mode = "app", keepParams, onExit }: FinalCollectionPageProps) {
   return (
-    <CollectionModeProvider mode={mode} entryHref={entryHref}>
+    <CollectionModeProvider mode={mode} keepParams={keepParams}>
       <CollectionPage onExit={onExit} />
     </CollectionModeProvider>
   );

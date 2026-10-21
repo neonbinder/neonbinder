@@ -6,26 +6,26 @@ import FinalCollectionPage from "./FinalCollectionPage";
  * stay out of the main bundle).
  *
  * The same page signed-in collectors see at `/collection`, in public mode:
- * no Clerk, no Convex, its own sessionStorage key, view state kept out of the
- * marketing page's URL, and signed-in destinations pointed at the public tour
- * (see `./mode`). This component only supplies the frame the signed-in binder
+ * no Clerk, no Convex, its own sessionStorage key, its views on the
+ * marketing page's URL beside `demo=on` (so Back steps back through them),
+ * and signed-in destinations pointed at the public tour (see `./mode`). This component only supplies the frame the signed-in binder
  * shell would: the content column (with the right-edge gutter the pack tray
  * expects on a wide screen) and the scroll headroom
  * (`src/layouts/binder-layout.tsx`, NEO-260; keep the 208px in step).
  */
 export default function PublicCollectionDemo({
   onExit,
-  entryHref,
+  keepParams,
 }: {
   /** Leave the demo and go back to the tour. */
   onExit: () => void;
-  /** Where a demo-internal link points if opened on its own (the demo's URL). */
-  entryHref: string;
+  /** The marketing page's own params, kept on every demo view URL (`demo=on`). */
+  keepParams: Record<string, string>;
 }) {
   return (
     <main className="min-h-screen min-w-0 bg-background lg:pr-[170px]">
       <div className="mx-auto max-w-6xl p-4 sm:p-6">
-        <FinalCollectionPage mode="public" entryHref={entryHref} onExit={onExit} />
+        <FinalCollectionPage mode="public" keepParams={keepParams} onExit={onExit} />
       </div>
       <div aria-hidden="true" className="h-[208px]" />
     </main>

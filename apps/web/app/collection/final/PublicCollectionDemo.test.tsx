@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
+import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
 import { PUBLIC_DESTINATIONS } from "./mode";
 import { PUBLIC_STORAGE_KEY } from "./store";
@@ -8,8 +9,9 @@ import { PUBLIC_STORAGE_KEY } from "./store";
 /**
  * NEO-350 — the public collection demo on `/binder-tracking`: it renders for a
  * signed-out visitor with no Clerk provider and no Convex client, keeps its
- * own sessionStorage and its view state out of the page URL, and points every
- * signed-in destination at the public tour.
+ * own sessionStorage, puts each view on the page URL beside `demo=on` (so
+ * Back steps back through the views), and points every signed-in
+ * destination at the public tour.
  *
  * The auth and Convex client modules are mocked EMPTY: any hook or client the
  * demo reached for would throw "No … export is defined on the mock".
@@ -21,24 +23,34 @@ const DEMO_URL = "/binder-tracking?demo=on";
 
 function LocationProbe() {
   const { pathname, search } = useLocation();
-  return <output aria-label="Page URL">{pathname + search}</output>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="Page URL">{pathname + search}</output>
+      <button type="button" onClick={() => void navigate(-1)}>
+        Browser Back
+      </button>
+    </>
+  );
 }
 
-function renderDemo(onExit = vi.fn()) {
+function renderDemo(onExit = vi.fn(), entries: string[] = [DEMO_URL]) {
   render(
-    <MemoryRouter initialEntries={[DEMO_URL]}>
-      <Routes>
-        <Route
-          path="/binder-tracking"
-          element={
-            <>
-              <PublicCollectionDemo onExit={onExit} entryHref={DEMO_URL} />
-              <LocationProbe />
-            </>
-          }
-        />
-      </Routes>
-    </MemoryRouter>,
+    <Theme>
+      <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
+        <Routes>
+          <Route
+            path="/binder-tracking"
+            element={
+              <>
+                <PublicCollectionDemo onExit={onExit} keepParams={{ demo: "on" }} />
+                <LocationProbe />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    </Theme>,
   );
   return { onExit };
 }
@@ -74,18 +86,54 @@ describe("the public collection demo", () => {
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
-  it("switches tabs without touching the page URL", () => {
+  it("puts each view on the URL beside demo=on, and Back steps back through them", () => {
+    renderDemo();
+    const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+
+    // My Cards, scoped to Up for Trade: the scope is an in-view choice, not a step.
+    openTab("My Cards");
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
+    const scope = screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    const trade = within(scope).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement;
+    fireEvent.change(scope, { target: { value: trade.value } });
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
+
+    // The 1996-97 Upper Deck wall.
+    fireEvent.click(screen.getByRole("link", { name: "1996-97 Upper Deck" }));
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey");
+    expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
+
+    // My Binders, then All Reggie White.
+    openTab("My Binders");
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
+    fireEvent.click(screen.getByRole("button", { name: /^All Reggie White,/ }));
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=[\w-]+$/);
+    expect(screen.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeTruthy();
+
+    back();
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
+    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
+    back();
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey");
+    expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
+    back();
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
+    expect(screen.queryByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeNull();
+    back();
+    expect(pageUrl()).toBe(DEMO_URL);
+  });
+
+  it("opens a shared deep link straight into that view", () => {
+    renderDemo(vi.fn(), ["/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey"]);
+    expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
+  });
+
+  it("opening a binder from the shelf keeps demo=on on the URL", () => {
     renderDemo();
     openTab("My Binders");
-    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
-    expect(pageUrl()).toBe(DEMO_URL);
-
     fireEvent.click(screen.getByRole("button", { name: /^Ohtani rainbow,/ }));
     expect(screen.getByRole("heading", { level: 2, name: "Ohtani rainbow" })).toBeTruthy();
-    expect(pageUrl()).toBe(DEMO_URL);
-
-    openTab("Checklists");
-    expect(pageUrl()).toBe(DEMO_URL);
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=/);
   });
 
   it("sends the Inventory long box to the public Inventory tour", () => {

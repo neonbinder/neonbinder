@@ -6,7 +6,8 @@ import CardFace from "../../prototypes/_shared/CardFace";
 import { cardLabel, type BinderId, type Card, type Copy, type SearchHit } from "../../prototypes/_shared/data";
 import type { Notice } from "../../prototypes/p1/notice";
 import { shortName } from "../../prototypes/p2/model";
-import { cardCaption } from "../captions";
+import { cardCaption, cardNumberLine } from "../captions";
+import IdTooltip, { IdLines } from "./IdTooltip";
 import { lineNames } from "../lineItems";
 import type { CollectionBinder } from "../store";
 import { movableCopies, placesOf, placeWords, resolveTyped, type Place } from "./model";
@@ -421,7 +422,11 @@ function NeverMind({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** The card face as a drag handle: drag it onto a pocket. */
+/**
+ * The card face as a drag handle: drag it onto a pocket. Hover or focus
+ * raises its identity slip; the handle keeps dnd-kit's drag instructions as
+ * its description.
+ */
 function DragFace({ card, name, lifted }: { card: Card; name: string; lifted: boolean }) {
   const { setNodeRef, setActivatorNodeRef, attributes, listeners } = useDraggable({
     id: `card:${card.id}`,
@@ -429,18 +434,20 @@ function DragFace({ card, name, lifted }: { card: Card; name: string; lifted: bo
     attributes: { roleDescription: "card you can drag" },
   });
   return (
-    <div
-      ref={(el) => {
-        setNodeRef(el);
-        setActivatorNodeRef(el);
-      }}
-      {...attributes}
-      {...listeners}
-      aria-label={name}
-      className={`p2-handle${lifted ? " p2-handle--lifted" : ""}`}
-    >
-      <CardFace card={card} size="sm" />
-    </div>
+    <IdTooltip content={<IdLines title={cardCaption(card)} lines={[cardNumberLine(card)]} />}>
+      <div
+        ref={(el) => {
+          setNodeRef(el);
+          setActivatorNodeRef(el);
+        }}
+        {...attributes}
+        {...listeners}
+        aria-label={name}
+        className={`p2-handle${lifted ? " p2-handle--lifted" : ""}`}
+      >
+        <CardFace card={card} size="sm" />
+      </div>
+    </IdTooltip>
   );
 }
 
@@ -574,7 +581,7 @@ function TrayCard({
   return (
     <li className="flex w-[88px] flex-none flex-col items-center gap-1">
       <DragFace card={card} name={`${label}, need`} lifted={lifted} />
-      <p aria-hidden="true" title={cardCaption(card)} className="line-clamp-3 h-[3.75em] w-full text-center text-[11px] leading-tight text-slate-300">
+      <p aria-hidden="true" className="line-clamp-3 h-[3.75em] w-full text-center text-[11px] leading-tight text-slate-300">
         {cardCaption(card)}
       </p>
       <p className="text-center text-[11px] leading-tight text-slate-300">Need</p>

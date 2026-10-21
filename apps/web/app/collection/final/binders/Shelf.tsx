@@ -2,10 +2,11 @@ import { useId, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router";
 import { PlusIcon } from "@heroicons/react/24/outline";
 import { Input } from "@/components/primitives/Input";
-import { setLabel, setsInOrder, sports } from "../../prototypes/_shared/data";
+import { describeRule, setLabel, setsInOrder, sports } from "../../prototypes/_shared/data";
 import type { ViewKey } from "../../prototypes/p2/model";
 import { useCollectionMode } from "../mode";
 import { NO_BROWSE_FILTER, type BrowseFilter, type CollectionBinder, type CollectionStore } from "../store";
+import IdTooltip, { IdLines } from "./IdTooltip";
 import { labelOf } from "./label";
 import { binderTally, filterSets, isFiltering } from "./model";
 import SpineLabel, { SpineFontFaces } from "./SpineLabel";
@@ -20,6 +21,10 @@ import SpineLabel, { SpineFontFaces } from "./SpineLabel";
  * Spines wear their labels in the Print Shop's spine-label look (see
  * `SpineLabel.tsx`). The accessible name of every spine stays plain text:
  * name, count, smart or system role.
+ *
+ * Every spine's lettering can be cut short, so hovering or focusing one
+ * raises an identity slip (`IdTooltip`): a set's full season and name, a
+ * binder's full name with its rule or description and its count.
  *
  * The spine of the binder the page is scoped to stands a little proud with a
  * lit pip on the ledge, so the shelf says what Checklists and My Cards are
@@ -141,18 +146,20 @@ function Pip({ on }: { on: boolean }) {
 function MasterSpine({ total, current, onOpen }: { total: number; current: boolean; onOpen: () => void }) {
   const label = labelOf("all");
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      data-spine="all"
-      aria-current={current ? "true" : undefined}
-      aria-label={`All my cards, ${total} cards`}
-      className={`p2-spine nb-spine h-[196px] sm:h-[236px]${current ? " nb-spine--current" : ""}`}
-      style={{ "--vinyl": label.background, "--i": 0, width: MASTER_SPINE } as CSSProperties}
-    >
-      <SpineLabel name="All my cards" label={label} spineWidth={MASTER_SPINE} count={total} />
-      <Pip on={current} />
-    </button>
+    <IdTooltip content={<IdLines title="All my cards" lines={[`${total} ${total === 1 ? "card" : "cards"}`]} />}>
+      <button
+        type="button"
+        onClick={onOpen}
+        data-spine="all"
+        aria-current={current ? "true" : undefined}
+        aria-label={`All my cards, ${total} cards`}
+        className={`p2-spine nb-spine h-[196px] sm:h-[236px]${current ? " nb-spine--current" : ""}`}
+        style={{ "--vinyl": label.background, "--i": 0, width: MASTER_SPINE } as CSSProperties}
+      >
+        <SpineLabel name="All my cards" label={label} spineWidth={MASTER_SPINE} count={total} />
+        <Pip on={current} />
+      </button>
+    </IdTooltip>
   );
 }
 
@@ -173,17 +180,16 @@ function BinderSpine({
   const label = labelOf(binder);
   const tracked = count.have !== undefined && count.need !== undefined;
   const current = store.selectedBinderId === binder.id;
-  const name = [
-    binder.name,
-    binder.kind === "smart" ? "smart binder" : null,
-    isWant
-      ? `${count.cards} ${count.cards === 1 ? "card" : "cards"} wanted`
-      : tracked
-        ? `${count.have} have, ${count.need} need`
-        : `${count.cards} cards`,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  const tally = isWant
+    ? `${count.cards} ${count.cards === 1 ? "card" : "cards"} wanted`
+    : tracked
+      ? `${count.have} have, ${count.need} need`
+      : `${count.cards} cards`;
+  const name = [binder.name, binder.kind === "smart" ? "smart binder" : null, tally].filter(Boolean).join(", ");
+  // What the slip adds to the name: the collector's own words for the
+  // binder, or a smart binder's rule when they wrote none.
+  const about =
+    binder.description || (binder.kind === "smart" ? `Fills itself: ${describeRule(binder.rule)}.` : undefined);
   const size = tracked ? (count.have ?? 0) + (count.need ?? 0) : count.cards;
   const width = binder.system ? SYSTEM_SPINE : spineWidth(size);
   let badge: ReactNode = null;
@@ -194,29 +200,31 @@ function BinderSpine({
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen({ kind: "binder", binderId: binder.id })}
-      data-spine={binder.id}
-      aria-current={current ? "true" : undefined}
-      aria-label={name}
-      className={`p2-spine nb-spine h-[196px] sm:h-[236px]${current ? " nb-spine--current" : ""}`}
-      style={{ "--vinyl": label.background, "--i": index, width } as CSSProperties}
-    >
-      {binder.system === "trade" && (
-        <span aria-hidden="true" className="nb-spine-tag">
-          Trade
-        </span>
-      )}
-      <SpineLabel
-        name={binder.name}
-        label={label}
-        spineWidth={width}
-        badge={badge}
-        count={tracked ? `${count.have}/${(count.have ?? 0) + (count.need ?? 0)}` : count.cards}
-      />
-      <Pip on={current} />
-    </button>
+    <IdTooltip content={<IdLines title={binder.name} lines={[about, tally]} />} description={about || undefined}>
+      <button
+        type="button"
+        onClick={() => onOpen({ kind: "binder", binderId: binder.id })}
+        data-spine={binder.id}
+        aria-current={current ? "true" : undefined}
+        aria-label={name}
+        className={`p2-spine nb-spine h-[196px] sm:h-[236px]${current ? " nb-spine--current" : ""}`}
+        style={{ "--vinyl": label.background, "--i": index, width } as CSSProperties}
+      >
+        {binder.system === "trade" && (
+          <span aria-hidden="true" className="nb-spine-tag">
+            Trade
+          </span>
+        )}
+        <SpineLabel
+          name={binder.name}
+          label={label}
+          spineWidth={width}
+          badge={badge}
+          count={tracked ? `${count.have}/${(count.have ?? 0) + (count.need ?? 0)}` : count.cards}
+        />
+        <Pip on={current} />
+      </button>
+    </IdTooltip>
   );
 }
 
@@ -358,21 +366,27 @@ function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view:
               const c = store.completion(cardSet.id);
               return (
                 <li key={cardSet.id} className="flex-none">
-                  <button
-                    type="button"
-                    onClick={() => onOpen({ kind: "set", setId: cardSet.id })}
-                    data-spine={`set:${cardSet.id}`}
-                    aria-label={`Browse ${setLabel(cardSet)}, you have ${c.owned} of ${c.total}`}
-                    className="p2-spine p2-spine--clear h-[180px] w-[64px] sm:h-[210px]"
-                    style={{ "--i": i } as CSSProperties}
+                  {/* Catalog spines are whole sets (never an insert or a
+                      parallel), so the slip is the season and set name. */}
+                  <IdTooltip
+                    content={<IdLines title={setLabel(cardSet)} lines={[`You have ${c.owned} of ${c.total}`]} />}
                   >
-                    <span className="p2-spine-label" style={{ "--stripe": "#00C2FF" } as CSSProperties}>
-                      <span className="p2-spine-name">{setLabel(cardSet)}</span>
-                      <span className="p2-spine-count">
-                        {c.owned}/{c.total}
+                    <button
+                      type="button"
+                      onClick={() => onOpen({ kind: "set", setId: cardSet.id })}
+                      data-spine={`set:${cardSet.id}`}
+                      aria-label={`Browse ${setLabel(cardSet)}, you have ${c.owned} of ${c.total}`}
+                      className="p2-spine p2-spine--clear h-[180px] w-[64px] sm:h-[210px]"
+                      style={{ "--i": i } as CSSProperties}
+                    >
+                      <span className="p2-spine-label" style={{ "--stripe": "#00C2FF" } as CSSProperties}>
+                        <span className="p2-spine-name">{setLabel(cardSet)}</span>
+                        <span className="p2-spine-count">
+                          {c.owned}/{c.total}
+                        </span>
                       </span>
-                    </span>
-                  </button>
+                    </button>
+                  </IdTooltip>
                 </li>
               );
             })}

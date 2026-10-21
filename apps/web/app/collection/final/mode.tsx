@@ -1,14 +1,5 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useState,
-  type AnchorHTMLAttributes,
-  type MouseEvent,
-  type ReactNode,
-} from "react";
-import { Link, useSearchParams } from "react-router";
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
 import { MOCK_HANDLE } from "./binders/model";
 
 /**
@@ -16,17 +7,23 @@ import { MOCK_HANDLE } from "./binders/model";
  *
  * The same page ships twice:
  *
- * - `"app"`: `/collection`, inside the signed-in binder shell. Where you are
- *   (tab, open binder, set wall) rides on the URL (`?tab=…&b=…`), so Back and
- *   a shared link work, and links go to the real tools.
+ * - `"app"`: `/collection`, inside the signed-in binder shell. Links go to
+ *   the real tools.
  * - `"public"`: the no-login demo on the `/binder-tracking` marketing page.
- *   Nothing it does may need an account or touch the marketing page's URL:
- *   - where you are lives in local state, not the URL (the marketing URL stays
- *     a clean share link, and Back means "leave the demo", not "the tab I
- *     clicked before");
+ *   Nothing it does may need an account:
  *   - a link to a signed-in tool goes to the public tour page for it instead
  *     (`PUBLIC_DESTINATIONS`);
  *   - share links use a neutral `@you` handle and say they are examples.
+ *
+ * In both, where you are (tab, set wall, need list, open binder) rides on the
+ * page URL with the same params (`?tab=…&set=…&view=…&for=…&b=…`), so Back
+ * steps back through the views, a refresh stays put and a deep link opens
+ * straight there. Every view change pushes a history entry; in-view tweaks
+ * (page turns, filters, the binder-scope picker, the card drawer) stay in
+ * local state and push nothing. Public mode also keeps its own params on
+ * every view URL (`keepParams`, the marketing page's `demo=on`) and counts
+ * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
+ * tour" can return to the entry the visitor came from in one step.
  *
  * Both modes are hard-coded data and never reach Convex or Clerk.
  */
@@ -35,6 +32,17 @@ export type CollectionMode = "app" | "public";
 
 type ParamsInit = URLSearchParams | Record<string, string>;
 type SetParams = (next: ParamsInit) => void;
+
+/**
+ * The history state on a public-demo entry. The marketing page sets
+ * `demoFrom: "tour"` on the entry that opens the demo; every view the demo
+ * pushes after it carries that on and counts one deeper.
+ */
+export interface DemoHistoryState {
+  demoFrom?: string;
+  /** Views pushed since the demo opened: 0 on the entry that opened it. */
+  demoDepth?: number;
+}
 
 /** Where a signed-in destination goes from the public demo, and why. */
 export const PUBLIC_DESTINATIONS = {
@@ -57,10 +65,8 @@ interface CollectionModeValue {
   printLabelHref: (appHref: string) => string;
   /** The handle in a binder's share link. */
   shareHandle: string;
-  /** Public mode: the demo's own "URL" (local state). Null in the app. */
-  local: { params: URLSearchParams; setParams: SetParams } | null;
-  /** Public mode: the href a demo-internal link carries (middle-click, copy). */
-  entryHref: string;
+  /** Params every view URL keeps (public mode's `demo=on`). Empty in the app. */
+  keepParams: Record<string, string>;
 }
 
 const APP_MODE: CollectionModeValue = {
@@ -68,24 +74,22 @@ const APP_MODE: CollectionModeValue = {
   inventoryHref: "/inventory",
   printLabelHref: (appHref) => appHref,
   shareHandle: MOCK_HANDLE,
-  local: null,
-  entryHref: "",
+  keepParams: {},
 };
 
 const CollectionModeContext = createContext<CollectionModeValue>(APP_MODE);
 
 export function CollectionModeProvider({
   mode,
-  entryHref = "#",
+  keepParams,
   children,
 }: {
   mode: CollectionMode;
-  /** Public mode: where a demo-internal link points if opened on its own. */
-  entryHref?: string;
+  /** Public mode: params every view URL keeps (the marketing page's `demo=on`). */
+  keepParams?: Record<string, string>;
   children: ReactNode;
 }) {
-  const [params, setLocal] = useState(() => new URLSearchParams());
-  const setParams = useCallback<SetParams>((next) => setLocal(new URLSearchParams(next)), []);
+  const keepKey = new URLSearchParams(keepParams).toString();
   const value = useMemo<CollectionModeValue>(
     () =>
       mode === "app"
@@ -95,10 +99,9 @@ export function CollectionModeProvider({
             inventoryHref: PUBLIC_DESTINATIONS.inventory,
             printLabelHref: () => PUBLIC_DESTINATIONS.printShop,
             shareHandle: PUBLIC_SHARE_HANDLE,
-            local: { params, setParams },
-            entryHref,
+            keepParams: Object.fromEntries(new URLSearchParams(keepKey)),
           },
-    [mode, params, setParams, entryHref],
+    [mode, keepKey],
   );
   return <CollectionModeContext.Provider value={value}>{children}</CollectionModeContext.Provider>;
 }
@@ -108,48 +111,47 @@ export function useCollectionMode(): CollectionModeValue {
 }
 
 /**
- * The page's search params: the router's in the app, the demo's own in
- * public mode. A drop-in for `useSearchParams()` (read, and replace whole).
+ * Where a view link or a view change goes: the next view's search (with the
+ * mode's kept params) and, in the demo, the history state one level deeper.
  */
-export function useCollectionParams(): [URLSearchParams, SetParams] {
-  const { local } = useCollectionMode();
-  const [routerParams, setRouterParams] = useSearchParams();
-  const setRouter = useCallback<SetParams>((next) => setRouterParams(next), [setRouterParams]);
-  return local ? [local.params, local.setParams] : [routerParams, setRouter];
+function useViewTarget() {
+  const { mode, keepParams } = useCollectionMode();
+  const location = useLocation();
+  return useCallback(
+    (next: ParamsInit) => {
+      const params = new URLSearchParams(keepParams);
+      new URLSearchParams(next).forEach((value, key) => params.set(key, value));
+      const search = `?${params.toString()}`;
+      if (mode !== "public") return { search, state: undefined };
+      const current = (location.state ?? {}) as DemoHistoryState;
+      const state: DemoHistoryState = { ...current, demoDepth: (current.demoDepth ?? 0) + 1 };
+      return { search, state };
+    },
+    [mode, keepParams, location.state],
+  );
 }
 
 /**
- * A link to another view of the collection page (`?tab=…`). In the app it is
- * a router link; in the demo it swaps the demo's own params and leaves the
- * page URL alone.
+ * The page's search params, read from the router in both modes. The setter
+ * opens another view: it replaces the view params whole (keeping the mode's
+ * own) and pushes a history entry, so Back returns to the view before.
  */
-export function ParamLink({
-  search,
-  onClick,
-  children,
-  ...rest
-}: Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & { search: ParamsInit }) {
-  const { local, entryHref } = useCollectionMode();
-  const query = new URLSearchParams(search).toString();
-  if (!local) {
-    return (
-      <Link to={{ search: `?${query}` }} onClick={onClick} {...rest}>
-        {children}
-      </Link>
-    );
-  }
-  return (
-    <a
-      href={entryHref}
-      onClick={(e: MouseEvent<HTMLAnchorElement>) => {
-        onClick?.(e);
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-        e.preventDefault();
-        local.setParams(search);
-      }}
-      {...rest}
-    >
-      {children}
-    </a>
+export function useCollectionParams(): [URLSearchParams, SetParams] {
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const target = useViewTarget();
+  const setParams = useCallback<SetParams>(
+    (next) => {
+      const { search, state } = target(next);
+      void navigate({ search }, { state });
+    },
+    [navigate, target],
   );
+  return [params, setParams];
+}
+
+/** A link to another view of the collection page (`?tab=…`): a router link that pushes. */
+export function ParamLink({ search, ...rest }: Omit<LinkProps, "to" | "state"> & { search: ParamsInit }) {
+  const target = useViewTarget()(search);
+  return <Link to={{ search: target.search }} state={target.state} {...rest} />;
 }

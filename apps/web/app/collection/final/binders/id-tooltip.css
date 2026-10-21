@@ -1,0 +1,39 @@
+/*
+ * NEO-350 — the identity slip (`IdTooltip.tsx`) over Radix Themes' tooltip.
+ *
+ * Dark glass with the shelf's cyan focus edge, so the slip a keyboard focus
+ * opens wears the same light as the focus ring under it. White title, slate
+ * detail lines. No motion here: Radix's own entrance only runs under
+ * prefers-reduced-motion: no-preference.
+ */
+
+.rt-TooltipContent.nb-idtip {
+  padding: 7px 10px 8px;
+  background: #020617;
+  border: 1px solid #00c2ff;
+  border-radius: 6px;
+  box-shadow:
+    0 0 14px rgba(0, 194, 255, 0.35),
+    0 8px 20px rgba(0, 0, 0, 0.6);
+}
+
+.nb-idtip .rt-TooltipText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.nb-idtip .nb-idtip-title {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.nb-idtip .rt-TooltipArrow {
+  fill: #00c2ff;
+}

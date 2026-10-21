@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
+import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "./FinalCollectionPage";
 
 /**
@@ -10,14 +11,38 @@ import FinalCollectionPage from "./FinalCollectionPage";
  * between two cards, and Share shows a readable link.
  */
 
+/** The URL, and the browser's Back, for the history tests. */
+function HistoryProbe() {
+  const { search } = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="Page search">{search}</output>
+      <button type="button" onClick={() => void navigate(-1)}>
+        Browser Back
+      </button>
+    </>
+  );
+}
+
 function renderBinders(start = "/collection?tab=binders") {
   return render(
-    <MemoryRouter initialEntries={[start]}>
-      <Routes>
-        <Route path="/collection" element={<FinalCollectionPage />} />
-        <Route path="/inventory" element={<p>Inventory page</p>} />
-      </Routes>
-    </MemoryRouter>,
+    <Theme>
+      <MemoryRouter initialEntries={[start]}>
+        <Routes>
+          <Route
+            path="/collection"
+            element={
+              <>
+                <FinalCollectionPage />
+                <HistoryProbe />
+              </>
+            }
+          />
+          <Route path="/inventory" element={<p>Inventory page</p>} />
+        </Routes>
+      </MemoryRouter>
+    </Theme>,
   );
 }
 
@@ -317,3 +342,70 @@ describe("Browse a set's filters", () => {
     expect(screen.getByText("3 of 6 sets")).toBeTruthy();
   });
 });
+
+describe("identity slips on the shelf", () => {
+  const tip = () => screen.queryByRole("tooltip");
+
+  it("focusing a cut-short Browse spine shows the full season and set, and Escape puts it away", async () => {
+    renderBinders();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Find a set by name" }), { target: { value: "playoff" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "From year" }), { target: { value: "1993" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "To year" }), { target: { value: "1996" } });
+    const spine = within(screen.getByRole("list", { name: "Sets to browse" })).getByRole("button", {
+      name: /^Browse 1996 Playoff Contenders, you have \d+ of \d+$/,
+    });
+
+    act(() => spine.focus());
+    await waitFor(() => expect(tip()?.textContent).toMatch(/^1996 Playoff ContendersYou have \d+ of \d+$/));
+    // The name already says it all: the slip is not read a second time.
+    expect(spine.getAttribute("aria-describedby")).toBeNull();
+
+    fireEvent.keyDown(spine, { key: "Escape" });
+    await waitFor(() => expect(tip()).toBeNull());
+  });
+
+  it("a binder spine's slip gives its full name, its own words and its count; only the words are announced", async () => {
+    renderBinders();
+    const spine = screen.getByRole("button", { name: /^All Reggie White, smart binder,/ });
+    act(() => spine.focus());
+    await waitFor(() => expect(tip()).not.toBeNull());
+    expect(tip()?.textContent).toBe("Every Reggie White card, any team, any year.");
+    expect(spine.getAttribute("aria-describedby")).toBe(tip()?.id);
+    const shown = screen.getAllByText("All Reggie White").find((el) => el.classList.contains("nb-idtip-title"));
+    expect(shown).toBeTruthy();
+  });
+
+  it("a card in a pocket shows its set, insert or parallel, number and player", async () => {
+    renderBinders("/collection?tab=binders&b=binder-contenders-96");
+    const pocket = screen.getAllByRole("button", { name: /^1996 Playoff Contenders .*#\d+ /, hidden: false })[0];
+    act(() => pocket.focus());
+    await waitFor(() => expect(tip()?.textContent).toMatch(/^1996 Playoff Contenders.*#\d+ \S+/));
+    expect(pocket.getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+describe("the views on the URL (app mode)", () => {
+  it("each tab, set wall and binder is a step, and Back walks back through them", () => {
+    renderBinders("/collection");
+    const search = () => screen.getByRole("status", { name: "Page search" }).textContent;
+    const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    const tabs = () => screen.getByRole("navigation", { name: "Collection sections" });
+
+    fireEvent.click(within(tabs()).getByRole("link", { name: "My Cards" }));
+    fireEvent.click(screen.getByRole("link", { name: "1996-97 Upper Deck" }));
+    expect(search()).toBe("?tab=cards&set=1996-97-upper-deck-hockey");
+    fireEvent.click(within(tabs()).getByRole("link", { name: "My Binders" }));
+    fireEvent.click(screen.getByRole("button", { name: /^All Reggie White,/ }));
+    expect(screen.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeTruthy();
+
+    back();
+    expect(search()).toBe("?tab=binders");
+    back();
+    expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
+    back();
+    expect(search()).toBe("?tab=cards");
+    back();
+    expect(search()).toBe("");
+  });
+});
+

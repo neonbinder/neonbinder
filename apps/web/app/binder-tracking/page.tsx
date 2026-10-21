@@ -1,18 +1,21 @@
 import { lazy, Suspense, useEffect, useRef, type CSSProperties, type RefObject } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
+import type { DemoHistoryState } from "@/app/collection/final/mode";
 
 /**
  * NEO-350 — the collection demo, playable right here with no account.
  *
  * `?demo=on` swaps the tour for the demo (the same page signed-in collectors
- * see at `/collection`, in public mode). The flag is in the URL so Back
- * closes the demo and a link can open it straight away; everything the demo
- * does inside (tabs, open binder) stays out of the URL. The demo's code,
- * fake catalog and CSS load only when it opens.
+ * see at `/collection`, in public mode). The flag is in the URL so a link can
+ * open it straight away. The demo's views ride beside it, as they do at
+ * `/collection` (`?demo=on&tab=binders&b=…`): Back steps back through them,
+ * and Back from the demo's first view closes it. "Back to the tour" returns
+ * to the tour entry in one step, however deep the visitor went. The demo's
+ * code, fake catalog and CSS load only when it opens.
  */
 const DEMO_PARAM = "demo";
-const DEMO_HREF = `/binder-tracking?${DEMO_PARAM}=on`;
+const DEMO_KEEP = { [DEMO_PARAM]: "on" };
 const loadDemo = () => import("@/app/collection/final/PublicCollectionDemo");
 const PublicCollectionDemo = lazy(loadDemo);
 
@@ -28,7 +31,7 @@ export default function BinderTrackingPage() {
   const location = useLocation();
   const [params] = useSearchParams();
   const demoOpen = params.get(DEMO_PARAM) === "on";
-  const openedFromTour = (location.state as { demoFrom?: string } | null)?.demoFrom === "tour";
+  const demoState = (location.state ?? {}) as DemoHistoryState;
 
   // Opening starts the demo at the top; closing comes back to the spin
   // section and its link, so the keyboard lands where it left.
@@ -46,9 +49,12 @@ export default function BinderTrackingPage() {
     link?.focus({ preventScroll: true });
   }, [demoOpen]);
 
+  // Opened from the tour: go back to that very entry, past every view the
+  // demo pushed. Opened from a link: there is no tour entry behind it, so
+  // the tour replaces the demo.
   const closeDemo = () => {
-    if (openedFromTour) navigate(-1);
-    else navigate({ search: "" }, { replace: true });
+    if (demoState.demoFrom === "tour") void navigate(-((demoState.demoDepth ?? 0) + 1));
+    else void navigate({ search: "" }, { replace: true });
   };
 
   // In the demo the header only sticks from `sm` up, like the signed-in
@@ -85,7 +91,7 @@ export default function BinderTrackingPage() {
             </main>
           }
         >
-          <PublicCollectionDemo onExit={closeDemo} entryHref={DEMO_HREF} />
+          <PublicCollectionDemo onExit={closeDemo} keepParams={DEMO_KEEP} />
         </Suspense>
       </>
     );

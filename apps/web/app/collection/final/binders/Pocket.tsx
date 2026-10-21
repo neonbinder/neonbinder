@@ -8,6 +8,8 @@ import {
   slabLabel,
   type SlotRef,
 } from "../../prototypes/p2/model";
+import { cardCaption, cardNumberLine } from "../captions";
+import IdTooltip, { IdLines } from "./IdTooltip";
 import type { BinderPocket } from "./model";
 
 /**
@@ -24,6 +26,11 @@ import type { BinderPocket } from "./model";
  * button instead: the faces are the point of flipping through a set.
  *
  * `found` rings a pocket the hunt tray led the collector to.
+ *
+ * Every pocket holding a card raises an identity slip on hover or focus
+ * (`IdTooltip`): season, set, insert or parallel, then number and player.
+ * In browse the slip hangs on the whole sleeve, so focusing its Add chip
+ * shows it too.
  */
 
 export type PocketVariant = "binder" | "browse";
@@ -95,6 +102,7 @@ export default function Pocket({
   });
   const ring = `${isOver ? " p2-sleeve--over" : ""}${aimed ? " p2-sleeve--target" : ""}${found ? " nb-sleeve--found" : ""}`;
   const where = `pocket ${index + 1} on page ${pageNumber}`;
+  const slip = (card: Card) => <IdLines title={cardCaption(card)} lines={[cardNumberLine(card)]} />;
 
   if (content.kind === "have") {
     const { card, copies } = content;
@@ -126,32 +134,36 @@ export default function Pocket({
     );
     if (variant === "browse") {
       return (
-        <div ref={setNodeRef} className={`p2-sleeve flex flex-col${ring}`}>
-          <button
-            type="button"
-            aria-haspopup="dialog"
-            aria-label={`${havePocketLabel(card, copies)}, have`}
-            onClick={open}
-            className="relative block w-full rounded focus-visible:outline-none"
-          >
-            {art}
-          </button>
-          <AddChip label={`Add another ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
-        </div>
+        <IdTooltip content={slip(card)}>
+          <div ref={setNodeRef} className={`p2-sleeve flex flex-col${ring}`}>
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              aria-label={`${havePocketLabel(card, copies)}, have`}
+              onClick={open}
+              className="relative block w-full rounded focus-visible:outline-none"
+            >
+              {art}
+            </button>
+            <AddChip label={`Add another ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
+          </div>
+        </IdTooltip>
       );
     }
     return (
-      <button
-        ref={setNodeRef}
-        type="button"
-        aria-haspopup="dialog"
-        aria-label={havePocketLabel(card, copies)}
-        data-found={found ? "true" : undefined}
-        onClick={open}
-        className={`p2-sleeve${ring}`}
-      >
-        {art}
-      </button>
+      <IdTooltip content={slip(card)}>
+        <button
+          ref={setNodeRef}
+          type="button"
+          aria-haspopup="dialog"
+          aria-label={havePocketLabel(card, copies)}
+          data-found={found ? "true" : undefined}
+          onClick={open}
+          className={`p2-sleeve${ring}`}
+        >
+          {art}
+        </button>
+      </IdTooltip>
     );
   }
 
@@ -159,27 +171,31 @@ export default function Pocket({
     const { card } = content;
     if (variant === "browse") {
       return (
-        <div ref={setNodeRef} className={`p2-sleeve${ring}`}>
-          <CardFace card={card} size="fill" state="need" />
-          <AddChip label={`Add ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
-        </div>
+        <IdTooltip content={slip(card)}>
+          <div ref={setNodeRef} className={`p2-sleeve${ring}`}>
+            <CardFace card={card} size="fill" state="need" />
+            <AddChip label={`Add ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
+          </div>
+        </IdTooltip>
       );
     }
     const who = getPlayer(card.playerIds[0]).name.split(" ").slice(-1)[0];
     return (
-      <button
-        ref={setNodeRef}
-        type="button"
-        aria-label={`${cardLabel(card)}, need. Add it`}
-        onClick={() => onAdd(card, slot, pocket.wantFor)}
-        className={`p2-sleeve${ring}`}
-      >
-        <span aria-hidden="true" className="p2-ghost">
-          <span className="p2-ghost-number">#{card.cardNumber}</span>
-          <span className="p2-ghost-need">Need</span>
-          <span className="p2-ghost-who">{who}</span>
-        </span>
-      </button>
+      <IdTooltip content={slip(card)}>
+        <button
+          ref={setNodeRef}
+          type="button"
+          aria-label={`${cardLabel(card)}, need. Add it`}
+          onClick={() => onAdd(card, slot, pocket.wantFor)}
+          className={`p2-sleeve${ring}`}
+        >
+          <span aria-hidden="true" className="p2-ghost">
+            <span className="p2-ghost-number">#{card.cardNumber}</span>
+            <span className="p2-ghost-need">Need</span>
+            <span className="p2-ghost-who">{who}</span>
+          </span>
+        </button>
+      </IdTooltip>
     );
   }
 

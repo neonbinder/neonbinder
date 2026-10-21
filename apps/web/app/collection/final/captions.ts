@@ -1,4 +1,4 @@
-import { getSet, setLabel, variantLabel, type Card } from "../prototypes/_shared/data";
+import { getSet, playerNames, setLabel, variantLabel, type Card } from "../prototypes/_shared/data";
 
 /**
  * The line under a card thumbnail: season, set, and the insert or parallel
@@ -13,4 +13,9 @@ export function cardCaption(card: Card): string {
   const variant = card.variantPath.type === "Base" ? "" : ` ${variantLabel(card.variantPath)}`;
   const variation = card.variation ? ` (${card.variation})` : "";
   return `${setLabel(getSet(card.setId))}${variant}${variation}`;
+}
+
+/** The second line of a card's identity slip: "#12 Jim Kelly". */
+export function cardNumberLine(card: Card): string {
+  return `#${card.cardNumber} ${playerNames(card)}`;
 }
