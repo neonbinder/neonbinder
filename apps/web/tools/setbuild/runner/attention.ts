@@ -46,8 +46,7 @@ import {
   type RowRef,
   type SetPath,
 } from "../service";
-import { childrenOf, resolveBrandYear, resolveSetPath, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
-import { variantTypeKind } from "../../../convex/variantRole";
+import { resolveBrandYear, resolveSetPath, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
 import { listCardAttention, type ListCardAttentionOptions } from "../lib/attention";
 import {
   AutographFixAborted,
@@ -61,6 +60,7 @@ import {
 import { NameFixAborted, applyNameAnswers, listNameSuggestions, resolveNameAnswers } from "../lib/name-suggestions";
 import { openSlRows, readSlReview } from "../lib/sl-review";
 import { setBuilderUrlForPath } from "../lib/set-builder-link";
+import { READ_CONCURRENCY, mapLimit, walkSet } from "../lib/set-walk";
 import { parseFixAnswers } from "../lib/fix-answers";
 import { DetachFixAborted, applyDetachAnswers, resolveDetachAnswers, type ResolvedDetachAnswer } from "../lib/detach-answers";
 import { queryOnlyClient } from "./read-only-client";
@@ -179,10 +179,10 @@ async function noticeColumns(client: NbClient, r: Resolved): Promise<NoticeColum
   }
   const base = formatPath(r.path);
   const out: NoticeColumn[] = [{ level: "variantType", parentId: r.set.setId, where: `${base} › Variant types`, ids }];
-  for (const t of await childrenOf(client, "variantType", r.set.setId)) {
-    if (variantTypeKind(t) === "base") continue;
+  for (const { type: t, isBase, rows } of await walkSet(client, r.set.setId, { parallels: false })) {
+    if (isBase) continue;
     out.push({ level: "insert", parentId: t._id, where: `${base} › ${t.value}`, ids: [...ids, t._id] });
-    for (const row of await childrenOf(client, "insert", t._id)) {
+    for (const { row } of rows) {
       out.push({ level: "parallel", parentId: row._id, where: `${base} › ${t.value} › ${row.value}`, ids: [...ids, t._id, row._id] });
     }
   }
@@ -191,8 +191,13 @@ async function noticeColumns(client: NbClient, r: Resolved): Promise<NoticeColum
 
 async function noticesOf(client: NbClient, r: Resolved): Promise<AttentionNotice[]> {
   const out: AttentionNotice[] = [];
-  for (const c of await noticeColumns(client, r)) {
-    const s = await client.query(api.selectorOptions.getSelectorSyncStatus, { level: c.level, parentId: c.parentId });
+  const columns = await noticeColumns(client, r);
+  // One status per column, read concurrently; the notices keep the columns' order.
+  const statuses = await mapLimit(columns, READ_CONCURRENCY, (c) =>
+    client.query(api.selectorOptions.getSelectorSyncStatus, { level: c.level, parentId: c.parentId }),
+  );
+  for (const [i, c] of columns.entries()) {
+    const s = statuses[i];
     if (!s) continue;
     const unlinked = s.unlinkedTotal ?? s.unlinked?.length;
     const twinsLeft = s.twinsLeftTotal ?? s.twinsLeft?.length;
@@ -230,12 +235,14 @@ async function totalsOf(
   names: Awaited<ReturnType<typeof listNameSuggestions>>;
   sl: Awaited<ReturnType<typeof slSummaryOf>>;
 }> {
-  const cardPart =
+  // The three parts read nothing from each other, so they run at once.
+  const [cardPart, names, sl] = await Promise.all([
     r.kind === "set"
-      ? await listCardAttention(client, r.set, { detail: detail ?? "summary" })
-      : { cards: [], autographs: [], totals: { cards: 0, byKind: {}, awaitingTeamLookup: 0, autographRows: 0 }, enrichment: { enriched: 0, of: 0 } };
-  const names = await listNameSuggestions(client, r.path, r.kind === "set" ? r.set : r.brand);
-  const sl = await slSummaryOf(client, r.kind === "set" ? r.set.manufacturerId : r.brand.manufacturerId);
+      ? listCardAttention(client, r.set, { detail: detail ?? "summary" })
+      : { cards: [], autographs: [], totals: { cards: 0, byKind: {}, awaitingTeamLookup: 0, autographRows: 0 }, enrichment: { enriched: 0, of: 0 } },
+    listNameSuggestions(client, r.path, r.kind === "set" ? r.set : r.brand),
+    slSummaryOf(client, r.kind === "set" ? r.set.manufacturerId : r.brand.manufacturerId),
+  ]);
   return {
     totals: {
       cards: cardPart.totals.cards,
@@ -267,7 +274,11 @@ export async function attentionOf(
   const client = queryOnlyClient(inner);
   const pathText = formatPath(path);
   const r = await resolveNode(client, path);
-  const { totals, cards, autographs, enrichment, names, sl } = await totalsOf(client, r, opts.detail);
+  // The notices read nothing the listing reads, so both run at once.
+  const [{ totals, cards, autographs, enrichment, names, sl }, notices] = await Promise.all([
+    totalsOf(client, r, opts.detail),
+    noticesOf(client, r),
+  ]);
 
   let slReview: AttentionReport["slReview"] = null;
   if (sl) {
@@ -292,7 +303,7 @@ export async function attentionOf(
     names,
     slReview,
     review: openRows.length > 0 ? { rows: openRows, answerWith: "nb_decide" } : null,
-    notices: await noticesOf(client, r),
+    notices,
     ...linksNoteFor(target),
   };
 }

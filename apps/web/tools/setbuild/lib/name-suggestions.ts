@@ -33,9 +33,9 @@ import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { NbClient } from "../client/convex-client";
 import { formatPath, ResolveError, type BrandYearPath, type NodePath, type SetPath } from "../service";
-import { childrenOf, resolveChild, resolveTypeRowRef, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
-import { variantTypeKind } from "../../../convex/variantRole";
+import { resolveChild, resolveTypeRowRef, type ResolvedBrandYear, type ResolvedSet, type RowId, type SelectorLevel } from "../spec/resolve";
 import { setBuilderUrlForPath } from "./set-builder-link";
+import { READ_CONCURRENCY, mapLimit, walkSet } from "./set-walk";
 
 /** The mutation's per-call cap (`MAX_SUGGESTION_DECISIONS` in convex/selectorOptions.ts). */
 export const MAX_SUGGESTION_DECISIONS = 200;
@@ -134,7 +134,8 @@ async function suggestionsOf(client: NbClient, c: Pick<Column, "level" | "parent
 /**
  * Every column a set shows names in: the set's own row (in the brand's Sets
  * column), its variant types, each non-Base type's rows, and each row's
- * parallels. Reads one `getSelectorOptions` per variant type to find the rows.
+ * parallels. Reads one `getSelectorOptions` per variant type to find the rows
+ * (concurrently, `walkSet`).
  */
 async function setColumns(client: NbClient, path: SetPath, set: ResolvedSet): Promise<Column[]> {
   const setIds = [set.sportId, set.yearId, set.manufacturerId];
@@ -143,16 +144,15 @@ async function setColumns(client: NbClient, path: SetPath, set: ResolvedSet): Pr
     { level: "setName", parentId: set.manufacturerId, only: set.setId, ids: setIds, address: () => ({ path, row: {} }) },
     { level: "variantType", parentId: set.setId, ids: typeIds, address: (type) => ({ path, row: { type } }) },
   ];
-  const types = await childrenOf(client, "variantType", set.setId);
-  for (const t of types) {
-    if (variantTypeKind(t) === "base") continue;
+  for (const { type: t, isBase, rows } of await walkSet(client, set.setId, { parallels: false })) {
+    if (isBase) continue;
     columns.push({
       level: "insert",
       parentId: t._id,
       ids: [...typeIds, t._id],
       address: (name) => ({ path, row: { type: t.value, name } }),
     });
-    for (const r of await childrenOf(client, "insert", t._id)) {
+    for (const { row: r } of rows) {
       columns.push({
         level: "parallel",
         parentId: r._id,
@@ -198,8 +198,10 @@ export async function listNameSuggestions(
       ? await setColumns(client, path as SetPath, resolved)
       : brandYearColumns(path, resolved);
   const out: NameSuggestionItem[] = [];
-  for (const c of columns) {
-    for (const s of await suggestionsOf(client, c)) {
+  // One read per column, concurrently; the items keep the columns' order.
+  const perColumn = await mapLimit(columns, READ_CONCURRENCY, (c) => suggestionsOf(client, c));
+  for (const [i, c] of columns.entries()) {
+    for (const s of perColumn[i]) {
       if (c.only && s.existingId !== c.only) continue;
       const at = c.address(s.currentValue);
       out.push({

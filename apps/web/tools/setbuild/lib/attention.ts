@@ -60,6 +60,7 @@ import type { NbClient } from "../client/convex-client";
 import { ResolveError } from "../service";
 import { childrenOf, pickExactlyOne, resolveTypeRowRef, type ResolvedSet, type RowId, type SelectorRow } from "../spec/resolve";
 import { setBuilderUrlForPath } from "./set-builder-link";
+import { READ_CONCURRENCY, mapLimit, walkSet } from "./set-walk";
 import {
   AUTOGRAPH_CHOICE_LABEL,
   AUTOGRAPH_FORMATS,
@@ -308,8 +309,13 @@ export function attentionSetOf(target: AttentionSetTarget): ResolvedSet {
 /** How many cards a summary listing reads the fixer's facts for. */
 export const SUMMARY_ENRICH_LIMIT = 25;
 
-/** How many reads run at once. */
-const READ_CONCURRENCY = 4;
+/**
+ * How many cards' fixer facts are read at once. Lower than the row reads'
+ * `READ_CONCURRENCY` because each card is already a fan-out of its own (up to
+ * three queries at once: suggestions, players, eras; then the regenerated
+ * title), so eight cards keep roughly the same number of reads in flight.
+ */
+const FACT_CONCURRENCY = 8;
 
 // ---------------------------------------------------------------------------
 // The walker's order (WALK_RANK and the rest live in attention-rules.ts)
@@ -387,16 +393,18 @@ function isBaseType(row: SelectorRow): boolean {
 export async function attentionRows(client: NbClient, set: ResolvedSet): Promise<AttentionRowNode[]> {
   const base = setDrillIds(set);
   const out: AttentionRowNode[] = [];
-  for (const t of await childrenOf(client, "variantType", set.setId)) {
+  // The rows and their parallels are read concurrently (`walkSet`); the
+  // order is the serial walk's.
+  for (const { type: t, isBase, rows } of await walkSet(client, set.setId, { parallels: true })) {
     const typeIds = [...base, String(t._id)];
-    if (isBaseType(t)) {
+    if (isBase) {
       out.push({ ref: { type: t.value }, label: t.value, rowId: t._id, drillIds: typeIds, ...formatOf(t) });
       continue;
     }
-    for (const r of await childrenOf(client, "insert", t._id)) {
+    for (const { row: r, parallels } of rows) {
       const rowIds = [...typeIds, String(r._id)];
       out.push({ ref: { type: t.value, name: r.value }, label: `${t.value} › ${r.value}`, rowId: r._id, drillIds: rowIds, ...formatOf(r) });
-      for (const p of await childrenOf(client, "parallel", r._id)) {
+      for (const p of parallels) {
         out.push({
           ref: { type: t.value, name: r.value, parallel: p.value },
           label: `${t.value} › ${r.value} › ${p.value}`,
@@ -605,19 +613,8 @@ export async function missingTeamFacts(
 // The listing
 // ---------------------------------------------------------------------------
 
-/** Run `fn` over `items`, at most `limit` at a time, results in order. */
-export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
-}
+/** Re-exported for the callers that took it from here. */
+export { mapLimit };
 
 function emptyByKind(): Record<AttentionKind, number> {
   return { missingPlayer: 0, missingTeam: 0, unreviewedName: 0, titleOverLimit: 0, titleTruncated: 0, aspectValueOverLimit: 0 };
@@ -794,7 +791,7 @@ export async function listCardAttention(
   const limit =
     opts.detail === "full" ? flagged.length : opts.detail === "totals" ? 0 : Math.min(SUMMARY_ENRICH_LIMIT, flagged.length);
   const eras = erasReader(client, set.sportId);
-  await mapLimit(flagged.slice(0, limit), READ_CONCURRENCY, async ({ item, card }) => {
+  await mapLimit(flagged.slice(0, limit), FACT_CONCURRENCY, async ({ item, card }) => {
     try {
       Object.assign(item, await readFixerFacts(client, item, card, eras), { enriched: true });
     } catch {

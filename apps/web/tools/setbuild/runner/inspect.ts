@@ -29,6 +29,7 @@ import {
 import { childrenOf, resolveBrandYear, resolveSetPath, type SelectorRow } from "../spec/resolve";
 import { cardCount } from "../lib/commit";
 import { setBuilderUrlForPath } from "../lib/set-builder-link";
+import { READ_CONCURRENCY, mapLimit, walkSet } from "../lib/set-walk";
 import { attentionSummaryOf } from "./attention";
 
 /** The marketplace ids in a row's platform slots, per side. */
@@ -42,10 +43,6 @@ export function linksOf(row: Pick<SelectorRow, "platformData">): MarketplaceLink
 
 export function isBaseRow(row: SelectorRow): boolean {
   return variantTypeKind(row) === "base";
-}
-
-async function inspectRow(client: NbClient, row: SelectorRow, isBase: boolean, link: string): Promise<InspectRow> {
-  return { name: row.value, cards: await cardCount(client, row._id), isBase, links: linksOf(row), link };
 }
 
 export async function inspectPath(
@@ -73,26 +70,33 @@ export async function inspectPath(
     }
     const set = await resolveSetPath(client, path);
     const setIds = [set.sportId, set.yearId, set.manufacturerId, set.setId];
-    const types = await childrenOf(client, "variantType", set.setId);
+    // The tree and every row's card count are read concurrently (`walkSet`,
+    // `mapLimit`); the report keeps the serial walk's order.
+    const walked = await walkSet(client, set.setId, { parallels: true });
+    const counted: SelectorRow[] = walked.flatMap((w) => (w.isBase ? [w.type] : w.rows.flatMap((r) => [r.row, ...r.parallels])));
+    const counts = await mapLimit(counted, READ_CONCURRENCY, (row) => cardCount(client, row._id));
+    const cardsOf = new Map(counted.map((row, i) => [String(row._id), counts[i]]));
+    const rowOf = (row: SelectorRow, isBase: boolean, link: string): InspectRow => ({
+      name: row.value,
+      cards: cardsOf.get(String(row._id))!,
+      isBase,
+      links: linksOf(row),
+      link,
+    });
     let base: InspectRow | null = null;
     const variantTypes: NonNullable<InspectReport["variantTypes"]> = [];
-    for (const t of types) {
+    for (const { type: t, isBase, rows } of walked) {
       const typeIds = [...setIds, t._id];
-      if (isBaseRow(t)) {
-        const row = await inspectRow(client, t, true, linkTo(typeIds));
+      if (isBase) {
+        const row = rowOf(t, true, linkTo(typeIds));
         base = row;
         variantTypes.push({ type: t.value, link: linkTo(typeIds), rows: [row] });
         continue;
       }
-      const rows = await childrenOf(client, "insert", t._id);
       const out: InspectRow[] = [];
-      for (const r of rows) {
-        const row = await inspectRow(client, r, false, linkTo([...typeIds, r._id]));
-        const parallels = await childrenOf(client, "parallel", r._id);
-        if (parallels.length > 0) {
-          row.parallels = [];
-          for (const p of parallels) row.parallels.push(await inspectRow(client, p, false, linkTo([...typeIds, r._id, p._id])));
-        }
+      for (const { row: r, parallels } of rows) {
+        const row = rowOf(r, false, linkTo([...typeIds, r._id]));
+        if (parallels.length > 0) row.parallels = parallels.map((p) => rowOf(p, false, linkTo([...typeIds, r._id, p._id])));
         out.push(row);
       }
       variantTypes.push({ type: t.value, link: linkTo(typeIds), rows: out });
