@@ -87,17 +87,24 @@ export default function BinderDesk(props: BinderDeskProps) {
     other?.animate([{ filter: "brightness(0.45)" }, { filter: "none" }], opts);
   }, [step, wide, reducedMotion]);
 
-  const touchX = useRef<number | null>(null);
+  // A swipe turns the page only when it is mostly sideways: a diagonal
+  // scroll down the page used to turn it too.
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const onTouchStart = (e: TouchEvent) => {
-    touchX.current = e.touches[0]?.clientX ?? null;
+    const t = e.touches[0];
+    touchStart.current = t ? { x: t.clientX, y: t.clientY } : null;
+  };
+  const onTouchCancel = () => {
+    touchStart.current = null;
   };
   const onTouchEnd = (e: TouchEvent) => {
-    const start = touchX.current;
-    touchX.current = null;
-    const end = e.changedTouches[0]?.clientX;
+    const start = touchStart.current;
+    touchStart.current = null;
+    const end = e.changedTouches[0];
     if (start === null || end === undefined) return;
-    const dx = end - start;
-    if (Math.abs(dx) < 50) return;
+    const dx = end.clientX - start.x;
+    const dy = end.clientY - start.y;
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
     if (dx < 0 && step < steps - 1) onTurn(step + 1);
     if (dx > 0 && step > 0) onTurn(step - 1);
   };
@@ -128,6 +135,7 @@ export default function BinderDesk(props: BinderDeskProps) {
       aria-label={`${name}, open`}
       onTouchStart={wide ? undefined : onTouchStart}
       onTouchEnd={wide ? undefined : onTouchEnd}
+      onTouchCancel={wide ? undefined : onTouchCancel}
       className={`p2-binder ${wide ? "" : "p2-binder--single"}`}
       style={
         {

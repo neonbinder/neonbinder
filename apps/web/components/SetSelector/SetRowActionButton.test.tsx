@@ -24,7 +24,7 @@ afterEach(() => {
 const RING = [
   "focus-visible:outline-none",
   "focus-visible:ring-2",
-  "focus-visible:ring-[#00B7FF]",
+  "focus-visible:ring-[#00C2FF]",
   "focus-visible:ring-offset-2",
 ];
 

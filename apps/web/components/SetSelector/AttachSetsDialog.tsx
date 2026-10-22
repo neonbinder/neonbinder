@@ -716,7 +716,7 @@ export default function AttachSetsDialog({
         </div>
 
         {errorMsg && (
-          <div className="px-6 pb-2 text-sm text-[#FF2EB3]" role="alert">
+          <div className="px-6 pb-2 text-sm text-[#FF2E9A]" role="alert">
             {errorMsg}
           </div>
         )}
@@ -911,7 +911,7 @@ function Pane({
         // this dialog reserves for a marketplace that actually failed.
         <p
           role="status"
-          className="mb-2 border-l-2 border-[#00B7FF] pl-2 text-xs leading-snug text-gray-300"
+          className="mb-2 border-l-2 border-[#00C2FF] pl-2 text-xs leading-snug text-gray-300"
         >
           {notice}
         </p>
@@ -945,7 +945,7 @@ function Pane({
           // NEO-196 an adapter failure was swallowed entirely and read as "this
           // marketplace has nothing", which is the opposite of what it means.
           <li
-            className="text-xs text-[#FF2EB3] px-2 py-1 break-words"
+            className="text-xs text-[#FF2E9A] px-2 py-1 break-words"
             role="alert"
           >
             {error}
@@ -983,7 +983,7 @@ function BreadcrumbButton({
       type="button"
       onClick={onClick}
       aria-label={ariaLabel}
-      className="text-xs px-2 py-0.5 rounded border border-gray-700 bg-gray-800 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+      className="hit-area-24 text-xs px-2 py-0.5 rounded border border-gray-700 bg-gray-800 text-[#00C2FF] hover:border-[#00C2FF] focus:border-[#00C2FF] focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
     >
       ‹ {label}
     </button>
@@ -1133,7 +1133,7 @@ function CandidateRow({
           type="button"
           onClick={() => onBrowse(candidate)}
           aria-label={`Browse BSC set ${label}`}
-          className="shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+          className="hit-area-24 shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00C2FF] hover:border-[#00C2FF] focus:border-[#00C2FF] focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
         >
           Browse ›
         </button>

@@ -145,9 +145,9 @@ describe("ApiKeysPanel", () => {
   });
 
   it("is reachable — src/main.tsx routes /profile/api-keys to this page", () => {
-    expect(mainSource).toContain('from "@/app/profile/api-keys/page"');
+    expect(mainSource).toContain('import("@/app/profile/api-keys/page")');
     expect(mainSource).toMatch(
-      /path="api-keys"\s+element=\{<ProfileApiKeys \/>\}/,
+      /path="api-keys"\s+element=\{<Deferred><ProfileApiKeys \/><\/Deferred>\}/,
     );
     // Nested inside the /profile route, which sits under <ProtectedLayout> —
     // that nesting is what makes the page signed-in only.

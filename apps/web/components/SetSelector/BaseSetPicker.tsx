@@ -758,7 +758,7 @@ export default function BaseSetPicker({
                             { sl: selectedSl, bsc: cand.item },
                           )
                         }
-                        className={`w-full text-left px-3 py-1.5 rounded-md border transition-all text-sm focus:outline-none focus:ring-2 focus:ring-[#00B7FF] ${
+                        className={`w-full text-left px-3 py-1.5 rounded-md border transition-all text-sm focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
                           selected
                             ? "border-blue-400 bg-blue-900/30 ring-1 ring-blue-400"
                             : "border-gray-600 bg-gray-800 hover:border-gray-400"

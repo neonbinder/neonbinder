@@ -243,7 +243,7 @@ function PromoteDialog({
       )}
       {preview === undefined && <p className="text-sm text-slate-400">{promoteCopy.loading}</p>}
       {preview !== undefined && !preview.ok && (
-        <p id={reasonId} className="text-sm text-[#FF2EB3]">
+        <p id={reasonId} className="text-sm text-[#FF2E9A]">
           {preview.reason}
         </p>
       )}

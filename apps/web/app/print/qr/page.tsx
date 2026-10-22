@@ -11,6 +11,7 @@ import {
   PrinterIcon,
 } from "@heroicons/react/24/outline";
 import { Input } from "@/components/primitives/Input";
+import { QR_FONT_CSS_URL, embeddedQrFontCss } from "./embedded-font";
 
 
 async function downloadSvgAsPng(
@@ -18,10 +19,11 @@ async function downloadSvgAsPng(
   filename: string,
   scale = 3,
 ) {
-  // Clone the SVG and embed font CSS so text renders in the isolated blob context
+  // Clone the SVG and embed the font itself so text renders in the isolated
+  // blob context.
   const clone = svgElement.cloneNode(true) as SVGSVGElement;
   const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
-  style.textContent = `@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@700&family=Geist:wght@700&display=swap');`;
+  style.textContent = await embeddedQrFontCss();
   clone.insertBefore(style, clone.firstChild);
 
   const svgData = new XMLSerializer().serializeToString(clone);
@@ -57,11 +59,11 @@ function printSvg(svgElement: SVGSVGElement, title: string) {
     <html>
       <head>
         <title>${title}</title>
-        <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@700&family=Geist:wght@700&display=swap" rel="stylesheet" />
+        <link href="${QR_FONT_CSS_URL}" rel="stylesheet" />
       </head>
       <body style="margin:0;display:flex;justify-content:center;align-items:center;height:100vh">
         <div style="width:min(100vw,100vh);height:min(100vw,100vh)">${svgData}</div>
-        <style>svg{width:100%;height:100%}@page{margin:0;size:auto}@media print{svg rect[fill="#00D558"],svg rect[fill="#00B7FF"]{fill:#000000!important}}</style>
+        <style>svg{width:100%;height:100%}@page{margin:0;size:auto}@media print{svg rect[fill="#00D558"],svg rect[fill="#00C2FF"]{fill:#000000!important}}</style>
       </body>
     </html>
   `);

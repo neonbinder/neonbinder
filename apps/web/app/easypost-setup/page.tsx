@@ -89,7 +89,7 @@ export default function EasypostSetupPage() {
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="w-20" />
@@ -99,7 +99,7 @@ export default function EasypostSetupPage() {
         <div className="max-w-4xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-teal to-neon-green">
+            <h1 className="text-5xl font-bold mb-4 text-neon-teal">
               Get Your EasyPost Key
             </h1>
             <p className="text-xl text-slate-400 mb-8">
@@ -116,7 +116,7 @@ export default function EasypostSetupPage() {
             <div className="space-y-6">
               {steps.map((step, i) => (
                 <div key={step.title} className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                     {i + 1}
                   </div>
                   <div>
@@ -137,9 +137,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Your Key Is Treated Like A Password
-                  </h4>
+                  </h3>
                   <p>
                     It&apos;s stored encrypted behind the same wall as
                     marketplace credentials, it is never shown back to anyone —
@@ -151,9 +151,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Your Money Stays Yours
-                  </h4>
+                  </h3>
                   <p>
                     Postage is charged by EasyPost to your own account at USPS
                     rates. Neon Binder never touches, holds, or marks up a
@@ -164,9 +164,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Labels Are Free Without It
-                  </h4>
+                  </h3>
                   <p>
                     No EasyPost account? You can still print unlimited 4×6
                     address labels for free — the key only unlocks buying the
@@ -177,9 +177,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Addresses Are Checked Before You Pay
-                  </h4>
+                  </h3>
                   <p>
                     USPS verifies the buyer&apos;s address while the label is
                     being priced, so an undeliverable address fails before any

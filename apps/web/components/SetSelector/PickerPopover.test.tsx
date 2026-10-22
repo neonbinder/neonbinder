@@ -318,4 +318,36 @@ describe("PickerPopover — stays inside the viewport (NEO-341)", () => {
     rerender(<Harness rows={8} highlight={5} />);
     expect(popover().scrollTop).toBe(0);
   });
+
+  describe("re-measuring on scroll", () => {
+    beforeEach(() => {
+      setViewport(CI.height);
+    });
+
+    it("skips a scroll that happens inside the popover", () => {
+      render(<Harness />);
+      expect(popover().style.top).toBe("120px");
+
+      // The trigger "moved", but the popover scrolling inside itself cannot
+      // have moved it: the popover keeps the place it had.
+      geometry.anchor = { top: 200, bottom: 220, left: 40 };
+      fireEvent.scroll(popover());
+      expect(popover().style.top).toBe("120px");
+
+      // The same holds for a scroll on something inside the popover.
+      fireEvent.scroll(screen.getByText("Thing 1"));
+      expect(popover().style.top).toBe("120px");
+    });
+
+    it("re-measures on a scroll outside the popover (the window, an ancestor)", () => {
+      render(<Harness />);
+      geometry.anchor = { top: 200, bottom: 220, left: 40 };
+      fireEvent.scroll(window);
+      expect(popover().style.top).toBe("220px");
+
+      geometry.anchor = { top: 300, bottom: 320, left: 40 };
+      fireEvent.scroll(screen.getByRole("button", { name: "Add thing" }));
+      expect(popover().style.top).toBe("320px");
+    });
+  });
 });

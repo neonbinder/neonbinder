@@ -32,7 +32,7 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
  *
  * ## One focus ring
  *
- * 2px `#00B7FF` with a 2px offset on both tones — the codebase's most-used
+ * 2px `#00C2FF` with a 2px offset on both tones — the codebase's most-used
  * arbitrary ring, and deliberately not the hover colour, so a chip that is
  * focused AND hovered is still legibly both.
  *
@@ -91,7 +91,7 @@ type Props = CommonProps &
 
 const BASE =
   "shrink-0 inline-flex items-center gap-1.5 min-h-8 px-3 border text-xs whitespace-nowrap " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 " +
   "aria-disabled:opacity-50 aria-disabled:cursor-not-allowed";
 
 export const SET_ROW_ACTION_TONE_CLASSES: Record<SetRowActionTone, string> = {

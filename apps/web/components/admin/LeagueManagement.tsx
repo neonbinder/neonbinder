@@ -1034,7 +1034,7 @@ export default function LeagueManagement() {
           ref={filterRef}
           label="Filter leagues"
           value={filter}
-          placeholder="Start typing a league name…"
+          placeholder="Type a league name…"
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
@@ -1137,7 +1137,7 @@ export default function LeagueManagement() {
                       // metadata segments cannot share a line without one of
                       // them truncating, and a clipped league name defeats the
                       // list's only job.
-                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
+                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
                         isSelected
                           ? "border-neon-teal bg-neon-teal/10 text-neon-teal"
                           : "border-transparent text-slate-300 hover:bg-slate-900"

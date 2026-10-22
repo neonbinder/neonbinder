@@ -446,7 +446,7 @@ export default function SalePage() {
           {/* Footer */}
           <div className="flex flex-col items-center gap-3 mt-8">
             <img
-              src="/logo.png"
+              src="/logo-120.png"
               alt="NeonBinder"
               width={40}
               height={40}

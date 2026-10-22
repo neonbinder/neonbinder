@@ -552,6 +552,20 @@ describe("Autocomplete — the list's layer", () => {
     expect(list.style.top).toBe("94px");
   });
 
+  it("does not re-place itself when only the list scrolls", () => {
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 100, bottom: 130, left: 40, width: 300 });
+    openList();
+    const list = screen.getByRole("listbox");
+
+    // The field "moved", but a scroll inside the list cannot have moved it:
+    // the list keeps the place it had.
+    stubField({ top: 60, bottom: 90, left: 40, width: 300 });
+    fireEvent.scroll(list);
+    expect(list.style.top).toBe("134px");
+  });
+
   it("does not treat a press on the list as an outside click, nor let it blur the field", () => {
     render(<Harness />);
     openList();

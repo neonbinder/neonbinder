@@ -15,6 +15,12 @@ test("Managing Inventory Feature Page", { tag: ["@marketing", "@home"] }, async 
   await expect(page.getByText("Real-Time Inventory Control")).toBeVisible();
   await expect(page.getByText("Sales Intelligence")).toBeVisible();
   await expect(page.getByText("Dominate the Card Show")).toBeVisible();
+  // Heading outline: h1, each section an h2, its cards h3 (they were h4).
+  await expect(page.getByRole("heading", { level: 1, name: "Sell Your Cards Everywhere" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "One Upload, Multiple Platforms" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "List One Time" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Instant Platform Updates" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 4 })).toHaveCount(0);
   await expectAccessible(page, { label: "managing-inventory feature page" });
 
   // The CTA opens the sign-up dialog; clicking beside it dismisses it.

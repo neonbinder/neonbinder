@@ -11,6 +11,12 @@ test("Print Shop Feature Page", { tag: ["@marketing", "@home"] }, async ({ page,
   await expect(page.getByRole("heading", { name: "Spine Labels In Team Colors" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Hold Their Spot In The Binder" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Print, Cut, Slide In" })).toBeVisible();
+  // Heading outline: h1, each section an h2, its cards h3 (they were h4).
+  await expect(page.getByRole("heading", { level: 1, name: "The Print Shop" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Spine Labels In Team Colors" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Team Colors, Automatic" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Cut Guides Included" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 4 })).toHaveCount(0);
   await expectAccessible(page, { label: "print-shop feature page" });
 
   await page.getByRole("button", { name: "Get Started" }).click();

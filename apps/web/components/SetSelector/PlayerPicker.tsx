@@ -613,7 +613,7 @@ export default function PlayerPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
-            className="text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            className="hit-area-24 text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
           >
             ×
           </button>
@@ -711,7 +711,7 @@ export default function PlayerPicker({
             />
 
             {createError && (
-              // a11y: NOT the brand `#FF2EB3` — measured against this
+              // a11y: NOT the brand `#FF2E9A` — measured against this
               // popover's own `bg-white dark:bg-gray-800` it is 3.34:1 /
               // 4.4:1, both under WCAG 1.4.3's 4.5:1 floor for normal text.
               // Same-hue darkened/lightened pair CardDetailPanel's
@@ -732,7 +732,7 @@ export default function PlayerPicker({
               matches.length === 0 &&
               query.trim().length === 0 && (
                 <div className="text-xs text-gray-400 px-2 py-1">
-                  Start typing a player name…
+                  Type a player name…
                 </div>
               )}
             <div

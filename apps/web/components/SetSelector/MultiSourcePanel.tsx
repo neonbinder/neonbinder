@@ -505,7 +505,7 @@ function SideColumn({
         // skipped — the one moment this sentence exists to cover.
         <p
           role="status"
-          className="mb-2 border-l-2 border-[#00B7FF] pl-2 text-xs leading-snug text-gray-300"
+          className="mb-2 border-l-2 border-[#00C2FF] pl-2 text-xs leading-snug text-gray-300"
         >
           {skipNote}
         </p>
@@ -676,7 +676,7 @@ function Chip({
 
   if (mode === "confirming") {
     return (
-      <li className="px-3 py-1.5 rounded border border-[#FF2EB3] bg-[#FF2EB3]/10">
+      <li className="px-3 py-1.5 rounded border border-[#FF2E9A] bg-[#FF2E9A]/10">
         {/* role="group" + aria-labelledby: the sentence IS the name of this
             little decision surface, so focus landing on Cancel announces what
             is being decided. Not role="alert" — an alert fires once on mount
@@ -719,7 +719,7 @@ function Chip({
             // py-1: text-xs's 1rem line-height + 0.25rem top/bottom padding
             // clears WCAG 2.5.8's 24px target-size minimum; px-1 alone left
             // this ~16px tall.
-            className="text-xs font-semibold text-[#FF2EB3] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+            className="text-xs font-semibold text-[#FF2E9A] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
           >
             {counting ? "Counting cards…" : busy ? "Detaching…" : "Confirm"}
           </button>
@@ -735,7 +735,7 @@ function Chip({
           </button>
           {err && (
             <span
-              className="w-full text-[10px] text-[#FF2EB3]"
+              className="w-full text-[10px] text-[#FF2E9A]"
               role="alert"
             >
               {err}
@@ -841,7 +841,7 @@ function Chip({
         ×
       </button>
       {err && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span className="text-[10px] text-[#FF2E9A]" role="alert">
           {err}
         </span>
       )}

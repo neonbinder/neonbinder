@@ -228,7 +228,7 @@ function FieldDiff({ field }: { field: SyncDiffField }) {
   const em = "—";
   return (
     <div className="font-mono text-xs leading-5 min-w-0">
-      <div className="text-[#FF2EB3] break-words">
+      <div className="text-[#FF2E9A] break-words">
         {/* The glyph is decoration; "was"/"now" is what AT reads. */}
         <span aria-hidden="true">− </span>
         <span className="sr-only">was </span>
@@ -296,7 +296,7 @@ function CardDiffRow({
                       // 1.4.3's 4.5:1 for this text-xs badge, on exactly the
                       // label the tier exists to make someone stop and read.
                       // /10 measures 4.55:1.
-                      className="rounded px-1.5 py-0.5 bg-[#FF2EB3]/10 text-[#FF2EB3]"
+                      className="rounded px-1.5 py-0.5 bg-[#FF2E9A]/10 text-[#FF2E9A]"
                       // Not decoration: "check this one deliberately" is the
                       // entire point of the tier.
                     >
@@ -309,7 +309,7 @@ function CardDiffRow({
                     </span>
                   )}
                   {SOURCE_LABEL[f.source] && (
-                    <span className="rounded px-1.5 py-0.5 bg-[#00B7FF]/15 text-[#00B7FF]">
+                    <span className="rounded px-1.5 py-0.5 bg-[#00C2FF]/15 text-[#00C2FF]">
                       {SOURCE_LABEL[f.source]}
                     </span>
                   )}
@@ -667,7 +667,7 @@ export default function SyncReviewModal({
               <section aria-labelledby="sync-review-conflicts">
                 <h3
                   id="sync-review-conflicts"
-                  className="text-sm font-semibold text-[#FF2EB3] mb-1"
+                  className="text-sm font-semibold text-[#FF2E9A] mb-1"
                 >
                   Linked to two cards ({diff.conflicts.length}) — held back from
                   this sync
@@ -768,7 +768,7 @@ export default function SyncReviewModal({
                               }
                               className={`text-xs rounded px-2 py-1.5 ${
                                 chosen === o.value
-                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
+                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00C2FF]"
                                   : "bg-gray-700/60 text-gray-300"
                               }`}
                             >
@@ -1022,7 +1022,7 @@ export default function SyncReviewModal({
                           aria-describedby={
                             orphansOverCap ? "sync-delete-cap" : undefined
                           }
-                          className="h-4 w-4 shrink-0 accent-[#FF2EB3] aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                          className="h-4 w-4 shrink-0 accent-[#FF2E9A] aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                           aria-label={`Delete #${r.cardNumber} ${r.cardName}`}
                         />
                         <label

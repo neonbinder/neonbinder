@@ -126,7 +126,7 @@ export function SpineLabelLettering({ fontId, onFontChange }: SpineLabelLetterin
               aria-checked={isActive}
               onClick={() => onFontChange(option.id)}
               title={option.note}
-              className={`rounded-md border px-3 py-1.5 text-lg leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+              className={`rounded-md border px-3 py-1.5 text-lg leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
                 isActive
                   ? "border-neon-teal text-neon-teal"
                   : "border-slate-700 text-slate-300 hover:border-slate-500"

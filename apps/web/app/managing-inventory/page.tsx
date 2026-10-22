@@ -15,7 +15,7 @@ export default function ManagingInventoryPage() {
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="w-20" />
@@ -25,7 +25,7 @@ export default function ManagingInventoryPage() {
         <div className="max-w-5xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-blue to-neon-green">
+            <h1 className="text-5xl font-bold mb-4 text-neon-blue">
               Sell Your Cards Everywhere
             </h1>
             <p className="text-xl text-slate-400 mb-8">
@@ -74,21 +74,21 @@ export default function ManagingInventoryPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">List One Time</h4>
+                    <h3 className="font-semibold text-slate-300">List One Time</h3>
                     <p>Upload once, sync everywhere automatically. No extra work needed.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">All 5 Platforms</h4>
+                    <h3 className="font-semibold text-slate-300">All 5 Platforms</h3>
                     <p>eBay, BuySportsCards, MySlabs, MyCardPost, SportLots — instantly available.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Zero Duplicate Work</h4>
+                    <h3 className="font-semibold text-slate-300">Zero Duplicate Work</h3>
                     <p>Never manually upload the same card twice. Automation handles it all.</p>
                   </div>
                 </div>
@@ -149,21 +149,21 @@ export default function ManagingInventoryPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Track Stock Everywhere</h4>
+                    <h3 className="font-semibold text-slate-300">Track Stock Everywhere</h3>
                     <p>See your inventory levels across all platforms instantly.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Prevent Overselling</h4>
+                    <h3 className="font-semibold text-slate-300">Prevent Overselling</h3>
                     <p>Never sell the same card twice. Automatic sync keeps you protected.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Perfect Sync Guaranteed</h4>
+                    <h3 className="font-semibold text-slate-300">Perfect Sync Guaranteed</h3>
                     <p>All platforms stay in perfect sync at all times. That&apos;s gnarly accuracy.</p>
                   </div>
                 </div>
@@ -209,21 +209,21 @@ export default function ManagingInventoryPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">See Which Cards Sold</h4>
+                    <h3 className="font-semibold text-slate-300">See Which Cards Sold</h3>
                     <p>Track which cards moved and on which platforms. Total visibility.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Platform Performance</h4>
+                    <h3 className="font-semibold text-slate-300">Platform Performance</h3>
                     <p>Compare sales across eBay, BuySportsCards, MySlabs, MyCardPost, SportLots.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Data-Driven Decisions</h4>
+                    <h3 className="font-semibold text-slate-300">Data-Driven Decisions</h3>
                     <p>Use sales data to optimize your inventory strategy. Smart moves based on facts.</p>
                   </div>
                 </div>
@@ -279,21 +279,21 @@ export default function ManagingInventoryPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Generate QR Per Card</h4>
+                    <h3 className="font-semibold text-slate-300">Generate QR Per Card</h3>
                     <p>Every card gets its own unique QR code for instant identification.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Sell at Card Shows</h4>
+                    <h3 className="font-semibold text-slate-300">Sell at Card Shows</h3>
                     <p>Buyers scan, you get instant notifications. Totally rad in-person selling.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Instant Platform Updates</h4>
+                    <h3 className="font-semibold text-slate-300">Instant Platform Updates</h3>
                     <p>Sales tracked automatically across your inventory system in real-time.</p>
                   </div>
                 </div>

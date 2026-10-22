@@ -165,7 +165,7 @@ function ScanUpdatesChip() {
             /print/shipping is a different page with a similar name. */}
         <Link
           to="/profile/postage"
-          className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+          className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
         >
           your profile
         </Link>
@@ -338,7 +338,7 @@ export default function LabelHistoryPage() {
             Buy postage over on{" "}
             <Link
               to="/print/shipping"
-              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
             >
               Shipping
             </Link>{" "}
@@ -452,7 +452,7 @@ export default function LabelHistoryPage() {
                           ? `Checking for new scans for ${rowLabel}`
                           : `Check for new scans for ${rowLabel}`
                       }
-                      className="rounded-md border border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-400 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500"
+                      className="rounded-md border border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-400 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
                     >
                       {checking ? "Checking…" : "Check for new scans"}
                     </button>
@@ -487,7 +487,7 @@ export default function LabelHistoryPage() {
                             ? `Reprinting the label for ${rowLabel}`
                             : `Reprint the label for ${rowLabel}`
                         }
-                        className="rounded-md border border-neon-teal/60 px-3 py-1.5 text-sm font-medium text-neon-teal transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500"
+                        className="rounded-md border border-neon-teal/60 px-3 py-1.5 text-sm font-medium text-neon-teal transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
                       >
                         {busy ? "Reprinting…" : "Reprint"}
                       </button>
@@ -546,7 +546,7 @@ export default function LabelHistoryPage() {
                             // inline box measured only the 16px glyphs, within
                             // 12px of the copy button above). Not flex: that
                             // would drop the space before the arrow.
-                            className="inline-block py-0.5 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+                            className="inline-block py-0.5 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
                           >
                             Public scan page
                             {/* Visible arrow for sighted users, spelled out for
@@ -649,7 +649,7 @@ export default function LabelHistoryPage() {
                       // padding-cancelled-by-negative-margin trick TrackingCode's
                       // Copy button already uses — grows the hit area without
                       // shifting layout.
-                      className="p-2 -m-2 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+                      className="p-2 -m-2 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
                     >
                       {scansOpen ? "Hide" : "Show"} all scans ({scans.length})
                     </button>

@@ -13,7 +13,8 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -608,11 +609,11 @@ function plural(n: number, noun: string): string {
  *   - `tabIndex=0` would add one dead tab stop per row to the dialog's focus
  *     trap (its Tab handler queries `[tabindex]:not([tabindex="-1"])`), so a
  *     900-row set would grow 900 stops that do nothing when activated.
- * The listeners alone are what the PointerSensor needs; the accessible
+ * The listeners alone are what the mouse and touch sensors need; the accessible
  * affordance for the same action is the click path, which is untouched.
  *
- * Plain clicks on the inner buttons still work because the PointerSensor's
- * 5px activation constraint means a drag never starts from a stationary press
+ * Plain clicks on the inner buttons still work because a drag needs 5px of
+ * mouse movement or a 180ms touch hold, so it never starts from a plain press
  * (same reasoning as ParallelGroupingModal).
  *
  * NEO-300 — the <li> is also the drag's ACTIVATOR node. Without one, dnd-kit's
@@ -663,7 +664,7 @@ function PairableRow({
       {...listeners}
       className={`flex items-center gap-2 rounded cursor-grab active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
-      } ${isLinkTarget ? "ring-2 ring-[#00B7FF] bg-[#00B7FF]/10" : ""}`}
+      } ${isLinkTarget ? "ring-2 ring-[#00C2FF] bg-[#00C2FF]/10" : ""}`}
     >
       {children}
     </li>
@@ -1703,10 +1704,10 @@ function ConflictRadioGroup({
       // the explanation and the pills are the decision; they read
       // top-to-bottom, always. (The pills themselves still wrap — see the
       // radiogroup's own `flex flex-wrap` below.)
-      className="flex flex-col items-start gap-1.5 border-l-2 border-[#FF2EB3] pl-2 py-1"
+      className="flex flex-col items-start gap-1.5 border-l-2 border-[#FF2E9A] pl-2 py-1"
       {...{ [handleAttr]: handleKey }}
     >
-      <span id={warningId} className="text-xs text-[#FF2EB3]">
+      <span id={warningId} className="text-xs text-[#FF2E9A]">
         {/* Decorative — the sentence itself carries the meaning, so AT
             shouldn't also be made to announce "warning sign" first. */}
         <span aria-hidden="true">⚠</span> {warning}
@@ -1762,7 +1763,7 @@ function ConflictRadioGroup({
             onClick={() => onChoose(option.side, false)}
             className={`text-xs rounded px-2 py-1.5 ${
               chosen === option.side
-                ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
+                ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00C2FF]"
                 : "bg-gray-700/60 text-gray-300"
             }`}
           >
@@ -2255,12 +2256,16 @@ export default function CardPairingModal({
   );
 
   // ── Drag-and-drop linking ────────────────────────────────────────────────
-  // The 5px activation constraint is load-bearing, not cosmetic: without it a
+  // The activation constraints are load-bearing, not cosmetic: without them a
   // stationary press on a row's inner <button> starts a drag and the button's
   // onClick never fires, which would break the click-to-select path (and the
   // Maestro flow that drives it) the moment the listeners went on.
+  // Mouse and touch, not PointerSensor: a touch drag starts on a 180ms hold,
+  // so a swipe still scrolls the list and a tap still clicks. PointerSensor
+  // lost every touch drag to the browser's own scroll (no `touch-action`).
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
     useSensor(KeyboardSensor),
   );
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -2561,7 +2566,7 @@ export default function CardPairingModal({
                 long as Confirm is blocked, which outlasts the fetch itself
                 until this run's teams have landed (`confirmBlocked`). */}
             {confirmBlocked && (
-              <p id="pairing-streaming-status" className="text-xs text-[#00B7FF] mt-1">
+              <p id="pairing-streaming-status" className="text-xs text-[#00C2FF] mt-1">
                 {pairingStreamingSentence(streamProgress)}
               </p>
             )}
@@ -2628,7 +2633,7 @@ export default function CardPairingModal({
             >
               {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
               {nameConflictCount > 0 && (
-                <span className="text-[#FF2EB3] ml-2">
+                <span className="text-[#FF2E9A] ml-2">
                   {/* The glyph is decorative — "name conflict(s)" already
                       carries the meaning in words, so AT shouldn't also be
                       made to announce "warning sign" on top of that. */}
@@ -2642,7 +2647,7 @@ export default function CardPairingModal({
                   "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
                   one line reads as one number the eye has to parse apart. */}
               {playersConflictCount > 0 && (
-                <span className="block text-[#FF2EB3]">
+                <span className="block text-[#FF2E9A]">
                   <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
                   player conflict
                   {playersConflictCount === 1 ? "" : "s"}
@@ -2844,7 +2849,7 @@ export default function CardPairingModal({
                                 <span
                                   id={`name-edit-error-${domKey(m.card)}`}
                                   role="alert"
-                                  className="text-xs text-[#FF2EB3]"
+                                  className="text-xs text-[#FF2E9A]"
                                 >
                                   {nameError.message}
                                 </span>
@@ -2860,7 +2865,7 @@ export default function CardPairingModal({
                               // inline-block + min-h-6: the text-sm line alone
                               // is a ~20px target; SC 2.5.8 needs 24px (axe
                               // target-size).
-                              className="inline-block min-h-6 text-left border-b border-dotted border-gray-600 hover:border-[#00B7FF] hover:text-white"
+                              className="inline-block min-h-6 text-left border-b border-dotted border-gray-600 hover:border-[#00C2FF] hover:text-white"
                               onClick={() => {
                                 // Prefilled with `cardName` ALONE — not
                                 // `label()`. The number and the variation
@@ -3156,7 +3161,7 @@ export default function CardPairingModal({
                             <span
                               id={`players-edit-error-${domKey(m.card)}`}
                               role="alert"
-                              className="text-xs text-[#FF2EB3]"
+                              className="text-xs text-[#FF2E9A]"
                             >
                               {playersError.message}
                             </span>
@@ -3377,7 +3382,7 @@ export default function CardPairingModal({
                   the same card, following the cursor. */}
               <DragOverlay>
                 {activeDragLabel && (
-                  <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
+                  <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
                     <span className="text-gray-200">{activeDragLabel}</span>
                   </div>
                 )}

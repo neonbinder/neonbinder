@@ -220,7 +220,7 @@ function CardFeatureRow({
           {label}
         </span>
         {boolError && (
-          <span className="text-[10px] text-[#FF2EB3]" role="alert">
+          <span className="text-[10px] text-[#FF2E9A]" role="alert">
             {boolError}
           </span>
         )}

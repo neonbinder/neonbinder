@@ -583,6 +583,129 @@ describe("ParallelGroupingModal — draggable rows", () => {
     renderModal();
     expect(fireEvent.keyDown(row("Gold"), { key: " ", code: "Space" })).toBe(false);
   });
+
+  // Tests below leave a drag live on purpose; end it so no document listener
+  // or half-open drag leaks into the next test. dnd-kit removes its
+  // click-swallowing capture listener 50ms after a drag ends, so wait it
+  // out or the next test's first click is eaten.
+  afterEach(async () => {
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+      fireEvent.mouseUp(document);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+  });
+
+  /** Lift Gold with Space and wait for dnd-kit to attach its document listeners. */
+  async function liftGold() {
+    act(() => {
+      fireEvent.keyDown(row("Gold"), { key: " ", code: "Space" });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  test("a drag cancelled with Escape un-dims the rows and Escape closes the dialog again", async () => {
+    const { onClose } = renderModal();
+    expect(row("Gold").style.opacity).toBe("1");
+
+    await liftGold();
+    expect(row("Gold").style.opacity).toBe("0.4");
+
+    // Escape during a drag cancels the drag only; the dialog stays open.
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+    });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // onDragCancel cleared the drag: the carried row is no longer dimmed.
+    expect(row("Gold").style.opacity).toBe("1");
+
+    // And the next Escape is no longer swallowed by the in-drag guard.
+    fireEvent.keyDown(overlay(), { key: "Escape", code: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test("Escape on the dialog while a drag is live does not close it", async () => {
+    const { onClose } = renderModal();
+    await liftGold();
+    fireEvent.keyDown(overlay(), { key: "Escape", code: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Sensors: a mouse drag starts after 5px of movement, so a plain click on
+   * an inner button is still a click (PointerSensor -> MouseSensor + TouchSensor).
+   */
+  describe("sensors", () => {
+    const mouseDownOnGold = () =>
+      fireEvent.mouseDown(row("Gold"), { button: 0, clientX: 10, clientY: 10 });
+
+    test("a plain click on the row's ✕ still fires it and starts no drag", () => {
+      renderModal();
+      fireEvent.mouseDown(reject(), { button: 0, clientX: 10, clientY: 10 });
+      fireEvent.mouseUp(reject(), { button: 0, clientX: 10, clientY: 10 });
+      fireEvent.click(reject());
+      expect(screen.getByText("0 promotions, 1 demotion")).toBeTruthy();
+      expect(document.querySelectorAll('[style*="opacity: 0.4"]')).toHaveLength(0);
+    });
+
+    test("a mouse move of 4px does not start a drag", () => {
+      renderModal();
+      act(() => {
+        mouseDownOnGold();
+        fireEvent.mouseMove(document, { clientX: 14, clientY: 10 });
+      });
+      expect(row("Gold").style.opacity).toBe("1");
+    });
+
+    test("a touch held 180ms starts a drag; a touch that moves 20px first does not", async () => {
+      vi.useFakeTimers();
+      try {
+        renderModal();
+        const touch = (x: number) => ({ touches: [{ clientX: x, clientY: 10 }] });
+
+        // Held still for the delay: the drag starts.
+        act(() => {
+          fireEvent.touchStart(row("Gold"), touch(10));
+          vi.advanceTimersByTime(100);
+        });
+        expect(row("Gold").style.opacity).toBe("1");
+        act(() => {
+          vi.advanceTimersByTime(100);
+        });
+        expect(row("Gold").style.opacity).toBe("0.4");
+        act(() => {
+          fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+          fireEvent.touchEnd(document);
+          vi.advanceTimersByTime(100);
+        });
+        expect(row("Gold").style.opacity).toBe("1");
+
+        // A swipe (moved past the 8px tolerance before the hold) is a scroll.
+        act(() => {
+          fireEvent.touchStart(row("Gold"), touch(10));
+          fireEvent.touchMove(document, touch(30));
+          vi.advanceTimersByTime(200);
+        });
+        expect(row("Gold").style.opacity).toBe("1");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a mouse move of 6px starts a drag", () => {
+      renderModal();
+      act(() => {
+        mouseDownOnGold();
+        fireEvent.mouseMove(document, { clientX: 16, clientY: 10 });
+      });
+      expect(row("Gold").style.opacity).toBe("0.4");
+    });
+  });
 });
 
 /**

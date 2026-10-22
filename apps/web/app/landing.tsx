@@ -30,7 +30,7 @@ export default function LandingPage() {
     <>
       <header className="sticky top-0 z-10 bg-background p-4 border-b-2 border-slate-800 flex flex-row justify-between items-center">
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="flex items-center gap-3">
@@ -80,8 +80,8 @@ export default function LandingPage() {
             className="w-full my-16 p-8 rounded-lg bg-gradient-to-r from-pink-900/30 to-green-900/30 border border-pink-500/40 hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 transition-all cursor-pointer text-left"
           >
             <div className="flex items-center gap-3 mb-4">
-              <span className="text-3xl">📱</span>
-              <h3 className="text-2xl font-bold">Card Show Sales</h3>
+              <span className="text-3xl" aria-hidden="true">📱</span>
+              <h2 className="text-2xl font-bold">Card Show Sales</h2>
               <span className="ml-auto px-3 py-1 text-xs font-bold uppercase tracking-wider rounded-full bg-green-500 text-black">
                 Available Today
               </span>
@@ -108,9 +108,9 @@ export default function LandingPage() {
               <div className="mb-4 h-[60px] flex items-center">
                 <BindersIcon size={60} />
               </div>
-              <h3 className="text-xl font-semibold mb-2">
+              <h2 className="text-xl font-semibold mb-2">
                 Fill Binders for Collection Tracking
-              </h3>
+              </h2>
               <p className="text-slate-400">
                 Organize and track your card collection with digital binders using verified manufacturer checklists or custom organization. See exactly what you own and what you&apos;re missing.
               </p>
@@ -119,8 +119,8 @@ export default function LandingPage() {
               onClick={handleAiIdentificationClick}
               className="flex flex-col p-6 rounded-lg bg-slate-900 border border-slate-800 hover:border-purple-500 hover:shadow-lg hover:shadow-purple-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4 h-[60px] flex items-center">🤖</div>
-              <h3 className="text-xl font-semibold mb-2">AI-Based Card Identification</h3>
+              <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🤖</div>
+              <h2 className="text-xl font-semibold mb-2">AI-Based Card Identification</h2>
               <p className="text-slate-400">
                 Our AI matches your photos against verified manufacturer databases automatically, taking the guesswork out of cataloging and ensuring accurate collection data.
               </p>
@@ -129,8 +129,8 @@ export default function LandingPage() {
               onClick={handleManagingInventoryClick}
               className="flex flex-col p-6 rounded-lg bg-slate-900 border border-slate-800 hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4 h-[60px] flex items-center">🌐</div>
-              <h3 className="text-xl font-semibold mb-2">Manage Multiple Inventory Sites</h3>
+              <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🌐</div>
+              <h2 className="text-xl font-semibold mb-2">Manage Multiple Inventory Sites</h2>
               <p className="text-slate-400">
                 Track inventory across eBay, BuySportsCards, MySlabs, MyCardPost, and SportLots all in one place. Coming soon for sellers.
               </p>
@@ -139,8 +139,8 @@ export default function LandingPage() {
               onClick={handleShippingLabelsClick}
               className="flex flex-col p-6 rounded-lg bg-slate-900 border border-slate-800 hover:border-teal-400 hover:shadow-lg hover:shadow-teal-400/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4 h-[60px] flex items-center">📦</div>
-              <h3 className="text-xl font-semibold mb-2">Shipping Labels & PWE Postage</h3>
+              <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">📦</div>
+              <h2 className="text-xl font-semibold mb-2">Shipping Labels & PWE Postage</h2>
               <p className="text-slate-400">
                 Print a clean 4×6 label for free, or buy real USPS letter postage for a plain white envelope — about 80¢, tracking number included.
               </p>
@@ -149,8 +149,8 @@ export default function LandingPage() {
               onClick={handlePrintShopClick}
               className="flex flex-col p-6 rounded-lg bg-slate-900 border border-slate-800 hover:border-pink-500 hover:shadow-lg hover:shadow-pink-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4 h-[60px] flex items-center">🏷️</div>
-              <h3 className="text-xl font-semibold mb-2">Spine Labels in Team Colors</h3>
+              <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🏷️</div>
+              <h2 className="text-xl font-semibold mb-2">Spine Labels in Team Colors</h2>
               <p className="text-slate-400">
                 Type a player&apos;s name, get their team colors automatically, and print binder-spine labels in bold athletic fonts. Your shelf never looked so rad.
               </p>
@@ -162,7 +162,7 @@ export default function LandingPage() {
               <div className="mb-4 h-[60px] flex items-center">
                 <NinePocketIcon size={54} />
               </div>
-              <h3 className="text-xl font-semibold mb-2">9-Pocket Placeholder Sheets</h3>
+              <h2 className="text-xl font-semibold mb-2">9-Pocket Placeholder Sheets</h2>
               <p className="text-slate-400">
                 Sold it? Slabbed it? Off at grading? Print true-size placeholders from your own scans, so the binder still shows every card you pulled.
               </p>
@@ -176,7 +176,7 @@ export default function LandingPage() {
             </h2>
             <div className="space-y-6">
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   1
                 </div>
                 <div>
@@ -189,7 +189,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   2
                 </div>
                 <div>
@@ -202,7 +202,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   3
                 </div>
                 <div>
@@ -215,7 +215,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   4
                 </div>
                 <div>
@@ -228,7 +228,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   5
                 </div>
                 <div>

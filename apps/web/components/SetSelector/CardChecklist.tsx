@@ -3319,7 +3319,7 @@ export default function CardChecklist({
             className={
               // a11y (1.4.3): mirrors the status box below it exactly (same
               // structure, pink swapped in for blue) rather than the brand's
-              // literal `#FF2EB3` — this container renders in BOTH light and
+              // literal `#FF2E9A` — this container renders in BOTH light and
               // dark (`bg-white dark:bg-gray-800`, unlike the always-dark
               // review modal), and pink text at any low opacity measures
               // under 4.5:1 against both a near-white light background and

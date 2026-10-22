@@ -131,7 +131,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 
         {(helperText || error) && (
           <p
-            className={`text-sm ${error ? "text-[#FF2EB3]" : "text-slate-400"}`}
+            className={`text-sm ${error ? "text-[#FF2E9A]" : "text-slate-400"}`}
           >
             {error || helperText}
           </p>

@@ -256,7 +256,7 @@ function FieldFeedback({
         </p>
       )}
       {error && (
-        // a11y: NOT the brand `#FF2EB3` — measured 3.34:1 on this drawer's
+        // a11y: NOT the brand `#FF2E9A` — measured 3.34:1 on this drawer's
         // light-mode `bg-white` and 4.4:1 on its `dark:bg-gray-800`, both under
         // WCAG 1.4.3's 4.5:1 floor. This darkened/lightened pair in the same
         // hue measures 5.55:1 / 5.87:1 and is the file's existing precedent.
@@ -892,7 +892,7 @@ export default function CardDetailPanel({
             disabled={!hasPrev}
             aria-label="Previous card"
             title="Previous card (↑)"
-            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00C2FF] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↑
           </button>
@@ -901,7 +901,7 @@ export default function CardDetailPanel({
             disabled={!hasNext}
             aria-label="Next card"
             title="Next card (↓)"
-            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00B7FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00C2FF] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↓
           </button>
@@ -909,7 +909,7 @@ export default function CardDetailPanel({
             onClick={onClose}
             aria-label="Close card detail"
             title="Close (Esc)"
-            className="px-2 py-1 text-lg leading-none rounded text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            className="px-2 py-1 text-lg leading-none rounded text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
           >
             ×
           </button>
@@ -1065,16 +1065,16 @@ export default function CardDetailPanel({
                   aria-describedby={
                     preview.confirming ? `${uid}-regen-confirm` : undefined
                   }
-                  // a11y (1.4.3, audit fix): #00B7FF alone measures 2.28:1
+                  // a11y (1.4.3, audit fix): #00C2FF alone measures 2.28:1
                   // against this drawer's light-mode `bg-white` (fails
                   // 4.5:1) — this panel is genuinely bi-themed
                   // (`bg-white dark:bg-gray-800`), unlike TitleFixer's
                   // always-dark walker dialog. #0369A1 measures 5.93:1
-                  // against white; #00B7FF unchanged for dark mode (6.44:1
+                  // against white; #00C2FF unchanged for dark mode (6.44:1
                   // against gray-800).
                   // inline-flex + min-h-6: the 10px label alone is a 15px-tall target;
                   // SC 2.5.8 needs 24px (axe target-size).
-                  className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+                  className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00C2FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
                 >
                   {preview.loading
                     ? "Rebuilding…"
@@ -1130,9 +1130,9 @@ export default function CardDetailPanel({
                 aria-atomic="true"
                 // a11y (1.4.3, audit fix): same light/dark split as the
                 // Regenerate button above, same reason — this panel is
-                // bi-themed and #00B7FF alone fails 4.5:1 against its
+                // bi-themed and #00C2FF alone fails 4.5:1 against its
                 // light-mode `bg-white`.
-                className="mt-1 text-[10px] text-[#0369A1] dark:text-[#00B7FF]"
+                className="mt-1 text-[10px] text-[#0369A1] dark:text-[#00C2FF]"
               >
                 Regenerate again to replace the title you have typed.
               </p>
@@ -1481,7 +1481,7 @@ export default function CardDetailPanel({
               />
             )}
             {parentError && (
-              // a11y: NOT the brand `#FF2EB3` used for errors/destructive
+              // a11y: NOT the brand `#FF2E9A` used for errors/destructive
               // actions elsewhere in this file — measured contrast for that
               // hex against this panel's own background is 3.34:1 on white and
               // 4.4:1 on dark:bg-gray-800, both under WCAG 1.4.3's 4.5:1
@@ -1595,7 +1595,7 @@ export default function CardDetailPanel({
                       }}
                       aria-label={`Unlink card from ${link.setLabel}`}
                       title="Remove this card from that set — the card itself is not deleted"
-                      className="px-2 py-0.5 rounded text-[#FF2EB3] hover:bg-[#FF2EB3]/10 border border-transparent hover:border-[#FF2EB3]/50 shrink-0"
+                      className="px-2 py-0.5 rounded text-[#FF2E9A] hover:bg-[#FF2E9A]/10 border border-transparent hover:border-[#FF2E9A]/50 shrink-0"
                     >
                       Unlink
                     </button>

@@ -318,7 +318,7 @@ export default function PublicProfilePage() {
           {/* Footer */}
           <div className="flex flex-col items-center gap-3 mt-8 pt-6 border-t border-white/10 w-full">
             <img
-              src="/logo.png"
+              src="/logo-120.png"
               alt="NeonBinder"
               width={40}
               height={40}

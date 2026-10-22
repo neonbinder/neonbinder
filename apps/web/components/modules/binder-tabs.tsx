@@ -98,6 +98,11 @@ export function useVisibleNavItems(): NavItem[] {
 // edit it in lockstep. Derived from the index, the list can change freely.
 const STAGGER_STEP_PX = 6;
 
+// Every tab is 170px wide; a resting tab is pushed 10px past the right edge
+// and the active one slides fully out, so it reads as 160 -> 170 without
+// animating `width` (a layout property, re-laid out every frame). Hover pulls
+// a resting tab 6px out. Under reduced motion only the colours ease.
+
 export default function BinderTabs() {
   const items = useVisibleNavItems();
   return (
@@ -106,14 +111,14 @@ export default function BinderTabs() {
         <NavLink
           key={item.path}
           to={item.path}
-          viewTransition
           className={({ isActive }) =>
             `binder-tab flex items-center gap-3 rounded-l-xl cursor-pointer
-            transition-all duration-200 ease-out
-            py-4 pl-4 pr-5 w-[160px]
+            transition-[transform,background-color,color,box-shadow] duration-200 ease-out
+            motion-reduce:transition-colors
+            py-4 pl-4 pr-5 w-[170px]
             ${isActive
-              ? `${item.glowClass} ${item.activeColor} bg-gray-900 w-[170px]`
-              : "bg-gray-800/80 text-gray-400 hover:w-[166px] hover:bg-gray-800"
+              ? `${item.glowClass} ${item.activeColor} bg-gray-900 translate-x-0`
+              : "bg-gray-800/80 text-gray-400 translate-x-[10px] hover:translate-x-[4px] hover:bg-gray-800"
             }`
           }
           style={{ marginRight: `-${index * STAGGER_STEP_PX}px` }}

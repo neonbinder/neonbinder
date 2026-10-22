@@ -528,7 +528,7 @@ function MakeInsertDialog({
   if (targets === undefined) {
     body = <p className="text-sm text-slate-400">{makeInsertCopy.loading}</p>;
   } else if (!targets.ok) {
-    body = <p className="text-sm text-[#FF2EB3]">{targets.reason}</p>;
+    body = <p className="text-sm text-[#FF2E9A]">{targets.reason}</p>;
   } else if (targets.targets.length === 0) {
     body = (
       <p className="text-sm text-slate-400">{makeInsertCopy.noTargets(targets.brandValue)}</p>

@@ -432,11 +432,11 @@ describe("PipelineRunsPage", () => {
   });
 
   it("is reachable — main.tsx routes it under /admin behind the admin guard", () => {
-    expect(mainSource).toContain('from "@/app/pipeline-runs/page"');
+    expect(mainSource).toContain('import("@/app/pipeline-runs/page")');
     // NEO-155 folded this into the /admin section; the top-level era's URL
     // redirects rather than 404ing.
     expect(mainSource).toMatch(
-      /path="pipeline-runs"\s+element=\{<PipelineRuns \/>\}/,
+      /path="pipeline-runs"\s+element=\{<Deferred><PipelineRuns \/><\/Deferred>\}/,
     );
     expect(mainSource).toMatch(
       /path="\/pipeline-runs"\s+element=\{<Navigate to="\/admin\/pipeline-runs" replace \/>\}/,

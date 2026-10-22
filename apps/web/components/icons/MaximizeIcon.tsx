@@ -87,7 +87,7 @@ export const MaximizeIcon = React.forwardRef<SVGSVGElement, MaximizeIconProps>(
                 L360 330
                 L280 300 Z"
           fill="none"
-          stroke="#00B7FF"
+          stroke="#00C2FF"
           strokeWidth="16"
           strokeLinejoin="round"
         />
@@ -99,21 +99,21 @@ export const MaximizeIcon = React.forwardRef<SVGSVGElement, MaximizeIconProps>(
           height="60"
           rx="10"
           fill="none"
-          stroke="#00B7FF"
+          stroke="#00C2FF"
           strokeWidth="16"
         />
 
         <path
           d="M380 255 Q410 270 430 255"
           fill="none"
-          stroke="#00B7FF"
+          stroke="#00C2FF"
           strokeWidth="12"
           strokeLinecap="round"
         />
         <path
           d="M385 290 Q420 310 445 290"
           fill="none"
-          stroke="#00B7FF"
+          stroke="#00C2FF"
           strokeWidth="12"
           strokeLinecap="round"
         />

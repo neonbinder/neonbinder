@@ -354,7 +354,7 @@ export default function EntityLinkSearch({
         type="button"
         onClick={onCancel}
         aria-label="Cancel linking"
-        className="w-full text-left px-2 py-1 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+        className="w-full text-left px-2 py-1 text-xs text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
       >
         Cancel (Esc)
       </button>

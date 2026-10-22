@@ -99,11 +99,12 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
 /**
  * The exits as binder index tabs on the right edge, wide screens only: the
  * same staircase the signed-in shell's nav uses, so the demo sits in the
- * frame it will live in after sign-up.
+ * frame it will live in after sign-up. Resting tabs sit 10px past the edge
+ * and slide out, rather than animating width (see binder-tabs.tsx).
  */
 export function DemoRail({ onExit }: { onExit?: () => void }) {
   const tab =
-    "binder-tab flex items-center gap-3 rounded-l-xl py-4 pl-4 pr-5 text-left text-sm font-medium leading-tight transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
+    "binder-tab flex items-center gap-3 rounded-l-xl py-4 pl-4 pr-5 text-left text-sm font-medium leading-tight transition-[transform,background-color,color,box-shadow] duration-200 ease-out motion-reduce:transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
   return (
     <aside aria-label="Leave the demo" className="fixed right-0 top-1/2 z-30 hidden -translate-y-1/2 flex-col gap-2 lg:flex">
       <Link
@@ -118,7 +119,7 @@ export function DemoRail({ onExit }: { onExit?: () => void }) {
           type="button"
           onClick={onExit}
           style={{ marginRight: "-6px" }}
-          className={`${tab} w-[160px] bg-gray-800/80 text-gray-300 hover:w-[166px] hover:bg-gray-800 hover:text-white`}
+          className={`${tab} w-[170px] translate-x-[10px] bg-gray-800/80 text-gray-300 hover:translate-x-[4px] hover:bg-gray-800 hover:text-white`}
         >
           <ArrowUturnLeftIcon aria-hidden="true" className="h-6 w-6 shrink-0" />
           {EXIT}
