@@ -2,7 +2,7 @@ import "./sentry";
 import "@/app/globals.css";
 import "@radix-ui/themes/styles.css";
 
-import { lazy, StrictMode, Suspense, useEffect, type ReactNode } from "react";
+import { lazy, StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router";
 import { ClerkProvider } from "@clerk/clerk-react";
@@ -18,13 +18,16 @@ import AdminSectionLayout from "@/src/layouts/admin-section-layout";
 import ProfileLayout from "@/src/layouts/profile-layout";
 import PrintLayout from "@/src/layouts/print-layout";
 
-// The binder tabs' destinations, named so PrefetchBinderTabs can warm them.
-const loadDashboard = () => import("@/app/dashboard/page");
-const loadCollection = () => import("@/app/collection/page");
-const loadInventory = () => import("@/app/inventory/page");
-const loadAdminHub = () => import("@/app/admin/page");
-const loadPrintHub = () => import("@/app/print/page");
-const loadProfilePublic = () => import("@/app/profile/public/page");
+import {
+  Deferred,
+  PrefetchBinderTabs,
+  loadAdminHub,
+  loadCollection,
+  loadDashboard,
+  loadInventory,
+  loadPrintHub,
+  loadProfilePublic,
+} from "@/src/routes/lazy-routes";
 
 // Pages. Only Home (the landing page, and the first paint for most visitors)
 // ships in the entry bundle; every other page is its own chunk, fetched when
@@ -85,52 +88,6 @@ const CollectionPrototype4 = lazy(() => import("@/app/collection/prototypes/p4/p
 const CollectionPrototype5 = lazy(() => import("@/app/collection/prototypes/p5/page"));
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-
-/** A lazy route's element: a quiet line while its chunk loads. */
-function Deferred({ children }: { children: ReactNode }) {
-  return (
-    <Suspense
-      fallback={
-        <p role="status" className="text-sm text-slate-400">
-          Sleeving the cards…
-        </p>
-      }
-    >
-      {children}
-    </Suspense>
-  );
-}
-
-/**
- * Warms the binder tabs' chunks once the signed-in shell is idle, so a tab
- * click shows its page straight away rather than "Sleeving the cards…" while
- * the chunk downloads. Rendered only inside the binder shell, so the public
- * pages never pay for it.
- */
-function PrefetchBinderTabs() {
-  useEffect(() => {
-    const warm = () => {
-      for (const load of [
-        loadDashboard,
-        loadCollection,
-        loadInventory,
-        loadAdminHub,
-        loadPrintHub,
-        loadProfilePublic,
-      ]) {
-        // A failed prefetch is harmless: the route retries when it renders.
-        load().catch(() => {});
-      }
-    };
-    if ("requestIdleCallback" in window) {
-      const id = window.requestIdleCallback(warm, { timeout: 3000 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const id = setTimeout(warm, 1500);
-    return () => clearTimeout(id);
-  }, []);
-  return null;
-}
 
 /**
  * The old /placeholders stopgap URL, forwarded to the real tool.

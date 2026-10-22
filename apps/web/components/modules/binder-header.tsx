@@ -69,14 +69,16 @@ export default function BinderHeader({
         <SignedOut>
           <SignInButton />
         </SignedOut>
-        {/* While the menu is open the page (this toggle included) is inert and
-            the menu's own Close button takes over, so the open-state label
-            and icon only ever show for the instant before the dialog mounts. */}
+        {/* One name in both states, with aria-expanded carrying open/closed.
+            It used to read "Close menu" while open, the same name as the
+            button inside the dialog. While the menu is open this toggle is
+            inert anyway (the page behind is), and the dialog's own Close menu
+            button takes over. */}
         <button
           type="button"
           onClick={onMobileMenuToggle}
           className="lg:hidden min-h-11 min-w-11 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue transition-colors"
-          aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
+          aria-label="Open menu"
           aria-expanded={isMobileMenuOpen}
           aria-controls={isMobileMenuOpen ? MOBILE_NAV_ID : undefined}
           aria-haspopup="dialog"

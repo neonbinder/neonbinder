@@ -14,6 +14,12 @@ test("Collection Tracking Feature Page", { tag: ["@marketing", "@home"] }, async
   await expect(page.getByText("We Find Your Cards")).toBeVisible();
   await expect(page.getByText("Build It Your Way")).toBeVisible();
   await expect(page.getByText("Track Everything")).toBeVisible();
+  // Heading outline: h1, each section an h2, its cards h3 (they were h4).
+  await expect(page.getByRole("heading", { level: 1, name: "Track Your Collection Like It's 1995" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Snap & Upload" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Quick & Dirty" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Search & Filter" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 4 })).toHaveCount(0);
   await expectAccessible(page, { label: "collection-tracking feature page" });
 
   // The CTA opens the sign-up dialog; clicking beside it dismisses it.

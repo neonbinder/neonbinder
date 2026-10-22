@@ -12,6 +12,13 @@ test("AI Card Identification Feature Page", { tag: ["@marketing", "@home"] }, as
   await expect(page.getByText("Complete Card Data")).toBeVisible();
   await expect(page.getByText("Accuracy & Verification")).toBeVisible();
   await expect(page.getByText("Machine Learning")).toBeVisible();
+  // Heading outline: h1, then each section an h2, then its cards h3 (they were
+  // h4, which skipped a level). No h4 is left to skip to.
+  await expect(page.getByRole("heading", { level: 1, name: "Identify Cards Like a Pro" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Instant Recognition" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Lightning-Fast Speed" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Learns From You" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 4 })).toHaveCount(0);
   await expectAccessible(page, { label: "ai-identification feature page" });
 
   // Get Started opens the sign-up modal; dismissing it returns to the page.

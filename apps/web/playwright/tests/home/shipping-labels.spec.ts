@@ -18,6 +18,12 @@ test("Shipping Labels Feature Page", { tag: ["@marketing", "@home"] }, async ({ 
   await expect(page.getByText(/Fits Any 4.6 Label Printer/)).toBeVisible();
   // NEO-207: the postage section.
   await expect(page.getByText("Buy The Postage Too")).toBeVisible();
+  // Heading outline: h1, each section an h2, its cards h3 (they were h4).
+  await expect(page.getByRole("heading", { level: 1, name: "Print the Label, Ship the Card" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Your Address, Saved Once" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Set It And Forget It" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Reprint Without Re-Buying" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 4 })).toHaveCount(0);
   await expectAccessible(page, { label: "shipping-labels feature page" });
 
   await page.getByRole("button", { name: "Get Started" }).click();

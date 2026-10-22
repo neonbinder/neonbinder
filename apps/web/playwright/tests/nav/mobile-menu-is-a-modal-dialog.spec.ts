@@ -22,6 +22,7 @@ test("Mobile menu opens as a modal dialog, traps focus and closes cleanly", { ta
     await expect(page.getByRole("link", { name: "Print Shop", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Profile", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open menu" })).toBeHidden();
+    await expectAccessible(page, { label: "Dashboard, desktop binder tabs" });
     return;
   }
 
@@ -45,9 +46,11 @@ test("Mobile menu opens as a modal dialog, traps focus and closes cleanly", { ta
   await expect(dashboardLink).toHaveAttribute("aria-current", "page");
   await expect(dashboardLink).toBeFocused();
 
-  // The page behind is inert: focus cannot be put on the header's controls
-  // (its toggle now reads "Close menu"), so focus stays in the dialog.
-  const headerControl = page.getByRole("banner").getByRole("button", { name: "Close menu" });
+  // The page behind is inert: focus cannot be put on the header's toggle,
+  // so focus stays in the dialog. The toggle keeps its one name and reports
+  // the open menu through aria-expanded.
+  const headerControl = page.getByRole("banner").getByRole("button", { name: "Open menu" });
+  await expect(headerControl).toHaveAttribute("aria-expanded", "true");
   await headerControl.focus();
   await expect(headerControl).not.toBeFocused();
   await expect(dashboardLink).toBeFocused();
