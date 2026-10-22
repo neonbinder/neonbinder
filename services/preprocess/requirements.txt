@@ -10,7 +10,7 @@ google-cloud-vision==3.15.0
 # storage surface itself.
 google-cloud-storage==3.14.1
 anthropic==1.1.0
-Pillow==12.3.0
+Pillow==13.0.0
 # SAM crop fallback (slice 2b). CPU-only torch keeps the image size sane;
 # transformers pulls the SAM model + processor; opencv-headless handles
 # mask-to-contour math and image encoding; numpy is the shared dep.
