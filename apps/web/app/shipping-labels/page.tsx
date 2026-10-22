@@ -97,21 +97,21 @@ export default function ShippingLabelsPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-teal font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Set It And Forget It</h4>
+                    <h3 className="font-semibold text-slate-300">Set It And Forget It</h3>
                     <p>Enter it once on your profile. It fills in on every label after that.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-teal font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Private To You</h4>
+                    <h3 className="font-semibold text-slate-300">Private To You</h3>
                     <p>Your address stays on your account. It never shows on your public collector page.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-teal font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Change It Anytime</h4>
+                    <h3 className="font-semibold text-slate-300">Change It Anytime</h3>
                     <p>Moved? Update it in one place and every future label follows.</p>
                   </div>
                 </div>
@@ -170,21 +170,21 @@ export default function ShippingLabelsPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Live Preview</h4>
+                    <h3 className="font-semibold text-slate-300">Live Preview</h3>
                     <p>The label updates as you type, at actual size. No guessing.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Nothing To Install</h4>
+                    <h3 className="font-semibold text-slate-300">Nothing To Install</h3>
                     <p>It runs in your browser and uses the printer you already have.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Big, Readable Addresses</h4>
+                    <h3 className="font-semibold text-slate-300">Big, Readable Addresses</h3>
                     <p>Clean uppercase type that carriers and sorting machines read easily.</p>
                   </div>
                 </div>
@@ -248,21 +248,21 @@ export default function ShippingLabelsPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">The Standard Size</h4>
+                    <h3 className="font-semibold text-slate-300">The Standard Size</h3>
                     <p>The same 4×6 label every shipping service uses. Buy them anywhere.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Thermal Or Inkjet</h4>
+                    <h3 className="font-semibold text-slate-300">Thermal Or Inkjet</h3>
                     <p>Pure black on white, so it comes out crisp on either one.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">True To Size</h4>
+                    <h3 className="font-semibold text-slate-300">True To Size</h3>
                     <p>Prints at exactly 6 by 4 inches — no shrink-to-fit, no crooked labels.</p>
                   </div>
                 </div>
@@ -330,28 +330,28 @@ export default function ShippingLabelsPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Letter Rates, Not Package Rates</h4>
+                    <h3 className="font-semibold text-slate-300">Letter Rates, Not Package Rates</h3>
                     <p>A PWE ships as a First-Class letter, with 1, 2, and 3oz tiers priced up front — every weight shows its real price before you pick one.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Verified Before You&apos;re Charged</h4>
+                    <h3 className="font-semibold text-slate-300">Verified Before You&apos;re Charged</h3>
                     <p>USPS checks the buyer&apos;s address while the label is priced, so an undeliverable address fails before any money moves. The buy button always shows the exact amount it will charge.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Tracking, Copied, Done</h4>
+                    <h3 className="font-semibold text-slate-300">Tracking, Copied, Done</h3>
                     <p>Every purchase hands you a tracking number with a copy button, ready to paste back to your buyer. Then Label History picks up the story — every USPS sorting scan, right up to &quot;out for delivery.&quot;</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Reprint Without Re-Buying</h4>
+                    <h3 className="font-semibold text-slate-300">Reprint Without Re-Buying</h3>
                     <p>Every label you buy is saved. Jammed printer, wrong tray, lost sheet — pull it back up and print it again for free.</p>
                   </div>
                 </div>

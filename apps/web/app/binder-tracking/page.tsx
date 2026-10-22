@@ -177,21 +177,21 @@ export default function BinderTrackingPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Quick & Dirty</h4>
+                    <h3 className="font-semibold text-slate-300">Quick & Dirty</h3>
                     <p>No fancy equipment needed. Your phone camera is totally enough.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Batch Upload</h4>
+                    <h3 className="font-semibold text-slate-300">Batch Upload</h3>
                     <p>Upload multiple cards at once and we&apos;ll process them all in one go.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Front & Back</h4>
+                    <h3 className="font-semibold text-slate-300">Front & Back</h3>
                     <p>Capture both sides for maximum info and killer accuracy.</p>
                   </div>
                 </div>
@@ -241,21 +241,21 @@ export default function BinderTrackingPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Massive Database</h4>
+                    <h3 className="font-semibold text-slate-300">Massive Database</h3>
                     <p>Thousands of sets spanning decades of card history. We got &apos;em all.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Instant Matching</h4>
+                    <h3 className="font-semibold text-slate-300">Instant Matching</h3>
                     <p>Automatic identification with zero effort from you. Sick, right?</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Verify & Correct</h4>
+                    <h3 className="font-semibold text-slate-300">Verify & Correct</h3>
                     <p>Double-check the matches and make manual adjustments if needed. Total control.</p>
                   </div>
                 </div>
@@ -300,21 +300,21 @@ export default function BinderTrackingPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Unlimited Binders</h4>
+                    <h3 className="font-semibold text-slate-300">Unlimited Binders</h3>
                     <p>Create as many custom collections as you want. Go wild.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Mix & Match</h4>
+                    <h3 className="font-semibold text-slate-300">Mix & Match</h3>
                     <p>Drag cards between binders. Organize however makes sense to you.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Your Rules</h4>
+                    <h3 className="font-semibold text-slate-300">Your Rules</h3>
                     <p>Custom sorting, filtering, and organization options for maximum control.</p>
                   </div>
                 </div>
@@ -373,28 +373,28 @@ export default function BinderTrackingPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Collection Value</h4>
+                    <h3 className="font-semibold text-slate-300">Collection Value</h3>
                     <p>Automatic valuation based on current market data. Know what you&apos;re holding.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Set Completion</h4>
+                    <h3 className="font-semibold text-slate-300">Set Completion</h3>
                     <p>Track percentage complete for each set. See exactly what you&apos;re missing.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Full Analytics</h4>
+                    <h3 className="font-semibold text-slate-300">Full Analytics</h3>
                     <p>Card counts, condition grades, rarity distributions, and detailed statistics.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Search & Filter</h4>
+                    <h3 className="font-semibold text-slate-300">Search & Filter</h3>
                     <p>Instantly find any card or set in your collection with powerful search tools.</p>
                   </div>
                 </div>

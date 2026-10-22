@@ -137,9 +137,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Your Key Is Treated Like A Password
-                  </h4>
+                  </h3>
                   <p>
                     It&apos;s stored encrypted behind the same wall as
                     marketplace credentials, it is never shown back to anyone —
@@ -151,9 +151,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Your Money Stays Yours
-                  </h4>
+                  </h3>
                   <p>
                     Postage is charged by EasyPost to your own account at USPS
                     rates. Neon Binder never touches, holds, or marks up a
@@ -164,9 +164,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Labels Are Free Without It
-                  </h4>
+                  </h3>
                   <p>
                     No EasyPost account? You can still print unlimited 4×6
                     address labels for free — the key only unlocks buying the
@@ -177,9 +177,9 @@ export default function EasypostSetupPage() {
               <div className="flex items-start gap-3">
                 <span className="text-neon-teal font-bold text-xl">▸</span>
                 <div>
-                  <h4 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-slate-300">
                     Addresses Are Checked Before You Pay
-                  </h4>
+                  </h3>
                   <p>
                     USPS verifies the buyer&apos;s address while the label is
                     being priced, so an undeliverable address fails before any

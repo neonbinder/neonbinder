@@ -211,7 +211,7 @@ export const QrCodeSvg = forwardRef<SVGSVGElement, QrCodeSvgProps>(
                   textAnchor="middle"
                   dominantBaseline="central"
                   fill="#000000"
-                  fontFamily="Lexend, Geist, sans-serif"
+                  fontFamily="Lexend, sans-serif"
                 >
                   {showDollar && (
                     <tspan

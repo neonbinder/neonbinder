@@ -14,8 +14,44 @@
 :root {
   --background: #0a0a0a;
   --foreground: #ededed;
-  --font-sans: 'Lexend', Arial, Helvetica, sans-serif;
+  --font-sans: 'Lexend', 'Lexend Fallback', Arial, Helvetica, sans-serif;
   color-scheme: dark;
+}
+
+/* Arial stretched to Lexend's width and vertical metrics (Lexend's latin
+ * subset runs ~8% wider: 40.16em vs 37.19em on the same sample line), so
+ * text keeps its line breaks and height when Lexend swaps in. */
+@font-face {
+  font-family: 'Lexend Fallback';
+  src: local('Arial'), local('Helvetica');
+  size-adjust: 108%;
+  ascent-override: 92.6%;
+  descent-override: 23.1%;
+  line-gap-override: 0%;
+}
+
+/* Radix Themes sets its own system-font stack on every `.radix-themes`
+ * element, and the whole app (portals included) renders inside one, so
+ * until this override every screen was in San Francisco / Segoe UI and
+ * Lexend never even downloaded. `html .radix-themes` outranks Radix's
+ * single-class rule, which loads after this file. */
+html .radix-themes {
+  --default-font-family: var(--font-sans);
+  --heading-font-family: var(--font-sans);
+  --strong-font-family: var(--font-sans);
+  --em-font-family: var(--font-sans);
+  --quote-font-family: var(--font-sans);
+  --code-font-family: var(--font-geist-mono);
+}
+
+/* Headings wrap to even lines; prose avoids a lone last word. Zero
+ * specificity, so any utility still wins. */
+:where(h1, h2, h3, h4, h5, h6) {
+  text-wrap: balance;
+}
+
+:where(p, li, dd, blockquote) {
+  text-wrap: pretty;
 }
 
 @theme inline {
