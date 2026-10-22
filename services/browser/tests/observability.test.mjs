@@ -511,3 +511,35 @@ describe("loginFailureOutcome — unmoved by the NEO-294 idempotence fix", () =>
     assert.equal(classifyBrowserError("Failed to retrieve credentials"), "other");
   });
 });
+
+describe("logBrowserOp — NEO-355 paused-canary heartbeat", () => {
+  it("a skipped canary line keeps msg browser_login_call, success true, canary true and carries outcome skipped_paused", () => {
+    logBrowserOp({
+      msg: "browser_login_call",
+      operation: "login_bsc",
+      platform: "bsc",
+      duration_ms: 12,
+      success: true,
+      status_code: 200,
+      canary: true,
+      outcome: "skipped_paused",
+    });
+    const line = emitted();
+    assert.equal(line.msg, "browser_login_call");
+    assert.equal(line.success, true);
+    assert.equal(line.status_code, 200);
+    assert.equal(line.canary, true);
+    assert.equal(line.outcome, "skipped_paused");
+    assert.equal(line.error_class, undefined, "a skip is not a failure: no error_class");
+  });
+
+  it("an ordinary login line has no outcome key at all", () => {
+    logBrowserOp({ ...BASE, success: true, status_code: 200 });
+    assert.equal("outcome" in emitted(), false);
+  });
+
+  it("an ordinary failed canary line has no outcome key", () => {
+    logBrowserOp({ ...BASE, canary: true, error_class: "other" });
+    assert.equal("outcome" in emitted(), false);
+  });
+});

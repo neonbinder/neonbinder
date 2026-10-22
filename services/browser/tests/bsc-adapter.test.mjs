@@ -1567,7 +1567,10 @@ describe("BSCAdapter — canary-key write-back protection", () => {
 const SSO_COOKIE_NAME = "x-ms-cpim-sso:buysportscards.onmicrosoft.com_0";
 const SSO_COOKIE_VALUE = "SSOFIXTUREVALUE0123456789abcdef";
 const SSO_COOKIE_REISSUED = "SSOFIXTUREREISSUED9876543210zyx";
-const SSO_EXPIRES_HTTP = "Sun, 15 Nov 2026 12:00:00 GMT";
+// Relative to now (a hard-coded calendar date goes stale and makes the cookie
+// "already expired"). toUTCString() has whole-second precision, which is what
+// the adapter's Date.parse of the header sees, so the two stay equal.
+const SSO_EXPIRES_HTTP = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toUTCString();
 const SSO_EXPIRES_MS = Date.parse(SSO_EXPIRES_HTTP);
 
 /** A secret whose refresh window has lapsed but whose SSO cookie is live. */
@@ -2356,8 +2359,9 @@ describe("BSCAdapter.login — NEO-278 silent SSO re-authorize", () => {
   it("two x-ms-cpim-sso:* cookies with different expiries persist BOTH, with expiresAt as the EARLIER one", async () => {
     const secret = statefulSecret({ username: "seller@example.com", password: "secret" });
     const BSCAdapter = loadBSCAdapter(secret);
-    const laterExpiry = "Sun, 15 Nov 2026 12:00:00 GMT";
-    const earlierExpiry = "Fri, 16 Oct 2026 12:00:00 GMT";
+    // Relative to now so the fixture cannot expire: both are in the future.
+    const laterExpiry = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toUTCString();
+    const earlierExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toUTCString();
     const secondCookieName = "x-ms-cpim-sso:buysportscards.onmicrosoft.com_1";
     const restore = stubFetch(
       makeB2CRouter({
