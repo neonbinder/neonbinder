@@ -1,21 +1,22 @@
 @import "tailwindcss";
+@import "./theme.css";
 @config "../tailwind.config.js";
 
-/* NeonBinder is a dark-only app. Radix renders the root `<Theme
- * appearance="dark">` as `.radix-themes.dark`, and index.html puts `dark` on
- * <html> so portals to <body> are covered too. Tailwind's `dark:` variant keys
- * off that class, NOT the OS `prefers-color-scheme` (Tailwind v4's default):
- * under a light OS the default rendered every `bg-white dark:bg-gray-800` /
- * `text-slate-600 dark:text-slate-400` pair as its light half on a dark page,
- * e.g. near-white header text on white (NEO-341 axe). Never reintroduce a
- * `prefers-color-scheme` rule; the light halves of existing pairs are dead. */
-@custom-variant dark (&:where(.dark, .dark *));
+/* NEO-356 — two modes. `<html data-theme="light|dark">` is always resolved
+ * (index.html's pre-paint script, then src/theme/ThemeProvider.tsx), and every
+ * colour is a role variable from app/theme.css. Components never use `dark:`;
+ * a role already knows the mode. The variant is kept, keyed to the attribute,
+ * only so the not-yet-migrated `bg-white dark:bg-gray-800` pairs keep their
+ * dark half while the lint allowlist (scripts/eslint/theme-allowlist.mjs)
+ * drains.
+ * Never reintroduce a `prefers-color-scheme` rule: the system setting reaches
+ * the page only through the attribute, which a user's saved choice overrides. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+  /* Kept for code that reads them by name; app/theme.css owns the values. */
+  --background: var(--surface);
   --font-sans: 'Lexend', 'Lexend Fallback', Arial, Helvetica, sans-serif;
-  color-scheme: dark;
 }
 
 /* Arial stretched to Lexend's width and vertical metrics (Lexend's latin
@@ -54,13 +55,8 @@ html .radix-themes {
   text-wrap: pretty;
 }
 
+/* Colours live in app/theme.css's `@theme inline`. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  /* Focus rings are Marquee Cyan everywhere. `ring-ring` (Button, Tabs,
-   * NavigationMenu) named this token and nothing defined it, so those rings
-   * fell back to the text colour. */
-  --color-ring: #00c2ff;
   --font-mono: var(--font-geist-mono);
 }
 
@@ -89,7 +85,7 @@ body {
 /* Paper is white. Labels, sheets and QR codes print from their own isolated
  * documents (lib/print/print-html.ts, the QR popup), which pin black on white
  * themselves and never load this file. This block covers the page itself being
- * printed (Ctrl+P): the dark-only base above would otherwise put #ededed body
+ * printed (Ctrl+P): the dark base above would otherwise put #ededed body
  * text on paper, under a dark colour scheme. The selectors are weighted on
  * purpose: Radix's stylesheet loads after this one and sets `color-scheme:
  * dark` on `:root` (via `:has()`) and on `.radix-themes:where(.dark)`, so a
@@ -128,7 +124,7 @@ body {
     font-size: 30px;
   }
 }
-.dark, .dark-theme {
+[data-theme="dark"] {
   --green-1: #060c07;
   --green-2: #111a12;
   --green-3: #122d17;
@@ -163,7 +159,7 @@ body {
 
 @supports (color: color(display-p3 1 1 1)) {
   @media (color-gamut: p3) {
-    .dark, .dark-theme {
+    [data-theme="dark"] {
       --green-1: oklch(14.5% 0.0168 148.2);
       --green-2: oklch(20.5% 0.0212 148.2);
       --green-3: oklch(26.8% 0.0514 148.2);
@@ -198,7 +194,7 @@ body {
   }
 }
 
-.dark, .dark-theme {
+[data-theme="dark"] {
   --gray-1: #0a0a0c;
   --gray-2: #18181a;
   --gray-3: #212225;
@@ -233,7 +229,7 @@ body {
 
 @supports (color: color(display-p3 1 1 1)) {
   @media (color-gamut: p3) {
-    .dark, .dark-theme {
+    [data-theme="dark"] {
       --gray-1: oklch(14.5% 0.0042 277.7);
       --gray-2: oklch(20.9% 0.004 277.7);
       --gray-3: oklch(25.2% 0.0055 277.7);
@@ -268,11 +264,11 @@ body {
   }
 }
 
-.dark, .dark-theme, :is(.dark, .dark-theme) :where(.radix-themes:not(.light, .light-theme)) {
+[data-theme="dark"] {
   --color-background: #0a0a0a;
 }
 
-:root, .light, .light-theme {
+[data-theme="light"] {
   --green-1: #f9fffa;
   --green-2: #f2fcf3; 
   --green-3: #e1fae4; /* 50 */
@@ -307,7 +303,7 @@ body {
 
 @supports (color: color(display-p3 1 1 1)) {
   @media (color-gamut: p3) {
-    :root, .light, .light-theme {
+    [data-theme="light"] {
       --green-1: oklch(99.4% 0.009 148.2);
       --green-2: oklch(98.2% 0.0155 148.2);
       --green-3: oklch(96.1% 0.0392 148.2);
@@ -342,7 +338,7 @@ body {
   }
 }
 
-:root, .light, .light-theme {
+[data-theme="light"] {
   --gray-1: #fcfcfd;
   --gray-2: #f9f9fb;
   --gray-3: #eff0f3;
@@ -377,7 +373,7 @@ body {
 
 @supports (color: color(display-p3 1 1 1)) {
   @media (color-gamut: p3) {
-    :root, .light, .light-theme {
+    [data-theme="light"] {
       --gray-1: oklch(99.1% 0.0015 277.7);
       --gray-2: oklch(98.2% 0.003 277.7);
       --gray-3: oklch(95.6% 0.0045 277.7);
@@ -412,8 +408,10 @@ body {
   }
 }
 
-:root, .light, .light-theme, .radix-themes {
-  --color-background: #fff;
+/* The light page under the Radix root: Radix would paint it white. Dark
+ * keeps Radix's own dark ground (its `.dark` rule on the Theme element). */
+[data-theme="light"] .radix-themes {
+  --color-background: var(--surface);
 }
 
 /* Grows a small control's hit area to at least 24x24px (WCAG 2.5.8) without
@@ -436,7 +434,9 @@ body {
   transform: translate(-50%, -50%);
 }
 
-/* Neon glow utilities for binder tabs */
+/* Neon glow utilities for binder tabs. The app shell's tabs moved to
+ * `.binder-tab` + `tab-hue-*` in app/theme.css (NEO-356); the collection
+ * demo's own tab (DemoChrome) still uses these until it migrates, then they go. */
 .binder-tab-glow-green {
   box-shadow: 0 0 12px 2px rgba(0, 213, 88, 0.4), inset 0 0 8px rgba(0, 213, 88, 0.1);
 }
@@ -459,15 +459,14 @@ body {
   box-shadow: 0 0 12px 2px rgba(0, 229, 192, 0.4), inset 0 0 8px rgba(0, 229, 192, 0.1);
 }
 
-/* Dark ink on Radix's solid pink and blue. Radix ships white
+/* Dark ink on Radix's solid pink and blue, in both modes. Radix ships white
  * (`--pink-contrast` / `--blue-contrast` on `:root`), which is 3.9:1 on its
  * dark pink-9 and 3.2:1 on its dark blue-9, under SC 1.4.3's 4.5:1. Black is
  * 5.1:1 and 6.4:1, and the same ink NeonButton puts on our own neon fills.
- * `:root.dark` outweighs Radix's `:root`; `.dark` covers the Theme root and
- * its portals, which carry the class themselves. */
-:root.dark,
-.dark,
-.dark-theme {
+ * `html:root` outweighs Radix's `:root`; `.radix-themes` covers the Theme
+ * root and its portals. */
+html:root,
+.radix-themes {
   --pink-contrast: #000000;
   --blue-contrast: #000000;
 }
@@ -545,7 +544,7 @@ body {
   }
 }
 
-:root, .light, .light-theme {
+[data-theme="light"] {
   --blue-1: #fafdff;
   --blue-2: #f1fbff;
   --blue-3: #e2f5ff; /* 50 */
@@ -580,7 +579,7 @@ body {
 
 @supports (color: color(display-p3 1 1 1)) {
   @media (color-gamut: p3) {
-    :root, .light, .light-theme {
+    [data-theme="light"] {
       --blue-1: oklch(99.3% 0.0041 230);
       --blue-2: oklch(98.2% 0.012 230);
       --blue-3: oklch(96% 0.0249 230);

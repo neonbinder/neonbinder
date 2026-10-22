@@ -18,12 +18,12 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
           <input
             ref={ref}
             type="checkbox"
-            className="appearance-none h-3.5 w-3.5 rounded border border-gray-300 bg-white checked:bg-slate-900 checked:border-slate-900 focus:ring-2 focus:ring-slate-400 focus:ring-offset-2"
+            className="appearance-none h-3.5 w-3.5 rounded border border-control bg-field checked:bg-selection checked:border-selection focus-outline"
             {...props}
           />
           {props.checked && (
             <svg
-              className="absolute inset-0 h-3.5 w-3.5 text-white pointer-events-none"
+              className="absolute inset-0 h-3.5 w-3.5 text-surface pointer-events-none"
               fill="currentColor"
               viewBox="0 0 20 20"
             >
@@ -39,12 +39,12 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
         {(label || description) && (
           <div className="flex flex-col gap-1.5">
             {label && (
-              <label className="text-sm font-medium text-slate-900 leading-none">
+              <label className="text-sm font-medium text-ink leading-none">
                 {label}
               </label>
             )}
             {variant === "withText" && description && (
-              <p className="text-sm text-slate-500 leading-5">{description}</p>
+              <p className="text-sm text-ink-3 leading-5">{description}</p>
             )}
           </div>
         )}

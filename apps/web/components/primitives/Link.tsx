@@ -18,7 +18,7 @@ export const Link = React.forwardRef<HTMLAnchorElement, LinkProps>(
     ref,
   ) => {
     const baseClasses =
-      "inline-block text-neon-blue hover:underline font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neon-blue";
+      "inline-block text-neon-blue-text hover:underline font-medium transition-colors focus-outline";
 
     const classes = `${baseClasses} ${className}`;
 

@@ -26,10 +26,19 @@ Confirmed this doesn't affect the main app build (`npm run build` still produces
 
 ## Styling
 
-No dedicated design-system stylesheet — components are pure Tailwind utility classes against the
-app-wide `tailwind.config.js` (custom neon color tokens: `neon-green`, `neon-pink`, `neon-yellow`,
-`neon-blue`, `neon-purple`, `neon-orange`) plus a couple of hand-written classes (`.neon-header`
-etc.) in `app/globals.css`.
+No dedicated design-system stylesheet — components are pure Tailwind utility classes plus a couple
+of hand-written classes (`.neon-header` etc.) in `app/globals.css`.
+
+**Since NEO-356 every colour is a role variable** in `app/theme.css` (imported first by
+`globals.css`), in two modes keyed on `<html data-theme="light|dark">`: `bg-surface`, `bg-raised`,
+`text-ink-2`, `border-rule`, `text-neon-pink-text`, `text-on-neon-green`, `focus-outline`,
+`shadow-offset`... `tailwind.config.js` no longer holds colours (a JS-config colour compiles to a
+literal hex and could not follow the mode). The compiled CSS therefore resolves to `var(--...)`,
+and a preview renders whichever mode its document root says: with no `data-theme` it gets the
+`:root` (dark) values. To preview light, set `data-theme="light"` on the preview's `<html>` (or on a
+wrapper: every role is redefined under `[data-theme="light"]`). Primitives that read the mode in
+React (`BrandMark`, `PullingLogo`) take it from `useTheme()`, which outside a provider reads the
+same attribute.
 
 **`cssEntry` is NOT `app/globals.css` directly** — that file is Tailwind v4 *source*
 (`@import "tailwindcss"` + `@config "../tailwind.config.js"`), and design-sync scrapes a
@@ -87,9 +96,9 @@ utility classes, the `Neon` `@font-face` rule intact.
 - **ScrollListItem's root is `inline-flex`**, not `flex`/`block` — stacking several instances in a
   plain wrapper `<div>` makes them flow horizontally. Wrap consumers in `flex flex-col` (the
   preview does this).
-- **Menubar/MenubarItem's plain white/slate styling (no neon tokens) is intentional**, straight
-  from the source (`bg-white`, `border-slate-300`, `hover:bg-slate-50`) — not a missed styling
-  opportunity if it looks understated next to the neon-heavy components.
+- **Menubar/MenubarItem's plain styling (no neon tokens) is intentional** — understated next to
+  the neon-heavy components on purpose. Since NEO-356 it uses the role tokens (`bg-raised`,
+  `border-control`, `hover:bg-hover`) instead of white/slate, so it follows the mode.
 - **Checkbox's checked state didn't render the intended slate-900 fill** — `appearance-none` was
   missing on the input, so the browser's native checkbox painted over the custom style in every
   real consumer, not just previews. **Fixed in NEO-94 (PR #85)**, not yet merged as of this sync.
@@ -105,8 +114,19 @@ utility classes, the `Neon` `@font-face` rule intact.
 - `components/modules/` staying out of scope is a standing decision, not a technical limit —
   if a future primitive migrates in from modules/ (deliberately decoupled from Convex), it should
   land in `components/primitives/` and get picked up automatically; don't special-case it here.
-- Neon color tokens live in `tailwind.config.js` as plain JS values, not CSS custom properties —
-  if the DS ever migrates to CSS vars, `cssEntry`/`tokensGlob` will need revisiting.
+- Neon colour tokens moved from `tailwind.config.js` to CSS custom properties in `app/theme.css`
+  (NEO-356). `cssEntry` still works (it compiles globals.css, which imports theme.css), but
+  `tokensGlob` and any token scrape should read `app/theme.css`; re-run the sync and re-grade, since
+  the showcase primitives (Accordion, Menubar, MenuItem, NavigationMenu, Tabs, TableItem, Switch,
+  RadioButton, Checkbox, Avatar, InlineCode, Palette, ScrollListItem, Collapsible) were restyled
+  from their old light-only slate classes onto the roles and now render correctly in both modes.
+- New primitives since the last sync: `ModeRadioGroup`, `BrandMark`, `ForceDark` (exported from the
+  barrel). `BrandMark`/`ForceDark`/`PullingLogo` import `useTheme` from `src/theme/`, outside
+  `components/primitives/`, so the lib build now pulls that module in too.
+- RadioButton's no-op checked ternary (see above) was fixed in NEO-356: checked draws the
+  selection colour on the ring and the dot.
+- `.binder-tab`/`.binder-row` (app shell, `@layer components`) are styled by theme.css now, keyed on
+  `aria-current`; out of scope here (modules), noted in case a shell preview is ever added.
 - **Checkbox's `Checked`/`WithDescription` cells are graded `needs-work`, deferred pending NEO-94**
   (PR #85, one-line `appearance-none` fix, open but not merged as of this sync). Re-run
   `package-capture.mjs --components Checkbox --force` after it merges and re-grade — should flip

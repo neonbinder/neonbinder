@@ -21,7 +21,7 @@ export const Avatar: React.FC<AvatarProps> = ({
     large: "w-12 h-12 text-base",
   };
 
-  const baseClasses = `inline-flex items-center justify-center rounded-full bg-slate-200 text-slate-900 font-medium ${sizeClasses[size]} ${className}`;
+  const baseClasses = `inline-flex items-center justify-center rounded-full bg-hover text-ink font-medium ${sizeClasses[size]} ${className}`;
 
   if (src) {
     return (

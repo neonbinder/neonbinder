@@ -66,10 +66,10 @@ export const NavigationMenuItem: React.FC<NavigationMenuItemProps> = ({
       <button
         type="button"
         onClick={handleClick}
-        className={`flex items-center gap-1 px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+        className={`flex items-center gap-1 px-4 py-2 text-sm font-medium transition-colors focus-outline ${
           isActive
-            ? "bg-slate-50 text-slate-900 rounded-md"
-            : "text-slate-900 hover:text-slate-600"
+            ? "bg-hover text-ink rounded-md"
+            : "text-ink hover:text-ink-2"
         } ${className}`}
       >
         <span>{children}</span>
@@ -116,7 +116,7 @@ export const NavigationMenuContent: React.FC<NavigationMenuContentProps> = ({
 
   return (
     <div
-      className={`absolute top-full left-0 mt-2 w-auto min-w-[400px] p-4 bg-white border border-slate-200 rounded-md shadow-lg z-50 ${
+      className={`absolute top-full left-0 mt-2 w-auto min-w-[400px] p-4 bg-raised border border-rule rounded-md shadow-lg shadow-offset z-50 ${
         type === "withPicture" ? "flex gap-3" : "grid grid-cols-2 gap-3"
       } ${className}`}
     >
@@ -140,11 +140,11 @@ export const NavigationMenuContentItem: React.FC<
     <div
       onClick={onClick}
       className={`p-3 rounded-md cursor-pointer transition-colors ${
-        selected ? "bg-slate-50" : "hover:bg-slate-50"
+        selected ? "bg-hover" : "hover:bg-hover"
       } ${className}`}
     >
-      <div className="text-sm font-medium text-slate-900 mb-1">{title}</div>
-      <div className="text-sm text-slate-500 leading-5">{description}</div>
+      <div className="text-sm font-medium text-ink mb-1">{title}</div>
+      <div className="text-sm text-ink-3 leading-5">{description}</div>
     </div>
   );
 };

@@ -1,6 +1,7 @@
 import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
+import { themePreferenceValidator } from "./schema";
 
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
@@ -33,7 +34,7 @@ export const getUserProfile = query({
       marketplaceAccountIds: marketplaceAccountIdsValidator,
       preferences: v.optional(v.object({
         defaultYear: v.optional(v.number()),
-        theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
+        theme: v.optional(themePreferenceValidator),
       })),
     }),
     v.null()
@@ -142,7 +143,7 @@ export const updateUserProfile = mutation({
   args: {
     preferences: v.optional(v.object({
       defaultYear: v.optional(v.number()),
-      theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
+      theme: v.optional(themePreferenceValidator),
     })),
   },
   returns: v.boolean(),
@@ -171,6 +172,45 @@ export const updateUserProfile = mutation({
     }
 
     return true;
+  },
+});
+
+/**
+ * NEO-356 — save the collector's Profile → Settings theme.
+ *
+ * Its own mutation rather than `updateUserProfile`, which REPLACES the whole
+ * `preferences` object: a theme write through it would silently drop
+ * `defaultYear` (and any preference added later). This one patches `theme`
+ * alone and carries every other key across.
+ *
+ * Creates the profile row when the collector has none yet — Settings is
+ * reachable before anything else has written one.
+ */
+export const setThemePreference = mutation({
+  args: { theme: themePreferenceValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+
+    if (profile) {
+      await ctx.db.patch(profile._id, {
+        preferences: { ...profile.preferences, theme: args.theme },
+      });
+    } else {
+      await ctx.db.insert("userProfiles", {
+        userId,
+        preferences: { theme: args.theme },
+      });
+    }
+    return null;
   },
 });
 

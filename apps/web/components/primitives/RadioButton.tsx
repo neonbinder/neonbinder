@@ -14,18 +14,18 @@ export const RadioButton = React.forwardRef<HTMLInputElement, RadioButtonProps>(
           <div
             className={`w-4 h-4 rounded-full border transition-colors ${
               props.checked
-                ? "border-slate-200 bg-white"
-                : "border-slate-200 bg-white"
+                ? "border-selection bg-field"
+                : "border-control bg-field"
             }`}
           >
             {props.checked && (
-              <div className="w-2 h-2 bg-black rounded-full absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
+              <div className="w-2 h-2 bg-selection rounded-full absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
             )}
           </div>
         </div>
 
         {label && (
-          <label className="text-sm font-medium text-slate-900 leading-none">
+          <label className="text-sm font-medium text-ink leading-none">
             {label}
           </label>
         )}

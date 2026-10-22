@@ -1,3 +1,5 @@
+import type { ThemeMode } from "@/src/theme/theme-mode";
+
 /**
  * NEO-172 — the dark-neon skin for Clerk's prebuilt components.
  *
@@ -31,44 +33,95 @@
  * palette on one of them.
  */
 
-/** Neon Binder's palette, in the shape Clerk's `appearance` prop expects. */
-export const clerkNeonAppearance = {
-  variables: {
-    // clerk-js 6 / @clerk/ui names
-    colorPrimary: "#00D558", // neon-green
-    colorPrimaryForeground: "#0a0a0a",
-    colorBackground: "#0a0a0a",
-    colorForeground: "#ededed",
-    colorMutedForeground: "#94a3b8", // slate-400
-    colorMuted: "#0f172a", // slate-900
-    colorInput: "#0f172a", // slate-900
-    colorInputForeground: "#ededed",
-    // slate-500, NOT slate-800: #1e293b computes to ~1.3:1 against both the
-    // page and input backgrounds — far under the 3:1 non-text minimum
-    // (WCAG 1.4.11) for the input outlines and dividers Clerk draws with it.
-    colorBorder: "#64748b",
-    colorDanger: "#FF2E9A", // neon-pink
-    colorSuccess: "#00D558", // neon-green
-    colorWarning: "#FFE600", // neon-yellow
-    // Clerk derives an alpha scale from this for ghost/outline controls: the
-    // text of the <APIKeys/> expiry select ("Select date", "1 Day"), hovered
-    // rows, menu items. Its default is black, which Clerk's docs say to flip
-    // to white on a dark theme; left unset, that select rendered black at 62%
-    // over #0a0a0a, ~1.03:1 (WCAG 1.4.3 failure, NEO-341). Same name in
-    // clerk-js 5 and 6.
-    colorNeutral: "#ededed",
-    // clerk-js 5 names for the same roles
-    colorText: "#ededed",
-    colorTextSecondary: "#94a3b8",
-    colorInputBackground: "#0f172a",
-    colorInputText: "#ededed",
-    colorAlphaShade: "#ededed",
-    // clerk-js 5 name for colorPrimaryForeground's role. Without it, a v5
-    // clerk-js falls back to its stock (light) CTA text, which on our
-    // neon-green primary computes to ~2:1 (WCAG 1.4.3 failure).
-    colorTextOnPrimaryBackground: "#0a0a0a",
-    // Shared by both
-    fontFamily: "Lexend, sans-serif",
-    borderRadius: "0.5rem",
-  },
-} as const;
+/**
+ * Neon Binder's palette for one mode, in the shape Clerk's `appearance` prop
+ * expects. NEO-356: `<ClerkProvider appearance={clerkAppearance(mode)}>` in
+ * src/main.tsx now skins every Clerk surface (sign-in, sign-up, the account
+ * menu) in the page's mode, so the opt-in-per-component note above is
+ * history. Clerk renders outside our CSS, so these are literal hexes: keep
+ * them in step with app/theme.css (src/theme/tokens.ts mirrors the same
+ * values).
+ */
+export function clerkAppearance(mode: ThemeMode) {
+  const c =
+    mode === "light"
+      ? {
+          primary: "#00D558", // neon-green fill
+          onPrimary: "#000000",
+          background: "#FFFFFF", // raised
+          foreground: "#18122B", // ink
+          muted: "#F0F2F9", // hover
+          mutedForeground: "#57516E", // ink-3
+          input: "#FFFFFF", // field
+          // control (#757090, 4.7:1 on white): Clerk draws input outlines
+          // and dividers with it, which need 3:1 (WCAG 1.4.11).
+          border: "#757090",
+          danger: "#C40068", // neon-pink as text
+          success: "#007A3B", // neon-green as text
+          warning: "#7A6400", // neon-yellow as text
+          // Clerk's alpha scale for ghost controls and hovered rows: ink.
+          neutral: "#18122B",
+        }
+      : {
+          primary: "#00D558", // neon-green
+          onPrimary: "#0a0a0a",
+          background: "#0a0a0a",
+          foreground: "#ededed",
+          muted: "#0f172a", // slate-900
+          mutedForeground: "#94a3b8", // slate-400
+          input: "#0f172a", // slate-900
+          // slate-500, NOT slate-800: #1e293b computes to ~1.3:1 against both
+          // the page and input backgrounds — far under the 3:1 non-text
+          // minimum (WCAG 1.4.11) for the input outlines and dividers Clerk
+          // draws with it.
+          border: "#64748b",
+          danger: "#FF2E9A", // neon-pink
+          success: "#00D558", // neon-green
+          warning: "#FFE600", // neon-yellow
+          // Clerk derives an alpha scale from this for ghost/outline controls:
+          // the text of the <APIKeys/> expiry select ("Select date", "1 Day"),
+          // hovered rows, menu items. Its default is black, which Clerk's docs
+          // say to flip to white on a dark theme; left unset, that select
+          // rendered black at 62% over #0a0a0a, ~1.03:1 (WCAG 1.4.3 failure,
+          // NEO-341). Same name in clerk-js 5 and 6.
+          neutral: "#ededed",
+        };
+  return {
+    variables: {
+      // clerk-js 6 / @clerk/ui names
+      colorPrimary: c.primary,
+      colorPrimaryForeground: c.onPrimary,
+      colorBackground: c.background,
+      colorForeground: c.foreground,
+      colorMutedForeground: c.mutedForeground,
+      colorMuted: c.muted,
+      colorInput: c.input,
+      colorInputForeground: c.foreground,
+      colorBorder: c.border,
+      colorDanger: c.danger,
+      colorSuccess: c.success,
+      colorWarning: c.warning,
+      colorNeutral: c.neutral,
+      // clerk-js 5 names for the same roles
+      colorText: c.foreground,
+      colorTextSecondary: c.mutedForeground,
+      colorInputBackground: c.input,
+      colorInputText: c.foreground,
+      colorAlphaShade: c.neutral,
+      // clerk-js 5 name for colorPrimaryForeground's role. Without it, a v5
+      // clerk-js falls back to its stock (light) CTA text, which on our
+      // neon-green primary computes to ~2:1 (WCAG 1.4.3 failure).
+      colorTextOnPrimaryBackground: c.onPrimary,
+      // Shared by both
+      fontFamily: "Lexend, sans-serif",
+      borderRadius: "0.5rem",
+    },
+  } as const;
+}
+
+/**
+ * The dark palette, by its pre-NEO-356 name. `app/profile/api-keys` still
+ * passes it to `<APIKeys>`; that page should drop the prop (the provider now
+ * skins it in the page's mode) when it is migrated.
+ */
+export const clerkNeonAppearance = clerkAppearance("dark");

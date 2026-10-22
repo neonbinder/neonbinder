@@ -40,6 +40,9 @@ const SECTIONS = [
   // shell it renders inside — no highlighted tab, and no way back to it from
   // the other sections.
   { label: "API Keys", path: "/profile/api-keys" },
+  // NEO-356. Last on purpose (Jason, 2026-10-22): the sections above are the
+  // seller's account and marketplace setup; this one is app preferences.
+  { label: "Settings", path: "/profile/settings" },
 ];
 
 /**
@@ -73,13 +76,13 @@ export default function ProfileLayout() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Profile Settings</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-3xl font-bold mb-2 text-ink">Profile Settings</h1>
+        <p className="text-ink-3">
           Manage your account settings and credentials for supported platforms.
         </p>
       </div>
 
-      <nav aria-label="Profile sections" className="border-b border-slate-800">
+      <nav aria-label="Profile sections" className="border-b border-rule">
         {/* Wraps rather than scrolls horizontally: the items fit two rows at
             375px, and a scrolling strip would hide sections off-screen — the
             same "you cannot see what is there" problem at a smaller scale. */}
@@ -89,10 +92,10 @@ export default function ProfileLayout() {
               <NavLink
                 to={section.path}
                 className={({ isActive }) =>
-                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm " +
+                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus-outline rounded-sm " +
                   (isActive
                     ? "border-neon-purple text-neon-purple-text"
-                    : "border-transparent text-slate-400 hover:text-foreground hover:border-slate-600")
+                    : "border-transparent text-ink-3 hover:text-ink hover:border-control")
                 }
               >
                 {section.label}

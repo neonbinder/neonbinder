@@ -2,6 +2,20 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
+ * NEO-356 — the collector's saved theme preference, shared by the schema and
+ * by convex/userProfile.ts's `getUserProfile` returns and the two write args.
+ * Defined once so the stored shape and the wire shapes cannot drift apart
+ * (the light | dark literal used to be copied three times). "system" follows
+ * the OS `prefers-color-scheme`; an absent value means the same thing. The
+ * client mirror of the union is `ThemePreference` in src/theme/theme-mode.ts.
+ */
+export const themePreferenceValidator = v.union(
+  v.literal("light"),
+  v.literal("dark"),
+  v.literal("system"),
+);
+
+/**
  * NEO-118 — a postal address, shared by the schema and by convex/shipping.ts's
  * query `returns` / mutation `args`. Defined once and exported so the stored
  * shape and the wire shape cannot drift apart; the matching TypeScript
@@ -716,7 +730,10 @@ export default defineSchema({
       // readers anywhere in the app, so it was dropped rather than converted to
       // a reference. Re-add as v.id("selectorOptions") if a consumer appears.
       defaultYear: v.optional(v.number()),
-      theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
+      // NEO-356: the collector's Profile → Settings theme. Absent means
+      // "system" (follow the OS); no backfill. Mirrored client-side to
+      // localStorage so the pre-paint script can read it.
+      theme: v.optional(themePreferenceValidator),
     })),
     // NEO-118: the seller's own address, printed in the FROM block of a 4x6
     // shipping label. Lives here rather than in `publicProfiles` because a home

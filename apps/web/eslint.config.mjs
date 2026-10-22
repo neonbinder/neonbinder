@@ -5,6 +5,7 @@ import tsParser from "@typescript-eslint/parser";
 import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import playwright from "eslint-plugin-playwright";
+import themePlugin from "./scripts/eslint/no-raw-palette.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -263,6 +264,44 @@ const playwrightFixturesFile = {
   },
 };
 
+/**
+ * NEO-356 — colours are roles (app/theme.css), so light and dark both work.
+ * `theme/no-raw-palette` bans palette steps, white/black paint, raw hex and
+ * `dark:` in the app's own source; the replacement for each is in
+ * src/theme/MIGRATION.md. Its allowlists (PERMANENT: print, physical objects,
+ * the forced-dark prototypes; PENDING: not migrated yet) live in
+ * scripts/eslint/theme-allowlist.mjs, which the rule reads itself. `.ts` files
+ * are in scope because class constants live in them too, so this block gives
+ * them the TypeScript parser.
+ */
+const themeColourRoles = {
+  files: ["{app,components,src,lib}/**/*.{ts,tsx}"],
+  ignores: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts"],
+  languageOptions: {
+    parser: tsParser,
+    parserOptions: { ecmaFeatures: { jsx: true }, sourceType: "module" },
+  },
+  plugins: { theme: themePlugin },
+  rules: {
+    "theme/no-raw-palette": "error",
+  },
+};
+
+/**
+ * `.ts` hooks carry `eslint-disable` comments for react-hooks rules, and
+ * themeColourRoles is the first block to lint `.ts` app files, so the plugin
+ * has to be known there or those comments error as unknown rules. Registered
+ * only (no rules switched on): widening react-hooks to `.ts` is NEO-111's
+ * call, not this one.
+ */
+const reactHooksKnownInTs = {
+  files: ["{app,components,src,lib}/**/*.ts"],
+  ignores: ["**/*.test.ts", "**/*.d.ts"],
+  plugins: { "react-hooks": reactHooks },
+  // Those comments target rules this block leaves off; do not report them.
+  linterOptions: { reportUnusedDisableDirectives: "off" },
+};
+
 const eslintConfig = [
   ...reactHooksLegacyScope,
   playwrightRecommended,
@@ -271,6 +310,8 @@ const eslintConfig = [
   jsxA11yRecommended,
   jsxA11yHouseRules,
   visualCaptionLabels,
+  themeColourRoles,
+  reactHooksKnownInTs,
   {
     ignores: ["dist/", "convex/_generated/"],
   },

@@ -1,0 +1,112 @@
+/**
+ * NEO-356 — Profile → Settings → Appearance.
+ *
+ * What is pinned here is the page's own logic, through the real
+ * ModeRadioGroup (its keyboard behaviour is that primitive's own test's job):
+ *   - a pick applies first (provider + localStorage mirror) and saves second;
+ *   - a failed save puts the old theme back and says so;
+ *   - System names the mode the device is giving right now.
+ */
+
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ThemePreference } from "@/src/theme/theme-mode";
+
+const calls: string[] = [];
+const saveTheme = vi.fn();
+const theme = {
+  preference: "system" as ThemePreference,
+  mode: "dark" as "light" | "dark",
+  setPreference: vi.fn((p: ThemePreference) => calls.push(`setPreference:${p}`)),
+  setProfilePreference: vi.fn((p: ThemePreference | null) =>
+    calls.push(`setProfilePreference:${p}`),
+  ),
+  setOverride: vi.fn(),
+};
+
+vi.mock("convex/react", () => ({
+  useMutation: () => saveTheme,
+  useQuery: () => undefined,
+}));
+
+vi.mock("@/src/theme/ThemeProvider", () => ({
+  useTheme: () => theme,
+}));
+
+import SettingsPanel from "./page";
+
+const radio = (label: string) => screen.getByRole("radio", { name: label });
+
+beforeEach(() => {
+  calls.length = 0;
+  saveTheme.mockReset();
+  saveTheme.mockImplementation(async (args: { theme: string }) => {
+    calls.push(`save:${args.theme}`);
+    return null;
+  });
+  theme.preference = "system";
+  theme.mode = "dark";
+  theme.setPreference.mockClear();
+  theme.setProfilePreference.mockClear();
+});
+
+describe("Settings → Appearance", () => {
+  it("has the Appearance heading and a Theme group with Light, Dark and System", () => {
+    render(<SettingsPanel />);
+    expect(screen.getByRole("heading", { level: 2, name: "Appearance" })).toBeTruthy();
+    const group = screen.getByRole("radiogroup", { name: "Theme" });
+    expect(
+      Array.from(group.querySelectorAll("[role=radio]")).map((r) => r.getAttribute("aria-checked")),
+    ).toHaveLength(3);
+    for (const label of ["Light", "Dark", "System"]) expect(radio(label)).toBeTruthy();
+    // System is the default the provider hands a collector with no choice.
+    expect(radio("System").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("applies a pick before saving it", async () => {
+    render(<SettingsPanel />);
+    await act(async () => {
+      fireEvent.click(radio("Light"));
+    });
+    expect(calls).toEqual([
+      "setPreference:light",
+      "setProfilePreference:light",
+      "save:light",
+    ]);
+    expect(screen.getByRole("status").textContent).toBe("Saved.");
+  });
+
+  it("puts the old theme back and says so when the save fails", async () => {
+    theme.preference = "dark";
+    saveTheme.mockImplementation(async () => {
+      throw new Error("offline");
+    });
+    render(<SettingsPanel />);
+    await act(async () => {
+      fireEvent.click(radio("Light"));
+    });
+    expect(theme.setPreference.mock.calls.map((c) => c[0])).toEqual(["light", "dark"]);
+    expect(theme.setProfilePreference.mock.calls.map((c) => c[0])).toEqual(["light", "dark"]);
+    expect(screen.getByRole("status").textContent).toMatch(/didn't save/);
+  });
+
+  it("does nothing when the current pick is chosen again", async () => {
+    theme.preference = "dark";
+    render(<SettingsPanel />);
+    await act(async () => {
+      fireEvent.click(radio("Dark"));
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("names the device's current mode only while System is chosen", () => {
+    theme.mode = "light";
+    const { rerender } = render(<SettingsPanel />);
+    expect(screen.getByText("Your device is on light right now.")).toBeTruthy();
+
+    theme.preference = "dark";
+    theme.mode = "dark";
+    rerender(<SettingsPanel />);
+    expect(screen.queryByText(/Your device is on/)).toBeNull();
+  });
+});

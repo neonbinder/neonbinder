@@ -34,7 +34,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref,
   ) => {
     const baseClasses =
-      "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
+      "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus-outline disabled:pointer-events-none disabled:opacity-50";
 
     const sizeClasses = {
       default: "px-4 py-2 text-sm leading-6",
@@ -42,26 +42,26 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     };
 
     const variantClasses = {
-      default: "bg-neon-green text-black hover:bg-neon-green/85",
-      primary: "bg-neon-green text-black hover:bg-neon-green/85",
+      default: "bg-neon-green text-on-neon-green hover:bg-neon-green-hover",
+      primary: "bg-neon-green text-on-neon-green hover:bg-neon-green-hover",
       // Black ink, like NeonButton: white on neon pink is 3.44:1 (SC 1.4.3).
-      destructive: "bg-neon-pink text-black hover:bg-neon-pink/90",
+      destructive: "bg-neon-pink text-on-neon-pink hover:bg-neon-pink-hover",
       outline:
-        "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50",
-      subtle: "bg-slate-100 text-slate-900 hover:bg-slate-200",
-      ghost: "text-slate-900 hover:bg-slate-100",
-      link: "text-slate-900 underline-offset-4 hover:underline",
-      withIcon: "bg-neon-green text-black hover:bg-neon-green/85",
-      justIcon: "p-2 text-slate-900 hover:bg-slate-100",
-      justIconCircle: "p-2 rounded-full text-slate-900 hover:bg-slate-100",
-      loading: "bg-slate-600 text-white",
+        "border border-control bg-raised text-ink hover:bg-hover",
+      subtle: "bg-hover text-ink hover:bg-raised",
+      ghost: "text-ink hover:bg-hover",
+      link: "text-ink underline-offset-4 hover:underline",
+      withIcon: "bg-neon-green text-on-neon-green hover:bg-neon-green-hover",
+      justIcon: "p-2 text-ink hover:bg-hover",
+      justIconCircle: "p-2 rounded-full text-ink hover:bg-hover",
+      loading: "bg-hover text-ink-2",
     };
 
     const classes = `${baseClasses} ${sizeClasses[size]} ${variantClasses[variant]} ${className}`;
 
     const content = isLoading ? (
       <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
         {children}
       </>
     ) : (

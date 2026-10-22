@@ -11,7 +11,7 @@ export const InlineCode: React.FC<InlineCodeProps> = ({
 }) => {
   return (
     <code
-      className={`inline-flex items-center px-1 py-0.5 rounded bg-slate-50 text-sm font-bold text-slate-900 ${className}`}
+      className={`inline-flex items-center px-1 py-0.5 rounded bg-hover text-sm font-bold text-ink ${className}`}
     >
       {children}
     </code>

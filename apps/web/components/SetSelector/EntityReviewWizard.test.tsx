@@ -2601,10 +2601,10 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
 
 describe("EntityReviewWizard — near matches", () => {
   // NeonButton paints its neon as an INLINE style, so the variant is readable
-  // straight off the node. happy-dom preserves the authored hex rather than
-  // normalising it to rgb(), so these compare as written.
-  const GREEN = "#00D558";
-  const BLUE = "#00C2FF"; // NeonButton's `secondary`
+  // straight off the node. Since NEO-356 the style names the role variable
+  // (so it follows light/dark), and happy-dom keeps it as written.
+  const GREEN = "var(--neon-green)";
+  const BLUE = "var(--neon-blue)"; // NeonButton's `secondary`
 
   it("queries players.nearMatches for a player row, skipping the team query", () => {
     currentRows = [
@@ -9444,8 +9444,8 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
   // Item 4 — the opened step's primary is always "Add as New Player".
   // -------------------------------------------------------------------------
   describe("the New Player step Create new opens", () => {
-    const GREEN = "#00D558";
-    const BLUE = "#00C2FF";
+    const GREEN = "var(--neon-green)";
+    const BLUE = "var(--neon-blue)";
 
     it("keeps Add as New Player as the primary however many exact rows nearMatches returns", () => {
       currentRows = [ambiguousRow()];

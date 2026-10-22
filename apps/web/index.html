@@ -1,8 +1,23 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- NEO-356: resolve light/dark before the first paint, so a light page
+         never flashes dark (or the reverse). Mirrors resolveMode() in
+         src/theme/theme-mode.ts (THEME_STORAGE_KEY "nb-theme"); keep the two
+         in step, src/theme/theme-mode.test.tsx checks the key and the query.
+         Runs before any stylesheet; ThemeProvider takes over once React
+         mounts. Without storage (private mode) it follows the system. -->
+    <script>
+      (function () {
+        var pref = null;
+        try { pref = window.localStorage.getItem("nb-theme"); } catch (e) {}
+        var mode = pref === "light" || pref === "dark" ? pref
+          : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", mode);
+      })();
+    </script>
     <!-- Exposes the (already-public) per-deployment Convex URL so CI can resolve
          the preview's .convex.site HTTP endpoints for the E2E work-queue (NEO-49).
          Vite substitutes %VITE_CONVEX_URL% at build time. -->

@@ -2,6 +2,7 @@ import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-reac
 import { useAuth } from "@clerk/clerk-react";
 import { useNavigate } from "react-router";
 import { Bars3Icon, KeyIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { BrandMark } from "@/components/primitives/BrandMark";
 import NeonButton from "./NeonButton";
 import { MOBILE_NAV_ID } from "./mobile-nav";
 
@@ -37,10 +38,12 @@ export default function BinderHeader({
   // scroll position, and hands the 74px back to the content. globals.css
   // drops `scroll-padding-top` below `sm` to match; keep the two in step.
   return (
-    <header className="sm:sticky sm:top-0 z-20 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center pointer-events-none">
+    <header className="sm:sticky sm:top-0 z-20 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center pointer-events-none">
       <div className="flex items-center gap-2 pointer-events-auto">
-        <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
-        <span className="neon-header neon-header-sm">Neon Binder</span>
+        <BrandMark />
+        {/* The wordmark inherits its colour in dark and takes the deep brand
+            green in light (`--wordmark`, app/theme.css). */}
+        <span className="neon-header neon-header-sm text-wordmark">Neon Binder</span>
       </div>
       <div className="flex items-center gap-3 pointer-events-auto">
         <SignedIn>
@@ -77,7 +80,7 @@ export default function BinderHeader({
         <button
           type="button"
           onClick={onMobileMenuToggle}
-          className="lg:hidden min-h-11 min-w-11 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue transition-colors"
+          className="lg:hidden min-h-11 min-w-11 inline-flex items-center justify-center rounded-md text-ink-3 hover:text-ink hover:bg-hover focus-outline transition-colors"
           aria-label="Open menu"
           aria-expanded={isMobileMenuOpen}
           aria-controls={isMobileMenuOpen ? MOBILE_NAV_ID : undefined}

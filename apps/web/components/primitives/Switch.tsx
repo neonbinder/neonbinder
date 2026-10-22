@@ -25,11 +25,11 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
           />
           <div
             className={`w-11 h-6 rounded-full transition-colors ${
-              props.checked ? "bg-slate-900" : "bg-slate-200"
+              props.checked ? "bg-selection" : "bg-control"
             }`}
           >
             <div
-              className={`w-5 h-5 bg-white rounded-full transition-transform transform ${
+              className={`w-5 h-5 bg-raised border border-rule-strong rounded-full transition-transform transform ${
                 props.checked ? "translate-x-5.5" : "translate-x-0.5"
               } translate-y-0.5`}
             />
@@ -37,7 +37,7 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
         </div>
 
         {label && (
-          <label className="text-sm font-medium text-slate-900 leading-none">
+          <label className="text-sm font-medium text-ink leading-none">
             {label}
           </label>
         )}

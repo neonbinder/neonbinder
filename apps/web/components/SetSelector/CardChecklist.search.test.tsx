@@ -435,11 +435,11 @@ describe("CardChecklist — search (NEO-343)", () => {
     render(ui());
     const box = searchBox() as HTMLInputElement;
     expect(box.placeholder).toBe("Number, name, team or feature");
-    // Follows the checklist card (`bg-white dark:bg-gray-800`), not the
-    // primitive's always-dark default.
-    expect(box.classList.contains("bg-white")).toBe(true);
-    expect(box.classList.contains("dark:bg-gray-900")).toBe(true);
-    expect(box.classList.contains("bg-slate-900")).toBe(false);
+    // The recessed well for a field on the checklist card, not the
+    // primitive's default well (NEO-356 roles: raised-deep, control edge).
+    expect(box.classList.contains("bg-raised-deep")).toBe(true);
+    expect(box.classList.contains("border-control")).toBe(true);
+    expect(box.classList.contains("bg-field")).toBe(false);
   });
 
   it("sits in a search landmark; the clear button has no tooltip to drift from its name", () => {

@@ -38,7 +38,8 @@ function renderAt(path: string) {
           <Route path="shipping" element={<div>shipping panel</div>} />
           <Route path="postage" element={<div>postage panel</div>} />
           <Route path="prizes" element={<div>prizes panel</div>} />
-        <Route path="api-keys" element={<div>api keys panel</div>} />
+          <Route path="api-keys" element={<div>api keys panel</div>} />
+          <Route path="settings" element={<div>settings panel</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -61,6 +62,8 @@ describe("ProfileLayout", () => {
       ["Postage", "/profile/postage"],
       ["Prize Pool", "/profile/prizes"],
       ["API Keys", "/profile/api-keys"],
+      // NEO-356: last, by Jason's call.
+      ["Settings", "/profile/settings"],
     ]);
   });
 
@@ -71,6 +74,7 @@ describe("ProfileLayout", () => {
     ["/profile/postage", "Postage"],
     ["/profile/prizes", "Prize Pool"],
     ["/profile/api-keys", "API Keys"],
+    ["/profile/settings", "Settings"],
   ])("marks %s as the current page", (path, label) => {
     renderAt(path);
     expect(

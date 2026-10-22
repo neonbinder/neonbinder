@@ -1,4 +1,6 @@
 import React from "react";
+import { useTheme } from "@/src/theme/ThemeProvider";
+import { BrandMark } from "./BrandMark";
 
 export interface PullingLogoProps {
   size?: "small" | "medium" | "large";
@@ -21,18 +23,24 @@ export const PullingLogo = React.forwardRef<HTMLDivElement, PullingLogoProps>(
       large: { width: 120, height: 120, src: "/logo-360.png" },
     };
 
+    const { mode } = useTheme();
     const { width, height, src } = sizeMap[size];
     // Switches on once, like a neon sign (globals.css, `neon-sign-ignite`).
     const animateClass = animate ? "animate-neon-ignite" : "";
 
+    // Light mode (NEO-356): the single-colour Mark, never the black tile.
     return (
       <div ref={ref} className={animateClass}>
-        <img
-          src={src}
-          alt="Neon Binder"
-          width={width}
-          height={height}
-        />
+        {mode === "light" ? (
+          <BrandMark size={width} />
+        ) : (
+          <img
+            src={src}
+            alt="Neon Binder"
+            width={width}
+            height={height}
+          />
+        )}
       </div>
     );
   },

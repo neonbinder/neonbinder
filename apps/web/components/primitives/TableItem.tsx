@@ -16,9 +16,9 @@ export const TableItem: React.FC<TableItemProps> = ({
   const baseClasses = "px-4 py-3 text-base";
 
   const typeClasses = {
-    head: "font-bold text-slate-900",
-    item: `font-normal text-slate-900 ${
-      selected ? "bg-slate-50" : "hover:bg-slate-50"
+    head: "font-bold text-ink",
+    item: `font-normal text-ink ${
+      selected ? "bg-hover" : "hover:bg-hover"
     }`,
   };
 

@@ -37,11 +37,11 @@ export interface TextareaProps
 
 /**
  * Visual identity only — geometry is the caller's in `bare` mode (see Input).
- * Text colour is hardcoded, not `text-foreground`: this surface is always dark
- * and must not depend on the page token (see Input).
+ * Colours are the field roles (NEO-356): the well, its 3:1 edge in light, the
+ * field's own ink, and the focus outline. Same as Input's default surface.
  */
 const BASE_TEXTAREA =
-  "rounded-md border border-slate-700 bg-slate-900 text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
+  "rounded-md border border-field-rule bg-field text-ink placeholder:text-ink-3 focus-outline disabled:cursor-not-allowed disabled:opacity-50";
 
 // `resize-none` lives here, not in BASE: resize behaviour is geometry, and a
 // caller that wants `resize-y` could not override it from `className` (Tailwind
@@ -94,7 +94,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
       <>
         <label
           htmlFor={props.id}
-          className="text-sm font-medium leading-none text-slate-300"
+          className="text-sm font-medium leading-none text-ink-2"
         >
           {label}
         </label>
@@ -102,7 +102,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
       </>
     ) : (
       <label className="flex flex-col gap-2">
-        <span className="text-sm font-medium leading-none text-slate-300">
+        <span className="text-sm font-medium leading-none text-ink-2">
           {label}
         </span>
         {control}
@@ -119,10 +119,10 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           <button
             type="button"
             onClick={onButtonClick}
-            className={`w-full rounded-md px-4 py-2 text-sm font-medium text-black transition-colors ${
+            className={`w-full rounded-md px-4 py-2 text-sm font-medium text-on-neon-green transition-colors focus-outline ${
               state === "disabled"
-                ? "bg-[#00D558]/40"
-                : "bg-[#00D558] hover:bg-[#00D558]/90"
+                ? "bg-neon-green/40"
+                : "bg-neon-green hover:bg-neon-green-hover"
             }`}
           >
             {buttonText}
@@ -131,7 +131,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 
         {(helperText || error) && (
           <p
-            className={`text-sm ${error ? "text-[#FF2E9A]" : "text-slate-400"}`}
+            className={`text-sm ${error ? "text-neon-pink-text" : "text-ink-3"}`}
           >
             {error || helperText}
           </p>

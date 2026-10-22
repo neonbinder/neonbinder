@@ -2,13 +2,16 @@ import "./sentry";
 import "@/app/globals.css";
 import "@radix-ui/themes/styles.css";
 
-import { lazy, StrictMode, useEffect } from "react";
+import { lazy, StrictMode, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router";
 import { ClerkProvider } from "@clerk/clerk-react";
 import { Theme } from "@radix-ui/themes";
 import { PostHogProvider } from "@/components/modules/PostHogProvider";
+import { clerkAppearance } from "@/components/modules/clerk-appearance";
+import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 import ConvexClientProvider from "@/components/modules/ConvexClientProvider";
+import { ProfileThemeSync } from "@/src/theme/ProfileThemeSync";
 import * as Sentry from "@sentry/react";
 
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
@@ -59,6 +62,7 @@ const ProfileShipping = lazy(() => import("@/app/profile/shipping/page"));
 const ProfilePostage = lazy(() => import("@/app/profile/postage/page"));
 const ProfilePrizes = lazy(() => import("@/app/profile/prizes/page"));
 const ProfileApiKeys = lazy(() => import("@/app/profile/api-keys/page"));
+const ProfileSettings = lazy(() => import("@/app/profile/settings/page"));
 const AdminHub = lazy(loadAdminHub);
 const AdminSetBuilder = lazy(() => import("@/app/admin/set-builder/page"));
 const AdminPlayers = lazy(() => import("@/app/admin/players/page"));
@@ -212,6 +216,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 {/* NEO-172 — self-service Clerk API keys. Protected by the
                     same ProtectedLayout gate as the rest of /profile. */}
                 <Route path="api-keys" element={<Deferred><ProfileApiKeys /></Deferred>} />
+                {/* NEO-356 — Appearance (theme), the collector's app preferences. */}
+                <Route path="settings" element={<Deferred><ProfileSettings /></Deferred>} />
               </Route>
               {/* Print Shop (NEO-145) — the print tools under one section.
                   Bare /print lists them; each tool is its own sub-route. */}
@@ -290,21 +296,37 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
   { fallback: <div>An error occurred. Please refresh the page.</div> },
 );
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ClerkProvider publishableKey={clerkPubKey}>
+/**
+ * NEO-356 — everything that paints takes the mode from ThemeProvider: Clerk's
+ * widgets through `appearance`, Radix through `<Theme appearance>`, and the
+ * page through `<html data-theme>` (the provider writes that itself).
+ */
+function ThemedApp() {
+  const { mode } = useTheme();
+  const appearance = useMemo(() => clerkAppearance(mode), [mode]);
+  return (
+    <ClerkProvider publishableKey={clerkPubKey} appearance={appearance}>
       <Theme
         accentColor="green"
         grayColor="sage"
         radius="large"
-        appearance="dark"
+        appearance={mode}
       >
         <PostHogProvider>
           <ConvexClientProvider>
+            <ProfileThemeSync />
             <SentryErrorBoundary />
           </ConvexClientProvider>
         </PostHogProvider>
       </Theme>
     </ClerkProvider>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <ThemeProvider>
+      <ThemedApp />
+    </ThemeProvider>
   </StrictMode>,
 );

@@ -130,3 +130,6 @@
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
+- [Tailwind JS-config colours are inlined](reference_tailwind_js_config_colours_are_inlined.md) — neon-* compile to literal hex; redeclare in @theme to theme them by variable
+- [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — globals.css (0,1,0) remaps of --green-9/--focus-8 are dead; out-specify on the Theme element, probe computed values
+- [vitest CSS ?raw import is empty](reference_vitest_css_raw_import_is_empty.md) — CSS imports stub to ""; read stylesheets with readFileSync(join(__dirname, ...))
