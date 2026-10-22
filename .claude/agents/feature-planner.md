@@ -93,7 +93,8 @@ A plan document, written to be read by a person and executed by agents:
    Builders are `neonbinder-web-dev`, `marketplace-adapter-dev`,
    `puppeteer-security-engineer`; `convex-schema-specialist` plans schema;
    tests are `unit-test-author` and `playwright-e2e-author`; the audit round is
-   `security-auditor`, `accessibility-auditor` and `card-collector-tester`.
+   `security-auditor`, `accessibility-auditor` and `card-collector-tester`,
+   plus an `/impeccable audit` pass for every new screen.
 5. **Test and E2E coverage** — what proves this works, including which
    existing specs are affected. Retiring a spec needs replacement coverage
    first.

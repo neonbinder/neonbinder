@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T00:00:00Z",
+  "title": "Design System: Neon Binder",
+  "extensions": {
+    "colorMeta": {
+      "neon-green": { "role": "primary", "displayName": "Binder Green", "canonical": "#00D558", "tonalRamp": ["#060c07", "#122d17", "#154a22", "#246a35", "#297e3e", "#00d558", "#1adb5e", "#adf4b7"] },
+      "neon-pink": { "role": "secondary", "displayName": "Show-Sign Pink", "canonical": "#FF2E9A", "tonalRamp": ["oklch(15% 0.06 355)", "oklch(25% 0.1 355)", "oklch(35% 0.14 355)", "oklch(45% 0.18 355)", "oklch(55% 0.22 355)", "oklch(65% 0.25 355)", "oklch(78% 0.15 355)", "oklch(92% 0.05 355)"] },
+      "neon-blue": { "role": "secondary", "displayName": "Marquee Cyan", "canonical": "#00C2FF", "tonalRamp": ["oklch(15% 0.04 230)", "oklch(25% 0.07 230)", "oklch(35% 0.1 230)", "oklch(45% 0.12 230)", "oklch(58% 0.15 230)", "oklch(76% 0.15 230)", "oklch(86% 0.09 230)", "oklch(96% 0.025 230)"] },
+      "neon-yellow": { "role": "tertiary", "displayName": "Hazard Yellow", "canonical": "#FFE600", "tonalRamp": ["oklch(15% 0.03 100)", "oklch(25% 0.06 100)", "oklch(38% 0.09 100)", "oklch(50% 0.12 100)", "oklch(65% 0.15 100)", "oklch(91% 0.19 100)", "oklch(94% 0.12 100)", "oklch(97% 0.05 100)"] },
+      "neon-orange": { "role": "tertiary", "displayName": "Admin Amber", "canonical": "#FF9E00", "tonalRamp": ["oklch(15% 0.04 65)", "oklch(25% 0.07 65)", "oklch(37% 0.1 65)", "oklch(50% 0.13 65)", "oklch(62% 0.16 65)", "oklch(78% 0.17 65)", "oklch(88% 0.1 65)", "oklch(96% 0.04 65)"] },
+      "neon-teal": { "role": "tertiary", "displayName": "Label Teal", "canonical": "#00E5C0", "tonalRamp": ["oklch(15% 0.03 175)", "oklch(25% 0.06 175)", "oklch(37% 0.09 175)", "oklch(50% 0.11 175)", "oklch(65% 0.14 175)", "oklch(83% 0.16 175)", "oklch(90% 0.09 175)", "oklch(96% 0.04 175)"] },
+      "neon-purple": { "role": "tertiary", "displayName": "Profile Violet", "canonical": "#A44AFF", "tonalRamp": ["oklch(15% 0.06 300)", "oklch(25% 0.1 300)", "oklch(35% 0.15 300)", "oklch(45% 0.2 300)", "oklch(60% 0.25 300)", "oklch(68% 0.21 300)", "oklch(82% 0.12 300)", "oklch(95% 0.04 300)"] },
+      "neon-purple-text": { "role": "tertiary", "displayName": "Profile Violet Text", "canonical": "#B56BFF" },
+      "ink-black": { "role": "neutral", "displayName": "Ink Black", "canonical": "#000000" },
+      "page-black": { "role": "neutral", "displayName": "Page Black", "canonical": "#0A0A0A" },
+      "well-slate": { "role": "neutral", "displayName": "Slate Well", "canonical": "#0F172A", "tonalRamp": ["#020617", "#0f172a", "#1e293b", "#334155", "#475569", "#64748b", "#94a3b8", "#cbd5e1"] },
+      "card-graphite": { "role": "neutral", "displayName": "Graphite", "canonical": "#1F2937", "tonalRamp": ["#030712", "#111827", "#1f2937", "#374151", "#4b5563", "#6b7280", "#9ca3af", "#d1d5db"] },
+      "deep-graphite": { "role": "neutral", "displayName": "Deep Graphite", "canonical": "#111827" },
+      "rule-slate": { "role": "neutral", "displayName": "Slate Rule", "canonical": "#334155" },
+      "header-rule": { "role": "neutral", "displayName": "Header Rule", "canonical": "#1E293B" },
+      "foreground": { "role": "neutral", "displayName": "Foreground", "canonical": "#EDEDED" },
+      "label-slate": { "role": "neutral", "displayName": "Label Slate", "canonical": "#CBD5E1" },
+      "hint-slate": { "role": "neutral", "displayName": "Hint Slate", "canonical": "#94A3B8" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Neon Sign", "purpose": "The Neon Binder wordmark only." },
+      "headline": { "displayName": "Headline", "purpose": "Page titles." },
+      "title": { "displayName": "Title", "purpose": "Section and card headings." },
+      "body": { "displayName": "Body", "purpose": "The working size across the app." },
+      "label": { "displayName": "Label", "purpose": "Metadata, badges, helper text." }
+    },
+    "shadows": [
+      { "name": "floating-layer", "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)", "purpose": "Dialogs, dropdowns and popovers (Tailwind shadow-lg)." },
+      { "name": "tab-glow-green", "value": "0 0 12px 2px rgba(0, 213, 88, 0.4), inset 0 0 8px rgba(0, 213, 88, 0.1)", "purpose": "Active binder tab; one variant per section hue." },
+      { "name": "breathing-sign", "value": "0 0 12px currentColor", "purpose": "Text-shadow peak of the 2s neon glow pulse." }
+    ],
+    "motion": [
+      { "name": "slide-in-right", "value": "0.24s cubic-bezier(0.16, 1, 0.3, 1); 0.15s fade under reduced motion", "purpose": "Mobile nav panel and card detail drawer." },
+      { "name": "neon-glow-pulse", "value": "2s ease-in-out infinite", "purpose": "Breathing neon text; disabled under reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "40rem" },
+      { "name": "md", "value": "48rem" },
+      { "name": "lg", "value": "64rem" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The forward action; one per decision.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Save set</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 16px; border: none; border-radius: 6px; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; color: #000; cursor: pointer; transition: background-color 150ms; } .ds-btn-primary { background: #00D558; } .ds-btn-primary:hover { background: rgb(0 213 88 / 0.85); } .ds-btn:focus-visible { outline: 2px solid #00C2FF; outline-offset: 2px; } .ds-btn[disabled], .ds-btn[aria-disabled=true] { opacity: 0.45; cursor: not-allowed; }"
+    },
+    {
+      "name": "Cancel Button",
+      "kind": "button",
+      "refersTo": "button-cancel",
+      "description": "Cancel, destructive and sign-out only.",
+      "html": "<button class=\"ds-btn-cancel\">Sign out</button>",
+      "css": ".ds-btn-cancel { display: inline-flex; align-items: center; padding: 8px 16px; border: none; border-radius: 6px; background: #FF2E9A; color: #000; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; cursor: pointer; transition: background-color 150ms; } .ds-btn-cancel:hover { background: rgb(255 46 154 / 0.9); } .ds-btn-cancel:focus-visible { outline: 2px solid #00C2FF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A second, non-destructive action beside the primary.",
+      "html": "<button class=\"ds-btn-secondary\">Preview</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; padding: 8px 16px; border: none; border-radius: 6px; background: #00C2FF; color: #000; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; cursor: pointer; transition: background-color 150ms; } .ds-btn-secondary:hover { background: rgb(0 194 255 / 0.85); } .ds-btn-secondary:focus-visible { outline: 2px solid #FFFFFF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input-dark",
+      "description": "The dark slate-well input with a cyan focus ring.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Player name</span><input class=\"ds-input\" placeholder=\"e.g. Ken Griffey Jr.\" /></label>",
+      "css": ".ds-field { display: block; font-family: Lexend, Arial, sans-serif; } .ds-field-label { display: block; margin-bottom: 4px; font-size: 0.875rem; color: #CBD5E1; } .ds-input { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #0F172A; color: #F1F5F9; font: inherit; font-size: 1rem; } .ds-input::placeholder { color: #94A3B8; } .ds-input:focus { outline: none; box-shadow: 0 0 0 2px #00C2FF; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Graphite container on the page-black ground.",
+      "html": "<div class=\"ds-card\"><h3 class=\"ds-card-title\">1996 Score</h3><p class=\"ds-card-body\">110 of 330 cards collected</p></div>",
+      "css": ".ds-card { padding: 16px; border: 1px solid #334155; border-radius: 8px; background: #1F2937; color: #EDEDED; font-family: Lexend, Arial, sans-serif; } .ds-card-title { margin: 0 0 4px; font-size: 1.25rem; font-weight: 700; } .ds-card-body { margin: 0; font-size: 0.875rem; color: #94A3B8; }"
+    },
+    {
+      "name": "Binder Index Tabs",
+      "kind": "nav",
+      "refersTo": "binder-tab-active",
+      "description": "Signature right-edge tab stack; the active tab is lit in its section hue.",
+      "html": "<nav class=\"ds-tabs\"><a class=\"ds-tab\" href=\"#\"><span class=\"ds-tab-dot\"></span>Dashboard</a><a class=\"ds-tab ds-tab-active\" href=\"#\" aria-current=\"page\"><span class=\"ds-tab-dot\"></span>Collection</a><a class=\"ds-tab\" href=\"#\"><span class=\"ds-tab-dot\"></span>Print Shop</a></nav>",
+      "css": ".ds-tabs { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; font-family: Lexend, Arial, sans-serif; } .ds-tab { display: flex; align-items: center; gap: 12px; width: 140px; padding: 10px 14px; border-radius: 8px 0 0 8px; background: #1F2937; color: #9CA3AF; font-size: 1rem; text-decoration: none; transition: width 200ms, color 200ms; } .ds-tab:hover { color: #FFFFFF; } .ds-tab:focus-visible { outline: 2px solid #00C2FF; outline-offset: 2px; } .ds-tab-dot { width: 20px; height: 20px; border-radius: 4px; background: currentColor; opacity: 0.8; } .ds-tab-active { width: 170px; background: #111827; color: #00C2FF; box-shadow: 0 0 12px 2px rgba(0, 194, 255, 0.4), inset 0 0 8px rgba(0, 194, 255, 0.1); }"
+    },
+    {
+      "name": "Wordmark Header",
+      "kind": "custom",
+      "description": "Sticky header with the Neon wordmark and a 2px header rule.",
+      "html": "<header class=\"ds-header\"><span class=\"ds-wordmark\">Neon Binder</span><button class=\"ds-btn-cancel\">Sign out</button></header>",
+      "css": ".ds-header { display: flex; justify-content: space-between; align-items: center; padding: 16px; background: #000; border-bottom: 2px solid #1E293B; } .ds-wordmark { font-family: Neon, Lexend, sans-serif; font-size: 30px; color: #00D558; text-shadow: 0 0 12px rgba(0, 213, 88, 0.5); } .ds-btn-cancel { padding: 8px 16px; border: none; border-radius: 6px; background: #FF2E9A; color: #000; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; cursor: pointer; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Neon Binder",
+    "overview": "The app is a binder. Sections are index tabs on the right edge, each with its own ink. Moving between pages turns a page. The pages themselves are black, and the work on them (checklists, card rows, label fields) sits on quiet graphite and slate. Neon is the binder's signage: the wordmark, the lit tab, the one button that moves you forward. It is not the wallpaper.\n\nBecause the people using it are both cataloguing at a desk and selling at a show table, the working surfaces are crisp and precise rather than playful. Dense lists, `text-sm` body, tight controls, keyboard-first. Personality comes from the wordmark, the glow and the voice of the copy, not from decorating the tools.\n\nThe app is dark-only. Paper is the one exception: labels, placeholder sheets and QR codes print black on white from their own isolated documents.",
+    "keyCharacteristics": [
+      "Black page, graphite cards, slate wells: three dark steps, no light theme.",
+      "One neon hue per binder section, shown on the lit tab and its glow.",
+      "Neon fills always carry black ink.",
+      "The Neon display face appears only in the wordmark.",
+      "Index-tab navigation carries the binder metaphor; route changes are instant, with no page-turn transition."
+    ],
+    "rules": [
+      { "name": "The Signage Rule", "body": "Neon marks identity and action: the wordmark, the lit tab, the primary button, a status. Working surfaces stay black, graphite and slate. If a screen reads as \"neon everywhere\", something is decorating instead of signalling.", "section": "colors" },
+      { "name": "The Black Ink Rule", "body": "Text on a neon fill is always black. White on neon pink is 3.44:1 and on cyan 2.07:1; black is 6.1:1 or better on every hue. One ink keeps the buttons reading as one family.", "section": "colors" },
+      { "name": "The One Hue Per Section Rule", "body": "A section's colour is fixed by its tab (Dashboard green, Collection cyan, Inventory yellow, Admin amber, Print Shop teal, Profile violet). Don't borrow another section's hue for emphasis.", "section": "colors" },
+      { "name": "The One Sign Rule", "body": "The Neon face is the wordmark. It is never used for headings, buttons or body copy.", "section": "typography" },
+      { "name": "The Four Weights Rule", "body": "Lexend runs at 400 (body), 500 (labels, tabs), 600 (card and section titles) and 700 (page headings, numbers). Nothing lighter than 400, nothing heavier than 700.", "section": "typography" },
+      { "name": "The Lit Means Active Rule", "body": "A neon glow says \"this is where you are\" or \"this is live\". Never put a glow on a resting element for decoration.", "section": "elevation" },
+      { "name": "The Glow Not Fade Rule", "body": "Neon text pulses its halo, never its opacity. `animate-pulse` on neon pink drops it to about 3:1 at the trough; the glow keeps the letters at full colour. One 12px halo, never stacked.", "section": "elevation" }
+    ],
+    "dos": [
+      "**Do** put black ink on every neon fill.",
+      "**Do** use `neon-purple-text` (#B56BFF), not `neon-purple`, for violet text.",
+      "**Do** keep each section in its tab's hue.",
+      "**Do** keep working surfaces on Page Black, Graphite and Slate Well, with neon only for signage and action.",
+      "**Do** dim disabled neon buttons to 45% opacity and honour `aria-disabled`.",
+      "**Do** give every dark input the Marquee Cyan focus ring.",
+      "**Do** stop the glow pulse under `prefers-reduced-motion`.",
+      "**Do** print on white: print documents pin black on white and never load the app stylesheet."
+    ],
+    "donts": [
+      "**Don't** use white text on neon pink, cyan or green.",
+      "**Don't** add a `prefers-color-scheme` rule or a light theme; the app is dark-only and the `dark:` variant keys off the `.dark` class.",
+      "**Don't** fade neon text with `animate-pulse`; pulse the glow instead.",
+      "**Don't** use the Neon display face anywhere but the wordmark.",
+      "**Don't** put a glow on a resting element.",
+      "**Don't** use neon pink for anything but cancel, destructive and sign-out."
+    ]
+  }
+}
