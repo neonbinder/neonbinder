@@ -1,0 +1,3 @@
+# The launcher downloads and checksums its engine into ~/.cache on first run;
+# never commit the per-platform binary.
+scripts/bin/

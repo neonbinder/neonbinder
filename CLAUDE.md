@@ -401,6 +401,8 @@ cd services/browser && npm start  # Runs on port 8080 (reads .env for GCP creden
 - **Components:** Radix UI Themes, Tailwind CSS 4.x
 - **Structure:** `apps/web/components/primitives/` (base), `apps/web/components/modules/` (composed)
 - **Keyboard-first:** every flow must be fully operable from the keyboard (Enter confirms, Escape cancels, preselect sensible defaults).
+- **Design system:** `DESIGN.md` (with its machine-readable sidecar `.impeccable/design.json`) records the tokens, type scale, motion and Don'ts; `PRODUCT.md` records who the product is for. Both are read by the `impeccable` skill. Change them when the shipped design changes, not ahead of it.
+- **Every new screen goes through `/impeccable audit`** (accessibility, performance, theming, responsive, anti-patterns) in the audit round, alongside `accessibility-auditor`. Fix what it scores as P0/P1 before the PR merges, or list each unfixed finding in the PR body with why. A substantial reshape of an existing screen gets the same pass. The signed-in app is the product, so audit it signed in at both desktop and phone widths.
 
 ## Observability
 
@@ -422,7 +424,7 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 ## Agents and skills
 
-`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close` and `deps-batch` skills; there is no other copy. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
+`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
 
 Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
 
@@ -447,7 +449,7 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
 
 The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, helpers under `support/`, config `apps/web/playwright.config.ts`). **`apps/web/playwright/GUIDE.md` is the authoring and running guide** — hard rules (role/label/text locators only, 7 s budget, no sleeps), the R1–R9 spec rules, tags, support helpers, the seed, the PAUSED_PLATFORMS switch, local commands, CI shape, and how to read a red run. Read it before writing or changing a spec. `SET-REGISTRY.md` beside it lists the real sets the suite touches and who may write to them.
 
-**Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite. `playwright-e2e-author` writes and debugs specs.
+**Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite (and, for a new screen, `/impeccable audit`; see **UI & Styling**). `playwright-e2e-author` writes and debugs specs.
 
 **Run locally** — only the specs covering your change, against the PR's Convex preview (never shared dev, never the full suite; see the PR loop above):
 ```bash
