@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
+  attachCrossMarketplaceVariations,
   cardNumberStem,
   displayVariationLabel,
   resolveVariationParents,
   suggestVariationPairings,
   variationLabelKey,
+  type SourcedVariationCandidate,
   type VariationCandidate,
 } from "./variations";
 
@@ -247,5 +249,88 @@ describe("suggestVariationPairings", () => {
     expect(pairs).toHaveLength(4);
     expect(unpairedLeft.map((i) => bsc[i])).toEqual(["Team Color"]);
     expect(unpairedRight.map((i) => sl[i])).toEqual(["Team Name Color Swap"]);
+  });
+});
+
+describe("attachCrossMarketplaceVariations (NEO-339)", () => {
+  /** 2024 Topps Chrome #122: base on both marketplaces, BSC's 122b/122c, SportLots' one bare VAR. */
+  const BSC = "topps-chrome";
+  const SL = "309098";
+  const both = (cardNumber: string): SourcedVariationCandidate => ({
+    cardNumber,
+    isVariation: false,
+    sourceSetIds: { bsc: BSC, sportlots: SL },
+  });
+  const bscOnly = (cardNumber: string, isVariation: boolean): SourcedVariationCandidate => ({
+    cardNumber,
+    isVariation,
+    sourceSetIds: { bsc: BSC },
+  });
+  const slVar = (cardNumber: string, variationLabel?: string, setId = SL): SourcedVariationCandidate => ({
+    cardNumber,
+    isVariation: true,
+    variationLabel,
+    sourceSetIds: { sportlots: setId },
+  });
+
+  /** The commit's two passes, partitioned the way the commit partitions (BSC set first). */
+  function resolve(rows: SourcedVariationCandidate[]) {
+    const parts = new Map<string, number[]>();
+    rows.forEach((r, i) => {
+      const key = r.sourceSetIds.bsc ?? r.sourceSetIds.sportlots ?? "unattributed";
+      parts.set(key, [...(parts.get(key) ?? []), i]);
+    });
+    const first = new Map<number, number>();
+    for (const idx of parts.values()) {
+      for (const [c, p] of resolveVariationParents(idx.map((i) => rows[i])).parentByIndex) first.set(idx[c], idx[p]);
+    }
+    return { first, added: attachCrossMarketplaceVariations(rows, first) };
+  }
+
+  test("exactly one: the SportLots-only bare VAR hangs off the matched base #122", () => {
+    const rows = [both("122"), bscOnly("122b", true), bscOnly("122c", true), slVar("122")];
+    const { first, added } = resolve(rows);
+    expect(first).toEqual(new Map([[1, 0], [2, 0]]));
+    expect(added).toEqual(new Map([[3, 0]]));
+  });
+
+  test("a labelled one is treated the same way, by number and set, never by its label", () => {
+    const { added } = resolve([both("11"), slVar("11", "Action Image")]);
+    expect(added).toEqual(new Map([[1, 0]]));
+  });
+
+  test("zero: no non-variation card of that SportLots set on the stem, nothing attached", () => {
+    // The base is BSC-only, so it is not of the VAR's SportLots set.
+    expect(resolve([bscOnly("122", false), slVar("122")]).added.size).toBe(0);
+    expect(resolve([slVar("122")]).added.size).toBe(0);
+  });
+
+  test("multiple: two non-variation #122s of the set (invariant 7) attach nothing", () => {
+    expect(resolve([both("122"), both("122"), slVar("122")]).added.size).toBe(0);
+  });
+
+  test("a stem the first pass would call ambiguous stays ambiguous (#1 and #1a beside the VAR)", () => {
+    expect(resolve([both("1"), both("1a"), slVar("1")]).added.size).toBe(0);
+  });
+
+  test("the one candidate must carry the stem as its number: a suffixed base (1a) is not guessed", () => {
+    expect(resolve([both("1a"), slVar("1")]).added.size).toBe(0);
+  });
+
+  test("another source set of a fan-out never lends a parent", () => {
+    expect(resolve([both("29"), slVar("29", undefined, "other-set")]).added.size).toBe(0);
+  });
+
+  test("a variation the first pass parented, or one with no source set, is left alone", () => {
+    const rows: SourcedVariationCandidate[] = [
+      { cardNumber: "5", isVariation: false, sourceSetIds: { sportlots: SL } },
+      slVar("5"),
+      { cardNumber: "7", isVariation: true, sourceSetIds: {} },
+      { cardNumber: "7", isVariation: false, sourceSetIds: { sportlots: SL } },
+    ];
+    const { first, added } = resolve(rows);
+    expect(first.get(1)).toBe(0);
+    expect(first.has(2)).toBe(false);
+    expect(added.size).toBe(0);
   });
 });

@@ -1,5 +1,24 @@
 {
   "mcpServers": {
+    "nb-setbuild": {
+      "type": "stdio",
+      "command": "npm",
+      "args": ["--prefix", "apps/web", "run", "--silent", "setbuild:mcp"],
+      "env": {
+        "NB_SETBUILD_CONVEX_URL": "${NB_SETBUILD_CONVEX_URL:-}",
+        "NB_SETBUILD_AUTH": "${NB_SETBUILD_AUTH:-}",
+        "NB_SETBUILD_APP_URL": "${NB_SETBUILD_APP_URL:-}",
+        "NB_SETBUILD_WORKER": "${NB_SETBUILD_WORKER:-}",
+        "NB_SETBUILD_TRANSPORT": "${NB_SETBUILD_TRANSPORT:-}",
+        "NB_SETBUILD_CONVEX_SITE_URL": "${NB_SETBUILD_CONVEX_SITE_URL:-}",
+        "NB_SETBUILD_ENV_FILE": "${NB_SETBUILD_ENV_FILE:-}",
+        "NB_SETBUILD_API_KEY": "${NB_SETBUILD_API_KEY:-}",
+        "TESTING_ENDPOINT_SECRET": "${TESTING_ENDPOINT_SECRET:-}",
+        "VERCEL_AUTOMATION_BYPASS_SECRET": "${VERCEL_AUTOMATION_BYPASS_SECRET:-}",
+        "VITE_CLERK_PUBLISHABLE_KEY": "${VITE_CLERK_PUBLISHABLE_KEY:-}",
+        "PAUSED_PLATFORMS": "${PAUSED_PLATFORMS:-}"
+      }
+    },
     "playwright-test": {
       "command": "npx",
       "args": [

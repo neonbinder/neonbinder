@@ -440,3 +440,91 @@ describe("baseSlIdsBesideVariantType (NEO-325)", () => {
     expect(await read(t, a.insertTypeId)).toEqual([]);
   });
 });
+
+describe("fetchRawOptions — the manufacturer word reaches the matcher (NEO-339)", () => {
+  // BSC names an insert with the set's full name; SportLots' label drops the
+  // brand, and the Base-prefix strip then leaves "Authentics Relics".
+  const lists = {
+    sl: [
+      ["100", "Anime"],
+      ["201", "Anime Authentics Relics"],
+    ] as Array<[string, string]>,
+    bsc: [["topps-anime-authentics-relics", "Topps Anime Authentics Relics"]] as Array<[string, string]>,
+  };
+
+  test("with the manufacturer in parentFilters, a leading brand word only one side has is equal", async () => {
+    const t = convexTest(schema, modules);
+    const { insertTypeId } = await seed(t, { bsc: true, base: { sl: ["100"] } });
+    stubMarketplaces(lists);
+
+    const res = await t.withIdentity(ADMIN_IDENTITY).action(api.setReconciliation.fetchRawOptions, {
+      level: "insert",
+      parentId: insertTypeId,
+      parentFilters: { manufacturer: "Topps" },
+      baseSlPrefix: "Anime",
+    });
+
+    expect(res.errors).toEqual([]);
+    expect(res.autoMatched.map((m) => [m.bsc.platformValue, m.sl.platformValue])).toEqual([
+      ["topps-anime-authentics-relics", "201"],
+    ]);
+  });
+
+  test("without it, the pair is left for the operator, as before", async () => {
+    const t = convexTest(schema, modules);
+    const { insertTypeId } = await seed(t, { bsc: true, base: { sl: ["100"] } });
+    stubMarketplaces(lists);
+
+    const res = await fetchInsert(t, insertTypeId, "Anime");
+
+    expect(res.autoMatched).toEqual([]);
+    expect(res.unmatchedSl.map((s) => s.platformValue)).toEqual(["201"]);
+  });
+});
+
+describe("fetchRawOptions — a SportLots set still in the brand's review is never proposed (NEO-339)", () => {
+  // 2023 Topps Chrome: BSC's "1988 Topps Baseball Autographs Red" auto-matched
+  // the flagship's SportLots set by name, a set Sync Sets had not placed.
+  const lists = {
+    sl: [
+      ["100", "Anime"],
+      ["269998", "Anime 1988 Autos Red"],
+    ] as Array<[string, string]>,
+    bsc: [["anime-1988-autos-red", "Anime 1988 Autos Red"]] as Array<[string, string]>,
+  };
+  const withReview = async (t: ReturnType<typeof convexTest>, slIds: string[]) =>
+    t.run(async (ctx) => {
+      const brand = (await ctx.db.query("selectorOptions").collect()).find((r) => r.level === "manufacturer")!;
+      await ctx.db.insert("slSetReviews", {
+        yearId: brand.parentId!,
+        manufacturerId: brand._id,
+        entries: slIds.map((slId) => ({ slId, label: "Anime 1988 Autos Red" })),
+        classifiedAt: SENTINEL,
+      });
+    });
+
+  test("the auto-match is taken apart: both halves are unmatched for the operator", async () => {
+    const t = convexTest(schema, modules);
+    const { insertTypeId } = await seed(t, { bsc: true, base: { sl: ["100"] } });
+    await withReview(t, ["269998"]);
+    stubMarketplaces(lists);
+
+    const res = await fetchInsert(t, insertTypeId);
+
+    expect(res.errors).toEqual([]);
+    expect(res.autoMatched).toEqual([]);
+    expect(res.unmatchedBsc.map((b) => b.platformValue)).toEqual(["anime-1988-autos-red"]);
+    expect(res.unmatchedSl.map((s) => s.platformValue)).toEqual(["269998"]);
+  });
+
+  test("with nothing in the review, the name match is proposed as before", async () => {
+    const t = convexTest(schema, modules);
+    const { insertTypeId } = await seed(t, { bsc: true, base: { sl: ["100"] } });
+    await withReview(t, ["some-other-id"]);
+    stubMarketplaces(lists);
+
+    const res = await fetchInsert(t, insertTypeId);
+
+    expect(res.autoMatched.map((m) => [m.bsc.platformValue, m.sl.platformValue])).toEqual([["anime-1988-autos-red", "269998"]]);
+  });
+});

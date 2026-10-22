@@ -22,6 +22,7 @@ import {
   type BaseSignature,
 } from "@/lib/cards/base-match";
 import ReconciliationModal, { type PlatformItem } from "./ReconciliationModal";
+import { pressSave } from "./press-save";
 
 const useConvexSpy = vi.hoisted(() => vi.fn());
 vi.mock("convex/react", async (importOriginal) => {
@@ -207,7 +208,7 @@ const keepAll = (side: "SportLots" | "BSC") =>
 const srStatusIn = (row: HTMLElement) => row.querySelector(".sr-only")?.textContent ?? "";
 
 async function savedItems(onConfirm: ReturnType<typeof vi.fn>) {
-  fireEvent.click(screen.getByText(/^Save \d+ sets$/));
+  pressSave(screen.getByText(/^Save \d+ sets$/));
   await waitFor(() => expect(onConfirm).toHaveBeenCalled());
   return onConfirm.mock.calls[0][0].items as Array<{
     value: string;

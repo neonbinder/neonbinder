@@ -32,6 +32,7 @@ const CONTEXT: TitleContext = {
   players: [
     { printed: "Shohei Ohtani", name: "Shohei Ohtani" },
     { printed: "Mike Trout", name: "Mike Trout" },
+    { printed: "Aaron Judge", name: "Aaron Judge" },
   ],
   teams: [],
 };
@@ -100,12 +101,26 @@ describe("CardTitlesStep — what is on screen", () => {
   });
 
   test("identical drops share one line with a count; each card's own name sits under its field", () => {
-    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
-    const shared = screen.getByText(/^Left out to fit: Collectors Box/);
+    const teamId = "t1" as Id<"teams">;
+    setup({
+      // Aaron Judge, not Mike Trout: a name of 10 characters or fewer leaves
+      // room for "Anniversary" (the card number goes before a set word, Jason
+      // 2026-10-19), so the two cards would no longer lose the same words.
+      cards: [card("1"), card("2", { players: ["Aaron Judge"] })],
+      // A team that does not fit is the card's OWN loss; the set words the
+      // core gave up are shared.
+      names: { teamNameById: new Map([[teamId, "Los Angeles Dodgers"]]) },
+      teamAnswers: [{ teamIds: [teamId] }, undefined],
+    });
+    const shared = screen.getByText(/^Left out to fit: Anniversary Collectors Box/);
     expect(shared.textContent).toContain("(2 cards)");
-    expect(shared.textContent).not.toMatch(/Ohtani|Trout/);
-    expect(screen.getByText("Left out to fit: Shohei Ohtani")).toBeTruthy();
-    expect(screen.getByText("Left out to fit: Mike Trout")).toBeTruthy();
+    expect(shared.textContent).not.toMatch(/Ohtani|Judge|Dodgers/);
+    expect(screen.getByText("Left out to fit: Los Angeles Dodgers")).toBeTruthy();
+    // NEO-339: the set words go before a player's, so both names are in.
+    const first = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLInputElement;
+    const second = screen.getByRole("textbox", { name: "Title for #2 Card 2" }) as HTMLInputElement;
+    expect(first.value).toContain("Shohei Ohtani #1");
+    expect(second.value).toContain("Aaron Judge #2");
   });
 
   test("two rows the same words would name get distinct field names", () => {
@@ -230,7 +245,7 @@ describe("CardTitlesStep — recomputed from the team answers", () => {
     fireEvent.change(second, { target: { value: "Mine #2" } });
 
     rerenderWith({ teamAnswers: [{ teamIds: [teamId] }, { teamIds: [teamId] }] });
-    expect(screen.getAllByText(/Left out to fit: Shohei Ohtani, Los Angeles Dodgers/)).toHaveLength(2);
+    expect(screen.getAllByText("Left out to fit: Los Angeles Dodgers")).toHaveLength(2);
     expect(
       (screen.getByRole("textbox", { name: "Title for #2 Card 2" }) as HTMLInputElement).value,
     ).toBe("Mine #2");
@@ -292,11 +307,16 @@ describe("CardTitlesStep — accessibility wiring", () => {
   });
 
   test("each field is described by its own 'Left out to fit' line and its meter", () => {
-    setup({ cards: [card("1")] });
+    const teamId = "t1" as Id<"teams">;
+    setup({
+      cards: [card("1")],
+      names: { teamNameById: new Map([[teamId, "Los Angeles Dodgers"]]) },
+      teamAnswers: [{ teamIds: [teamId] }],
+    });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     const ids = (field.getAttribute("aria-describedby") ?? "").split(" ");
     const texts = ids.map((id) => document.getElementById(id)?.textContent);
-    expect(texts).toContain("Left out to fit: Shohei Ohtani");
+    expect(texts).toContain("Left out to fit: Los Angeles Dodgers");
     expect(texts.some((t) => /\/80/.test(t ?? ""))).toBe(true);
     // The over-cap status joins only once the title is over.
     fireEvent.change(field, { target: { value: "t".repeat(84) } });
@@ -307,10 +327,10 @@ describe("CardTitlesStep — accessibility wiring", () => {
   });
 
   test("a group of cards is described by the drop they share; its <li> stays a list item", () => {
-    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
+    setup({ cards: [card("1"), card("2", { players: ["Aaron Judge"] })] });
     const group = screen.getByRole("group");
     const line = document.getElementById(group.getAttribute("aria-describedby")!);
-    expect(line?.textContent).toMatch(/^Left out to fit: Collectors Box/);
+    expect(line?.textContent).toMatch(/^Left out to fit: Anniversary Collectors Box/);
     expect(group.tagName).toBe("DIV");
     expect(group.parentElement?.tagName).toBe("LI");
     expect(within(group).getAllByRole("textbox")).toHaveLength(2);

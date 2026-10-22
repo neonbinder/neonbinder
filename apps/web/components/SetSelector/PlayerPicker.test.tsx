@@ -370,6 +370,7 @@ describe("PlayerPicker", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Bobby Witt Jr",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => {
@@ -391,6 +392,7 @@ describe("PlayerPicker", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Bobby Witt Jr",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => {
@@ -538,6 +540,99 @@ describe("PlayerPicker", () => {
     // No chip was added — the refusal is a refusal, not a silent no-op that
     // leaves the operator thinking it worked.
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("NEO-339: a name already on file is refused with the player named, and one press uses that player", async () => {
+    // `createOnly`: "+ Create" never links silently. The server names the row
+    // on file (it can be one the pool missed: an alias, another sport's
+    // member), and the picker offers it as the way forward.
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError({
+        code: "PLAYER_EXISTS",
+        reason: "sameName",
+        name: "Ron Artest",
+        count: 1,
+        players: [{ id: "p-metta", name: "Metta World Peace", birthYear: 1979 }],
+      }),
+    );
+    currentCandidates = [];
+    const { onChange } = renderPicker();
+    openPopover();
+    // The open-time autofocus (a timer) lands first, as it does in a browser
+    // long before anyone has typed; left pending it would land AFTER the
+    // refusal and pull focus back off "Use".
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search players")));
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Ron Artest" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Ron Artest"));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Ron Artest is already in the binder. Use that player instead of adding a second one.",
+      ),
+    );
+    expect(mockFindOrCreate).toHaveBeenCalledWith({ name: "Ron Artest", sportId: SPORT_ID, createOnly: true });
+    expect(onChange).not.toHaveBeenCalled();
+
+    const use = screen.getByRole("button", { name: "Use Metta World Peace (born 1979), already on file" });
+    await waitFor(() => expect(document.activeElement).toBe(use));
+    fireEvent.click(use);
+    expect(onChange).toHaveBeenCalledWith([pid("p-metta")]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("NEO-339: a refused create focuses the first \"Use\" even when a timer would fire before the render", async () => {
+    // The CI failure this pins: the refusal's state updates land after an
+    // `await`, outside any React event, so React renders them on its own
+    // scheduler task. A `setTimeout(…, 0)` focus queued beside them fired
+    // FIRST in Chrome, found no button yet and moved focus nowhere. Here the
+    // window is forced open: the rejection settles under fake timers (React's
+    // scheduler keeps the real `setImmediate` it captured at load), every
+    // pending timer is run while the render is still queued, and only then is
+    // React let through. Focus must still end on "Use".
+    let rejectCreate!: (err: unknown) => void;
+    mockFindOrCreate.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectCreate = reject;
+      }),
+    );
+    currentCandidates = [];
+    renderPicker();
+    openPopover();
+    // The open-time autofocus timer lands first, as it does in a browser.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search players")));
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Ron Artest" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Ron Artest"));
+
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+    });
+    try {
+      rejectCreate(
+        new ConvexError({
+          code: "PLAYER_EXISTS",
+          reason: "sameName",
+          name: "Ron Artest",
+          count: 1,
+          players: [{ id: "p-metta", name: "Metta World Peace", birthYear: 1979 }],
+        }),
+      );
+      // Microtasks only: the catch block runs, React's render stays queued.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      // R2: the window really is open — the refusal is not on screen yet.
+      expect(screen.queryByRole("alert")).toBeNull();
+      vi.runOnlyPendingTimers();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const use = await screen.findByRole("button", {
+      name: "Use Metta World Peace (born 1979), already on file",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(use));
   });
 
   it("clears the refusal on the next keystroke", async () => {

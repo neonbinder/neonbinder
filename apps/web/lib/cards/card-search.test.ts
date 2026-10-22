@@ -323,9 +323,10 @@ describe("terms combine: AND across terms, OR across fields", () => {
 });
 
 describe("the 'attention' keyword", () => {
-  // Teamed and settled: nothing for a person to do.
-  const settled = card({ cardNumber: "1", cardName: "Josh Allen", teamOnCardIds: ["team-buf"] });
-  // No team and no automatic source for one: `missingTeam`.
+  // Teamed, its player linked, and settled: nothing for a person to do.
+  const settled = card({ cardNumber: "1", cardName: "Josh Allen", playerIds: ["player-ja"], teamOnCardIds: ["team-buf"] });
+  // No team and no automatic source for one: `missingTeam` (and, NEO-339, no
+  // player linked either).
   const teamless = card({ cardNumber: "2", cardName: "Stefon Diggs" });
   const teamlessBills = card({
     cardNumber: "3",
@@ -334,7 +335,8 @@ describe("the 'attention' keyword", () => {
     teamOnCardIds: [],
     pendingTeamNames: [],
   });
-  const settledBills = card({ cardNumber: "4", cardName: "Bills Mafia", teamOnCardIds: ["team-buf"] });
+  // NEO-339: a team card the operator answered "No player on this card".
+  const settledBills = card({ cardNumber: "4", cardName: "Bills Mafia", teamOnCardIds: ["team-buf"], playerNoneConfirmedAt: 1 });
   const withBills: CardSearchLookups = {
     teamNames: new Map([["team-buf", "Buffalo Bills"]]),
     playerNames: new Map([["player-vm", "Von Miller"]]),
@@ -356,6 +358,7 @@ describe("the 'attention' keyword", () => {
     const named = card({
       cardName: "Attention Grabbers",
       cardVariation: "Pay Attention",
+      playerIds: ["player-ja"],
       teamOnCardIds: ["team-buf"],
     });
     expect(cardMatchesSearch(named, "attention")).toBe(false);
@@ -391,6 +394,10 @@ describe("the 'attention' keyword", () => {
       card({ platformData: { bsc: { ref: "b1" } }, teamCheckDoneAt: 1 }),
       // The operator said "no team on this card".
       card({ teamNoneConfirmedAt: 1 }),
+      // NEO-339: a team card with nobody linked, and the same one answered
+      // "No player on this card".
+      card({ teamOnCardIds: ["team-buf"] }),
+      card({ teamOnCardIds: ["team-buf"], playerNoneConfirmedAt: 1 }),
       // A typed team name counts as a team; a typed player name that links
       // to nobody is a name to link.
       card({ pendingTeamNames: ["Wisconsin Badgers"] }),

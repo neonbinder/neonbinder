@@ -1648,6 +1648,23 @@ describe("SetAttributesPanel — Autograph format row (NEO-345)", () => {
     expect(field().value).toBe("Sticker/Label");
   });
 
+  it("a corrected answer says how many parallels moved with it, and how many took it (Jason, 2026-10-18)", async () => {
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: ["p1", "p2", "p3"], movedIds: ["p1", "p2"] });
+    currentRow = makeRow({ level: "insert", value: "Autographs", features: { autographFormat: "On Card" } });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    await act(async () => {
+      fireEvent.change(field(), { target: { value: "Sticker/Label" } });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Saved Autograph format · Its parallel takes the same answer. Its 2 parallels that had the old answer moved too.",
+        ),
+      ).toBeTruthy();
+    });
+  });
+
   it("saves through setAutographFormat, never the generic feature write", async () => {
     currentRow = makeRow({ level: "insert", value: "Autographs" });
     currentChain = makeChain("Baseball");

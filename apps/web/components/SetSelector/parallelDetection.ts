@@ -24,6 +24,24 @@ export type DetectionResult<TId extends string> = {
   ungroupedSelfStanding: Set<TId>;
   // Inserts identified as parents (have at least one suggested child).
   parents: Set<TId>;
+  // NEO-339 — rows suggested as a child that root a family of their own
+  // (see below), not held back: row id → the parent they were suggested under.
+  familyRoots: Map<TId, TId>;
+  // NEO-339 — the `holdFamilyRoots` rows actually held back: id → the parent
+  // the plain rule would have put them under.
+  heldFamilyRoots: Map<TId, TId>;
+};
+
+export type DetectionOptions<TId extends string> = {
+  /**
+   * Family roots the caller has EVIDENCE stand apart from their prefix
+   * parent (the two rows' previewed checklists share no card number:
+   * `groupWithFamilyRootEvidence` in lib/set-build/family-roots.ts, which the
+   * set-build draft runs and the modal runs on "Check card numbers"). Each
+   * stays top level and its own family groups under it. Absent, the plain
+   * prefix rule decides every row.
+   */
+  holdFamilyRoots?: ReadonlySet<TId>;
 };
 
 // Detect groupings using common-prefix matching.
@@ -40,14 +58,43 @@ export type DetectionResult<TId extends string> = {
 //    is a strict prefix of B's followed by a separator. If found, B is a
 //    candidate child of A.
 // 4. Anything with no parent and no children stays in `ungroupedSelfStanding`.
+//
+// NEO-339 — A FAMILY ROOT, HELD BACK ONLY ON EVIDENCE. Step 3 puts "Future
+// Stars Autographs" AND its SuperFractor, Red and Orange under "Future
+// Stars", though the autographs are their own insert (other card numbers).
+// The name cannot tell that case from "X Orange" / "X Orange Wave", which
+// are both parallels of X, so the prefix rule stays the rule. A row suggested
+// as a child that another candidate extends by a word ("Future Stars
+// Autographs Red" extends "Future Stars Autographs") is reported in
+// `familyRoots`; a caller with evidence (previewed cards sharing no number)
+// names it in `holdFamilyRoots`, and only then does it stay top level, its
+// own family grouping under it by the same longest-prefix step. One family is
+// one level: a row whose best parent is a held root is never a root itself
+// ("X Autographs Gold Wave" goes under "X Autographs"). With no
+// `holdFamilyRoots` the suggestions are exactly the plain rule's.
 export function detectGroupings<TId extends string>(
   inserts: ReadonlyArray<DetectionInput<TId>>,
   excludeAsChild: ReadonlySet<TId> = new Set(),
+  opts: DetectionOptions<TId> = {},
 ): DetectionResult<TId> {
+  const hold = opts.holdFamilyRoots ?? new Set<TId>();
   const normalized = inserts.map((it) => ({
     _id: it._id,
     norm: normalizeName(it.value),
   }));
+  // Rows another candidate (one that may become a child) extends by a word.
+  const extended = new Set<TId>();
+  for (const a of normalized) {
+    if (!a.norm) continue;
+    const prefix = a.norm + " ";
+    for (const b of normalized) {
+      if (b._id === a._id || excludeAsChild.has(b._id)) continue;
+      if (b.norm.startsWith(prefix)) {
+        extended.add(a._id);
+        break;
+      }
+    }
+  }
 
   // Sort by length ascending for stable parent-before-child evaluation.
   const byLength = [...normalized].sort((a, b) => a.norm.length - b.norm.length);
@@ -55,6 +102,8 @@ export function detectGroupings<TId extends string>(
   const suggestions = new Map<TId, TId[]>();
   const parents = new Set<TId>();
   const claimedAsChild = new Set<TId>();
+  const familyRoots = new Map<TId, TId>();
+  const heldFamilyRoots = new Map<TId, TId>();
 
   for (const child of byLength) {
     if (excludeAsChild.has(child._id)) continue;
@@ -77,6 +126,14 @@ export function detectGroupings<TId extends string>(
     }
 
     if (bestParent) {
+      // A family root (see above): held back only when the caller has
+      // evidence; reported either way. Inside a held family, never a root.
+      const root = extended.has(child._id) && !heldFamilyRoots.has(bestParent);
+      if (root && hold.has(child._id)) {
+        heldFamilyRoots.set(child._id, bestParent);
+        continue;
+      }
+      if (root) familyRoots.set(child._id, bestParent);
       const list = suggestions.get(bestParent) ?? [];
       list.push(child._id);
       suggestions.set(bestParent, list);
@@ -92,5 +149,5 @@ export function detectGroupings<TId extends string>(
     ungroupedSelfStanding.add(it._id);
   }
 
-  return { suggestions, ungroupedSelfStanding, parents };
+  return { suggestions, ungroupedSelfStanding, parents, familyRoots, heldFamilyRoots };
 }

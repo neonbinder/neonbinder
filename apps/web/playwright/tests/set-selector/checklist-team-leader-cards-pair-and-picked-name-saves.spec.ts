@@ -13,8 +13,10 @@
 //       "(unconfirmed)".
 //   (b) NEO-344: a conflict that IS there shows each value bare (Jason,
 //       2026-10-13: "I don't want the user swayed by what marketplace the data
-//       comes from"), still opens on BSC's value, and the value the operator
-//       picks is the one the card is saved with. STEP 6 manufactures the
+//       comes from"), starts with no pill checked and holds Confirm until
+//       answered (NEO-339), and the value the operator picks is the one the
+//       card is saved with. The set's own conflicts are answered by the
+//       first value each offers (support/pairing.ts) and are not the claim. STEP 6 manufactures the
 //       conflict on #442 (unlink it, then link it to a SportLots-only card),
 //       STEP 7 saves, STEP 8 reads the saved name back.
 //
@@ -30,14 +32,16 @@
 //
 // MEASURED on PR #335 run 38501127928 (Football 2014 Topps Base, live): the
 // dialog opens on "Matched (554)" with 8 name conflicts and 7 player
-// conflicts, "BSC only (0)" and "SportLots only (2)": #28 Vernon David ·
+// conflicts, "BSC only (0)" and "SportLots only (2)" (NEO-339 re-measured
+// PR #323: 552 matched, 10 name and 9 player conflicts, BSC 9a/9b and SL's two
+// #9 Julius Thomas variations unmatched as a same-player tie): #28 Vernon David ·
 // Jumping and #35 Navarro Bowman · Celebrating. EVERY BSC card matched, #442
 // included, so #442 is NOT BSC-only (an earlier draft assumed it was and
 // failed to find its row in the BSC column).
 //
 // The conflict is MANUFACTURED from the real fetched halves (as
 // checklist-pairing-dialog-cancel's is): #442 is found in the Matched list,
-// UNLINKED (its BSC half lands in BSC only: 0 -> 1), and linked to the first
+// UNLINKED (its BSC half lands in BSC only: n -> n+1), and linked to the first
 // SportLots-only card, a different person, so a name conflict is guaranteed.
 // Both names are read off the screen; nothing is hardcoded but the card
 // numbers.
@@ -53,6 +57,7 @@
 // stops after the drill and proves the pause on the page.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
+import { answerOpenConflicts, conflictsHoldLine, releasedConfirm } from "../../support/pairing";
 import {
   drillToBaseVariant,
   drillToColdManufacturer,
@@ -102,9 +107,12 @@ test(
     // Live BSC + SportLots round trip (GUIDE hard rule 3, marketplace exception).
     await expect(dialog).toBeVisible({ timeout: CHECKLIST_FETCH });
     // The dialog OPENING is not the fetch FINISHING: Confirm is "Loading…"
-    // (aria-disabled) until the stream resolves. Same live round trip.
-    const confirm = dialog.getByRole("button", { name: "Confirm card matches", disabled: false });
-    await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
+    // (aria-disabled) until the stream resolves, and then (NEO-339) held while
+    // any conflict is unanswered. This real set raises some of its own (STEP 4
+    // counts them), so "settled" is Confirm released OR the hold line showing.
+    // Same live round trip.
+    const confirm = dialog.getByRole("button", { name: "Confirm card matches" });
+    await expect(releasedConfirm(dialog).or(conflictsHoldLine(dialog))).toBeVisible({ timeout: CHECKLIST_FETCH });
     await expect(confirm).toHaveText("Confirm");
 
     // ── STEP 4 (a): at most 12 of each kind of conflict. The Matched toggle's
@@ -147,10 +155,15 @@ test(
     // from STEP 5. The measured shape (R2): every BSC card matched, so BSC
     // only is empty and #442 sits in the Matched list. Unlink it (the button
     // carries its label, `Unlink #442 <name>`); its BSC half lands in BSC only.
+    // The count it starts from is read, not assumed: NEO-339 leaves a
+    // same-player tie unmatched (BSC 9a/9b against SportLots' two #9 Julius
+    // Thomas variations), so BSC only is not always empty.
+    const bscOnlyAny = dialog.getByRole("heading", { name: /^BSC only \(\d+\)$/ });
+    await expect(bscOnlyAny).toBeVisible();
+    const bscOnlyBefore = Number(/\((\d+)\)/.exec((await bscOnlyAny.textContent()) ?? "")?.[1]);
     const bscOnly = (n: number) => dialog.getByRole("heading", { name: `BSC only (${n})`, exact: true });
-    await expect(bscOnly(0)).toBeVisible();
     await dialog.getByRole("button", { name: /^Unlink #442 / }).click();
-    await expect(bscOnly(1)).toBeVisible();
+    await expect(bscOnly(bscOnlyBefore + 1)).toBeVisible();
     // Collapse Matched so the columns are the dialog's working area again.
     await collapseMatched.click();
     await expect(expandMatched).toBeVisible();
@@ -206,19 +219,28 @@ test(
     await expect(dialog.getByRole("radio").filter({ hasText: /^(✓ )?(BSC|SportLots|Custom): / })).toHaveCount(0);
     await expectAccessible(page, { within: dialog, label: "Match Cards dialog, name conflict on #442" });
 
-    // BSC's value stays preselected: read on the name the row will be saved
-    // with, which its Unlink carries.
-    await expect(bscPill).toBeChecked();
-    await expect(dialog.getByRole("button", { name: new RegExp(`^Unlink #442 ${escapeRe(bscName)}( · .+)?$`) })).toBeVisible();
+    // NEO-339: no pill starts checked (BSC's no longer looks pre-answered), so
+    // #442 holds Confirm until the operator picks.
+    await expect(bscPill).not.toBeChecked();
+    await expect(slPill).not.toBeChecked();
+    await expect(conflictsHoldLine(dialog)).toBeVisible();
+    await expect(confirm).toBeDisabled();
 
     // Pick the other value, by the value it shows.
     await slPill.click();
     await expect(slPill).toBeChecked();
+    await expect(bscPill).not.toBeChecked();
     await expect(dialog.getByRole("button", { name: new RegExp(`^Unlink #442 ${escapeRe(slName)}( · .+)?$`) })).toBeVisible();
     await expect(dialog.getByRole("button", { name: new RegExp(`^Unlink #442 ${escapeRe(bscName)}( · .+)?$`) })).toBeHidden();
 
-    // ── STEP 7: save. Nothing is kept: the unpaired cards are dropped and the
-    // matched rows, #442 among them, are saved.
+    // ── STEP 7: save. The set's own conflicts (and #442's roster) are not this
+    // spec's claim: each is answered with the first value it offers, which
+    // releases Confirm. #442's name stays the operator's pick above. Nothing is
+    // kept: the unpaired cards are dropped and the matched rows, #442 among
+    // them, are saved.
+    await answerOpenConflicts(page, dialog);
+    await expect(slPill).toBeChecked();
+    await expect(releasedConfirm(dialog)).toBeVisible();
     await confirm.click();
     await expect(dialog).toBeHidden();
 

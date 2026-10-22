@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import { MAX_OPERATOR_DELETE_IDS } from "./selectorOptions";
 import { normalizeTeamName } from "./teams";
+import { normalizePlayerName } from "./players";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
@@ -544,6 +545,71 @@ async function scheduledBscEnqueueCount(
     n.includes("processBscTeamEnrichmentQueue"),
   ).length;
 }
+
+/**
+ * NEO-339 — the player twin: "No player on this card" is retired by the commit
+ * only when an ACCEPTED, re-diffed, non-empty `playerIds` is written, on the
+ * same one gate as the team ruling; a linkage-only re-sync leaves it.
+ */
+describe("commitCardChecklist — NEO-339 no-player confirmation", () => {
+  test("a reviewed sync that writes a real player retires it; a linkage-only one leaves it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Ichiro Suzuki",
+        nameNormalized: normalizePlayerName("Ichiro Suzuki"),
+        sportId,
+        teamYears: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Ichiro", slRef: "S1" })],
+    });
+    const inserted = (await storedRows(t, leafId))[0];
+    expect(inserted.playerIds ?? []).toEqual([]);
+    await asAdmin.mutation(api.cardChecklist.confirmCardNoPlayer, { cardId: inserted._id });
+    const stamp = (await storedRows(t, leafId))[0].playerNoneConfirmedAt;
+    expect(stamp).toBeTypeOf("number");
+
+    // Linkage only: the stamp stands.
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Ichiro", slRef: "S1" })],
+    });
+    expect((await storedRows(t, leafId))[0].playerNoneConfirmedAt).toBe(stamp);
+
+    // An accepted player write retires it in the same patch.
+    const before = (await storedRows(t, leafId))[0];
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        {
+          ...card({
+            cardNumber: "1",
+            cardName: "Ichiro",
+            slRef: "S1",
+            applyFields: ["playerIds"],
+            baseVersion: before.lastUpdated,
+          }),
+          players: ["Ichiro Suzuki"],
+        },
+      ],
+    });
+    const after = (await storedRows(t, leafId))[0];
+    expect(after.playerIds).toHaveLength(1);
+    expect(after.playerNoneConfirmedAt).toBeUndefined();
+    expect(after.playerNoneConfirmedByUserId).toBeUndefined();
+    await drainScheduled(t);
+  });
+});
 
 describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
   test("a reviewed sync that writes a real team retires the confirmation in the same patch", async () => {

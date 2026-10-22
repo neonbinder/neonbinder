@@ -25,6 +25,7 @@
 // to exactly one. It mints no names either, so no env-minted marker is
 // needed; the per-project run only differs in the signed-in worker.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { settleMatchCards } from "../../support/pairing";
 import {
   COLD_SYNC,
   columnHeading,
@@ -35,12 +36,13 @@ import {
   INSERT_FETCH,
   openInsertsReconcile,
   pick,
+  saveReconcile,
   setBuilderReady,
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
+import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard, skipHeldPickStep } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
@@ -106,7 +108,11 @@ test(
       await expect(insertSet).toBeVisible();
       await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog (Prospect Dual Autographs)" });
 
-      await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
+      // NEO-339: an insert left in Pending makes Save ask "Leave N sets unpaired?".
+      // `saveReconcile` reads the dialog's Pending columns before the press and
+      // asserts whichever outcome they call for: the step listing those sets (this
+      // insert not among them), left on purpose, or a save at once.
+      await saveReconcile(page, reconcile, { placed: [INSERT] });
       await expect(reconcile).toBeHidden();
 
       // Saving leaves the columns at the offset the dialog opened from: re-drill
@@ -146,9 +152,12 @@ test(
     if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
     if (await matchCards.isVisible()) {
       // The dialog OPENING is not the fetch FINISHING: Confirm reads
-      // "Loading…" and is inert until the action resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
+      // "Loading…" and is inert until the action resolves, and (NEO-339) is
+      // held on any conflict the live data raised, which this spec answers with
+      // the first value each offers: its feature is the team split, not a name.
+      const confirm = await settleMatchCards(page, page.getByRole("dialog", { name: /^Match Cards/ }), {
+        timeout: CHECKLIST_FETCH,
+      });
       await expect(page.getByText(new RegExp(`Match Cards — ${INSERT}`))).toBeVisible();
       await expectAccessible(page, {
         within: page.getByRole("dialog", { name: /^Match Cards/ }),
@@ -193,6 +202,16 @@ test(
       // or every name is decided (a batch that staged teams and no player, or
       // none unknown), so the loop cannot exit on a blank or wedged dialog.
       await expect(person.or(namesDone).or(stepSkip)).toBeVisible();
+
+      // A SAME-NAME PICK STEP HOLDS ITS PLACE (NEO-339). If the wizard opened on
+      // one ("Which <name> is this?", inserted ready while every other name
+      // waited on its lookup), it is still on screen now, and it is a player
+      // row: the drain below would exit on it at once, check no team step, and
+      // "Skip remaining names" would then decide every team unseen, so (a)
+      // would pass without looking. Skip it first and the league and team steps
+      // come next. A no-op on any other step, a post-name step included. After
+      // the precondition, so the read lands on a presented step.
+      await skipHeldPickStep(page);
 
       // Every settled undecided team (and the league step staged ahead of a team
       // that needs one) is presented before any player, so "a player is

@@ -21,6 +21,7 @@ import {
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
+  saveReconcile,
   setBuilderReady,
 } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
@@ -70,7 +71,11 @@ test(
       // Blue pairs both links: two chips on the one NB row.
       await expect(reconcile.getByRole("button", { name: `Remove ${COLOUR} from ${COLOUR}` }).nth(1)).toBeVisible();
       await expectAccessible(page, { within: reconcile, label: "Reconcile Parallels dialog" });
-      await reconcile.getByRole("button", { name: /Save [0-9]+ sets/ }).click();
+      // NEO-339: a SportLots or BSC set left in Pending makes Save ask "Leave N
+      // sets unpaired?"; `saveReconcile` asserts whichever outcome the Pending
+      // columns call for (Blue and the review's Red Ink source row are Ready, so
+      // neither is among the sets listed).
+      await saveReconcile(page, reconcile, { placed: [COLOUR, SOURCE_ROW] });
       await expect(reconcile).toBeHidden();
     } else {
       await expect(page.getByRole("listbox", { name: `${TYPE_PARALLEL}s` })).toBeVisible({
@@ -163,7 +168,10 @@ test(
 
     if (!env.SL_PAUSED) {
       await expect(reconcile).toBeVisible({ timeout: PARALLELS_FETCH });
-      await reconcile.getByRole("button", { name: /Save [0-9]+ sets/ }).click();
+      // The same step as the first Save (NEO-339). The moved row's ids are held
+      // under its new insert, which the dialog neither seeds into Ready nor offers
+      // in Pending, so the step must not list it either.
+      await saveReconcile(page, reconcile, { placed: [COLOUR, SOURCE_ROW] });
       await expect(reconcile).toBeHidden();
     } else {
       // The form announces itself while it runs, then closes by itself when the

@@ -461,3 +461,172 @@ describe("fetchBscCardTeamNames — attribute tokens (NEO-345)", () => {
     expect(entry.rawTeamName).toBe("Boston Red Sox");
   });
 });
+
+/**
+ * NEO-339 — when `playerAttribute` is empty (and `teamName` is no label), the
+ * card's tokens are read from its `productName`. The PBDA payloads are the
+ * live card-listing answers for 2024 Topps Chrome Black "Pitch Black Pairings
+ * Dual Autographs".
+ */
+describe("fetchBscCardTeamNames — productName tokens (NEO-339)", () => {
+  test("the live PBDA payloads: AU and a bare SN, no print run", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-cp": {
+          teamName: "",
+          playerAttribute: "",
+          productName: "Gerrit Cole / Andy Pettitte AU, SN #PBDA-CP",
+        },
+        "bsc-hs": {
+          teamName: "",
+          playerAttribute: "",
+          productName: "Mike Schmidt / Bryce Harper AU, SN #PBDA-HS",
+        },
+      }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-cp", "bsc-hs"] },
+    );
+
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-cp",
+        rawTeamName: "",
+        teamNames: [],
+        success: true,
+        attributeTokens: ["AU", "SN"],
+      },
+      {
+        bscCardId: "bsc-hs",
+        rawTeamName: "",
+        teamNames: [],
+        success: true,
+        attributeTokens: ["AU", "SN"],
+      },
+    ]);
+  });
+
+  test("'AU, SN99' in productName carries the print run, beside a real team", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": {
+          teamName: "Kansas City Royals",
+          playerAttribute: "",
+          productName: "Jac Caglianone / Charlie Condon AU, SN99 #PDA-JC",
+        },
+      }),
+    );
+
+    const [entry] = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(entry.rawTeamName).toBe("Kansas City Royals");
+    expect(entry.attributeTokens).toEqual(["AU", "SN99"]);
+    expect(entry.printRun).toBe(99);
+  });
+
+  test("a populated playerAttribute wins; productName is ignored", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": {
+          teamName: "Los Angeles Angels",
+          playerAttribute: "AU, SN50",
+          productName: "Mike Trout AU, SN99 #MT-1",
+        },
+      }),
+    );
+
+    const [entry] = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(entry.attributeTokens).toEqual(["AU", "SN50"]);
+    expect(entry.printRun).toBe(50);
+  });
+
+  test("a label teamName still gives the tokens; productName is not read over it", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": {
+          teamName: "AU  SN1",
+          playerAttribute: "",
+          productName: "Mike Trout AU, SN99 #MT-1",
+        },
+      }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const [entry] = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(entry.rawTeamName).toBe("");
+    expect(entry.attributeTokens).toEqual(["AU", "SN1"]);
+    expect(entry.printRun).toBe(1);
+  });
+
+  test("a productName with no run, or one whose name holds 'Au'/'Sn', reads nothing", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": { teamName: "Boston Red Sox", playerAttribute: "", productName: "Tony Au #12" },
+        "bsc-2": {
+          teamName: "Brooklyn Dodgers",
+          playerAttribute: "",
+          productName: "Duke Snider / Aubrey Huff #DS-AH",
+        },
+        "bsc-3": { teamName: "Boston Red Sox", playerAttribute: "", productName: { evil: true } },
+      }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1", "bsc-2", "bsc-3"] },
+    );
+
+    for (const entry of result) {
+      expect(entry.success).toBe(true);
+      expect(entry.attributeTokens).toEqual([]);
+      expect(entry.printRun).toBeUndefined();
+    }
+  });
+
+  test("an over-long playerAttribute list stays refused; productName does not replace it", async () => {
+    const t = convexTest(schema, modules);
+    const many = Array.from({ length: 25 }, (_, i) => `T${i}`).join(", ");
+    vi.stubGlobal(
+      "fetch",
+      makePayloadFetch({
+        "bsc-1": {
+          teamName: "Boston Red Sox",
+          playerAttribute: many,
+          productName: "Mike Trout AU, SN99 #MT-1",
+        },
+      }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const [entry] = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(entry.attributeTokens).toEqual([]);
+    expect(entry.printRun).toBeUndefined();
+  });
+});

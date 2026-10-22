@@ -1122,8 +1122,10 @@ async function fetchSetNames(
  * ## The one thing a bracket does NOT mean
  *
  * A bracket holding nothing but a known attribute token — `[ SP ]`, `[ RC ]` —
- * is describing the card, not naming a second version of it. Those are left
- * alone; `tokenizeSlDescription` picks them up as attributes.
+ * is describing the card, not naming a second version of it. The brackets are
+ * removed and the token left in place, so `tokenizeSlDescription` picks it up
+ * as an attribute and the name comes out clean (NEO-339: it used to read
+ * "Brandon Belt [ ]", with no player).
  *
  * The residual risk is a bracket that is neither: a genuinely new convention
  * would be read as a variation name. That is the safer direction to fail —
@@ -1133,10 +1135,38 @@ async function fetchSetNames(
  * Returns SL's RAW label. It is not translated: which NeonBinder name it and
  * BSC's wording both mean is settled when the two are paired, not guessed by
  * an adapter.
+ *
+ * ## A bare `[ VAR ]` is a variation with no label
+ *
+ * NEO-339: 2024 Topps Chrome lists "#16 Pete Crow-Armstrong [ VAR ]" beside
+ * "#16 Pete Crow-Armstrong" (BSC files it as 16b). `VAR` used to sit in the
+ * attribute-token set below, so the row parsed as a SECOND non-variation #16
+ * carrying "[ VAR ]" in its name: the number looked printed twice, and the
+ * name disagreed with BSC's on every pair. It is the plainest variation marker
+ * SportLots writes; it just names no variation, so `variationLabel` is absent.
+ *
+ * ## `VAR` makes it a variation whatever follows, and the name is never glued
+ *
+ * NEO-339 (2023 Topps Chrome): two shapes lost the card's player.
+ *
+ *   - `[ VAR SSP ]`. The attribute-token check above ran on what followed the
+ *     optional `VAR`, so an SSP variation (BSC's 1c, "VAR: SSP") read as a
+ *     second plain card, kept "[ VAR ]" in its name, and `parseSlSubjects`
+ *     refused the bracket: no player at all. A bracket that SAYS `VAR` is a
+ *     variation; the attribute check only applies to a bracket without it.
+ *     The words after `VAR` are still its label (untranslated, "SSP" here,
+ *     which is also BSC's), and when every one of them is an attribute token
+ *     they are left in the residual too, so `tokenizeSlDescription` lifts
+ *     them as attributes.
+ *   - `[ VAR ] RC`. The marker was cut out with the spaces on both sides of
+ *     it and the two halves joined with nothing, so "Adley Rutschman [ VAR ]
+ *     RC" became "Adley RutschmanRC": a player NB has never heard of, and
+ *     the RC lost. The cut now leaves one space.
  */
 /**
  * Bracket contents that describe the card rather than name a variation of it.
  * Mirrors the tokens `tokenizeSlDescription` already lifts into attributes.
+ * (`VAR` is not one of them: see the note above.)
  */
 const SL_BRACKET_ATTRIBUTE_TOKENS = new Set([
   "SP",
@@ -1145,7 +1175,6 @@ const SL_BRACKET_ATTRIBUTE_TOKENS = new Set([
   "AU",
   "RELIC",
   "MEM",
-  "VAR",
 ]);
 
 export function parseSlVariationMarker(desc: string): {
@@ -1154,21 +1183,44 @@ export function parseSlVariationMarker(desc: string): {
   variationLabel?: string;
   residual: string;
 } {
-  // `VAR ` is optional — see the note above. Tolerant of internal spacing.
-  const m = desc.match(/\s*\[\s*(?:VAR\s+)?([^\]]+?)\s*\]\s*/i);
+  // `VAR` is optional — see the note above. Tolerant of internal spacing.
+  const m = desc.match(/\s*\[\s*([^\]]+?)\s*\]\s*/);
   if (!m) return { isVariation: false, residual: desc };
   const inner = m[1].trim();
-  // A bracket holding only an attribute token describes the card rather than
-  // naming a second version of it.
-  if (SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
-    return { isVariation: false, residual: desc };
+  const varMarker = inner.match(/^VAR(?:\s+([\s\S]*))?$/i);
+  // A bracket holding only an attribute token, and no `VAR`, describes the
+  // card rather than naming a second version of it. The bracket goes and its
+  // token stays for `tokenizeSlDescription` to lift: "Brandon Belt [ SP ]"
+  // used to leave "Brandon Belt [ ]", which no name parse accepts.
+  if (!varMarker && SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
+    const residual = [desc.slice(0, m.index), inner, desc.slice(m.index! + m[0].length)]
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return { isVariation: false, residual };
   }
-  const residual = (desc.slice(0, m.index) + desc.slice(m.index! + m[0].length))
+  const label = (varMarker ? (varMarker[1] ?? "") : inner).trim();
+  const labelWords = label.split(/\s+/).filter(Boolean);
+  // `[ VAR SSP ]`: the short print is a fact about the card as well as SL's
+  // name for the variation, so it stays where the tokenizer will lift it.
+  const keepInResidual =
+    labelWords.length > 0 &&
+    labelWords.every((w) => SL_BRACKET_ATTRIBUTE_TOKENS.has(w.toUpperCase()));
+  // One space where the marker was, never none: "… [ VAR ] RC" must not
+  // become "…RC".
+  const residual = [
+    desc.slice(0, m.index),
+    keepInResidual ? label : "",
+    desc.slice(m.index! + m[0].length),
+  ]
+    .join(" ")
     .replace(/\s+/g, " ")
     .trim();
+  // A bare `[ VAR ]`: a variation that names no variation.
+  if (!label) return { isVariation: true, residual };
   return {
     isVariation: true,
-    variationLabel: displayVariationLabel(inner),
+    variationLabel: displayVariationLabel(label),
     residual,
   };
 }
@@ -1221,7 +1273,7 @@ export function parseSlVariationMarker(desc: string): {
  * Still pure parsing of SportLots' own string: nothing is looked up in NB, and
  * no name is matched against anything.
  */
-function tokenizeSlDescription(desc: string): {
+export function tokenizeSlDescription(desc: string): {
   attributes: string[];
   printRun?: number;
   residual: string;
@@ -1596,6 +1648,38 @@ export function parseSlSubjects(residual: string): { players?: string[] } {
 }
 
 /**
+ * NEO-339 — the ONE-WORD name `parseSlSubjects` refuses (rule 8), offered as
+ * an unconfirmed hint rather than a player.
+ *
+ * Rule 8 stays: an adapter cannot tell "Ichiro" from "Checklist", a sponsor,
+ * a team nickname or a subset word, and a junk player in NB's table is the
+ * failure the parser exists to prevent. What CAN tell them apart is NB's own
+ * data, so `fetchCardChecklist` takes this hint only for a card neither
+ * marketplace named a player on, and only when exactly one player in the
+ * set's sport already answers to the word (name or alias, the commit's own
+ * lookup). Anything else drops it. Jason, NEO-339: "it should match an alias
+ * if it is a one word name".
+ *
+ * The residual must be ONE token with nothing else on the row: no separator,
+ * no digit, no markup or control character, not a stoplist word, not a
+ * SportLots team code ("SEA"), a suffix or a particle, and shaped like a
+ * capitalised name token. "Ichiro SEA" stays refused, hint and all: whether
+ * SEA is a team code or half a name is the ambiguity rule 7 refuses.
+ */
+export function parseSlMononymHint(residual: string): string | undefined {
+  if (/[<>]/.test(residual) || SL_CONTROL_CHARS.test(residual)) return undefined;
+  const subject = residual.replace(/\s+/g, " ").trim();
+  if (!subject || subject.includes(" ")) return undefined;
+  if (/[|,/&]/.test(subject) || /\d/.test(subject)) return undefined;
+  if (subject.length > SL_MAX_SUBJECT_LENGTH) return undefined;
+  const lowered = subject.toLowerCase();
+  if (SL_SUBJECT_STOPWORDS.some((pattern) => pattern.test(lowered))) return undefined;
+  if (SL_TEAM_ABBREVIATION.test(subject)) return undefined;
+  if (SL_NAME_SUFFIXES.has(lowered) || SL_NAME_PARTICLES.has(subject)) return undefined;
+  return SL_NAME_TOKEN.test(subject) ? subject : undefined;
+}
+
+/**
  * NEO-343 — the card-type word SportLots appends to a team card:
  * "Philadelphia Eagles Team". Its own final token after whitespace, and
  * case-sensitive like BSC's `TC`/`TL` suffixes, so "Eagles team",
@@ -1749,6 +1833,13 @@ export type SlListcardsCard = {
    *  parent's card number, so this flag is the only thing separating
    *  these rows from the card they vary. */
   isVariation?: boolean;
+  /**
+   * NEO-339 — a one-word subject ("Ichiro") `parseSlSubjects` refused by rule
+   * 8. NOT a player: `fetchCardChecklist` names the card with it only when
+   * neither marketplace gave players and exactly one NB player in the sport
+   * answers to it. See `parseSlMononymHint`.
+   */
+  mononymHint?: string;
   platformRef?: string;
   sportlotsRef?: string;
 };
@@ -2019,6 +2110,10 @@ export async function walkSlListcards(
       const { players } = teamCardTeam
         ? { players: [teamCardTeam] }
         : parseSlSubjects(residual);
+      // NEO-339 — the one-word name rule 8 refused, as a HINT only. Never in
+      // `players`; see `parseSlMononymHint`.
+      const mononymHint =
+        teamCardTeam || players ? undefined : parseSlMononymHint(residual);
 
       pageCards.push({
         cardNumber,
@@ -2032,6 +2127,7 @@ export async function walkSlListcards(
         // wording for the variation. Untranslated — see parseSlVariationMarker.
         isVariation: isVariation || undefined,
         cardVariation: variationLabel,
+        ...(mononymHint ? { mononymHint } : {}),
         // NEO-91: the raw, un-tokenized description (not the bare card
         // number) — this is what lands in cardChecklist.platformData.
         // sportlots. SL reuses the same cardNumber across variation rows
@@ -2115,6 +2211,8 @@ export const fetchSportLotsChecklist = action({
         // NEO-189: does this source consider the row a variation of another
         // card? A domain answer, not a marketplace field.
         isVariation: v.optional(v.boolean()),
+        // NEO-339: an unconfirmed one-word name, never a player on its own.
+        mononymHint: v.optional(v.string()),
         platformRef: v.optional(v.string()),
         sportlotsRef: v.optional(v.string()),
       }),

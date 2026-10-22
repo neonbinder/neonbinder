@@ -27,7 +27,10 @@ import AutographFormatStep, {
   AUTOGRAPH_NEXT_BLOCKED,
   AUTOGRAPH_PROMPT_SAVING,
   AutographFormatPrompt,
+  autographParallelsNote,
   autographPromptLine,
+  autographPromptMoved,
+  autographPromptParallels,
   autographPromptSaved,
   autographStepQuestion,
 } from "./AutographFormatStep";
@@ -182,13 +185,15 @@ describe("AutographFormatStep — keyboard", () => {
 
 describe("AutographFormatPrompt — a stored leaf", () => {
   function PromptHost({ count = 3 }: { count?: number }) {
-    const [saved, setSaved] = useState<AutographFormat | undefined>(undefined);
+    const [saved, setSaved] = useState<{ value: AutographFormat; parallels: number; moved: number } | undefined>(undefined);
     return (
       <AutographFormatPrompt
         selectorOptionId={LEAF}
         count={count}
-        saved={saved}
-        onSaved={setSaved}
+        saved={saved?.value}
+        savedParallels={saved?.parallels}
+        savedMoved={saved?.moved}
+        onSaved={(value, parallels, moved) => setSaved({ value, parallels, moved })}
       />
     );
   }
@@ -214,6 +219,41 @@ describe("AutographFormatPrompt — a stored leaf", () => {
     expect(status.textContent).toBe(autographPromptSaved("Sticker/Label"));
     expect(document.activeElement).toBe(status);
     expect(screen.queryByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] })).toBeNull();
+  });
+
+  it("names the parallels the answer also reached, and says nothing of none", async () => {
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: ["p1"] });
+    const { unmount } = render(<PromptHost />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] }));
+    });
+    expect((await screen.findByRole("status")).textContent).toBe(
+      `${autographPromptSaved("On Card")} ${autographPromptParallels(1)}`,
+    );
+    expect(autographPromptParallels(1)).toBe("Its parallel takes the same answer.");
+    expect(autographPromptParallels(4)).toBe("Its 4 parallels take the same answer.");
+    unmount();
+
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: [] });
+    render(<PromptHost />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] }));
+    });
+    expect((await screen.findByRole("status")).textContent).toBe(autographPromptSaved("On Card"));
+  });
+
+  it("says how many parallels moved off an old answer", async () => {
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: ["p1", "p2"], movedIds: ["p1", "p2"] });
+    render(<PromptHost />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["Sticker/Label"] }));
+    });
+    expect((await screen.findByRole("status")).textContent).toBe(
+      `${autographPromptSaved("Sticker/Label")} Its 2 parallels that had the old answer moved too.`,
+    );
+    expect(autographPromptMoved(1)).toBe("Its parallel that had the old answer moved too.");
+    expect(autographParallelsNote(3, 1)).toBe(`${autographPromptParallels(2)} ${autographPromptMoved(1)}`);
+    expect(autographParallelsNote(0, 0)).toBe("");
   });
 
   it("a refusal shows the server's sentence and keeps both answers", async () => {

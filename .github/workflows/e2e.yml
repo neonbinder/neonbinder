@@ -50,8 +50,7 @@ permissions:
 # ─── The Playwright suite (NEO-341) ───────────────────────────────────────────
 # main deploys to prod on every merge, so the FULL suite is the merge-blocking
 # gate. Specs live in apps/web/playwright/tests/; config is
-# apps/web/playwright.config.ts (projects: setup / bootstrap / e2e /
-# e2e-mobile). Every spec runs on BOTH e2e (desktop) and e2e-mobile (a
+# apps/web/playwright.config.ts (projects: bootstrap / e2e / e2e-mobile). Every spec runs on BOTH e2e (desktop) and e2e-mobile (a
 # Chromium phone), in two passes, each on a FRESHLY SEEDED preview: ~15 specs
 # are fresh-only or the sole writer of a real marketplace set and pass once
 # per seed, so desktop and mobile cannot share one. `shard-plan.mjs
@@ -59,9 +58,16 @@ permissions:
 #
 #   setup        → adopt the PR's Vercel preview URL, wait for it (with the
 #                  bypass header), derive the preview's Convex deployment name.
-#   seed         → mirror the Convex env switches, scripted reset
-#                  (e2e-baseline.sh), then the `setup` project (the global
-#                  baseline) as worker 0.
+#   seed         → mirror the Convex env switches, scripted reset +
+#                  reference catalogue (e2e-seed-reset.sh), then the global
+#                  baseline through the set-building API (NEO-339: `setbuild
+#                  apply` of playwright/seed/baseline.spec.json as worker 0,
+#                  then `setbuild mcp-smoke`, which builds the one seeded
+#                  parallel). No browser: the seed is a script.
+#   setbuild-oneshot → NEO-339: the one-shot set build's live proof (draft →
+#                  merge with the committed answers → plan → apply →
+#                  inspect) as worker 8, after `seed` and in parallel with
+#                  the desktop shards. Once per run; the gate requires it.
 #   shard-desktop→ 8 x ubuntu-latest, `--project=e2e`. Each shard runs the spec
 #                  files that `shard-plan.mjs 8 <i> --project e2e` assigns it
 #                  (longest-first over the per-spec desktop timings in
@@ -73,8 +79,9 @@ permissions:
 #                  mobile may only seed after EVERY desktop shard has
 #                  finished. Runs even when desktop has reds (`!cancelled()`
 #                  as long as setup + seed succeeded) so one run still
-#                  collects the mobile results. Same Convex env switches,
-#                  scripted reset and `setup` project as `seed`.
+#                  collects the mobile results. Waits for setbuild-oneshot
+#                  too (the reset would wipe it mid-build). Same Convex env
+#                  switches, scripted reset and setbuild seed as `seed`.
 #   shard-mobile → 8 x ubuntu-latest, `--project=e2e-mobile`, planned on the
 #                  mobile timings. `bootstrap` is a dependency of e2e-mobile
 #                  too, so each mobile shard re-seeds its account after the
@@ -99,7 +106,9 @@ permissions:
 # else changes. Accounts 0-11 exist, so up to 12 shards per pass; the longest
 # single spec bounds wall-clock at any N >= 7.
 #
-# Artifacts are failure screenshots + the Playwright report. Never traces: a
+# Artifacts are failure screenshots + the Playwright report, plus the setbuild
+# JSON reports (setbuild-seed, setbuild-seed-mobile, setbuild-oneshot: ids and
+# counts only, the tool redacts secrets). Never traces: a
 # trace records the network traffic, including Clerk testing tokens, and these
 # artifacts are public (playwright.config.ts turns traces off in CI; do not turn
 # them back on here). What IS published, knowingly (NEO-341 security review):
@@ -108,8 +117,7 @@ permissions:
 # values in plaintext) and the screenshots, plus the sanitised axe JSON.
 # Accepted as the main red-run diagnostic: real marketplace passwords never
 # reach the browser. Artifact names:
-# pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
-# pw-report-mobile-<i>, pw-merged (+ convex-logs-* on the first shard of each
+# pw-report-desktop-<i>, pw-report-mobile-<i>, pw-merged (+ convex-logs-* on the first shard of each
 # pass and each seed).
 
 jobs:
@@ -230,8 +238,9 @@ jobs:
 
   seed:
     # Seed the shared per-PR Convex preview's global baseline before the
-    # DESKTOP shard matrix fans out: scripted reset, then the `setup` project (Base +
-    # Insert + Parallel in one in-place pass) as worker 0. The per-shard
+    # DESKTOP shard matrix fans out: scripted reset, then (NEO-339) the
+    # setbuild tool builds the baseline through the same public admin Convex
+    # functions the Set Builder UI calls, as worker 0. No Playwright here. The per-shard
     # `bootstrap` project resets only its own user, so it never wipes this
     # global baseline. By the time this runs, NEONBINDER_BROWSER_URL on the
     # Convex preview already points at the PR's own browser preview (when
@@ -265,7 +274,6 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
 
       # NEO-301: capture this PR preview's Convex logs for the seed job's own
       # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
@@ -459,59 +467,184 @@ jobs:
           echo "NB_SEED_SINCE_MS=${since_ms}" >> "$GITHUB_ENV"
           echo "since_ms=${since_ms}" >> "$GITHUB_OUTPUT"
 
-      # NEO-214: the scripted reset is the single writer of the global baseline
-      # (shared with local use via `npm run test:e2e:seed`). It needs a PREVIEW
-      # deploy key + the deployment slug to reach THIS PR's Convex preview
-      # rather than the CLI's local default. CONVEX_PREVIEW_DEPLOY_KEY is
-      # TEAM+PROJECT scoped, not deployment-scoped (a wrong CONVEX_NAME would
-      # reach ANOTHER PR's preview in this project, not dev/prod) — hence the
-      # shape assertion on `name` in the `setup` job above. Once --deployment is
-      # passed the CLI selects the target BY THAT NAME and the key only
-      # authenticates the call, so a right key + wrong name is exactly the
-      # "reach another PR's preview" failure mode, not a fail-closed one.
+      # NEO-339: reset, then build the baseline through the set-building API.
+      # Since NEO-330 the reset also loads prod's reference catalogue (players,
+      # teams, leagues, sports) from the bundle downloaded above, so the
+      # baseline's review asks only about names the catalogue lacks and about
+      # same-name players (the pick step); every other spec answer is a moot
+      # no-op, reported as such (docs/operations/neo339-setbuild.md).
       #
-      # NEO-330: with NB_REFERENCE_BUNDLE exported by the download step,
-      # e2e-seed-reset.sh checks the bundle, resets everything EXCEPT the
-      # eight reference tables, then loads the bundle (`convex import
-      # --replace`, which is the clear for those tables). The reset alone does
-      # not empty them, so each pass must load again; the sequence is
-      # idempotent on a preview the earlier pass wrote to.
-      - name: Scripted reset + reference catalogue (e2e-seed-reset.sh)
+      # Credentials. `setbuild --auth testing` signs in as the worker-0 test
+      # admin exactly as /testing/sign-in does, so it needs two values the SPA
+      # build gets from Vercel env: TESTING_ENDPOINT_SECRET (the x-testing-auth
+      # shared secret) and VITE_CLERK_PUBLISHABLE_KEY (to derive the Clerk FAPI
+      # origin). Source, in order:
+      #   1. `vercel pull` (the same VERCEL_* secrets web-preview uses). Those
+      #      vars are stored Encrypted, and a CLI token that cannot decrypt
+      #      them gets the KEYS with EMPTY values, so this can legitimately
+      #      return blanks. Only key presence and value length are logged.
+      #   2. The PR preview's own served JS bundle: the SPA bakes
+      #      VITE_TESTING_ENDPOINT_SECRET in and sends it from /testing/sign-in,
+      #      which is precisely how the old Maestro seed authenticated. Needs no
+      #      new secret. PREVIEWS ONLY; production never serves the testing
+      #      endpoint and this job only ever sees a preview URL.
+      # The secret is masked before first use and exported to THIS step only,
+      # never to $GITHUB_ENV or a later step. The publishable key is public by
+      # design (it ships in every page) so it is logged by length only, unmasked.
+      #
+      # The Convex target is the deployment this job already resolved and
+      # shape-checked in the `setup` job ($CONVEX_NAME), never a value read back
+      # from the preview, and the confirm phrase binds the write to that host.
+      - name: Seed baseline (reset, then setbuild apply + MCP smoke)
         env:
+          CI: "true"
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          # NEO-214: e2e-baseline.sh needs a PREVIEW deploy key + the deployment
+          # slug to reach THIS PR's Convex preview rather than the CLI's local
+          # default. CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT scoped, not
+          # deployment-scoped (a wrong CONVEX_NAME would reach ANOTHER PR's
+          # preview in this project, not dev/prod), hence the shape assertion on
+          # `name` in the `setup` job above. Once --deployment is passed the CLI
+          # selects the target BY THAT NAME and never consults the key for
+          # selection, so a right key + wrong name is the failure to guard.
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
+          set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          reset_start=$(date +%s)
+          # The deployment is never printed (this log is public): mask its
+          # name before anything below can echo it (phrases name the host).
+          echo "::add-mask::$CONVEX_NAME"
+          started=$SECONDS
+          creds_dir="$(mktemp -d)"; chmod 700 "$creds_dir"
+          trap 'rm -rf "$creds_dir" "$GITHUB_WORKSPACE/.vercel"' EXIT
+
+          # Read KEY from a dotenv file; strip one layer of quotes. Empty if absent.
+          env_value() {
+            local v
+            v="$(grep -E "^$2=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            printf '%s' "$v"
+          }
+          report() {  # name value -> presence + length only
+            if [ -n "$2" ]; then echo "  $1: present (length ${#2})"; else echo "  $1: EMPTY"; fi
+          }
+
+          secret=""; pk=""
+          # 1. vercel pull. Runs from the repo root (the Vercel project's Root
+          #    Directory is apps/web and the CLI composes it onto the cwd).
+          #    `env -u` strips the two secrets this step holds that the Vercel
+          #    CLI has no use for, so a third-party CLI (and anything it
+          #    spawns) never sees the Convex deploy key or the bypass secret.
+          if [ -n "${VERCEL_TOKEN:-}" ] && [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "Trying vercel pull (preview, branch $HEAD_REF)"
+            if (cd "$GITHUB_WORKSPACE" && env -u CONVEX_DEPLOY_KEY -u VERCEL_AUTOMATION_BYPASS_SECRET \
+                  npx --yes vercel@48.2.0 pull --yes --environment=preview \
+                  --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN" > "$creds_dir/vercel-pull.log" 2>&1); then
+              envfile="$GITHUB_WORKSPACE/.vercel/.env.preview.local"
+              secret="$(env_value "$envfile" TESTING_ENDPOINT_SECRET)"
+              pk="$(env_value "$envfile" VITE_CLERK_PUBLISHABLE_KEY)"
+              echo "vercel pull result:"
+              report TESTING_ENDPOINT_SECRET "$secret"
+              report VITE_CLERK_PUBLISHABLE_KEY "$pk"
+            else
+              echo "::warning::vercel pull failed (see below); falling back to the preview bundle."
+              tail -n 5 "$creds_dir/vercel-pull.log" | sed 's/^/  /'
+            fi
+          else
+            echo "VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID not all set; skipping vercel pull."
+          fi
+          [ -n "$secret" ] && echo "::add-mask::$secret"
+
+          # 2. Fallback: the values the preview itself serves.
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "Falling back to the PR preview's served bundle"
+            if node "$GITHUB_WORKSPACE/.github/scripts/preview-testing-creds.mjs" "$PREVIEW_URL" "$creds_dir"; then :; else
+              echo "::warning::preview bundle did not yield both values."
+            fi
+            if [ -z "$secret" ] && [ -s "$creds_dir/testing-secret" ]; then
+              secret="$(cat "$creds_dir/testing-secret")"
+              echo "::add-mask::$secret"
+            fi
+            if [ -z "$pk" ] && [ -s "$creds_dir/publishable-key" ]; then
+              pk="$(cat "$creds_dir/publishable-key")"
+            fi
+          fi
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "::error::Could not obtain TESTING_ENDPOINT_SECRET / VITE_CLERK_PUBLISHABLE_KEY from vercel pull or the preview bundle."
+            exit 1
+          fi
+          export TESTING_ENDPOINT_SECRET="$secret"
+          export VITE_CLERK_PUBLISHABLE_KEY="$pk"
+
+          convex_url="https://${CONVEX_NAME}.convex.cloud"
+          # The confirm phrase is "BUILD <convex host> <spec scope> <digest>",
+          # the digest binding it to the spec's content. `setbuild
+          # confirm-phrase` computes it offline (no network, no auth) with the
+          # same code apply and nb_plan use, so it is never built by hand. A
+          # spec that does not parse fails here, before the reset.
+          base_phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec playwright/seed/baseline.spec.json --convex-url "$convex_url")"
+          par_phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec playwright/seed/parallel.spec.json --convex-url "$convex_url")"
+          echo "baseline confirm phrase: $base_phrase"
+          echo "mcp-smoke confirm phrase: $par_phrase"
+
+          # Reset, then (NB_REFERENCE_BUNDLE, exported by the download step
+          # above) the NEO-330 reference-catalogue import: check → scoped
+          # reset → `convex import --replace`, one explicit target
+          # ($CONVEX_NAME), the bundle deleted afterwards. Shared with the
+          # local ./e2e-seed.sh (`npm run test:e2e:seed`).
+          reset_start=$SECONDS
           ./e2e-seed-reset.sh
-          # Plain "label: value" lines (counts, table names, seconds only)
-          # written by the script; nothing is parsed from its log output.
+          reset_s=$((SECONDS - reset_start))
+
+          echo "── setbuild apply (baseline) ──"
+          npm run setbuild -- apply \
+            --spec playwright/seed/baseline.spec.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker 0 \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$base_phrase" \
+            --report setbuild-seed-report.json
+
+          echo "── setbuild mcp-smoke ──"
+          npm run setbuild -- mcp-smoke \
+            --spec playwright/seed/parallel.spec.json \
+            --expect playwright/seed/mcp-smoke.expect.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker 0 \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$par_phrase" \
+            --json > setbuild-mcp-smoke-report.json
+
+          duration=$((SECONDS - started))
           {
-            echo "- Reset + reference import wall-clock: $(( $(date +%s) - reset_start ))s"
+            echo "### Seed (setbuild, NEO-339)"
+            echo "- duration: \`${duration}s\` (reset + reference import: \`${reset_s}s\`)"
+            # The step summary is not masked: the digest only, never the host.
+            echo "- baseline spec digest: \`${base_phrase##* }\`"
+            echo "- apply counts: \`$(jq -c '.counts // .summary // {}' setbuild-seed-report.json 2>/dev/null || echo '?')\`"
+            echo "- mcp-smoke: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-mcp-smoke-report.json 2>/dev/null || echo '?')\`"
+            # The reference-seed lines (step seconds, generatedAt, per-table
+            # counts) e2e-seed-reset.sh wrote; numbers and names only.
             if [ -s "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # The `setup` project answers one New Team step per team the first sync
-      # stages (NEO-236, ~13 min on CI), so the project carries its own 25 min
-      # timeout; this job's budget covers install + reset + that.
-      - name: Seed global baseline (setup project, worker 0)
-        env:
-          CI: "true"
-          APP_URL: http://localhost:3000
-          PREVIEW_URL: ${{ needs.setup.outputs.url }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          WORKER_INDEX: "0"
-          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          PW_REPORT_DIR: playwright/report
-        run: |
-          setup_start=$(date +%s)
-          npx playwright test --project=setup
-          echo "- Setup project wall-clock: $(( $(date +%s) - setup_start ))s" >> "$GITHUB_STEP_SUMMARY"
 
       # NEO-289: report how much of the seed's name set the fixture recording
       # actually covered, without blocking the run on it. `continue-on-error`
@@ -601,21 +734,181 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # NEO-339: the setbuild run reports (counts, open decisions as fill-in
+      # templates, timings). They hold no secrets: the tool redacts them and
+      # reports only ids and counts. Uploaded on failure too: a red seed's
+      # open-decision template is the thing you fix the spec from. Not named
+      # pw-report-*: the gate merges only Playwright blobs.
       - name: Upload seed report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pw-report-seed
-          # Not under a dot-directory: upload-artifact skips hidden paths by
-          # default. report/ holds the blob, results.json and junit.xml;
-          # results/ holds failure screenshots. The blob in report/ also embeds
-          # error-context ARIA snapshots (accepted, see the header). No traces.
+          name: setbuild-seed
           path: |
-            apps/web/playwright/report/
-            apps/web/playwright/results/**/*.png
+            apps/web/setbuild-seed-report.json
+            apps/web/setbuild-mcp-smoke-report.json
           if-no-files-found: ignore
           retention-days: 14
 
+
+  # NEO-339 part B — the live proof of the one-shot set build. After the
+  # desktop pass's seed (it needs the seeded 2024 Topps brand-year and the
+  # seeded test admin's marketplace credentials), IN PARALLEL with the desktop
+  # shards, ONCE per run (not per pass), and required by the `e2e` gate.
+  # `seed-mobile` waits for it: the mobile reset wipes the preview this build
+  # writes to. It drives the MCP server as an agent would: nb_draft_set
+  # on a real set no flow touches (2024 Topps Chrome Black), the draft merged
+  # with the committed answers must digest to the committed spec (drift is a
+  # visible failure), nb_plan, nb_apply (stopAt "end") with the phrase, then
+  # nb_inspect. `setbuild oneshot-smoke` (tools/setbuild/mcp-oneshot.ts).
+  # Fixture: playwright/seed/oneshot.spec.json + oneshot.expect.json. Until they
+  # are measured on a PR preview they are placeholders and this job FAILS
+  # ("fixture not measured yet"); it never passes vacuously.
+  # Runbook: docs/operations/neo339-setbuild.md §2.4.
+  setbuild-oneshot:
+    defaults:
+      run:
+        working-directory: apps/web
+    needs: [setup, seed]
+    if: always() && needs.seed.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The fixture must be measured
+        run: |
+          set -euo pipefail
+          for f in playwright/seed/oneshot.spec.json playwright/seed/oneshot.expect.json; do
+            if [ "$(jq -r '.measured // "yes"' "$f")" = "false" ]; then
+              echo "::error file=apps/web/$f::fixture not measured yet — measure 2024 Topps Chrome Black with nb_draft_set on this PR's preview (docs/operations/neo339-setbuild.md §2.4)"
+              exit 1
+            fi
+          done
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Signs in exactly as the seed job does (keep the two credential blocks
+      # in step): `vercel pull`, else the PR preview's own served bundle;
+      # the testing secret masked before first use and exported to this step
+      # only. The account is its own worker index (ONESHOT_WORKER), not one a
+      # shard runs specs with (shards use workers 0-7): a shard's bootstrap
+      # reset is scoped to its own user, and this build's candidate and review batches are scoped
+      # to this one. Its marketplace credentials come from the committed
+      # spec's `credentials` block (seeded on the preview, as the baseline's).
+      - name: One-shot build (nb_draft_set → nb_plan → nb_apply → nb_inspect)
+        env:
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          ONESHOT_WORKER: "8"
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Never print the deployment: this log is public.
+          echo "::add-mask::$CONVEX_NAME"
+          started=$SECONDS
+          creds_dir="$(mktemp -d)"; chmod 700 "$creds_dir"
+          trap 'rm -rf "$creds_dir" "$GITHUB_WORKSPACE/.vercel"' EXIT
+
+          env_value() {
+            local v
+            v="$(grep -E "^$2=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            printf '%s' "$v"
+          }
+          report() {
+            if [ -n "$2" ]; then echo "  $1: present (length ${#2})"; else echo "  $1: EMPTY"; fi
+          }
+
+          secret=""; pk=""
+          if [ -n "${VERCEL_TOKEN:-}" ] && [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "Trying vercel pull (preview, branch $HEAD_REF)"
+            if (cd "$GITHUB_WORKSPACE" && env -u VERCEL_AUTOMATION_BYPASS_SECRET \
+                  npx --yes vercel@48.2.0 pull --yes --environment=preview \
+                  --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN" > "$creds_dir/vercel-pull.log" 2>&1); then
+              envfile="$GITHUB_WORKSPACE/.vercel/.env.preview.local"
+              secret="$(env_value "$envfile" TESTING_ENDPOINT_SECRET)"
+              pk="$(env_value "$envfile" VITE_CLERK_PUBLISHABLE_KEY)"
+              echo "vercel pull result:"
+              report TESTING_ENDPOINT_SECRET "$secret"
+              report VITE_CLERK_PUBLISHABLE_KEY "$pk"
+            else
+              echo "::warning::vercel pull failed; falling back to the preview bundle."
+              tail -n 5 "$creds_dir/vercel-pull.log" | sed 's/^/  /'
+            fi
+          fi
+          [ -n "$secret" ] && echo "::add-mask::$secret"
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "Falling back to the PR preview's served bundle"
+            node "$GITHUB_WORKSPACE/.github/scripts/preview-testing-creds.mjs" "$PREVIEW_URL" "$creds_dir" \
+              || echo "::warning::preview bundle did not yield both values."
+            if [ -z "$secret" ] && [ -s "$creds_dir/testing-secret" ]; then
+              secret="$(cat "$creds_dir/testing-secret")"
+              echo "::add-mask::$secret"
+            fi
+            if [ -z "$pk" ] && [ -s "$creds_dir/publishable-key" ]; then
+              pk="$(cat "$creds_dir/publishable-key")"
+            fi
+          fi
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "::error::Could not obtain TESTING_ENDPOINT_SECRET / VITE_CLERK_PUBLISHABLE_KEY from vercel pull or the preview bundle."
+            exit 1
+          fi
+          export TESTING_ENDPOINT_SECRET="$secret"
+          export VITE_CLERK_PUBLISHABLE_KEY="$pk"
+
+          convex_url="https://${CONVEX_NAME}.convex.cloud"
+          phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec playwright/seed/oneshot.spec.json --convex-url "$convex_url")"
+
+          status=0
+          npm run --silent setbuild -- oneshot-smoke \
+            --answers playwright/seed/oneshot.spec.json \
+            --expect playwright/seed/oneshot.expect.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker "$ONESHOT_WORKER" \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$phrase" \
+            --json > setbuild-oneshot-report.json || status=$?
+
+          duration=$((SECONDS - started))
+          # Check lines only (labels and counts; the tool redacts the host).
+          jq -r '.checks[]? | "\(if .ok then "ok  " else "FAIL" end)  \(.label): \(.detail)"' setbuild-oneshot-report.json || true
+          {
+            echo "### One-shot set build (setbuild, NEO-339)"
+            echo "- duration: \`${duration}s\`"
+            echo "- spec digest: \`${phrase##* }\`"
+            echo "- checks: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+            # Leaves drafted vs committed per type, and how many were moot
+            # (taken out of Pending by another writer before the draft).
+            echo "- draft vs committed (leaves and review answers aside): \`$(jq -r '[.checks[]? | select(.label == "draft + answers") | .detail] | first // "?"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+            echo "- leave lists: \`$(jq -r '[.checks[]? | select(.label == "leave lists") | .detail] | first // "?"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+            echo "- review answers: \`$(jq -r '[.checks[]? | select(.label == "review answers") | .detail] | first // "?"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload one-shot report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: setbuild-oneshot
+          path: apps/web/setbuild-oneshot-report.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   shard-desktop:
     # DESKTOP pass: 8 identical shards, each its own VM = ONE Chrome (web can't parallelize
@@ -774,11 +1067,13 @@ jobs:
 
   seed-mobile:
     # The second pass's seed: the same Convex env switches, scripted reset and
-    # `setup` project as `seed` (see its comments), run again so every spec
+    # setbuild seed as `seed` (see its comments), run again so every spec
     # starts the mobile pass on a fresh baseline. Strictly after every
     # desktop shard (the reset wipes the shared preview), and independent of
     # their verdict so a red desktop pass still yields mobile results.
-    needs: [setup, seed, shard-desktop]
+    # NEO-339: also after setbuild-oneshot, which builds on this same preview
+    # in parallel with the desktop shards; its verdict is the gate's to read.
+    needs: [setup, seed, shard-desktop, setbuild-oneshot]
     if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -804,7 +1099,6 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
 
       - name: Start Convex log capture (seed-mobile)
         working-directory: apps/web
@@ -986,41 +1280,160 @@ jobs:
           echo "NB_SEED_SINCE_MS=${since_ms}" >> "$GITHUB_ENV"
           echo "since_ms=${since_ms}" >> "$GITHUB_OUTPUT"
 
-      # The mobile pass reloads the reference catalogue after its own reset: the
-      # desktop shards wrote to the same preview, and the reset (except the
-      # reference tables) plus the bundle's `import --replace` returns it to the
-      # same baseline as the first pass. See the `seed` job's step for why.
-      - name: Scripted reset + reference catalogue for the mobile pass (e2e-seed-reset.sh)
+      # NEO-339: the mobile pass's seed is the desktop pass's, step for step
+      # (see the `seed` job): reset + reference catalogue, then the setbuild
+      # apply of the baseline and the MCP smoke, which builds the one seeded
+      # parallel, so the mobile shards start from the same baseline.
+      - name: Seed baseline for the mobile pass (reset, then setbuild apply + MCP smoke)
         env:
+          CI: "true"
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          # NEO-214: e2e-baseline.sh needs a PREVIEW deploy key + the deployment
+          # slug to reach THIS PR's Convex preview rather than the CLI's local
+          # default. CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT scoped, not
+          # deployment-scoped (a wrong CONVEX_NAME would reach ANOTHER PR's
+          # preview in this project, not dev/prod), hence the shape assertion on
+          # `name` in the `setup` job above. Once --deployment is passed the CLI
+          # selects the target BY THAT NAME and never consults the key for
+          # selection, so a right key + wrong name is the failure to guard.
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
+          set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          reset_start=$(date +%s)
+          # The deployment is never printed (this log is public): mask its
+          # name before anything below can echo it (phrases name the host).
+          echo "::add-mask::$CONVEX_NAME"
+          started=$SECONDS
+          creds_dir="$(mktemp -d)"; chmod 700 "$creds_dir"
+          trap 'rm -rf "$creds_dir" "$GITHUB_WORKSPACE/.vercel"' EXIT
+
+          # Read KEY from a dotenv file; strip one layer of quotes. Empty if absent.
+          env_value() {
+            local v
+            v="$(grep -E "^$2=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            printf '%s' "$v"
+          }
+          report() {  # name value -> presence + length only
+            if [ -n "$2" ]; then echo "  $1: present (length ${#2})"; else echo "  $1: EMPTY"; fi
+          }
+
+          secret=""; pk=""
+          # 1. vercel pull. Runs from the repo root (the Vercel project's Root
+          #    Directory is apps/web and the CLI composes it onto the cwd).
+          #    `env -u` strips the two secrets this step holds that the Vercel
+          #    CLI has no use for, so a third-party CLI (and anything it
+          #    spawns) never sees the Convex deploy key or the bypass secret.
+          if [ -n "${VERCEL_TOKEN:-}" ] && [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "Trying vercel pull (preview, branch $HEAD_REF)"
+            if (cd "$GITHUB_WORKSPACE" && env -u CONVEX_DEPLOY_KEY -u VERCEL_AUTOMATION_BYPASS_SECRET \
+                  npx --yes vercel@48.2.0 pull --yes --environment=preview \
+                  --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN" > "$creds_dir/vercel-pull.log" 2>&1); then
+              envfile="$GITHUB_WORKSPACE/.vercel/.env.preview.local"
+              secret="$(env_value "$envfile" TESTING_ENDPOINT_SECRET)"
+              pk="$(env_value "$envfile" VITE_CLERK_PUBLISHABLE_KEY)"
+              echo "vercel pull result:"
+              report TESTING_ENDPOINT_SECRET "$secret"
+              report VITE_CLERK_PUBLISHABLE_KEY "$pk"
+            else
+              echo "::warning::vercel pull failed (see below); falling back to the preview bundle."
+              tail -n 5 "$creds_dir/vercel-pull.log" | sed 's/^/  /'
+            fi
+          else
+            echo "VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID not all set; skipping vercel pull."
+          fi
+          [ -n "$secret" ] && echo "::add-mask::$secret"
+
+          # 2. Fallback: the values the preview itself serves.
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "Falling back to the PR preview's served bundle"
+            if node "$GITHUB_WORKSPACE/.github/scripts/preview-testing-creds.mjs" "$PREVIEW_URL" "$creds_dir"; then :; else
+              echo "::warning::preview bundle did not yield both values."
+            fi
+            if [ -z "$secret" ] && [ -s "$creds_dir/testing-secret" ]; then
+              secret="$(cat "$creds_dir/testing-secret")"
+              echo "::add-mask::$secret"
+            fi
+            if [ -z "$pk" ] && [ -s "$creds_dir/publishable-key" ]; then
+              pk="$(cat "$creds_dir/publishable-key")"
+            fi
+          fi
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "::error::Could not obtain TESTING_ENDPOINT_SECRET / VITE_CLERK_PUBLISHABLE_KEY from vercel pull or the preview bundle."
+            exit 1
+          fi
+          export TESTING_ENDPOINT_SECRET="$secret"
+          export VITE_CLERK_PUBLISHABLE_KEY="$pk"
+
+          convex_url="https://${CONVEX_NAME}.convex.cloud"
+          # The confirm phrase is "BUILD <convex host> <spec scope> <digest>",
+          # the digest binding it to the spec's content. `setbuild
+          # confirm-phrase` computes it offline (no network, no auth) with the
+          # same code apply and nb_plan use, so it is never built by hand. A
+          # spec that does not parse fails here, before the reset.
+          base_phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec playwright/seed/baseline.spec.json --convex-url "$convex_url")"
+          par_phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec playwright/seed/parallel.spec.json --convex-url "$convex_url")"
+          echo "baseline confirm phrase: $base_phrase"
+          echo "mcp-smoke confirm phrase: $par_phrase"
+
+          # Reset, then (NB_REFERENCE_BUNDLE, exported by the download step
+          # above) the NEO-330 reference-catalogue import: check → scoped
+          # reset → `convex import --replace`, one explicit target
+          # ($CONVEX_NAME), the bundle deleted afterwards. Shared with the
+          # local ./e2e-seed.sh (`npm run test:e2e:seed`).
+          reset_start=$SECONDS
           ./e2e-seed-reset.sh
+          reset_s=$((SECONDS - reset_start))
+
+          echo "── setbuild apply (baseline) ──"
+          npm run setbuild -- apply \
+            --spec playwright/seed/baseline.spec.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker 0 \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$base_phrase" \
+            --report setbuild-seed-report.json
+
+          echo "── setbuild mcp-smoke ──"
+          npm run setbuild -- mcp-smoke \
+            --spec playwright/seed/parallel.spec.json \
+            --expect playwright/seed/mcp-smoke.expect.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker 0 \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$par_phrase" \
+            --json > setbuild-mcp-smoke-report.json
+
+          duration=$((SECONDS - started))
           {
-            echo "- Reset + reference import wall-clock: $(( $(date +%s) - reset_start ))s"
+            echo "### Seed, mobile pass (setbuild, NEO-339)"
+            echo "- duration: \`${duration}s\` (reset + reference import: \`${reset_s}s\`)"
+            # The step summary is not masked: the digest only, never the host.
+            echo "- baseline spec digest: \`${base_phrase##* }\`"
+            echo "- apply counts: \`$(jq -c '.counts // .summary // {}' setbuild-seed-report.json 2>/dev/null || echo '?')\`"
+            echo "- mcp-smoke: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-mcp-smoke-report.json 2>/dev/null || echo '?')\`"
+            # The reference-seed lines (step seconds, generatedAt, per-table
+            # counts) e2e-seed-reset.sh wrote; numbers and names only.
             if [ -s "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Seed global baseline for the mobile pass (setup project, worker 0)
-        env:
-          CI: "true"
-          APP_URL: http://localhost:3000
-          PREVIEW_URL: ${{ needs.setup.outputs.url }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          WORKER_INDEX: "0"
-          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          PW_REPORT_DIR: playwright/report
-        run: |
-          setup_start=$(date +%s)
-          npx playwright test --project=setup
-          echo "- Setup project wall-clock: $(( $(date +%s) - setup_start ))s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enrichment fixture coverage
         working-directory: apps/web
@@ -1079,18 +1492,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # NEO-339: the setbuild run reports (counts, open decisions as fill-in
+      # templates, timings). They hold no secrets: the tool redacts them and
+      # reports only ids and counts. Uploaded on failure too: a red seed's
+      # open-decision template is the thing you fix the spec from. Not named
+      # pw-report-*: the gate merges only Playwright blobs.
       - name: Upload seed report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pw-report-seed-mobile
-          # Not under a dot-directory: upload-artifact skips hidden paths by
-          # default. report/ holds the blob, results.json and junit.xml;
-          # results/ holds failure screenshots. The blob in report/ also embeds
-          # error-context ARIA snapshots (accepted, see the header). No traces.
+          name: setbuild-seed-mobile
           path: |
-            apps/web/playwright/report/
-            apps/web/playwright/results/**/*.png
+            apps/web/setbuild-seed-report.json
+            apps/web/setbuild-mcp-smoke-report.json
           if-no-files-found: ignore
           retention-days: 14
 
@@ -1263,7 +1677,7 @@ jobs:
   #     project (desktop and mobile) — so a shard, or one project's half of
   #     it, that died before reporting cannot pass by omission.
   e2e:
-    needs: [setup, seed, shard-desktop, seed-mobile, shard-mobile]
+    needs: [setup, seed, setbuild-oneshot, shard-desktop, seed-mobile, shard-mobile]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1283,10 +1697,14 @@ jobs:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SEED_MOBILE: ${{ needs.seed-mobile.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
+          R_ONESHOT: ${{ needs.setbuild-oneshot.result }}
         run: |
-          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
-          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
-            echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
+          echo "jobs: setup=$R_SETUP seed=$R_SEED setbuild-oneshot=$R_ONESHOT shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
+          # NEO-339: both seeds are scripted (setbuild), so their job results
+          # ARE their verdicts; the one-shot set build's live proof is required
+          # too (a red draft merge is drift, an unmeasured fixture says so).
+          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ] || [ "$R_ONESHOT" != "success" ]; then
+            echo "::error::setup, a seed or setbuild-oneshot did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE setbuild-oneshot=$R_ONESHOT)"
             # Record, don't exit: the reports still merge and publish so a red
             # run is readable; the "Upstream verdict" step fails the gate.
             echo "UPSTREAM_FAILED=1" >> "$GITHUB_ENV"
@@ -1388,11 +1806,8 @@ jobs:
               if verdict == "bad":
                   errors.append(f"[{proj}] {file} :: {title} -> {last}")
 
-          # One seed per pass: the desktop pass and the mobile pass each ran
-          # the `setup` project once, so two passing results are required.
-          seed_ok = [r for r in rows if r[0] == "setup" and r[3] == "ok"]
-          if len(seed_ok) < 2:
-              errors.append(f"expected a passing `setup` (seed) result for EACH pass (desktop + mobile), found {len(seed_ok)}")
+          # The seeds are not Playwright any more (NEO-339: scripted setbuild
+          # apply); "Upstream jobs" above holds each pass's seed job to success.
 
           # Bad results are errors above, so "a result on every project" plus
           # "no bad result" is "a passing result on every project".
@@ -1427,7 +1842,7 @@ jobs:
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
         run: |
           if [ "${UPSTREAM_FAILED:-0}" = "1" ]; then
-            echo "::error::Upstream verdict: setup or a seed did not succeed (see the Upstream jobs step)"
+            echo "::error::Upstream verdict: setup, a seed or setbuild-oneshot did not succeed (see the Upstream jobs step)"
             exit 1
           fi
           if [ "$R_SHARD_DESKTOP" != "success" ] || [ "$R_SHARD_MOBILE" != "success" ]; then

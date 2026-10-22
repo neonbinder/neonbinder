@@ -244,13 +244,13 @@ describe("previewListingTitle (NEO-101)", () => {
       cardId,
     });
     expect(preview.coreFits).toBe(false);
-    // "skip, don't stop", end to end: the 5-character " AUTO" did not fit, the
-    // 3-character " RC" behind it did, and the result lands exactly on the cap.
-    expect(preview.dropped).toEqual(["AUTO", "Rookie", "Baseball"]);
-    expect(preview.title).toBe(
-      "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999 RC",
-    );
-    expect(preview.title.length).toBe(80);
+    // Jason, 2026-10-19: the player is never dropped and the card number may
+    // be. The 76-character name stays whole; the number, year and set words
+    // do not fit beside it; " RC" does (79), " AUTO" would not (81). The
+    // number is reported first among the dropped tokens.
+    expect(preview.dropped).toEqual(["#99999", "AUTO", "Rookie", "Baseball"]);
+    expect(preview.title).toBe(`${hugeName} RC`);
+    expect(preview.title.length).toBe(79);
     expect(preview.title).not.toContain("…");
   });
 

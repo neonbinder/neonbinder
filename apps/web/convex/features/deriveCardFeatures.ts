@@ -105,8 +105,15 @@ export const AUTOGRAPH_FORMAT_LEVELS: ReadonlySet<string> = new Set([
  * NEO-345: feature keys that belong to ONE node and are never copied down —
  * not to a child node at its creation, and not onto a card. Jason chose to
  * ask for the autograph format per synced part (each insert, each parallel),
- * never per set, so a parallel minted under an answered insert starts
- * unanswered and is asked for its own.
+ * never per set, so a node minted under an answered node starts unanswered.
+ *
+ * One deliberate reach, which is not a copy-down (Jason, 2026-10-18: "insert
+ * info should be copied to its parallels"): an answer on an insert or the
+ * Base is also written onto each of its PARALLELS whose own format is unset,
+ * when it is given (`autographFormat.adoptAutographFormatOnParallels`) and
+ * when a parallel is built later (`parallelChecklistBuild
+ * .insertParallelCardsPage`). A changed answer moves a parallel still
+ * holding the previous one; a parallel holding any other format keeps it.
  */
 export const NODE_ONLY_FEATURE_KEYS: ReadonlySet<string> = new Set([
   "autographFormat",

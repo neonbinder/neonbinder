@@ -92,15 +92,22 @@
  *     npx convex run enrichmentFixtures:captureFromCli \
  *       '{"confirm":"CAPTURE_ENRICHMENT_FIXTURES","sportQid":"Q5369"}' > capture.json
  *     npx convex env remove ALLOW_ENRICHMENT_FIXTURE_CAPTURE
+ *     npx tsx scripts/merge-enrichment-capture.ts capture.json
  *     npx convex run enrichmentFixtures:coverageReportFromCli \
  *       '{"confirm":"CAPTURE_ENRICHMENT_FIXTURES","sportQid":"Q5369"}'
  *
  * A capture holds only the names one run looked up, so its `fixture.entries`
- * are MERGED into the committed file (the runbook's merge step), never
- * written over it: the file also carries batches recorded on other runs.
+ * are MERGED into the committed file, never written over it: the file also
+ * carries batches recorded on other runs. `fixture.entries` is a list of
+ * `{ key, entry }` sorted by key, not the file's keyed object, because a key
+ * embeds the name and Convex refuses a non-ASCII field name in a return value
+ * (NEO-346: "Ciego de Ávila" failed a whole page). The merge script builds the
+ * keyed object, adds only keys the file lacks, and writes the file in its
+ * committed format (Python `json.dumps(indent=2)`, `\uXXXX` escapes) — see
+ * `adapters/enrichmentFixtureMerge.ts` and the runbook, §4.
  *
  * `offset`/`limit` page the name list when a single run would outlast the
- * CLI's wait; merge the pages' `entries` objects by hand (keys are unique
+ * CLI's wait; pass every page's file to the merge script (keys are unique
  * across pages). `since` overrides the boundary above for both actions.
  * `skippedTransport` lists names whose lookup did not
  * complete — a timeout, a 429, ESPN down — and which were therefore NOT
@@ -126,9 +133,11 @@ import {
   captureItemValidator,
   captureSkipValidator,
   captureSportValidator,
-  fixtureFileValidator,
+  capturedFixtureValidator,
+  compareFixtureKeys,
   fixtureKey,
   hasFixtureEntry,
+  type CapturedFixture,
   type EnrichmentFixtureEntry,
 } from "./adapters/enrichmentFixtures";
 
@@ -408,7 +417,12 @@ export const listLookedUpNames = internalQuery({
 // ---------------------------------------------------------------------------
 
 const captureResultValidator = v.object({
-  fixture: fixtureFileValidator,
+  /**
+   * `entries` is a LIST of `{ key, entry }` sorted by key, not the file's
+   * keyed object: a key embeds the name, and Convex refuses a non-ASCII field
+   * name in a return value (NEO-346). The merge tool builds the keyed form.
+   */
+  fixture: capturedFixtureValidator,
   skippedTransport: v.array(captureSkipValidator),
   /** Looked-up names for the sport (see the header), before paging. */
   total: v.number(),
@@ -430,8 +444,10 @@ type CaptureResult = Infer<typeof captureResultValidator>;
  * Bypasses the fixture switch by construction: `runCaptureLookups` calls the
  * `*Live` bodies, so a deployment that already reads fixtures still captures
  * fresh answers. Writes nothing to the database; the return value IS the
- * output, for the developer to MERGE into the committed file — it holds one
- * run's names, and the file holds every recorded batch.
+ * output, for the developer to MERGE into the committed file with
+ * `scripts/merge-enrichment-capture.ts` — it holds one run's names, and the
+ * file holds every recorded batch. Entries come back as a key-sorted list
+ * (see `captureResultValidator`).
  *
  * A truncated name list is refused rather than captured: past
  * `MAX_ROWS_PER_SOURCE` the list is no longer "what a run looked up", and
@@ -467,7 +483,9 @@ export const captureFromCli = internalAction({
     }
     const page = listed.items.slice(offset, limit === undefined ? undefined : offset + limit);
 
-    const entries: Record<string, EnrichmentFixtureEntry> = {};
+    // Keyed in memory only (a Map, never a returned object; see
+    // `captureResultValidator`), so a name looked up twice keeps one entry.
+    const entries = new Map<string, EnrichmentFixtureEntry>();
     const skippedTransport: CaptureResult["skippedTransport"] = [];
     for (let start = 0; start < page.length; start += CHUNK) {
       const chunk = page.slice(start, start + CHUNK);
@@ -476,13 +494,15 @@ export const captureFromCli = internalAction({
         sportQid: args.sportQid,
         items: chunk,
       });
-      for (const { key, entry } of result.entries) entries[key] = entry;
+      for (const { key, entry } of result.entries) entries.set(key, entry);
       skippedTransport.push(...result.skippedTransport);
     }
 
-    // Sorted keys, so two captures of the same deployment diff cleanly.
-    const sortedEntries: Record<string, EnrichmentFixtureEntry> = {};
-    for (const key of Object.keys(entries).sort()) sortedEntries[key] = entries[key];
+    // Sorted by key, the committed file's order, so two captures of the same
+    // deployment diff cleanly.
+    const sortedEntries: CapturedFixture["entries"] = [...entries.entries()]
+      .sort(([a], [b]) => compareFixtureKeys(a, b))
+      .map(([key, entry]) => ({ key, entry }));
 
     console.log(
       JSON.stringify({
@@ -491,7 +511,7 @@ export const captureFromCli = internalAction({
         total: listed.items.length,
         offset,
         scanned: page.length,
-        recorded: Object.keys(sortedEntries).length,
+        recorded: sortedEntries.length,
         skippedTransport: skippedTransport.length,
         since: listed.since,
         sinceSource: listed.sinceSource,

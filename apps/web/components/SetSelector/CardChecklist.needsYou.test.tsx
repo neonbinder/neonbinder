@@ -99,13 +99,17 @@ import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
 
-/** No team, no marketplace lookup to wait for: `missingTeam`. */
+/**
+ * No team, no marketplace lookup to wait for: `missingTeam`. Its player is
+ * linked (NEO-339), so a team is the only thing it is flagged for.
+ */
 function teamless(n: number, overrides: Record<string, unknown> = {}) {
   return {
     _id: `card-${n}` as unknown as Id<"cardChecklist">,
     selectorOptionId: VARIANT_ID,
     cardNumber: String(n),
     cardName: `Teamless ${n}`,
+    playerIds: ["player-1"],
     platformData: {},
     lastUpdated: 1_000,
     ...overrides,
@@ -126,6 +130,7 @@ function unlinkedName(n: number) {
   return teamless(n, {
     cardName: `Unlinked ${n}`,
     teamOnCardIds: ["team-1"],
+    playerIds: [],
     pendingPlayerNames: ["Somebody"],
   });
 }

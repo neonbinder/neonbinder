@@ -14,7 +14,7 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
-import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
+import { SIDE_LABEL } from "./selector-sync-feedback";
 import {
   LiveLine,
   RunGlyph,
@@ -25,6 +25,17 @@ import {
 // NEO-325 — the ledger pieces moved to `modules/RunLedger` on their second
 // use; re-exported so every existing import of them from here keeps working.
 export { SLEEVE_TONE, pulseText } from "../modules/RunLedger";
+import { MAKE_INSERT_LABEL } from "./MakeInsertControl";
+import {
+  listedOnlyCounts,
+  planParallelBuildOrder,
+  sharesNoNumbers,
+  type ParallelBuildPlan,
+  type ParallelBuildResult,
+  type ParallelBuildSource,
+  type ParallelLine,
+  type ParallelRunEntry,
+} from "@/lib/set-build/parallel-build";
 
 /**
  * NEO-312 — building an insert's parallels from the insert's own checklist.
@@ -96,81 +107,20 @@ export { SLEEVE_TONE, pulseText } from "../modules/RunLedger";
  */
 
 // ---------------------------------------------------------------------------
-// The contract (M5). Declared here, not re-derived, so the view is typed
-// against what it renders; the calls below are NOT cast, so a server that
-// returns a different shape fails the typecheck at the assignment.
+// The contract (M5). Declared in lib/set-build/parallel-build.ts (NEO-339),
+// not re-derived, so the view is typed against what it renders; the calls
+// below are NOT cast, so a server that returns a different shape fails the
+// typecheck at the assignment. Re-exported so existing imports keep working.
 // ---------------------------------------------------------------------------
 
-/** One parallel of the source, as `getParallelsForBuild` lists it. */
-export type ParallelPlanEntry = {
-  _id: Id<"selectorOptions">;
-  value: string;
-  /** Which marketplace ids the parallel ITSELF holds (M4 — never inherited). */
-  sides: { bsc: boolean; sportlots: boolean };
-  hasCards: boolean;
-  /** Set when the server already knows a build would be refused. */
-  blocked?: string;
-};
-
-/** What the parallels are copied from, as the server resolved it (NEO-321). */
-export type ParallelBuildSource = {
-  id: Id<"selectorOptions">;
-  value: string;
-  /** An insert's own checklist, or the Base checklist for the base set's parallels. */
-  kind: "insert" | "base";
-  hasCards: boolean;
-};
-
-export type ParallelBuildPlan = {
-  parallels: ParallelPlanEntry[];
-  truncated: boolean;
-  /**
-   * Optional in this type so the view reads it defensively: a row the server
-   * could not resolve a source for answers without one, and the run falls
-   * back to what the caller said it stands on.
-   */
-  source?: ParallelBuildSource | null;
-  /** Why there is no `source` (a Parallel variant type with no single Base). */
-  sourceBlocked?: string;
-};
-
-type SideCounts = { bsc: number; sportlots: number };
-/** Card labels ("#12 Player Name"), at most 50 per list. */
-type SideCardLists = { bsc: string[]; sportlots: string[] };
-
-export type ParallelBuildResult = {
-  status: "built" | "blocked";
-  copied: number;
-  notCopied: number;
-  unlinked: SideCounts;
-  ambiguous: SideCounts;
-  sidesFetched: SyncSide[];
-  sidesSkipped: SyncSide[];
-  earlierLinksMissing: SideCounts;
-  rebuilt: boolean;
-  blockedReason?: string;
-  /** Per side: old links that were NOT carried over although the marketplace still lists the card. */
-  stillListedNotRelinked: SideCounts;
-  /** Per side: old links that pointed at the source's own cards, removed. */
-  legacyLinksRemoved: SideCounts;
-  skippedChangedSource: number;
-  /**
-   * Old cards already deleted when a block fired mid-delete — the parallel is
-   * short that many cards until it is built again.
-   */
-  deletedCount?: number;
-  /** Per side: cards the parallel's marketplace lists that the source does not have. */
-  extraOnMarketplace: {
-    bsc: { count: number; cards: string[] };
-    sportlots: { count: number; cards: string[] };
-  };
-  /** WHICH cards, per bucket — each list capped at 50. */
-  cards: {
-    leftOff: string[];
-    unlinked: SideCardLists;
-    ambiguous: SideCardLists;
-  };
-};
+export type {
+  ParallelBuildPlan,
+  ParallelBuildResult,
+  ParallelBuildSource,
+  ParallelLine,
+  ParallelPlanEntry,
+  ParallelRunEntry,
+} from "@/lib/set-build/parallel-build";
 
 /**
  * Where the open checklist sits in the source → parallel pair. `insert`: an
@@ -194,24 +144,6 @@ export type ParallelBuildRole =
        */
       unavailableReasonId?: string;
     };
-
-/** One parallel's line in the panel. */
-export type ParallelLine =
-  | { kind: "waiting" }
-  | { kind: "building" }
-  | { kind: "built"; result: ParallelBuildResult }
-  | { kind: "skipped" }
-  | { kind: "blocked"; reason?: string; deleted?: number }
-  | { kind: "stopped" }
-  | { kind: "failed"; message: string }
-  /** Was being built when the set builder was left; its result never came back here. */
-  | { kind: "unfinished" };
-
-export type ParallelRunEntry = {
-  id: Id<"selectorOptions">;
-  value: string;
-  line: ParallelLine;
-};
 
 export type ParallelRun = {
   /** The row the run was started from: an insert, or the Parallel variant type. */
@@ -298,6 +230,14 @@ export function builtText(
     ([side, count]) => `${count} on ${SIDE_LABEL[side]} that ${source} doesn't have`,
   );
 
+  // NEO-339 — the marketplaces list cards and not one shares a number with
+  // the source: probably its own insert, not a parallel. Said as the decision
+  // it is, with the way forward, rather than as "Nothing copied" and a count.
+  // The same signal the set-building tool makes an open decision of.
+  if (sharesNoNumbers(result)) {
+    return noSharedNumbersText(result, source);
+  }
+
   if (!result.rebuilt && result.copied === 0) {
     const total = result.copied + result.notCopied;
     return [
@@ -358,6 +298,25 @@ export function builtText(
   }
   parts.push(...extraClauses);
   return parts.join(", ");
+}
+
+/**
+ * NEO-339 — "No shared numbers — this parallel's marketplaces list 12 cards,
+ * but none share a number with Base. It's probably its own insert: …". DRAFT
+ * copy (NB voice). `Make insert of…` is the control's own label
+ * (`MAKE_INSERT_LABEL`), quoted so the operator can find it.
+ */
+export function noSharedNumbersText(
+  result: Pick<ParallelBuildResult, "extraOnMarketplace">,
+  source: string,
+): string {
+  const listed = listedOnlyCounts(result);
+  const n = listed.bsc + listed.sportlots;
+  return (
+    `No shared numbers — this parallel's marketplaces list ${plural(n, "card", "cards")}, ` +
+    `but none share a number with ${source}. It's probably its own insert, not a parallel: ` +
+    `file it with “${MAKE_INSERT_LABEL}” on its row, or take it out of ${possessive(source)} parallels`
+  );
 }
 
 /** "BSC only" / "SportLots only" when exactly one side was fetched. */
@@ -624,18 +583,6 @@ function errorMessage(error: unknown): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Lines the server has already answered: a parallel holding no marketplace id
- * of its own has nothing to copy links from (and the source's ids are never
- * borrowed — M4), and one the plan marks `blocked` would be refused. Neither is
- * sent to the action.
- */
-function initialLine(entry: ParallelPlanEntry): ParallelLine {
-  if (entry.blocked) return { kind: "blocked", reason: entry.blocked };
-  if (!entry.sides.bsc && !entry.sides.sportlots) return { kind: "skipped" };
-  return { kind: "waiting" };
-}
-
-/**
  * Above this many parallels, plain successes are not announced one by one;
  * the live region pulses "12 of 40 done" every `PULSE_EVERY` instead.
  */
@@ -828,11 +775,9 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
       // array on every change. Once Stop is pressed every line still waiting
       // is handed over as "Stopped" — `stop()` already showed it that way,
       // and a later publish must not put "Waiting" back.
-      const entries: ParallelRunEntry[] = plan.parallels.map((p) => ({
-        id: p._id,
-        value: p.value,
-        line: initialLine(p),
-      }));
+      // NEO-339: each line's opening state (`initialLine`) and the order come
+      // from `planParallelBuildOrder` (lib/set-build/parallel-build.ts).
+      const { entries } = planParallelBuildOrder(plan);
       const total = entries.length;
       const pulses = total > PULSE_AFTER;
       const snapshot = (): ParallelRunEntry[] =>

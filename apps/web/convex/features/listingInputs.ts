@@ -41,6 +41,7 @@ import {
   assessListingTitle,
   isFillerToken,
   rookieAsRc,
+  wordKey,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./generateListing";
@@ -331,8 +332,9 @@ function wordsOf(text: string): string[] {
 
 /**
  * NEO-335 — is this dropped token one of the generator's FILLER words: the
- * sport, "Rookie" (the second spelling, appended only beside "RC"), or the
- * "Insert" / "Parallel" labels?
+ * sport, "Rookie" (the second spelling, appended only beside "RC"), the
+ * "Insert" / "Parallel" labels, or (given the title) an AUTO or RELIC the
+ * title already says?
  * Lives in generateListing.ts now (the short-name rule reads it there);
  * re-exported so existing importers keep working.
  */
@@ -341,12 +343,15 @@ export { isFillerToken };
 /**
  * NEO-335 — what the title had to leave out, in the order the generator
  * would have spent characters on it: the identity words the core cut lost
- * (year, maker, set, each player), then the optional tokens it dropped.
+ * (year, maker, set, insert, parallel, each player), then the tokens it
+ * dropped (the card number first, when it went: Jason, 2026-10-19).
  *
- * The generator reports the dropped OPTIONAL tokens itself; a core cut it
- * only reports as `coreFits: false`. The core is cut at a word boundary, so
- * what it lost is read per segment. Year, maker and set report whichever of
- * their words the title no longer carries. A PLAYER is reported whole when
+ * The generator reports the dropped tokens itself; a core cut it only
+ * reports as `coreFits: false`. The core is cut at a word boundary, so what
+ * it lost is read per segment. Year, maker, set, insert and parallel report
+ * whichever of their words the title no longer carries (a word the title
+ * says elsewhere, such as a "Topps" the set already said, is not lost). A
+ * PLAYER is reported whole when
  * the title no longer carries the whole name: "Mike Trout & Shohei Ohtani"
  * cut after "Shohei" reports "Shohei Ohtani", and a dropped "Ken Griffey Sr."
  * is reported as that, never as a bare "Sr." because "Ken Griffey" survives
@@ -354,8 +359,9 @@ export { isFillerToken };
  * brand (NEO-272): the generator never put it in.
  *
  * FILLER is not listed (collector review, NEO-335): the sport word, the
- * second spelling of rookie ("Rookie" beside "RC") and the "Insert" /
- * "Parallel" labels are the generator's
+ * second spelling of rookie ("Rookie" beside "RC"), the "Insert" /
+ * "Parallel" labels and an AUTO or RELIC the title already says are the
+ * generator's
  * deliberate fill tail — they exist to spend characters that would otherwise
  * go unused — so they are not a loss an operator should be shown, let alone
  * first. Only the dropped TOKENS are filtered; a set or player word that
@@ -367,7 +373,9 @@ export function leftOutOfTitle(
   inputs: ListingCardInputs,
   assessment: ListingTitleAssessment,
 ): string[] {
-  const present = new Set(wordsOf(assessment.title));
+  // Compared as the redundant-word rule compares: a parallel's "Rookie" is
+  // said by an insert the title reads as "RC Autographs".
+  const present = new Set(wordsOf(assessment.title).map(wordKey));
   const out: string[] = [];
   if (!assessment.coreFits) {
     // NEO-335 — the insert's name is core identity now, so its words are
@@ -380,13 +388,28 @@ export function leftOutOfTitle(
       assessment.rookieAsRcUsed && inputs.insertName
         ? rookieAsRc(inputs.insertName)
         : inputs.insertName;
+    // The parallel's name is core too now (never dropped, Jason
+    // 2026-10-19), so the fallback cut that shortens it is reported here.
+    // Not "Base", and not a variation copied into it (NEO-189): that one is
+    // a dropped token, reported below.
+    const parallelLower = inputs.parallelName?.trim().toLowerCase();
+    const parallel =
+      parallelLower === "base" || parallelLower === inputs.cardVariation?.trim().toLowerCase()
+        ? undefined
+        : inputs.parallelName;
     const segments = assessment.shortNameUsed
-      ? [inputs.year, maker, inputs.setShortName]
-      : [inputs.year, maker, inputs.setName, insertName];
+      ? [inputs.year, maker, inputs.setShortName, parallel]
+      : [inputs.year, maker, inputs.setName, insertName, parallel];
+    // A word is reported once: a maker "Topps" and a set "Topps Chrome" that
+    // both went report "Topps", then "Chrome".
+    const reported = new Set<string>();
     for (const segment of segments) {
       const words = (segment ?? "").split(/\s+/).filter(Boolean);
-      const missing = words.filter((w) => w !== "&" && !present.has(w.toLowerCase()));
+      const missing = words.filter(
+        (w) => w !== "&" && !present.has(wordKey(w)) && !reported.has(w.toLowerCase()),
+      );
       if (missing.length > 0) {
+        for (const w of missing) reported.add(w.toLowerCase());
         const text = missing.join(" ");
         if (!out.includes(text)) out.push(text);
       }
@@ -401,7 +424,7 @@ export function leftOutOfTitle(
     }
   }
   for (const token of assessment.dropped) {
-    if (isFillerToken(token, inputs)) continue;
+    if (isFillerToken(token, inputs, assessment.title)) continue;
     if (!out.includes(token)) out.push(token);
   }
   return out;

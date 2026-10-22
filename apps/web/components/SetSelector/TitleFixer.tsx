@@ -14,6 +14,10 @@ import {
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import {
+  BLANK_LISTING_TITLE_MESSAGE,
+  listingTitleRefusal,
+} from "../../lib/cards/listing-title-gate";
 import type { AttentionFixerProps } from "./cardAttentionRegistry";
 
 /**
@@ -85,7 +89,10 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
 
   const titleState = titleLengthState(title.length, LISTING_TITLE_MAX, true);
   const titleDirty = title !== (row.listingTitle ?? "");
-  const canSave = !busy && !titleState.over;
+  // NEO-339 — and never blank: `updateCard` refuses one (the shared rule in
+  // lib/cards/listing-title-gate.ts), so Save holds and the hint says why.
+  const titleBlank = listingTitleRefusal(title) === BLANK_LISTING_TITLE_MESSAGE;
+  const canSave = !busy && !titleState.over && !titleBlank;
 
   // Focus the field the operator is here to edit. The walker remounts this
   // component per card (`key={current._id}`), so this IS "focus on every
@@ -199,8 +206,10 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.
           aria-label={`Card title for #${row.cardNumber}`}
-          aria-invalid={titleState.over || undefined}
-          aria-describedby={titleState.over ? titleAlertId : undefined}
+          aria-invalid={titleState.over || titleBlank || undefined}
+          aria-describedby={
+            titleState.over ? titleAlertId : titleBlank ? `${uid}-save-hint` : undefined
+          }
           // a11y (audit fix): native `disabled` here would strand focus. Enter
           // in THIS field is what sets `busy` — the moment it goes native-
           // disabled, the browser force-blurs the very input that had focus,
@@ -307,10 +316,15 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       {/* gray-400, not gray-500: 500 measures 3.67:1 on this dialog's
           bg-gray-900 and fails 1.4.3 — the recurring bug logged in
           accessibility-auditor/contrast-reference.md. */}
-      <p id={`${uid}-save-hint`} className="text-xs text-gray-400">
-        {fixesVariation
-          ? "Saves the title and variation on this card."
-          : "Saves the title on this card."}
+      <p
+        id={`${uid}-save-hint`}
+        className={`text-xs ${titleBlank ? "text-[#FF6FCB]" : "text-gray-400"}`}
+      >
+        {titleBlank
+          ? BLANK_LISTING_TITLE_MESSAGE
+          : fixesVariation
+            ? "Saves the title and variation on this card."
+            : "Saves the title on this card."}
       </p>
     </div>
   );

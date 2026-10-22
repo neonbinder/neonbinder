@@ -1547,6 +1547,6 @@ The suite is Playwright, in `apps/web/playwright/`; `apps/web/playwright/GUIDE.m
 
 **Write every spec self-contained.** It creates and uses its own per-worker data, or it reads the seeded baseline without mutating it. CI splits spec files across 8 shards in no guaranteed order, one test account per shard. A spec that only passes when some other spec ran first is a broken spec.
 
-The one ordering that exists is the seed: the scripted `e2e-baseline.sh reset`, then the `setup` project (`playwright/tests/setup.spec.ts`), then each shard's `bootstrap` project. CI does it in the pre-shard seed job; locally run `npm run test:e2e:seed` yourself against a PR preview, never shared dev.
+The one ordering that exists is the seed: the scripted `e2e-baseline.sh reset`, then the scripted baseline (NEO-339: `setbuild apply` of `playwright/seed/baseline.spec.json`, a bulk load through the set-building API, not a spec; `docs/operations/neo339-setbuild.md`), then each shard's `bootstrap` project. CI does it in the pre-shard seed jobs; locally run `npm run test:e2e:seed` (`./e2e-seed.sh`, needs `CONVEX_NAME`) yourself against a PR preview, never shared dev.
 
 Mutating shared data (a real, marketplace-backed set) is limited to registered sole-writer specs; everything else writes to a per-worker hand-made set. See `GUIDE.md` (R7, R7a) and `playwright/SET-REGISTRY.md`.

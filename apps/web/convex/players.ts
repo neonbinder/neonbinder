@@ -63,6 +63,11 @@ import {
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
+import {
+  MAX_EXISTING_NAMED,
+  playerCreateRefusal,
+  type PlayerExistsRefusal,
+} from "../lib/entities/entity-exists";
 
 /**
  * The dedup key on `players.nameNormalized`.
@@ -261,6 +266,43 @@ export const findByNameAndSport = query({
     return matches.length === 1 ? toPublicPlayer(matches[0]) : null;
   },
 });
+
+/**
+ * NEO-339 — of these names, the ones EXACTLY ONE player in the sport answers
+ * to, by name or alias (`sameNamePlayers`, the commit prelude's lookup, so a
+ * name that passes here links there). Zero or several matches leave a name
+ * out: invariant 7, never a guess.
+ *
+ * Read by `fetchCardChecklist` to settle SportLots' one-word names
+ * ("Ichiro"), which the adapter cannot tell from a non-name on its own.
+ * Bounded by the caller's page size; each name costs the three indexed legs
+ * of `sameNamePlayers`.
+ */
+export const uniquelyNamedPlayers = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    if (args.names.length > MAX_UNIQUELY_NAMED_LOOKUP) {
+      throw new Error(
+        `uniquelyNamedPlayers: ${args.names.length} names, above the ${MAX_UNIQUELY_NAMED_LOOKUP}-name limit`,
+      );
+    }
+    const out: string[] = [];
+    for (const name of args.names) {
+      const normalized = normalizePlayerName(name);
+      if (!normalized) continue;
+      const matches = await sameNamePlayers(ctx, normalized, args.sportId);
+      if (matches.length === 1) out.push(name);
+    }
+    return out;
+  },
+});
+
+/** `uniquelyNamedPlayers`' per-call bound; its caller pages under it. */
+const MAX_UNIQUELY_NAMED_LOOKUP = 100;
 
 /**
  * NEO-254 — re-exported from `lib/players/name-limits.ts`, which is where it
@@ -1043,10 +1085,13 @@ export { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
  * NEO-220 corrected a stale claim here: this is NOT what the checklist
  * commit path calls. `commitCardChecklistFinalize` inserts into `players`
  * directly (see the player loop in `selectorOptions.ts`), already enriched.
- * The ONLY caller of this mutation is `SetSelector/PlayerPicker`'s "+ Create"
+ * The ONLY callers of this mutation are `SetSelector/PlayerPicker`'s "+ Create"
  * row, reached from the card drawer, the attention walker's
  * `UnreviewedNameFixer`, and the checklist quick-add form — every one of them
- * under `/admin/set-builder`.
+ * under `/admin/set-builder` — and the set-building tool's player `create`
+ * answer (`tools/setbuild/lib/attention-answers.ts`). Since NEO-339 every one
+ * of them sends `createOnly: true`; the find-or-create default remains for a
+ * caller that means "link or create".
  *
  * Cross-user note: the row this returns may have been created by a
  * different user. That's intentional — see playerDocPublicValidator's
@@ -1066,6 +1111,22 @@ export const findOrCreate = mutation({
      * this mutation exists for.
      */
     birthYear: v.optional(v.number()),
+    /**
+     * NEO-339 — "I mean a NEW player; never hand me one that is on file."
+     *
+     * The pickers' "+ Create" row and the set-building tool's `create` answer
+     * send it. With it this mutation never returns an existing row: a name
+     * the sport already holds is refused with a structured `PLAYER_EXISTS`
+     * (see `lib/entities/entity-exists.ts`), naming the rows on file so the
+     * caller can offer "use that one" instead. The rule is
+     * `playerCreateRefusal`: one same-name player always refuses; several
+     * allow a create only when every one is dated and none was born in
+     * `birthYear`.
+     *
+     * Absent (the default) keeps find-or-create exactly as it was, for
+     * callers that mean "link or create".
+     */
+    createOnly: v.optional(v.boolean()),
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
@@ -1126,9 +1187,33 @@ export const findOrCreate = mutation({
      * calling `.find` and taking whichever row came back first.
      */
     const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
+    if (args.createOnly) {
+      // NEO-339 — never adopt. Refused with the rows on file (reference
+      // rows the admin caller can already search for), or inserted below.
+      const reason = playerCreateRefusal(
+        candidates,
+        args.birthYear,
+        PLAYER_AMBIGUITY_SCAN_LIMIT,
+      );
+      if (reason) {
+        const refusal: PlayerExistsRefusal = {
+          code: "PLAYER_EXISTS",
+          reason,
+          name,
+          ...(args.birthYear !== undefined ? { birthYear: args.birthYear } : {}),
+          count: candidates.length,
+          players: candidates.slice(0, MAX_EXISTING_NAMED).map((p) => ({
+            id: p._id,
+            name: p.name,
+            ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+          })),
+        };
+        throw new ConvexError(refusal);
+      }
+    }
     // NOT enqueued — see the creation-only note on the insert below.
-    if (candidates.length === 1) return candidates[0]._id;
-    if (candidates.length > 1) {
+    if (!args.createOnly && candidates.length === 1) return candidates[0]._id;
+    if (!args.createOnly && candidates.length > 1) {
       /**
        * NEO-254 — two or more people are already filed under this name, and
        * this mutation has no way to know which one a typeahead meant.
@@ -1607,30 +1692,61 @@ export const resolveNameForReview = internalQuery({
     narrowedByCardYear: v.optional(v.boolean()),
   }),
   handler: async (ctx, args) => {
-    const normalized = normalizePlayerName(args.name);
-    // A name that normalizes to nothing (punctuation only) can never match a
-    // stored key. Reported as no match, so it goes to review rather than being
-    // silently treated as resolved.
-    if (!normalized) return { matchCount: 0 };
-    const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
-    // Only when it is unambiguous. Handing back one id out of several is the
-    // exact thing this query was written to stop.
-    if (candidates.length === 1) {
-      return { matchCount: 1, playerId: candidates[0]._id };
-    }
-    if (candidates.length < 2) return { matchCount: candidates.length };
-    const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
-      cardYear: args.cardYear,
-      cardTeamNames: args.cardTeamNames,
-    });
+    const { matchCount, playerId, narrowedByCardYear } =
+      await resolvePlayerNameForReview(ctx, args);
     return {
-      matchCount: candidates.length,
-      ...(narrowed.playerId
-        ? { playerId: narrowed.playerId, narrowedByCardYear: true }
-        : {}),
+      matchCount,
+      ...(playerId ? { playerId } : {}),
+      ...(narrowedByCardYear ? { narrowedByCardYear } : {}),
     };
   },
 });
+
+/**
+ * NEO-339 — `resolveNameForReview`'s rule as a plain function, so a QUERY can
+ * apply it without a `ctx.runQuery` hop: `selectorOptions.previewChecklistEntities`
+ * classifies a draft's names with exactly the rule the review gate uses.
+ * Also hands back the same-name rows it read (`candidates`), which the
+ * internal query drops from its result.
+ */
+export async function resolvePlayerNameForReview(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    name: string;
+    sportId: Id<"selectorOptions">;
+    cardYear?: number;
+    cardTeamNames?: string[];
+  },
+): Promise<{
+  matchCount: number;
+  playerId?: Id<"players">;
+  narrowedByCardYear?: boolean;
+  candidates: Array<Doc<"players">>;
+}> {
+  const normalized = normalizePlayerName(args.name);
+  // A name that normalizes to nothing (punctuation only) can never match a
+  // stored key. Reported as no match, so it goes to review rather than being
+  // silently treated as resolved.
+  if (!normalized) return { matchCount: 0, candidates: [] };
+  const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
+  // Only when it is unambiguous. Handing back one id out of several is the
+  // exact thing this query was written to stop.
+  if (candidates.length === 1) {
+    return { matchCount: 1, playerId: candidates[0]._id, candidates };
+  }
+  if (candidates.length < 2) return { matchCount: candidates.length, candidates };
+  const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+    cardYear: args.cardYear,
+    cardTeamNames: args.cardTeamNames,
+  });
+  return {
+    matchCount: candidates.length,
+    ...(narrowed.playerId
+      ? { playerId: narrowed.playerId, narrowedByCardYear: true }
+      : {}),
+    candidates,
+  };
+}
 
 /**
  * NEO-254 — the NB rows already filed under this name, shaped for the review

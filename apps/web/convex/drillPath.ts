@@ -47,7 +47,7 @@ import { subVariantsAllowedUnder, variantTypeKind } from "./variantRole";
  * row of level `DRILL_LEVELS[n]`.
  *
  * Keep in step with `DRILL_LEVELS` in
- * `components/SetSelector/useDrillUrlState.ts` — the client cannot import this
+ * `components/SetSelector/drill-url.ts` — the client cannot import this
  * module (it pulls the server graph into the bundle), so the order is written
  * down twice.
  */

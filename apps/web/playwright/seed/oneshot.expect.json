@@ -1,0 +1,175 @@
+{
+  "measured": true,
+  "path": {
+    "sport": "Baseball",
+    "year": "2024",
+    "manufacturer": "Topps",
+    "set": "Topps Chrome Black"
+  },
+  "draft": {
+    "autographFormats": [
+      "steps[0].variants[0].rows[0].checklist.autographFormat",
+      "steps[0].variants[0].rows[1].checklist.autographFormat",
+      "steps[0].variants[0].rows[2].checklist.autographFormat"
+    ]
+  },
+  "apply": {
+    "counts": {
+      "reconciled": 21,
+      "grouped": 7,
+      "committed": 183,
+      "built": 1106
+    }
+  },
+  "builtFromBaseType": "Parallel",
+  "after": [
+    {
+      "path": {
+        "sport": "Baseball",
+        "year": "2024",
+        "manufacturer": "Topps",
+        "set": "Topps Chrome Black"
+      },
+      "base": {
+        "cards": 120,
+        "linked": {
+          "buysportscards": true,
+          "sportlots": true
+        }
+      },
+      "rows": [
+        {
+          "type": "Insert",
+          "name": "Super Futures Autographs",
+          "cards": 20
+        },
+        {
+          "type": "Insert",
+          "name": "Pitch Black Pairings Dual Autographs",
+          "cards": 6
+        },
+        {
+          "type": "Insert",
+          "name": "Ivory Autographs",
+          "cards": 17
+        },
+        {
+          "type": "Insert",
+          "name": "Depth of Darkness",
+          "cards": 20
+        },
+        {
+          "type": "Parallel",
+          "name": "Rose Gold Wave Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Red Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Purple Mini-Diamond Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Orange Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Magenta Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Green Wave Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Green Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Gold Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Gold Mini-Diamond Refractors",
+          "cards": 100
+        },
+        {
+          "type": "Parallel",
+          "name": "Blue Refractors",
+          "cards": 100
+        }
+      ],
+      "rowCounts": [
+        {
+          "type": "Insert",
+          "count": 4
+        },
+        {
+          "type": "Parallel",
+          "count": 10
+        }
+      ]
+    }
+  ],
+  "attention": {
+    "measured": true,
+    "totals": {
+      "cards": 21,
+      "byKind": {
+        "aspectValueOverLimit": 0,
+        "missingPlayer": 0,
+        "missingTeam": 0,
+        "titleOverLimit": 0,
+        "titleTruncated": 21,
+        "unreviewedName": 0
+      },
+      "namesToCheck": 14,
+      "autographRows": 3
+    },
+    "fix": {
+      "cards": [
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Super Futures Autographs"
+          },
+          "cardNumber": "SFA-CES",
+          "answer": {
+            "title": "2024 Topps Chrome Black Super Futures Autographs #SFA-CES Auto"
+          }
+        }
+      ],
+      "names": [
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Ivory Autographs"
+          },
+          "side": "sportlots",
+          "action": "decline",
+          "label": "Chrome Black Ivory Autos"
+        }
+      ],
+      "autographs": [
+        {
+          "row": {
+            "type": "Insert",
+            "name": "Ivory Autographs"
+          },
+          "format": "On Card"
+        }
+      ]
+    },
+    "afterAutographRows": 0
+  }
+}

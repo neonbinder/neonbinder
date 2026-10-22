@@ -91,6 +91,11 @@
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
+- [Clerk FAPI native mode from Node](reference_clerk_fapi_native_mode_from_node.md) — headless Clerk session: ticket redeem + template mint with _is_native=1, client JWT in Authorization both ways (NEO-339)
+- [MCP stdio server pitfalls](reference_mcp_stdio_server_pitfalls.md) — required zod args skip the handler; npm --silent; `${VAR:-}` = ""; 60 s timeout; new service methods wire in 4 places
+- [Candidates ready never reaches total](reference_candidates_ready_never_reaches_total.md) — gate a checklist fetch on batch id moved + total === candidateCount, never ready === total
+- [Setbuild CLI tests past the gate](reference_setbuild_cli_tests_past_the_gate.md) — eager token mint trips the network guard; stub fetch with a 401 (5xx/throw retries with backoff); io.prompt = TTY
+- [Setbuild cannot import React fixers](reference_setbuild_cannot_import_react_fixers.md) — tools tsconfig lacks `@/`: typecheck red, vitest green; move the pure piece to a React-free module, never mirror
 - [Ref cleanup sees focus before removal](reference_ref_cleanup_sees_focus_before_removal.md) — park focus when a focused control unmounts: React 19 callback-ref cleanup, not a parent effect cleanup
 - [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
 - [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
@@ -101,6 +106,7 @@
 - [One search per index per query](reference_one_search_per_index_per_query.md) — two same-text withSearchIndex reads go stale (narrower filter wins); narrow leg = index range + JS text filter
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — agent shells skip load-nvmrc; export PATH to ~/.nvm/versions/node/v$(cat apps/web/.nvmrc)/bin per gate call
 - [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
+- [Zod union hides enum errors](reference_zod_union_hides_enum_errors.md) — a fatal issue under z.union reports "Invalid input" at the union; use z.custom(check, {fatal:false}) or superRefine
 - [Ensure-sync idle window races Playwright](reference_ensure_sync_idle_window_races_playwright.md) — idle "Sync X" shows before the syncing write; wait for data, not the button (NEO-341 SPx notice)
 - [Dark variant is class-based (was OS-based)](reference_playwright_default_light_scheme_breaks_dark_variants.md) — NEO-341: @custom-variant + html.dark; light halves of dark: pairs are dead; never force colorScheme
 - [Print paths and Radix root scheme](reference_print_paths_and_radix_root_scheme.md) — Print buttons use isolated docs (globals.css never prints); print override needs html:root to beat Radix
@@ -118,8 +124,16 @@
 - [Candidate field reaches commit only through the client](reference_candidate_field_reaches_commit_only_through_the_client.md) — candidate row → commit hops via pairing-cards.ts, CardPairingModal merge, CardChecklist type; convex-only carry is dead
 - [No review row is not unanswered](reference_no_review_row_is_not_unanswered.md) — the gate drops stored skips before queuing; "no row ⇒ resolved/unreviewed" must read entityReviewSkips
 - [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
+- [Identify a same-name catalogue player read-only](reference_identify_a_same_name_catalogue_player_read_only.md) — preview slug from the PR Pipeline log, inline-query players/cardChecklist; never download the bundle, never trust the Wikidata fixture
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
+- [Draft shape changes hit the CI oneshot](reference_draft_shape_changes_hit_the_ci_oneshot.md) — index-merged vs oneshot.spec.json; new fill-ins/reorders go red
+- [React Compiler lint flips on unrelated edits](reference_react_compiler_lint_flips_on_unrelated_edits.md) — CardChecklist: hook-derived local into an import at render = 8 far-away errors; bisect via eslint --stdin, run 3x
+- [SL set has no product id](reference_sl_set_has_no_product_id.md) — label auto-match can pair two products; confirm by the pair preview's cards; SL review often absent
+- [New attention kind fixture ripple](reference_new_attention_kind_fixture_ripple.md) — a kind firing on an empty field reds ~80 unit tests + E2E badge/pill/walker specs; fixture defaults; walker answered is per question
+- [Nested act defers the render a helper reads](reference_nested_act_defers_the_render_a_helper_reads.md) — click-then-query helpers fail inside an outer `await act`; ship a sync and an async form (press-save.ts)
+- [Listing title keep order](reference_listing_title_keep_order.md) — card number now droppable; squeeze title tests with long players, not a long number
+- [aria-disabled hold stalls shared E2E helpers](reference_aria_disabled_gate_stalls_shared_e2e_helpers.md) — getByRole disabled:false honours aria-disabled; a new hold on Confirm card matches stalls fetchChecklistToWizard
 - [Container's own cqw resolves upward](reference_container_own_cqw_resolves_upward.md) — size the container itself in %, cqw only on children; a cqw radius on the root made a pill (NEO-350)
 - [Convex-free page harness](reference_convex_free_page_harness.md) — screenshot a page behind ProtectedLayout: temp harness.html + MemoryRouter, spare-port Vite, Playwright
 - [Print-only region needs the :has() prefix](reference_print_only_region_has_specificity.md) — visible rule must match hide rule weight; fullPage print-emulated shots go blank
@@ -130,3 +144,5 @@
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
+- [Post-await focus needs an effect](reference_post_await_focus_needs_an_effect.md) — setTimeout/rAF focus loses to a post-await render in Chrome; ref flag + effect; fake-timer test recipe
+- [Blob report times one expect across runs](reference_blob_report_times_one_expect_across_runs.md) — budget miss: regression or variance? sample the step duration from pw-report blobs, branch vs other PRs

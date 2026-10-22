@@ -67,6 +67,8 @@
 - [Patterns neo325 identity-only and twins](patterns_neo325_identity_only_and_twins.md) — forced-insert flag vs multi-id insert; upstream label bound on notice rows; pin internal id readers
 - [Inline re-auth bypasses backoff](patterns_inline_reauth_bypasses_backoff.md) — adapter 401 → authenticate* skips NEO-278 backoff + lock; batches multiply logins
 - [Patterns neo318 derived copy column](patterns_neo318_derived_copy_column.md) — exported *Impl split of a gated query is safe if gate stays in handler; derived copy: strip in public helper, spread-insert gap, two-step revert
+- [Confirm phrases and read/write splits](patterns_confirm_phrase_and_read_write_splits.md) — echoed phrase ≠ approval; URL overrides; read-only client; digest input; findOrCreate; web-research injection; empty-list vacuous checks
+- [Collect mode and preview side effects](patterns_collect_mode_and_preview_side_effects.md) — collect-mode gates keyed by target not step; mocked zero-write tests miss adapter re-auth writes (NEO-339)
 - [Patterns neo335 wizard team answers](patterns_neo335_wizard_team_answers.md) — server match decides insert-only title answers; "kept" flag unbound to text; short-name normaliser misses bidi/C1
 - [Neo330 reference seed CI](patterns_neo330_reference_seed_ci.md) — private bundle in public CI: id-token is job-wide, gcloud echoes gs:// URI, import errors echo rows, empty-bundle floor
 - [Neo330 by-id twin and search](patterns_neo330_by_id_twin_and_search.md) — normalizeId twins: exposure is the returns validator; search query text unbounded house-wide
@@ -75,4 +77,5 @@
 - [Patterns neo331 context-id side channel](patterns_neo331_context_id_side_channel.md) — signed-in query ranking by an admin-gated row leaks it via tier/order; old public query left live and unclamped after a client move
 - [Playwright report exposure](patterns_playwright_report_exposure.md) — blob/HTML reports embed error-context (ARIA snapshot, password values in plaintext); results/ glob is not a scope; .playwright-mcp; host guard
 - [Patterns neo345 attribute fill](patterns_neo345_attribute_fill.md) — node-only feature key needs every copy-down door; Proxy-recorded dry run; unarmed enqueuer grew a live re-ask mode
+- [Patterns neo339 format reach](patterns_neo339_format_reach.md) — door-txn flag + serial walk strands targets on throw; strict title-token parse shape; equality-gated text rebuild
 - [Patterns neo350 public demo and prefill](patterns_neo350_public_demo_and_prefill.md) — client-only demo on a public route: import-graph grep; URL prefill allowlisted at parse and interpolation; branch author email

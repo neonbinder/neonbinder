@@ -4,7 +4,7 @@ import { Theme } from "@radix-ui/themes";
 import type { Id } from "../../convex/_generated/dataModel";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 import NeonButton from "../modules/NeonButton";
-import { deriveCardAttention } from "./card-attention";
+import { deriveCardAttention, walkDoneLine } from "./card-attention";
 import WizardChrome from "./WizardChrome";
 import {
   AttentionSportContext,
@@ -28,23 +28,9 @@ export {
   type CardChecklistRow,
 } from "./cardAttentionRegistry";
 
-/**
- * NEO-335 — the line the walker ends on. "All clear" when nothing is left; when
- * cards are still waiting on the automatic team lookup (see
- * `isAwaitingTeamLookup`), it says so, because those can still join the walk
- * after the operator has finished it.
- *
- * Phase 2 wording (Jason-approved): "All clear for now. Still looking up teams
- * for K cards." The singular keeps "teams" — a card can carry more than one.
- */
-export function walkDoneLine(awaitingLookup: number): string {
-  if (awaitingLookup <= 0) {
-    return "All clear — nothing on this checklist needs attention.";
-  }
-  return `All clear for now. Still looking up teams for ${awaitingLookup} ${
-    awaitingLookup === 1 ? "card" : "cards"
-  }.`;
-}
+// NEO-339: `walkDoneLine` lives in the pure `card-attention.ts` so the set-build
+// tool can say the walker's own sentence; re-exported for existing importers.
+export { walkDoneLine } from "./card-attention";
 
 /**
  * NEO-335 Phase 2 (D9) — "Step x of y" for the walker.
@@ -100,9 +86,12 @@ export function walkStep(
  *
  * ## The order (NEO-335)
  *
- * Missing teams first, then names not yet linked, then titles; by card number
- * within each (`attentionWalkRank`). A team is the question most cards share
- * and the one an operator answers fastest, so it goes first.
+ * Missing players first (NEO-339), then missing teams, then names not yet
+ * linked, then titles; by card number within each (`attentionWalkRank`). A
+ * team is the question most cards share and the one an operator answers
+ * fastest; a player goes ahead of it because the team question's chips come
+ * from the card's players. A card that needs both is asked for its player,
+ * then comes back in the teams group (see `answered`).
  *
  * ## The queue is derived, not held
  *
@@ -182,14 +171,20 @@ export default function CardAttentionWalker({
   //
   //  - `skipped`  — deferred this sitting. NOT a write: the card keeps its
   //                 badge in the grid and comes back next time.
-  //  - `answered` — a fixer's write for this card landed. Needed as well as
-  //                 the derived rule because the write and the subscription
-  //                 update are not the same instant, and without it the card
-  //                 would flash back on screen in between.
-  //  - `seen`     — every card that has been in the walk this sitting, for
-  //                 "Step x of y" (see `walkStep`). Only ever grows.
+  //  - `answered` — a fixer's write for this card landed, and WHICH question
+  //                 it answered. Needed as well as the derived rule because the
+  //                 write and the subscription update are not the same
+  //                 instant, and without it the card would flash back on
+  //                 screen in between. Keyed on the question (NEO-339): a card
+  //                 whose row, once updated, asks something ELSE (a player
+  //                 linked, now its team) rejoins the walk in that question's
+  //                 group, rather than leaving the sitting with the pill still
+  //                 counting it.
+  //  - `seen`     — every question that has been in the walk this sitting
+  //                 (card + kind), for "Step x of y" (see `walkStep`). Only
+  //                 ever grows.
   const [skipped, setSkipped] = useState<Set<string>>(() => new Set());
-  const [answered, setAnswered] = useState<Set<string>>(() => new Set());
+  const [answered, setAnswered] = useState<ReadonlyMap<string, string>>(() => new Map());
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -201,21 +196,32 @@ export default function CardAttentionWalker({
   );
 
   // NEO-335: walk order, then card number — see `attentionWalkRank`. The rank
-  // is computed once per card rather than inside the comparator.
-  const attentionCards = useMemo(
+  // is computed once per card rather than inside the comparator, and so is the
+  // question the card is asked (`pickAttentionFixer`'s item), which `answered`
+  // and `seen` key on.
+  const attentionEntries = useMemo(
     () =>
       cards
         .map((card) => ({ card, items: deriveCardAttention(card) }))
         .filter(({ items }) => items.length > 0)
-        .map(({ card, items }) => ({ card, rank: attentionWalkRank(items) }))
+        .map(({ card, items }) => ({
+          card,
+          rank: attentionWalkRank(items),
+          asked: pickAttentionFixer(items).item?.kind ?? "",
+        }))
         .sort(
           (a, b) =>
             a.rank - b.rank ||
             compareCardNumbers(a.card.cardNumber, b.card.cardNumber),
-        )
-        .map(({ card }) => card),
+        ),
     [cards],
   );
+  const attentionCards = useMemo(
+    () => attentionEntries.map(({ card }) => card),
+    [attentionEntries],
+  );
+  const questionKey = (e: { card: CardChecklistRow; asked: string }) =>
+    `${e.card._id as string}:${e.asked}`;
 
   /*
    * y's memory. Seeded with the walk as it opens, and grown in the render
@@ -226,13 +232,13 @@ export default function CardAttentionWalker({
    * one that leaves the list by any route has been walked, and y holds.
    */
   const [seen, setSeen] = useState<ReadonlySet<string>>(
-    () => new Set(attentionCards.map((c) => c._id as string)),
+    () => new Set(attentionEntries.map(questionKey)),
   );
-  const unseen = attentionCards.filter((c) => !seen.has(c._id as string));
+  const unseen = attentionEntries.filter((e) => !seen.has(questionKey(e)));
   if (unseen.length > 0) {
     setSeen((prev) => {
       const next = new Set(prev);
-      for (const c of unseen) next.add(c._id as string);
+      for (const e of unseen) next.add(questionKey(e));
       return next;
     });
   }
@@ -245,10 +251,14 @@ export default function CardAttentionWalker({
 
   const remaining = useMemo(
     () =>
-      attentionCards.filter(
-        (c) => !skipped.has(c._id as string) && !answered.has(c._id as string),
-      ),
-    [attentionCards, skipped, answered],
+      attentionEntries
+        .filter(
+          ({ card, asked }) =>
+            !skipped.has(card._id as string) &&
+            answered.get(card._id as string) !== asked,
+        )
+        .map(({ card }) => card),
+    [attentionEntries, skipped, answered],
   );
 
   /**
@@ -361,10 +371,14 @@ export default function CardAttentionWalker({
     setSkipped((prev) => new Set(prev).add(cardId));
   };
 
-  /** A fixer's write landed. Leave the card behind; it counts as walked. */
-  const markAnswered = (cardId: string) => {
+  /**
+   * A fixer's write landed. Leave the card behind for the question it answered;
+   * it counts as walked. A card that then asks something else comes back in
+   * that question's group (see `answered`).
+   */
+  const markAnswered = (cardId: string, kind: string) => {
     movePinPast(cardId);
-    setAnswered((prev) => new Set(prev).add(cardId));
+    setAnswered((prev) => new Map(prev).set(cardId, kind));
   };
 
   return createPortal(
@@ -519,7 +533,9 @@ export default function CardAttentionWalker({
                   key={current._id as string}
                   row={current}
                   items={items}
-                  onSaved={() => markAnswered(current._id as string)}
+                  onSaved={() =>
+                    markAnswered(current._id as string, primaryItem?.kind ?? "")
+                  }
                   onSkip={skipCurrent}
                 />
               </AttentionSportContext.Provider>

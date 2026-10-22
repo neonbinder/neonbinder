@@ -126,6 +126,7 @@ import { RECONCILED_STORE_MAX_PAGES } from "./store-reconciled-until-done";
 import { twinReconcileNotice } from "./selector-sync-feedback";
 import { HOLDER_PATH_SEPARATOR } from "./held-elsewhere";
 import { titleClashMessage } from "./ready-title-clashes";
+import { pressSaveAsync } from "./press-save";
 
 const CHAIN = [
   { _id: "sport1", level: "sport", value: "Hockey" },
@@ -373,9 +374,7 @@ describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
     // Both auto-matches arrive as Ready sets. Disband one; the other still
     // saves, so Save stays enabled (it is disabled at zero sets).
     fireEvent.click(await screen.findByLabelText("Remove set Team Canada"));
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 1 sets/));
 
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
     const args = mockStore.mock.calls[0][0];
@@ -402,9 +401,7 @@ describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
     );
     await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 2 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 2 sets/));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(
@@ -423,17 +420,13 @@ describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
     mockStore.mockRejectedValueOnce(new Error("boom"));
     const { onDone } = await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 2 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 2 sets/));
     await screen.findByRole("alert");
     expect(onDone).not.toHaveBeenCalled();
 
     // Second press succeeds — Save is live again (confirming reset in finally).
     mockStore.mockResolvedValue({ success: true, unlinked: [] });
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 2 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 2 sets/));
 
     expect(mockStore).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).toBeNull();
@@ -445,9 +438,7 @@ describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
     // that the confirm path spreads it rather than assigning undefined.
     mockFetchRawOptions.mockResolvedValue(bothSides());
     await renderForm();
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 2 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 2 sets/));
     const args = mockStore.mock.calls[0][0];
     expect(args.coveredSides).toEqual(["bsc", "sportlots"]);
     expect(args.returnedIds.bsc).toEqual(["bsc-tc", "bsc-usa"]);
@@ -731,9 +722,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     const item = screen.getByText("Anime Kanji", { selector: "li > span" });
     expect(item.parentElement?.textContent).toBe("Anime Kanji→grouped under Anime");
 
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 1 sets/));
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
     const args = mockStore.mock.calls[0][0];
     expect(args.reconciledItems.map((i: { value: string }) => i.value)).toEqual([
@@ -929,9 +918,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     const { onDone } = await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 1 sets/));
 
     const status = await findLiveStatus();
     expect(status.textContent).toContain("Saved 1 set.");
@@ -978,9 +965,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     const { onDone } = await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 1 sets/));
     await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
 
@@ -1111,9 +1096,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     const { onDone } = await renderForm();
 
-    await act(async () => {
-      fireEvent.click(await screen.findByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(await screen.findByText(/Save 1 sets/));
 
     expect(
       await screen.findByText(
@@ -1188,9 +1171,7 @@ describe("VariantForm — ids another set in the brand holds are left alone (NEO
     fireEvent.click(toggle);
     expect(screen.getByText("Topps Blue", { selector: "li > span" })).toBeTruthy();
 
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 1 sets/));
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
     const args = mockStore.mock.calls[0][0];
     const saved = args.reconciledItems.flatMap(
@@ -1327,9 +1308,7 @@ describe("VariantForm — ids another variant type holds are left alone (NEO-312
       screen.getByRole("button", { name: `Make its own set: ${MOVED_BSC.value}` }),
     ).toBeTruthy();
 
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Save 1 sets/));
-    });
+    await pressSaveAsync(screen.getByText(/Save 1 sets/));
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
     const args = mockStore.mock.calls[0][0];
     const saved = args.reconciledItems.flatMap(

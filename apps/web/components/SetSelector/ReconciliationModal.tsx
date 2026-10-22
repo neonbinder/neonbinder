@@ -28,7 +28,7 @@ import { Input } from "../primitives/Input";
 import type { Id } from "../../convex/_generated/dataModel";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import HeldElsewhereNote from "./HeldElsewhereNote";
-import { heldIdSets, type HeldRow } from "./held-elsewhere";
+import type { HeldRow } from "./held-elsewhere";
 import {
   duplicateNames,
   itemLabel,
@@ -42,7 +42,6 @@ import {
   readyTitleClashes,
   titleClashMessage,
   titleClashSignature,
-  type ClashExistingRow,
 } from "./ready-title-clashes";
 import { MAX_SELECTOR_VALUE_LENGTH } from "../../convex/selectorSyncMatch";
 import { useConvex } from "convex/react";
@@ -61,84 +60,33 @@ import {
   type RowCheck,
 } from "./base-match-probe";
 import { BASE_MATCH_COPY, type BaseMatchSide } from "@/lib/cards/base-match";
+// NEO-339: the reducer, its seed and the Save payload live in
+// lib/set-build/reconcile.ts, shared with the set-building tool.
+import {
+  buildReconciledItems,
+  defaultSlPrefixes as defaultSlPrefixesOf,
+  inSlPrefixScope,
+  reconciliationReducer,
+  seedReconciliationState,
+  type ItemMetadata,
+  type MatchedPair,
+  type PlatformItem,
+  type ReadySet,
+  type ReconciledResult,
+  type Side,
+} from "@/lib/set-build/reconcile";
 
 // ===== TYPES =====
 
-export type PlatformItem = {
-  value: string;
-  platformValue: string;
-};
-
-export type MatchedPair = {
-  displayName: string;
-  bsc: PlatformItem;
-  sl: PlatformItem;
-  confidence: number;
-};
-
-/**
- * What the modal lets an operator say about a set beyond its title and its
- * marketplace mappings. NEO-291: only the card prefix. Insert/Parallel used to
- * be here as checkboxes, but which of those a row IS is a fact of where it sits
- * in the hierarchy (its level and its variant type), not a box to tick.
- */
-export type ItemMetadata = {
-  cardNumberPrefix?: string;
-};
-
-/**
- * A NeonBinder set under construction.
- *
- * NB is the system of record. A set has a title that belongs to US, and maps
- * to 0-N BSC sets and 0-N SportLots sets — the two sides completely
- * independent of each other. A marketplace id on a set records how that
- * marketplace happens to carve up the same cards; it is not an ownership claim
- * and not a scarce resource, so the same id may appear on any number of sets.
- *
- * This replaced a pair-shaped model (`{bsc, sl}`, one id per side) whose every
- * awkwardness came from treating marketplace sets as exclusive: an item with no
- * partner needed a special "keep as platform-only" shelf, and a set wanted by
- * two rows produced a winner and a loser.
- */
-export type ReadySet = {
-  /** Stable local key. Not persisted — `title` is the identity on save. */
-  key: string;
-  /**
-   * NEO-211 (plan E): the `selectorOptions` row this set ALREADY is, when it was
-   * seeded from `existingRows`. Absent for a set the operator just built here.
-   *
-   * Before this, the modal had no notion of `_id` at all and `title` WAS the
-   * identity on save — so editing a title in this dialog was a delete of the old
-   * row and an insert of a new one, taking the row's children, its checklist and
-   * every cross-listing pointed at it. Carrying the id makes that edit a rename.
-   */
-  existingId?: Id<"selectorOptions">;
-  /** The NeonBinder set name. Operator-editable; this is our data. */
-  title: string;
-  bsc: PlatformItem[];
-  sl: PlatformItem[];
-  metadata?: ItemMetadata;
-  /** Auto-match score, for display only. 0 once an operator has touched it. */
-  confidence: number;
-  /**
-   * NEO-325 — made with "Make its own set" (PROMOTE_SOLO). Saved with
-   * `identityOnly`: the store matches it by its marketplace ids or inserts it,
-   * and never folds it into a same-named row by name — which is what withheld
-   * a SportLots twin saved after its namesake. Kept through later attaches and
-   * renames: the operator still meant it as its own set.
-   */
-  ownSet?: boolean;
-};
-
-type ReconciliationState = {
-  /** Sets that will be written on save. */
-  ready: ReadySet[];
-  /** Marketplace sets not yet assigned to any NB set. NOT saved. */
-  pendingBsc: PlatformItem[];
-  pendingSl: PlatformItem[];
-  /** Monotonic source of ReadySet keys. Never rewound, so a key is never reused. */
-  seq: number;
-};
+// Re-exported so every existing import of these from here keeps working.
+export { reconciliationReducer } from "@/lib/set-build/reconcile";
+export type {
+  ItemMetadata,
+  MatchedPair,
+  PlatformItem,
+  ReadySet,
+  ReconciledResult,
+} from "@/lib/set-build/reconcile";
 
 /**
  * NEO-137: a ranked SL candidate for a BSC row that ended up unmatched.
@@ -153,278 +101,6 @@ export type SlCandidateGroup = {
     alreadyMatched: boolean;
   }>;
 };
-
-type Side = "bsc" | "sl";
-
-type ReconciliationAction =
-  // Two pending items become a new set. The 1:1 case, which is 95%+ of real
-  // reconciliation and stays a single drag.
-  | { type: "PROMOTE_PAIR"; bsc: PlatformItem; sl: PlatformItem }
-  // One item becomes a set on its own. Replaces "keep as platform-only":
-  // a set with ids on one side only is ordinary, not special.
-  | { type: "PROMOTE_SOLO"; side: Side; item: PlatformItem }
-  // NEO-300 — "Keep all": every item a column is SHOWING becomes its own set,
-  // in ONE action. A column can list 141 BSC sets; N PROMOTE_SOLOs would be N
-  // reducer passes each copying the Ready and Pending arrays (quadratic), and
-  // one action is also one undo-able step in the operator's head.
-  | { type: "PROMOTE_SOLO_MANY"; side: Side; items: PlatformItem[] }
-  // An item joins an existing set. This is what makes 0-N per side reachable,
-  // in both directions.
-  | { type: "ATTACH"; key: string; side: Side; item: PlatformItem }
-  | { type: "DETACH"; key: string; side: Side; platformValue: string }
-  | { type: "DISBAND"; key: string }
-  | { type: "RENAME"; key: string; title: string }
-  | { type: "UPDATE_METADATA"; key: string; metadata: ItemMetadata };
-
-export type ReconciledResult = {
-  items: Array<{
-    /**
-     * NEO-211 (plan E): present when this item came from an existing NB row.
-     * The store treats it as the tier-0 match, so a title changed in this dialog
-     * renames that row rather than replacing it.
-     */
-    existingId?: Id<"selectorOptions">;
-    value: string;
-    // Arrays, not single ids: a set maps to 0-N per side. The mutation has
-    // accepted `string | string[]` all along and allocates one slot per
-    // element on insert — it was only this modal that could not express it.
-    platformData: {
-      bsc?: string[];
-      sportlots?: string[];
-    };
-    // Marketplace display name per id, so each slot gets a meaningful label.
-    // With several sets on a side, "which one is this" is otherwise unanswerable.
-    platformLabels?: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
-    };
-    metadata?: ItemMetadata;
-    /**
-     * NEO-325 — the operator made this set with "Make its own set". The store
-     * matches it by identity only and otherwise inserts it; see
-     * `ReadySet.ownSet`. Absent on every other set.
-     */
-    identityOnly?: true;
-  }>;
-};
-
-/**
- * Remove an item from a Pending column IF it is there.
- *
- * An item being mapped does NOT consume it: a marketplace set may back any
- * number of NB sets, so the same item can be mapped again later from the
- * "already mapped" reveal. Only the first mapping empties it out of Pending;
- * subsequent ones find nothing to remove and leave the column alone.
- */
-function withoutPending(
-  list: PlatformItem[],
-  item: PlatformItem,
-): PlatformItem[] {
-  return list.some((i) => i.platformValue === item.platformValue)
-    ? list.filter((i) => i.platformValue !== item.platformValue)
-    : list;
-}
-
-/**
- * Return items to a Pending column, skipping any id already there.
- *
- * NEO-325: Pending is keyed by `platformValue` (React keys, dnd ids, selection),
- * so the same id twice in one column is a key collision. It happens when a
- * marketplace set mapped by two NB sets is detached from, or disbanded out of,
- * both — each return used to append another copy.
- */
-function withPendingAdded(
-  list: PlatformItem[],
-  items: PlatformItem[],
-): PlatformItem[] {
-  const have = new Set(list.map((i) => i.platformValue));
-  const added: PlatformItem[] = [];
-  for (const item of items) {
-    if (have.has(item.platformValue)) continue;
-    have.add(item.platformValue);
-    added.push(item);
-  }
-  return added.length === 0 ? list : [...list, ...added];
-}
-
-/** Exported for its unit test; the component is the only production caller. */
-export function reconciliationReducer(
-  state: ReconciliationState,
-  action: ReconciliationAction,
-): ReconciliationState {
-  switch (action.type) {
-    case "PROMOTE_PAIR": {
-      return {
-        ...state,
-        seq: state.seq + 1,
-        ready: [
-          ...state.ready,
-          {
-            key: `set-${state.seq}`,
-            // BSC names are closer to how collectors say a set's name, so it
-            // wins the default. The operator can rename — the title is ours.
-            title: action.bsc.value,
-            bsc: [action.bsc],
-            sl: [action.sl],
-            confidence: 0,
-          },
-        ],
-        pendingBsc: withoutPending(state.pendingBsc, action.bsc),
-        pendingSl: withoutPending(state.pendingSl, action.sl),
-      };
-    }
-    case "PROMOTE_SOLO": {
-      return {
-        ...state,
-        seq: state.seq + 1,
-        ready: [
-          ...state.ready,
-          {
-            key: `set-${state.seq}`,
-            title: action.item.value,
-            bsc: action.side === "bsc" ? [action.item] : [],
-            sl: action.side === "sl" ? [action.item] : [],
-            confidence: 0,
-            ownSet: true,
-          },
-        ],
-        pendingBsc:
-          action.side === "bsc"
-            ? withoutPending(state.pendingBsc, action.item)
-            : state.pendingBsc,
-        pendingSl:
-          action.side === "sl"
-            ? withoutPending(state.pendingSl, action.item)
-            : state.pendingSl,
-      };
-    }
-    case "PROMOTE_SOLO_MANY": {
-      // Exactly PROMOTE_SOLO applied to each item in order — same title, same
-      // one-sided mapping, keys drawn from the same never-rewound `seq` — but
-      // one pass. An item listed twice becomes one set, not two.
-      const seen = new Set<string>();
-      const items = action.items.filter((i) => {
-        if (seen.has(i.platformValue)) return false;
-        seen.add(i.platformValue);
-        return true;
-      });
-      if (items.length === 0) return state;
-      const created: ReadySet[] = items.map((item, n) => ({
-        key: `set-${state.seq + n}`,
-        title: item.value,
-        bsc: action.side === "bsc" ? [item] : [],
-        sl: action.side === "sl" ? [item] : [],
-        confidence: 0,
-        // NEO-325 — "Keep all" is "Make its own set" on every row, so each
-        // set it makes is saved by identity (`identityOnly`) the same way.
-        ownSet: true,
-      }));
-      const drop = (list: PlatformItem[]) =>
-        list.filter((i) => !seen.has(i.platformValue));
-      return {
-        ...state,
-        seq: state.seq + items.length,
-        ready: [...state.ready, ...created],
-        pendingBsc: action.side === "bsc" ? drop(state.pendingBsc) : state.pendingBsc,
-        pendingSl: action.side === "sl" ? drop(state.pendingSl) : state.pendingSl,
-      };
-    }
-    case "ATTACH": {
-      const target = state.ready.find((s) => s.key === action.key);
-      if (!target) return state;
-      // Same marketplace id twice on ONE set would make two slots pointing at
-      // the same place. Across DIFFERENT sets it is fine and expected — that is
-      // the 1996 Score case, where one SportLots set legitimately backs two NB
-      // sets — so this check is per-set, never global.
-      const existing = action.side === "bsc" ? target.bsc : target.sl;
-      if (existing.some((i) => i.platformValue === action.item.platformValue)) {
-        return state;
-      }
-      return {
-        ...state,
-        ready: state.ready.map((s) =>
-          s.key === action.key
-            ? {
-                ...s,
-                bsc: action.side === "bsc" ? [...s.bsc, action.item] : s.bsc,
-                sl: action.side === "sl" ? [...s.sl, action.item] : s.sl,
-              }
-            : s,
-        ),
-        pendingBsc:
-          action.side === "bsc"
-            ? withoutPending(state.pendingBsc, action.item)
-            : state.pendingBsc,
-        pendingSl:
-          action.side === "sl"
-            ? withoutPending(state.pendingSl, action.item)
-            : state.pendingSl,
-      };
-    }
-    case "DETACH": {
-      const target = state.ready.find((s) => s.key === action.key);
-      if (!target) return state;
-      const from = action.side === "bsc" ? target.bsc : target.sl;
-      const item = from.find((i) => i.platformValue === action.platformValue);
-      if (!item) return state;
-      const remaining = from.filter(
-        (i) => i.platformValue !== action.platformValue,
-      );
-      const nextSet: ReadySet = {
-        ...target,
-        bsc: action.side === "bsc" ? remaining : target.bsc,
-        sl: action.side === "sl" ? remaining : target.sl,
-      };
-      // A set with nothing mapped has no reason to exist — it would save as a
-      // row with an empty platformData and never sync anything.
-      const emptied = nextSet.bsc.length === 0 && nextSet.sl.length === 0;
-      return {
-        ...state,
-        ready: emptied
-          ? state.ready.filter((s) => s.key !== action.key)
-          : state.ready.map((s) => (s.key === action.key ? nextSet : s)),
-        pendingBsc:
-          action.side === "bsc"
-            ? withPendingAdded(state.pendingBsc, [item])
-            : state.pendingBsc,
-        pendingSl:
-          action.side === "sl"
-            ? withPendingAdded(state.pendingSl, [item])
-            : state.pendingSl,
-      };
-    }
-    case "DISBAND": {
-      const target = state.ready.find((s) => s.key === action.key);
-      if (!target) return state;
-      return {
-        ...state,
-        ready: state.ready.filter((s) => s.key !== action.key),
-        pendingBsc: withPendingAdded(state.pendingBsc, target.bsc),
-        pendingSl: withPendingAdded(state.pendingSl, target.sl),
-      };
-    }
-    case "RENAME": {
-      return {
-        ...state,
-        ready: state.ready.map((s) =>
-          s.key === action.key ? { ...s, title: action.title } : s,
-        ),
-      };
-    }
-    case "UPDATE_METADATA": {
-      return {
-        ...state,
-        ready: state.ready.map((s) =>
-          s.key === action.key
-            ? { ...s, metadata: { ...(s.metadata ?? {}), ...action.metadata } }
-            : s,
-        ),
-      };
-    }
-    default:
-      return state;
-  }
-}
 
 // ===== PROPS =====
 
@@ -1219,184 +895,23 @@ function ReconciliationDialog({
   // NEO-325: the same pass records every saved row under the parent — the
   // ones seeded into Ready and the ones that were not — so Save can refuse a
   // title that would sit beside one of them (`readyTitleClashes`).
-  const seed = useMemo(() => {
-    const ready: ReadySet[] = [];
-    const savedSiblings: ClashExistingRow[] = [];
-    const usedBsc = new Set<string>();
-    const usedSl = new Set<string>();
-    let seq = 0;
-
-    // platformValue → freshest PlatformItem, so restored rows show the current
-    // marketplace display name rather than the NB title we saved them under.
-    const bscByPv = new Map<string, PlatformItem>();
-    for (const item of initialData.unmatchedBsc) bscByPv.set(item.platformValue, item);
-    for (const m of initialData.autoMatched) bscByPv.set(m.bsc.platformValue, m.bsc);
-    const slByPv = new Map<string, PlatformItem>();
-    for (const item of initialData.unmatchedSl) slByPv.set(item.platformValue, item);
-    for (const m of initialData.autoMatched) slByPv.set(m.sl.platformValue, m.sl);
-
-    const toIds = (v: string | string[] | undefined): string[] =>
-      typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
-
-    for (const row of existingRows) {
-      const bscIds = toIds(row.platformData.bsc);
-      const slIds = toIds(row.platformData.sportlots);
-      if (bscIds.length === 0 && slIds.length === 0) {
-        // Not seeded: a row with no marketplace ids has nothing to reconcile,
-        // but it is still a set under this parent with this name.
-        savedSiblings.push({ name: row.value, bsc: [], sportlots: [] });
-        continue;
-      }
-      const key = `set-${seq++}`;
-      savedSiblings.push({
-        name: row.value,
-        bsc: bscIds,
-        sportlots: slIds,
-        seededKey: key,
-      });
-      ready.push({
-        key,
-        existingId: row.existingId,
-        title: row.value,
-        bsc: bscIds.map(
-          (id) => bscByPv.get(id) ?? { value: row.value, platformValue: id },
-        ),
-        sl: slIds.map(
-          (id) => slByPv.get(id) ?? { value: row.value, platformValue: id },
-        ),
-        confidence: 0,
-        // NEO-291: project to the one field the modal edits. Callers hand
-        // over the row's whole stored metadata (`setNamePrefix`,
-        // `isBrandUnknown` and the rest), which tsc accepts structurally but
-        // `storeReconciledOptions`' `v.object` rejects at runtime.
-        metadata: row.metadata?.cardNumberPrefix
-          ? { cardNumberPrefix: row.metadata.cardNumberPrefix }
-          : undefined,
-      });
-      for (const id of bscIds) usedBsc.add(id);
-      for (const id of slIds) usedSl.add(id);
-    }
-
-    // NEO-300: ids another NB row already holds (a grouped parallel, for
-    // Sync Inserts). Seeded AFTER the restored rows so they never stop this
-    // level's own rows coming back, and BEFORE the auto-matches so a grouped
-    // set is not handed back as a fresh Ready set — which is exactly how a
-    // Sync Inserts after Group Parallels re-created every grouped row.
-    // NEO-305: ids another set in the brand holds are held the same way.
-    const held = heldIdSets([
-      ...(heldElsewhere?.rows ?? []),
-      ...(heldInBrand?.rows ?? []),
-    ]);
-    // NEO-312: ids the caller says rows ELSEWHERE in the set hold
-    // (`used*PlatformValues`) are held too. Before, they only trimmed Pending,
-    // so after "Make insert of…" moved a SportLots link to another variant
-    // type, the next sync auto-matched it straight back into Ready and Save
-    // put that one link on a second NB row. Less the ids this sync's own
-    // restored rows carry: a Sub-Variants caller's list includes its own
-    // parallels, and those must keep coming back as this sync's rows.
-    // `usedBsc`/`usedSl` hold exactly the restored ids at this point.
-    for (const id of usedBscPlatformValues) {
-      if (!usedBsc.has(id)) held.bsc.add(id);
-    }
-    for (const id of usedSlPlatformValues) {
-      if (!usedSl.has(id)) held.sportlots.add(id);
-    }
-    for (const id of held.bsc) usedBsc.add(id);
-    for (const id of held.sportlots) usedSl.add(id);
-    // The unheld half of an auto-match whose other half is held: an ordinary
-    // unassigned marketplace set, so it goes to Pending rather than vanishing.
-    const releasedBsc: PlatformItem[] = [];
-    const releasedSl: PlatformItem[] = [];
-    // Only the rows restored from `existingRows` take an attached half below;
-    // the auto-match sets pushed after them are the reconciler's guesses, not
-    // our data, and a second guess is not joined onto a first.
-    const restoredCount = ready.length;
-
-    // Auto-matches. These are suggestions the reconciler made; a pair that
-    // collides with nothing arrives as a Ready set because 95%+ of them are
-    // right, and a wrong one is one ✕ away from Pending. A pair that collides
-    // on ONE half is not skipped whole: its other half is attached or released
-    // (NEO-306, below), because a skipped half is a link nobody can make.
-    for (const m of initialData.autoMatched) {
-      const bscHeld = held.bsc.has(m.bsc.platformValue);
-      const slHeld = held.sportlots.has(m.sl.platformValue);
-      if (bscHeld !== slHeld) {
-        if (!bscHeld) releasedBsc.push(m.bsc);
-        if (!slHeld) releasedSl.push(m.sl);
-      }
-      // A held half is never attached anywhere, and its unheld partner was
-      // just released above: the NEO-300/305 path, untouched by NEO-306.
-      if (bscHeld || slHeld) continue;
-      const bscUsed = usedBsc.has(m.bsc.platformValue);
-      const slUsed = usedSl.has(m.sl.platformValue);
-      if (bscUsed && slUsed) continue;
-      if (bscUsed || slUsed) {
-        // Exactly one half is already mapped. NEO-306: the SportLots review
-        // files "Blue" as a parallel holding its SL id, and the next Sync
-        // Parallels auto-matches BSC "Blue" with that same SL id. Skipping
-        // the whole pair (the old behaviour) dropped BSC Blue on the floor:
-        // in neither Ready nor Pending, so it could never be linked.
-        //
-        // The free half joins the ONE restored row that carries the used
-        // half's id — matched by id, never by name — as an ordinary attached
-        // chip the operator can ✕ back to Pending. The free half is held or
-        // placed nowhere (`used*` holds every held and restored id and every
-        // id placed so far), so the attach duplicates nothing. A free half the
-        // caller's `used*PlatformValues` names never reaches here: it is held
-        // (NEO-312, above) and took the held branch. In every case with no
-        // single row to join — no restored row carries that id (an earlier
-        // auto-match placed it), or two do (a shared marketplace id) — it goes
-        // to Pending, where it is handled like any loose item.
-        const side: Side = bscUsed ? "sl" : "bsc";
-        const usedPv = bscUsed ? m.bsc.platformValue : m.sl.platformValue;
-        const free = side === "bsc" ? m.bsc : m.sl;
-        const owners: number[] = [];
-        for (let i = 0; i < restoredCount; i++) {
-          const mapped = bscUsed ? ready[i].bsc : ready[i].sl;
-          if (mapped.some((it) => it.platformValue === usedPv)) owners.push(i);
-        }
-        if (owners.length === 1) {
-          const row = ready[owners[0]];
-          ready[owners[0]] =
-            side === "bsc"
-              ? { ...row, bsc: [...row.bsc, free] }
-              : { ...row, sl: [...row.sl, free] };
-          (side === "bsc" ? usedBsc : usedSl).add(free.platformValue);
-        } else {
-          (side === "bsc" ? releasedBsc : releasedSl).push(free);
-        }
-        continue;
-      }
-      ready.push({
-        key: `set-${seq++}`,
-        title: m.displayName,
-        bsc: [m.bsc],
-        sl: [m.sl],
-        confidence: m.confidence,
-      });
-      usedBsc.add(m.bsc.platformValue);
-      usedSl.add(m.sl.platformValue);
-    }
-
-    const pendingOf = (items: PlatformItem[], used: Set<string>) => {
-      const seen = new Set<string>();
-      return items.filter((it) => {
-        if (used.has(it.platformValue) || seen.has(it.platformValue)) {
-          return false;
-        }
-        seen.add(it.platformValue);
-        return true;
-      });
-    };
-    const state: ReconciliationState = {
-      ready,
-      pendingBsc: pendingOf([...initialData.unmatchedBsc, ...releasedBsc], usedBsc),
-      pendingSl: pendingOf([...initialData.unmatchedSl, ...releasedSl], usedSl),
-      seq,
-    };
-    return { state, savedSiblings };
+  // NEO-339: the seed itself lives in lib/set-build/reconcile.ts, shared with
+  // the set-building tool.
+  const seed = useMemo(
+    () =>
+      seedReconciliationState({
+        fetch: initialData,
+        existingRows,
+        heldElsewhere,
+        heldInBrand,
+        usedIds: {
+          bsc: usedBscPlatformValues,
+          sportlots: usedSlPlatformValues,
+        },
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    [],
+  );
   const initialState = seed.state;
   const savedSiblings = seed.savedSiblings;
   const [state, dispatch] = useReducer(reconciliationReducer, initialState);
@@ -1422,33 +937,24 @@ function ReconciliationDialog({
    * offer to discard the work being saved.
    */
   const [discardOpen, setDiscardOpen] = useState(false);
+  /**
+   * NEO-339 — is the "leave these unpaired?" step on screen? Save never
+   * leaves the set's own Pending sets behind silently (the set-building
+   * tool's rule too): the operator leaves them on purpose, or goes back.
+   */
+  const [leaveOpen, setLeaveOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   /** What had focus before this opened, so it can go back there on close
    *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
   const triggerRef = useRef<HTMLElement | null>(null);
   // Default SL-side prefixes: full set name, set name with manufacturer
   // prefix stripped, plus any caller-supplied extras (typically the SL Base
-  // anchor's name). De-duped and lowercased.
-  // e.g. setName="Topps Chrome", mfg="Topps", extra=["Chrome"] → ["topps chrome", "chrome"]
-  const defaultSlPrefixes = useMemo(() => {
-    const setNorm = setName.trim().toLowerCase();
-    const mfgNorm = manufacturer.trim().toLowerCase();
-    const prefixes: string[] = [];
-    const seen = new Set<string>();
-    const push = (p: string) => {
-      const v = p.trim().toLowerCase();
-      if (v && !seen.has(v)) {
-        seen.add(v);
-        prefixes.push(v);
-      }
-    };
-    if (setNorm) push(setNorm);
-    if (mfgNorm && setNorm.startsWith(`${mfgNorm} `)) {
-      push(setNorm.slice(mfgNorm.length + 1).trim());
-    }
-    for (const extra of extraSlPrefixes) push(extra);
-    return prefixes;
-  }, [setName, manufacturer, extraSlPrefixes]);
+  // anchor's name). NEO-339: the rule lives in lib/set-build/reconcile.ts,
+  // where the set-building tool reads the same scope.
+  const defaultSlPrefixes = useMemo(
+    () => defaultSlPrefixesOf(setName, manufacturer, extraSlPrefixes),
+    [setName, manufacturer, extraSlPrefixes],
+  );
 
   const [slFilter, setSlFilter] = useState<string>("");
   const [showAllSl, setShowAllSl] = useState<boolean>(showAllSlInitially);
@@ -1487,14 +993,7 @@ function ReconciliationDialog({
   const scopedPendingSl = useMemo(() => {
     return state.pendingSl.filter((item) => {
       if (usedSlSet.has(item.platformValue)) return false;
-      const v = item.value.toLowerCase();
-      if (
-        activeSlPrefixes.length > 0 &&
-        !activeSlPrefixes.some((p) => v.startsWith(p))
-      ) {
-        return false;
-      }
-      return true;
+      return inSlPrefixScope(item.value, activeSlPrefixes);
     });
   }, [state.pendingSl, activeSlPrefixes, usedSlSet]);
 
@@ -1510,6 +1009,20 @@ function ReconciliationDialog({
       (item) => !usedBscSet.has(item.platformValue),
     );
   }, [state.pendingBsc, usedBscSet]);
+
+  // NEO-339 — the set's own sets nobody has paired: every BSC set this level
+  // lists, and every SportLots set inside the default prefix filter (the
+  // same scope the set-building tool asks about, whatever "Show all" shows).
+  // Save asks about these before it leaves them in Pending.
+  const unpairedInScope = useMemo(() => {
+    const prefixes = showAllSlInitially ? [] : defaultSlPrefixes;
+    return [
+      ...scopedPendingBsc.map((item) => ({ side: "bsc" as const, item })),
+      ...state.pendingSl
+        .filter((item) => !usedSlSet.has(item.platformValue) && inSlPrefixScope(item.value, prefixes))
+        .map((item) => ({ side: "sl" as const, item })),
+    ];
+  }, [scopedPendingBsc, state.pendingSl, usedSlSet, showAllSlInitially, defaultSlPrefixes]);
 
   const queriedPendingBsc = useMemo(() => {
     if (!bscQuery) return scopedPendingBsc;
@@ -2029,7 +1542,7 @@ function ReconciliationDialog({
     [resolveItem, refocusColumn],
   );
 
-  const handleConfirm = useCallback(async () => {
+  const handleConfirm = useCallback(async (opts: { leaveAcknowledged?: boolean } = {}) => {
     // NEO-325: Save is aria-disabled (not removed from the tab order) while
     // titles clash, so a press still arrives here. It must not save; it
     // takes the operator to the first title that needs a new name instead
@@ -2040,42 +1553,16 @@ function ReconciliationDialog({
         ?.focus();
       return;
     }
+    // NEO-339: the set's own sets still in Pending are asked about first.
+    if (!opts.leaveAcknowledged && unpairedInScope.length > 0) {
+      setLeaveOpen(true);
+      return;
+    }
     setConfirming(true);
     try {
-      const items: ReconciledResult["items"] = state.ready.map((set) => {
-        const bscLabels: Record<string, string> = {};
-        for (const i of set.bsc) bscLabels[i.platformValue] = i.value;
-        const slLabels: Record<string, string> = {};
-        for (const i of set.sl) slLabels[i.platformValue] = i.value;
-
-        return {
-          // Undefined for a set built in this dialog, which is exactly right:
-          // the store then falls through to its id/value matcher.
-          existingId: set.existingId,
-          value: set.title.trim() || set.bsc[0]?.value || set.sl[0]?.value || "",
-          platformData: {
-            ...(set.bsc.length > 0
-              ? { bsc: set.bsc.map((i) => i.platformValue) }
-              : {}),
-            ...(set.sl.length > 0
-              ? { sportlots: set.sl.map((i) => i.platformValue) }
-              : {}),
-          },
-          ...(set.bsc.length > 0 || set.sl.length > 0
-            ? {
-                platformLabels: {
-                  ...(set.bsc.length > 0 ? { bsc: bscLabels } : {}),
-                  ...(set.sl.length > 0 ? { sportlots: slLabels } : {}),
-                },
-              }
-            : {}),
-          metadata: set.metadata,
-          // NEO-325: a set the operator made its own is matched by identity
-          // only, so a SportLots twin saved after its namesake is stored as
-          // its own row rather than withheld against the namesake by name.
-          ...(set.ownSet ? { identityOnly: true as const } : {}),
-        };
-      });
+      // NEO-339: built in lib/set-build/reconcile.ts, the same function the
+      // set-building tool saves through.
+      const items = buildReconciledItems(state.ready);
 
       // Anything left in Pending is intentionally discarded — SL especially
       // returns siblings from other variantTypes that don't belong here.
@@ -2083,7 +1570,7 @@ function ReconciliationDialog({
     } finally {
       setConfirming(false);
     }
-  }, [state, onConfirm, saveBlockedByTitles]);
+  }, [state, onConfirm, saveBlockedByTitles, unpairedInScope]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -2576,7 +2063,7 @@ function ReconciliationDialog({
           // The discard confirm owns Escape while it is open. It is a sibling
           // in this portal rather than a descendant, so its own keypresses
           // never reach here; this covers focus left behind it.
-          if (discardOpen) return;
+          if (discardOpen || leaveOpen) return;
           // D8: inside a text field Escape already means something smaller —
           // clear the filter, revert the title — and those handlers stop
           // propagation. Anything arriving here from a field is a field with
@@ -2798,7 +2285,7 @@ function ReconciliationDialog({
             Cancel
           </NeonButton>
           <NeonButton
-            onClick={handleConfirm}
+            onClick={() => void handleConfirm()}
             disabled={confirming || saveCount === 0}
             // aria-disabled, not disabled: a disabled button leaves the tab
             // order, and the reason it is unavailable would be unreachable
@@ -2828,6 +2315,37 @@ function ReconciliationDialog({
     {/* NEO-220 — a SIBLING of the overlay, not a child of it. This overlay
         closes on backdrop click; a confirm nested inside it would hand its own
         backdrop click straight to the thing it is protecting. */}
+    {leaveOpen && (
+      <ConfirmDialog
+        title={`Leave ${plural(unpairedInScope.length, "set")} unpaired?`}
+        description={
+          "These are this set's own, and nothing pairs them yet. Save now and they stay in Pending with no NB row, " +
+          "so nothing can be listed under them. Go back to pair them or make them their own sets, or leave them on purpose."
+        }
+        confirmLabel={`Leave them, save ${plural(saveCount, "set")}`}
+        busyLabel="Saving..."
+        busy={confirming}
+        childrenLabel="Sets left in Pending"
+        onConfirm={() => {
+          setLeaveOpen(false);
+          void handleConfirm({ leaveAcknowledged: true });
+        }}
+        onCancel={() => setLeaveOpen(false)}
+      >
+        <ul className="divide-y divide-slate-800 text-sm">
+          {unpairedInScope.map(({ side, item }) => (
+            <li key={`${side}:${item.platformValue}`} className="flex items-baseline justify-between gap-3 px-3 py-2">
+              {/* A twin carries its id, as everywhere else in the dialog:
+                  two "Chrome Update Sapphire" rows must not read the same. */}
+              <span className="text-foreground">
+                <ItemName item={item} side={side} dups={dups} />
+              </span>
+              <span className="shrink-0 text-xs text-slate-400">{side === "bsc" ? "BSC" : "SportLots"}</span>
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
+    )}
     {discardOpen && (
       <ConfirmDialog
         title={`Discard ${plural(pendingEdits, "set change")}?`}

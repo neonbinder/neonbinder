@@ -29,6 +29,7 @@ import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
+import { autographParallelsNote } from "./autograph-prompt";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
@@ -493,10 +494,17 @@ export default function SetAttributesPanel({
     if (!clearing && !(AUTOGRAPH_FORMATS as readonly string[]).includes(trimmed)) return;
     showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     try {
-      await setAutographFormat({
+      const result = await setAutographFormat({
         selectorOptionId,
         value: trimmed as (typeof AUTOGRAPH_FORMATS)[number] | "",
       });
+      // Jason, 2026-10-18 — say what the answer did to the row's parallels:
+      // took it, or (a corrected answer) moved with it.
+      const note = autographParallelsNote(
+        result?.parallelIds?.length ?? 0,
+        result?.movedIds?.length ?? 0,
+      );
+      if (!clearing && note) showToast(`Saved ${label} · ${note}`);
     } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
     }

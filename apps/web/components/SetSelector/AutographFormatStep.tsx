@@ -17,6 +17,15 @@ import {
   AUTOGRAPH_FORMATS,
   type AutographFormat,
 } from "./entity-review-steps";
+// The header prompt's words live in the pure prompt module, which the
+// set-build tool's attention listing reads too (NEO-339).
+import {
+  autographParallelsNote,
+  autographPromptLine,
+  autographPromptMoved,
+  autographPromptParallels,
+  autographPromptSaved,
+} from "./autograph-prompt";
 
 /**
  * NEO-345 — how a leaf's autographs are signed: on the card, or on a sticker.
@@ -60,20 +69,15 @@ export { AUTOGRAPH_CHOICE_LABEL };
  */
 export const AUTOGRAPH_NEXT_BLOCKED = "Pick how they're signed first";
 
-/** The checklist header's one line, for a stored leaf. */
-export function autographPromptLine(count: number): string {
-  return count === 1
-    ? "1 autographed card — on card or sticker?"
-    : `${count} autographed cards — on card or sticker?`;
-}
+/**
+ * The checklist header's one line, for a stored leaf, and what it says once
+ * the answer is saved: defined in `autograph-prompt.ts` so the set-build
+ * tool's listing says the same words, re-exported for this step's callers.
+ */
+export { autographParallelsNote, autographPromptLine, autographPromptMoved, autographPromptParallels, autographPromptSaved };
 
 /** Said politely while the header prompt's write is in flight. */
 export const AUTOGRAPH_PROMPT_SAVING = "Saving…";
-
-/** What the header line says once the answer is saved. */
-export function autographPromptSaved(value: AutographFormat): string {
-  return `Autographs saved as ${AUTOGRAPH_CHOICE_LABEL[value].toLowerCase()}.`;
-}
 
 /**
  * A small drawn card: the hobby's own picture of the question. On card, the
@@ -246,9 +250,15 @@ export default function AutographFormatStep({
  */
 function SavedLine({
   value,
+  parallels,
+  moved,
   slotRef,
 }: {
   value: AutographFormat;
+  /** Parallels the answer also reached (0: say nothing about them). */
+  parallels: number;
+  /** Of those, the ones that moved off the old answer. */
+  moved: number;
   slotRef: RefObject<HTMLDivElement | null>;
 }) {
   const ref = useRef<HTMLParagraphElement>(null);
@@ -264,7 +274,7 @@ function SavedLine({
       role="status"
       className="mb-3 rounded-md border border-slate-500 px-3 py-2 text-sm text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
     >
-      {autographPromptSaved(value)}
+      {[autographPromptSaved(value), autographParallelsNote(parallels, moved)].filter(Boolean).join(" ")}
     </p>
   );
 }
@@ -273,7 +283,9 @@ function SavedLine({
  * The checklist header's prompt for a STORED leaf: its AU cards are still
  * "None" because nobody has said how they are signed. Two buttons, each a
  * `setAutographFormat` on the leaf, which writes the format and cascades it
- * to the leaf's AU cards server-side.
+ * to the leaf's AU cards server-side — and, for an insert or the Base, onto
+ * each of its parallels with no format of its own, which the saved line
+ * then says.
  *
  * Once saved, the host keeps this slot mounted (`saved`) so the line can say
  * so in place, and focus is parked on it — the button that was pressed is
@@ -283,12 +295,18 @@ export function AutographFormatPrompt({
   selectorOptionId,
   count,
   saved,
+  savedParallels = 0,
+  savedMoved = 0,
   onSaved,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   count: number;
   saved?: AutographFormat;
-  onSaved: (value: AutographFormat) => void;
+  /** How many parallels the saved answer also reached. */
+  savedParallels?: number;
+  /** Of those, how many moved off the old answer. */
+  savedMoved?: number;
+  onSaved: (value: AutographFormat, parallels: number, moved: number) => void;
 }) {
   const setAutographFormat = useMutation(api.autographFormat.setAutographFormat);
   const [busy, setBusy] = useState<AutographFormat | null>(null);
@@ -302,8 +320,8 @@ export function AutographFormatPrompt({
     setBusy(value);
     setError(null);
     try {
-      await setAutographFormat({ selectorOptionId, value });
-      onSaved(value);
+      const result = await setAutographFormat({ selectorOptionId, value });
+      onSaved(value, result?.parallelIds?.length ?? 0, result?.movedIds?.length ?? 0);
     } catch (e) {
       setError(userFacingMessage(e, "Could not save the autograph format"));
     } finally {
@@ -314,7 +332,7 @@ export function AutographFormatPrompt({
   if (saved) {
     return (
       <div ref={slotRef}>
-        <SavedLine value={saved} slotRef={slotRef} />
+        <SavedLine value={saved} parallels={savedParallels} moved={savedMoved} slotRef={slotRef} />
       </div>
     );
   }

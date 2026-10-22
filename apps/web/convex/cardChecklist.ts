@@ -73,6 +73,15 @@ import {
   isAutographFormat,
 } from "./features/deriveCardFeatures";
 import { variantTypeKind } from "./variantRole";
+// NEO-345 (Jason, 2026-10-18) — a card the autograph format reaches has its
+// still-generated title rebuilt through Regenerate's own builder.
+import {
+  findAncestorLabels,
+  newTitleNameCache,
+  rebuiltGeneratedListing,
+  type StoredCardTitleChain,
+  type TitleNameCache,
+} from "./storedCardTitle";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -349,8 +358,16 @@ function hasToken(list: ReadonlyArray<string>, token: string): boolean {
  *   the card's value is absent/"None" or equals `previousAutographFormat`
  *   (the cascade re-answering a leaf). Signed By is then seeded from the
  *   card's players when empty.
- * - `lastUpdated` is bumped only when something was written. The listing
- *   title is NOT regenerated. Idempotent: a second call writes nothing.
+ * - `listingTitle` / `listingDescription`: each rebuilt ONLY when this call
+ *   formatted the card's autograph and the stored text is still exactly what
+ *   the generator makes of the card as it stood (Jason, 2026-10-18: the title
+ *   gains "AUTO", the description "Autographed (On Card)."). An operator's
+ *   own text is never touched; `listingTitleTruncated` follows creation's
+ *   rule (`storedCardTitle.rebuiltGeneratedListing`). A walk passes
+ *   `titleChain` (the leaf's ancestor facts, read once) and `titleNames` (a
+ *   page-wide name cache); a lone call reads them itself.
+ * - `lastUpdated` is bumped only when something was written. Idempotent: a
+ *   second call writes nothing.
  */
 export async function applyBscAttributeFill(
   ctx: MutationCtx,
@@ -360,11 +377,19 @@ export async function applyBscAttributeFill(
     printRun?: number;
     autographFormat?: "On Card" | "Sticker/Label";
     previousAutographFormat?: string;
+    /** The card's leaf ancestor facts for its title, read once by a walk. */
+    titleChain?: () => Promise<StoredCardTitleChain>;
+    /** Player and team names already read in this transaction. */
+    titleNames?: TitleNameCache;
   },
 ): Promise<{
   wrote: boolean;
   printRunDisagreement: boolean;
   autographFormatted: boolean;
+  /** The still-generated title was rebuilt (only ever with `autographFormatted`). */
+  retitled: boolean;
+  /** The still-generated listing description was rebuilt (likewise). */
+  redescribed: boolean;
 }> {
   const incoming = normalizeBscAttributeTokensDetailed(
     boundBscAttributeTokens(opts.tokens).tokens,
@@ -500,12 +525,38 @@ export async function applyBscAttributeFill(
   if (isRelic) patch.isRelic = true;
   if (featuresChanged) patch.features = features;
 
+  // ── listing title and description (NEO-345) ────────────────────────────
+  // Only for the write that made the card an autograph, and only over text
+  // nobody has edited. The rebuilt text reads the card AFTER this patch (its
+  // new `autographed`, and a print run or RC this call filled).
+  let retitled = false;
+  let redescribed = false;
+  if (autographFormatted) {
+    const chain = opts.titleChain
+      ? await opts.titleChain()
+      : await findAncestorLabels(ctx, await ctx.db.get(row.selectorOptionId));
+    const rebuilt = await rebuiltGeneratedListing(
+      ctx,
+      row,
+      { ...row, ...patch },
+      chain,
+      opts.titleNames ?? newTitleNameCache(),
+    );
+    if (rebuilt) {
+      // A rebuilt title carries `listingTitleTruncated` even when undefined:
+      // that removes the field (the flag is omitted, never false).
+      Object.assign(patch, rebuilt.patch);
+      retitled = rebuilt.retitled;
+      redescribed = rebuilt.redescribed;
+    }
+  }
+
   const wrote = Object.keys(patch).length > 0;
   if (wrote) {
     patch.lastUpdated = Date.now();
     await ctx.db.patch(row._id, patch);
   }
-  return { wrote, printRunDisagreement, autographFormatted };
+  return { wrote, printRunDisagreement, autographFormatted, retitled, redescribed };
 }
 
 /**
@@ -1302,6 +1353,58 @@ export const confirmCardNoTeam = mutation({
     await ctx.db.patch(row._id, {
       teamNoneConfirmedAt: Date.now(),
       teamNoneConfirmedByUserId: userId,
+    });
+    return { confirmed: true, stamped: true };
+  },
+});
+
+/**
+ * NEO-339 — record that an operator has decided this card shows no player: a
+ * checklist, a team card, a logo or relic card with nobody on it. The answer
+ * `MissingPlayerFixer`'s "No player on this card" gives, and the set-build
+ * tool's `{ noPlayer: true }`.
+ *
+ * `confirmCardNoTeam`'s twin, on the same terms, for the same reasons:
+ *
+ *  - **Server-stamped.** The only argument is the card; the time is
+ *    `Date.now()` and the user is `requireAdmin`'s. A client-supplied
+ *    timestamp would be badge suppression the client could mint for itself.
+ *  - **Refuses a card that names a player.** Re-read here, against the row as
+ *    it stands: a linked player (`playerIds`) or a typed one
+ *    (`pendingPlayerNames`, NEO-221's `unreviewedName`) and "nobody on this
+ *    card" cannot both be true, and a stale render must not be how that
+ *    contradiction is written. `confirmed: false` is the honest answer, not
+ *    an error.
+ *  - **Idempotent, never re-stamps.** A second call writes nothing and says
+ *    `stamped: false`, so it neither invalidates the checklist's queries nor
+ *    moves the audit stamp off whoever answered first.
+ *  - **`lastUpdated` untouched.** Suppression bookkeeping, not card content:
+ *    bumping it would stale a sync review open in another tab.
+ *
+ * `selectorOptions.updateCard` retires the stamp on any non-empty `playerIds`
+ * write, so linking a player later undoes this without a second control.
+ */
+export const confirmCardNoPlayer = mutation({
+  args: { cardId: v.id("cardChecklist") },
+  returns: v.object({
+    /** The row now carries a "no player" confirmation. */
+    confirmed: v.boolean(),
+    /** THIS call wrote it. False when it was already confirmed, or refused. */
+    stamped: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+
+    const row = await ctx.db.get(args.cardId);
+    if (!row) return { confirmed: false, stamped: false };
+    if ((row.playerIds?.length ?? 0) > 0 || (row.pendingPlayerNames?.length ?? 0) > 0) {
+      return { confirmed: false, stamped: false };
+    }
+    if (row.playerNoneConfirmedAt) return { confirmed: true, stamped: false };
+
+    await ctx.db.patch(row._id, {
+      playerNoneConfirmedAt: Date.now(),
+      playerNoneConfirmedByUserId: userId,
     });
     return { confirmed: true, stamped: true };
   },

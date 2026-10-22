@@ -6,7 +6,18 @@ metadata:
 ---
 
 Since NEO-330, every CI E2E run loads prod's reference catalogue onto the PR
-preview right after the reset and before the setup spec. The Playwright guide states the rules ("A reference catalogue is on every CI preview"); these are the working facts behind them.
+preview right after the reset (`e2e-seed-reset.sh`) and before the scripted
+seed's `setbuild apply` (NEO-339 replaced the UI seed). The Playwright guide
+states the rules ("A reference catalogue is on every CI preview"); these are
+the working facts behind them.
+
+**What the catalogue does to a setbuild spec's review answers.** A name the
+catalogue holds exactly once is never staged, so the spec's answer for it is a
+reported moot no-op. A name it holds 2+ times (not narrowed by card year/team)
+is staged as a PICK step; a `create` answer is accepted there but mints one
+more same-name person, and a `{link: "<name>"}` answer can never resolve (the
+link target needs exactly one exact match). A zero-candidate name must stay
+`create`: the oneshot drift check compares drafted answers to committed ones.
 
 **Check names against the bundle, not by guessing.** The bundle is a
 `convex export`-shaped zip (`<table>/documents.jsonl` plus `manifest.json` with

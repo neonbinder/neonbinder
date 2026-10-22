@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-back-to-matching-resumes-decisions.yaml (Maestro suite retired in NEO-341; see git history)
 import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { settleMatchCards } from "../../support/pairing";
 import { setBuilderReady } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -49,8 +50,11 @@ test(
 
       await wizard.getByRole("button", { name: "Back to Match Cards" }).click();
       await expect(wizard).toBeHidden();
-      const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirmMatches).toBeVisible();
+      // The parked session comes back already settled; this answers any conflict still open
+      // (fetchChecklistToWizard answered them on the way in) and returns the released Confirm.
+      const confirmMatches = await settleMatchCards(page, page.getByRole("dialog", { name: /^Match Cards/ }), {
+        timeout: 7_000,
+      });
       await expectAccessible(page, {
         within: page.getByRole("dialog", { name: /^Match Cards/ }),
         label: "Match Cards dialog after Back to Match Cards",

@@ -37,14 +37,15 @@
 // call fires; per attempt, so card `SN1` is the only card in its checklist.
 // Nothing is deleted or restored: the set is this attempt's alone.
 //
-// Fixture arithmetic - why the core MUST be cut on every runner: the core is
-// "<year> <maker> <set> [<insert>] #<number>" capped at 80 with " #SN1"
-// reserved, so the words before it get 75 characters. "2024 Topps " is 11 and
-// the set name is 6 + ATTEMPT_ID + 1 + a 60-character tail with NO spaces, so
-// the core is over 75 before the insert name and `cutAtWordBoundary` (spaces
-// only) can only cut at the space after "Topps": the title becomes "2024 Topps
-// #SN1" plus whatever optional tokens fit (the sport). With the short name
-// (`SNT<token>`) the core is short and fits whole. The tail is hyphenated, not
+// Fixture arithmetic - why the core MUST be cut on every runner: the title is
+// "<year> <maker> <set> <insert> #<number>" capped at 80. The insert's name
+// ("Base", the row under the Insert type) is never dropped, and the set name
+// is 6 + ATTEMPT_ID + 1 + a 60-character tail with NO spaces: one word that
+// cannot fit beside "2024 Topps Base" even with the card number gone, so it
+// is left out and the number, which does fit, is kept. The title
+// becomes "2024 Topps Base #SN1" plus whatever optional tokens fit (the
+// sport). With the short name (`SNT<token>`, standing in for the set and
+// insert names) the core is short and fits whole. The tail is hyphenated, not
 // one long word, so the Sets column's search result can wrap it inside the list.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
@@ -87,9 +88,9 @@ test(
 
     // The cut, in the product's words (stamped at creation, read off the row)...
     await expect(page.getByText("Auto title was cut short — rewrite it")).toBeVisible();
-    // ...and in the title itself: it still ends in the card number (the number
-    // is never cut) and holds nothing of the set.
-    await expect(cardTitle).toHaveValue(/^2024 Topps #SN1( .*)?$/);
+    // ...and in the title itself: the insert's name and the card number stay,
+    // and nothing of the set's name is left.
+    await expect(cardTitle).toHaveValue(/^2024 Topps Base #SN1( .*)?$/);
     await expect(cardTitle).not.toHaveValue(/stn-/);
     await expectAccessible(page, { within: drawer, label: "Card detail drawer, auto title cut short" });
 

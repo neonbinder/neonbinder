@@ -62,6 +62,11 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { applyBscAttributeFill } from "./cardChecklist";
 import {
+  findAncestorLabels,
+  newTitleNameCache,
+  type StoredCardTitleChain,
+} from "./storedCardTitle";
+import {
   carriesAutographToken,
   isAutographFormat,
   type AutographFormat,
@@ -212,6 +217,19 @@ export const run = internalMutation({
       return leafFormat.get(leafId);
     };
 
+    // NEO-345 — a formatted card's still-generated title is rebuilt by the
+    // fill; its leaf's ancestor walk is read once per leaf, names once per page.
+    const titleChains = new Map<string, Promise<StoredCardTitleChain>>();
+    const titleChainOf = (leafId: Id<"selectorOptions">) => () => {
+      let chain = titleChains.get(leafId);
+      if (!chain) {
+        chain = ctx.db.get(leafId).then((leaf) => findAncestorLabels(ctx, leaf));
+        titleChains.set(leafId, chain);
+      }
+      return chain;
+    };
+    const titleNames = newTitleNameCache();
+
     const counts = {
       rowsNormalised: 0,
       printRunsSet: 0,
@@ -247,6 +265,8 @@ export const run = internalMutation({
       const result = await applyBscAttributeFill(fillCtx, row as Doc<"cardChecklist">, {
         tokens,
         ...(autographFormat !== undefined ? { autographFormat } : {}),
+        titleChain: titleChainOf(row.selectorOptionId),
+        titleNames,
       });
       if (result.wrote) counts.rowsNormalised++;
       if (result.printRunDisagreement) counts.printRunDisagreements++;

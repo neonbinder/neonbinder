@@ -5,7 +5,11 @@
 // choice (BSC's value preselected, SportLots' on request, or a typed third
 // name); NEO-344: every choice is the bare value, never which marketplace
 // said it, and the warning reads "Potential names/players for this card";
-// a conflict does not block Confirm; Cancel asks to discard and writes nothing.
+// NEO-339: an unanswered conflict HOLDS Confirm (no pill starts checked, the
+// footer says "Hold up — N conflicts still need your pick…", "Go to the next
+// conflict" and a press on the held Confirm both move focus to the first open
+// one, and answering every conflict releases Confirm); Cancel asks to discard
+// and writes nothing.
 // READ-ONLY on the shared set: the flow only ever cancels.
 //
 // SportLots paused (NEO-287): the dialog has no surface (a one-marketplace
@@ -13,6 +17,12 @@
 // pause on the page instead.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
+import {
+  conflictsHoldLine,
+  NEXT_CONFLICT,
+  releasedConfirm,
+  settleMatchCards,
+} from "../../support/pairing";
 import {
   columnHeading,
   columnOption,
@@ -74,9 +84,17 @@ test(
 
     // ── STEP 3: NEO-189. Wait for the stream to finish (Confirm replaces
     // "Loading…"): a live round trip, the flow's 90 s.
+    // NEO-339: Confirm is also held while any conflict the live data raised is
+    // unanswered. This spec's claim starts from a dialog with none open, so it
+    // answers any (Future Stars pairs cleanly, so usually there are none) and
+    // reads the released Confirm; the hold itself is proved on the manual link
+    // below, where the open count is known.
+    const released = await settleMatchCards(page, dialog, { timeout: 90_000 });
+    await expect(released).toHaveText("Confirm");
+    // The button itself, for the states below where it is held (`released` only
+    // matches while it is usable).
     const confirm = dialog.getByRole("button", { name: "Confirm card matches" });
-    await expect(confirm).toHaveText("Confirm", { timeout: 90_000 });
-    await expect(dialog.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
+    await expect(conflictsHoldLine(dialog)).toHaveCount(0);
     const matched = (n: number) => dialog.getByText(new RegExp(`Matched \\(${n}\\)`));
     await expect(matched(20)).toBeVisible();
     await expectAccessible(page, { within: dialog, label: "Match Cards dialog, all cards matched" });
@@ -161,12 +179,64 @@ test(
     await expect(dialog.getByText(/These marketplaces/)).toHaveCount(0);
     await expect(dialog.getByRole("radio", { name: sourcePrefix })).toHaveCount(0);
     await expect(dialog.getByRole("radio").filter({ hasText: /^(✓ )?(BSC|SportLots|Custom): / })).toHaveCount(0);
-    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, name conflict on a manual link" });
 
-    // BSC stays preselected (Jason, 2026-10-13: only its label goes): read on
-    // the name the merged row will be saved with, which its Unlink carries.
+    // NEO-339: nothing is answered yet, so NO pill is checked (BSC's used to
+    // look pre-answered) and Confirm is held, with the reason beside it. The
+    // merged row still carries BSC's value until the operator picks.
+    const namePills = dialog.getByRole("radiogroup", { name: "Name for #FS-1", exact: true });
+    const playerPills = dialog.getByRole("radiogroup", { name: "Players for #FS-1", exact: true });
+    await expect(namePills.getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(playerPills.getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(bscPill).not.toBeChecked();
+    await expect(slPill).not.toBeChecked();
+    await expect(dialog.getByRole("button", { name: `Unlink #FS-1 ${bscName}`, exact: true })).toBeVisible();
+    // Two open: this name and this roster (Future Stars pairs cleanly, and any
+    // conflict the fetch raised was answered before the cross-link).
+    await expect(conflictsHoldLine(dialog)).toHaveText(
+      "Hold up — 2 conflicts still need your pick before these cards save.",
+    );
+    await expect(confirm).toBeDisabled();
+    await expect(confirm).toHaveText("Confirm");
+    await expect(releasedConfirm(dialog)).toHaveCount(0);
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, name conflict on a manual link, Confirm held" });
+
+    // "Go to the next conflict" puts focus on the first open conflict's pills:
+    // the name on #FS-1 (a row's name is asked before its roster).
+    const nextConflict = dialog.getByRole("button", { name: NEXT_CONFLICT, exact: true });
+    await nextConflict.click();
+    await expect(namePills.getByRole("radio").first()).toBeFocused();
+    // Pressing the held Confirm goes to the same place, and saves nothing: it
+    // is the keyboard way forward (the button stays focusable while held).
+    await confirm.focus();
+    await expect(confirm).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(namePills.getByRole("radio").first()).toBeFocused();
+    await expect(dialog).toBeVisible();
+    await expect(conflictsHoldLine(dialog)).toHaveText(
+      "Hold up — 2 conflicts still need your pick before these cards save.",
+    );
+
+    // Pressing BSC's value (the one the row already carries) IS an answer: it
+    // checks, and the hold now counts one left, singular.
+    await bscPill.click();
     await expect(bscPill).toBeChecked();
     await expect(dialog.getByRole("button", { name: `Unlink #FS-1 ${bscName}`, exact: true })).toBeVisible();
+    await expect(conflictsHoldLine(dialog)).toHaveText(
+      "Hold up — 1 conflict still needs your pick before these cards save.",
+    );
+    await expect(confirm).toBeDisabled();
+    // The next one is the roster.
+    await nextConflict.click();
+    await expect(playerPills.getByRole("radio").first()).toBeFocused();
+
+    // Answering the last one releases Confirm and takes the hold line away.
+    await playerPills.getByRole("radio").first().click();
+    await expect(playerPills.getByRole("radio", { checked: true })).toHaveCount(1);
+    await expect(conflictsHoldLine(dialog)).toHaveCount(0);
+    await expect(nextConflict).toHaveCount(0);
+    await expect(releasedConfirm(dialog)).toBeVisible();
+    await expect(confirm).toBeEnabled();
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, every conflict answered, Confirm released" });
 
     // Choosing the other value, by the value it shows, changes the name the
     // card would be saved with.
@@ -192,8 +262,10 @@ test(
     await expect(bscPill).toBeVisible();
     await expect(slPill).toBeVisible();
 
-    // A conflict does not block Confirm: 20 - 2 unlinked + 1 re-linked = 19.
+    // An ANSWERED conflict does not hold Confirm (the typed name answers it
+    // too): 20 - 2 unlinked + 1 re-linked = 19.
     await expect(dialog.getByText(/19 cards will be saved/)).toBeVisible();
+    await expect(conflictsHoldLine(dialog)).toHaveCount(0);
     await expect(confirm).toHaveText("Confirm");
     await expect(confirm).toBeEnabled();
     await expectAccessible(page, { within: dialog, label: "Match Cards dialog, custom name chosen" });

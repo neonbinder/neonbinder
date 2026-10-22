@@ -1,7 +1,16 @@
 // Origin: .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 1996 Score Dugout Collection Artists Proofs insert; fresh-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { columnOption, columnSearch, drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import { settleMatchCards } from "../../support/pairing";
+import {
+  columnOption,
+  columnSearch,
+  drillToSet,
+  pick,
+  saveReconcile,
+  setBuilderReady,
+  syncChecklistButton,
+} from "../../support/set-builder";
 import {
   advanceToSave,
   answerStepAsNew,
@@ -30,9 +39,7 @@ test(
     const renamed = `${MERGED} NB211-${id}`;
     const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
     const pairing = page.getByRole("dialog", { name: /Match Cards/ });
-    const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
     const wizard = reviewWizard(page);
-    const saveSets = reconcile.getByRole("button", { name: /^Save [0-9]+ sets$/ });
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -57,7 +64,22 @@ test(
     await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog" });
 
     await reconcile.getByRole("textbox", { name: "Filter NeonBinder sets" }).fill("Artist");
-    await expect(reconcile.getByText(/Ready \(1 of [0-9]+\)/)).toBeVisible();
+    // TWO LEGITIMATE SHAPES, named by this gate (R2). The reconcile proposes Series 2
+    // already paired with SportLots' combined set ("Ready (1 of N)") unless that
+    // SportLots set is still unsorted in the brand's SportLots review, in which
+    // case NEO-339 withholds the pair and both halves wait in Pending ("Ready (0
+    // of N)"); the operator then pairs them here. Both end at the same Ready set.
+    const paired = reconcile.getByText(/Ready \(1 of [0-9]+\)/);
+    const apart = reconcile.getByText(/Ready \(0 of [0-9]+\)/);
+    await expect(paired.or(apart)).toBeVisible();
+    if (await apart.isVisible()) {
+      await reconcile.getByRole("textbox", { name: "Filter BSC items" }).fill("Artist");
+      await reconcile.getByRole("checkbox", { name: "Show all SportLots items" }).check();
+      await reconcile.getByRole("textbox", { name: "Search SportLots items" }).fill("Artists Proofs");
+      await reconcile.getByRole("button", { name: `BSC ${SERIES_2}` }).click();
+      await reconcile.getByRole("button", { name: `SL ${MERGED}` }).click();
+    }
+    await expect(paired).toBeVisible();
     await expect(reconcile.getByText(/Pending \([0-9]+/)).toBeVisible();
     const setName = reconcile.getByRole("textbox", { name: `NeonBinder set name for ${SERIES_2}` });
     await expect(setName).toBeVisible();
@@ -73,7 +95,11 @@ test(
     await setName.press("Enter");
     await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${MERGED}` })).toBeVisible();
 
-    await saveSets.click();
+    // NEO-339: the year's other inserts are BSC sets nobody paired, so Save asks
+    // "Leave N sets unpaired?"; `saveReconcile` asserts whichever outcome the
+    // Pending columns call for. The two series sit inside the merged Ready set,
+    // so neither may be among the sets the step lists.
+    await saveReconcile(page, reconcile, { placed: [SERIES_1, SERIES_2] });
     await expect(reconcile).toBeHidden();
 
     // ── 2. Re-open: one NB set holds both BSC sets ──
@@ -109,7 +135,9 @@ test(
     // ── 3. Fetch the checklist: both BSC sets + SportLots pair into one ──
     await syncChecklistButton(page).click();
     await expect(pairing).toBeVisible({ timeout: FETCH });
-    await expect(confirmMatches).toBeVisible({ timeout: FETCH });
+    // Confirm waits for the stream and, since NEO-339, for every conflict the live data raised;
+    // this spec's feature is the merged set, so they are answered with the first value each offers.
+    const confirmMatches = await settleMatchCards(page, pairing, { timeout: FETCH });
     await expect(pairing.getByText(new RegExp(`Match Cards — ${MERGED}`))).toBeVisible();
     await expect(pairing.getByText(/Unlink/).first()).toBeVisible();
     await expect(pairing.getByText(/BSC only/)).toBeHidden();
@@ -226,9 +254,9 @@ test(
 
     await syncChecklistButton(page).click();
     await expect(pairing).toBeVisible({ timeout: FETCH });
-    await expect(confirmMatches).toBeVisible({ timeout: FETCH });
+    const confirmResync = await settleMatchCards(page, pairing, { timeout: FETCH });
     await expect(pairing.getByText(/220 cards will be saved/)).toBeVisible();
-    await confirmMatches.click();
+    await confirmResync.click();
 
     const review = page.getByRole("dialog", { name: new RegExp(`Review Changes — ${MERGED}`) });
     await expect(review).toBeVisible();
@@ -272,7 +300,8 @@ test(
     await reconcile.getByRole("textbox", { name: "Filter NeonBinder sets" }).fill(`NB211-${id}`);
     await expect(reconcile.getByText(/Ready \(1 of [0-9]+\)/)).toBeVisible();
     await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${renamed}` })).toBeVisible();
-    await saveSets.click();
+    // The same Save and step as STEP 1 (NEO-339), on the renamed set.
+    await saveReconcile(page, reconcile, { placed: [SERIES_1, SERIES_2] });
     await expect(reconcile).toBeHidden();
 
     // ── 7. The renamed set keeps its name; upstream spellings are only suggestions ──

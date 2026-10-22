@@ -23,6 +23,9 @@ type CardChecklistItemProps = {
     // marked, which is the louder bug.
     teamCheckDoneAt?: number;
     teamNoneConfirmedAt?: number;
+    // NEO-339: the "No player on this card" ruling — omit it and every card
+    // answered "nobody" is marked again.
+    playerNoneConfirmedAt?: number;
     /**
      * Team names typed by an operator that no `teams` row exists for yet.
      *

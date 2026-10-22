@@ -160,6 +160,27 @@ describe("TitleFixer (NEO-101)", () => {
     expect(mockUpdateCard).not.toHaveBeenCalled();
   });
 
+  it("NEO-339: a blank title holds Save, says why, and writes nothing (updateCard refuses it too)", async () => {
+    const { onSaved } = renderFixer([overLimit(84)]);
+
+    fireEvent.change(titleField(), { target: { value: "   " } });
+    const save = saveButton();
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    const hint = document.getElementById(save.getAttribute("aria-describedby")!);
+    expect(hint?.textContent).toBe("A card title can't be blank.");
+    expect(titleField().getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      fireEvent.keyDown(titleField(), { key: "Enter" });
+      fireEvent.click(save);
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+
+    fireEvent.change(titleField(), { target: { value: "2024 Topps Chrome #300b" } });
+    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+  });
+
   it("writes the trimmed title, then reports the fix so the walker advances", async () => {
     const { onSaved } = renderFixer([overLimit(84)]);
 

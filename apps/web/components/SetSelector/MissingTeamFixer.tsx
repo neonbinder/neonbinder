@@ -4,7 +4,9 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import TeamPicker from "./TeamPicker";
+import { careerHeading, marketplaceHeading, playedHere } from "./attention-rules";
 import { MAX_CARD_TEAMS } from "./card-attention";
+import { foldMissingTeamChips } from "../../lib/set-build/missing-team-chips";
 import {
   useAttentionContextOptionId,
   useAttentionSportId,
@@ -80,37 +82,10 @@ type TeamChip = {
   inSetYear: boolean;
 };
 
-/**
- * "Jimmie Foxx played here" / "Johnny Bench & Pete Rose played here" /
- * "A, B & C played here" — the provenance a chip carries. Full names, never a
- * derived surname: "Ken Griffey Jr." has no safe one.
- */
-export function playedHere(playerNames: string[]): string {
-  const names =
-    playerNames.length <= 2
-      ? playerNames.join(" & ")
-      : `${playerNames.slice(0, -1).join(", ")} & ${playerNames[playerNames.length - 1]}`;
-  return `${names} played here`;
-}
-
-/**
- * The line over the listing's chips. Exported for the copy test. Never names
- * the marketplace (Jason, 2026-10-11) — "the listing".
- *
- *   agreed   — a set-year stint is one of the listing's rows, so it is
- *              preselected and focus is on Save
- *   several  — the name is held in several eras: pick the one on the card
- *   one      — one row: offered, not assumed (the background lookup already
- *              links a lone row whose era fits, so reaching here means it
- *              did not)
- */
-export function marketplaceHeading(listingName: string, rowCount: number, agreed: boolean): string {
-  if (agreed) return `The listing names “${listingName}” and the career agrees — Enter accepts it.`;
-  if (rowCount > 1) {
-    return `The listing names “${listingName}” — ${rowCount} teams share that name. Pick the one on the card.`;
-  }
-  return `The listing names “${listingName}” — pick it if it matches the card.`;
-}
+// NEO-339: the chip provenance and the two headings live in the pure
+// `attention-rules.ts`, so the set-build tool says the same words; re-exported
+// here for existing importers.
+export { careerHeading, marketplaceHeading, playedHere } from "./attention-rules";
 
 /**
  * NEO-345 — which case the card is in, from the background team check's
@@ -136,28 +111,6 @@ export function outcomeHeading(
     return "The listing has no team for this card. Pick the one on the card, or say there isn’t one.";
   }
   return null;
-}
-
-/**
- * The line over the career chips. Exported for the copy test.
- *
- * `uncoveredSetYear` is the set's year when the server fell back to the whole
- * career because no stint covers it; undefined when the set has no year.
- */
-export function careerHeading(
-  inSetYear: boolean,
-  listingDisagrees: boolean,
-  uncoveredSetYear?: number,
-): string {
-  if (!inSetYear) {
-    return uncoveredSetYear !== undefined
-      ? `No ${uncoveredSetYear} team on file — here’s the whole career. Pick the one on the card.`
-      : "No year on this set — here’s the whole career. Pick the one on the card.";
-  }
-  if (listingDisagrees) {
-    return "From the career — the listing names a different team, so pick the one on the card.";
-  }
-  return "Suggested from career history — Enter accepts these.";
 }
 
 /**
@@ -225,84 +178,28 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const pickerEngagedRef = useRef(false);
 
   /**
-   * One chip per TEAM, not per suggestion. Two players on a League Leaders
-   * card can share a team, and two identical chips would look like a bug and
-   * double-count against the cap. The label is the server's — the full name,
-   * era-labelled when the sport holds that name more than once.
+   * The chips and what is preselected, folded by the rule the set-building
+   * tool folds by too (`lib/set-build/missing-team-chips.ts`, NEO-339): one
+   * chip per TEAM; the listing's rows first, era by era, taking a career's
+   * provenance with them; set-year teams only preselected, none when the
+   * listing disagrees (a listing name we could not look up vouches for
+   * nothing), at most `MAX_CARD_TEAMS`.
    */
-  const careerByTeam = useMemo(() => {
-    const byTeam = new Map<string, TeamChip>();
-    for (const s of suggestions ?? []) {
-      const existing = byTeam.get(s.teamId as string);
-      if (existing) {
-        if (!existing.playerNames.includes(s.playerName)) {
-          existing.playerNames.push(s.playerName);
-        }
-        existing.inSetYear = existing.inSetYear || s.inSetYear;
-      } else {
-        byTeam.set(s.teamId as string, {
-          teamId: s.teamId,
-          label: s.label,
-          playerNames: [s.playerName],
-          inSetYear: s.inSetYear,
-        });
-      }
-    }
-    return byTeam;
-  }, [suggestions]);
-
-  /** The set year a whole-career fallback looked for, when the server says so. */
-  const uncoveredSetYear = (suggestions ?? []).find(
-    (s) => s.uncoveredSetYear !== undefined,
-  )?.uncoveredSetYear;
-
-  /**
-   * The rows the listing's name could mean. A row that is ALSO in a player's career
-   * carries that provenance here and is not repeated in the career list — one
-   * chip per team, and the fact that Foxx played for the 1901–1954 Athletics
-   * is exactly what tells the operator which of the four eras the card means.
-   */
-  const marketplaceChips = useMemo<TeamChip[]>(
+  const folded = useMemo(
     () =>
-      (bscLookedUp ? (bscEras ?? []) : []).map((era) => {
-        const career = careerByTeam.get(era._id as string);
-        return {
-          teamId: era._id,
-          label: era.label,
-          playerNames: career?.playerNames ?? [],
-          inSetYear: career?.inSetYear ?? false,
-        };
+      foldMissingTeamChips({
+        suggestions: suggestions ?? [],
+        listingName: bscName,
+        listingRows: bscLookedUp ? (bscEras ?? []) : null,
       }),
-    [bscLookedUp, bscEras, careerByTeam],
+    [suggestions, bscName, bscLookedUp, bscEras],
   );
-  const marketplaceIds = useMemo(
-    () => new Set<string>(marketplaceChips.map((chip) => chip.teamId as string)),
-    [marketplaceChips],
-  );
-  const careerChips = useMemo(
-    () => [...careerByTeam.values()].filter((chip) => !marketplaceIds.has(chip.teamId as string)),
-    [careerByTeam, marketplaceIds],
-  );
-
-  /**
-   * What may be preselected: set-year stints only, and only when BSC does not
-   * contradict them. A card with a BSC name and a set-year stint at a team
-   * that is not among that name's rows has two sources saying two things —
-   * product invariant 7: surface it, never settle it. Nothing is preselected
-   * and the career line says BSC disagrees. A BSC name we could not look up
-   * (no sport) cannot vouch for anything, so it counts as disagreeing: the
-   * cost is one click, the alternative is a silent write.
-   */
-  const setYearTeamIds = useMemo(
-    () => [...careerByTeam.values()].filter((chip) => chip.inSetYear).map((chip) => chip.teamId),
-    [careerByTeam],
-  );
-  const bscDisagrees =
-    bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
-  const preselect = useMemo(
-    () => (bscDisagrees ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
-    [bscDisagrees, setYearTeamIds],
-  );
+  const marketplaceChips: TeamChip[] = folded.listingChips;
+  const careerChips: TeamChip[] = folded.careerChips;
+  /** The set year a whole-career fallback looked for, when the server says so. */
+  const uncoveredSetYear = folded.uncoveredSetYear;
+  const bscDisagrees = folded.listingDisagrees;
+  const preselect = folded.preselect;
   const ready = suggestions !== undefined && bscSettled;
 
   useEffect(() => {

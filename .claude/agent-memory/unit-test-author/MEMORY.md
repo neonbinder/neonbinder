@@ -33,3 +33,4 @@
 - [NEO-325 security/a11y round tests](reference_neo325_security_a11y_round_tests.md) — real refresh under stubbed login, Date.now skew deadlines, status-region filter, twice-mapped fixture, equivalent mutants
 - [NEO-335 team answer commit tests](reference_neo335_team_answer_commit_tests.md) — re-sync queue asserts count a delta, 501-id paging, leaf default vs teamNone, rows keyed by ref
 - [NEO-331 picker ranking test patterns](reference_neo331_picker_ranking_test_patterns.md) — ranked mock shape, radio level helpers, convex-test window fixtures, NaN limit, alias-hit client filter
+- [NEO-339 harness link and parity tests](reference_neo339_harness_link_and_parity_tests.md) — link-checks.ts + fixture, registry parity test must be .test.tsx under components, engine tweak hook, break loop

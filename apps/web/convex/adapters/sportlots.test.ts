@@ -3,10 +3,12 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   decodeSlEntities,
+  parseSlMononymHint,
   parseSlSubjects,
   parseSlTeamCard,
   parseSlVariationMarker,
   stripBrandPrefixForLabel,
+  tokenizeSlDescription,
 } from "./sportlots";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS } from "../features/cardAttention";
@@ -96,12 +98,72 @@ describe("parseSlVariationMarker", () => {
     ).toBe("Sombrero Photo");
   });
 
-  test("a bracket that is not a VAR marker is left alone", () => {
-    const desc = "2021 Topps Heritage #7 Brandon Belt [ SP ]";
-    expect(parseSlVariationMarker(desc)).toEqual({
-      isVariation: false,
-      residual: desc,
+  test("a bare [ VAR ] is a variation with no label, and leaves the name clean (NEO-339)", () => {
+    // 2024 Topps Chrome: "#16 Pete Crow-Armstrong [ VAR ]" beside the base
+    // "#16 Pete Crow-Armstrong". It used to parse as a second non-variation
+    // #16 whose name still carried "[ VAR ]".
+    expect(parseSlVariationMarker("Pete Crow-Armstrong [ VAR ]")).toEqual({
+      isVariation: true,
+      residual: "Pete Crow-Armstrong",
     });
+    expect(parseSlVariationMarker("Wyatt Langford [var]")).toEqual({
+      isVariation: true,
+      residual: "Wyatt Langford",
+    });
+  });
+
+  test("[ VAR SSP ] is a variation: VAR decides, and the short print stays for the tokenizer (NEO-339)", () => {
+    // 2023 Topps Chrome #1c (BSC: "VAR: SSP"). It used to read as a second
+    // plain #1 named "Adley Rutschman [ VAR ]", with no player.
+    expect(parseSlVariationMarker("Adley Rutschman [ VAR SSP ]")).toEqual({
+      isVariation: true,
+      variationLabel: "SSP",
+      residual: "Adley Rutschman SSP",
+    });
+    // A label that is not only attribute tokens is not put back.
+    expect(parseSlVariationMarker("Carl Yastrzemski [ VAR SSSP ]")).toEqual({
+      isVariation: true,
+      variationLabel: "SSSP",
+      residual: "Carl Yastrzemski",
+    });
+  });
+
+  test("the live 2023 Topps Chrome rows: a line break before the bracket is cleaned out (NEO-339)", () => {
+    for (const desc of ["Adley Rutschman\r\n    [ VAR ]", "Adley Rutschman\r\n    [ VAR SSP ]"]) {
+      const { isVariation, residual } = parseSlVariationMarker(desc);
+      expect(isVariation).toBe(true);
+      expect(residual).not.toMatch(/[\r\n[\]]/);
+      expect(residual.replace(/ SSP$/, "")).toBe("Adley Rutschman");
+    }
+  });
+
+  test("text after the marker is not glued to the name (NEO-339)", () => {
+    expect(parseSlVariationMarker("Riley Greene [ VAR ] RC")).toEqual({
+      isVariation: true,
+      residual: "Riley Greene RC",
+    });
+    expect(parseSlVariationMarker("Alec Bohm [ VAR Action Image ] SP").residual).toBe(
+      "Alec Bohm SP",
+    );
+  });
+
+  test("an attribute-only bracket is not a variation: the bracket goes, the token stays to be lifted (NEO-339)", () => {
+    expect(parseSlVariationMarker("2021 Topps Heritage #7 Brandon Belt [ SP ]")).toEqual({
+      isVariation: false,
+      residual: "2021 Topps Heritage #7 Brandon Belt SP",
+    });
+    expect(parseSlVariationMarker("Brandon Belt\r\n    [ rc ] /99")).toEqual({
+      isVariation: false,
+      residual: "Brandon Belt rc /99",
+    });
+  });
+
+  test("[ SP ] end to end: the name is clean, the player is read, SP is an attribute", () => {
+    const { residual: withoutBracket } = parseSlVariationMarker("Brandon Belt [ SP ]");
+    const { attributes, residual } = tokenizeSlDescription(withoutBracket);
+    expect(residual).toBe("Brandon Belt");
+    expect(attributes).toEqual(["SP"]);
+    expect(parseSlSubjects(residual)).toEqual({ players: ["Brandon Belt"] });
   });
 });
 
@@ -944,5 +1006,36 @@ describe("parseSlSubjects over a recorded listcards.tpl page", () => {
     );
     // No attributes beyond the two cell classes the parser keys on.
     expect(markup).not.toMatch(/\b(?:href|src|action|value|name|id)\s*=/i);
+  });
+});
+
+describe("parseSlMononymHint (NEO-339)", () => {
+  test("a one-word name is offered as a hint; parseSlSubjects still refuses it", () => {
+    expect(parseSlMononymHint("Ichiro")).toBe("Ichiro");
+    // The row loop hands it the tokenizer's residual, whitespace collapsed.
+    expect(parseSlMononymHint(" Ichiro ")).toBe("Ichiro");
+    expect(parseSlSubjects("Ichiro")).toEqual({});
+  });
+
+  test("anything that is not one clean capitalised word gives no hint", () => {
+    for (const residual of [
+      "",
+      "Checklist",
+      "Legends",
+      "Ichiro SEA",
+      "Mike Trout",
+      "SEA",
+      "Jr",
+      "Jr.",
+      "ichiro",
+      "Ichiro2",
+      "Ichiro/Suzuki",
+      "Ichiro|",
+      "Ichi<ro",
+      "Ichiro\u0007",
+      `I${"x".repeat(MAX_PLAYER_NAME_LENGTH)}`,
+    ]) {
+      expect(parseSlMononymHint(residual), residual).toBeUndefined();
+    }
   });
 });

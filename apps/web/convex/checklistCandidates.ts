@@ -1,6 +1,11 @@
 import { v, type Infer } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { requireAdmin, getCurrentUserIdentity } from "./auth";
@@ -10,6 +15,7 @@ import { cardNumberStem } from "../lib/cards/variations";
 // at this boundary too — see `startCandidateBatch`'s handler.
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import { fillBscAttributeFields } from "./lib/bscAttributeTokens";
 // NEO-333 — the whole-name-first team match, through the one resolution the
 // review gate and the commit prelude also use.
 import { resolveTeamForSetYear } from "./lib/teamRow";
@@ -537,6 +543,55 @@ async function writeCandidatePage(
 }
 
 /**
+ * NEO-333 — one card's team lookup result as `fetchBscCardTeamNames` hands it
+ * on: BSC's raw, unsplit string and the adapter's comma split. A ref with
+ * neither resolved to "no team". NEO-335 adds whether that lookup answered or
+ * failed (`teamLookup`).
+ */
+const teamLookupEntryValidator = v.object({
+  bscRef: v.string(),
+  rawTeamName: v.optional(v.string()),
+  teamNames: v.optional(v.array(v.string())),
+  // NEO-335 — how the lookup ended; see `resolveCandidateTeams`.
+  teamLookup: v.optional(teamLookupValidator),
+  // NEO-339 — the card's attribute tokens on the same answer, raw
+  // (`playerAttribute`, else the `teamName` label, else `productName`), and
+  // the print run they carry. Filled onto the candidate fill-empty
+  // (`fillBscAttributeFields`), which bounds and normalises them again: an
+  // internal caller is not trusted with a third party's list.
+  attributeTokens: v.optional(v.array(v.string())),
+  printRun: v.optional(v.number()),
+});
+
+/** The set's sport and year: what a whole-name team match is scoped by. */
+type TeamScope = {
+  sportId: Id<"selectorOptions"> | undefined;
+  setYear: number | undefined;
+};
+
+/**
+ * NEO-333 — the scope `chooseCandidateTeams` asks for, read at most once per
+ * call and only when some card needs a whole-name match. Every card in one
+ * call belongs to one selectorOption (a staged batch, or one preview), so the
+ * first id asked for is the scope for the call. `undefined` sport = no
+ * whole-name match possible.
+ */
+function lazyTeamScope(
+  ctx: QueryCtx | MutationCtx,
+): (selectorOptionId: Id<"selectorOptions">) => Promise<TeamScope> {
+  let scope: TeamScope | undefined;
+  return async (selectorOptionId) => {
+    if (!scope) {
+      scope = {
+        sportId: await findSportForSelectorOption(ctx, selectorOptionId),
+        setYear: await findSetYearForSelectorOption(ctx, selectorOptionId),
+      };
+    }
+    return scope;
+  };
+}
+
+/**
  * NEO-333 — which team names a candidate card carries: BSC's WHOLE value, or
  * its comma split.
  *
@@ -561,13 +616,13 @@ async function writeCandidatePage(
  * An over-length raw string is never matched.
  */
 async function chooseCandidateTeams(
-  ctx: MutationCtx,
+  // Reads only. NEO-339: `previewCandidateTeams` runs this same function in a
+  // query, so the read-only checklist preview carries exactly the teams the
+  // staged rows end up with — one rule, not a mirror of it.
+  ctx: QueryCtx | MutationCtx,
   rawTeamName: string | undefined,
   teamNames: string[] | undefined,
-  scope: () => Promise<{
-    sportId: Id<"selectorOptions"> | undefined;
-    setYear: number | undefined;
-  }>,
+  scope: () => Promise<TeamScope>,
 ): Promise<string[] | undefined> {
   const raw = rawTeamName?.trim() ?? "";
   const parts = (teamNames ?? []).map((n) => n.trim()).filter(Boolean);
@@ -672,14 +727,7 @@ export const resolveCandidateTeams = internalMutation({
     // (see the schema note). Optional so a caller that predates it is
     // unchanged: absent records nothing, and the commit then queues the card
     // for the background lookup exactly as it always did.
-    resolved: v.array(
-      v.object({
-        bscRef: v.string(),
-        rawTeamName: v.optional(v.string()),
-        teamNames: v.optional(v.array(v.string())),
-        teamLookup: v.optional(teamLookupValidator),
-      }),
-    ),
+    resolved: v.array(teamLookupEntryValidator),
     // NEO-294 — set on the one retry, so a miss cannot reschedule forever.
     retry: v.optional(v.boolean()),
   },
@@ -729,8 +777,16 @@ export const resolveCandidateTeams = internalMutation({
     type ResolvedEntry = (typeof args.resolved)[number];
     // NEO-335 — and `teamLookup`: an "answered: no team" and a "failed" for
     // one ref are not the same claim, so neither is written.
+    // NEO-339 — and the attribute answer: two entries naming different
+    // tokens for one ref fill nothing, as two teams write none.
     const answerKey = (e: ResolvedEntry) =>
-      JSON.stringify([e.rawTeamName ?? null, e.teamNames ?? null, e.teamLookup ?? null]);
+      JSON.stringify([
+        e.rawTeamName ?? null,
+        e.teamNames ?? null,
+        e.teamLookup ?? null,
+        e.attributeTokens ?? null,
+        e.printRun ?? null,
+      ]);
     const answerByRef = new Map<string, ResolvedEntry | undefined>();
     for (const entry of args.resolved) {
       if (!answerByRef.has(entry.bscRef)) {
@@ -747,12 +803,8 @@ export const resolveCandidateTeams = internalMutation({
     /** NEO-294 — refs with no row yet; see the retry note above. */
     const missed: Array<(typeof args.resolved)[number]> = [];
     let patched = 0;
-    // NEO-333 — the set's sport and year, read once per call (every row in a
-    // batch belongs to one selectorOption) and only if some card needs a
-    // whole-name match. `undefined` sport = no whole-name match possible.
-    let teamScope:
-      | { sportId: Id<"selectorOptions"> | undefined; setYear: number | undefined }
-      | undefined;
+    // NEO-333 — the set's sport and year; see `lazyTeamScope`.
+    const teamScope = lazyTeamScope(ctx);
     for (const [bscRef, entry] of answerByRef) {
       const matching = byBscRef.get(bscRef);
       if (!matching) {
@@ -772,28 +824,28 @@ export const resolveCandidateTeams = internalMutation({
             ctx,
             entry.rawTeamName,
             entry.teamNames,
-            async () => {
-              if (!teamScope) {
-                teamScope = {
-                  sportId: await findSportForSelectorOption(
-                    ctx,
-                    scopeRow.selectorOptionId,
-                  ),
-                  setYear: await findSetYearForSelectorOption(
-                    ctx,
-                    scopeRow.selectorOptionId,
-                  ),
-                };
-              }
-              return teamScope;
-            },
+            () => teamScope(scopeRow.selectorOptionId),
           )
         : undefined;
       const rawTeamName = entry
         ? candidateRawTeamHint(entry.rawTeamName, teams)
         : undefined;
       for (const row of matching) {
+        // NEO-339 — BSC's per-card tokens, filled onto the candidate by the
+        // rule `applyBscAttributeFill` applies to a stored card: union the
+        // attributes, set a print run only where there is none, set the
+        // rookie/relic flags true from RC/RELIC. Nothing the card holds is
+        // replaced. The preview (`previewCardChecklist`) runs the same fill.
+        const attributeFill =
+          entry &&
+          (entry.attributeTokens?.length || entry.printRun !== undefined)
+            ? fillBscAttributeFields(row, {
+                tokens: entry.attributeTokens ?? [],
+                printRun: entry.printRun,
+              })
+            : undefined;
         await ctx.db.patch(row._id, {
+          ...(attributeFill?.changed ? attributeFill.fields : {}),
           // An empty result is an answer, not a failure — see the note above.
           // So is a refused split or a disagreement (`undefined`): the row is
           // settled with no team, and the operator picks one in review —
@@ -856,6 +908,69 @@ export const resolveCandidateTeams = internalMutation({
       );
     }
     return { patched, released, missing: missed.length, ready };
+  },
+});
+
+/** NEO-339 — entries one `previewCandidateTeams` call decides (callers send 50). */
+export const PREVIEW_TEAM_LOOKUP_MAX = 100;
+
+/**
+ * NEO-339 — the team decision `resolveCandidateTeams` makes, for the read-only
+ * checklist preview (`selectorOptions.previewCardChecklist`), with nothing
+ * written.
+ *
+ * The same `chooseCandidateTeams` over the same lookup entries, scoped by the
+ * same sport and set year, so a previewed card carries exactly the `teams`
+ * its staged row ends up with: the whole raw string when it names an existing
+ * team ("Korea, South"), else the comma parts ("Cleveland Guardians,
+ * Washington Nationals" is two teams), else none. A query, so it cannot write.
+ *
+ * `selectorOptionId` scopes the match: the previewed row, or for a row that
+ * does not exist yet its set (the sport and year are the set's either way).
+ *
+ * Returns one entry per input, in order; `teams` absent = the card carries no
+ * team (no value, or a split refused by the card bounds). NEO-335:
+ * `rawTeamName` is the unsplit value the staged row keeps beside `teams`
+ * (`candidateRawTeamHint`, the same rule), absent where `teams` already says
+ * it. The entry's `teamLookup` is the caller's own and is not echoed.
+ */
+export const previewCandidateTeams = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    resolved: v.array(teamLookupEntryValidator),
+  },
+  returns: v.array(
+    v.object({
+      bscRef: v.string(),
+      teams: v.optional(v.array(v.string())),
+      rawTeamName: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    // The caller chunks by 50; the bound keeps one query's reads small.
+    if (args.resolved.length > PREVIEW_TEAM_LOOKUP_MAX) {
+      throw new Error(
+        `previewCandidateTeams: ${args.resolved.length} entries, above the ${PREVIEW_TEAM_LOOKUP_MAX}-entry limit`,
+      );
+    }
+    const teamScope = lazyTeamScope(ctx);
+    const out: Array<{ bscRef: string; teams?: string[]; rawTeamName?: string }> =
+      [];
+    for (const entry of args.resolved) {
+      const teams = await chooseCandidateTeams(
+        ctx,
+        entry.rawTeamName,
+        entry.teamNames,
+        () => teamScope(args.selectorOptionId),
+      );
+      const rawTeamName = candidateRawTeamHint(entry.rawTeamName, teams);
+      out.push({
+        bscRef: entry.bscRef,
+        ...(teams ? { teams } : {}),
+        ...(rawTeamName ? { rawTeamName } : {}),
+      });
+    }
+    return out;
   },
 });
 

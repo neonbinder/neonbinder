@@ -1,6 +1,6 @@
 ---
 name: same-name-player-panel
-description: NEO-332 same-name PICK STEP ("Which <name> is this?") — inserted READY with no lookup, bulk create skips it, bulk skip decides it; locators, why to click the TOP candidate, why an untouched pick step yields to a settled team, and why a second dated fork beside an undated catalogue row is refused
+description: NEO-332 same-name PICK STEP ("Which <name> is this?") — inserted READY with no lookup, bulk create skips it, bulk skip decides it; locators, why to click the TOP candidate, why it HOLDS its place since NEO-339 (and blocks a team drain), how to detect it, and why a second dated fork beside an undated catalogue row is refused
 metadata:
   type: reference
 ---
@@ -42,12 +42,38 @@ while they remain; `Skip remaining names (N)` decides them.
 
 Click the TOP candidate (`.first()`): rows lower down can fall under the dialog footer.
 
-**It can be the step on screen when the wizard opens** (READY, no lookup), and
-an UNTOUCHED pick step is an implicit player pin: it yields to the first
-settled undecided team/league (`resolveNav`), including career teams staged
-by OTHER rows' lookups. `Create new` pins it (an edit); `Back to the list`
-unpins. So a flow that must hold the pick step for several steps needs the
-batch's other lookups to be slow or already drained — on a catalogue-loaded
-preview a set with a handful of unknowns stages and settles career teams in
-seconds. Any drain loop must wake on the heading too, or it parks.
+**It is usually the step on screen when the wizard opens** (READY, no
+lookup, while every other staged name is pending), and since NEO-339 it
+HOLDS its place, touched or not (`holdPresentedRow` = `pinnedRowHasEdits ||
+pickStep`, gating only the teams-first yield): teams and leagues settling
+elsewhere no longer take it away. `Create new` holds via `pinnedRowHasEdits`;
+`Back to the list` returns to the held list. Answering it (link or skip)
+hands control back to the walk: leagues → teams → players. Dependency
+surfacing still comes first: a row waiting on its own staged teams/league
+still moves the walk (not gated by the hold).
+
+Consequences for specs:
+- A pick step is a player row (`Skip <name> — not a person`), so any drain
+  that exits on that control exits at once under a held pick step and
+  answers no team. Skip it first (the Maestro suite had
+  `util-wizard-skip-held-pick-step`, called by the walk util after its
+  lookup wait; `walkToPlayerRow` in `support/wizard.ts` needs the same).
+  Only the one presented before teams settle can block; others come up
+  after the teams.
+- Detect it by the footer: every live step has exactly one of `Create new`,
+  `Add as New Player( anyway)?`, `Skip . (not a team|no league)`, `Next
+  (Enter)` or `Confirm & Save`; `Create new` means a pick step. Branch on
+  one `.or()` locator, never a timed visibility probe.
+- A spec that must stay ON the pick step must not call the walk helper.
+  With the batch settled the step is still there, so steps on it need no
+  drain; waiting the lookups out first makes the post-link `Back to
+  previous decision` deterministic (with lookups out the walk may present
+  nothing, and that footer control renders only with a presented row).
+
 Related: [[catalogue-seeded-wizard-staging]].
+
+Helper (NEO-339): `skipHeldPickStep(page)` in `support/wizard.ts` skips a held
+pick step (detected by the footer's `Create new`; one of Create new / Add as
+New Player / team-league Skip / Next (Enter) / Confirm & Save must be up) and
+proves x moved by one. `walkToPlayerRow` calls it once after its first lookup
+wait; a spec that wants to stay ON the pick step must not call the walk.

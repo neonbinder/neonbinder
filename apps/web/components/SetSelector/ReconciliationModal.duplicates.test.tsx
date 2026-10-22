@@ -14,6 +14,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
+import { pressSave } from "./press-save";
 
 const ANIME_111: PlatformItem = { value: "Anime", platformValue: "111" };
 const ANIME_222: PlatformItem = { value: "Anime", platformValue: "222" };
@@ -104,7 +105,7 @@ describe("ReconciliationModal — SportLots sets that share a name (NEO-325)", (
     const { onConfirm } = renderModal();
 
     fireEvent.click(screen.getByLabelText("Make its own set: Anime (#222)"));
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items).toHaveLength(1);
@@ -116,7 +117,7 @@ describe("ReconciliationModal — SportLots sets that share a name (NEO-325)", (
 
     fireEvent.click(rowHandle("Make its own set: Anime (#222)"));
     fireEvent.click(screen.getByText(BSC_ONE.value));
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items).toHaveLength(1);
@@ -132,7 +133,7 @@ describe("ReconciliationModal — SportLots sets that share a name (NEO-325)", (
     fireEvent.click(
       screen.getByLabelText("Add Anime (#222) to this set, Bsc One"),
     );
-    fireEvent.click(screen.getByText(/Save 1 sets/));
+    pressSave(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
 
     expect(items[0].platformData.sportlots).toEqual(["222"]);
@@ -261,7 +262,7 @@ describe("ReconciliationModal — SportLots sets that share a name (NEO-325)", (
         .previousElementSibling as HTMLElement;
       fireEvent.click(mappedRow.firstElementChild as HTMLElement);
       fireEvent.click(screen.getByLabelText("Add Anime (#111) to this set, Bsc One"));
-      fireEvent.click(screen.getByText(/Save 2 sets/));
+      pressSave(screen.getByText(/Save 2 sets/));
       const items = await itemsFromConfirm(onConfirm);
 
       const bscSet = items.find((i) => i.value === "Bsc One");

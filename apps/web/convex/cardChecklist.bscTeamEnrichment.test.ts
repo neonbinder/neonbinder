@@ -1087,6 +1087,8 @@ describe("applyBscAttributeFill (NEO-345)", () => {
       wrote: true,
       printRunDisagreement: false,
       autographFormatted: false,
+      retitled: false,
+      redescribed: false,
     });
     const card = (await getCard(t, id))!;
     expect(card.attributes).toEqual(["AU", "RELIC", "RC", "SSP", "NUM"]);

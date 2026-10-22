@@ -27,6 +27,8 @@
 - [Judge twins before filtering](reference_judge_twins_before_filtering.md) — twin-ness on the raw list, carried as ids; a filtered twin makes its sibling look unique; prefix test includes equality
 - [Planner sees the first wire id only](reference_planner_sees_first_wire_id_only.md) — reconcile store plans ids[0] per side; extras need their own one-link-one-row check at the insert
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
+- [Read-only marketplace measurement](reference_read_only_marketplace_measurement.md) — SL adapter actions + pure routeSlSets + discarded candidate fetches pick fixtures without writing NB rows
+- [Virtual-chain previews](reference_virtual_chain_previews.md) — previews share the read half over a virtual chain; unconfirmed SL ids on a node count as set linkage
 - [Action promise races its subscription](reference_action_promise_races_subscription.md) — action resolves before useQuery sees its runMutation writes; last-chunk team loss; empty is never a diff claim
 - [Action stubs pin old return shapes](reference_action_stubs_pin_old_return_shapes.md) — tests vi.mock adapter actions with their own returns validator; a return-shape change must update every stub
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — `node` is the nvm default in agent Bash; prefix PATH with the .nvmrc version for every gate call
@@ -34,6 +36,9 @@
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)
 - [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
+- [Convex field names are ASCII only](reference_convex_field_names_are_ascii_only.md) — never key args/returns by a name or marketplace id (BSC slugs carry accents); send [{ id, label }]; t.mutation args reproduce it
 - [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
+- [Build SL fixtures through the parsers](reference_build_sl_fixtures_through_the_parsers.md) — hand-set isVariation hid that a bare "[ VAR ]" parsed as a non-variation; reproduce live shapes via parseSlVariationMarker
 - [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label
+- [Mocked credentials: first action gets the real module](reference_mocked_credentials_first_action_race.md) — real-adapter preview tests: pre-import ./credentials in beforeAll or the first test hits real getSiteToken

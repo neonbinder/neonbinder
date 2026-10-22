@@ -41,7 +41,7 @@
  * settles and then settle it afterward to prove the late result is dropped.
  */
 
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -476,6 +476,7 @@ import CardChecklist, {
   streamRowsArrived,
   streamTeamsLanded,
 } from "./CardChecklist";
+import { autographPromptCount, autographPromptLine } from "./autograph-prompt";
 
 /**
  * Every live-region line on the page, hidden ones included: the sync banner
@@ -1989,6 +1990,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           _id: "row-1",
           cardNumber: "1",
           teamOnCardIds: undefined,
+          playerIds: undefined,
           pendingPlayerNames: ["Chris Potter"],
         }),
       ];
@@ -2079,7 +2081,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       // that has a player. Neither has a team, so both are asked about — but
       // only card 1 belongs on the no-players line.
       state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined, playerIds: undefined }),
         settledCard({
           _id: "row-2",
           cardNumber: "2",
@@ -2110,8 +2112,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("a row whose incoming players were ACCEPTED in the review is not playerless", async () => {
       state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
-        settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined }),
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined, playerIds: undefined }),
+        settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined, playerIds: undefined }),
       ];
       mockDiffChecklist.mockResolvedValue({
         ...emptyDiff,
@@ -2139,6 +2141,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           _id: "row-1",
           cardNumber: "1",
           teamOnCardIds: undefined,
+          playerIds: undefined,
           pendingPlayerNames: ["Chris Potter"],
         }),
       ];
@@ -2943,8 +2946,10 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
  * `useMutation`'s only resolves once the client's subscribed queries reflect
  * the mutation's writes. So the message that used to be safe to paint right
  * after the commit now races `getCardChecklist`'s repaint — and
- * .maestro/flows/setup.yaml waits for "Saved 335 cards" and then IMMEDIATELY
- * asserts a "#NNN" card row is visible.
+ * a flow that waits for "Saved N cards" and then IMMEDIATELY asserts a "#NNN"
+ * card row is visible (the retired `setup.yaml` did this for 335 cards; since
+ * NEO-339 the Base commit is the scripted seed, `npm run setbuild`, and the
+ * Maestro flows that commit a checklist still read the message).
  *
  * The fix is ordering, not a new sync primitive: `discardCandidates` is still
  * a mutation, and its resolution guarantees the client reflects every write
@@ -3060,6 +3065,8 @@ function attentionCard(overrides: Record<string, unknown> = {}) {
     cardName: "AL Leaders ERA LL",
     platformData: { bsc: { ref: "bsc-1" } },
     teamCheckDoneAt: 1_000,
+    // NEO-339: its players are linked, so a team is all it needs.
+    playerIds: ["player-1"],
     ...overrides,
   };
 }
@@ -3074,6 +3081,7 @@ function settledCard(overrides: Record<string, unknown> = {}) {
     platformData: { bsc: { ref: "bsc-2" } },
     teamCheckDoneAt: 1_000,
     teamOnCardIds: ["team-1"],
+    playerIds: ["player-2"],
     ...overrides,
   };
 }
@@ -3811,6 +3819,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(mockFindOrCreateTeam).toHaveBeenCalledWith({
       name: "Savannah Bananas",
       sportId: SPORT_ID,
+      createOnly: true,
     });
     // The picker's own "createAndAdd" chips it immediately — same as picking
     // an existing match.
@@ -4243,6 +4252,7 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
     expect(mockFindOrCreatePlayer).toHaveBeenCalledWith({
       name: "Rookie Nobody",
       sportId: SPORT_ID,
+      createOnly: true,
     });
     expect(screen.getByLabelText("Player: Rookie Nobody")).toBeTruthy();
 
@@ -4836,6 +4846,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
         _id: "card-unreviewed" as unknown as Id<"cardChecklist">,
         cardNumber: "9",
         cardName: "Yordan Alvrez",
+        playerIds: undefined,
         pendingPlayerNames: ["Yordan Alvrez"],
       }),
     ];
@@ -5065,7 +5076,11 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     state.skippedNames = [];
   });
 
-  /** Stream one conflicted matched candidate and press Confirm. */
+  /**
+   * Stream one conflicted matched candidate, answer it with the merge's own
+   * default (NEO-339: Confirm holds until every conflict is answered), and
+   * press Confirm.
+   */
   async function confirmConflictedPairing() {
     state.liveCandidates = {
       ready: 1,
@@ -5099,21 +5114,21 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /^Mike Yastrzemski —/ }));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
     });
   }
 
-  it("hands the diff both marketplaces' rosters", async () => {
+  it("a row answered with the merge's default reaches the diff as a decision, with no conflict on it", async () => {
     await confirmConflictedPairing();
 
     await waitFor(() => expect(mockDiffChecklist).toHaveBeenCalled());
     const [, args] = mockDiffChecklist.mock.calls[0];
-    expect(args.cards[0].playersConflict).toEqual({
-      bsc: ["Mike Yastrzemski"],
-      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
-    });
-    // The card still carries the merge's default, exactly as the server sent
-    // it — the conflict ADDS the loser, it does not swap the winner.
+    // NEO-339: every conflict is answered before Confirm, and an answered row
+    // is a decision the diff must see — so nothing suppresses it.
+    expect(args.cards[0].playersConflict).toBeUndefined();
     expect(args.cards[0].players).toEqual(["Mike Yastrzemski"]);
   });
 
@@ -6063,6 +6078,32 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
     expect(screen.queryByText(PROMPT)).toBeNull();
   });
 
+  it("a stored format outside the two answers is no answer: the prompt still asks", () => {
+    state.cards = [auto()];
+    state.variantRow = { value: "Test Set", features: { autographFormat: "on card" } };
+    renderChecklist();
+    expect(screen.getByText(PROMPT).textContent).toBe(autographPromptLine(1));
+  });
+
+  it("shows exactly when the tool's rule says it asks, with the same count (NEO-339 parity)", () => {
+    const cases: Array<{ format?: string; cards: Array<Record<string, unknown>> }> = [
+      { cards: [auto({ _id: "a" }), auto({ _id: "b" })] },
+      { format: "On Card", cards: [auto({ _id: "a" })] },
+      { cards: [auto({ _id: "a", features: { autographed: "Sticker/Label" } })] },
+      { cards: [settledCard({ _id: "a", attributes: ["RC"] })] },
+      { format: "Sticker/Label", cards: [] },
+    ];
+    for (const c of cases) {
+      cleanup();
+      state.cards = c.cards as never;
+      state.variantRow = { value: "Test Set", ...(c.format ? { features: { autographFormat: c.format } } : {}) };
+      renderChecklist();
+      const count = autographPromptCount(c.format, c.cards as never);
+      const line = screen.queryByText(PROMPT);
+      expect(line?.textContent ?? null, JSON.stringify(c)).toBe(count > 0 ? autographPromptLine(count) : null);
+    }
+  });
+
   it("is absent until the leaf row has loaded", () => {
     state.cards = [auto()];
     state.variantRow = undefined;
@@ -6095,7 +6136,29 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
     expect(screen.queryByText(PROMPT)).toBeNull();
     const saved = screen.getAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
     expect(saved).toBeTruthy();
+    expect(saved!.textContent).toBe("Autographs saved as on card.");
     expect(document.activeElement).toBe(saved);
+  });
+
+  it("an answer that reached the leaf's parallels says so on the saved line (Jason, 2026-10-18)", async () => {
+    mockSetAutographFormat.mockResolvedValueOnce({ parallelIds: ["p1", "p2", "p3"] });
+    state.cards = [auto()];
+    const { rerender } = renderChecklist();
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole("group", { name: PROMPT })).getByRole("button", { name: "Sticker" }));
+    });
+    state.variantRow = { value: "Test Set", features: { autographFormat: "Sticker/Label" } };
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />,
+      );
+    });
+    const saved = screen.getAllByRole("status").find((el) => /Autographs saved/.test(el.textContent ?? ""));
+    expect(saved!.textContent).toBe("Autographs saved as sticker. Its 3 parallels take the same answer.");
   });
   it("the saved line is for this sitting only: another leaf drops it, and coming back does not bring it back", async () => {
     state.cards = [auto()];

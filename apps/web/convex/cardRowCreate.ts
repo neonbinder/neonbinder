@@ -57,7 +57,8 @@ export type CardRowSetContext = ListingSetContext & {
  * it before save (NEO-335, `settleCardTeamAnswer` in selectorOptions.ts):
  * `teamCheckDoneAt` (+ `teamCheckOutcome`, NEO-345, and `bscTeamName`) for a
  * card whose fetch-time BSC lookup answered, or `teamNoneConfirmedAt` / `teamNoneConfirmedByUserId` for an
- * operator's "No team on this card". It never passes a variation link.
+ * operator's "No team on this card". It never passes a variation link. The
+ * parallel build also carries `playerNoneConfirmedAt` (+ByUserId, NEO-339).
  */
 export type CarriedCardFields = Partial<
   Pick<
@@ -67,6 +68,8 @@ export type CarriedCardFields = Partial<
     | "bscTeamName"
     | "teamNoneConfirmedAt"
     | "teamNoneConfirmedByUserId"
+    | "playerNoneConfirmedAt"
+    | "playerNoneConfirmedByUserId"
     | "variationOfCardId"
     | "variationParentManual"
   >
@@ -261,6 +264,14 @@ export function buildCardRowForInsert(
       : {}),
     ...(carried.teamNoneConfirmedByUserId !== undefined
       ? { teamNoneConfirmedByUserId: carried.teamNoneConfirmedByUserId }
+      : {}),
+    // NEO-339 — the operator's "No player on this card" travels with the
+    // copy, as the team ruling does: the copy shows the same nobody.
+    ...(carried.playerNoneConfirmedAt !== undefined
+      ? { playerNoneConfirmedAt: carried.playerNoneConfirmedAt }
+      : {}),
+    ...(carried.playerNoneConfirmedByUserId !== undefined
+      ? { playerNoneConfirmedByUserId: carried.playerNoneConfirmedByUserId }
       : {}),
     ...(carried.variationOfCardId !== undefined
       ? { variationOfCardId: carried.variationOfCardId }

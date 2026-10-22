@@ -898,6 +898,7 @@ describe("TeamPicker", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Savannah Bananas",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => {
@@ -923,6 +924,7 @@ describe("TeamPicker", () => {
         name: "Padres",
         location: "San Diego",
         sportId: SPORT_ID,
+        createOnly: true,
       });
     });
     await waitFor(() => {
@@ -956,6 +958,7 @@ describe("TeamPicker", () => {
         name: "Savannah Bananas",
         sportId: SPORT_ID,
         leagueId: "league-1",
+        createOnly: true,
       });
     });
   });
@@ -1272,6 +1275,7 @@ describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Green Bay Packers",
         sportId: OTHER_SPORT_ID,
+        createOnly: true,
       });
     });
   });

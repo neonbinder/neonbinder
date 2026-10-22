@@ -41,7 +41,7 @@ import {
   generateListingDescription,
   type ListingCardInputs,
 } from "./features/generateListing";
-import { LISTING_TITLE_MAX } from "./features/listingLimits";
+import { listingTitleRefusal } from "../lib/cards/listing-title-gate";
 import {
   checkTitleAnswer,
   listingInputsForCard,
@@ -56,13 +56,25 @@ import {
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
 import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
+// NEO-345 — the ancestor walk and the stored-card title mapping Regenerate
+// and the autograph cascade share (see that module's header).
+import {
+  findAncestorLabels,
+  storedCardListingInputs,
+  storedCardTitleNames,
+} from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
-  cardNumberStem,
+  attachCrossMarketplaceVariations,
   resolveVariationParents,
-  suggestVariationPairings,
 } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-339 — the card-listing lookup's tokens filled onto a candidate.
+import { fillBscAttributeFields } from "./lib/bscAttributeTokens";
+import {
+  decideDuplicateNumberPairs,
+  decideVariationPairs,
+} from "./lib/duplicateNumberPairing";
 // NEO-212: the SINGLE career-timeline ordering, shared with `enrichPlayer` in
 // convex/adapters/wikidata.ts. Both write `players.teamYears`, and a player
 // can be created by either, so they must not disagree about the order.
@@ -228,6 +240,7 @@ import {
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
   playerBelongsToSport,
+  resolvePlayerNameForReview,
   sameNamePlayers,
 } from "./players";
 // NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
@@ -331,6 +344,12 @@ import {
 // read it) and threaded into `resolvableSides` as an argument, so a paused
 // marketplace is a side that is never asked and never covered.
 import { pausedSides } from "./marketplacePause";
+// NEO-339 — the raw-options body, run by `previewCardChecklist` to confirm a
+// cold row's ids against the set's own marketplace lists.
+import {
+  fetchRawOptionsForChain,
+  type RawOptionsParentFilters,
+} from "./setReconciliation";
 import {
   allocateSlots,
   assertValidSlotLabel,
@@ -1150,22 +1169,39 @@ export const findSkippedEntityNames = internalQuery({
           `${SKIPPED_NAME_LOOKUP_PAGE} per call — slice them`,
       );
     }
-    const skipped: string[] = [];
-    for (const candidate of args.candidates) {
-      const row = await ctx.db
-        .query("entityReviewSkips")
-        .withIndex("by_selector_option_and_kind_and_name", (q) =>
-          q
-            .eq("selectorOptionId", args.selectorOptionId)
-            .eq("kind", candidate.kind)
-            .eq("nameNormalized", candidate.nameNormalized),
-        )
-        .first();
-      if (row) skipped.push(`${candidate.kind}:${candidate.nameNormalized}`);
-    }
-    return skipped;
+    return await skippedEntityNameKeys(
+      ctx,
+      args.selectorOptionId,
+      args.candidates,
+    );
   },
 });
+
+/**
+ * NEO-339 — `findSkippedEntityNames`' read as a plain function, for the query
+ * path (`previewChecklistEntities`) that cannot `ctx.runQuery` it. One indexed
+ * point lookup per candidate; the caller bounds the list.
+ */
+async function skippedEntityNameKeys(
+  ctx: QueryCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  candidates: ReadonlyArray<{ kind: "player" | "team"; nameNormalized: string }>,
+): Promise<string[]> {
+  const skipped: string[] = [];
+  for (const candidate of candidates) {
+    const row = await ctx.db
+      .query("entityReviewSkips")
+      .withIndex("by_selector_option_and_kind_and_name", (q) =>
+        q
+          .eq("selectorOptionId", selectorOptionId)
+          .eq("kind", candidate.kind)
+          .eq("nameNormalized", candidate.nameNormalized),
+      )
+      .first();
+    if (row) skipped.push(`${candidate.kind}:${candidate.nameNormalized}`);
+  }
+  return skipped;
+}
 
 /**
  * NEO-254 — the team names printed on one incoming card.
@@ -1249,6 +1285,350 @@ export const findSetYearForSelectorOptionQuery = internalQuery({
 });
 
 /**
+ * NEO-339 — the distinct player and team names of a checklist, deduped by
+ * NORMALIZED name with the first spelling kept: two spellings of one player
+ * ("Ken Griffey Jr." vs "Ken Griffey Jr") are one name, one lookup and at most
+ * one review row. Shared by the review gate and `previewChecklistEntities`
+ * so the two see the same name list.
+ */
+function checklistNameCollector() {
+  const playerByNorm = new Map<string, string>();
+  const teamByNorm = new Map<string, string>();
+  return {
+    playerByNorm,
+    teamByNorm,
+    addPlayer(raw: string) {
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      const norm = normalizePlayerName(trimmed);
+      if (!playerByNorm.has(norm)) playerByNorm.set(norm, trimmed);
+    },
+    addTeam(raw: string) {
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      const norm = normalizeTeamName(trimmed);
+      if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
+    },
+  };
+}
+
+/** What the review gate's player lookup concluded about one name. */
+type PlayerNameVerdict = {
+  /** Same-name rows in the sport, BEFORE any year narrowing. */
+  matchCount: number;
+  /** Set only when exactly one row is meant (alone, or by the card's year). */
+  playerId?: Id<"players">;
+  narrowedByCardYear?: boolean;
+  /** The same-name rows, when the lookup can hand them back (query path). */
+  candidates?: Array<Doc<"players">>;
+};
+
+/** What the review gate's team lookup concluded about one name. */
+type TeamNameVerdict = {
+  /** The one row this name means, or null when a human has to decide. */
+  teamId: Id<"teams"> | null;
+  /**
+   * NEO-335 — that row's full name (`teamFullName`), for the "Card titles"
+   * step's title context. Set whenever `teamId` is.
+   */
+  fullName?: string;
+  /** Every era held under the name, when the lookup can hand them back. */
+  candidates?: Array<Doc<"teams">>;
+};
+
+/**
+ * NEO-339 — the reads the classification needs, injected so ONE function
+ * serves both callers: `resolveUnknownsAndStartBatch` (an action, each read a
+ * `ctx.runQuery`) and `previewChecklistEntities` (a query, each read direct).
+ * Both sides bottom out in the same functions: `skippedEntityNameKeys`,
+ * `findSetYearForSelectorOption`, `resolvePlayerNameForReview` and
+ * `resolveTeamForSetYear`.
+ */
+type ChecklistNameLookups = {
+  /** `${kind}:${nameNormalized}` keys of NEO-212 skip records. */
+  skippedKeys: (
+    candidates: Array<{ kind: "player" | "team"; nameNormalized: string }>,
+  ) => Promise<ReadonlySet<string>>;
+  setYear: () => Promise<number | undefined>;
+  resolvePlayer: (args: {
+    name: string;
+    cardYear?: number;
+    cardTeamNames?: string[];
+  }) => Promise<PlayerNameVerdict>;
+  resolveTeam: (args: {
+    name: string;
+    setYear?: number;
+  }) => Promise<TeamNameVerdict>;
+};
+
+type ClassifiedChecklistName<V> = {
+  name: string;
+  normalized: string;
+} & (
+  | { skipped: true }
+  | { skipped: false; verdict: V; usedCardTeamNames?: boolean }
+);
+
+/**
+ * NEO-339 — the review gate's classification of a checklist's names, out of
+ * `resolveUnknownsAndStartBatch` so `previewChecklistEntities` answers by the
+ * same rule: a skipped name is not an entity, a player is known only when
+ * exactly one row is meant, a team only when exactly one era is meant.
+ * Writes nothing and calls no enrichment; the caller decides what to do with
+ * the verdicts. Names come back in the collector's order.
+ */
+async function classifyChecklistNames(
+  lookups: ChecklistNameLookups,
+  input: {
+    playerByNorm: ReadonlyMap<string, string>;
+    teamByNorm: ReadonlyMap<string, string>;
+    /** Keyed by NORMALIZED player name; see `addCardTeamNames`. */
+    cardTeamNamesByPlayer?: ReadonlyMap<string, string[]>;
+  },
+): Promise<{
+  setYear: number | undefined;
+  players: Array<ClassifiedChecklistName<PlayerNameVerdict>>;
+  teams: Array<ClassifiedChecklistName<TeamNameVerdict>>;
+}> {
+  // ── NEO-212: names an operator already ruled are not an entity ──────────
+  //
+  // THIS is why a skipped name never re-enters the wizard. Everything else
+  // about a skip is per-batch and transient — `entityReviewQueue` rows are
+  // deleted the moment the commit finishes — so without this read the same
+  // "CHECKLIST" header row, sponsor logo, or stray column heading would be
+  // handed back to the operator on every single re-fetch of the set, and the
+  // only way to clear the wizard would remain what it was before: creating a
+  // bogus player row for it.
+  //
+  // Dropped BEFORE the players/teams existence checks, not after, so a skipped
+  // name is not merely left out of the batch but never counted as "unknown" at
+  // all — the caller reports these counts to the operator, and a name they
+  // have already settled is not an open question. It also saves the lookup.
+  //
+  // Scoped to THIS selectorOption, matching the table's per-set key: a name
+  // that is noise on one checklist is very often a real player on the next.
+  //
+  // ── NEO-294: asked in BOUNDED SLICES, because one query is one transaction ─
+  //
+  // This list is every distinct player and team name the fetch observed, not
+  // just the unknown ones, so a real first-time sync hands it ~750 (2024 Topps
+  // Chrome). The budget counts one operation per CALL, and that query makes a
+  // call PER NAME, so ~750 names is ~750 operations in one transaction — past
+  // what is comfortable. CI run 35771938308's seed job died here — the
+  // operator's version being a bare `Server Error` at Confirm New Players,
+  // before the wizard opens, with no way forward at all.
+  //
+  // The action's `skippedKeys` slices (see `actionChecklistNameLookups`); the
+  // query path is bounded by its caller's name cap instead.
+  const skippedKeys = await lookups.skippedKeys([
+    ...Array.from(input.playerByNorm.keys(), (nameNormalized) => ({
+      kind: "player" as const,
+      nameNormalized,
+    })),
+    ...Array.from(input.teamByNorm.keys(), (nameNormalized) => ({
+      kind: "team" as const,
+      nameNormalized,
+    })),
+  ]);
+
+  /**
+   * NEO-254 — the year of the set these names were read off, resolved ONCE.
+   *
+   * One ancestor walk for the whole gate rather than one per name. Undefined
+   * for an orphaned subtree or a fixture with no year row, and every caller
+   * below treats that as "cannot narrow" — the name goes to a human, never to
+   * whichever row the index returned first.
+   */
+  const setYear = await lookups.setYear();
+  /**
+   * The team names that appeared on a card alongside this player, deduped and
+   * keyed by the NORMALIZED name — the same key `playerByNorm` and the
+   * `players` table itself use, so two spellings of one person pool their
+   * teams instead of filing apart. See `addCardTeamNames`.
+   */
+  const cardTeamNamesFor = (nameNormalized: string): string[] =>
+    input.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
+
+  const players: Array<ClassifiedChecklistName<PlayerNameVerdict>> = [];
+  for (const [normalized, name] of input.playerByNorm) {
+    if (skippedKeys.has(`player:${normalized}`)) {
+      players.push({ name, normalized, skipped: true });
+      continue;
+    }
+    const cardTeamNames = cardTeamNamesFor(normalized);
+    /**
+     * NEO-254 — THE "needs review" GATE for players, and the reason it is no
+     * longer `findByNameAndSport`.
+     *
+     * That query answers "a player, or null", which cannot express the case
+     * this ticket exists for. `(nameNormalized, sportId)` is a DEDUP key, not
+     * a unique one, and after the bulk preload a great many real names match
+     * more than one row — same name, same sport, different people. Handing
+     * back one of them read here as "known, nothing to review", so the name
+     * never reached an operator and the commit prelude then bound every card
+     * carrying it to whichever row the index happened to return first.
+     *
+     * The rule is the card-number invariant's rule (#7), applied to a name:
+     *   0 matches  → unknown, review it (unchanged);
+     *   1 match    → resolved, no review (unchanged);
+     *   2 or more  → UNRESOLVED. Only a human can say which one, so it goes
+     *                to the wizard, where `enrichment.existingCandidates`
+     *                puts the matching rows in front of them for a one-click
+     *                link.
+     */
+    const verdict = await lookups.resolvePlayer({
+      name,
+      // NEO-254 — the card's OWN year and team, which is what turns "2 or
+      // more" back into "1" for most collisions. See
+      // `players.narrowSameNamePlayersByCardYear`: a 1990 card is not about a
+      // man who retired in 1937, and when two contemporaries share a name the
+      // team printed on the card separates them. Undefined year → no
+      // narrowing at all, which is the pre-NEO-254 behaviour.
+      ...(setYear !== undefined ? { cardYear: setYear } : {}),
+      ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
+    });
+    players.push({
+      name,
+      normalized,
+      skipped: false,
+      verdict,
+      usedCardTeamNames: cardTeamNames.length > 0,
+    });
+  }
+
+  const teams: Array<ClassifiedChecklistName<TeamNameVerdict>> = [];
+  for (const [normalized, name] of input.teamByNorm) {
+    if (skippedKeys.has(`team:${normalized}`)) {
+      teams.push({ name, normalized, skipped: true });
+      continue;
+    }
+    const verdict = await lookups.resolveTeam({
+      name,
+      /*
+       * NEO-254 — the SET'S year, which this gate already knows.
+       *
+       * Without it a name two eras share never resolves: `findByNameAndSport`
+       * answers `null` for several candidates by design, so every "Winnipeg
+       * Jets" would be reported unknown and queued for review on EVERY sync of
+       * the set, forever, no matter how many times an operator answered it.
+       * The year is what picks the row whose era covers the cards in hand.
+       */
+      ...(setYear !== undefined ? { setYear } : {}),
+    });
+    teams.push({ name, normalized, skipped: false, verdict });
+  }
+
+  return { setYear, players, teams };
+}
+
+/**
+ * NEO-339 — `ChecklistNameLookups` for an ACTION: each read is its own
+ * `ctx.runQuery`, so each is its own transaction and the skip lookup can be
+ * sliced (NEO-294).
+ */
+function actionChecklistNameLookups(
+  ctx: ActionCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  sportId: Id<"selectorOptions">,
+): ChecklistNameLookups {
+  return {
+    // This is the EASY instance of NEO-296's shape and the reason is worth
+    // stating: `resolveUnknownsAndStartBatch` runs inside an ACTION
+    // (`resolveChecklistEntities` / `fetchCardChecklist`), and an action is not
+    // a transaction. Each `ctx.runQuery` below is its own transaction with its
+    // own budget, so slicing the list costs a few extra round trips and buys a
+    // complete answer — no cursor, no resumption, nothing partial to report.
+    // The union of every slice IS what one unbounded call used to return, so
+    // NOTHING is truncated here; the loop runs to the end of the list or throws.
+    //
+    // (The two HARD instances — a mutation that must page and resume — are
+    // `entityReviewQueue.decideAllRemaining` and `commitCardChecklistFinalize`.)
+    skippedKeys: async (candidates) => {
+      const keys = new Set<string>();
+      for (
+        let start = 0;
+        start < candidates.length;
+        start += SKIPPED_NAME_LOOKUP_PAGE
+      ) {
+        const slice = candidates.slice(start, start + SKIPPED_NAME_LOOKUP_PAGE);
+        for (const key of await ctx.runQuery(
+          internal.selectorOptions.findSkippedEntityNames,
+          { selectorOptionId, candidates: slice },
+        )) {
+          keys.add(key);
+        }
+      }
+      return keys;
+    },
+    setYear: async () =>
+      (await ctx.runQuery(
+        internal.selectorOptions.findSetYearForSelectorOptionQuery,
+        { selectorOptionId },
+      )) ?? undefined,
+    resolvePlayer: (args) =>
+      ctx.runQuery(internal.players.resolveNameForReview, {
+        name: args.name,
+        sportId,
+        ...(args.cardYear !== undefined ? { cardYear: args.cardYear } : {}),
+        ...(args.cardTeamNames ? { cardTeamNames: args.cardTeamNames } : {}),
+      }),
+    resolveTeam: async (args) => {
+      const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
+        name: args.name,
+        sportId,
+        ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
+      });
+      return existing
+        ? { teamId: existing._id, fullName: teamFullName(existing) }
+        : { teamId: null };
+    },
+  };
+}
+
+/**
+ * NEO-339 — `ChecklistNameLookups` for a QUERY: the same functions the
+ * action's queries run, called directly in one transaction. No skip records
+ * and no year without a `selectorOptionId` to scope them.
+ */
+function queryChecklistNameLookups(
+  ctx: QueryCtx,
+  selectorOptionId: Id<"selectorOptions"> | undefined,
+  sportId: Id<"selectorOptions">,
+): ChecklistNameLookups {
+  return {
+    skippedKeys: async (candidates) =>
+      selectorOptionId && candidates.length > 0
+        ? new Set(await skippedEntityNameKeys(ctx, selectorOptionId, candidates))
+        : new Set<string>(),
+    setYear: async () =>
+      selectorOptionId
+        ? await findSetYearForSelectorOption(ctx, selectorOptionId)
+        : undefined,
+    resolvePlayer: (args) =>
+      resolvePlayerNameForReview(ctx, { ...args, sportId }),
+    resolveTeam: async (args) => {
+      // `findByNameAndSport`'s own call, without the identity check this
+      // query's caller has already made.
+      const { teamId, candidates } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        args.name,
+        args.setYear,
+        { allowPastEra: true },
+      );
+      const row = teamId
+        ? candidates.find((c) => c._id === teamId)
+        : undefined;
+      return {
+        teamId,
+        candidates,
+        ...(row ? { fullName: teamFullName(row) } : {}),
+      };
+    },
+  };
+}
+
+/**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
  * marketplace path (folds in names observed on freshly-reconciled cards via
@@ -1323,23 +1703,11 @@ async function resolveUnknownsAndStartBatch(
   const playersWithNoExistingMatch: string[] = [];
   let batchId: string | undefined;
 
-  const playerByNorm = new Map<string, string>();
-  const teamByNorm = new Map<string, string>();
-  const addPlayer = (raw: string) => {
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    const norm = normalizePlayerName(trimmed);
-    if (!playerByNorm.has(norm)) playerByNorm.set(norm, trimmed);
-  };
-  const addTeam = (raw: string) => {
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    const norm = normalizeTeamName(trimmed);
-    if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
-  };
-
-  for (const p of args.additionalPlayerNames ?? []) addPlayer(p);
-  for (const t of args.additionalTeamNames ?? []) addTeam(t);
+  // NEO-339 — collected and classified by the shared functions, so
+  // `previewChecklistEntities` reads a draft's names by this exact rule.
+  const names = checklistNameCollector();
+  for (const p of args.additionalPlayerNames ?? []) names.addPlayer(p);
+  for (const t of args.additionalTeamNames ?? []) names.addTeam(t);
 
   // Custom cards (added via addCustomCard) can declare pending player /
   // team names that should also be surfaced as unknown until the user
@@ -1350,134 +1718,26 @@ async function resolveUnknownsAndStartBatch(
     selectorOptionId: args.selectorOptionId,
   });
   for (const r of customRows) {
-    for (const p of r.pendingPlayerNames ?? []) addPlayer(p);
-    for (const t of r.pendingTeamNames ?? []) addTeam(t);
+    for (const p of r.pendingPlayerNames ?? []) names.addPlayer(p);
+    for (const t of r.pendingTeamNames ?? []) names.addTeam(t);
   }
 
-  // ── NEO-212: names an operator already ruled are not an entity ──────────
-  //
-  // THIS is why a skipped name never re-enters the wizard. Everything else
-  // about a skip is per-batch and transient — `entityReviewQueue` rows are
-  // deleted the moment the commit finishes — so without this read the same
-  // "CHECKLIST" header row, sponsor logo, or stray column heading would be
-  // handed back to the operator on every single re-fetch of the set, and the
-  // only way to clear the wizard would remain what it was before: creating a
-  // bogus player row for it.
-  //
-  // Dropped BEFORE the players/teams existence checks, not after, so a skipped
-  // name is not merely left out of the batch but never counted as "unknown" at
-  // all — the caller reports these counts to the operator, and a name they
-  // have already settled is not an open question. It also saves the lookup.
-  //
-  // Scoped to THIS selectorOption, matching the table's per-set key: a name
-  // that is noise on one checklist is very often a real player on the next.
-  //
-  // ── NEO-294: asked in BOUNDED SLICES, because one query is one transaction ─
-  //
-  // This list is every distinct player and team name the fetch observed, not
-  // just the unknown ones, so a real first-time sync hands it ~750 (2024 Topps
-  // Chrome). The budget counts one operation per CALL, and that query makes a
-  // call PER NAME, so ~750 names is ~750 operations in one transaction — past
-  // what is comfortable. CI run 35771938308's seed job died here — the
-  // operator's version being a bare `Server Error` at Confirm New Players,
-  // before the wizard opens, with no way forward at all.
-  //
-  // This is the EASY instance of NEO-296's shape and the reason is worth
-  // stating: `resolveUnknownsAndStartBatch` runs inside an ACTION
-  // (`resolveChecklistEntities` / `fetchCardChecklist`), and an action is not
-  // a transaction. Each `ctx.runQuery` below is its own transaction with its
-  // own budget, so slicing the list costs a few extra round trips and buys a
-  // complete answer — no cursor, no resumption, nothing partial to report.
-  // The union of every slice IS what one unbounded call used to return, so
-  // NOTHING is truncated here; the loop runs to the end of the list or throws.
-  //
-  // (The two HARD instances — a mutation that must page and resume — are
-  // `entityReviewQueue.decideAllRemaining` and `commitCardChecklistFinalize`.)
-  const skipCandidates = [
-    ...Array.from(playerByNorm.keys(), (nameNormalized) => ({
-      kind: "player" as const,
-      nameNormalized,
-    })),
-    ...Array.from(teamByNorm.keys(), (nameNormalized) => ({
-      kind: "team" as const,
-      nameNormalized,
-    })),
-  ];
-  const skippedKeys = new Set<string>();
-  for (
-    let start = 0;
-    start < skipCandidates.length;
-    start += SKIPPED_NAME_LOOKUP_PAGE
-  ) {
-    const slice = skipCandidates.slice(start, start + SKIPPED_NAME_LOOKUP_PAGE);
-    for (const key of await ctx.runQuery(
-      internal.selectorOptions.findSkippedEntityNames,
-      { selectorOptionId: args.selectorOptionId, candidates: slice },
-    )) {
-      skippedKeys.add(key);
-    }
-  }
+  const classified = await classifyChecklistNames(
+    actionChecklistNameLookups(ctx, args.selectorOptionId, args.sportId),
+    {
+      playerByNorm: names.playerByNorm,
+      teamByNorm: names.teamByNorm,
+      cardTeamNamesByPlayer: args.cardTeamNamesByPlayer,
+    },
+  );
 
-  /**
-   * NEO-254 — the year of the set these names were read off, resolved ONCE.
-   *
-   * One ancestor walk for the whole gate rather than one per name. Undefined
-   * for an orphaned subtree or a fixture with no year row, and every caller
-   * below treats that as "cannot narrow" — the name goes to a human, never to
-   * whichever row the index returned first.
-   */
-  const setYear =
-    (await ctx.runQuery(
-      internal.selectorOptions.findSetYearForSelectorOptionQuery,
-      { selectorOptionId: args.selectorOptionId },
-    )) ?? undefined;
-  /**
-   * The team names that appeared on a card alongside this player, deduped and
-   * keyed by the NORMALIZED name — the same key `playerByNorm` and the
-   * `players` table itself use, so two spellings of one person pool their
-   * teams instead of filing apart. See `addCardTeamNames`.
-   */
-  const cardTeamNamesFor = (nameNormalized: string): string[] =>
-    args.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
-
-  for (const [normalized, name] of playerByNorm) {
-    if (skippedKeys.has(`player:${normalized}`)) continue;
-    const cardTeamNames = cardTeamNamesFor(normalized);
-    /**
-     * NEO-254 — THE "needs review" GATE for players, and the reason it is no
-     * longer `findByNameAndSport`.
-     *
-     * That query answers "a player, or null", which cannot express the case
-     * this ticket exists for. `(nameNormalized, sportId)` is a DEDUP key, not
-     * a unique one, and after the bulk preload a great many real names match
-     * more than one row — same name, same sport, different people. Handing
-     * back one of them read here as "known, nothing to review", so the name
-     * never reached an operator and the commit prelude then bound every card
-     * carrying it to whichever row the index happened to return first.
-     *
-     * The rule is the card-number invariant's rule (#7), applied to a name:
-     *   0 matches  → unknown, review it (unchanged);
-     *   1 match    → resolved, no review (unchanged);
-     *   2 or more  → UNRESOLVED. Only a human can say which one, so it goes
-     *                to the wizard, where `enrichment.existingCandidates`
-     *                puts the matching rows in front of them for a one-click
-     *                link.
-     */
-    const resolved = await ctx.runQuery(internal.players.resolveNameForReview, {
-      name,
-      sportId: args.sportId,
-      // NEO-254 — the card's OWN year and team, which is what turns "2 or
-      // more" back into "1" for most collisions. See
-      // `players.narrowSameNamePlayersByCardYear`: a 1990 card is not about a
-      // man who retired in 1937, and when two contemporaries share a name the
-      // team printed on the card separates them. Undefined year → no
-      // narrowing at all, which is the pre-NEO-254 behaviour.
-      ...(setYear !== undefined ? { cardYear: setYear } : {}),
-      ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
-    });
+  for (const entry of classified.players) {
+    if (entry.skipped) continue;
+    const { name } = entry;
+    const resolved = entry.verdict;
     // NEO-335 — recorded for the title context. A no-op when not asked for.
     if (resolved.playerId) {
-      args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
+      args.resolvedNames?.playerIdByNorm.set(entry.normalized, resolved.playerId);
     }
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
@@ -1513,34 +1773,22 @@ async function resolveUnknownsAndStartBatch(
           msg: "player_narrowed_by_card_year",
           selectorOptionId: args.selectorOptionId,
           sportId: args.sportId,
-          setYear,
+          setYear: classified.setYear,
           name,
           playerId: resolved.playerId,
           matchCount: resolved.matchCount,
-          usedCardTeamNames: cardTeamNames.length > 0,
+          usedCardTeamNames: entry.usedCardTeamNames ?? false,
         }),
       );
     }
   }
-  for (const [normalized, name] of teamByNorm) {
-    if (skippedKeys.has(`team:${normalized}`)) continue;
-    const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
-      name,
-      sportId: args.sportId,
-      /*
-       * NEO-254 — the SET'S year, which this gate already knows.
-       *
-       * Without it a name two eras share never resolves: `findByNameAndSport`
-       * answers `null` for several candidates by design, so every "Winnipeg
-       * Jets" would be reported unknown and queued for review on EVERY sync of
-       * the set, forever, no matter how many times an operator answered it.
-       * The year is what picks the row whose era covers the cards in hand.
-       */
-      ...(setYear !== undefined ? { setYear } : {}),
-    });
-    if (!existing) unknownTeams.push(name);
+  for (const entry of classified.teams) {
+    if (entry.skipped) continue;
+    if (entry.verdict.teamId === null) unknownTeams.push(entry.name);
     // NEO-335 — recorded for the title context, under the gate's own key.
-    else args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
+    else if (entry.verdict.fullName !== undefined) {
+      args.resolvedNames?.teamNameByNorm.set(entry.normalized, entry.verdict.fullName);
+    }
   }
 
   // NEO-92: kick off the review-wizard batch (background Wikidata preview
@@ -1689,6 +1937,13 @@ export const getCardChecklist = query({
       // `Object contains extra field` for every row that has it. This query is
       // `requireAdmin`, and the value is an admin's own Clerk subject.
       teamNoneConfirmedByUserId: v.optional(v.string()),
+      // NEO-339: the operator's "No player on this card" — the half of
+      // `missingPlayer` the row cannot say by itself (an empty `playerIds`
+      // is also "nobody linked yet"). Read client-side by
+      // `features/cardAttention.ts`, like `teamNoneConfirmedAt` above; the
+      // user id is audit only and listed because this validator is strict.
+      playerNoneConfirmedAt: v.optional(v.number()),
+      playerNoneConfirmedByUserId: v.optional(v.string()),
       attributes: v.optional(v.array(v.string())),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -4600,86 +4855,10 @@ export const renameSelectorOption = mutation({
  * to typical marketplace card numbers (1-500), which matches user
  * expectations for an appended custom slot.
  */
-/**
- * Walk a selectorOptions node's parent chain ONCE, collecting everything
- * listing generation needs from above the card: the setName display value
- * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
- * has identified the brand of the set at all (a ROLE off
- * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
- *
- * NEO-101 widened this from `findSetNameValue`, which returned early at the
- * setName level. The sport node sits ABOVE setName, so a second helper would
- * have meant a second walk over the same chain for every card previewed or
- * hand-added — the walk is the cost here, not the comparison, so both values
- * come out of one pass.
- *
- * Still deliberately narrow rather than a general ancestor-chain utility:
- * every other consumer of the chain already had its own reason to walk it
- * (commitCardChecklist resolves both in the prelude, once per commit, and
- * hands them to the chunks). Depth-bounded like
- * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
- * spin a query.
- */
-async function findAncestorLabels(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
-  node: any,
-): Promise<
-  {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } & TitleChainFacts
-> {
-  const labels: {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } = {};
-  if (!node) return labels;
-  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
-  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
-  // nearest short name). Collected on the way past: this walk already passes
-  // every one of them before it can stop.
-  const titleChain: any[] = [];
-  let current = node;
-  let depth = 0;
-  while (current && depth < 16) {
-    if (labels.setName === undefined) titleChain.push(current);
-    if (current.level === "setName" && labels.setName === undefined) {
-      labels.setName = current.value;
-    }
-    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
-    // rather than by a walk of its own: the chain is
-    // sport › year › manufacturer › setName › …, so walking UP from a card's
-    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
-    // break below waits for sport. Every chain that has a manufacturer level
-    // therefore passes through it before this loop can stop.
-    if (
-      current.level === "manufacturer" &&
-      labels.manufacturerBrandUnknown === undefined
-    ) {
-      labels.manufacturerBrandUnknown =
-        current.metadata?.isBrandUnknown === true;
-    }
-    if (current.level === "sport" && labels.sport === undefined) {
-      labels.sport = current.value;
-    }
-    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
-    // no manufacturer level at all — a setName hung straight off a sport, which
-    // is what most fixtures and some hand-built trees look like — would then
-    // never satisfy the condition and would walk to the depth cap, paying extra
-    // reads on every card previewed or hand-added to buy nothing. The value is
-    // already collected above by the time sport is reached, so stopping here
-    // loses nothing; leaving it absent is the same "no manufacturer role" answer
-    // as `false`, which is exactly how the generator reads it.
-    if (labels.setName !== undefined && labels.sport !== undefined) break;
-    const parentId: Id<"selectorOptions"> | undefined = current.parentId;
-    if (!parentId) break;
-    current = await ctx.db.get(parentId);
-    depth += 1;
-  }
-  return { ...labels, ...titleChainFacts(titleChain) };
-}
+// NEO-345 (Jason, 2026-10-18) — `findAncestorLabels` moved to
+// `storedCardTitle.ts` with the stored-card title mapping, so the autograph
+// cascade (`cardChecklist.ts`, which this module imports) can rebuild a title
+// through the same walk as Regenerate.
 
 
 /**
@@ -5789,11 +5968,12 @@ export const updateCard = mutation({
 
     if (typeof filtered.listingTitle === "string") {
       const trimmedTitle = filtered.listingTitle.trim();
-      if (trimmedTitle.length > LISTING_TITLE_MAX) {
-        throw new ConvexError(
-          `Listing title is ${trimmedTitle.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
-        );
-      }
+      // NEO-339 — and never BLANK. A card with no title cannot be listed, and
+      // a cleared one used to save silently. One rule for this mutation, the
+      // fixer, the drawer and the set-building tool (`lib/cards/
+      // listing-title-gate.ts`), with the over-length sentence unchanged.
+      const titleRefusal = listingTitleRefusal(trimmedTitle);
+      if (titleRefusal) throw new ConvexError(titleRefusal);
       filtered.listingTitle = trimmedTitle;
       // A human has now authored this title, so whether the GENERATOR's core
       // fit is no longer a question anyone is asking — `undefined` in a patch
@@ -5914,6 +6094,16 @@ export const updateCard = mutation({
     // Only a NON-EMPTY write clears it. `teamOnCardIds: []` is the operator
     // unlinking every team, which leaves the card teamless and the
     // confirmation still true.
+    // NEO-339: the player twin. A non-empty `playerIds` write (validated by
+    // `resolvePlayerIdsForWrite` above, so `filtered.playerIds` is what will
+    // actually be stored) retires the operator's "No player on this card" in
+    // the same patch. Derived, never an argument; `playerIds: []` leaves it.
+    const writtenPlayerIds = filtered.playerIds;
+    if (Array.isArray(writtenPlayerIds) && writtenPlayerIds.length > 0) {
+      filtered.playerNoneConfirmedAt = undefined;
+      filtered.playerNoneConfirmedByUserId = undefined;
+    }
+
     const writtenTeamIds = filtered.teamOnCardIds;
     if (Array.isArray(writtenTeamIds) && writtenTeamIds.length > 0) {
       filtered.teamNoneConfirmedAt = undefined;
@@ -5930,6 +6120,33 @@ export const updateCard = mutation({
       // operator unlinking every team, which leaves the typed name as the only
       // thing the row still knows about its team.
       filtered.pendingTeamNames = undefined;
+    }
+
+    // NEO-339 — a side's typed names are retired only by LINKING that side
+    // (`UnreviewedNameFixer`'s `clearsCard`, shared with the set-building tool
+    // in `lib/set-build/unreviewed-name-gate.ts`). A write that drops typed
+    // names while the side ends up with no link would make the card look
+    // answered with nothing on it — the half-answer that gate exists to stop —
+    // so it is refused here too, whoever sent it. Runs after the derived team
+    // clear above, which is itself a link.
+    for (const side of ["player", "team"] as const) {
+      const key = side === "player" ? "pendingPlayerNames" : "pendingTeamNames";
+      const written = filtered[key];
+      if (!Array.isArray(written)) continue;
+      const stored = (await loadStoredCard())[key] ?? [];
+      // Compared trimmed: `normalizePendingNames` above trims what was sent.
+      const kept = new Set((written as string[]).map((name) => name.trim()));
+      const dropsNames = stored.some((name) => name.trim() !== "" && !kept.has(name.trim()));
+      if (!dropsNames) continue;
+      const linkKey = side === "player" ? "playerIds" : "teamOnCardIds";
+      const ids = Array.isArray(filtered[linkKey])
+        ? (filtered[linkKey] as unknown[])
+        : ((await loadStoredCard())[linkKey] ?? []);
+      if (ids.length === 0) {
+        throw new ConvexError(
+          `Link a ${side} to this card before clearing the ${side} names typed on it.`,
+        );
+      }
     }
 
     // NEO-221 — an explicitly-emptied pending-name list is stored as the
@@ -6037,65 +6254,17 @@ export const previewListingTitle = query({
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("previewListingTitle: no such card");
 
-    // Deduped and BOUNDED before any read, exactly as `teamOnCardIds` is
-    // below. NEO-101 originally bounded this with a LOCAL constant of its own
-    // (12) because `updateCard.playerIds` was written unvalidated and this
-    // query was the only thing standing between one card id and an unbounded
-    // sequential `ctx.db.get` walk. NEO-246 routed that write through
-    // `resolvePlayerIdsForWrite`, so the stopgap is gone and the bound here is
-    // `MAX_CARD_PLAYERS` — the same number the write path enforces. A row that
-    // went through the supported path can therefore never be truncated by it;
-    // the cap remains for rows written before that validation landed, or by a
-    // future caller that skips it. Deduping still earns its keep for the same
-    // rows: a repeat must not be read twice, or printed twice.
-    const previewPlayerIds = [...new Set(card.playerIds ?? [])].slice(
-      0,
-      MAX_CARD_PLAYERS,
-    );
-    const resolvedPlayerNames: string[] = [];
-    for (const playerId of previewPlayerIds) {
-      const player = await ctx.db.get(playerId);
-      // A dangling id is a data problem, not a reason to fail a preview —
-      // skip it and let the chips show what actually resolved.
-      if (player) resolvedPlayerNames.push(player.name);
-    }
-    const playerNames =
-      resolvedPlayerNames.length > 0
-        ? resolvedPlayerNames
-        : (card.pendingPlayerNames ?? []);
-
-    // Teams get the same treatment as players — deduped and BOUNDED before any
-    // read. The bound here is `MAX_CARD_TEAMS`, which is what `updateCard`
-    // already enforces on the write path, so a row that went through the
-    // supported path can never be truncated by it; the cap exists for rows
-    // written before that validation landed, or by a future caller that skips
-    // it.
-    const previewTeamIds = [...new Set(card.teamOnCardIds ?? [])].slice(
-      0,
-      MAX_CARD_TEAMS,
-    );
-    const resolvedTeamNames: string[] = [];
-    for (const teamId of previewTeamIds) {
-      const team = await ctx.db.get(teamId);
-      // NEO-236: full name, matching what the commit path stores on the card.
-      if (team) resolvedTeamNames.push(teamFullName(team));
-    }
-    // Same fallback as `playerNames`: a hand-added card carries the names the
-    // operator typed until a sync resolves them into `teams` rows, and those
-    // are the operator's answer.
-    const teamNames =
-      resolvedTeamNames.length > 0
-        ? resolvedTeamNames
-        : (card.pendingTeamNames ?? []).slice(0, MAX_CARD_TEAMS);
-
-    const features: Record<string, string> = card.features ?? {};
+    // Players and teams: deduped and BOUNDED before any read
+    // (`MAX_CARD_PLAYERS` / `MAX_CARD_TEAMS`, the numbers the write path
+    // enforces; NEO-101 / NEO-246), a dangling id skipped rather than failing
+    // the preview, and a hand-added card's typed `pendingPlayerNames` /
+    // `pendingTeamNames` as the fallback: both are the operator's answer.
+    // NEO-345 — that resolution, the ancestor walk and the field mapping live
+    // in `storedCardTitle.ts`, shared with the autograph cascade's title
+    // rebuild, so Regenerate and the rebuild cannot disagree.
+    const { playerNames, teamNames } = await storedCardTitleNames(ctx, card);
     const parentNode = await ctx.db.get(card.selectorOptionId);
-    const {
-      setName: setNameValue,
-      sport: sportValue,
-      manufacturerBrandUnknown,
-      ...chainFacts
-    } = await findAncestorLabels(ctx, parentNode);
+    const chain = await findAncestorLabels(ctx, parentNode);
 
     // NEO-335 — the insert branch's own mapping (`listingInputsForCard`), fed
     // the STORED row's `features` as the merged snapshot, rather than a
@@ -6104,23 +6273,10 @@ export const previewListingTitle = query({
     // print run/verbatim variation, the set name, the NEO-272 brand ROLE and
     // the sport — plus the chain's insert role, parallel leaf and short name,
     // so Regenerate and the TitleFixer read the short name an operator set.
-    const inputs: ListingCardInputs = listingInputsForCard(
-      {
-        cardNumber: card.cardNumber,
-        isRookie: card.isRookie,
-        isRelic: card.isRelic,
-        printRun: card.printRun,
-        cardVariation: card.cardVariation,
-      },
-      {
-        sportValue: sportValue ?? "",
-        setNameValue,
-        manufacturerBrandUnknown,
-        ...chainFacts,
-      },
-      { playerNames, teamNames },
-      features,
-    );
+    const inputs: ListingCardInputs = storedCardListingInputs(card, chain, {
+      playerNames,
+      teamNames,
+    });
 
     const { title, coreFits, dropped } = assessListingTitle(inputs);
     return {
@@ -8038,7 +8194,8 @@ export const setVariantTypePlatformData = mutation({
     // NEO-137: the incoming ids must be resolved to SLOTS. Spreading them
     // straight over `row.platformData` used to produce a mixed object
     // ({ bsc: { b0: "x" }, sportlots: "884412" }) that the schema rejects —
-    // which broke the Base Set picker, and with it setup.yaml.
+    // which broke the Base Set picker, and with it the E2E seed (then
+    // setup.yaml; since NEO-339 the scripted seed, `npm run setbuild`).
     let working: {
       platformData: typeof row.platformData;
       platformLabels: typeof row.platformLabels;
@@ -13196,6 +13353,1028 @@ const commitCardValidator = v.object({
 });
 
 /**
+ * NEO-339 — one node of the chain a checklist fetch is scoped from.
+ * Structurally what `getAncestorChain` returns, so a real chain passes as-is;
+ * `previewCardChecklist`'s cold form also builds the variant-type and insert
+ * nodes of a row that does not exist yet, carrying only ids it has confirmed
+ * against the set's own marketplace lists.
+ */
+type ChecklistChainNode = ResolvableRow & {
+  /** The row's id; present on every chain read from the DB. */
+  _id?: Id<"selectorOptions">;
+  value: string;
+  metadata?: { cardNumberPrefix?: string; setNamePrefix?: string } | null;
+};
+
+/** What `fetchAndMatchChecklist` concluded. */
+type ChecklistMatchOutcome =
+  | {
+      /** Neither side could be scoped. Nothing was fetched. */
+      kind: "noIds";
+      message: string;
+    }
+  | {
+      kind: "matched";
+      autoMatchedCards: Array<{ card: ReconciledCard; confidence: number }>;
+      unmatchedBscCards: ReconciledCard[];
+      unmatchedSlCards: ReconciledCard[];
+      /** Every card of the three buckets, in the order they were built. */
+      out: ReconciledCard[];
+      bscCollisions: Array<{
+        cardNumber: string;
+        keptSource: string;
+        skippedSource: string;
+      }>;
+      slCollisions: Array<{
+        cardNumber: string;
+        keptSource: string;
+        skippedSource: string;
+      }>;
+    };
+
+/**
+ * NEO-339 — the read half of `fetchCardChecklist`: resolve the chain, fetch
+ * BSC and SportLots, and reconcile the cards into the three buckets. Nothing
+ * is written. Everything after it (the candidate batch, the team lookup and
+ * its `resolveCandidateTeams` writes) stays in `fetchCardChecklist`, which
+ * calls this and then stages exactly as before; `previewCardChecklist`
+ * calls it and returns the buckets.
+ *
+ * `report` is filled as soon as each value is known, so a caller's `catch`
+ * can still say which sides were attached or paused when this throws.
+ * `committedFor` is the row whose committed cards carry the operator's stored
+ * pairings (NEO-137 sticky pairing) and NEO-251 roster evidence; absent for a
+ * row that does not exist yet, which has neither. `marketplaceCalls` counts
+ * the adapter calls made.
+ */
+async function fetchAndMatchChecklist(
+  ctx: ActionCtx,
+  args: {
+    chain: ChecklistChainNode[];
+    committedFor?: Id<"selectorOptions">;
+    report: {
+      attachedSides: Array<"bsc" | "sportlots">;
+      pausedSides: Array<"bsc" | "sportlots">;
+      marketplaceCalls: number;
+    };
+  },
+): Promise<ChecklistMatchOutcome> {
+  const { chain, report } = args;
+  report.attachedSides = attachedSidesOf(chain);
+  let marketplaceCalls = 0;
+  try {
+    const filters: Record<string, string> = {};
+    // NEO-6: both sides may now be arrays at any level. We keep the
+    // arrays here and fan out / pass through downstream.
+    const slPlatformFilters: Record<string, string[]> = {};
+    // NEO-96: `sport` used to be `ancestor.value.toLowerCase()` — a BSC wire
+    // format — and that string was persisted onto teams/players by
+    // commitCardChecklist. It is now the sport ROW's id, which the CLIENT
+    // resolves off this same chain (see the `returns` note above); all this
+    // handler still needs from the sport row is a label for the log line.
+    let sportLabel: string | undefined;
+    let cardNumberPrefix: string | undefined;
+
+    for (const ancestor of chain) {
+      filters[ancestor.level] = ancestor.value;
+      if (ancestor.level === "sport") {
+        sportLabel = ancestor.value;
+      }
+      if (ancestor.metadata?.cardNumberPrefix) {
+        cardNumberPrefix = ancestor.metadata.cardNumberPrefix;
+      }
+      // NEO-137: adapters filter on marketplace IDs; slots are internal.
+      const ancestorSlIds = slotIds(ancestor, "sportlots");
+      if (ancestorSlIds.length > 0) {
+        slPlatformFilters[ancestor.level] = ancestorSlIds;
+      }
+      // BSC is bucketed by FACET, not by level — see `bscFacetPlan` below.
+    }
+
+    // NEO-239 — PER-SIDE resolvability replaces the custom-subtree gate AND
+    // the BSC-only precondition that followed it.
+    //
+    // Both used to be all-or-nothing for the whole fetch: an `isCustom`
+    // ancestor skipped both marketplaces forever, and a missing BSC slug
+    // failed the entire call even when SportLots could have answered. Each
+    // side is now judged on its own, and a side that cannot be scoped is
+    // SKIPPED — never queried by an NB display value, which is what the
+    // removed fallbacks did and what the old gate was the only thing
+    // standing in front of.
+    //
+    // BSC needs an id at sport / year / setName and a `variant`-TAGGED slot
+    // on the variantType row (`marketplaceResolvability.ts` explains why the
+    // tag, not merely an id, is the requirement). SportLots needs sport and
+    // year; it has no setName-level concept and resolves the set's
+    // radio-button id from the deepest variant row's slot.
+    // No `level`: this is the CHECKLIST fetch, not a selector-options one.
+    // `fetchSportLotsChecklist` scopes itself from the deepest variant row's
+    // slot id and `fetchBscChecklist` from the facet plan, so the served-level
+    // and per-level scope tables above do not describe it.
+    //
+    // NEO-252 — and `bscScope: "checklist"` for the same reason, one level
+    // deeper: BSC's half of the gate is judged on the FACET FILTERS below
+    // (`bscFacetPlan`), which is the object the request carries, rather than
+    // on a walk over NB levels. The two disagreed for the NEO-189 shape (a
+    // BSC `setName` id attached to the leaf), and the disagreement always
+    // fell the same way — the gate skipped a side the adapter would have
+    // answered.
+    //
+    // NEO-287 — and the pause, which makes a side unresolvable for this run
+    // whatever its ids say. A paused side is not fetched, so nothing on it
+    // is compared, paired, or reported missing.
+    //
+    // NEO-312 — and `leafGate`: an insert or parallel is fetched only on the
+    // sides it holds an id of its own on. Without it a parallel with no BSC
+    // id queried its INSERT's variantName (deepest-contributor rule, one row
+    // up) and SportLots' `parallel || insert || …` precedence did the same,
+    // so the insert's cards arrived filed as the parallel's.
+    const resolution = resolvableSides(chain, {
+      bscScope: "checklist",
+      paused: pausedSides(),
+      leafGate: true,
+    });
+    report.pausedSides = pausedSideList(resolution);
+    const pausedList = report.pausedSides;
+    if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
+      console.log(
+        `[fetchCardChecklist] no marketplace ids on this path — ` +
+          `bsc_missing=${missingSummary(resolution.bsc)} ` +
+          `sl_missing=${missingSummary(resolution.sportlots)}`,
+      );
+      // Nothing to pair. The set's own hand-added cards can still carry
+      // unresolved pendingPlayerNames / pendingTeamNames, but resolving those
+      // is `resolveChecklistEntities`' job (NEO-137) — it runs on the
+      // confirmed set and handles the no-marketplace case identically.
+      //
+      // NEO-287 — when a pause is why, say so: the paused sentence, then the
+      // no-ids sentence for the other side. `NO_MARKETPLACE_IDS_MESSAGE`
+      // alone would tell the operator to attach an id they may already have.
+      return {
+        kind: "noIds",
+        message:
+          pausedList.length > 0
+            ? (unaskedSidesNotice(
+                pausedList,
+                notifiableSkippedSides(resolution),
+              ) ?? NO_MARKETPLACE_IDS_MESSAGE)
+            : NO_MARKETPLACE_IDS_MESSAGE,
+      };
+    }
+    if (!resolution.bsc.resolvable) {
+      console.log(
+        `[fetchCardChecklist] BSC skipped — missing=${missingSummary(resolution.bsc)}`,
+      );
+    }
+    if (!resolution.sportlots.resolvable) {
+      console.log(
+        `[fetchCardChecklist] SportLots skipped — missing=${missingSummary(resolution.sportlots)}`,
+      );
+    }
+
+    // NEO-189 — bucket the chain's BSC ids by the FACET each one belongs to
+    // rather than by the NB level of the row holding it.
+    //
+    // This is the whole point of the ticket. BSC splits Topps into Series 1
+    // and Series 2 at `setName` while SportLots has one set, so a **setName**
+    // id has to hang off the NB Base (`variantType`) row — and the old
+    // level-keyed bucketing threw those away (`variantType` was skipped,
+    // `parallel` had no facet at all). An id now follows what it IS.
+    //
+    // Untagged slots keep the level rule, so a row attached before this
+    // change queries exactly what it queried before.
+    const bscFacetPlan = resolveBscFacetFilters(chain);
+
+    console.log(
+      `[fetchCardChecklist] sport=${sportLabel} prefix=${cardNumberPrefix}`,
+      `filters:`, filters,
+      `bscFacets:`, bscFacetPlan.filters,
+    );
+
+    // NEO-6: SL adapter takes one set ID at a time. When the active
+    // SL level has multiple attached IDs (operator-attached extras),
+    // fan out one call per ID and tag each returned card with its
+    // source set ID. Dedup by cardNumber across the merged result —
+    // first source wins, conflicts are logged.
+    type SlCard = {
+      cardNumber: string;
+      cardName: string;
+      team?: string;
+      teams?: string[];
+      players?: string[];
+      attributes?: string[];
+      printRun?: number;
+      autographType?: string;
+      cardVariation?: string;
+      /** NEO-189 — SL tags a variation in the description and reuses the
+       *  parent's card number. */
+      isVariation?: boolean;
+      /** NEO-339 — see `SlListcardsCard.mononymHint`. Never a player as-is. */
+      mononymHint?: string;
+      platformRef?: string;
+      sportlotsRef?: string;
+      sourceSlSetId?: string;
+    };
+
+    // Find which level (if any) has multiple attached SL IDs. Phase 1
+    // expects this only at variantType/insert/parallel rows; warn if it
+    // appears elsewhere so we notice unexpected data shape.
+    //
+    // Cap to MAX_SL_FAN_OUT to bound the number of parallel SL HTTP
+    // calls per fetch (matches `MAX_ATTACHED_PER_SIDE` on the attach
+    // path; defense-in-depth in case extras were attached pre-cap).
+    const MAX_SL_FAN_OUT = 10;
+    const slFanOut: { level: string; ids: string[] } | null = (() => {
+      for (const [lvl, ids] of Object.entries(slPlatformFilters)) {
+        if (ids.length > 1) {
+          if (!["variantType", "insert", "parallel"].includes(lvl)) {
+            console.warn(
+              `[fetchCardChecklist] unexpected multi-SL at level=${lvl} (phase-1 expects variant levels only)`,
+            );
+          }
+          const cappedIds = ids.slice(0, MAX_SL_FAN_OUT);
+          if (cappedIds.length < ids.length) {
+            console.warn(
+              `[fetchCardChecklist] SL fan-out capped at ${MAX_SL_FAN_OUT} (had ${ids.length} attached at level=${lvl})`,
+            );
+          }
+          return { level: lvl, ids: cappedIds };
+        }
+      }
+      return null;
+    })();
+
+    // NEO-189 — card numbers seen from more than one source set, on either
+    // marketplace. Surfaced to the operator in the result message, because
+    // two attached sets legitimately overlapping is a fact about the mapping
+    // they just built and only they can say whether it was intended. Every
+    // row is kept on both sides; this is a report, not a drop.
+    const slCollisions: Array<{
+      cardNumber: string;
+      keptSource: string;
+      skippedSource: string;
+    }> = [];
+
+    const callSl = async (
+      perCallFilters: Record<string, string>,
+      sourceId: string | undefined,
+    ): Promise<SlCard[]> => {
+      marketplaceCalls++;
+      const result = await ctx.runAction(
+        api.adapters.sportlots.fetchSportLotsChecklist,
+        {
+          parentFilters: filters,
+          platformFilters: perCallFilters,
+        },
+      ).catch((err) => {
+        console.error(`[fetchCardChecklist] SportLots error:`, err);
+        return { success: false, cards: [] as SlCard[], message: String(err) };
+      });
+      if (!result.success) return [];
+      return (result.cards as SlCard[]).map((c) => ({
+        ...c,
+        sourceSlSetId: sourceId,
+      }));
+    };
+
+    // SL and BSC are independent network fetches. Run both concurrently
+    // with Promise.allSettled so one marketplace's outage can never reject
+    // the other.
+
+    const fetchSl = async (): Promise<SlCard[]> => {
+      // Adapter signature is record<string,string>; flatten single-ID
+      // entries down to scalars. Multi-ID entries are handled by fanning
+      // out one call per ID at the fan-out level.
+      const singletonFilters: Record<string, string> = {};
+      for (const [lvl, ids] of Object.entries(slPlatformFilters)) {
+        if (ids.length === 1) singletonFilters[lvl] = ids[0];
+      }
+      if (!slFanOut) {
+        // No fan-out needed; single call (still tag source id when
+        // exactly one SL set is attached at a variant level).
+        const variantSlIds = ["variantType", "insert", "parallel"]
+          .map((lvl) => slPlatformFilters[lvl]?.[0])
+          .filter(Boolean) as string[];
+        const sourceId =
+          variantSlIds.length > 0 ? variantSlIds[variantSlIds.length - 1] : undefined;
+        return await callSl(singletonFilters, sourceId);
+      }
+      // Multi-ID fan-out: one call per ID at the fan-out level.
+      const perIdResults = await Promise.all(
+        slFanOut.ids.map((slId) => {
+          const perCall = { ...singletonFilters, [slFanOut.level]: slId };
+          return callSl(perCall, slId);
+        }),
+      );
+      const merged = mergeSlFanOut(perIdResults);
+      for (const col of merged.collisions) {
+        slCollisions.push(col);
+        console.warn(
+          `[fetchCardChecklist] SL cardNumber in two source sets: ${col.cardNumber} ` +
+            `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
+        );
+      }
+      return merged.cards;
+    };
+
+    type BscFetchResult = {
+      success: boolean;
+      cards: any[];
+      message?: string;
+      collisions?: Array<{
+        cardNumber: string;
+        keptSource: string;
+        skippedSource: string;
+      }>;
+    };
+    const fetchBsc = async (): Promise<BscFetchResult> => {
+      marketplaceCalls++;
+      // The adapter fans out internally — one request per BSC source set.
+      // BSC does NOT OR multi-value facets: two values on one facet return
+      // 200 OK with zero rows (measured on dev 2026-08-12, 1996 Score).
+      // The comment that used to be here asserted the opposite.
+      //
+      // NEO-189: `facetFilters`, not `platformFilters`. The level-keyed form
+      // cannot express a setName id attached to a Base row, which is the
+      // split this feature exists for.
+      return await ctx.runAction(
+        api.adapters.buysportscards.fetchBscChecklist,
+        {
+          parentFilters: filters,
+          facetFilters: bscFacetPlan.filters,
+          ...(bscFacetPlan.sourceFacet
+            ? { sourceFacet: bscFacetPlan.sourceFacet }
+            : {}),
+        },
+      ).catch((err) => {
+        console.error(`[fetchCardChecklist] BSC error:`, err);
+        return { success: false, cards: [] as any[], message: String(err) };
+      });
+    };
+
+    // NEO-239 — an unresolvable side is never called. Its result is the
+    // empty one, and because it produced no cards it can contribute no
+    // `coveredSides` to the diff either (that set is derived from the
+    // incoming cards' refs, so it fails closed on its own).
+    const [slSettled, bscSettled] = await Promise.allSettled([
+      resolution.sportlots.resolvable
+        ? fetchSl()
+        : Promise.resolve([] as SlCard[]),
+      resolution.bsc.resolvable
+        ? fetchBsc()
+        : Promise.resolve({ success: false, cards: [] } as BscFetchResult),
+    ]);
+
+    const slCards: SlCard[] =
+      slSettled.status === "fulfilled" ? slSettled.value : [];
+    const bscResult: BscFetchResult =
+      bscSettled.status === "fulfilled"
+        ? bscSettled.value
+        : { success: false, cards: [] };
+
+    const bscCollisions = bscResult.collisions ?? [];
+    const bscCards = (bscResult.success ? bscResult.cards : []) as Array<{
+      cardNumber: string;
+      cardName: string;
+      team?: string;
+      teams?: string[];
+      players?: string[];
+      attributes?: string[];
+      printRun?: number;
+      autographType?: string;
+      cardVariation?: string;
+      /** NEO-189 — BSC marks a variation with a VAR token and/or a `VAR:`
+       *  description, and suffixes the card number. */
+      isVariation?: boolean;
+      platformRef?: string;
+      sportlotsRef?: string;
+      sourceBscSetSlug?: string;
+    }>;
+
+    // Index SL by both cardNumber and (after prefix-strip) for prefix-aware
+    // BSC matching, AND by sportlotsRef so BSC's built-in cross-reference
+    // can short-circuit fuzzy matching.
+    const slByNumber = new Map<string, typeof slCards[0]>();
+    const slByRef = new Map<string, typeof slCards[0]>();
+    for (const c of slCards) {
+      // NEO-189: prefer the NON-variation row for a given number.
+      //
+      // SportLots files a card and its variations under ONE number — "#11
+      // Alec Bohm", "#11 Alec Bohm [ VAR Action Image ]", "#11 … [ VAR
+      // Throwback Alternate ]". A plain last-write-wins index therefore
+      // answered `get("11")` with whichever variation happened to be scraped
+      // last, and BSC's base #11 paired with a variation. Wrong, and silent.
+      //
+      // A bare BSC number means the base card, so that is what this index
+      // must return. Variations are paired to variations separately below.
+      //
+      // NEO-339: "first non-variation row" is only an answer when there is
+      // ONE. A number carrying two (or two BSC cards on one number) is
+      // settled by `decideDuplicateNumberPairs` below and never read here.
+      const prev = slByNumber.get(c.cardNumber);
+      if (!prev || (prev.isVariation && !c.isVariation)) {
+        slByNumber.set(c.cardNumber, c);
+      }
+      if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
+    }
+
+    // NEO-189 — pair BSC variations to SportLots variations of the same card.
+    //
+    // Neither side's number can do this on its own: BSC suffixes a variation
+    // (`1b`), SportLots reuses the parent's number and tags the description.
+    // So `slByNumber.get("1b")` finds nothing, the fuzzy name fallback cannot
+    // help (the base already claimed that SL row, and a "Legend" variation may
+    // be a different player entirely), and every variation lands in the
+    // BSC-only column. A real 2025 Topps sync put 393 of them there.
+    //
+    // Grouped by card-number STEM — the one thing both sides agree on — and
+    // matched on the variation label (exact, then containment), then by
+    // player for what the labels leave, exactly one both ways (NEO-339: a
+    // bare `[ VAR ]` has no label). Anything it will not pair confidently is
+    // left for the operator rather than guessed, which is the same rule the
+    // commit-time parent resolution follows. See decideVariationPairs.
+    const variationPairs = decideVariationPairs({ bscCards, slCards });
+    if (variationPairs.stats.bscVariations > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "variation_pairing",
+          bscVariations: variationPairs.stats.bscVariations,
+          slVariations: variationPairs.stats.slVariations,
+          paired: variationPairs.pairs.size,
+          byNumber: variationPairs.stats.byNumber,
+          byPlayer: variationPairs.stats.byPlayer,
+          unmatched: variationPairs.unmatched.size,
+        }),
+      );
+    }
+
+    // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
+    // a re-sync, otherwise a shared marketplace set has to be hand-paired
+    // again on every fetch and the assignment is not really persisted.
+    //
+    // Re-deriving from scratch is not good enough: the whole point of this
+    // ticket is that the BSC↔SL pairing is NOT inferable (two series can each
+    // contain a card #1), so a fresh guess would silently overwrite the
+    // operator's answer with the wrong one.
+    //
+    // Already-committed rows carry the answer in platformData.{bsc,sportlots}.
+    // Index the SL ref an operator previously bound to each BSC ref and
+    // honour it ahead of every heuristic below.
+    const committed = args.committedFor
+      ? await ctx.runQuery(api.selectorOptions.getCardChecklist, {
+          selectorOptionId: args.committedFor,
+        })
+      : [];
+    const storedSlRefByBscRef = new Map<string, string>();
+    const storedSlRefs = new Set<string>();
+    for (const row of committed) {
+      const bscRef = row.platformData?.bsc?.ref;
+      const slRef = row.platformData?.sportlots?.ref;
+      if (slRef) storedSlRefs.add(slRef);
+      if (bscRef && slRef) storedSlRefByBscRef.set(bscRef, slRef);
+    }
+    const slByPlatformRef = new Map<string, typeof slCards[0]>();
+    // INDISTINGUISHABLE (NEO-137 accounting): two SportLots rows sharing BOTH
+    // card number and description. SL exposes no per-card id, so the
+    // description IS the identity (NEO-91) — when it collides there is
+    // genuinely nothing left to tell the rows apart except ordinal position
+    // in the scrape, which is not stable across re-scrapes. Report it; do
+    // NOT guess, because a wrong guess here silently binds a card to the
+    // wrong marketplace row and looks identical to a correct one.
+    const indistinguishableSlRefs: string[] = [];
+    for (const c of slCards) {
+      if (!c.platformRef) continue;
+      if (slByPlatformRef.has(c.platformRef)) {
+        indistinguishableSlRefs.push(c.platformRef);
+        continue; // first occurrence wins; the duplicate is reported, not used
+      }
+      slByPlatformRef.set(c.platformRef, c);
+    }
+    if (indistinguishableSlRefs.length > 0) {
+      // NEO-251 security review — a SportLots ref IS the card description,
+      // i.e. text chosen by whoever listed the card, and this line is read in
+      // a terminal and in Convex's dashboard. `safeMarketplaceText` neutralises
+      // the newline that would forge a second log entry and the bidi controls
+      // that would reorder the line as an operator reads it, and caps each ref
+      // so a 900-card set cannot emit one line of tens of kilobytes. The COUNT
+      // is what an operator acts on; the sample is a debugging aid.
+      console.warn(
+        `[fetchCardChecklist] ${indistinguishableSlRefs.length} SportLots row(s) ` +
+          `are indistinguishable (same card number AND description) — only ` +
+          `ordinal position separates them and that is not stable. Not guessed: ` +
+          indistinguishableSlRefs
+            .slice(0, 5)
+            .map(safeMarketplaceText)
+            .join(" | "),
+      );
+    }
+    // A stored ref that no longer appears in the marketplace's response is
+    // ORPHANED — SportLots edited the description out from under us. Report
+    // it; never silently drop the card it belonged to.
+    const orphanedSlRefs = [...storedSlRefs].filter(
+      (ref) => !slByPlatformRef.has(ref),
+    );
+    if (orphanedSlRefs.length > 0) {
+      console.warn(
+        `[fetchCardChecklist] ${orphanedSlRefs.length} stored SportLots ref(s) ` +
+          `no longer resolve — the marketplace changed the description: ` +
+          orphanedSlRefs.slice(0, 5).map(safeMarketplaceText).join(" | "),
+      );
+    }
+
+    // NEO-137: three buckets, not one flat list. No NB card exists until
+    // the operator pairs — same vocabulary as set reconciliation (matched /
+    // unmatched-BSC / unmatched-SL) and the same keep shelf for a
+    // deliberately-single-sided card.
+    //
+    // This is also what holds a shared SL set's sibling-owned cards: when
+    // two NB rows draw from one SL set, the other row's cards simply land
+    // in unmatchedSl and are dropped unless the operator keeps them, rather
+    // than being materialised as bogus cards under this row.
+    const autoMatchedCards: Array<{
+      card: ReconciledCard;
+      confidence: number;
+    }> = [];
+    const unmatchedBscCards: ReconciledCard[] = [];
+    const unmatchedSlCards: ReconciledCard[] = [];
+    // `out` stays as the union of everything, purely so the team-lookup and
+    // entity-bucketing passes below can walk every candidate once.
+    const out: ReconciledCard[] = [];
+    // NEO-189: claims are keyed by SL's REAL identity — its platformRef, the
+    // full row description — not by card number.
+    //
+    // SportLots deliberately reuses a card number across variation rows:
+    // "#11 Alec Bohm" and "#11 Alec Bohm [ VAR Action Image ]" are different
+    // cards sharing the number 11. That is precisely why platformRef is the
+    // description (NEO-91).
+    //
+    // Keying claims by NUMBER meant the first BSC card to claim SL's "#11"
+    // marked every other SL row numbered 11 as taken. Its variations were
+    // then invisible on both sides — not matched, and skipped by the
+    // leftover loop that builds unmatchedSl — so they vanished silently.
+    // A real 2025 Topps sync reported "350 paired, 393 BSC-only, 0 SL-only":
+    // the zero was not "SportLots had nothing extra", it was the variations
+    // being discarded.
+    //
+    // Falls back to the number only when a row has no ref, which is the one
+    // case where nothing better exists.
+    const claimedSlRefs = new Set<string>();
+    // NEO-339 — the cards no marketplace named a player on whose SportLots row
+    // carried a one-word name (`mononymHint`). Settled against NB's players
+    // after the merge; see `applyMononymHints`.
+    const mononymHintByCard = new Map<ReconciledCard, string>();
+    const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
+      c.platformRef ?? `#${c.cardNumber}`;
+
+    const strippedNumberOf = (bsc: (typeof bscCards)[number]) =>
+      cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
+        ? bsc.cardNumber.slice(cardNumberPrefix.length)
+        : bsc.cardNumber;
+    // Everything that outranks the number lookup, in rank order. One function
+    // so the duplicate-number pass below and the walk agree on which BSC cards
+    // ever reach the number at all.
+    const shortCircuitSl = (
+      bsc: (typeof bscCards)[number],
+    ): (typeof slCards)[number] | undefined => {
+      // Operator's stored answer first — it outranks every heuristic.
+      const storedSlRef = bsc.platformRef
+        ? storedSlRefByBscRef.get(bsc.platformRef)
+        : undefined;
+      return (
+        (storedSlRef ? slByPlatformRef.get(storedSlRef) : undefined)
+        || (bsc.sportlotsRef ? slByRef.get(bsc.sportlotsRef) : undefined)
+        // NEO-189: a variation's counterpart, matched by label (or, NEO-339,
+        // by player) above. Ranks below the operator's stored answer and
+        // BSC's own cross-reference, and above the number lookups — which
+        // cannot resolve a suffixed number against SportLots at all.
+        || variationPairs.pairs.get(bsc)
+      );
+    };
+    // NEO-339 — a card number printed twice (2014 Topps Chrome #482 is both
+    // Rickey Henderson and Tony Gwynn). Where either side carries more than
+    // one non-variation card under a number, the number alone no longer names
+    // a card: pair by player when exactly one pairing fits both ways, and leave
+    // the rest unmatched for the operator (invariants 7 and 8). Unambiguous
+    // numbers are untouched. See convex/lib/duplicateNumberPairing.ts.
+    const duplicateNumbers = decideDuplicateNumberPairs({
+      bscCards,
+      slCards,
+      numberKeysOf: (bsc) => [bsc.cardNumber, strippedNumberOf(bsc)],
+      shortCircuit: shortCircuitSl,
+    });
+
+    // 1. Walk BSC, attach matching SL data
+    for (const bsc of bscCards) {
+      const stripped = strippedNumberOf(bsc);
+
+      const storedSlRef = bsc.platformRef
+        ? storedSlRefByBscRef.get(bsc.platformRef)
+        : undefined;
+      // `undefined`: the number is unambiguous, look it up as always.
+      // `null`: an ambiguous number with no single player match, or a
+      // variation that lost its contest for the stem's SportLots variations —
+      // unmatched either way.
+      const numberDecision = variationPairs.unmatched.has(bsc)
+        ? null
+        : duplicateNumbers.decided.get(bsc);
+      let sl: typeof slCards[0] | undefined =
+        shortCircuitSl(bsc)
+        || (numberDecision !== undefined
+          ? (numberDecision ?? undefined)
+          : (slByNumber.get(bsc.cardNumber) || slByNumber.get(stripped)));
+      const fromStoredPairing =
+        storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
+
+      // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
+      //    name is most similar to BSC's first player. Threshold 0.92.
+      //    NEO-339: never for a card on an ambiguous number, and never onto a
+      //    SportLots row on one — a best-score pick whose ties go to the first
+      //    candidate is the guess the duplicate-number rule refuses to make.
+      let fuzzyScore: number | undefined;
+      if (!sl && numberDecision === undefined && bsc.players?.[0]) {
+        const target = normalizeName(bsc.players[0]);
+        let best: { card: typeof slCards[0]; score: number } | null = null;
+        for (const candidate of slCards) {
+          if (claimedSlRefs.has(slClaimKey(candidate))) continue;
+          if (duplicateNumbers.fuzzyExcluded.has(candidate)) continue;
+          if (variationPairs.fuzzyExcluded.has(candidate)) continue;
+          const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
+          if (!candName) continue;
+          const score = jaroWinkler(target, candName);
+          if (score >= 0.92 && (!best || score > best.score)) {
+            best = { card: candidate, score };
+          }
+        }
+        if (best) {
+          sl = best.card;
+          fuzzyScore = best.score;
+        }
+      }
+
+      // Confidence: an exact number / sportlotsRef hit is certain; a
+      // Jaro-Winkler name match is not. Surfaced so the operator can see
+      // which pairings deserve a second look.
+      // A previously-confirmed pairing is certain by definition — it is the
+      // operator's own answer being replayed, not a guess.
+      const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
+      if (sl) claimedSlRefs.add(slClaimKey(sl));
+
+      const attributes = Array.from(new Set([
+        ...(bsc.attributes ?? []),
+        ...(sl?.attributes ?? []),
+      ]));
+      const printRun = bsc.printRun ?? sl?.printRun;
+      // NEO-251 — recorded BEFORE the `players` default below throws one of
+      // the two rosters away, for the same reason `nameConflict` is recorded
+      // before the name default: this is the AUTO path, where most of a
+      // 660-row set is merged without an operator ever seeing the two rows
+      // side by side. `players` still resolves to BSC exactly as before, so
+      // the modal's `chosen: "bsc"` is a truthful statement about what the
+      // card is carrying rather than a guess.
+      const playersConflict = sl
+        ? conflictingPlayers(bsc.players, sl.players)
+        : undefined;
+      // NEO-251: an EMPTY roster is an absent one. `??` only falls through
+      // on null/undefined, so a BSC row carrying a literal `[]` used to beat
+      // a real SportLots roster and drop it silently — and no conflict was
+      // raised either, because one empty side is genuinely not a
+      // disagreement (`conflictingPlayers` requires both). Both adapters send
+      // an absent key today (`players.length ? players : undefined`), so this
+      // changes nothing in practice; it is here because SportLots supplies
+      // rosters now, which is what makes "absent" versus "empty" worth being
+      // right about. `mergePair` in CardPairingModal reads the same way.
+      const players = bsc.players?.length
+        ? bsc.players
+        : (sl?.players ?? undefined);
+      const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
+
+      // NEO-199 — recorded BEFORE the merge below throws one of the two
+      // names away.
+      //
+      // This is the COMMON path: most of a 660-row set auto-matches here and
+      // never reaches the operator's hands, so a wrong-player guard that only
+      // fires on the manual leftovers is a guard that mostly does not fire —
+      // worse than none, because the screen then looks like it is protecting
+      // you. `cardName` below still resolves to BSC exactly as before; the
+      // only change is that the loser survives the trip.
+      const nameConflict = sl
+        ? conflictingNames(bsc.cardName, sl.cardName)
+        : undefined;
+
+      const candidate: ReconciledCard = {
+        cardNumber: bsc.cardNumber,
+        cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
+        team: bsc.team ?? sl?.team,
+        teams: teamsArr,
+        players,
+        attributes: attributes.length ? attributes : undefined,
+        isRookie: attributes.includes("RC") || undefined,
+        isRelic: attributes.includes("RELIC") || undefined,
+        printRun,
+        autographType: bsc.autographType ?? sl?.autographType,
+        cardVariation: bsc.cardVariation ?? sl?.cardVariation,
+        // NEO-189: EITHER source recognising a variation makes it one. They
+        // mark it differently (BSC suffixes the number, SL tags the
+        // description) and one may carry a variation the other has not
+        // catalogued, so this is a union rather than a preference.
+        isVariation: bsc.isVariation || sl?.isVariation || undefined,
+        // NEO-137: each ref carries the marketplace SET it came from, so
+        // the source travels with the ref rather than in a parallel
+        // `sourcePlatformIds` object that could fall out of step with it.
+        // Commit resolves `setId` to a slot on this card's parent row.
+        platformData: {
+          ...(bsc.platformRef
+            ? {
+                bsc: {
+                  ref: bsc.platformRef,
+                  ...(bsc.sourceBscSetSlug
+                    ? { setId: bsc.sourceBscSetSlug }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(sl?.platformRef
+            ? {
+                sportlots: {
+                  ref: sl.platformRef,
+                  ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
+                },
+              }
+            : {}),
+        },
+        // Spread rather than always-present-and-undefined: `previewCardValidator`
+        // is strict, and an explicit `undefined` is not the same as an absent
+        // optional on the wire.
+        ...(nameConflict ? { nameConflict } : {}),
+        // Spread for the same reason `nameConflict` is: `previewCardValidator`
+        // is strict, and an explicit `undefined` is not an absent optional.
+        ...(playersConflict ? { playersConflict } : {}),
+        ...(sl ? {} : { unmatched: "sl" as const }),
+      };
+      out.push(candidate);
+      if (!candidate.players?.length && sl?.mononymHint) {
+        mononymHintByCard.set(candidate, sl.mononymHint);
+      }
+      if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
+      else unmatchedBscCards.push(candidate);
+    }
+
+    // 3. SL cards no BSC card claimed. These are NOT turned into NB cards
+    //    on their own any more — they are offered for the operator to pair
+    //    or deliberately keep.
+    for (const sl of slCards) {
+      if (claimedSlRefs.has(slClaimKey(sl))) continue;
+      const slOnly: ReconciledCard = {
+        cardNumber: sl.cardNumber,
+        cardName: sl.cardName || `Card #${sl.cardNumber}`,
+        team: sl.team,
+        teams: sl.teams,
+        players: sl.players,
+        attributes: sl.attributes,
+        isRookie: sl.attributes?.includes("RC") || undefined,
+        isRelic: sl.attributes?.includes("RELIC") || undefined,
+        printRun: sl.printRun,
+        autographType: sl.autographType,
+        cardVariation: sl.cardVariation,
+        isVariation: sl.isVariation,
+        platformData: sl.platformRef
+          ? {
+              sportlots: {
+                ref: sl.platformRef,
+                ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
+              },
+            }
+          : {},
+        unmatched: "bsc",
+      };
+      out.push(slOnly);
+      unmatchedSlCards.push(slOnly);
+      if (!slOnly.players?.length && sl.mononymHint) {
+        mononymHintByCard.set(slOnly, sl.mononymHint);
+      }
+    }
+
+    // 3b. NEO-251 — did an operator already settle this same roster
+    //     disagreement on an earlier sync?
+    //
+    //     The merge defaults `players` to BSC every time, so a card the
+    //     operator settled as SportLots comes back on the NEXT sync
+    //     defaulting to BSC again, and the review screen asks the same
+    //     question with the same wrong default. `preferred` is how the modal
+    //     is told which way the answer went last time.
+    //
+    //     It is EVIDENCE, not a decision, and it is NB's own evidence: the
+    //     committed NB row's players are read, and if they mean the same
+    //     thing as SportLots' list then SportLots is what an operator chose.
+    //     No marketplace is asked which side is right — that would be exactly
+    //     the "marketplace as source of truth" the product invariant forbids.
+    //
+    //     Bounded: only conflicted, BSC-linked, already-committed rows are
+    //     considered, and their player ids are deduped into ONE batch read.
+    //     A set where the marketplaces agree pays nothing at all.
+    const conflictedByBscRef = new Map<string, ReconciledCard>();
+    for (const card of out) {
+      const ref = card.platformData.bsc?.ref;
+      if (ref && card.playersConflict) conflictedByBscRef.set(ref, card);
+    }
+    if (conflictedByBscRef.size > 0) {
+      const rowsByBscRef = new Map<string, (typeof committed)[number]>();
+      for (const row of committed) {
+        const ref = row.platformData?.bsc?.ref;
+        if (ref) rowsByBscRef.set(ref, row);
+      }
+      const neededPlayerIds = new Set<Id<"players">>();
+      for (const ref of conflictedByBscRef.keys()) {
+        for (const id of rowsByBscRef.get(ref)?.playerIds ?? []) {
+          neededPlayerIds.add(id);
+        }
+      }
+      if (neededPlayerIds.size > 0) {
+        const playerDocs = await ctx.runQuery(api.players.getManyByIds, {
+          ids: [...neededPlayerIds],
+        });
+        const playerNameById = new Map<string, string>();
+        for (const doc of playerDocs) playerNameById.set(doc._id, doc.name);
+        for (const [ref, card] of conflictedByBscRef) {
+          const conflict = card.playersConflict;
+          if (!conflict) continue;
+          const storedIds = rowsByBscRef.get(ref)?.playerIds ?? [];
+          // A dangling id is not evidence of anything — it cannot be shown
+          // to mean either side — so a row with one simply carries no hint.
+          const storedNames = storedIds
+            .map((id) => playerNameById.get(id))
+            .filter((n): n is string => n !== undefined);
+          if (storedNames.length !== storedIds.length) continue;
+          if (storedNames.length === 0) continue;
+          if (playersKey(storedNames) === playersKey(conflict.sportlots)) {
+            conflict.preferred = "sportlots";
+          }
+        }
+      }
+    }
+
+    // 3c. NEO-339 — a one-word name names the card only when exactly one NB
+    //     player in this sport answers to it. Before staging, so the preview
+    //     and the commit read the same `players`.
+    await applyMononymHints(
+      ctx,
+      chain.find((node) => node.level === "sport")?._id,
+      mononymHintByCard,
+    );
+
+    return {
+      kind: "matched",
+      autoMatchedCards,
+      unmatchedBscCards,
+      unmatchedSlCards,
+      out,
+      bscCollisions,
+      slCollisions,
+    };
+  } finally {
+    report.marketplaceCalls += marketplaceCalls;
+  }
+}
+
+/**
+ * NEO-339 — give a card its SportLots one-word name ("Ichiro") when, and only
+ * when, exactly one NB player in the set's sport answers to it, by name or
+ * alias (`players.uniquelyNamedPlayers`, the commit's own lookup). Zero
+ * matches, several (invariant 7), or no sport row on the chain: the card
+ * keeps no players, exactly as before.
+ *
+ * The hint is written as the card's printed name, never as a player: the
+ * commit then resolves it to that one existing row, and nothing creates a
+ * player from it. Only cards neither marketplace named a player on carry a
+ * hint at all (see where `mononymHintByCard` is filled).
+ */
+async function applyMononymHints(
+  ctx: ActionCtx,
+  sportId: Id<"selectorOptions"> | undefined,
+  hintByCard: ReadonlyMap<{ players?: string[] }, string>,
+): Promise<void> {
+  if (!sportId || hintByCard.size === 0) return;
+  const names = [...new Set(hintByCard.values())];
+  const unique = new Set<string>();
+  for (let i = 0; i < names.length; i += MONONYM_HINTS_PER_QUERY) {
+    const answered = await ctx.runQuery(internal.players.uniquelyNamedPlayers, {
+      sportId,
+      names: names.slice(i, i + MONONYM_HINTS_PER_QUERY),
+    });
+    for (const name of answered) unique.add(name);
+  }
+  for (const [card, hint] of hintByCard) {
+    if (unique.has(hint)) card.players = [hint];
+  }
+}
+
+/** How many one-word names one `uniquelyNamedPlayers` read settles. */
+const MONONYM_HINTS_PER_QUERY = 100;
+
+/**
+ * NEO-335 — one `resolveCandidateTeams` entry per looked-up card, from what
+ * `fetchBscCardTeamNames` answered. Shared by the staging path and the
+ * read-only `previewCardChecklist` (NEO-339), so both hand the team decision
+ * the same entries.
+ *
+ * Keyed by the card's OWN ref, inside the adapter boundary: this routes BSC's
+ * answer back to the card it was asked about and nothing else. A ref the
+ * adapter did not answer for (including every ref of a chunk whose lookup
+ * threw, which leaves `lookups` empty) is a FAILED lookup, never "BSC has no
+ * team".
+ */
+function bscTeamLookupEntries(
+  bscRefs: readonly string[],
+  lookups: readonly BscCardTeamLookup[],
+): Array<{
+  bscRef: string;
+  rawTeamName?: string;
+  teamNames?: string[];
+  teamLookup: "answered" | "failed";
+  attributeTokens?: string[];
+  printRun?: number;
+}> {
+  const lookupByRef = new Map(lookups.map((l) => [l.bscCardId, l]));
+  return bscRefs.map((bscRef) => {
+    const lookup = lookupByRef.get(bscRef);
+    if (lookup?.success !== true) {
+      return { bscRef, teamLookup: "failed" as const };
+    }
+    // NEO-339 — the card's attribute tokens ride on the same answer
+    // (`playerAttribute`, else the `teamName` label, else `productName`), so
+    // the candidate is filled from them (`fillBscAttributeFields`). Read
+    // defensively: an older stub of the adapter returns no tokens.
+    const attributeTokens = lookup.attributeTokens ?? [];
+    return {
+      bscRef,
+      ...(lookup.rawTeamName ? { rawTeamName: lookup.rawTeamName } : {}),
+      ...(lookup.teamNames.length > 0 ? { teamNames: lookup.teamNames } : {}),
+      teamLookup: "answered" as const,
+      ...(attributeTokens.length > 0 ? { attributeTokens } : {}),
+      ...(lookup.printRun !== undefined ? { printRun: lookup.printRun } : {}),
+    };
+  });
+}
+
+/**
+ * NEO-339 — the attribute answer for each looked-up ref, one per ref: two
+ * entries for one ref that disagree give `undefined` (nothing is filled), the
+ * rule `resolveCandidateTeams` applies, so the preview fills what the stage
+ * fills.
+ */
+function bscAttributeAnswerByRef(
+  entries: ReadonlyArray<{
+    bscRef: string;
+    attributeTokens?: string[];
+    printRun?: number;
+  }>,
+): Map<string, { attributeTokens?: string[]; printRun?: number } | undefined> {
+  const key = (e: { attributeTokens?: string[]; printRun?: number }) =>
+    JSON.stringify([e.attributeTokens ?? null, e.printRun ?? null]);
+  const out = new Map<
+    string,
+    { attributeTokens?: string[]; printRun?: number } | undefined
+  >();
+  for (const e of entries) {
+    if (!out.has(e.bscRef)) out.set(e.bscRef, e);
+    else {
+      const prior = out.get(e.bscRef);
+      if (prior && key(prior) !== key(e)) out.set(e.bscRef, undefined);
+    }
+  }
+  return out;
+}
+
+/**
+ * NEO-339 — the fields a checklist candidate carries, shared by the staging
+ * path (`fetchCardChecklist`, which adds `bucket` and `confidence`) and the
+ * read-only `previewCardChecklist`, so a preview card is byte-identical to
+ * the candidate row the staging path writes for it.
+ */
+function checklistCandidateFields(card: ReconciledCard) {
+  return {
+    cardNumber: card.cardNumber,
+    cardName: card.cardName,
+    teams: card.teams,
+    players: card.players,
+    attributes: card.attributes,
+    isRookie: card.isRookie,
+    isRelic: card.isRelic,
+    printRun: card.printRun,
+    autographType: card.autographType,
+    cardVariation: card.cardVariation,
+    isVariation: card.isVariation,
+    platformData: card.platformData,
+    // NEO-199: the streamed path is the only path. A conflict missing here
+    // is a conflict the operator never sees.
+    nameConflict: card.nameConflict,
+    // NEO-251: same rule — the streamed path is the only path, so a roster
+    // conflict missing here is one the operator never sees.
+    playersConflict: card.playersConflict,
+  };
+}
+
+/**
  * Action — fetch and reconcile a checklist into pairing CANDIDATES, without
  * persisting a single NB card.
  *
@@ -13370,103 +14549,29 @@ export const fetchCardChecklist = action({
         api.selectorOptions.getAncestorChain,
         { id: args.selectorOptionId },
       );
-      attachedSides = attachedSidesOf(chain);
-
-      const filters: Record<string, string> = {};
-      // NEO-6: both sides may now be arrays at any level. We keep the
-      // arrays here and fan out / pass through downstream.
-      const slPlatformFilters: Record<string, string[]> = {};
-      // NEO-96: `sport` used to be `ancestor.value.toLowerCase()` — a BSC wire
-      // format — and that string was persisted onto teams/players by
-      // commitCardChecklist. It is now the sport ROW's id, which the CLIENT
-      // resolves off this same chain (see the `returns` note above); all this
-      // handler still needs from the sport row is a label for the log line.
-      let sportLabel: string | undefined;
-      let cardNumberPrefix: string | undefined;
-
-      for (const ancestor of chain) {
-        filters[ancestor.level] = ancestor.value;
-        if (ancestor.level === "sport") {
-          sportLabel = ancestor.value;
-        }
-        if (ancestor.metadata?.cardNumberPrefix) {
-          cardNumberPrefix = ancestor.metadata.cardNumberPrefix;
-        }
-        // NEO-137: adapters filter on marketplace IDs; slots are internal.
-        const ancestorSlIds = slotIds(ancestor, "sportlots");
-        if (ancestorSlIds.length > 0) {
-          slPlatformFilters[ancestor.level] = ancestorSlIds;
-        }
-        // BSC is bucketed by FACET, not by level — see `bscFacetPlan` below.
+      // NEO-339 — the fetch and the reconcile are `fetchAndMatchChecklist`,
+      // shared with `previewCardChecklist`. `report` carries the hoisted
+      // `attachedSides` / `pausedList` back out, including on a throw.
+      const report = {
+        attachedSides: [] as Array<"bsc" | "sportlots">,
+        pausedSides: [] as Array<"bsc" | "sportlots">,
+        marketplaceCalls: 0,
+      };
+      let matched: ChecklistMatchOutcome;
+      try {
+        matched = await fetchAndMatchChecklist(ctx, {
+          chain,
+          committedFor: args.selectorOptionId,
+          report,
+        });
+      } finally {
+        attachedSides = report.attachedSides;
+        pausedList = report.pausedSides;
       }
-
-      // NEO-239 — PER-SIDE resolvability replaces the custom-subtree gate AND
-      // the BSC-only precondition that followed it.
-      //
-      // Both used to be all-or-nothing for the whole fetch: an `isCustom`
-      // ancestor skipped both marketplaces forever, and a missing BSC slug
-      // failed the entire call even when SportLots could have answered. Each
-      // side is now judged on its own, and a side that cannot be scoped is
-      // SKIPPED — never queried by an NB display value, which is what the
-      // removed fallbacks did and what the old gate was the only thing
-      // standing in front of.
-      //
-      // BSC needs an id at sport / year / setName and a `variant`-TAGGED slot
-      // on the variantType row (`marketplaceResolvability.ts` explains why the
-      // tag, not merely an id, is the requirement). SportLots needs sport and
-      // year; it has no setName-level concept and resolves the set's
-      // radio-button id from the deepest variant row's slot.
-      // No `level`: this is the CHECKLIST fetch, not a selector-options one.
-      // `fetchSportLotsChecklist` scopes itself from the deepest variant row's
-      // slot id and `fetchBscChecklist` from the facet plan, so the served-level
-      // and per-level scope tables above do not describe it.
-      //
-      // NEO-252 — and `bscScope: "checklist"` for the same reason, one level
-      // deeper: BSC's half of the gate is judged on the FACET FILTERS below
-      // (`bscFacetPlan`), which is the object the request carries, rather than
-      // on a walk over NB levels. The two disagreed for the NEO-189 shape (a
-      // BSC `setName` id attached to the leaf), and the disagreement always
-      // fell the same way — the gate skipped a side the adapter would have
-      // answered.
-      //
-      // NEO-287 — and the pause, which makes a side unresolvable for this run
-      // whatever its ids say. A paused side is not fetched, so nothing on it
-      // is compared, paired, or reported missing.
-      //
-      // NEO-312 — and `leafGate`: an insert or parallel is fetched only on the
-      // sides it holds an id of its own on. Without it a parallel with no BSC
-      // id queried its INSERT's variantName (deepest-contributor rule, one row
-      // up) and SportLots' `parallel || insert || …` precedence did the same,
-      // so the insert's cards arrived filed as the parallel's.
-      const resolution = resolvableSides(chain, {
-        bscScope: "checklist",
-        paused: pausedSides(),
-        leafGate: true,
-      });
-      pausedList = pausedSideList(resolution);
-      if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
-        console.log(
-          `[fetchCardChecklist] no marketplace ids on this path — ` +
-            `bsc_missing=${missingSummary(resolution.bsc)} ` +
-            `sl_missing=${missingSummary(resolution.sportlots)}`,
-        );
-        // Nothing to pair. The set's own hand-added cards can still carry
-        // unresolved pendingPlayerNames / pendingTeamNames, but resolving those
-        // is `resolveChecklistEntities`' job (NEO-137) — it runs on the
-        // confirmed set and handles the no-marketplace case identically.
-        //
-        // NEO-287 — when a pause is why, say so: the paused sentence, then the
-        // no-ids sentence for the other side. `NO_MARKETPLACE_IDS_MESSAGE`
-        // alone would tell the operator to attach an id they may already have.
+      if (matched.kind === "noIds") {
         return {
           success: true,
-          message:
-            pausedList.length > 0
-              ? (unaskedSidesNotice(
-                  pausedList,
-                  notifiableSkippedSides(resolution),
-                ) ?? NO_MARKETPLACE_IDS_MESSAGE)
-              : NO_MARKETPLACE_IDS_MESSAGE,
+          message: matched.message,
           // No candidates written at all — the client reads this as "nothing to
           // pair" and goes straight to entity resolution.
           candidateCount: 0,
@@ -13477,669 +14582,14 @@ export const fetchCardChecklist = action({
           pausedSides: pausedList,
         };
       }
-      if (!resolution.bsc.resolvable) {
-        console.log(
-          `[fetchCardChecklist] BSC skipped — missing=${missingSummary(resolution.bsc)}`,
-        );
-      }
-      if (!resolution.sportlots.resolvable) {
-        console.log(
-          `[fetchCardChecklist] SportLots skipped — missing=${missingSummary(resolution.sportlots)}`,
-        );
-      }
-
-      // NEO-189 — bucket the chain's BSC ids by the FACET each one belongs to
-      // rather than by the NB level of the row holding it.
-      //
-      // This is the whole point of the ticket. BSC splits Topps into Series 1
-      // and Series 2 at `setName` while SportLots has one set, so a **setName**
-      // id has to hang off the NB Base (`variantType`) row — and the old
-      // level-keyed bucketing threw those away (`variantType` was skipped,
-      // `parallel` had no facet at all). An id now follows what it IS.
-      //
-      // Untagged slots keep the level rule, so a row attached before this
-      // change queries exactly what it queried before.
-      const bscFacetPlan = resolveBscFacetFilters(chain);
-
-      console.log(
-        `[fetchCardChecklist] sport=${sportLabel} prefix=${cardNumberPrefix}`,
-        `filters:`, filters,
-        `bscFacets:`, bscFacetPlan.filters,
-      );
-
-      // NEO-6: SL adapter takes one set ID at a time. When the active
-      // SL level has multiple attached IDs (operator-attached extras),
-      // fan out one call per ID and tag each returned card with its
-      // source set ID. Dedup by cardNumber across the merged result —
-      // first source wins, conflicts are logged.
-      type SlCard = {
-        cardNumber: string;
-        cardName: string;
-        team?: string;
-        teams?: string[];
-        players?: string[];
-        attributes?: string[];
-        printRun?: number;
-        autographType?: string;
-        cardVariation?: string;
-        /** NEO-189 — SL tags a variation in the description and reuses the
-         *  parent's card number. */
-        isVariation?: boolean;
-        platformRef?: string;
-        sportlotsRef?: string;
-        sourceSlSetId?: string;
-      };
-
-      // Find which level (if any) has multiple attached SL IDs. Phase 1
-      // expects this only at variantType/insert/parallel rows; warn if it
-      // appears elsewhere so we notice unexpected data shape.
-      //
-      // Cap to MAX_SL_FAN_OUT to bound the number of parallel SL HTTP
-      // calls per fetch (matches `MAX_ATTACHED_PER_SIDE` on the attach
-      // path; defense-in-depth in case extras were attached pre-cap).
-      const MAX_SL_FAN_OUT = 10;
-      const slFanOut: { level: string; ids: string[] } | null = (() => {
-        for (const [lvl, ids] of Object.entries(slPlatformFilters)) {
-          if (ids.length > 1) {
-            if (!["variantType", "insert", "parallel"].includes(lvl)) {
-              console.warn(
-                `[fetchCardChecklist] unexpected multi-SL at level=${lvl} (phase-1 expects variant levels only)`,
-              );
-            }
-            const cappedIds = ids.slice(0, MAX_SL_FAN_OUT);
-            if (cappedIds.length < ids.length) {
-              console.warn(
-                `[fetchCardChecklist] SL fan-out capped at ${MAX_SL_FAN_OUT} (had ${ids.length} attached at level=${lvl})`,
-              );
-            }
-            return { level: lvl, ids: cappedIds };
-          }
-        }
-        return null;
-      })();
-
-      // NEO-189 — card numbers seen from more than one source set, on either
-      // marketplace. Surfaced to the operator in the result message, because
-      // two attached sets legitimately overlapping is a fact about the mapping
-      // they just built and only they can say whether it was intended. Every
-      // row is kept on both sides; this is a report, not a drop.
-      const slCollisions: Array<{
-        cardNumber: string;
-        keptSource: string;
-        skippedSource: string;
-      }> = [];
-
-      const callSl = async (
-        perCallFilters: Record<string, string>,
-        sourceId: string | undefined,
-      ): Promise<SlCard[]> => {
-        const result = await ctx.runAction(
-          api.adapters.sportlots.fetchSportLotsChecklist,
-          {
-            parentFilters: filters,
-            platformFilters: perCallFilters,
-          },
-        ).catch((err) => {
-          console.error(`[fetchCardChecklist] SportLots error:`, err);
-          return { success: false, cards: [] as SlCard[], message: String(err) };
-        });
-        if (!result.success) return [];
-        return (result.cards as SlCard[]).map((c) => ({
-          ...c,
-          sourceSlSetId: sourceId,
-        }));
-      };
-
-      // SL and BSC are independent network fetches. Run both concurrently
-      // with Promise.allSettled so one marketplace's outage can never reject
-      // the other.
-
-      const fetchSl = async (): Promise<SlCard[]> => {
-        // Adapter signature is record<string,string>; flatten single-ID
-        // entries down to scalars. Multi-ID entries are handled by fanning
-        // out one call per ID at the fan-out level.
-        const singletonFilters: Record<string, string> = {};
-        for (const [lvl, ids] of Object.entries(slPlatformFilters)) {
-          if (ids.length === 1) singletonFilters[lvl] = ids[0];
-        }
-        if (!slFanOut) {
-          // No fan-out needed; single call (still tag source id when
-          // exactly one SL set is attached at a variant level).
-          const variantSlIds = ["variantType", "insert", "parallel"]
-            .map((lvl) => slPlatformFilters[lvl]?.[0])
-            .filter(Boolean) as string[];
-          const sourceId =
-            variantSlIds.length > 0 ? variantSlIds[variantSlIds.length - 1] : undefined;
-          return await callSl(singletonFilters, sourceId);
-        }
-        // Multi-ID fan-out: one call per ID at the fan-out level.
-        const perIdResults = await Promise.all(
-          slFanOut.ids.map((slId) => {
-            const perCall = { ...singletonFilters, [slFanOut.level]: slId };
-            return callSl(perCall, slId);
-          }),
-        );
-        const merged = mergeSlFanOut(perIdResults);
-        for (const col of merged.collisions) {
-          slCollisions.push(col);
-          console.warn(
-            `[fetchCardChecklist] SL cardNumber in two source sets: ${col.cardNumber} ` +
-              `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
-          );
-        }
-        return merged.cards;
-      };
-
-      type BscFetchResult = {
-        success: boolean;
-        cards: any[];
-        message?: string;
-        collisions?: Array<{
-          cardNumber: string;
-          keptSource: string;
-          skippedSource: string;
-        }>;
-      };
-      const fetchBsc = async (): Promise<BscFetchResult> => {
-        // The adapter fans out internally — one request per BSC source set.
-        // BSC does NOT OR multi-value facets: two values on one facet return
-        // 200 OK with zero rows (measured on dev 2026-08-12, 1996 Score).
-        // The comment that used to be here asserted the opposite.
-        //
-        // NEO-189: `facetFilters`, not `platformFilters`. The level-keyed form
-        // cannot express a setName id attached to a Base row, which is the
-        // split this feature exists for.
-        return await ctx.runAction(
-          api.adapters.buysportscards.fetchBscChecklist,
-          {
-            parentFilters: filters,
-            facetFilters: bscFacetPlan.filters,
-            ...(bscFacetPlan.sourceFacet
-              ? { sourceFacet: bscFacetPlan.sourceFacet }
-              : {}),
-          },
-        ).catch((err) => {
-          console.error(`[fetchCardChecklist] BSC error:`, err);
-          return { success: false, cards: [] as any[], message: String(err) };
-        });
-      };
-
-      // NEO-239 — an unresolvable side is never called. Its result is the
-      // empty one, and because it produced no cards it can contribute no
-      // `coveredSides` to the diff either (that set is derived from the
-      // incoming cards' refs, so it fails closed on its own).
-      const [slSettled, bscSettled] = await Promise.allSettled([
-        resolution.sportlots.resolvable
-          ? fetchSl()
-          : Promise.resolve([] as SlCard[]),
-        resolution.bsc.resolvable
-          ? fetchBsc()
-          : Promise.resolve({ success: false, cards: [] } as BscFetchResult),
-      ]);
-
-      const slCards: SlCard[] =
-        slSettled.status === "fulfilled" ? slSettled.value : [];
-      const bscResult: BscFetchResult =
-        bscSettled.status === "fulfilled"
-          ? bscSettled.value
-          : { success: false, cards: [] };
-
-      const bscCollisions = bscResult.collisions ?? [];
-      const bscCards = (bscResult.success ? bscResult.cards : []) as Array<{
-        cardNumber: string;
-        cardName: string;
-        team?: string;
-        teams?: string[];
-        players?: string[];
-        attributes?: string[];
-        printRun?: number;
-        autographType?: string;
-        cardVariation?: string;
-        /** NEO-189 — BSC marks a variation with a VAR token and/or a `VAR:`
-         *  description, and suffixes the card number. */
-        isVariation?: boolean;
-        platformRef?: string;
-        sportlotsRef?: string;
-        sourceBscSetSlug?: string;
-      }>;
-
-      // Index SL by both cardNumber and (after prefix-strip) for prefix-aware
-      // BSC matching, AND by sportlotsRef so BSC's built-in cross-reference
-      // can short-circuit fuzzy matching.
-      const slByNumber = new Map<string, typeof slCards[0]>();
-      const slByRef = new Map<string, typeof slCards[0]>();
-      for (const c of slCards) {
-        // NEO-189: prefer the NON-variation row for a given number.
-        //
-        // SportLots files a card and its variations under ONE number — "#11
-        // Alec Bohm", "#11 Alec Bohm [ VAR Action Image ]", "#11 … [ VAR
-        // Throwback Alternate ]". A plain last-write-wins index therefore
-        // answered `get("11")` with whichever variation happened to be scraped
-        // last, and BSC's base #11 paired with a variation. Wrong, and silent.
-        //
-        // A bare BSC number means the base card, so that is what this index
-        // must return. Variations are paired to variations separately below.
-        const prev = slByNumber.get(c.cardNumber);
-        if (!prev || (prev.isVariation && !c.isVariation)) {
-          slByNumber.set(c.cardNumber, c);
-        }
-        if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
-      }
-
-      // NEO-189 — pair BSC variations to SportLots variations of the same card.
-      //
-      // Neither side's number can do this on its own: BSC suffixes a variation
-      // (`1b`), SportLots reuses the parent's number and tags the description.
-      // So `slByNumber.get("1b")` finds nothing, the fuzzy name fallback cannot
-      // help (the base already claimed that SL row, and a "Legend" variation may
-      // be a different player entirely), and every variation lands in the
-      // BSC-only column. A real 2025 Topps sync put 393 of them there.
-      //
-      // Grouped by card-number STEM — the one thing both sides agree on — and
-      // matched on the variation label via suggestVariationPairings: exact
-      // wording first, then containment ("Action" in "Action Image"). Anything
-      // it will not pair confidently is left for the operator rather than
-      // guessed, which is the same rule the commit-time parent resolution
-      // follows.
-      const slVariationPairByBscRef = new Map<string, typeof slCards[0]>();
-      {
-        const bscVarsByStem = new Map<string, typeof bscCards>();
-        for (const c of bscCards) {
-          if (!c.isVariation) continue;
-          const stem = cardNumberStem(c.cardNumber);
-          const b = bscVarsByStem.get(stem);
-          if (b) b.push(c);
-          else bscVarsByStem.set(stem, [c]);
-        }
-        const slVarsByStem = new Map<string, typeof slCards>();
-        for (const c of slCards) {
-          if (!c.isVariation) continue;
-          const stem = cardNumberStem(c.cardNumber);
-          const b = slVarsByStem.get(stem);
-          if (b) b.push(c);
-          else slVarsByStem.set(stem, [c]);
-        }
-        let paired = 0;
-        for (const [stem, bscVars] of bscVarsByStem) {
-          const slVars = slVarsByStem.get(stem);
-          if (!slVars?.length) continue;
-          const { pairs } = suggestVariationPairings(
-            bscVars.map((c) => c.cardVariation ?? ""),
-            slVars.map((c) => c.cardVariation ?? ""),
-          );
-          for (const pair of pairs) {
-            const bscRef = bscVars[pair.leftIndex]?.platformRef;
-            const slCard = slVars[pair.rightIndex];
-            if (bscRef && slCard) {
-              slVariationPairByBscRef.set(bscRef, slCard);
-              paired++;
-            }
-          }
-        }
-        if (bscVarsByStem.size > 0) {
-          console.log(
-            JSON.stringify({
-              msg: "variation_pairing",
-              bscVariations: [...bscVarsByStem.values()].reduce((n, v) => n + v.length, 0),
-              slVariations: [...slVarsByStem.values()].reduce((n, v) => n + v.length, 0),
-              paired,
-            }),
-          );
-        }
-      }
-
-      // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
-      // a re-sync, otherwise a shared marketplace set has to be hand-paired
-      // again on every fetch and the assignment is not really persisted.
-      //
-      // Re-deriving from scratch is not good enough: the whole point of this
-      // ticket is that the BSC↔SL pairing is NOT inferable (two series can each
-      // contain a card #1), so a fresh guess would silently overwrite the
-      // operator's answer with the wrong one.
-      //
-      // Already-committed rows carry the answer in platformData.{bsc,sportlots}.
-      // Index the SL ref an operator previously bound to each BSC ref and
-      // honour it ahead of every heuristic below.
-      const committed = await ctx.runQuery(
-        api.selectorOptions.getCardChecklist,
-        { selectorOptionId: args.selectorOptionId },
-      );
-      const storedSlRefByBscRef = new Map<string, string>();
-      const storedSlRefs = new Set<string>();
-      for (const row of committed) {
-        const bscRef = row.platformData?.bsc?.ref;
-        const slRef = row.platformData?.sportlots?.ref;
-        if (slRef) storedSlRefs.add(slRef);
-        if (bscRef && slRef) storedSlRefByBscRef.set(bscRef, slRef);
-      }
-      const slByPlatformRef = new Map<string, typeof slCards[0]>();
-      // INDISTINGUISHABLE (NEO-137 accounting): two SportLots rows sharing BOTH
-      // card number and description. SL exposes no per-card id, so the
-      // description IS the identity (NEO-91) — when it collides there is
-      // genuinely nothing left to tell the rows apart except ordinal position
-      // in the scrape, which is not stable across re-scrapes. Report it; do
-      // NOT guess, because a wrong guess here silently binds a card to the
-      // wrong marketplace row and looks identical to a correct one.
-      const indistinguishableSlRefs: string[] = [];
-      for (const c of slCards) {
-        if (!c.platformRef) continue;
-        if (slByPlatformRef.has(c.platformRef)) {
-          indistinguishableSlRefs.push(c.platformRef);
-          continue; // first occurrence wins; the duplicate is reported, not used
-        }
-        slByPlatformRef.set(c.platformRef, c);
-      }
-      if (indistinguishableSlRefs.length > 0) {
-        // NEO-251 security review — a SportLots ref IS the card description,
-        // i.e. text chosen by whoever listed the card, and this line is read in
-        // a terminal and in Convex's dashboard. `safeMarketplaceText` neutralises
-        // the newline that would forge a second log entry and the bidi controls
-        // that would reorder the line as an operator reads it, and caps each ref
-        // so a 900-card set cannot emit one line of tens of kilobytes. The COUNT
-        // is what an operator acts on; the sample is a debugging aid.
-        console.warn(
-          `[fetchCardChecklist] ${indistinguishableSlRefs.length} SportLots row(s) ` +
-            `are indistinguishable (same card number AND description) — only ` +
-            `ordinal position separates them and that is not stable. Not guessed: ` +
-            indistinguishableSlRefs
-              .slice(0, 5)
-              .map(safeMarketplaceText)
-              .join(" | "),
-        );
-      }
-      // A stored ref that no longer appears in the marketplace's response is
-      // ORPHANED — SportLots edited the description out from under us. Report
-      // it; never silently drop the card it belonged to.
-      const orphanedSlRefs = [...storedSlRefs].filter(
-        (ref) => !slByPlatformRef.has(ref),
-      );
-      if (orphanedSlRefs.length > 0) {
-        console.warn(
-          `[fetchCardChecklist] ${orphanedSlRefs.length} stored SportLots ref(s) ` +
-            `no longer resolve — the marketplace changed the description: ` +
-            orphanedSlRefs.slice(0, 5).map(safeMarketplaceText).join(" | "),
-        );
-      }
-
-      // NEO-137: three buckets, not one flat list. No NB card exists until
-      // the operator pairs — same vocabulary as set reconciliation (matched /
-      // unmatched-BSC / unmatched-SL) and the same keep shelf for a
-      // deliberately-single-sided card.
-      //
-      // This is also what holds a shared SL set's sibling-owned cards: when
-      // two NB rows draw from one SL set, the other row's cards simply land
-      // in unmatchedSl and are dropped unless the operator keeps them, rather
-      // than being materialised as bogus cards under this row.
-      const autoMatchedCards: Array<{
-        card: ReconciledCard;
-        confidence: number;
-      }> = [];
-      const unmatchedBscCards: ReconciledCard[] = [];
-      const unmatchedSlCards: ReconciledCard[] = [];
-      // `out` stays as the union of everything, purely so the team-lookup and
-      // entity-bucketing passes below can walk every candidate once.
-      const out: ReconciledCard[] = [];
-      // NEO-189: claims are keyed by SL's REAL identity — its platformRef, the
-      // full row description — not by card number.
-      //
-      // SportLots deliberately reuses a card number across variation rows:
-      // "#11 Alec Bohm" and "#11 Alec Bohm [ VAR Action Image ]" are different
-      // cards sharing the number 11. That is precisely why platformRef is the
-      // description (NEO-91).
-      //
-      // Keying claims by NUMBER meant the first BSC card to claim SL's "#11"
-      // marked every other SL row numbered 11 as taken. Its variations were
-      // then invisible on both sides — not matched, and skipped by the
-      // leftover loop that builds unmatchedSl — so they vanished silently.
-      // A real 2025 Topps sync reported "350 paired, 393 BSC-only, 0 SL-only":
-      // the zero was not "SportLots had nothing extra", it was the variations
-      // being discarded.
-      //
-      // Falls back to the number only when a row has no ref, which is the one
-      // case where nothing better exists.
-      const claimedSlRefs = new Set<string>();
-      const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
-        c.platformRef ?? `#${c.cardNumber}`;
-
-      // 1. Walk BSC, attach matching SL data
-      for (const bsc of bscCards) {
-        const stripped = cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
-          ? bsc.cardNumber.slice(cardNumberPrefix.length)
-          : bsc.cardNumber;
-
-        // Operator's stored answer first — it outranks every heuristic.
-        const storedSlRef = bsc.platformRef
-          ? storedSlRefByBscRef.get(bsc.platformRef)
-          : undefined;
-        let sl: typeof slCards[0] | undefined =
-          (storedSlRef && slByPlatformRef.get(storedSlRef))
-          || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
-          // NEO-189: a variation's counterpart, matched by label above. Ranks
-          // below the operator's stored answer and BSC's own cross-reference,
-          // and above the number lookups — which cannot resolve a suffixed
-          // number against SportLots at all.
-          || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
-          || slByNumber.get(bsc.cardNumber)
-          || slByNumber.get(stripped);
-        const fromStoredPairing =
-          storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
-
-        // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
-        //    name is most similar to BSC's first player. Threshold 0.92.
-        let fuzzyScore: number | undefined;
-        if (!sl && bsc.players?.[0]) {
-          const target = normalizeName(bsc.players[0]);
-          let best: { card: typeof slCards[0]; score: number } | null = null;
-          for (const candidate of slCards) {
-            if (claimedSlRefs.has(slClaimKey(candidate))) continue;
-            const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
-            if (!candName) continue;
-            const score = jaroWinkler(target, candName);
-            if (score >= 0.92 && (!best || score > best.score)) {
-              best = { card: candidate, score };
-            }
-          }
-          if (best) {
-            sl = best.card;
-            fuzzyScore = best.score;
-          }
-        }
-
-        // Confidence: an exact number / sportlotsRef hit is certain; a
-        // Jaro-Winkler name match is not. Surfaced so the operator can see
-        // which pairings deserve a second look.
-        // A previously-confirmed pairing is certain by definition — it is the
-        // operator's own answer being replayed, not a guess.
-        const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
-        if (sl) claimedSlRefs.add(slClaimKey(sl));
-
-        const attributes = Array.from(new Set([
-          ...(bsc.attributes ?? []),
-          ...(sl?.attributes ?? []),
-        ]));
-        const printRun = bsc.printRun ?? sl?.printRun;
-        // NEO-251 — recorded BEFORE the `players` default below throws one of
-        // the two rosters away, for the same reason `nameConflict` is recorded
-        // before the name default: this is the AUTO path, where most of a
-        // 660-row set is merged without an operator ever seeing the two rows
-        // side by side. `players` still resolves to BSC exactly as before, so
-        // the modal's `chosen: "bsc"` is a truthful statement about what the
-        // card is carrying rather than a guess.
-        const playersConflict = sl
-          ? conflictingPlayers(bsc.players, sl.players)
-          : undefined;
-        // NEO-251: an EMPTY roster is an absent one. `??` only falls through
-        // on null/undefined, so a BSC row carrying a literal `[]` used to beat
-        // a real SportLots roster and drop it silently — and no conflict was
-        // raised either, because one empty side is genuinely not a
-        // disagreement (`conflictingPlayers` requires both). Both adapters send
-        // an absent key today (`players.length ? players : undefined`), so this
-        // changes nothing in practice; it is here because SportLots supplies
-        // rosters now, which is what makes "absent" versus "empty" worth being
-        // right about. `mergePair` in CardPairingModal reads the same way.
-        const players = bsc.players?.length
-          ? bsc.players
-          : (sl?.players ?? undefined);
-        const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
-
-        // NEO-199 — recorded BEFORE the merge below throws one of the two
-        // names away.
-        //
-        // This is the COMMON path: most of a 660-row set auto-matches here and
-        // never reaches the operator's hands, so a wrong-player guard that only
-        // fires on the manual leftovers is a guard that mostly does not fire —
-        // worse than none, because the screen then looks like it is protecting
-        // you. `cardName` below still resolves to BSC exactly as before; the
-        // only change is that the loser survives the trip.
-        const nameConflict = sl
-          ? conflictingNames(bsc.cardName, sl.cardName)
-          : undefined;
-
-        const candidate: ReconciledCard = {
-          cardNumber: bsc.cardNumber,
-          cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
-          team: bsc.team ?? sl?.team,
-          teams: teamsArr,
-          players,
-          attributes: attributes.length ? attributes : undefined,
-          isRookie: attributes.includes("RC") || undefined,
-          isRelic: attributes.includes("RELIC") || undefined,
-          printRun,
-          autographType: bsc.autographType ?? sl?.autographType,
-          cardVariation: bsc.cardVariation ?? sl?.cardVariation,
-          // NEO-189: EITHER source recognising a variation makes it one. They
-          // mark it differently (BSC suffixes the number, SL tags the
-          // description) and one may carry a variation the other has not
-          // catalogued, so this is a union rather than a preference.
-          isVariation: bsc.isVariation || sl?.isVariation || undefined,
-          // NEO-137: each ref carries the marketplace SET it came from, so
-          // the source travels with the ref rather than in a parallel
-          // `sourcePlatformIds` object that could fall out of step with it.
-          // Commit resolves `setId` to a slot on this card's parent row.
-          platformData: {
-            ...(bsc.platformRef
-              ? {
-                  bsc: {
-                    ref: bsc.platformRef,
-                    ...(bsc.sourceBscSetSlug
-                      ? { setId: bsc.sourceBscSetSlug }
-                      : {}),
-                  },
-                }
-              : {}),
-            ...(sl?.platformRef
-              ? {
-                  sportlots: {
-                    ref: sl.platformRef,
-                    ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
-                  },
-                }
-              : {}),
-          },
-          // Spread rather than always-present-and-undefined: `previewCardValidator`
-          // is strict, and an explicit `undefined` is not the same as an absent
-          // optional on the wire.
-          ...(nameConflict ? { nameConflict } : {}),
-          // Spread for the same reason `nameConflict` is: `previewCardValidator`
-          // is strict, and an explicit `undefined` is not an absent optional.
-          ...(playersConflict ? { playersConflict } : {}),
-          ...(sl ? {} : { unmatched: "sl" as const }),
-        };
-        out.push(candidate);
-        if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
-        else unmatchedBscCards.push(candidate);
-      }
-
-      // 3. SL cards no BSC card claimed. These are NOT turned into NB cards
-      //    on their own any more — they are offered for the operator to pair
-      //    or deliberately keep.
-      for (const sl of slCards) {
-        if (claimedSlRefs.has(slClaimKey(sl))) continue;
-        const slOnly: ReconciledCard = {
-          cardNumber: sl.cardNumber,
-          cardName: sl.cardName || `Card #${sl.cardNumber}`,
-          team: sl.team,
-          teams: sl.teams,
-          players: sl.players,
-          attributes: sl.attributes,
-          isRookie: sl.attributes?.includes("RC") || undefined,
-          isRelic: sl.attributes?.includes("RELIC") || undefined,
-          printRun: sl.printRun,
-          autographType: sl.autographType,
-          cardVariation: sl.cardVariation,
-          isVariation: sl.isVariation,
-          platformData: sl.platformRef
-            ? {
-                sportlots: {
-                  ref: sl.platformRef,
-                  ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
-                },
-              }
-            : {},
-          unmatched: "bsc",
-        };
-        out.push(slOnly);
-        unmatchedSlCards.push(slOnly);
-      }
-
-      // 3b. NEO-251 — did an operator already settle this same roster
-      //     disagreement on an earlier sync?
-      //
-      //     The merge defaults `players` to BSC every time, so a card the
-      //     operator settled as SportLots comes back on the NEXT sync
-      //     defaulting to BSC again, and the review screen asks the same
-      //     question with the same wrong default. `preferred` is how the modal
-      //     is told which way the answer went last time.
-      //
-      //     It is EVIDENCE, not a decision, and it is NB's own evidence: the
-      //     committed NB row's players are read, and if they mean the same
-      //     thing as SportLots' list then SportLots is what an operator chose.
-      //     No marketplace is asked which side is right — that would be exactly
-      //     the "marketplace as source of truth" the product invariant forbids.
-      //
-      //     Bounded: only conflicted, BSC-linked, already-committed rows are
-      //     considered, and their player ids are deduped into ONE batch read.
-      //     A set where the marketplaces agree pays nothing at all.
-      const conflictedByBscRef = new Map<string, ReconciledCard>();
-      for (const card of out) {
-        const ref = card.platformData.bsc?.ref;
-        if (ref && card.playersConflict) conflictedByBscRef.set(ref, card);
-      }
-      if (conflictedByBscRef.size > 0) {
-        const rowsByBscRef = new Map<string, (typeof committed)[number]>();
-        for (const row of committed) {
-          const ref = row.platformData?.bsc?.ref;
-          if (ref) rowsByBscRef.set(ref, row);
-        }
-        const neededPlayerIds = new Set<Id<"players">>();
-        for (const ref of conflictedByBscRef.keys()) {
-          for (const id of rowsByBscRef.get(ref)?.playerIds ?? []) {
-            neededPlayerIds.add(id);
-          }
-        }
-        if (neededPlayerIds.size > 0) {
-          const playerDocs = await ctx.runQuery(api.players.getManyByIds, {
-            ids: [...neededPlayerIds],
-          });
-          const playerNameById = new Map<string, string>();
-          for (const doc of playerDocs) playerNameById.set(doc._id, doc.name);
-          for (const [ref, card] of conflictedByBscRef) {
-            const conflict = card.playersConflict;
-            if (!conflict) continue;
-            const storedIds = rowsByBscRef.get(ref)?.playerIds ?? [];
-            // A dangling id is not evidence of anything — it cannot be shown
-            // to mean either side — so a row with one simply carries no hint.
-            const storedNames = storedIds
-              .map((id) => playerNameById.get(id))
-              .filter((n): n is string => n !== undefined);
-            if (storedNames.length !== storedIds.length) continue;
-            if (storedNames.length === 0) continue;
-            if (playersKey(storedNames) === playersKey(conflict.sportlots)) {
-              conflict.preferred = "sportlots";
-            }
-          }
-        }
-      }
+      const {
+        autoMatchedCards,
+        unmatchedBscCards,
+        unmatchedSlCards,
+        out,
+        bscCollisions,
+        slCollisions,
+      } = matched;
 
       // 4. NEO-90: resolve team names for regular BSC cards that don't
       //    already have one from the cheap synchronous parse (TC-suffix /
@@ -14197,24 +14647,9 @@ export const fetchCardChecklist = action({
         bucket: "matched" | "bscOnly" | "slOnly",
         confidence?: number,
       ) => ({
-        cardNumber: card.cardNumber,
-        cardName: card.cardName,
-        teams: card.teams,
-        players: card.players,
-        attributes: card.attributes,
-        isRookie: card.isRookie,
-        isRelic: card.isRelic,
-        printRun: card.printRun,
-        autographType: card.autographType,
-        cardVariation: card.cardVariation,
-        isVariation: card.isVariation,
-        platformData: card.platformData,
-        // NEO-199: the streamed path is the only path. A conflict missing here
-        // is a conflict the operator never sees.
-        nameConflict: card.nameConflict,
-        // NEO-251: same rule — the streamed path is the only path, so a roster
-        // conflict missing here is one the operator never sees.
-        playersConflict: card.playersConflict,
+        // NEO-339 — the shared field list, so `previewCardChecklist` returns
+        // exactly what this writes.
+        ...checklistCandidateFields(card),
         bucket,
         confidence,
         // NEO-341 — see `awaitingTeam` above.
@@ -14289,28 +14724,14 @@ export const fetchCardChecklist = action({
           // ("Cleveland Guardians, Washington Nationals" is two teams). The
           // candidate row that mutation writes is the only copy the modal and
           // the commit read; nothing below this loop reads `c.teams`.
-          const lookupByRef = new Map(lookups.map((l) => [l.bscCardId, l]));
           const resolvedChunk: { ready: number } = await ctx.runMutation(
             internal.checklistCandidates.resolveCandidateTeams,
             {
               batchId: candidateBatchId,
-              resolved: chunk.map((c) => {
-                const bscRef = c.platformData.bsc!.ref;
-                const lookup = lookupByRef.get(bscRef);
-                if (lookup?.success !== true) {
-                  return { bscRef, teamLookup: "failed" as const };
-                }
-                return {
-                  bscRef,
-                  ...(lookup.rawTeamName
-                    ? { rawTeamName: lookup.rawTeamName }
-                    : {}),
-                  ...(lookup.teamNames.length > 0
-                    ? { teamNames: lookup.teamNames }
-                    : {}),
-                  teamLookup: "answered" as const,
-                };
-              }),
+              resolved: bscTeamLookupEntries(
+                chunk.map((c) => c.platformData.bsc!.ref),
+                lookups,
+              ),
             },
           );
           // `ready` never falls within a batch, so the last chunk's count is
@@ -14508,10 +14929,867 @@ export const resolveChecklistEntities = action({
   },
 });
 /**
+ * NEO-339 — one card as `previewCardChecklist` returns it: exactly the fields
+ * the staging path writes to `checklistCandidates` for it
+ * (`checklistCandidateFields`), without the bucket and confidence, which the
+ * preview carries structurally.
+ */
+const previewChecklistCardValidator = v.object({
+  cardNumber: v.string(),
+  cardName: v.string(),
+  teams: v.optional(v.array(v.string())),
+  players: v.optional(v.array(v.string())),
+  attributes: v.optional(v.array(v.string())),
+  isRookie: v.optional(v.boolean()),
+  isRelic: v.optional(v.boolean()),
+  printRun: v.optional(v.number()),
+  autographType: v.optional(v.string()),
+  cardVariation: v.optional(v.string()),
+  isVariation: v.optional(v.boolean()),
+  platformData: cardPlatformWireDataValidator,
+  nameConflict: v.optional(v.object({ bsc: v.string(), sportlots: v.string() })),
+  playersConflict: v.optional(
+    v.object({
+      bsc: v.array(v.string()),
+      sportlots: v.array(v.string()),
+      preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
+    }),
+  ),
+  // NEO-335 — what `resolveCandidateTeams` records on the staged row once the
+  // team lookup ran (`lookupTeams: true`): how it ended, and BSC's unsplit
+  // team value where `teams` does not already say it. Absent otherwise.
+  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  rawTeamName: v.optional(v.string()),
+});
+
+type PreviewChecklistCard = ReturnType<typeof checklistCandidateFields> & {
+  teamLookup?: "answered" | "failed";
+  rawTeamName?: string;
+};
+
+/**
+ * NEO-339 — how many marketplace ids one list of the cold form may carry.
+ * Mirrors `MAX_SL_FAN_OUT` (and `MAX_ATTACHED_PER_SIDE` on the attach path):
+ * a row attaches at most this many sets per side.
+ */
+const PREVIEW_MAX_IDS_PER_LIST = 10;
+
+/** NEO-339 — the longest marketplace id the cold form accepts. */
+const PREVIEW_MAX_ID_LENGTH = 200;
+
+/**
+ * NEO-339 — refuse a malformed id list before anything is fetched. Ids are
+ * reported by count and length, never echoed.
+ */
+function previewIdList(ids: string[] | undefined, what: string): string[] {
+  const list = ids ?? [];
+  if (list.length > PREVIEW_MAX_IDS_PER_LIST) {
+    throw new Error(
+      `previewCardChecklist: ${what} carries ${list.length} ids, above the ${PREVIEW_MAX_IDS_PER_LIST}-id limit`,
+    );
+  }
+  for (const id of list) {
+    if (id.trim() === "" || id.length > PREVIEW_MAX_ID_LENGTH) {
+      throw new Error(
+        `previewCardChecklist: ${what} carries an empty id or one over ${PREVIEW_MAX_ID_LENGTH} characters`,
+      );
+    }
+  }
+  if (new Set(list).size !== list.length) {
+    throw new Error(`previewCardChecklist: ${what} repeats an id`);
+  }
+  return list;
+}
+
+/** Slot map for `ids` on one side, in order: b0, b1… / s0, s1… */
+function previewSlots(prefix: "b" | "s", ids: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  ids.forEach((id, i) => {
+    out[`${prefix}${i}`] = id;
+  });
+  return out;
+}
+
+/**
+ * NEO-339 — the chain of a checklist row that does not exist yet: the set's
+ * REAL ancestors, a variant-type node and, for an insert, an insert node,
+ * carrying only ids confirmed to be values of THIS set's own facets.
+ *
+ * ## The scoping rule (NEO-239)
+ *
+ * Every id is checked against the list the set itself returns, fetched with
+ * the same body `fetchRawOptions` runs (`fetchRawOptionsForChain`):
+ *
+ *   - `variantType.bscVariantId` must be a value of BSC's `variant` facet
+ *     under this set;
+ *   - `insert.bscVariantNameIds` must be values of BSC's `variantName` facet
+ *     under this set and that variant;
+ *   - every SportLots id must be on the SportLots set list this set's
+ *     brand-year scope returns (the list the Base picker and the Reconcile
+ *     dialog choose from).
+ *
+ * An id that is not on its list, or a list that could not be fetched, refuses
+ * the preview (`refused`); nothing is guessed. The checklist fetch that
+ * follows then runs the same per-side gate as `fetchCardChecklist`
+ * (`resolvableSides` with `bscScope: "checklist"`), so a chain missing a
+ * required facet skips that side rather than sending an unscoped query.
+ *
+ * Costs up to 3 marketplace calls, counted into `report.marketplaceCalls`.
+ */
+async function coldChecklistChain(
+  ctx: ActionCtx,
+  setChain: ChecklistChainNode[],
+  ids: {
+    bscVariantId?: string;
+    variantTypeSlIds: string[];
+    insert?: { bscVariantNameIds: string[]; sportlotsIds: string[] };
+  },
+  report: { marketplaceCalls: number },
+): Promise<{ chain: ChecklistChainNode[] } | { refused: string }> {
+  const parentFilters: RawOptionsParentFilters = {};
+  for (const node of setChain) {
+    if (
+      node.level === "sport" ||
+      node.level === "year" ||
+      node.level === "manufacturer" ||
+      node.level === "setName"
+    ) {
+      parentFilters[node.level] = node.value;
+    }
+  }
+  const noBaseIds = async () => new Set<string>();
+  const insertBscIds = ids.insert?.bscVariantNameIds ?? [];
+  const insertSlIds = ids.insert?.sportlotsIds ?? [];
+  if (insertBscIds.length > 0 && !ids.bscVariantId) {
+    return {
+      refused:
+        "BuySportsCards variantName ids need the variant id they sit under.",
+    };
+  }
+
+  // BSC's `variant` facet under this set.
+  let variantLabel = "";
+  if (ids.bscVariantId) {
+    const listed = await fetchRawOptionsForChain(ctx, {
+      level: "variantType",
+      loadChain: async () => setChain,
+      parentFilters,
+      loadBaseSlIds: noBaseIds,
+    });
+    report.marketplaceCalls += listed.marketplaceCalls;
+    const r = listed.result;
+    if (
+      !r.success ||
+      r.skippedSides.includes("bsc") ||
+      r.errors.some((e) => e.platform === "bsc" || e.platform === "internal")
+    ) {
+      return {
+        refused:
+          "This set's BuySportsCards variants could not be read, so the variant id could not be confirmed.",
+      };
+    }
+    const hit = r.bscOptions.filter((o) => o.platformValue === ids.bscVariantId);
+    if (hit.length !== 1) {
+      return {
+        refused: "The variant id is not one of this set's BuySportsCards variants.",
+      };
+    }
+    variantLabel = hit[0].value;
+  }
+
+  const variantNode: ChecklistChainNode = {
+    level: "variantType",
+    value: variantLabel,
+    platformData: {
+      ...(ids.bscVariantId ? { bsc: { b0: ids.bscVariantId } } : {}),
+      ...(ids.variantTypeSlIds.length > 0
+        ? { sportlots: previewSlots("s", ids.variantTypeSlIds) }
+        : {}),
+    },
+    ...(ids.bscVariantId ? { platformFacets: { bsc: { b0: "variant" as const } } } : {}),
+  };
+
+  // The insert-level lists: BSC's variantNames under the variant, and the
+  // SportLots set list for the brand-year. Nothing dropped from either.
+  const slIds = [...ids.variantTypeSlIds, ...insertSlIds];
+  let insertLabel = "";
+  if (insertBscIds.length > 0 || slIds.length > 0) {
+    // The variant node as confirmed so far: never its unconfirmed SportLots
+    // ids (they would count as the set's SportLots link), and its BSC id only
+    // when a variantName list is needed, so BSC is not asked for a list
+    // nothing will be checked against.
+    const listedUnder: ChecklistChainNode = {
+      level: "variantType",
+      value: variantLabel,
+      platformData:
+        insertBscIds.length > 0 && ids.bscVariantId
+          ? { bsc: { b0: ids.bscVariantId } }
+          : {},
+      ...(insertBscIds.length > 0 && ids.bscVariantId
+        ? { platformFacets: { bsc: { b0: "variant" as const } } }
+        : {}),
+    };
+    const listed = await fetchRawOptionsForChain(ctx, {
+      level: "insert",
+      loadChain: async () => [...setChain, listedUnder],
+      parentFilters: { ...parentFilters, variantType: variantLabel },
+      loadBaseSlIds: noBaseIds,
+    });
+    report.marketplaceCalls += listed.marketplaceCalls;
+    const r = listed.result;
+    const sideRead = (side: "bsc" | "sportlots") =>
+      r.success &&
+      !r.skippedSides.includes(side) &&
+      !r.errors.some((e) => e.platform === side || e.platform === "internal");
+    if (insertBscIds.length > 0) {
+      if (!sideRead("bsc")) {
+        return {
+          refused:
+            "This set's BuySportsCards variantNames could not be read, so the ids could not be confirmed.",
+        };
+      }
+      const known = new Map(r.bscOptions.map((o) => [o.platformValue, o.value]));
+      if (insertBscIds.some((id) => !known.has(id))) {
+        return {
+          refused:
+            "A variantName id is not one of this set's BuySportsCards variantNames.",
+        };
+      }
+      insertLabel = known.get(insertBscIds[0]) ?? "";
+    }
+    if (slIds.length > 0) {
+      if (!sideRead("sportlots")) {
+        return {
+          refused:
+            "This set's SportLots sets could not be read, so the SportLots ids could not be confirmed.",
+        };
+      }
+      const known = new Map(r.slOptions.map((o) => [o.platformValue, o.value]));
+      if (slIds.some((id) => !known.has(id))) {
+        return {
+          refused: "A SportLots id is not one of this set's SportLots sets.",
+        };
+      }
+      if (!insertLabel && insertSlIds.length > 0) {
+        insertLabel = known.get(insertSlIds[0]) ?? "";
+      }
+    }
+  }
+
+  const chain: ChecklistChainNode[] = [...setChain, variantNode];
+  if (ids.insert) {
+    chain.push({
+      level: "insert",
+      value: insertLabel,
+      platformData: {
+        ...(insertBscIds.length > 0
+          ? { bsc: previewSlots("b", insertBscIds) }
+          : {}),
+        ...(insertSlIds.length > 0
+          ? { sportlots: previewSlots("s", insertSlIds) }
+          : {}),
+      },
+      ...(insertBscIds.length > 0
+        ? {
+            platformFacets: {
+              bsc: Object.fromEntries(
+                insertBscIds.map((_, i) => [`b${i}`, "variantName" as const]),
+              ),
+            },
+          }
+        : {}),
+    });
+  }
+  return { chain };
+}
+
+/**
+ * NEO-339 — the matched buckets `fetchCardChecklist` computes, returned
+ * instead of staged: no `checklistCandidates` batch, no team-lookup writes,
+ * no review queue, nothing written at all. For `nb_draft_set`, which drafts a
+ * whole set's checklists before the one approval.
+ *
+ * ## Two forms (exactly one)
+ *
+ *   - `selectorOptionId` — an existing row. Its real chain, its committed
+ *     cards' sticky pairings: the buckets `fetchCardChecklist` would stage.
+ *   - `cold` — a row that does not exist yet: the set, the variant type's
+ *     BSC `variant` id and SportLots ids, and for an insert its own BSC
+ *     `variantName` ids and SportLots ids. Every id is confirmed against this
+ *     set's own lists before anything is fetched (`coldChecklistChain`).
+ *
+ * Both share `fetchAndMatchChecklist` with the staging path, and every card
+ * goes through `checklistCandidateFields`, so a preview card is the
+ * candidate row the staging path writes. The card batch is bounded like a
+ * commit (`assertCardBatchWithinLimits`); over it, the preview fails.
+ *
+ * ## Teams
+ *
+ * `lookupTeams: true` also runs BSC's per-card team lookup the staging path
+ * runs (one request per BSC card that has no team yet), in memory, so the
+ * cards carry the teams the staged rows end up with. Which teams a card
+ * carries is `resolveCandidateTeams`' own decision, run read-only by
+ * `checklistCandidates.previewCandidateTeams` (NEO-333: a dual-team value is
+ * two teams, a known comma-bearing name stays one). `teamLookup.resolved`
+ * counts cards that came back with at least one team. Off by default: it is
+ * most of a big set's wall-clock.
+ *
+ * Marketplace calls: up to 3 to confirm cold ids, then BSC (1) and
+ * SportLots (1 per attached set, at most 10), then the team lookups.
+ */
+export const previewCardChecklist = action({
+  args: {
+    selectorOptionId: v.optional(v.id("selectorOptions")),
+    cold: v.optional(
+      v.object({
+        setId: v.id("selectorOptions"),
+        variantType: v.object({
+          bscVariantId: v.optional(v.string()),
+          sportlotsIds: v.optional(v.array(v.string())),
+        }),
+        insert: v.optional(
+          v.object({
+            bscVariantNameIds: v.optional(v.array(v.string())),
+            sportlotsIds: v.optional(v.array(v.string())),
+          }),
+        ),
+      }),
+    ),
+    lookupTeams: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    /** The same status line `fetchCardChecklist` writes, or why it failed. */
+    message: v.string(),
+    attachedSides: v.array(platformSideValidator),
+    pausedSides: v.array(platformSideValidator),
+    matched: v.array(
+      v.object({ card: previewChecklistCardValidator, confidence: v.number() }),
+    ),
+    bscOnly: v.array(previewChecklistCardValidator),
+    slOnly: v.array(previewChecklistCardValidator),
+    teamLookup: v.object({
+      /** BSC cards with no team after the cheap parse. */
+      needed: v.number(),
+      performed: v.boolean(),
+      resolved: v.number(),
+    }),
+    marketplaceCalls: v.number(),
+  }),
+  handler: async (ctx, args): Promise<{
+    success: boolean;
+    message: string;
+    attachedSides: Array<"bsc" | "sportlots">;
+    pausedSides: Array<"bsc" | "sportlots">;
+    matched: Array<{ card: PreviewChecklistCard; confidence: number }>;
+    bscOnly: PreviewChecklistCard[];
+    slOnly: PreviewChecklistCard[];
+    teamLookup: { needed: number; performed: boolean; resolved: number };
+    marketplaceCalls: number;
+  }> => {
+    // Outside the try, as in `fetchCardChecklist`: an authorization failure
+    // is not a marketplace outage.
+    await requireAdmin(ctx);
+    const started = Date.now();
+    if ((args.selectorOptionId === undefined) === (args.cold === undefined)) {
+      throw new Error(
+        "previewCardChecklist: pass exactly one of selectorOptionId or cold",
+      );
+    }
+    // Argument shape is refused before any marketplace call.
+    const coldIds = args.cold
+      ? {
+          bscVariantId: args.cold.variantType.bscVariantId,
+          variantTypeSlIds: previewIdList(
+            args.cold.variantType.sportlotsIds,
+            "variantType.sportlotsIds",
+          ),
+          ...(args.cold.insert
+            ? {
+                insert: {
+                  bscVariantNameIds: previewIdList(
+                    args.cold.insert.bscVariantNameIds,
+                    "insert.bscVariantNameIds",
+                  ),
+                  sportlotsIds: previewIdList(
+                    args.cold.insert.sportlotsIds,
+                    "insert.sportlotsIds",
+                  ),
+                },
+              }
+            : {}),
+        }
+      : undefined;
+    if (coldIds?.bscVariantId !== undefined) {
+      previewIdList([coldIds.bscVariantId], "variantType.bscVariantId");
+    }
+    const setChain: ChecklistChainNode[] | undefined = args.cold
+      ? await ctx.runQuery(api.selectorOptions.getAncestorChain, {
+          id: args.cold.setId,
+        })
+      : undefined;
+    if (setChain && setChain[setChain.length - 1]?.level !== "setName") {
+      throw new Error("previewCardChecklist: cold.setId is not a set (setName) row");
+    }
+
+    const report = {
+      attachedSides: [] as Array<"bsc" | "sportlots">,
+      pausedSides: [] as Array<"bsc" | "sportlots">,
+      marketplaceCalls: 0,
+    };
+    const teamLookup = { needed: 0, performed: false, resolved: 0 };
+    const empty = {
+      matched: [] as Array<{ card: PreviewChecklistCard; confidence: number }>,
+      bscOnly: [] as PreviewChecklistCard[],
+      slOnly: [] as PreviewChecklistCard[],
+    };
+    const finish = <T extends { success: boolean }>(out: T) => {
+      console.log(
+        JSON.stringify({
+          msg: "preview_card_checklist",
+          operation: "previewCardChecklist",
+          form: args.cold ? "cold" : "row",
+          success: out.success,
+          marketplaceCalls: report.marketplaceCalls,
+          duration_ms: Date.now() - started,
+        }),
+      );
+      return out;
+    };
+    try {
+      let chain: ChecklistChainNode[];
+      if (setChain && coldIds) {
+        const built = await coldChecklistChain(ctx, setChain, coldIds, report);
+        if ("refused" in built) {
+          return finish({
+            success: false,
+            message: `${built.refused} Nothing was fetched.`,
+            attachedSides: report.attachedSides,
+            pausedSides: report.pausedSides,
+            ...empty,
+            teamLookup,
+            marketplaceCalls: report.marketplaceCalls,
+          });
+        }
+        chain = built.chain;
+      } else {
+        chain = await ctx.runQuery(api.selectorOptions.getAncestorChain, {
+          id: args.selectorOptionId!,
+        });
+      }
+
+      const matched = await fetchAndMatchChecklist(ctx, {
+        chain,
+        ...(args.selectorOptionId ? { committedFor: args.selectorOptionId } : {}),
+        report,
+      });
+      if (matched.kind === "noIds") {
+        return finish({
+          success: true,
+          message: matched.message,
+          attachedSides: report.attachedSides,
+          pausedSides: report.pausedSides,
+          ...empty,
+          teamLookup,
+          marketplaceCalls: report.marketplaceCalls,
+        });
+      }
+      const { autoMatchedCards, unmatchedBscCards, unmatchedSlCards, out } =
+        matched;
+      // Bounded like every other path that hands a batch of cards on; a
+      // throw lands in the catch below as `success: false`.
+      assertCardBatchWithinLimits(out, "previewCardChecklist");
+
+      // The staging path's team lookup, without its writes: same predicate,
+      // same adapter, same chunking, and the SAME team decision
+      // (`chooseCandidateTeams`, NEO-333: the whole raw value when it names
+      // an existing team, else its comma parts), run by the read-only
+      // `previewCandidateTeams` query instead of `resolveCandidateTeams`.
+      // The result is applied in memory, as the mutation patches it.
+      // NEO-330: a card with an empty BSC ref is not looked up, as in
+      // `fetchCardChecklist` — nothing could route an answer back to it.
+      const needsTeamLookup = out.filter(
+        (c) => !c.teams?.length && !c.team && c.platformData.bsc?.ref,
+      );
+      teamLookup.needed = needsTeamLookup.length;
+      // NEO-335 — per BSC ref, the lookup outcome and raw team hint the staged
+      // row would carry (see `resolveCandidateTeams`). Empty unless the
+      // lookup ran.
+      const teamAnswerByRef = new Map<
+        string,
+        { teamLookup?: "answered" | "failed"; rawTeamName?: string }
+      >();
+      const previewCard = (card: ReconciledCard): PreviewChecklistCard => {
+        const ref = card.platformData.bsc?.ref;
+        const answer = ref ? teamAnswerByRef.get(ref) : undefined;
+        return { ...checklistCandidateFields(card), ...answer };
+      };
+      if (args.lookupTeams && needsTeamLookup.length > 0) {
+        teamLookup.performed = true;
+        // The match's sport and year: the row's, or for a cold preview its
+        // set's (a new row's ancestors are the set's).
+        const teamScopeId = args.selectorOptionId ?? args.cold!.setId;
+        const TEAM_LOOKUP_CHUNK = 50;
+        for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
+          const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
+          report.marketplaceCalls += chunk.length;
+          // NEO-330 — a chunk whose lookup THROWS is "no team" for its cards,
+          // as in `fetchCardChecklist`: the staged rows commit with no team
+          // and the operator picks. The preview reports what staging would
+          // write, so it does not fail either.
+          let lookups: BscCardTeamLookup[] = [];
+          const lookupStartedAt = Date.now();
+          try {
+            lookups = await ctx.runAction(
+              internal.adapters.buysportscards.fetchBscCardTeamNames,
+              { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
+            );
+          } catch (error) {
+            // Platform, operation, counts and timing — never a card name.
+            console.warn(
+              JSON.stringify({
+                msg: "preview_checklist_team_lookup_chunk_failed",
+                platform: "bsc",
+                operation: "fetchBscCardTeamNames",
+                cards: chunk.length,
+                elapsedMs: Date.now() - lookupStartedAt,
+                error: error instanceof Error ? error.name : "unknown",
+              }),
+            );
+          }
+          const entries = bscTeamLookupEntries(
+            chunk.map((c) => c.platformData.bsc!.ref),
+            lookups,
+          );
+          const decided: Array<{
+            bscRef: string;
+            teams?: string[];
+            rawTeamName?: string;
+          }> = await ctx.runQuery(
+            internal.checklistCandidates.previewCandidateTeams,
+            { selectorOptionId: teamScopeId, resolved: entries },
+          );
+          // NEO-335 — and what the staged row records beside `teams`: how the
+          // lookup ended and BSC's unsplit value where `teams` does not say
+          // it. Applied to the preview card below, as the mutation patches
+          // the row.
+          for (const e of entries) {
+            teamAnswerByRef.set(e.bscRef, { teamLookup: e.teamLookup });
+          }
+          for (const d of decided) {
+            if (d.rawTeamName) {
+              teamAnswerByRef.set(d.bscRef, {
+                ...teamAnswerByRef.get(d.bscRef),
+                rawTeamName: d.rawTeamName,
+              });
+            }
+          }
+          const teamsFor = new Map(decided.map((d) => [d.bscRef, d.teams]));
+          // NEO-339 — the attribute fill `resolveCandidateTeams` patches onto
+          // the staged row, applied in memory by the same function.
+          const attributesFor = bscAttributeAnswerByRef(entries);
+          for (const c of chunk) {
+            const teams = teamsFor.get(c.platformData.bsc!.ref);
+            if (teams && teams.length > 0) {
+              c.teams = teams;
+              // Cards that now carry at least one team (a dual-team card
+              // counts once).
+              teamLookup.resolved++;
+            }
+            const answer = attributesFor.get(c.platformData.bsc!.ref);
+            if (
+              answer &&
+              (answer.attributeTokens?.length || answer.printRun !== undefined)
+            ) {
+              const { fields, changed } = fillBscAttributeFields(c, {
+                tokens: answer.attributeTokens ?? [],
+                printRun: answer.printRun,
+              });
+              if (changed) {
+                c.attributes = fields.attributes;
+                c.printRun = fields.printRun;
+                c.isRookie = fields.isRookie;
+                c.isRelic = fields.isRelic;
+              }
+            }
+          }
+        }
+      }
+
+      const collisionNote = summarizeCollisions([
+        ...matched.bscCollisions.map((c) => ({ ...c, side: "BSC" as const })),
+        ...matched.slCollisions.map((c) => ({ ...c, side: "SL" as const })),
+      ]);
+      const pausedNote =
+        report.pausedSides.length > 0
+          ? ` ${pausedSyncMessage(report.pausedSides)}`
+          : "";
+      return finish({
+        success: true,
+        message:
+          `${autoMatchedCards.length} matched, ` +
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
+          collisionNote +
+          pausedNote,
+        attachedSides: report.attachedSides,
+        pausedSides: report.pausedSides,
+        matched: autoMatchedCards.map((m) => ({
+          card: previewCard(m.card),
+          confidence: m.confidence,
+        })),
+        bscOnly: unmatchedBscCards.map(previewCard),
+        slOnly: unmatchedSlCards.map(previewCard),
+        teamLookup,
+        marketplaceCalls: report.marketplaceCalls,
+      });
+    } catch (error) {
+      console.error(`[previewCardChecklist] Error:`, error);
+      return finish({
+        success: false,
+        message: `Failed to preview checklist: ${error instanceof Error ? error.message : "Unknown error"}`,
+        attachedSides: report.attachedSides,
+        pausedSides: report.pausedSides,
+        ...empty,
+        teamLookup,
+        marketplaceCalls: report.marketplaceCalls,
+      });
+    }
+  },
+});
+
+/**
+ * NEO-339 — how many names one `previewChecklistEntities` call classifies,
+ * players and teams together.
+ *
+ * A query is ONE transaction. A name costs ~3 operations on the ordinary path
+ * (one skip lookup, then two indexed reads for a player or one to two for a
+ * team), more for a name several rows share (the card-year tie-break, at most
+ * `CARD_YEAR_TEAM_READS_PER_NAME` more). 200 names is ~600 on the ordinary
+ * path, inside the ~900 this codebase treats as comfortable
+ * (`CARDS_PER_COMMIT_CHUNK`). The caller slices a bigger list, the NEO-294
+ * way; a call over the cap is refused, never truncated.
+ */
+export const PREVIEW_ENTITY_NAMES_PER_CALL = 200;
+
+const previewNameStatusValidator = v.union(
+  v.literal("known"),
+  v.literal("unknown"),
+  v.literal("skipped"),
+);
+
+/**
+ * `previewChecklistEntities`' result. Declared rather than inferred so a
+ * caller sees one row shape (with optional ids) instead of a union per
+ * status.
+ */
+type PreviewChecklistEntitiesResult = {
+  setYear: number | null;
+  players: Array<{
+    name: string;
+    status: "known" | "unknown" | "skipped";
+    matchCount: number;
+    playerId?: Id<"players">;
+    narrowedByCardYear?: boolean;
+    candidates: Array<{ playerId: Id<"players">; name: string; birthYear?: number }>;
+  }>;
+  teams: Array<{
+    name: string;
+    status: "known" | "unknown" | "skipped";
+    teamId?: Id<"teams">;
+    candidates: Array<{
+      teamId: Id<"teams">;
+      name: string;
+      fromYear?: number;
+      toYear?: number;
+    }>;
+  }>;
+};
+
+/**
+ * NEO-339 — the review gate's verdict on a draft's player and team names,
+ * without a review batch: for each name, `known` (exactly one NB row meant),
+ * `unknown` (a human decides) or `skipped` (an operator already ruled it is
+ * not an entity on this row, NEO-212), plus the NB rows already filed under
+ * the name. `nb_draft_set` proposes `create` only for an unknown name with
+ * NO candidates; one or more candidates is an open decision, never a link by
+ * name.
+ *
+ * The same classification as `resolveChecklistEntities`
+ * (`classifyChecklistNames`), read in one transaction. Writes nothing, starts
+ * no batch and calls no enrichment.
+ *
+ * `selectorOptionId` is the row the names were read off (or, for a row that
+ * does not exist yet, its set): it scopes the skip records and supplies the
+ * set's year for the same-name tie-break. Its sport must be `sportId`.
+ * `playerCardTeams` carries the teams printed on each player's cards, the
+ * second half of that tie-break. Names on the row's existing hand-added cards
+ * (`pendingPlayerNames`) are not read here; pass them in if they matter.
+ */
+export const previewChecklistEntities = query({
+  args: {
+    sportId: v.id("selectorOptions"),
+    selectorOptionId: v.optional(v.id("selectorOptions")),
+    players: v.array(v.string()),
+    teams: v.array(v.string()),
+    playerCardTeams: v.optional(
+      v.array(v.object({ player: v.string(), teams: v.array(v.string()) })),
+    ),
+  },
+  returns: v.object({
+    setYear: v.union(v.number(), v.null()),
+    players: v.array(
+      v.object({
+        name: v.string(),
+        status: previewNameStatusValidator,
+        /** Same-name rows in the sport, before any year narrowing. */
+        matchCount: v.number(),
+        playerId: v.optional(v.id("players")),
+        narrowedByCardYear: v.optional(v.boolean()),
+        candidates: v.array(
+          v.object({
+            playerId: v.id("players"),
+            name: v.string(),
+            /**
+             * What tells same-name rows apart, and what a spec's
+             * `{ link, birthYear }` answer names (NEO-339). Omitted when the
+             * row has none.
+             */
+            birthYear: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
+    teams: v.array(
+      v.object({
+        name: v.string(),
+        status: previewNameStatusValidator,
+        teamId: v.optional(v.id("teams")),
+        candidates: v.array(
+          v.object({
+            teamId: v.id("teams"),
+            name: v.string(),
+            fromYear: v.optional(v.number()),
+            toYear: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
+  }),
+  handler: async (ctx, args): Promise<PreviewChecklistEntitiesResult> => {
+    await requireAdmin(ctx);
+    const total = args.players.length + args.teams.length;
+    if (total > PREVIEW_ENTITY_NAMES_PER_CALL) {
+      throw new Error(
+        `previewChecklistEntities: ${total} names exceeds the ${PREVIEW_ENTITY_NAMES_PER_CALL} per call — slice them`,
+      );
+    }
+    const cardTeams = args.playerCardTeams ?? [];
+    if (cardTeams.length > PREVIEW_ENTITY_NAMES_PER_CALL) {
+      throw new Error(
+        `previewChecklistEntities: ${cardTeams.length} playerCardTeams entries exceeds the ${PREVIEW_ENTITY_NAMES_PER_CALL} per call`,
+      );
+    }
+    const tooLong = (name: string) => name.length > MAX_PLAYER_NAME_LENGTH;
+    if (
+      args.players.some(tooLong) ||
+      args.teams.some(tooLong) ||
+      cardTeams.some(
+        (e) =>
+          tooLong(e.player) ||
+          e.teams.length > MAX_CARD_TEAMS ||
+          e.teams.some(tooLong),
+      )
+    ) {
+      throw new Error(
+        `previewChecklistEntities: a name is over ${MAX_PLAYER_NAME_LENGTH} characters or a card carries more than ${MAX_CARD_TEAMS} teams`,
+      );
+    }
+    const sport = await ctx.db.get(args.sportId);
+    if (!sport || sport.level !== "sport") {
+      throw new Error("previewChecklistEntities: sportId is not a sport row");
+    }
+    if (
+      args.selectorOptionId !== undefined &&
+      (await findSportForSelectorOption(ctx, args.selectorOptionId)) !==
+        args.sportId
+    ) {
+      throw new Error(
+        "previewChecklistEntities: sportId is not the sport ancestor of selectorOptionId",
+      );
+    }
+
+    const names = checklistNameCollector();
+    for (const p of args.players) names.addPlayer(p);
+    for (const t of args.teams) names.addTeam(t);
+    const cardTeamNamesByPlayer = new Map<string, string[]>();
+    for (const entry of cardTeams) {
+      addCardTeamNames(
+        cardTeamNamesByPlayer,
+        entry.player,
+        cardTeamNames({ teams: entry.teams }),
+      );
+    }
+
+    const classified = await classifyChecklistNames(
+      queryChecklistNameLookups(ctx, args.selectorOptionId, args.sportId),
+      {
+        playerByNorm: names.playerByNorm,
+        teamByNorm: names.teamByNorm,
+        cardTeamNamesByPlayer,
+      },
+    );
+
+    return {
+      setYear: classified.setYear ?? null,
+      players: classified.players.map((entry) => {
+        if (entry.skipped) {
+          return {
+            name: entry.name,
+            status: "skipped" as const,
+            matchCount: 0,
+            candidates: [],
+          };
+        }
+        const verdict = entry.verdict;
+        return {
+          name: entry.name,
+          status: verdict.playerId ? ("known" as const) : ("unknown" as const),
+          matchCount: verdict.matchCount,
+          ...(verdict.playerId ? { playerId: verdict.playerId } : {}),
+          ...(verdict.narrowedByCardYear ? { narrowedByCardYear: true } : {}),
+          candidates: (verdict.candidates ?? []).map((p) => ({
+            playerId: p._id,
+            name: p.name,
+            ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+          })),
+        };
+      }),
+      teams: classified.teams.map((entry) => {
+        if (entry.skipped) {
+          return { name: entry.name, status: "skipped" as const, candidates: [] };
+        }
+        const verdict = entry.verdict;
+        return {
+          name: entry.name,
+          status: verdict.teamId ? ("known" as const) : ("unknown" as const),
+          ...(verdict.teamId ? { teamId: verdict.teamId } : {}),
+          candidates: (verdict.candidates ?? []).map((t) => ({
+            teamId: t._id,
+            name: teamFullName(t),
+            ...(t.yearsActive ? { fromYear: t.yearsActive.from } : {}),
+            ...(t.yearsActive?.to !== undefined ? { toYear: t.yearsActive.to } : {}),
+          })),
+        };
+      }),
+    };
+  },
+});
+/**
  * NEO-189 — how many cards one `commitCardChecklistChunk` transaction upserts.
  *
  * Measured, not guessed. The single-mutation version of this commit passed at
- * 335 cards (the E2E `setup.yaml` save — and already sat near its 120s wait)
+ * 335 cards (the E2E seed's Base save, then `setup.yaml`, since NEO-339 the
+ * scripted seed `npm run setbuild` — and already sat near its 120s wait)
  * and FAILED at 712 with Convex's `Your request timed out performing too many
  * system operations.` (PR #205 preview, request af06962bc3db7994). Each card
  * costs ~5-6 database operations in the chunk below, so 150 cards is ~900
@@ -15177,6 +16455,14 @@ export const commitCardChecklistPrelude = internalMutation({
           features: { ...(leaf.features ?? {}), autographFormat: args.autographFormat },
           lastUpdated: Date.now(),
         });
+        // Jason, 2026-10-18 — the answer reaches the leaf's parallels too
+        // (each one whose own format is unset), off this transaction: their
+        // reads are not the commit's to pay. See `autographFormat.ts`.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.autographFormat.inheritAutographFormatToParallels,
+          { selectorOptionId: args.selectorOptionId, format: args.autographFormat },
+        );
       }
     }
 
@@ -17811,6 +19097,13 @@ export const commitCardChecklistChunk = internalMutation({
           existing.teamNoneConfirmedAt !== undefined &&
           teamIdsWritten !== undefined &&
           teamIdsWritten.length > 0;
+        // NEO-339 — the player twin, on the same one gate: an ACCEPTED,
+        // re-diffed, non-empty `playerIds` retires "No player on this card".
+        // A linkage-only refresh never touches it.
+        const retirePlayerNoneConfirmed =
+          existing.playerNoneConfirmedAt !== undefined &&
+          Array.isArray(contentPatch.playerIds) &&
+          (contentPatch.playerIds as unknown[]).length > 0;
 
         // ── NEO-221: this row's unreviewed-name stamp ─────────────────────
         //
@@ -17959,6 +19252,12 @@ export const commitCardChecklistChunk = internalMutation({
             ? {
                 teamNoneConfirmedAt: undefined,
                 teamNoneConfirmedByUserId: undefined,
+              }
+            : {}),
+          ...(retirePlayerNoneConfirmed
+            ? {
+                playerNoneConfirmedAt: undefined,
+                playerNoneConfirmedByUserId: undefined,
               }
             : {}),
           // Patching `undefined` deletes the field, so an emptied list is
@@ -20409,12 +21708,20 @@ export const commitCardChecklist = action({
     // an older or newer bundle's shape through to a readable error here, not to
     // fail with `ArgumentValidationError` at the last step of a 900-card
     // review. The card NUMBER is NB's own value; no marketplace text is echoed.
+    //
+    // NEO-339 — and the NAME conflict on the same terms. The Match Cards
+    // dialog (and the set-building tool, through the same reducer) now
+    // refuses Confirm while either disagreement is unanswered
+    // (`openPairingConflicts`), so a card arriving here still carrying one is
+    // a client that skipped that question.
     for (const [index, card] of args.cards.entries()) {
-      if (!card.playersConflict) continue;
+      if (!card.playersConflict && !card.nameConflict) continue;
       throw new ConvexError(
         `commitCardChecklist: ${
           card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
-        } still carries an unsettled players conflict. Settle it in the pairing dialog before committing.`,
+        } still carries an unsettled ${
+          card.playersConflict ? "players" : "name"
+        } conflict. Settle it in the pairing dialog before committing.`,
       );
     }
     // NEO-335 — the "Card titles" answers, held to the write path's caps before
@@ -21102,6 +22409,24 @@ export const commitCardChecklist = action({
       // sets is two separate groups needing review, and collapsing them would
       // understate the work.
       variationLinks.unresolvedStems.push(...resolved.unresolvedStems);
+    }
+    // NEO-339: a variation only one marketplace lists, whose base card both
+    // list, has no parent in its own partition (the base sits in BSC's). Give
+    // it the one non-variation card of the same marketplace set whose number
+    // is its stem, or leave it as it is. See `attachCrossMarketplaceVariations`.
+    const crossMarketplace = attachCrossMarketplaceVariations(
+      args.cards.map((c) => ({
+        cardNumber: c.cardNumber,
+        isVariation: !!c.isVariation,
+        sourceSetIds: {
+          bsc: c.platformData?.bsc?.setId,
+          sportlots: c.platformData?.sportlots?.setId,
+        },
+      })),
+      variationLinks.parentByIndex,
+    );
+    for (const [child, parent] of crossMarketplace) {
+      variationLinks.parentByIndex.set(child, parent);
     }
     const links: Array<{
       childId: Id<"cardChecklist">;

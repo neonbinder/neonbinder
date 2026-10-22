@@ -9,9 +9,37 @@
 // row changed. Per-worker, per-attempt custom set under the real
 // Baseball > 2024 > Topps ancestors (a real sport row is what lets the team
 // picker create a team at all).
+//
+// NEO-339: each card is born linked to a player the quick-add picker creates
+// (a single minted token), so a TEAM is the only thing it is asked: a card
+// with nobody linked is asked for its player first, which
+// checklist-title-length-limits-and-fixer and checklist-attention-badge-and-filter
+// cover.
+import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm } from "../../support/cards";
+
+/**
+ * The quick-add form's player picker: create `name` (a single token no player
+ * has) and link it to the card being added. Its results popover opens below
+ * the field and is fixed to the viewport, so the form is lifted first (the
+ * fold trap checklist-attention-badge-and-filter documents).
+ */
+function linkNewPlayer(page: Page, name: string) {
+  return async () => {
+    await page.getByRole("heading", { name: "Add Card" }).hover();
+    await page.mouse.wheel(0, 250);
+    await page.getByRole("button", { name: "Add a player to the new card" }).click();
+    const find = page.getByRole("textbox", { name: "Find a player for the new card" });
+    await find.fill(name);
+    await page.getByRole("option", { name: `Create player ${name}` }).click();
+    await expect(page.getByRole("button", { name: `Remove player ${name}` })).toBeVisible();
+    // Leaving the picker closes its popover before Submit.
+    await page.getByRole("textbox", { name: "Card name", exact: true }).click();
+    await expect(find).toBeHidden();
+  };
+}
 
 test(
   "Attention walker — answering a card's missing team, one card at a time",
@@ -39,9 +67,17 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await drillToCustom(page, target);
 
-    // Two hand-made cards, each with no team.
-    await addCardViaForm(page, { cardNumber: `801-${A}`, playerName: `WalkerAlpha${T}` });
-    await addCardViaForm(page, { cardNumber: `802-${A}`, playerName: `WalkerBravo${T}` });
+    // Two hand-made cards, each linked to its own new player and with no team.
+    await addCardViaForm(page, {
+      cardNumber: `801-${A}`,
+      playerName: `WalkerAlpha${T}`,
+      beforeSubmit: linkNewPlayer(page, `WalkerAlpha${T}`),
+    });
+    await addCardViaForm(page, {
+      cardNumber: `802-${A}`,
+      playerName: `WalkerBravo${T}`,
+      beforeSubmit: linkNewPlayer(page, `WalkerBravo${T}`),
+    });
     await expect(pill("2 need you")).toBeVisible();
     await expectAccessible(page, { label: "Checklist with two cards needing attention" });
 
@@ -53,7 +89,7 @@ test(
     await expect(walker.getByRole("button", { name: skipFor("801") })).toBeVisible();
     await expect(walker.getByText("Step 1 of 2", { exact: true })).toBeVisible();
     await expect(walker.getByText("Cards with no team", { exact: true })).toBeVisible();
-    await expect(walker.getByText("No players on this card.")).toBeVisible();
+    await expect(walker.getByText(`Players: WalkerAlpha${T}`, { exact: true })).toBeVisible();
     await expect(walker.getByText("Pick at least one team, or record that this card has none.")).toBeVisible();
     await expectAccessible(page, { within: walker, label: "Attention walker, first card" });
 

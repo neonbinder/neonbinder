@@ -75,6 +75,8 @@ function makeCard(overrides: Partial<Parameters<typeof CardChecklistItem>[0]["ca
     cardNumber: "42",
     cardName: "Mike Trout",
     platformData: {},
+    // NEO-339: linked, so the attention tests below are about the team alone.
+    playerIds: ["player-trout" as unknown as Id<"players">],
     ...overrides,
   };
 }

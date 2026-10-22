@@ -148,7 +148,10 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitleTruncated).toBe(true);
     expect(row.listingTitle!.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
-    expect(row.listingTitle).toMatch(/#1$|#1 /);
+    // Jason, 2026-10-19: the card number goes before any set word, so on this
+    // set the set's own words fill the title and "#1" is what was cut.
+    expect(row.listingTitle).toMatch(/^2026 Topps Chrome Update Series /);
+    expect(row.listingTitle).not.toContain("#1");
     await settle(t);
   });
 
@@ -156,6 +159,8 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);
     await commit(t, ids, [card({ cardNumber: "1" })]);
+    // (A no-op on this set since 2026-10-19, whose titles carry no number;
+    // kept so the test holds if the fixture ever fits one.)
     const shown = (await rowsByNumber(t, ids.leafId)).get("1")!.listingTitle!.replace("#1", "#2");
     await commit(t, ids, [card({ cardNumber: "2", listingTitleKept: shown })]);
     const kept = (await rowsByNumber(t, ids.leafId)).get("2")!;

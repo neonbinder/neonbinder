@@ -40,3 +40,12 @@ looked like a flake.
 - A *printed* `Component "X" is not registered` line is a different thing and
   is not this: see [[convex-components-unregistered-in-convex-test]]. Those do
   not fail a run, and draining to remove them makes things worse.
+
+**Same mechanism, silent form (NEO-339 × NEO-335 merge, 2026-10-13).** A
+`fetchCardChecklist` over more than `CHECKLIST_CANDIDATE_PAGE` (700) cards in
+convex-test: `resolveCandidateTeams` runs before the second write page exists,
+misses those refs, and schedules its NEO-294 retry 1 s later — which
+`drainScheduled` never runs. So staged rows past card 700 carry no `teams` /
+`teamLookup` / `rawTeamName` in tests, while the first page does. A test that
+compares staged rows to anything that DID resolve every card (the read-only
+preview) must compare those fields only for refs the staged side recorded.

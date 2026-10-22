@@ -26,6 +26,7 @@ import {
   titleClashMessage,
 } from "./ready-title-clashes";
 import { MAX_SELECTOR_VALUE_LENGTH } from "../../convex/selectorSyncMatch";
+import { pressSave } from "./press-save";
 
 const ANIME_111: PlatformItem = { value: "Anime", platformValue: "111" };
 const ANIME_222: PlatformItem = { value: "Anime", platformValue: "222" };
@@ -135,7 +136,7 @@ describe("ReconciliationModal — Save is blocked while titles clash (NEO-325)",
     const save = saveButton();
     expect(save.hasAttribute("aria-disabled")).toBe(false);
     expect(save.hasAttribute("title")).toBe(false);
-    fireEvent.click(save);
+    pressSave(save);
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
   });
 
@@ -150,7 +151,7 @@ describe("ReconciliationModal — Save is blocked while titles clash (NEO-325)",
     expect(saveButton().hasAttribute("title")).toBe(false);
     // A real press on Save blurs the field first, which commits the title.
     fireEvent.blur(titleInputs()[1]);
-    fireEvent.click(saveButton());
+    pressSave(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     const items = onConfirm.mock.calls[0][0].items as Array<{ value: string }>;
     expect(items.map((i) => i.value).sort()).toEqual(["Anime", "Anime Gold"]);
@@ -193,7 +194,7 @@ describe("ReconciliationModal — Save is blocked while titles clash (NEO-325)",
     fireEvent.keyDown(second, { key: "Enter" });
 
     expect(saveButton().hasAttribute("aria-disabled")).toBe(false);
-    fireEvent.click(saveButton());
+    pressSave(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
   });
 
@@ -217,7 +218,7 @@ describe("ReconciliationModal — identityOnly rides on sets the operator made t
   test("Make its own set sends identityOnly: true", async () => {
     const { onConfirm } = renderModal();
     makeOwnSet("Solo");
-    fireEvent.click(saveButton());
+    pressSave(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
 
     const items = onConfirm.mock.calls[0][0].items as Sent;
@@ -235,7 +236,7 @@ describe("ReconciliationModal — identityOnly rides on sets the operator made t
       },
     });
     fireEvent.click(screen.getByRole("button", { name: /^Keep all, SportLots sets/ }));
-    fireEvent.click(saveButton());
+    pressSave(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
 
     const items = onConfirm.mock.calls[0][0].items as Sent;
@@ -247,7 +248,7 @@ describe("ReconciliationModal — identityOnly rides on sets the operator made t
     const { onConfirm } = renderModal();
     fireEvent.click(screen.getByText("Solo"));
     fireEvent.click(screen.getByText(BSC_ONE.value));
-    fireEvent.click(saveButton());
+    pressSave(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
 
     const items = onConfirm.mock.calls[0][0].items as Sent;
@@ -266,7 +267,7 @@ describe("ReconciliationModal — identityOnly rides on sets the operator made t
         slCandidates: [],
       },
     });
-    fireEvent.click(saveButton());
+    pressSave(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
 
     const items = onConfirm.mock.calls[0][0].items as Sent;

@@ -60,6 +60,7 @@ import { isPlatformPaused } from "../marketplacePause";
 import {
   boundBscAttributeTokens,
   bscAttributeLabelTokens,
+  bscAttributeTokensFromProductName,
   isBscAttributeLabel,
   normalizeBscAttributeTokens,
 } from "../lib/bscAttributeTokens";
@@ -1516,7 +1517,9 @@ async function bscChecklistWithSession(
   //   cardNoSequence, cardNoSort.
   // No year, sport, features, printRun, autograph, sportlots — those
   // don't exist on the catalog template (NEO-345: the print run is read out
-  // of the `SN<n>` attribute token instead). `team`/`teams` are populated
+  // of the `SN<n>` attribute token instead). `productName` is read when a
+  // row carries it and its `playerAttribute` is empty (NEO-339); a row
+  // without it reads exactly as before. `team`/`teams` are populated
   // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
   // the raw response itself never carries a separate team field.
   const seenRefs = new Set<string>();
@@ -1542,9 +1545,25 @@ async function bscChecklistWithSession(
       // NEO-345: read into NB's vocabulary at the parse, so a numbered card
       // arrives as `NUM` + its print run rather than BSC's raw "SN25". Bounded
       // first: the payload is a third party's.
+      //
+      // NEO-339: when `playerAttribute` carries no token, the card's own
+      // `productName` may ("Gerrit Cole / Andy Pettitte AU, SN #PBDA-CP"),
+      // and those tokens are read the same way. Only the strict
+      // known-token run before `#<cardNo>` (see
+      // `bscAttributeTokensFromProductName`); never the set or insert name. A
+      // list refused as over-long is not replaced: that card's tags were
+      // garbage, not absent.
+      const fromAttribute = boundBscAttributeTokens(
+        parsePlayerAttributeTokens(r.playerAttribute),
+      );
+      const fromProductName =
+        fromAttribute.tokens.length === 0 && !fromAttribute.refused
+          ? boundBscAttributeTokens(
+              bscAttributeTokensFromProductName(r.productName),
+            ).tokens
+          : [];
       const { attributes, printRun } = normalizeBscAttributeTokens(
-        boundBscAttributeTokens(parsePlayerAttributeTokens(r.playerAttribute))
-          .tokens,
+        fromAttribute.tokens.length > 0 ? fromAttribute.tokens : fromProductName,
       );
       // NEO-189: only a genuine printing variety reaches `cardVariation`.
       // BSC reuses `playerAttributeDesc` for shelf notes and for "this is
@@ -1606,6 +1625,7 @@ async function bscChecklistWithSession(
         // Not part of the checklist card shape — stripped below, once the
         // dedupe has run, so an overlapping row is not counted twice.
         __unrepresentable: unrepresentable === true,
+        __tokensFromProductName: fromProductName.length > 0,
       };
     })
     .filter((c): c is NonNullable<typeof c> => c !== null)
@@ -1626,9 +1646,23 @@ async function bscChecklistWithSession(
   const unrepresentableCount = mapped.filter(
     (c) => c.__unrepresentable,
   ).length;
+  // NEO-339 — how many cards took their tokens from `productName`. A count
+  // only, never the text.
+  const tokensFromProductNameCount = mapped.filter(
+    (c) => c.__tokensFromProductName,
+  ).length;
   const cards = mapped.map(
-    ({ __unrepresentable: _unrepresentable, ...card }) => card,
+    ({
+      __unrepresentable: _unrepresentable,
+      __tokensFromProductName: _tokensFromProductName,
+      ...card
+    }) => card,
   );
+  if (tokensFromProductNameCount > 0) {
+    console.log(
+      `[fetchBscChecklist] platform=bsc op=checklist ${tokensFromProductNameCount} of ${cards.length} card(s) took attribute tokens from productName`,
+    );
+  }
   if (unrepresentableCount > 0) {
     // The COUNT, never the text. What was dropped is precisely the string
     // NB could not make sense of, and it came off a marketplace page.
@@ -1989,7 +2023,8 @@ export type BscCardTeamValue = {
    * normalises them, and keeps BSC's own `SN<n>` beside `NUM` when the row
    * already holds a different print run. When BSC put the attribute LABEL in
    * `teamName` and left `playerAttribute` empty, these are the label's
-   * tokens. Empty on a failed call.
+   * tokens; failing both, the known-token run in `productName` (NEO-339).
+   * Empty on a failed call.
    */
   attributeTokens: string[];
   /** NEO-345 — the print run those tokens carry (`SN<n>`, `1/1`), if any. */
@@ -2005,6 +2040,13 @@ export type BscCardTeamValue = {
 type BscCardListingPayload = {
   teamName?: unknown;
   playerAttribute?: unknown;
+  /**
+   * NEO-339 — the card's title, e.g. "Gerrit Cole / Andy Pettitte AU, SN
+   * #PBDA-CP" (seen live with `playerAttribute` ""). Read for attribute
+   * tokens only when neither `playerAttribute` nor a label `teamName` gave
+   * any; see `bscAttributeTokensFromProductName`.
+   */
+  productName?: unknown;
 };
 
 async function fetchBscCardTeamNameRaw(
@@ -2066,6 +2108,15 @@ async function fetchBscCardTeamNameRaw(
       console.warn(
         `[fetchBscCardTeamNameRaw] card-listing team value is the attribute label bscCardId=${bscCardId}`,
       );
+    }
+    // NEO-339 — still no token: the card's `productName` may carry them
+    // ("... AU, SN #PBDA-CP" with `playerAttribute` ""; confirmed live). The
+    // strict known-token run before `#<cardNo>` only. An over-long
+    // `playerAttribute` list stays refused rather than replaced.
+    if (attributeTokens.length === 0 && !bounded.refused) {
+      attributeTokens = boundBscAttributeTokens(
+        bscAttributeTokensFromProductName(payload.productName),
+      ).tokens;
     }
     if (bounded.refused) {
       console.warn(

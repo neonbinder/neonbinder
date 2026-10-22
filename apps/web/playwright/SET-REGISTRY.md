@@ -12,8 +12,19 @@ Every set the Playwright suite touches is listed here. Two rules govern this fil
 
 ## Real marketplace-backed sets
 
-These are provisioned once by `tests/setup.spec.ts` at the head of every run and are
-**READ-ONLY for all other flows**.
+Rows marked **seed** are provisioned once per run, before any flow, by the
+scripted seed: the reset (`e2e-seed-reset.sh`: `e2e-baseline.sh reset`,
+then on CI the NEO-330 reference-catalogue import), then `setbuild apply` on
+`playwright/seed/baseline.spec.json` — a bulk load that drives the same public
+Convex functions the Set Builder UI calls (NEO-339; runbook
+`docs/operations/neo339-setbuild.md`). On a catalogue preview the seed's
+reviews ask only about names the catalogue lacks and about same-name players
+(the pick step); the spec's answers for every other name are moot no-ops, so
+the seed mints few players and no teams or leagues. Until NEO-339 the seed was the Maestro
+flow `flows/setup.yaml`, now retired. Seeded data is **READ-ONLY for every
+flow** except the single sole writer this file names for a datum. The seed is
+a script, not a flow, so it is not a "writer" in R7a's sense: it runs alone,
+before the queue.
 
 ### When SportLots is paused (NEO-287) every real set is BSC-ONLY
 
@@ -35,8 +46,10 @@ BuySportsCards alone for the whole run:
   `Match Cards` dialog, every row a solo-kept "BSC only" card with no `SL`
   badge and no SportLots id anywhere in the chain. `Parallel` → Gold Wave
   Refractors is BUILT FROM BASE (NEO-321) from BSC alone, so its copies
-  carry Base's "BSC only" tag and no `SL` badge either. The Base is confirmed **BSC-only** in the picker by
-  the seed. Because `baseHasMapping` counts the SportLots slot only, such a
+  carry Base's "BSC only" tag and no `SL` badge either (built mid-queue by
+  `gold-wave-build-from-base-row`). The seed maps the Base **BSC-only**
+  (`base.map.whenPaused: "bsc-only"` in the spec; Topps Big League's is
+  `"skip"`). Because `baseHasMapping` counts the SportLots slot only, such a
   Base still reads as unmapped: every later drill auto-opens the picker
   again, and `drillToBaseVariant` leaves it the no-write way
   (Cancel → Close → "Map Base Set") on every read-only set.
@@ -44,7 +57,10 @@ BuySportsCards alone for the whole run:
   from SportLots' brand list and nowhere else (`convex/platformLevels.ts`), so
   under the pause the Manufacturers column syncs to nothing and the row is
   added through the column's own "+ Custom" form by the path's **sole
-  writer**: `Topps` under Baseball → 2024 by `tests/setup.spec.ts`; `Score` under
+  writer**: `Topps` under Baseball → 2024 and `Bowman` under Baseball → 2026
+  by the seed (`manufacturer.whenMissing: "create"`, the server path behind
+  the "+ Custom" form); `Bowman` under Baseball → 2023 by
+  `bowman-2023-sportlots-review-save` (via `util-drill-to-cold-real-set`); `Score` under
   Baseball → 1996 by `inserts-1996-score-…` (via `CREATE_MANUFACTURER: "1"`
   on the drill); `Topps` under Hockey → 2024 by `set-rename-…` (via
   `drillToColdManufacturer`, which adds a ROW under the pause), and
@@ -84,12 +100,13 @@ BuySportsCards alone for the whole run:
   Sets column (a hand-made brand, or
   any brand under the pause) ends "done" with "SportLots skipped: no
   SportLots ids on this path." since NEO-237 made Sync Sets two-sided — a
-  notice, not a failure; the seed's strict asserts key on failure copy only.
+  notice, not a failure. The seed reads `PAUSED_PLATFORMS` and fails loudly
+  when `ensureSelectorOptions` reports different paused sides.
 
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
-| Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
-| Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `tests/setup.spec.ts` |
+| Baseball → 2024 → Topps → Topps Chrome | `Base` — mapped on BOTH sides, 336 cards COMMITTED (BSC's 122b and 122c and SportLots' one `#122 … [ VAR ]` are left unpaired and all kept: Jason 2026-10-15, SportLots lists one more variation than BSC) with the players its review creates (on the catalogue only the names it lacks; teams and leagues are the catalogue's); `Insert` reconciled, `Future Stars` 20 cards COMMITTED, and `Youthquake` (50 cards, both sides) left with an EMPTY checklist; `Parallel` reconciled — 41 rows, ONE of them built from Base by the seed (never `Gold Wave Refractors` — its flow builds it — and never the first buildable row, which `base-parallels-build-from-section` builds), every other one EMPTY, `Gold Wave Refractors` included | **seed**. Sole writers, one datum each: the cards of the first buildable row under `Parallel` (measured: `Sepia Refractors`) — `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321, approved Jason 2026-10-04); `Gold Wave Refractors`' cards — `tests/set-selector/gold-wave-build-from-base-row.spec.ts` (NEO-339); `Youthquake`'s cards — `tests/set-selector/topps-chrome-insert-known-roster-no-wizard.spec.ts` (NEO-339). See "2024 Topps Chrome › Parallel — the base-parallel build" and "The NEO-339 flows on 2024 Topps Chrome" |
+| Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED on both sides, checklist deliberately EMPTY (NEO-248 wizard fixture) | **seed** |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `tests/set-selector/base-mapping-cancel-recovers.spec.ts` — **sole writer**, and it writes nothing |
 | Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only, every name SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-skip-commits-and-unskip.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (19 review rows once three players' Wikidata career clubs are staged) — see "The 1995 minor-league hockey wizard fixtures" |
 | Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; ONE player created with ONE hand-staged career team, the rest SKIPPED (NOT pre-synced) | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **15 unknown players, 0 teams** (15 rows settled) |
@@ -103,7 +120,8 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | none since NEO-330 — RETIRED as a fixture: the reference catalogue holds its Negro League clubs and players, so it no longer raises the team steps the alias flow needs | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-284, approved 2026-09-16); no flow touches it now |
 | Baseball → 1996 → All Brands (the view; the set is filed under the year's `Unknown` row) → Line Up Venezuelan Winter League | `Base` — 300 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): one club LINKED to the minted `Loc<token> Ali<token>` with its alias, every other name SKIPPED | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **200 unknown players + 8 unknown teams** (211 rows once lookups settle) — see "The TEAM-link alias fixture" |
 | Baseball → 2025 (the whole year) → Topps → Topps Welcome to the Club: 3X MVP | `Base` — 36 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the one team step, `Philadelphia Athletics`, LINKED by the operator to the catalogue's 1901–1954 row (remember-box unticked, no alias written); Brooklyn Dodgers linked automatically at the fetch. The year's Manufacturers and Topps Sets syncs are this flow's too: no other flow drills Baseball → 2025 | `tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts` — **sole writer** of the year. ✅ **Approved by Jason 2026-10-11** (NEO-330). Measured: **0 unknown players + 1 unknown team** (1 row once its lookup settles) — see "The PAST-ERA team fixture" |
-| Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `tests/setup.spec.ts` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
+| Baseball → 2026 → Bowman (the whole brand-year) | **seed:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | **seed** (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row — server-side since NEO-339; the review's UI is proved on 2023 Bowman instead), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
+| Baseball → 2023 (the whole year) → Bowman | Bowman's Sets synced cold (BSC's 2023 list is year-wide, so every 2023 BSC set is filed under the year's brands) and its SportLots review SAVED through the UI — 143 rows: `Best` its own set (`Bowman Best`), `Prospect Autos` under Bowman › `Insert`, the other 141 under Bowman › `Parallel`; Bowman's Variant Types synced inside the review. The year's Manufacturers column is synced cold by the same drill. No checklist is fetched (NOT pre-synced) | `tests/set-selector/bowman-2023-sportlots-review-save.spec.ts` — **sole writer** of the year; under the pause it also hand-makes the `Bowman` row. Relocated from 2025 (NEO-333 collision); Jason approved the move on 2026-10-13 (NEO-339); see "2023 Bowman — the SportLots review flow" |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `tests/set-selector/known-brand-files-set-and-operator-move-sticks.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 | Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED (on the catalogue every name is known, so the fetch commits with no wizard; any name the wizard does stage is SKIPPED) — no player, team or league minted (NOT pre-synced) | `tests/set-selector/checklist-dual-team-card-links-both-teams.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
 | Baseball → 2025 → Bowman › Bowman Draft › Insert › Bowman Draft Nights Autographs | `Insert` set `Bowman Draft Nights Autographs` — made its own set from the Reconcile Inserts dialog by its exact "Make its own set" button (its four refractor siblings are NOT made sets); its 5 cards (BDNA-SH, -EW, -GF, -KA, -XN, each AU + SN99 in BSC's attribute field) fetched and COMMITTED in-flow (NOT pre-synced); every name the wizard stages is SKIPPED, no player, team or league minted; the part's autograph format answered in the wizard, changed in Set details, cleared and answered again from the header, and card BDNA-KA's `autographed` toggled once by hand | `tests/set-selector/checklist-autograph-format-asked-applied-and-changeable.spec.ts` — **sole writer** of those five cards, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-14** (NEO-345); shares the YEAR and the Bowman Draft Insert reconcile with the dual-team spec above (a different insert, different rows) — see "Baseball → 2025 — the NEO-345 autograph fixture" |
@@ -159,8 +177,9 @@ rather than data-dependent.
 The flow tolerates a run that died between the rename and the accept (the row
 left as `TCG`) by selecting on the regex `Topps NHL Sticker Collection|TCG` and
 skipping the rename when the row already reads `TCG`. CI never needs that:
-`tests/setup.spec.ts` resets the set-builder tables at the head of every run, so the set
-is always re-synced from BSC under its own name.
+the run-start reset (`e2e-baseline.sh reset`) wipes the set-builder tables at
+the head of every run, so the set is always re-synced from BSC under its own
+name.
 
 **Sole writer.** Exactly ONE flow may ever touch this set. A second would race
 it on `selectorOptions`, which is global and unscoped, and the whole point of
@@ -225,7 +244,7 @@ dialog. Two consequences worth knowing:
 
 * The set is left with **220 cards still**, but the first card's NeonBinder
   name carries the run's `ATTEMPT_ID` marker. Nothing else reads that card, and
-  `tests/setup.spec.ts`'s reset clears it at the head of every run, so it accumulates
+  the run-start reset clears it at the head of every run, so it accumulates
   only across local re-runs that skip a reseed.
 * This is the ONLY end-to-end coverage of the re-sync content-diff review, and
   it lives here rather than in its own flow because the costly part of testing
@@ -253,7 +272,7 @@ Consequences worth knowing:
 * The set still ends with **exactly ONE** insert row and **220** cards. Only the
   insert row's NAME changes, and it changes to a per-attempt marker for the same
   reason the NB203 card marker does — it has to be unmistakably ours and unique
-  to the run. `tests/setup.spec.ts`'s reset clears it at the head of every run.
+  to the run. The run-start reset clears it at the head of every run.
 * The row also ends with `declinedUpstreamLabels` set on both sides, which is
   what makes the marketplace stop suggesting those names. Nothing else reads
   that field.
@@ -280,7 +299,7 @@ configuration returned 200 OK with zero rows and the UI reported "0 BSC cards".
 A count of 110 means only one BSC source was fetched. Do not loosen it.
 
 **Sole-writer, not read-only.** Unlike the Topps Chrome anchor, this set is NOT
-pre-synced by `tests/setup.spec.ts` and is NOT read-only: the reconciliation IS the
+pre-synced by the seed and is NOT read-only: the reconciliation IS the
 thing under test, so the flows must perform it.
 
 Exactly ONE flow may ever touch this set —
@@ -292,7 +311,7 @@ dependency graph. That was wrong, and the graph is gone (NEO-260): nothing
 schedules one flow after another. `run-e2e-queue.sh` enqueues in LPT order
 (alphabetical without timing history) and 8 runners claim from a shared queue
 with no dependency handling. Any flow in that queue must be independent of every
-other. Keeping it out of `tests/setup.spec.ts` also means its sync cost is paid by one
+other. Keeping it out of the seed also means its sync cost is paid by one
 flow rather than added to every run's seed.
 
 **No other real set exists in the suite.** If a flow needs marketplace-backed
@@ -300,9 +319,9 @@ data that isn't in the table above, it must either sync it itself (and accept th
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
 
-### 2026 Bowman — setup + two concurrent flows, one sole writer per row (NEO-293, NEO-300, NEO-305, NEO-306, NEO-308, NEO-312)
+### 2026 Bowman — seed + two concurrent flows, one sole writer per row (NEO-293, NEO-300, NEO-305, NEO-306, NEO-308, NEO-312, NEO-339)
 
-Baseball → 2026 → Bowman is written by `tests/setup.spec.ts` and two flows that run
+Baseball → 2026 → Bowman is written by the seed and two flows that run
 CONCURRENTLY against the same preview. Together they prove, in order, where
 each marketplace "set" of the brand belongs in NB and that the operator can
 move rows across that line with their links intact. Claim numbers are the
@@ -311,7 +330,7 @@ NEO-312 split):
 
 | claim | proved by | steps |
 | -- | -- | -- |
-| 1 — Sync Sets mints nothing; the review files it | `tests/setup.spec.ts` (its 2026 Bowman step, last in the seed) | 1 |
+| 1 — Sync Sets mints nothing; the review files it | on 2026 Bowman, the seed (server-side: it syncs the Sets, applies the review's named decisions and checks the result); the UI half is `tests/set-selector/bowman-2023-sportlots-review-save.spec.ts` on 2023 Bowman (NEO-339) | 1 |
 | 2–3 — Insert reconcile, Group Parallels, re-sync; the parallel build | `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` | 2–9 |
 | 4–5 — `Blue` pairs, Promote / Make parallel of; Make insert of… | `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` | 10–14 |
 | 9 — a moved SportLots link is never re-created by a later sync (NEO-312) | `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` | 15–16 |
@@ -347,6 +366,10 @@ one flow reached 570 s of the 600 s kill (CI run 36524859308), and NEO-312
 split it again along lines that are measured disjoint (below), with the one
 brand-wide write both halves need — Sync Sets and the review — moved into
 the seed, where nothing races it. Every assertion of the merged flow is kept.
+NEO-339 then made the seed a server-side bulk load; the review's UI claim
+moved to its own brand-year, 2023 Bowman, so that the two 2026 flows still
+find exactly the state they always did (see "2023 Bowman — the SportLots
+review flow").
 
 **Why the split is safe — the write sets, measured (code read + CI Convex
 logs, NEO-312).** Flows run concurrently against one preview and set data is
@@ -355,7 +378,7 @@ and for a client-side plan that could go stale under the other flow:
 
 | write | rows it touches | a stale client plan? |
 | -- | -- | -- |
-| SportLots review save (setup) | the brand's review rows → one set + rows under the Insert / Parallel types (`slSetReview.ts:653`, logged `sl_review_rows_under_type`: insert 1, parallel 40 + 39) | n/a — the seed runs alone |
+| SportLots review save (seed) | the brand's review rows → one set + rows under the Insert / Parallel types (`slSetReview.ts:653`, logged `sl_review_rows_under_type`: insert 1, parallel 40 + 39) | n/a — the seed runs alone |
 | Sync Inserts reconcile (inserts flow, STEPS 2, 5b) | the Insert type's own children only, read fresh at save (`setReconciliation.ts:1505`); changed fields only, never `children` of a child (`:2127-2129`); the type's `children` by UNION (`:2137-2146`); rows elsewhere in the type's subtree HELD, never written (`selectorSyncStore.ts:487-517`; logged `selector_sync_held_elsewhere`, level `insert`) | seeds every existing insert into Ready (`setReconciliation.ts:1397-1398`) — re-stores `All-America Game Autos` as is; a parallel the links flow adds under it is a CHILD, never named, so it survives |
 | Group Parallels Accept all + Save (inserts flow, STEP 4) | only the rows the plan changed (`ParallelGroupingModal.tsx:331-357`); every parent's `children` re-read and unioned at save (`selectorOptions.ts:7384-7392`); one variant type's tree (`selectorOptions.ts:7183`) | none: `Red Ink`, if present, is a parallel with an unchanged placement, so it is not in the diff |
 | Sync Parallels reconcile (links flow, STEPS 10 and 15) | the Parallel type's own children (same store) | **seeds the Red Ink source row into Ready**; a Make insert of… landing while it is open would make the save re-create that row (`existingId` matched against siblings only, `setReconciliation.ts:1379-1385`; held-elsewhere is per variant type, `selectorSyncStore.ts:504-517`) — **so STEPS 10 and 14 are one flow, in that order**. **STEP 15 is the regression proof of the production bug this path had**: after Make insert of…, a plain later `Sync Parallels` re-created the moved row (the single-platform store auto-stored it; the two-sided reconcile auto-paired it into Ready). NEO-312 makes the save withhold any id a row anywhere in the set or brand already holds, and the client stop auto-storing or auto-pairing a held id |
@@ -385,8 +408,8 @@ marketplace data, and the harness must never dictate the data shape.
 
 | | |
 | -- | -- |
-| drills | setup's drill is COLD on a fresh preview; under the pause it hand-makes the manufacturer row `Bowman` (the cold util's guarded create) and then selects the set once to sync its Variant Types. The two flows' drills are WARM and pass no `CREATE_MANUFACTURER` — setup is that row's sole writer, and two concurrent guarded creates could mint it twice |
-| review (live) | bulk: every row → Bowman › `Parallel` (picking Bowman force-syncs its Variant Types inside the dialog, additive); row tick + bulk: `All-America Game Autos` → Bowman › `Insert`; per row: `Bowman Sterling` → its own set; saved at the 7000 bar |
+| drills | the seed syncs the Sets and the Variant Types server-side; under the pause it creates the manufacturer row `Bowman` (`manufacturer.whenMissing: "create"`). The two flows' drills are WARM and pass no `CREATE_MANUFACTURER` — the seed is that row's sole writer, and two concurrent guarded creates could mint it twice |
+| review (live) | the seed's spec names each decision: every row → Bowman › `Parallel`, `All-America Game Autos` → Bowman › `Insert`, `Bowman Sterling` → its own set (the same filing the retired UI step made; the UI path itself is now proved on 2023 Bowman) |
 | Insert reconcile (live) | `Sync Inserts` (the column holds the review's row); filters Ready and BSC to "Anime"; `Anime` its own set when Pending; the BSC filter cleared, then "Keep all" on the WHOLE BSC column — every pending BSC insert its own set (NEO-308; it was the "Anime"-filtered column before); **saves every Ready set** (the review's row comes back restored) |
 | grouping | Group Parallels → `Accept all suggestions (N)` with N ≥ 201, asserted → `Save N changes` → the modal closes within 7000 (the save cut into ≤200-entry calls, NEO-308); every prefix pair nests, `Anime Kanji` and the other Anime parallels under `Anime`; a re-open reads `No changes yet` with no Accept-all button (every chunk landed) and leaves through Cancel |
 | re-sync (NEO-300) | "Sync Inserts" again; live the reconcile re-opens and is saved with no edits, paused the single-platform store runs; both say "N already grouped as parallels. Leaving those be." and do not re-create a grouped row as an insert |
@@ -412,7 +435,7 @@ all at the head of every run):
 
 **One sole writer per row, fresh-only.** No other flow may drill into 2026
 Bowman. A local re-run of either Bowman flow needs a fresh seed (reset +
-`tests/setup.spec.ts`): the inserts flow's first reconcile and the links flow's
+the bulk load): the inserts flow's first reconcile and the links flow's
 Promote both assume the seed's state.
 
 **NEO-308 (the chunked Group Parallels save) is proven HERE, not in a flow of
@@ -421,7 +444,7 @@ and not UI-built rows. It lives in the inserts flow, the sole writer of
 Bowman › Insert's BSC inserts: Bowman › Insert only exists once that flow's
 reconcile has run, the queue orders nothing, and the grouping it would save
 is the one STEP 4 there saves. Re-runnability is the flow's
-existing one — `tests/setup.spec.ts`'s reset at the head of every run; nothing
+existing one — the run-start reset at the head of every run; nothing
 undoes a grouping inside the run, and nothing needs to:
 
 * there is no bulk ungroup — a demotion is one `✕` or one `Select <row>`
@@ -484,6 +507,35 @@ step timings):
 
 `ensureSelectorOptions` has no "already syncing" guard; with one flow on the
 brand-year nothing races it any more.
+
+### 2023 Bowman — the SportLots review flow (NEO-339) — relocated from 2025 (NEO-333 collision), approved 2026-10-13
+
+The SportLots review's UI (claim 1 of the 2026 Bowman table above) was
+proved by the old seed on 2026 Bowman. The seed now saves that review
+server-side, so the two 2026 flows find exactly the state they always did,
+and the UI claim moved to a brand-year nobody else touches:
+`tests/set-selector/bowman-2023-sportlots-review-save.spec.ts`, **sole writer of Baseball → 2023**.
+
+**Why 2023, not 2025.** Jason approved 2025 Bowman on 2026-10-11. NEO-333
+(#316) merged first with `checklist-dual-team-card-links-both-teams`, which
+claims all of Baseball → 2025 through the same kind of cold, year-wide
+drill (next section). Two flows syncing one cold year in parallel race, so
+this one moved. 2023 is the most recent Baseball year no flow, seed spec
+(`baseline`, `oneshot`, `parallel`, `mcp-smoke`) or registry row touches:
+2024 is the seed's and the 2024 Topps flows', 2025 is NEO-333's, 2026 is
+the seed's 2026 Bowman. 2022 measures the same size (143 rows) but has the
+same `Best Top Prospects` problem described below and a `Dual Bowman
+Prospects Autos` row that sorts above `Prospects Autos`.
+
+| | |
+| -- | -- |
+| drills | Baseball (seeded) → 2023 → Bowman, COLD (`util-drill-to-cold-real-set`): the year's Manufacturers sync and Bowman's Sets sync (BSC's 2023 list is year-wide, so every 2023 BSC set is filed under the year's brands); under the pause the util hand-makes `Bowman` |
+| proves | Sync Sets asks SportLots and mints no SportLots-only set (the own-set label searched in the Sets column: `No matches found`); the pill opens the review; Select all → Bowman (its Variant Types sync inside the dialog) → Parallel; one row → Insert; one row → its own set; Save → `Saved 1 set, N parallels, 1 insert.`; the pill gone; the own set a row under the same search |
+| writes | the year's manufacturer rows and set filing; Bowman's Variant Types; the review's rows (one set, one insert, the rest parallels). No checklist, card, player or team |
+| readers | none: no other flow drills Baseball → 2023 |
+| paused | the skip sentence and no pill; nothing else |
+| re-runs | fresh-only per deployment: a second run finds no pill and the own set already a row, and fails at the claim-1 search by name |
+| measured | 2026-10-12, read-only against a seeded PR preview (SportLots' 2023 Bowman list, 864 sets, and BSC's 2023 baseball sets, 509, classified with the sync's own `routeSlSets`; nothing synced, no NB write). The same script reproduces 2025's 175 rows. The review holds **143** rows (cap 200): 721 SportLots entries hidden as variants of a BSC set, none truncated, no twins, and every filed row name distinct. Folded order: `Base Set` first, then the 94-row `Best …` family. OWN_LABEL `Best` (Bowman's Best) → OWN_SET `Bowman Best`, no substring of any 2023 BSC set (`Bowman's Best` differs by its apostrophe). INSERT_ROW `Prospect Autos`, the first of the 8 rows its filter shows. Not `Prospects`: the review's filter matches anywhere in a label, and the 15 `Best Top Prospects …` rows sort above it. No insert-like row sorts first, so the flow filters to INSERT_ROW before the tick and erases the filter before OWN_LABEL. Expected toast `Saved 1 set, 141 parallels, 1 insert.` (the flow matches the parallel count by shape). NOT YET measured: a live run's wall time — drop the own-set sub-step only if it exceeds ~480 s of the 600 s kill |
 
 ### Baseball → 2025 — the NEO-333 dual-team fixture (Bowman Draft › Insert › Prospect Dual Autographs)
 
@@ -674,7 +726,7 @@ committed and fails at its empty-checklist assert; re-seed first.
 `checklist-pairing-dialog-cancel` (NEO-137, extended by NEO-189) syncs
 `Insert → Future Stars` on the real anchor and then **cancels** the card-pairing
 dialog. Cancel returns before `commitCardChecklist`, so nothing is written and
-the set is left exactly as `tests/setup.spec.ts` provisioned it — it reads, it does not
+the set is left exactly as the seed provisioned it — it reads, it does not
 write.
 
 Since NEO-189 it also unlinks two of the auto-matched pairs and cross-links
@@ -706,8 +758,9 @@ real set and therefore explicit owner approval — it is **not** in the suite.
 
 ### READ-ONLY means read-only
 
-No flow other than `tests/setup.spec.ts` may add, edit, or delete cards, players, teams,
-or variants on a real set. This is not a style preference: the E2E work queue
+No flow may add, edit, or delete cards, players, teams, or variants on a real
+set unless this file names it the sole writer of that datum. (The seed is a
+script that runs alone before the queue, not a flow.) This is not a style preference: the E2E work queue
 drains dynamically across 8 parallel runners, so any write to a shared set is
 visible to whichever other flows happen to be running at that moment.
 
@@ -860,7 +913,7 @@ the view opens: all ten ran (`ran: true, reason: synced`), each Sets sync took
 year, or by BSC or SportLots id) and no leftover sync-status row**. Every
 store is an id-keyed mutation, so concurrent writers serialise on Convex's
 transactions. The cost of a race is a doubled marketplace round-trip, never
-a doubled row, so the columns are not pre-synced in `tests/setup.spec.ts` (whose time
+a doubled row, so the columns are not pre-synced by the seed (whose time
 every PR pays), and each flow keeps paying its own cold drill.
 
 **Drain and re-runs.** The three writers commit, so after one run their sets
@@ -943,9 +996,11 @@ re-run needs a fresh seed — rerun `npm run test:e2e:seed`.
 
 #### Why these sets, specifically
 
-* **Team sets have unknown players.** `tests/setup.spec.ts` only ever creates the ~494
-  players from 2024 Topps Chrome — its 200-card base plus two inserts — so a
-  team set's commons sit outside that roster. Measured 8–12 unknowns each.
+* **Team sets have unknown players.** The seed only ever creates the players
+  on 2024 Topps Chrome's Base (Future Stars' names are inside that roster; a
+  built parallel copies Base's players and creates none), ~494 rows measured
+  under the retired `setup.yaml` — so a team set's commons sit outside that
+  roster. Measured 8–12 unknowns each.
 * **The link flow needs BASEBALL specifically.** `EntityLinkSearch` queries
   `players.search({ query, sportId })`, scoped to the row's sport, so the link
   TARGET must share the fixture's sport. `Link to Shohei Ohtani` resolves on
@@ -962,7 +1017,8 @@ re-run needs a fresh seed — rerun `npm run test:e2e:seed`.
 
 #### Each flow provisions its OWN set — the seed does not
 
-`tests/setup.spec.ts` deliberately provisions NOTHING for these three. Doing so cost
+The seed deliberately provisions NOTHING for these three (they are not in
+`playwright/seed/baseline.spec.json`). Doing so in the old UI seed cost
 ~2 minutes of SERIAL seed time and pushed the seed past its 600s wall
 (run 34048184342); the seed runs once, before every runner starts, so anything
 added there taxes every PR.
@@ -995,8 +1051,8 @@ already-committed preview fails at the wizard wait, correctly.
 `base-mapping-cancel-recovers` needs a real set whose **Base is UNMAPPED**, so
 that selecting Base auto-opens `BaseSetPicker` and the Cancel → message → Retry
 recovery can be exercised. It used to use `Topps Big League`; it cannot any
-more, because Big League is now the wizard fixture and `tests/setup.spec.ts` maps its
-Base in the seed job. A mapped Base renders `Re-map Base` instead of opening the
+more, because Big League is now the wizard fixture and the seed maps its
+Base. A mapped Base renders `Re-map Base` instead of opening the
 picker, and the flow fails on its first assertion — CI run 34006917636.
 
 **The two needs are irreconcilable on one set** (one requires Base unmapped, the
@@ -1060,7 +1116,8 @@ card ("BSC only"), and goes straight to the entity review with **no "Back to
 matching"**.
 
 **There is currently ZERO one-sided coverage.** Every flow in the suite that
-reaches the pairing dialog — `tests/setup.spec.ts` ×3, `checklist-pairing-dialog-cancel`,
+reaches the pairing dialog — the old `setup.yaml` ×3 (now
+`topps-chrome-insert-known-roster-no-wizard`), `checklist-pairing-dialog-cancel`,
 `fetchChecklistToWizard` and its four `checklist-wizard-*`
 callers, the three `*-commits` siblings, `inserts-1996-score` — is on a set with
 BOTH sides attached. They cover the ≥2 half of the rule, which this ticket does
@@ -1075,7 +1132,7 @@ not change; none of them can express the =1 half.
 | unknown names | **25 — all players, 0 teams** ("25 new players + 0 new teams need confirmation", "0 of 25 reviewed" when measured; since NEO-335 Phase 2 the banner reads "25 names need a look before this saves." and the header "Step 1 of …"), stable for 27s after the wizard opened |
 | Base mapping | left **UNMAPPED** on SportLots, on purpose — the flow cancels the picker |
 | writer | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts`, **sole writer** |
-| pre-synced by `tests/setup.spec.ts` | **no** — the flow pays its own cold syncs, on its own runner, in parallel (the NEO-248 rule: nothing goes in the seed) |
+| pre-synced by the seed | **no** — the flow pays its own cold syncs, on its own runner, in parallel (the NEO-248 rule: nothing goes in the seed) |
 
 #### The measurements, against the ten questions this section used to ask
 
@@ -1197,9 +1254,10 @@ old attention count climbed to). The step prints no count; the header's
   which joins that card selected; the line itself stays on `Leave for later`.
 - **STEP 6c** leaves with `Next (Enter)` and asserts the Save step is
   `Step y of y` (y read on the teams step) and `Save 25 cards?`.
-- **STEP 7** asserts the pill reads `22 need you` within 7s of
-  `Saved 25 cards.` (25 − the "no team" card − the RXO card − the pre-filled
-  card; one card per player here, measurement 5).
+- **STEP 7** asserts the pill reads `24 need you` within 7s of
+  `Saved 25 cards.` (25 − the pre-filled card; one card per player here,
+  measurement 5). The "no team" card and the RXO card still count: their
+  names were skipped, so they link no player, and NEO-339 asks about that.
 - **STEP 9** walks the drawer's `Next card` from `NB272-…` (it sorts first)
   to the two cards with a team chip, in whichever order the checklist shows
   them, and asserts `Remove team RXT<token>` on one and
@@ -1435,7 +1493,7 @@ every CI run; the flow pays its own syncs on its own runner.
 | what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom"; the create itself links it through All Brands because the year carries SportLots ids — there is no opt-in on the confirm since Jason's 2026-09-21 preview pass; prefix defaulted to its name); the per-brand SportLots reviews the year-wide sync writes (NEO-306; 74 SportLots-only names measured on the first run, see (3) below — unsaved, never read or asserted); the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
 | what it never does | fetch a checklist, map a Base (the picker is cancelled), rename or delete anything |
 | writer | **sole writer** of the whole year; no other flow may drill Hockey 1997 |
-| pre-synced by `tests/setup.spec.ts` | **no** |
+| pre-synced by the seed | **no** |
 | re-runs | **fresh-only per deployment** (same contract as the 1995 fixture): a second run finds `SPx` already there, the "+ Custom" form SELECTS it with no confirm, and STEP 3 fails on the confirm sentence by name. Re-seed before re-running locally |
 
 **The prefix is `SPx`, MEASURED 2026-09-21** on PR #272's Convex preview
@@ -1491,7 +1549,8 @@ read:
 
    **Superseded by NEO-306 (kept for the record).** The review is now the
    surface where SportLots-only names are seen and filed, proved on 2026
-   Bowman (`tests/setup.spec.ts`'s 2026 Bowman step, the merged flagship flow's STEP 1). What follows
+   Bowman (then the retired `setup.yaml`'s 2026 Bowman step; since NEO-339
+   `bowman-2023-sportlots-review-save` on 2023 Bowman). What follows
    described the auto-save world. **The gap, and the affordance that would
    close it.** No step proves a set was SAVED, because nothing on screen tells an SL-minted set from a
    BSC-filed one: a set row is not terminal, so the view shows no `SL` pill
@@ -1582,7 +1641,7 @@ STEP 0.
 | what the flow WRITES | every brand row the known list mints for the year (expected `CMC` among others), the year's `Unknown` row, the year-wide BSC filing of every set under one of them, and ONE operator move of a `CMC…` set into `Unknown` (stamped `brandSetByOperator`) |
 | what it never does | fetch a checklist, map a Base, rename or delete anything, create a brand by hand, or add a row to Baseball's shared Years column |
 | writer | **sole writer** of the whole year; no other flow may drill Baseball 1990 |
-| pre-synced by `tests/setup.spec.ts` | **no** — the flow pays its own cold syncs on its own runner |
+| pre-synced by the seed | **no** — the flow pays its own cold syncs on its own runner |
 | re-runs | **fresh-only per deployment**, the same contract as the 1995 and 1997 hockey fixtures: a second run finds the set already under `Unknown` and already stamped, so the flow's `Manufacturers: CMC — change` assertion fails by name. CI reseeds the preview every run, so the first-run path is the CI path; re-seed before re-running locally. The flow deliberately does NOT restore the set — a restore would make a re-run green while proving the filing from the operator's own move rather than from the list |
 
 **The shared-sport question, answered: it adds no row above set level.**
@@ -1812,17 +1871,18 @@ re-attempted:
    syncing, so a test that syncs must sync through the real hierarchy, and
    `Base` is not something an insert set has.
 
-**Why its players are unknown.** `tests/setup.spec.ts` commits 2024 Topps Chrome's Base,
-Future Stars and Gold Wave players (~494 rows). Big League's base is a different
+**Why its players are unknown.** The seed commits 2024 Topps Chrome's Base
+and Future Stars players (~494 rows; built parallels copy Base's and add
+none). Big League's base is a different
 player pool — current players, prospects and veterans outside Chrome's 200 — so
 87 of its 88 names are new. That is the fixture, and it is fragile in exactly
 one way:
 
 > ⚠️ **NOTHING MAY EVER COMMIT THIS SET'S CHECKLIST.** A commit creates those 87
 > players, and a name that is known is not an unknown — the next fetch opens the
-> wizard on nothing and all four flows fail. `tests/setup.spec.ts` therefore provisions
-> the **structure only** (variant types + Base mapping) and asserts the
-> checklist is still empty. Do not "warm" this set the way Topps Chrome is
+> wizard on nothing and all four flows fail. The seed therefore provisions
+> the **structure only** (variant types + Base mapping, no `checklist` in its
+> spec step) and its MCP smoke asserts the set is mapped with 0 cards. Do not "warm" this set the way Topps Chrome is
 > warmed: Topps Chrome is warmed so its players ARE known, and this set exists
 > to be its opposite.
 
@@ -1861,7 +1921,7 @@ read.
 ### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) ✅ APPROVED by Jason 2026-10-10
 
 `Baseball → 2024 → Topps → Topps Chrome NPB → Base` belongs to exactly one flow,
-`checklist-wizard-same-name-pick-step`. `tests/setup.spec.ts` provisions nothing for it:
+`checklist-wizard-same-name-pick-step`. The seed provisions nothing for it:
 the flow syncs its variant types and maps Base on both sides on its first drill,
 through `fetchChecklistToWizard`, like the three committing
 fixtures above.
@@ -1945,15 +2005,16 @@ is that assertion, ~1s after the batch starts. Measured on the PR preview,
 +0.5s, STEP 1 COMPLETED +1.1s, last player lookup started +13.3s, first team
 settled +14.1s, tail gone +44s (+26.7s without one late 502 retry).
 
-**Then the flow walks.** An untouched pick step yields to the first settled
-team or league (teams first, NEO-236), and the career teams above settle ~14-25s
-in, inside the window the Create new / Back to the list / link steps need. So
-after STEP 1 the flow runs `walkToPlayerRow`, which waits the
-batch out, answers each team and league step as a skip, and stops on the first
-player row: Shuya Yamada's pick step, because rows are inserted in card order
-and he is card #1. Every later count is read relative to those skips (K), and
-the link's read-back comes from `Back to previous decision` → `Decision for
-Shuya Yamada`, because the Decided list folds past five.
+**Then the spec waits, and walks nothing (NEO-339).** A pick step now HOLDS
+its place, touched or not: no team or league settling elsewhere takes it away.
+So after STEP 1 the spec waits the batch's lookups out (180 s, the live-Wikidata
+ceiling) and asserts the untouched pick step is still on screen at `Step 1 of
+N` (R2(b2)); Create new, Back to the list and the link need no drain. Nothing is
+decided before the link, so the counts are absolute: `Step 1` before it, `Step
+2` after. The link's read-back comes from `Back to previous decision` ->
+`Decision for Shuya Yamada` (the Decided list folds past five). It does NOT call
+`walkToPlayerRow`, which since NEO-339 skips a held pick step
+(`skipHeldPickStep`).
 
 **What a green CI run must show** (fill in from the first green run on the
 catalogue preview): in the flow's `maestro.log`, STEP 1's
@@ -2039,10 +2100,13 @@ would put the wrong question on screen.
 | `parallel-feature-` | `tests/set-selector/cards-parallel-custom.spec.ts` — under `E2E Test Sport <w>` › 2026 › Topps; its hand-made `Parallel` type is a Parallel type by its title (NEO-334), so its rows are parallels of a Base the set never gets (the checklist shows the build-from-Base stand-in). |
 | `pg-cancel-` | `tests/set-selector/parallel-grouping-cancel-discards.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `pg-demote-` | `tests/set-selector/parallel-grouping-demoted-parallel-takes-parallels.spec.ts` (also `-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_ID> Stars` / `Stars Gold` / `Stars Blue`; Gold and Blue are saved as parallels of Stars, then Gold is demoted and Blue re-parented under it in one save (NEO-300). Per-attempt because the flow taps inside the Group Parallels body at positions that hold only for exactly these three rows. |
+| `pg-family-` | `tests/set-selector/parallel-grouping-family-root-offers-card-number-check.spec.ts` (always `-${WORKER_INDEX}-${ATTEMPT_ID}`) — four inserts `<ATTEMPT_TOKEN>Kite` / `Kite Red` / `Kite Autographs` / `Kite Autographs Red`; the dialog opens with the three longer names under the first and offers "Check card numbers" for `Kite Autographs`. Read-only on the set: the flow opens the dialog and discards (NEO-339). Per-attempt because the strip's count is exact. |
+| `pg-tie-` | `tests/set-selector/parallel-grouping-name-tie-suggests-nothing.spec.ts` (always `-${WORKER_INDEX}-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_TOKEN>Gold` / `Gold.` / `Gold Refractor`: the first two read the same to the grouping, so nothing is suggested. Opens the dialog and cancels (NEO-339). `Gold` + `gold` cannot be made: the "+ Custom" form folds case and selects the existing row. |
 | `pg-move-` | `tests/set-selector/move-parallels-of-inserts-custom.spec.ts` |
 | `pg-multi-` | `tests/set-selector/parallel-grouping-multi-select-moves-together.spec.ts` (also `-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_ID> Aces` / `Bolt` / `Comet`, none a prefix of another so nothing is suggested; Bolt and Comet are ticked together and saved as parallels of Aces in one save (NEO-300). Per-attempt because the flow taps inside the Group Parallels body at positions that hold only for exactly these three rows. |
 | `pg-reject-` | `tests/set-selector/parallel-grouping-reject-parallel.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `tests/set-selector/player-picker-create-custom-card.spec.ts` |
+| `ppx-` | `tests/set-selector/player-picker-create-refuses-a-name-on-file.spec.ts` (NEO-339) — under the REAL `Baseball` › 2024 › `Topps` (the card form's picker searches the set's sport, and the alias holder it must find is a Baseball player); `Insert` › `Base`. **Writes no card**: the quick-add form's chips are local state and the form is cancelled. The set and its rows stand. Per-worker only. |
 | `rnm-` | `tests/set-selector/rename-selector-option.spec.ts` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
 | `stt-` | `tests/set-selector/set-team-carries-down-to-cards.spec.ts` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's `League` combobox (NEO-307) then lists only leagues this worker minted, so its typed filters match exactly what the flow expects. It mints ONE league, `STL<token>L`, on STA's dialog and picks it back on STB's (see the minted-names table). Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
 | `tlf-` | `tests/set-selector/checklist-title-length-limits-and-fixer.spec.ts` (also `-${ATTEMPT_ID}`) |
@@ -2050,6 +2114,7 @@ would put the wrong question on screen.
 | `tp-` | `tests/set-selector/team-picker.spec.ts` |
 | `tpr-` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` (NEO-331) — under the REAL `Baseball` › 2024 › `Topps`: the picker ranks by the set's League feature, which is derived ONLY at the sport level for the four stick-and-ball sports (Baseball → "MLB"), so a synthetic sport would leave nothing to rank by. `Insert` › `Base`, whose checklist row is the picker's context. **Writes no card**: the whole flow runs in the quick-add form's TeamPicker, whose chips are local state, and cancels the form. Mints four teams and one league (see the team-names table); the set and its rows stand. Per-worker only. |
 | `tpc-` | `tests/set-selector/team-picker-create-custom-card.spec.ts` |
+| `tpx-` | `tests/set-selector/team-picker-new-team-refuses-a-name-on-file.spec.ts` (NEO-339) — under the REAL `Baseball` › 2024 › `Topps` (the team the flow makes is filed under the set's sport); `Insert` › `Base`. **Writes no card**: the quick-add form's chips are local state and the form is cancelled. Mints one team (see the team-names table); the set and its rows stand. Per-worker only. |
 | `vtk` | `tests/set-selector/variant-type-title-is-its-kind.spec.ts` (NEO-334) — ONE set per attempt, `vtk<token>` (single token: `ATTEMPT_ID` with its hyphens folded, which also carries the runner), under the REAL `Baseball` › 2024 › `Topps`. Hand-made, so neither marketplace side is resolvable at any level beneath it and its Base mapping answers "Nothing to link yet" without a round trip. Inside it the flow creates the variant types `Inserts` (renamed in-flow to `Insert`), `Parallel`, `vtkpro<token>` (renamed in-flow to `Base`) and `vtksec<token>`, the inserts `vtkins<token>` (under Inserts) and `vtkpar<token>` (under Parallel), and the sub-variant `vtksub<token>`. Per-attempt because the flow renames types and makes a Base: a retry in a set that already holds them would refuse the very creates it needs (one Base per set; singular/plural siblings refused). Nothing is deleted; the set stands. The kind words are deliberately NOT minted — they are the input under test, scoped by the per-attempt set. |
 | `WOSet3-` | `tests/set-selector/new-chain-autopopulates-features.spec.ts` (under synthetic `E2E Test Sport N`) |
 | `xb-` | `tests/set-selector/all-brands-view-lists-every-set.spec.ts` — its OWN sport `xb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and one set under each: `xb-a-<worker>` (Topps) / `xb-b-<worker>` (Panini). Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
@@ -2161,10 +2226,12 @@ or a career team staged off a player's Wikidata history — gets its own
 **New Team step** (`New Team: <name>`), because that step asks which LEAGUE and
 the bulk path could only ever guess it from the enrichment's suggestion.
 
-Two flows press that button — `tests/setup.spec.ts` (in its **Base** block only;
-NEO-260 deleted the dead Insert and Parallel copies) and
-`tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts` — and each
-now answers those steps with the same loop.
+One flow presses that button now —
+`tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts` — and it
+answers those steps with the loop below. The retired `setup.yaml` was the
+other (its **Base** block only); since NEO-339 the seed answers its Base
+review from its spec instead, one named decision per player, team and
+league, with no bulk button.
 `tests/set-selector/signed-by-autofills-from-players.spec.ts` used to be the third; it
 pressed the button inside a self-heal fallback that NEO-260 removed (see its
 entry under the sole-writer notes):
@@ -2233,7 +2300,8 @@ names-done footer after the loop is still the real gate.
 > entire flow before a single command runs**, with a message pointing at a line
 > nobody just edited. That is exactly how it took the seed job down once.
 > Anyone who copy-pasted this block reproduced the outage the registry
-> elsewhere describes. See the comment at `tests/setup.spec.ts`'s own loop.
+> elsewhere describes. (The full comment lived at the retired
+> `flows/setup.yaml`'s own loop; `inserts-1996-score-…` carries the loop.)
 
 ### NEO-254 — a New LEAGUE step, and why no flow covers it on its own
 
@@ -2253,7 +2321,8 @@ reachable cheaply:
   deterministic — whether it appears depends on what Wikidata returns for
   whichever names settle first, and on which leagues earlier flows have already
   created in the same shared deployment.
-* It is also self-erasing: the seed's Base sync now answers league steps, so by
+* It is also self-erasing: the seed's Base review creates the leagues its spec
+  names, so by
   the time any later flow runs, the obvious leagues (MLB and friends) exist and
   no step is staged for them. A flow asserting "a league step renders" would
   pass on a cold preview and quietly stop exercising anything on a warm one —
@@ -2285,8 +2354,10 @@ New League` (and the picker form's `Add league`, and League Management's
 drain answers a league step through `answerStepAsNew` (support/wizard.ts),
 which reads the step's kind off the footer button and presses `Other` — the
 level the step pre-pressed before NEO-331, so a drained league carries what it
-always did. A flow whose assertions depend on a level presses it itself
-(`tests/set-selector/team-picker-ranks-by-set-context.spec.ts`'s `Minor`).
+always did. The seed (NEO-339) answers its league steps the same way: every
+league `create` in `playwright/seed/baseline.spec.json` carries `"level": "other"`, which
+the spec now requires on a league create. A flow whose assertions depend on a
+level presses it itself (`tests/set-selector/team-picker-ranks-by-set-context.spec.ts`'s `Minor`).
 
 **NEO-331 — a league step needs a LEVEL, and none is pre-pressed.** `Add as
 New League` (and the picker form's `Add league`, and League Management's
@@ -2294,14 +2365,15 @@ New League` (and the picker form's `Add league`, and League Management's
 pressed. Every drain answers a league step through `answerStepAsNew` in
 `support/wizard.ts`, which reads the step's kind off its heading, presses
 `Other` first and waits for the step to leave the screen — the level the step pre-pressed before NEO-331, so a
-drained league carries what it always did (the seed's Base wizard drain adds
-the "Major League Baseball" league this way, abbreviation MLB). A spec whose
+drained league carries what it always did (the seed's spec creates the
+"Major League Baseball" league with level `other` when the catalogue lacks it). A spec whose
 assertions depend on a level presses it itself (`team-picker-ranks-by-set-context`'s
 `Minor`).
 
-**Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
-NEO-214 removed the seed-teams fixture — and the standing rule is that E2E
-fixtures come from the UI. Creating a real set's worth of teams through Team
+**Do not answer these with the seed.** The seed (NEO-339) loads the shared
+baseline every flow reads; it is not a place for one flow's fixture.
+`e2e-baseline.sh` says it outright — NEO-214 removed the seed-teams fixture —
+and the standing rule is that a flow's own fixtures come from the UI. Creating a real set's worth of teams through Team
 Management first would cost far more wall-clock and would exercise the wrong
 screen.
 
@@ -2386,7 +2458,10 @@ whole thing; never assume which letter the worker half starts with.
 | `Pca` | `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | an ALIAS, not a team: typed into `Ali<token>`'s New Team dialog so the wizard's alias-clash refusal (NEO-307) has a holder. Never searched; removed with the club's alias before the flow ends |
 | `MintedTeam` | `tests/set-selector/checklist-wizard-career-team-commits.spec.ts` | |
 | `TPT` | `tests/set-selector/team-picker.spec.ts` | |
-| `TPR` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. Z and X PICK the existing "Major League Baseball" in the New Team dialog's League combobox (an unanswered League leaves a team league-less since NEO-331); that row is the reference catalogue's on a catalogue preview (NEO-330: level Major, abbreviation MLB) and otherwise `tests/setup.spec.ts`'s (its Base wizard drain adds the New League step, level Other, abbreviation MLB), and this flow never creates it. The flow types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
+| `RfT` | `tests/set-selector/team-picker-new-team-refuses-a-name-on-file.spec.ts` | one Baseball team (NEO-339), made through the picker's New Team dialog with no league or years; the flow then asks the dialog for the same name again and is refused |
+| `RfP` | `tests/set-selector/player-picker-create-refuses-a-name-on-file.spec.ts` | a PLAYER (NEO-339), added on `/admin/players` in Baseball with the alias `RfA<token>`; diverges from `RfA` and `RfT` at its third character |
+| `RfA` | `tests/set-selector/player-picker-create-refuses-a-name-on-file.spec.ts` | an ALIAS, not a player (NEO-339): `RfP<token>`'s "Other names", typed into the card form's player picker so "+ Create" meets a name that is on file |
+| `TPR` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. Z and X PICK the existing "Major League Baseball" in the New Team dialog's League combobox (an unanswered League leaves a team league-less since NEO-331); that row is the reference catalogue's on a catalogue preview (NEO-330: level Major, abbreviation MLB) and otherwise the seed's (NEO-339: `playwright/seed/baseline.spec.json` answers the Base review's New League step `create` with level `other`, and the lookup supplies abbreviation MLB; on a catalogue preview that answer is a moot no-op), and this flow never creates it. The flow types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
 | `TPRLg` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` | a LEAGUE, named `TPRLg<token>M`, level **Minor** (load-bearing: it is what puts `TPR<token>QY` in tier 2), created from Y's New Team dialog (`Create “TPRLg<token>M”` → `Minor` → `Add league`) in **Baseball**. Trailing letter for the `STL<token>L` reason. No flow deletes it, so one row per attempt stands in Baseball |
 | `ProbeTeam` / `TempTeam` | `tests/set-selector/checklist-wizard-career-team-entry.spec.ts` | never persisted — the flow discards its batch |
 | `STL` | `tests/set-selector/set-team-carries-down-to-cards.spec.ts` | a LEAGUE, not a team, named `STL<token>L`: created from STA's New Team dialog (`Create “STL<token>L”` → `Add league`) under `E2E Test Sport <w>`, then picked as an existing league on STB's by typing `<token>L`. The trailing `L` is load-bearing: the create option appears only when the typed text is a substring of NO league, the token's random tail varies in length, so a bare `STL<token>` can sit inside an older attempt's name — a letter after the digits makes it contained in none. No flow deletes it, so one row per attempt stands in that worker's sport; nothing else types into that sport's League combobox except `No lea` |
@@ -2492,22 +2567,26 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/sets-resync-already-loaded.spec.ts`
 - `tests/set-selector/topps-chrome-marketplace-read.spec.ts`
 
-**Three flows on this set are NOT read-only, and the list used to say the first two were**
+**Five flows on this set are NOT read-only, and the list used to say the first two were**
 (corrected NEO-260). Each is **sole writer of one datum on the anchor** —
-approved by Jason, 2026-09-09 — and neither touches the checklist itself:
+the first two approved by Jason, 2026-09-09, the third 2026-10-04, the last
+two (NEO-339) inherit writes the retired `setup.yaml` made before the
+queue — and none touches another's datum:
 
 | Flow | What it writes | Tolerance |
 |---|---|---|
 | `tests/set-selector/signed-by-autofills-from-players.spec.ts` | `autographed` / `signedBy` on card **#300** | sole writer of those two fields; no other flow reads or writes them |
 | `tests/set-selector/topps-chrome-add-feature.spec.ts` | toggles one feature on the anchor, twice per run | sole writer of that feature; returns it to its starting state |
-| `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) | the CARDS of the first buildable base parallel under `Parallel` (measured: `Sepia Refractors`), rebuilt from Base by the section's run and stopped after the one in flight | sole writer of those rows' cards; no queue flow reads any base parallel's cards; never writes Base, a player, a team or a row. Approved: Jason, 2026-10-04 — see the section below |
+| `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) | the CARDS of the first buildable base parallel under `Parallel` (measured: `Sepia Refractors`), rebuilt from Base by the section's run and stopped after the one in flight | sole writer of those rows' cards; no other queue flow reads that parallel's cards; never writes Base, a player, a team or a row. Approved: Jason, 2026-10-04 — see the section below |
+| `tests/set-selector/gold-wave-build-from-base-row.spec.ts` (NEO-339) | the CARDS of `Gold Wave Refractors` under `Parallel`, built from Base through the row's own `Build from Base` | sole writer of Gold Wave's cards; it alone reads them (its SportLots badge check); never writes Base, a player, a team or a row — see "The NEO-339 flows on 2024 Topps Chrome" |
+| `tests/set-selector/topps-chrome-insert-known-roster-no-wizard.spec.ts` (NEO-339) | the CARDS of `Youthquake` under `Insert`, fetched and committed through Match Cards → Confirm | sole writer of that insert's cards; no player, team or league is created (the flow asserts there is no review) — see the same section |
 
 **`tests/set-selector/signed-by-autofills-from-players.spec.ts` no longer self-heals an empty Base
 checklist (NEO-260).** It used to carry a `when:`-guarded fallback that fetched
 and COMMITTED the entire shared Base checklist when it found the set empty —
 a write to a registered shared set by a flow entitled to two card fields and
 nothing else, and one that converted a failed seed into a green run proving
-nothing. `tests/setup.spec.ts` is the flow's documented precondition. The fallback
+nothing. The seed is the flow's documented precondition. The fallback
 is now a single positive assertion that the checklist has cards, so an unseeded
 run fails loudly instead of rebuilding a fixture the rest of the queue is
 reading. **Do not re-add a self-heal branch to any consumer of this set: the fix
@@ -2518,35 +2597,69 @@ for an empty shared set is to fix the seed.**
 `tests/set-selector/base-parallels-build-from-section.spec.ts` proves the `Parallels of Base`
 section live, so it presses `Build N parallels from Base` on the shared
 anchor's `Parallel` variant type, confirms `Replace and build` (K ≥ 1 on every
-run: the seed builds Gold Wave) and presses `Stop after this one` while the
+run: the seed builds one base parallel — never Gold Wave and never the first
+buildable row, NEO-339) and presses `Stop after this one` while the
 first build is in flight. It cannot use a hand-made set: a parallel with no
 marketplace ids is skipped, never built (NEO-239), so the build is only
 reachable on real data. No new real set: the rows are the seed's.
 
 | What it writes | Who else reads it | Why that is safe |
 |---|---|---|
-| the cards of the FIRST buildable parallel in `Parallel`'s own child order (`getParallelsForBuild` sorts by `parent.children`) — measured: `Sepia Refractors`. The flow asserts `stopped after 1`, so a Stop that lands after that build finished (writing the next one too) fails the run by name | nobody in the queue: no flow opens a Topps Chrome base parallel's checklist except `tests/setup.spec.ts` (Gold Wave, before the queue starts) | the build reads Base (the source) and never writes it; copies take Base's existing players and teams, so `players` / `teams` gain no row |
-| if Stop never lands: every buildable parallel in order, Gold Wave included, until the flow's browser closes (a client-side run, "stopped when you left") | the same nobody | the flow fails by name at `Base parallels — stopped after …` |
+| the cards of the FIRST buildable parallel in `Parallel`'s own child order (`getParallelsForBuild` sorts by `parent.children`) — measured: `Sepia Refractors`. The flow asserts `stopped after 1`, so a Stop that lands after that build finished (writing the next one too) fails the run by name | nobody in the queue: the only other flow that opens a Topps Chrome base parallel's checklist is `gold-wave-build-from-base-row` (Gold Wave's, a different row) | the build reads Base (the source) and never writes it; copies take Base's existing players and teams, so `players` / `teams` gain no row |
+| if Stop never lands: every buildable parallel in order, Gold Wave included, until the flow's browser closes (a client-side run, "stopped when you left") | `gold-wave-build-from-base-row`, if the run reaches Gold Wave before it builds: it then finds `Rebuild from Base` and fails by name | this flow fails by name at `Base parallels — stopped after …` first; the Gold Wave failure is its echo |
 
 **The row is `Sepia Refractors`** — measured in CI run 37179999943 (PR
 #305), the first green run: the flow typed `Sepia Refractors` into the
 Parallels search from the ledger line it read, and Convex logged exactly one
 `parallel_checklist_built` for the run (copied 300, left off 35, BSC +
 SportLots). The order is the `Parallel` reconcile's save order, so it is
-fixed per seed and moves only if the reconcile saves in a different order;
+fixed per seed and moves only if the reconcile saves in a different order
+(since NEO-339 the order is the seed spec's: its `Parallel` pairs are saved
+in the order the spec lists them, which must keep `Sepia Refractors` first,
+Gold Wave anywhere but first, and the seed-built parallel anywhere but first);
 the flow still reads the name off the ledger at run time and never assumes
 it, so a reorder changes the write set without failing the flow. To
 re-check it, read the `Inputting text:` line after `Input text
 ${output.BUILT}` in the flow's `maestro.log`. If it is ever `Gold Wave
-Refractors`, nothing breaks (see the table), but the seed's pagination guard
-then reads a set this flow rebuilt mid-queue — harmless, since the seed has
-already passed, but worth knowing when reading a Gold Wave screenshot.
+Refractors`, this flow and `gold-wave-build-from-base-row` write the same
+row concurrently and the Gold Wave flow fails by name (`Rebuild from Base`
+where it expects `Build from Base`): a seed-order bug, fixed in the spec.
 
 Concurrent Base writers: `signed-by-autofills-from-players` edits card #300's
 `autographed` / `signedBy`. A copy taken while that edit lands is either
 copied with it or skipped ("skipped — Base changed them mid-build"); the flow
 asserts neither the card nor the count, only that N > 0 cards were built and
 that a copy's title names its parallel.
+
+### The NEO-339 flows on 2024 Topps Chrome — Gold Wave's row build and the known-roster insert
+
+When the seed became a server-side bulk load (NEO-339), two UI behaviours the
+old `setup.yaml` exercised on this set needed flows of their own. Both write
+data the old seed wrote before the queue, so neither adds a real set; each is
+the sole writer of one datum and fresh-only per deployment (CI reseeds every
+run; re-seed before a local re-run).
+
+| | `tests/set-selector/gold-wave-build-from-base-row.spec.ts` | `tests/set-selector/topps-chrome-insert-known-roster-no-wizard.spec.ts` |
+| -- | -- | -- |
+| proves | the base-parallel row's `Build from Base` (no Match Cards, no review), pinned `Built 300 cards`, and the `SL` badge on the last copies (the SportLots pagination guard, NEO-137); paused, `BSC only` | a fetch whose whole roster NB already holds goes Match Cards → Confirm → `Saved 50 cards.` with NO names review (the old seed's Future Stars "no wizard" contract; since NEO-335 a names-free `Tidy up this set` teams/titles review may open and is pressed through on its defaults); paused, the same with no dialog |
+| row | `Parallel` › `Gold Wave Refractors` (left EMPTY by the seed) | `Insert` › `Youthquake` (left EMPTY by the seed) |
+| writes | Gold Wave's cards (copies of Base's; no player, team or row) | Youthquake's 50 cards; no player, team or league (asserted) |
+| who else reads it | nobody. `base-parallels-build-from-section` reaches Gold Wave only if its Stop never lands, and fails first | nobody: not Future Stars, which `checklist-pairing-dialog-cancel` reads |
+| concurrency note | `signed-by-autofills-from-players` edits Base card #300 mid-queue; a copy taken while it lands is skipped, so the notice pattern admits `Built 299 cards, …, 1 skipped — Base changed them mid-build` and nothing else | none known |
+| measured | the build: 4.5 s tap → notice, 300 copied / 35 left off (CI 37179999943, under the old seed) | 2026-10-11 on a seeded PR preview: 50 cards, roster entirely inside the seed's 336-card Base roster, both marketplaces, empty after the seed. The flow's own timings are not measured yet |
+
+**The pairing dialog's `Keep all` buttons have NO live E2E, and why.** This
+flow was drafted to prove `Keep all BSC-only cards` / `Keep all
+SportLots-only cards` too, with both columns as hard preconditions. Measured
+on a seeded PR preview (2026-10-11): every Insert row the seed saves under
+Topps Chrome pairs 100% between BSC and SportLots, so no insert has a
+one-sided card and neither button ever has work. The old `setup.yaml`
+pressed them only behind `when: visible "BSC only (…)"` guards, so live E2E
+never really exercised them either (R2). They are covered at component level
+only: `CardPairingModal.test.tsx` ("Keep all saves every card in a column")
+and `ReconciliationModal.keepAll.test.tsx` (the reconcile's own Keep all).
+Live coverage would need a real set with one-sided cards on both sides — a
+new real set, so an owner decision (rule 1), not a flow edit.
 
 ### SportLots twin names (NEO-325) — read-only on the shared anchor, plus one sole writer
 
@@ -2604,9 +2717,33 @@ is set aside with its reason (table below).
 | neighbour | "Chrome Update Sapphire Black Sapphire Refractor" (326060), the row left when the filter narrows past the twins |
 | measured | 2026-10-08, SportLots' public buyer search (each row's set id and set name): 824 sets with stock under "2024 Topps Baseball" hold three same-name pairs — this one, "City Connect Swatch Collection" (299607 / 307437) and its "… Black" (299608 / 307438). Only this one starts with "Chrome", so only it shows under the dialog's default SportLots prefix filter. The DEALER list the dialog reads holds one more "Chrome" twin the public search could not see (no stock on one side): "Chrome Black Refractor" (**305604** / **309103**), listed as `Chrome Black Refractor (#305604)` / `(#309103)` (live dialog, 2026-10-08). Since NEO-325 it is never auto-paired, so the seed's Topps Chrome `Parallel` reconcile saves **41** sets, not 42 (BSC `Black Refractors` stays in Pending; `base-parallels-build-from-section` pins 41). Since the Base check (below) the flow DOES match it, as claim 5's fixture |
 | writes | none: the dialog is client state (promotions and the rename included), Save is never pressed, and the flow closes it with Cancel → Discard |
-| base check (claim 5) | The dialog checks every pending set of this `Parallel` (a Parallel type by its title, NEO-334) against the saved Base — 335 cards — by first card and per-marketplace count (`lib/cards/base-match.ts`), and sets a mismatch aside behind the toggle `N that don't match the Base, SportLots` (the same name open or closed; `aria-expanded` carries the state, so the flow proves open and closed by the revealed row) with its reason, `Doesn't match the Base — …`. The flow types the twin's name and proves ONE NAME, TWO VERDICTS: **309103** stays listed with its row status `, matches the Base`, **305604** is set aside and, revealed, carries its reason. The ids are the planner's reading (309103 = the Topps Chrome Black Refractor parallel, 305604 = the Topps Chrome Black set) and are **NOT YET MEASURED**: pin them, and the probe waits' ceilings, from the first run on a preview carrying the check. The Chrome Update Sapphire twins are USCS-numbered (another product), so they are set aside too; the flow reveals them and proves claims 1–4 on the revealed rows |
+| base check (claim 5) | The dialog checks every pending set of this `Parallel` (a Parallel type by its title, NEO-334) against the saved Base — 336 cards — by first card and per-marketplace count (`lib/cards/base-match.ts`), and sets a mismatch aside behind the toggle `N that don't match the Base, SportLots` (the same name open or closed; `aria-expanded` carries the state, so the flow proves open and closed by the revealed row) with its reason, `Doesn't match the Base — …`. The flow types the twin's name and proves ONE NAME, TWO VERDICTS: **309103** stays listed with its row status `, matches the Base`, **305604** is set aside and, revealed, carries its reason. The ids are the planner's reading (309103 = the Topps Chrome Black Refractor parallel, 305604 = the Topps Chrome Black set) and are **NOT YET MEASURED**: pin them, and the probe waits' ceilings, from the first run on a preview carrying the check. The Chrome Update Sapphire twins are USCS-numbered (another product), so they are set aside too; the flow reveals them and proves claims 1–4 on the revealed rows |
 | base check reads | one query (`getBaseSignatureForVariantType`) and read-only probe actions (`probeSlFirstPage`, `probeSlCount`, `probeBscSets`) over the column's whole scope, two calls in flight per side, from the moment the dialog opens until it closes; nothing is stored. The seed's own Topps Chrome `Parallel` reconcile runs the same check for the second or two before it presses Save — Save writes Ready only, so it still saves the **41**; the check only changes what Pending SHOWS and what `Keep all` reaches |
 | paused | no SportLots list, no twin; the flow does not press `Sync Parallels` (one marketplace takes the single-platform STORE path) |
+
+#### Read-only: `tests/set-selector/reconcile-save-asks-before-leaving-sets-unpaired.spec.ts` (NEO-339)
+
+A second read-only consumer of the same seeded `Parallel` reconcile, no new real
+set. Save with sets still in Pending opens "Leave N sets unpaired?" (BSC sets the
+level lists, SportLots sets inside the default prefix filter); the flow opens
+that step, reads what it lists (the seed's `pending: leave` BSC `Black Refractors`
+and the `Chrome Update Sapphire` twins; never a Ready pair such as `Sepia
+Refractors`), then goes back with Cancel and with Escape and leaves through the
+dialog's own Cancel. It never presses `Leave them, save N sets` and never saves:
+`openLeaveStep` refuses to press Save unless the Pending columns list something.
+The names it expects are the seed spec's own leftovers (`seed/baseline.spec.json`,
+Parallel `pending`), **not yet measured on a preview carrying the step**.
+
+#### Every sole-writer Reconcile Save goes through the step (NEO-339)
+
+The specs that press Save in a Reconcile dialog (`checklist-autograph-format-…`,
+`checklist-dual-team-…`, `inserts-1996-…`, `bowman-insert-grouping-…`,
+`bowman-sportlots-links-…`, `reconcile-sportlots-twins-save-…`) do it through
+`saveReconcile` (support/set-builder.ts): it reads the dialog's Pending columns,
+then asserts the "Leave N sets unpaired?" step (and presses "Leave them") or the
+direct save they call for. Their registry rows are unchanged: "Save writes every
+Ready set" is still what is written. New with the step: the twins writer reads
+back that a set the step listed got no row.
 
 #### Sole writer — Baseball → 2024 → Topps → Topps (the flagship) › `Insert`: `tests/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.spec.ts` — ✅ approved by Jason 2026-10-08
 
@@ -2615,7 +2752,7 @@ twin it holds, and still offers the other) needs a SAVE, which is a write to
 a real set; the owner approved this set for it on 2026-10-08 (rule 1). The
 flow is this set's **sole writer** and is **not self-cleaning**: like every
 real-set sole writer it relies on the run-start reset (`e2e-baseline.sh
-reset` before `tests/setup.spec.ts`), and it REQUIRES a fresh `Insert` column (the
+reset` before the seed's bulk load), and it REQUIRES a fresh `Insert` column (the
 reconcile must open on its own), so a dirty deployment fails it at that
 gate, by name.
 
@@ -2668,8 +2805,8 @@ button's name is `Keep all, <side> sets` when it reaches the whole column and
 
 | Reconcile in the suite | Role | Base cards? | Check runs? | Effect on the flow |
 | -- | -- | -- | -- | -- |
-| `tests/setup.spec.ts` — 2024 Topps Chrome › `Parallel` | parallel | 335 (seeded earlier in setup) | yes | none: presses `Save N sets` at once; Ready (the 41) is untouched |
-| `reconcile-sportlots-twins-keep-their-own-ids` — same column | parallel | 335 | yes | the flow's claim 5; its twin claims run on the revealed rows |
+| the seed (server-side, NEO-339) — 2024 Topps Chrome › `Parallel` | parallel | 336 (committed earlier in the seed) | no: no dialog opens | none: it saves the spec's 41 named pairs |
+| `reconcile-sportlots-twins-keep-their-own-ids` — same column | parallel | 336 | yes | the flow's claim 5; its twin claims run on the revealed rows |
 | `bowman-sportlots-links-move-between-set-parallel-insert` STEP 10 and its re-sync — 2026 Bowman › Bowman › `Parallel` | parallel | none (no flow fetches Bowman's Base checklist) | no (skip: no cards) | none; if a Base checklist is ever saved there, still none — the flow reads Ready chips and presses Save |
 | `bowman-insert-grouping-builds-parallels` — 2026 Bowman › `Insert` | insert | — | no | none (its `Keep all N, BSC set(s)` / `Keep all, BSC sets` behave as without the check) |
 | `inserts-1996-score-…`, `reconcile-sportlots-twins-save-each-to-its-own-set` — `Insert` columns | insert | — | no | none |
@@ -2691,6 +2828,10 @@ commit, and drill with `drillToCustom` (support/set-builder.ts):
       VARIANT: "Base"
 ```
 
-**Real set** — stop and ask the owner first. If approved: extend
-`tests/setup.spec.ts`'s provisioning and its CANONICAL PRE-SYNCED DATA block, add a
-row to the real-set table above, and state the measured sync cost in the PR.
+**Real set** — stop and ask the owner first. If approved, either the flow
+provisions it in-flow as its sole writer (the default: it costs no seed time),
+or, only when several flows must read it, extend the seed's spec
+(`playwright/seed/baseline.spec.json`; `npm run setbuild -- plan` prints every
+decision the new step must name — runbook `docs/operations/neo339-setbuild.md`).
+Either way add a row to the real-set table above and state the measured sync
+cost in the PR. A UI behaviour is proved by a flow, never by the seed.

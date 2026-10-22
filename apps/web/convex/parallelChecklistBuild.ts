@@ -35,7 +35,9 @@
  *      both ends; the old cards' links break ties) and decide the copies.
  *      Classify every old link BEFORE anything is deleted.
  *   5. Check the blocks again, then delete the parallel's old cards (pages of
- *      100), then insert the copies (pages of 150).
+ *      100), then insert the copies (pages of 150). A parallel with no
+ *      autograph format of its own takes its source's on the first insert
+ *      page (NEO-345, Jason 2026-10-18), so its AU copies are born formatted.
  *
  * A crash between 5's delete and insert leaves the parallel short; running the
  * build again rebuilds it (risk 1 in the plan, accepted). A block that fires
@@ -122,7 +124,11 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 import { titleChainFacts } from "./listingShortName";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import {
+  deriveOwnLevelFeatures,
+  isAutographFormat,
+  type AutographFormat,
+} from "./features/deriveCardFeatures";
 import { classifyAdapterError } from "./observability";
 import {
   failureFromMessage,
@@ -539,6 +545,20 @@ export function snapshotForCopies(
     return snapshot;
   }
   return { ...snapshot, cardType: byFlags };
+}
+
+/**
+ * NEO-345 — the autograph format a parallel being built takes from its source
+ * (the insert, or the Base for a base parallel): the source's, when the
+ * parallel has none of its own. Pure.
+ */
+export function inheritedAutographFormat(
+  parallel: Pick<Doc<"selectorOptions">, "features">,
+  source: Pick<Doc<"selectorOptions">, "features">,
+): AutographFormat | undefined {
+  if (parallel.features?.autographFormat !== undefined) return undefined;
+  const format = source.features?.autographFormat;
+  return isAutographFormat(format) ? format : undefined;
 }
 
 export type ParallelSidePlan = {
@@ -1518,8 +1538,9 @@ export const insertParallelCardsPage = internalMutation({
       );
       return { created: [], missing: 0, skippedChangedSource: 0, processed: 0, changed: true };
     };
-    const parallel = await ctx.db.get(args.parallelId);
-    if (!parallel) return refuse("gone");
+    const stored = await ctx.db.get(args.parallelId);
+    if (!stored) return refuse("gone");
+    let parallel = stored;
     const resolved = await resolveBuildSource(ctx, parallel);
     if (resolved.status === "notBuildable") return refuse("notBuildable");
     if (resolved.status === "blocked") return refuse("blocked");
@@ -1547,6 +1568,21 @@ export const insertParallelCardsPage = internalMutation({
       if (!first || first.selectorOptionId !== args.parallelId) {
         return { created: [], missing: 0, skippedChangedSource: 0, processed: 0, changed: true };
       }
+    }
+
+    // NEO-345 (Jason, 2026-10-18: "insert info should be copied to its
+    // parallels") — a parallel with no autograph format of its own takes its
+    // source's, here, before its first copy is made: the copies' AU cards are
+    // then born formatted (`mergeCardFeatures` reads the parallel's format)
+    // with "AUTO" in their titles, and the parallel's header does not ask
+    // again. A parallel holding a format keeps it. Written once: every later
+    // page reads it back. Only after the concurrency guard, so a `changed`
+    // page still writes nothing.
+    const inherited = inheritedAutographFormat(parallel, sourceRow);
+    if (inherited) {
+      const features = { ...(parallel.features ?? {}), autographFormat: inherited };
+      await ctx.db.patch(args.parallelId, { features, lastUpdated: Date.now() });
+      parallel = { ...parallel, features };
     }
 
     const set = await parallelSetContext(ctx, parallel);
@@ -1685,6 +1721,9 @@ export const insertParallelCardsPage = internalMutation({
             bscTeamName: source.bscTeamName,
             teamNoneConfirmedAt: source.teamNoneConfirmedAt,
             teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
+            // NEO-339 — and the "No player on this card" ruling.
+            playerNoneConfirmedAt: source.playerNoneConfirmedAt,
+            playerNoneConfirmedByUserId: source.playerNoneConfirmedByUserId,
             ...variation,
           },
         },
