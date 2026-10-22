@@ -41,7 +41,7 @@ export default function ShippingLabelsPage() {
         <div className="max-w-5xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-teal to-neon-green">
+            <h1 className="text-5xl font-bold mb-4 text-neon-teal">
               Print the Label, Ship the Card
             </h1>
             <p className="text-xl text-slate-400 mb-8">

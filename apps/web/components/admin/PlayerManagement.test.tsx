@@ -580,7 +580,7 @@ describe("PlayerManagement — the list", () => {
     // The "type to search" hint lives in the filter's placeholder.
     expect(
       screen.getByLabelText("Filter players").getAttribute("placeholder"),
-    ).toBe("Start typing a player name…");
+    ).toBe("Type a player name…");
   });
 
   it("says 10+ when the search answers with as many rows as it asked for", async () => {

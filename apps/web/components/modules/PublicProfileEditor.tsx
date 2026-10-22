@@ -383,7 +383,7 @@ export default function PublicProfileEditor() {
                 ) : usernameAvailable ? (
                   <span className="text-[#00C2FF]">available</span>
                 ) : (
-                  <span className="text-[#FF2EB3]">taken</span>
+                  <span className="text-[#FF2E9A]">taken</span>
                 )}
               </span>
             )}

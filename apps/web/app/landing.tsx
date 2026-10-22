@@ -176,7 +176,7 @@ export default function LandingPage() {
             </h2>
             <div className="space-y-6">
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   1
                 </div>
                 <div>
@@ -189,7 +189,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   2
                 </div>
                 <div>
@@ -202,7 +202,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   3
                 </div>
                 <div>
@@ -215,7 +215,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   4
                 </div>
                 <div>
@@ -228,7 +228,7 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                   5
                 </div>
                 <div>

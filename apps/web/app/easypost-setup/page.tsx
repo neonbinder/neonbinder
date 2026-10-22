@@ -99,7 +99,7 @@ export default function EasypostSetupPage() {
         <div className="max-w-4xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-teal to-neon-green">
+            <h1 className="text-5xl font-bold mb-4 text-neon-teal">
               Get Your EasyPost Key
             </h1>
             <p className="text-xl text-slate-400 mb-8">
@@ -116,7 +116,7 @@ export default function EasypostSetupPage() {
             <div className="space-y-6">
               {steps.map((step, i) => (
                 <div key={step.title} className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white font-bold">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
                     {i + 1}
                   </div>
                   <div>

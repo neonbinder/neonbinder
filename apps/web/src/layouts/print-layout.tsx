@@ -90,7 +90,7 @@ export default function PrintLayout() {
                 to={section.path}
                 end
                 className={({ isActive }) =>
-                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm " +
+                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm " +
                   (isActive
                     ? "border-neon-teal text-neon-teal"
                     : "border-transparent text-slate-400 hover:text-foreground hover:border-slate-600")

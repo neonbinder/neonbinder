@@ -613,7 +613,7 @@ function EntitySelector({
       <button
         ref={collapsedCardRef}
         type="button"
-        className="w-full text-left bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+        className="w-full text-left bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
         aria-label={`${title}: ${nameOf(selected)}${
           suffixOf(selected) ? ` ${suffixOf(selected)}` : ""
         } — change`}
@@ -669,7 +669,7 @@ function EntitySelector({
             aria-expanded={true}
             // a11y (2.5.8): `p-2 -m-2` grows the 20px chevron's hit area to
             // 36px without moving it or the heading beside it.
-            className="p-2 -m-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+            className="p-2 -m-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
           >
             <ChevronUpIcon className="w-5 h-5 text-gray-500" />
           </button>
@@ -829,7 +829,7 @@ function EntitySelector({
                     // not focusable by key any more, but a pointer press can
                     // still focus one; Enter there picks it, once.
                     onKeyDown={(e) => activateOnEnter(e, pick)}
-                    className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+                    className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
                       isSelected
                         ? selectedColor
                         : isHighlighted

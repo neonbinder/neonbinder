@@ -213,7 +213,7 @@ export default function AutographFormatStep({
                 if (!disabled) onChange(format);
               }}
               onKeyDown={(event) => onKeyDown(event, index)}
-              className={`flex items-center gap-3 rounded-lg border-2 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
+              className={`flex items-center gap-3 rounded-lg border-2 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
                 checked
                   ? "border-[#00D558] bg-[#00D558]/10 text-[#00D558]"
                   : "border-slate-500 text-gray-300 hover:border-gray-300"
@@ -262,7 +262,7 @@ function SavedLine({
       ref={ref}
       tabIndex={-1}
       role="status"
-      className="mb-3 rounded-md border border-slate-500 px-3 py-2 text-sm text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+      className="mb-3 rounded-md border border-slate-500 px-3 py-2 text-sm text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
     >
       {autographPromptSaved(value)}
     </p>
@@ -358,7 +358,7 @@ export function AutographFormatPrompt({
       <p role="status" className="basis-full text-xs text-gray-300 empty:hidden">
         {busy ? AUTOGRAPH_PROMPT_SAVING : null}
       </p>
-      <p id={errorId} role="alert" className="basis-full text-xs text-[#FF2EB3] empty:hidden">
+      <p id={errorId} role="alert" className="basis-full text-xs text-[#FF2E9A] empty:hidden">
         {error}
       </p>
     </div>

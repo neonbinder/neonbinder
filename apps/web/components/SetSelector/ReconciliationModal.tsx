@@ -614,7 +614,7 @@ function FilterInput({
           type="button"
           onClick={clear}
           aria-label={`Clear ${ariaLabel.toLowerCase()}`}
-          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
         >
           <span aria-hidden="true">×</span>
         </button>
@@ -778,7 +778,7 @@ function DraggableItem({
         group flex items-center rounded-lg border
         text-sm font-medium transition-colors select-none
         ${isSelected
-          ? "ring-2 ring-[#00B7FF] bg-[#00B7FF]/10 border-[#00B7FF]"
+          ? "ring-2 ring-[#00C2FF] bg-[#00C2FF]/10 border-[#00C2FF]"
           : "bg-gray-800 border-gray-600 hover:border-gray-400"
         }
       `}
@@ -793,7 +793,7 @@ function DraggableItem({
             : attributes["aria-describedby"]
         }
         onClick={onClick}
-        className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#00B7FF]"
+        className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#00C2FF]"
       >
         {status && <RunGlyph kind={status.kind} tones={CHECK_GLYPH_TONE} />}
         <span
@@ -820,7 +820,7 @@ function DraggableItem({
  * `min-h-[28px]`: WCAG 2.5.8 wants 24px; 28 keeps the row a single line.
  */
 const OWN_SET_BUTTON =
-  "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]";
+  "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF]";
 const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-gray-500 text-gray-300 hover:border-[#00D558] hover:text-[#00D558] hover:bg-[#00D558]/10 focus-visible:text-[#00D558]`;
 const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] hover:bg-[#00D558]/10 hover:border-[#00D558] aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent`;
 
@@ -1008,9 +1008,9 @@ function ReadySetRow({
       // carries cannot save, so its rail turns the dialog's error pink until
       // the titles differ; the sentence beside Save says why.
       className={`border-l-4 ${
-        clashMessageId ? "border-[#FF2EB3]" : "border-[#00D558]"
+        clashMessageId ? "border-[#FF2E9A]" : "border-[#00D558]"
       } rounded-r-lg p-3 mb-2 transition-colors ${
-        isOver ? "bg-[#00B7FF]/10 ring-1 ring-[#00B7FF]" : "bg-gray-800/50"
+        isOver ? "bg-[#00C2FF]/10 ring-1 ring-[#00C2FF]" : "bg-gray-800/50"
       }`}
     >
       <div className="flex items-center gap-3">
@@ -1050,8 +1050,8 @@ function ReadySetRow({
           aria-describedby={
             clashMessageId ? `${clashLineId} ${clashMessageId}` : undefined
           }
-          className={`flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border rounded focus:border-[#00B7FF] ${
-            clashMessageId ? "border-[#FF2EB3]" : "border-gray-700"
+          className={`flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border rounded focus:border-[#00C2FF] ${
+            clashMessageId ? "border-[#FF2E9A]" : "border-gray-700"
           }`}
         />
         {set.confidence > 0 && (
@@ -1080,7 +1080,7 @@ function ReadySetRow({
         </button>
       </div>
       {clashMessageId && (
-        <p id={clashLineId} className="mt-1 text-xs text-[#FF2EB3]">
+        <p id={clashLineId} className="mt-1 text-xs text-[#FF2E9A]">
           {TITLE_CLASH_ROW_LINE}{" "}
           {/* gray-400: a hint, quieter than the pink fact it follows. */}
           <span className="text-gray-400">{RENAME_TIP}</span>
@@ -1102,7 +1102,7 @@ function ReadySetRow({
         <button
           type="button"
           onClick={onAttachClick}
-          className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-[#00B7FF] text-gray-900 hover:bg-[#33C6FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]"
+          className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-[#00C2FF] text-gray-900 hover:bg-[#33C6FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF]"
           // WCAG 2.5.3: the name begins with the visible words, then names
           // the set — every Ready row offers this button at once, so "this
           // set" alone would be the same name a dozen times.
@@ -2485,7 +2485,7 @@ function ReconciliationDialog({
             aria-label={BASE_MATCH_COPY.toggleName(toggleVisible, probeSide)}
             onClick={toggleMismatched}
             onKeyDown={(event) => activateOnEnter(event, toggleMismatched)}
-            className="group mb-2 inline-flex items-center gap-1 min-h-[24px] rounded-sm text-xs font-medium text-amber-300 hover:text-amber-200 underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]"
+            className="group mb-2 inline-flex items-center gap-1 min-h-[24px] rounded-sm text-xs font-medium text-amber-300 hover:text-amber-200 underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF]"
           >
             <ChevronRightIcon
               aria-hidden="true"
@@ -2756,7 +2756,7 @@ function ReconciliationDialog({
 
           <DragOverlay>
             {activeDragItem && (
-              <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
+              <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
                 <span className="text-gray-200">
                   <ItemName
                     item={activeDragItem.item}
@@ -2776,7 +2776,7 @@ function ReconciliationDialog({
             // button, not this spot, so this has to interrupt.
             <span
               role="alert"
-              className="mr-auto text-sm text-[#FF2EB3] max-w-md"
+              className="mr-auto text-sm text-[#FF2E9A] max-w-md"
             >
               {saveError}
             </span>
@@ -2786,7 +2786,7 @@ function ReconciliationDialog({
               it appears as the operator types). Empty, it takes no room. */}
           <div
             role="status"
-            className="max-w-md text-right text-sm text-[#FF2EB3] space-y-1"
+            className="max-w-md text-right text-sm text-[#FF2E9A] space-y-1"
           >
             {titleClashes.map((clash, index) => (
               <p key={clash.key} id={clashMessageIdOf(index)}>

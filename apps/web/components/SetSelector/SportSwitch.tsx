@@ -245,7 +245,7 @@ export default function SportSwitch({
         // `p-1.5 -m-1.5`: a 28px-tall hit area (SC 2.5.8) around text that
         // still sits exactly where it did — the padding is cancelled by the
         // margin, so nothing around it moves.
-        className="-m-1.5 inline-flex items-baseline gap-1 rounded-sm p-1.5 text-xs text-gray-400 hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
+        className="-m-1.5 inline-flex items-baseline gap-1 rounded-sm p-1.5 text-xs text-gray-400 hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
       >
         {prefix ? <span>{prefix}</span> : null}
         <span
@@ -325,7 +325,7 @@ export default function SportSwitch({
                     idx === activeIdx
                       ? "bg-gray-800 text-gray-100"
                       : "text-gray-300"
-                  } focus-visible:ring-2 focus-visible:ring-[#00B7FF]`}
+                  } focus-visible:ring-2 focus-visible:ring-[#00C2FF]`}
                 >
                   <span>{o.name}</span>
                   {/* What "default" means here, said once, in the list itself —

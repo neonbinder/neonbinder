@@ -442,7 +442,7 @@ function DraggableRow({
       {...attributes}
       aria-labelledby={nameId}
       style={{ opacity: isDragging || isRidingAlong ? 0.4 : 1 }}
-      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF] ${baseClass} ${
+      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF] ${baseClass} ${
         isMovable ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       }`}
     >
@@ -566,7 +566,7 @@ function DropZone({
       onClick={isClickTarget ? onClick : undefined}
       className={`rounded-lg border-2 transition-colors ${
         isOver
-          ? "border-[#00B7FF] bg-[#00B7FF]/5"
+          ? "border-[#00C2FF] bg-[#00C2FF]/5"
           : highlight
             ? "border-yellow-600/50 bg-yellow-900/5"
             : "border-gray-700 bg-gray-900/30"
@@ -1327,7 +1327,7 @@ export default function ParallelGroupingModal({
                       </div>
                     </div>
                   ) : (
-                    <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
+                    <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
                       <span className="text-gray-200">{activeDragValue}</span>
                     </div>
                   ))}

@@ -283,7 +283,7 @@ export default function CardChecklistItem({
         isVariation ? "ml-8 border-l-2 border-l-gray-300 dark:border-l-gray-500" : ""
       } ${
         isSelected
-          ? "ring-2 ring-[#00B7FF] border-[#00B7FF] bg-blue-50/40 dark:bg-blue-900/10"
+          ? "ring-2 ring-[#00C2FF] border-[#00C2FF] bg-blue-50/40 dark:bg-blue-900/10"
           : ""
       }`}
     >
@@ -315,7 +315,7 @@ export default function CardChecklistItem({
                 ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
                 : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
             }
-            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
           >
             <span aria-hidden="true" className="text-xs">
               {isExpanded ? "▾" : "▸"}
@@ -415,7 +415,7 @@ export default function CardChecklistItem({
             badge entirely and the row would look like an ordinary card. */}
         {isCrossListed && (
           <span
-            className="text-xs px-1.5 py-0.5 rounded bg-[#00B7FF]/10 text-[#00B7FF] border border-[#00B7FF]/50"
+            className="text-xs px-1.5 py-0.5 rounded bg-[#00C2FF]/10 text-[#00C2FF] border border-[#00C2FF]/50"
             title={`Cross-release card — physically printed in ${card.homeSetLabel || "another set"}, but it completes this set's checklist.`}
           >
             ↗ {card.homeSetLabel || "another set"}

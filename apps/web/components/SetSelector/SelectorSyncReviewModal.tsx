@@ -278,7 +278,7 @@ function SuggestionSideRow({
     // py-0.5 landed at ~22px. border-gray-500 (not -600): -600 measures 2.35:1
     // against this dialog's bg-gray-900 — fails 1.4.11's 3:1 non-text minimum;
     // -500 measures 3.67:1.
-    `text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-[#00B7FF] disabled:opacity-50 ${
+    `text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:opacity-50 ${
       active
         ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558] font-semibold"
         : "border-gray-500 text-gray-300 hover:border-gray-400"

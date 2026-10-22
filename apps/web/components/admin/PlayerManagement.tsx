@@ -2530,7 +2530,7 @@ export default function PlayerManagement() {
           ref={filterRef}
           label="Filter players"
           value={filter}
-          placeholder="Start typing a player name…"
+          placeholder="Type a player name…"
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
@@ -2655,7 +2655,7 @@ export default function PlayerManagement() {
                       // here precisely because nobody scans this list: the
                       // filter takes focus on load and typing a name is how you
                       // get to a player.
-                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
+                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
                         isSelected
                           ? "border-neon-blue bg-neon-blue/10 text-neon-blue"
                           : "border-transparent text-slate-300 hover:bg-slate-900"

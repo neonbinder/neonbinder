@@ -3924,7 +3924,7 @@ export default function EntityReviewWizard({
               ? `Skip ${current.name} — this team has no league`
               : `Skip ${current.name} — not a ${notAWhat(current.kind)}`
           }
-          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
         >
           {skipLabel(current.kind)}
         </button>
@@ -4081,12 +4081,12 @@ export default function EntityReviewWizard({
           */}
           <div ref={bodyRef} className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto">
             {bulkError && (
-              <p role="alert" className="text-xs text-[#FF2EB3]">
+              <p role="alert" className="text-xs text-[#FF2E9A]">
                 {bulkError}
               </p>
             )}
             {cancelError && !confirming && (
-              <p role="alert" className="text-xs text-[#FF2EB3]">
+              <p role="alert" className="text-xs text-[#FF2E9A]">
                 {cancelError}
               </p>
             )}
@@ -4125,7 +4125,7 @@ export default function EntityReviewWizard({
                       // not read as something to press. 70% blue on gray-900
                       // is ~4.3:1, over SC 1.4.11's 3:1.
                       tabIndex={-1}
-                      className="rounded-sm text-sm font-semibold text-gray-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#00B7FF]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+                      className="rounded-sm text-sm font-semibold text-gray-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#00C2FF]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
                     >
                       {/* NEO-332 (a11y S2) — the New Player step a pick step
                           opened shows the bare name, so it is announced as
@@ -4220,7 +4220,7 @@ export default function EntityReviewWizard({
                               [current._id]: e.target.checked,
                             }))
                           }
-                          className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
+                          className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
                         />
                         <span>Also add {current.setSportValue} to their sports</span>
                       </label>
@@ -4236,7 +4236,7 @@ export default function EntityReviewWizard({
                     undecided and the same buttons are still the way forward.
                   */}
                   {rowError && rowError.rowId === current._id && (
-                    <p role="alert" className="mt-1 text-xs text-[#FF2EB3]">
+                    <p role="alert" className="mt-1 text-xs text-[#FF2E9A]">
                       {rowError.message} This name is still waiting on a decision.
                     </p>
                   )}
@@ -4306,7 +4306,7 @@ export default function EntityReviewWizard({
                               href={wikidataUrl(current.enrichment.wikidataId)!}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="py-1 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                              className="py-1 text-[#00C2FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
                             >
                               Wikidata {current.enrichment.wikidataId}
                               <span className="sr-only"> (opens in new tab)</span>
@@ -4325,7 +4325,7 @@ export default function EntityReviewWizard({
                             href={wikipediaUrl(current.enrichment.enwikiTitle)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="py-1 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                            className="py-1 text-[#00C2FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
                           >
                             Wikipedia
                             <span className="sr-only"> (opens in new tab)</span>
@@ -4492,11 +4492,11 @@ export default function EntityReviewWizard({
                                           /* Not colour alone (SC 1.4.1): this
                                              says something different IN WORDS
                                              from the resolved case beside it,
-                                             and #FF2EB3 on the gray-900 panel
+                                             and #FF2E9A on the gray-900 panel
                                              is 5.32:1 (SC 1.4.3). */
                                           <span
                                             id={statusId}
-                                            className="inline-flex items-center gap-2 text-xs text-[#FF2EB3]"
+                                            className="inline-flex items-center gap-2 text-xs text-[#FF2E9A]"
                                           >
                                             needs a team decision
                                             {/*
@@ -4538,7 +4538,7 @@ export default function EntityReviewWizard({
                                                         ct.name,
                                                       )
                                                 }
-                                                className="py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
+                                                className="py-2 -my-2 text-[#00C2FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
                                               >
                                                 Decide team
                                               </button>
@@ -4819,7 +4819,7 @@ export default function EntityReviewWizard({
                               // ring: `accent-*` alone leaves focus to the
                               // browser default, which on this ground is
                               // easy to lose (SC 2.4.7).
-                              className="h-3.5 w-3.5 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
+                              className="h-3.5 w-3.5 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
                             />
                             {/* The row's RAW name, quoted: it is the string
                                 that will become the alias, spelling, caps and
@@ -4880,10 +4880,10 @@ export default function EntityReviewWizard({
                     {current.kind === "team" &&
                       nameAliasHolders &&
                       nameAliasHolders.length > 0 && (
-                        <div className="rounded-md border border-[#FF2EB3]/40 bg-[#FF2EB3]/10 p-3 space-y-2">
+                        <div className="rounded-md border border-[#FF2E9A]/40 bg-[#FF2E9A]/10 p-3 space-y-2">
                           {/* One text node, so a direct-text matcher (the
                               E2E driver's) reads the whole sentence. */}
-                          <p className="text-sm text-[#FF2EB3]">
+                          <p className="text-sm text-[#FF2E9A]">
                             {`${nameAliasHolders[0].name} already answers to this name as an alias — remove it there before a team can take the name.`}
                           </p>
                           <div className="flex flex-wrap gap-2">
@@ -5116,7 +5116,7 @@ export default function EntityReviewWizard({
                                         // the gray-800 chip), and a real focus
                                         // ring rather than a colour swap behind
                                         // `focus:outline-none` (SC 2.4.7).
-                                        className="hit-area-24 text-gray-400 hover:text-[#FF2EB3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800 rounded"
+                                        className="hit-area-24 text-gray-400 hover:text-[#FF2E9A] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800 rounded"
                                       >
                                         ×
                                       </button>
@@ -5278,9 +5278,9 @@ export default function EntityReviewWizard({
                   */
                   <div
                     role="alert"
-                    className="rounded-md border border-[#FF2EB3]/40 bg-[#FF2EB3]/10 p-3 space-y-2"
+                    className="rounded-md border border-[#FF2E9A]/40 bg-[#FF2E9A]/10 p-3 space-y-2"
                   >
-                    <p className="text-sm text-[#FF2EB3]">{commitError}</p>
+                    <p className="text-sm text-[#FF2E9A]">{commitError}</p>
                     {/*
                       NEO-294 — this line used to read "Nothing was saved.
                       Every decision you made is still here." and the first
@@ -5458,7 +5458,7 @@ export default function EntityReviewWizard({
                         // is left to grow the row itself rather than
                         // overlapping the list's `space-y-1` gap between
                         // adjacent "Decided" rows.
-                        className="py-1 px-1 -mx-1 text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                        className="py-1 px-1 -mx-1 text-gray-400 hover:text-[#00C2FF] focus:text-[#00C2FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                       >
                         Change
                       </button>
@@ -5570,7 +5570,7 @@ export default function EntityReviewWizard({
                   {onBack && (
                     <button
                       type="button"
-                      className={`${footerFieldClass("btn-back-to-match-cards")} p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
+                      className={`${footerFieldClass("btn-back-to-match-cards")} p-2 -m-2 text-xs text-gray-400 hover:text-[#00C2FF] focus:text-[#00C2FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
                       aria-disabled={cancelling || saving || undefined}
                       onClick={() => {
                         if (cancelling || saving) return;
@@ -5799,7 +5799,7 @@ export default function EntityReviewWizard({
                      it this inherits Radix's 16px body size, which is not the
                      `text-xs` line `min-h-6` reserves the footer's height
                      for. */
-                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3] max-sm:basis-full"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2E9A] max-sm:basis-full"
                 >
                   {/*
                     The id sits on the TEXT, not on this flex wrapper: the
@@ -5819,7 +5819,7 @@ export default function EntityReviewWizard({
                       type="button"
                       aria-label={`Decide team ${blockingStep.name}`}
                       onClick={() => goToTeamStep(blockingStep.rowId)}
-                      className="shrink-0 py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
+                      className="shrink-0 py-2 -my-2 text-[#00C2FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
                     >
                       Decide team
                     </button>
@@ -5852,7 +5852,7 @@ export default function EntityReviewWizard({
                     autoAddRef.current = false;
                     setAutoAddPending(false);
                   }}
-                  className="shrink-0 p-2 -m-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
+                  className="shrink-0 p-2 -m-2 text-xs text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none underline decoration-dotted"
                 >
                   Stop
                 </button>
@@ -5933,7 +5933,7 @@ export default function EntityReviewWizard({
                     aria-disabled={
                       bulkPending !== null || saving ? true : undefined
                     }
-                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                   >
                     {bulkPending === "skip"
                       ? "Skipping names…"

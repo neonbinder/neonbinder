@@ -741,7 +741,7 @@ export default function ShippingLabelsPage() {
             Want to buy the postage too?{" "}
             <Link
               to="/profile/postage"
-              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
             >
               Add your EasyPost key
             </Link>{" "}
@@ -789,7 +789,7 @@ export default function ShippingLabelsPage() {
           <p className="text-sm text-center">
             <Link
               to="/print/labels"
-              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
             >
               Go to Label History
             </Link>

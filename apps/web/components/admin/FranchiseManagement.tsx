@@ -603,7 +603,7 @@ export default function FranchiseManagement() {
           ref={filterRef}
           label="Filter franchises"
           value={filter}
-          placeholder="Start typing a franchise name…"
+          placeholder="Type a franchise name…"
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
@@ -679,7 +679,7 @@ export default function FranchiseManagement() {
                       ref={isSelected ? selectedRowRef : null}
                       onClick={() => select(row._id)}
                       aria-current={isSelected ? "true" : undefined}
-                      className={`flex w-full flex-col gap-y-0.5 border-l-2 px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
+                      className={`flex w-full flex-col gap-y-0.5 border-l-2 px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
                           : "border-transparent text-slate-300 hover:bg-slate-900"

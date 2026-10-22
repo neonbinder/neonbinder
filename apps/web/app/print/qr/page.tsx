@@ -105,7 +105,7 @@ function printSvg(svgElement: SVGSVGElement, title: string) {
       </head>
       <body style="margin:0;display:flex;justify-content:center;align-items:center;height:100vh">
         <div style="width:min(100vw,100vh);height:min(100vw,100vh)">${svgData}</div>
-        <style>svg{width:100%;height:100%}@page{margin:0;size:auto}@media print{svg rect[fill="#00D558"],svg rect[fill="#00B7FF"]{fill:#000000!important}}</style>
+        <style>svg{width:100%;height:100%}@page{margin:0;size:auto}@media print{svg rect[fill="#00D558"],svg rect[fill="#00C2FF"]{fill:#000000!important}}</style>
       </body>
     </html>
   `);

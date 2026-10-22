@@ -13,7 +13,7 @@ import { attentionItemLabel, type AttentionItem } from "./card-attention";
  * and tooltip, where they can be as long as they need to be.
  *
  * Amber because the other two roles are taken and both would lie: neon green
- * (#00D558) is "good, confirmed" throughout this app, and pink (#FF2EB3) is
+ * (#00D558) is "good, confirmed" throughout this app, and pink (#FF2E9A) is
  * destructive. This is neither — it is an unanswered question. Amber also
  * matches nothing else in the row's own badge cluster (`RC` amber sits in the
  * attribute group with a filled background; this is an outlined disc in its

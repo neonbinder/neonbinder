@@ -1648,7 +1648,7 @@ export default function TeamManagement() {
           ref={filterRef}
           label="Filter teams"
           value={filter}
-          placeholder="Start typing a team name…"
+          placeholder="Type a team name…"
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
@@ -1822,7 +1822,7 @@ export default function TeamManagement() {
                       aria-describedby={
                         attention || league ? `team-row-${team._id}` : undefined
                       }
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
                           : "border-transparent text-slate-300 hover:bg-slate-900"

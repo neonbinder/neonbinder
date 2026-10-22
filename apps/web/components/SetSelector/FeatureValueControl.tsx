@@ -175,7 +175,7 @@ function TextValueControl({
         className={className}
       />
       {error && (
-        <span id={errorId} className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span id={errorId} className="text-[10px] text-[#FF2E9A]" role="alert">
           {error}
         </span>
       )}
@@ -245,7 +245,7 @@ function CheckboxValueControl({
         {label}
       </button>
       {error && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span className="text-[10px] text-[#FF2E9A]" role="alert">
           {error}
         </span>
       )}
@@ -319,7 +319,7 @@ function ToggleOptionsValueControl({
         })}
       </div>
       {error && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span className="text-[10px] text-[#FF2E9A]" role="alert">
           {error}
         </span>
       )}
@@ -411,7 +411,7 @@ function SelectValueControl({
         ))}
       </select>
       {error && (
-        <span id={errorId} className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span id={errorId} className="text-[10px] text-[#FF2E9A]" role="alert">
           {error}
         </span>
       )}

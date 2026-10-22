@@ -180,7 +180,7 @@ export default function SameNamePlayerPanel({
   if (candidates.length === 0) return null;
 
   return (
-    <div className="mt-2 rounded-md border border-[#00B7FF]/40 border-l-4 border-l-[#00B7FF] bg-[#00B7FF]/5 p-3 space-y-2">
+    <div className="mt-2 rounded-md border border-[#00C2FF]/40 border-l-4 border-l-[#00C2FF] bg-[#00C2FF]/5 p-3 space-y-2">
       {/* NEO-332 — the step's own heading asks the question; this is the one
           line that says how many and what to do. text-sm, not the old
           text-xs caption: it is the instruction for the whole step now. */}
@@ -205,7 +205,7 @@ export default function SameNamePlayerPanel({
                   onPick(candidate.playerId);
                 }}
                 // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor.
-                className="flex min-h-6 w-full flex-col items-start gap-0.5 rounded px-2 py-1.5 text-left transition-colors hover:bg-[#00B7FF]/10 focus:outline-none focus:ring-2 focus:ring-[#00B7FF] aria-disabled:opacity-40"
+                className="flex min-h-6 w-full flex-col items-start gap-0.5 rounded px-2 py-1.5 text-left transition-colors hover:bg-[#00C2FF]/10 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] aria-disabled:opacity-40"
               >
                 {/*
                   NEO-254 — the name and, beside it, the one fact that settles
@@ -226,7 +226,7 @@ export default function SameNamePlayerPanel({
                     {candidate.name}
                   </span>
                   {candidate.activeInSetYear && (
-                    <span className="shrink-0 text-xs font-medium text-[#00B7FF]">
+                    <span className="shrink-0 text-xs font-medium text-[#00C2FF]">
                       {ACTIVE_IN_SET_YEAR_LABEL}
                     </span>
                   )}

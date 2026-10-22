@@ -365,7 +365,7 @@ export default function MoveSetToBrandControl({
                   onKeyDown={(event) => activateOnEnter(event, () => choose(brand))}
                   // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum target height;
                   // px-2 py-1 measured ~23px at this text size.
-                  className="text-left text-xs px-2 py-1.5 rounded border border-transparent text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+                  className="text-left text-xs px-2 py-1.5 rounded border border-transparent text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
                 >
                   {brand.value}
                 </button>

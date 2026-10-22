@@ -204,7 +204,7 @@ export function SetShapeDialog({
           </div>
         )}
         {error && (
-          <p id={errorId} role="alert" className="mx-5 mb-3 text-sm text-[#FF2EB3]">
+          <p id={errorId} role="alert" className="mx-5 mb-3 text-sm text-[#FF2E9A]">
             {error}
           </p>
         )}
@@ -451,7 +451,7 @@ export function ChoiceList({
           onClick={onExpand}
           onKeyDown={(event) => activateOnEnter(event, onExpand)}
           // min-h-6: WCAG 2.5.8's 24px target.
-          className="min-h-6 shrink-0 rounded px-2 text-xs font-medium text-[#00C2FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+          className="min-h-6 shrink-0 rounded px-2 text-xs font-medium text-[#00C2FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
         >
           {CHANGE_LABEL}
         </button>
@@ -514,7 +514,7 @@ export function ChoiceList({
                 activateOnEnter(event, () => pick(choice.id), unavailable)
               }
               // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum.
-              className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+              className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
                 checked
                   ? "border-[#00D558] text-[#00D558]"
                   : "border-transparent text-slate-200 hover:border-slate-500"

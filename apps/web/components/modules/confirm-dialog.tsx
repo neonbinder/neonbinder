@@ -180,7 +180,7 @@ export function ConfirmDialog({
           <p
             id="confirm-dialog-error"
             role="alert"
-            className="mb-5 text-sm text-[#FF2EB3]"
+            className="mb-5 text-sm text-[#FF2E9A]"
           >
             {error}
           </p>

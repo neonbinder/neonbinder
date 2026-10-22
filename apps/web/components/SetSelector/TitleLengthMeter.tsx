@@ -32,7 +32,7 @@ import {
  *
  * Every band that is not "fine" carries words: `may clip on mobile`,
  * `may clip in search`, and a full sentence in the alert. The colours below are
- * the app's existing roles — grey is neutral, pink (#FF2EB3) is the error
+ * the app's existing roles — grey is neutral, pink (#FF2E9A) is the error
  * colour used for every inline field error in this directory — plus two warm
  * steps between them.
  *
@@ -107,7 +107,7 @@ const TONE_CLASS_DARK: Record<TitleLengthTone, string> = {
   ok: "text-gray-400",
   mobile: "text-[#FFB020]",
   search: "text-[#FF7A45]",
-  over: "text-[#FF2EB3]",
+  over: "text-[#FF2E9A]",
 };
 
 /**

@@ -545,7 +545,7 @@ export default function SpineLabelPage() {
                         applyTeamColors(team._id);
                       }}
                       aria-pressed={isActive}
-                      className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                      className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
                         isActive
                           ? "border-neon-teal text-neon-teal"
                           : "border-slate-700 text-slate-300 hover:border-slate-500"
@@ -624,7 +624,7 @@ export default function SpineLabelPage() {
                     applyPickedTeamColors(t);
                   }}
                   label="Find a team"
-                  placeholder="Start typing a team name…"
+                  placeholder="Type a team name…"
                   emptyMessage="No teams match"
                   // NEO-330 — a 2+ character query the server has not answered
                   // yet, with nothing in the loaded window to show meanwhile,
@@ -694,7 +694,7 @@ export default function SpineLabelPage() {
                   type="button"
                   onClick={() => setWidthIn(preset.widthIn)}
                   aria-pressed={widthIn === preset.widthIn}
-                  className={`rounded-md border px-3 py-1.5 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                  className={`rounded-md border px-3 py-1.5 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
                     widthIn === preset.widthIn
                       ? "border-neon-teal text-neon-teal"
                       : "border-slate-700 text-slate-300 hover:border-slate-500"
@@ -757,7 +757,7 @@ export default function SpineLabelPage() {
             <h3
               ref={sheetHeadingRef}
               tabIndex={-1}
-              className="text-sm font-semibold text-slate-300 rounded-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              className="text-sm font-semibold text-slate-300 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
             >
               Sheet ({labels.length} label{labels.length === 1 ? "" : "s"},{" "}
               {sheetCount} page{sheetCount === 1 ? "" : "s"})

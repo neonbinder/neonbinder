@@ -161,7 +161,7 @@ export default function SyncDoneNotice({
         // px-2 py-1.5 (not px-1, no py): a bare underline link with no
         // vertical padding measures well under WCAG 2.5.8's 24px minimum
         // target size.
-        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00B7FF] rounded px-2 py-1.5 aria-disabled:opacity-50"
+        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded px-2 py-1.5 aria-disabled:opacity-50"
       >
         Dismiss
       </button>
@@ -226,7 +226,7 @@ function TwinsLeft({
             }
             onClick={() => setOpen((o) => !o)}
             // WCAG 2.5.8: padded to 24px+; the negative margin keeps the line.
-            className="inline-block min-h-6 px-1 py-0.5 -my-0.5 -ml-1 text-xs underline underline-offset-2 hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00B7FF] rounded"
+            className="inline-block min-h-6 px-1 py-0.5 -my-0.5 -ml-1 text-xs underline underline-offset-2 hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded"
           >
             {open ? "Show fewer" : `Show all ${entries.length}`}
           </button>

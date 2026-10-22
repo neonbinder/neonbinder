@@ -25,7 +25,7 @@ export default function AiCardIdentificationPage() {
         <div className="max-w-5xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-purple to-neon-blue">
+            <h1 className="text-5xl font-bold mb-4 text-neon-purple-text">
               Identify Cards Like a Pro
             </h1>
             <p className="text-xl text-slate-400 mb-8">

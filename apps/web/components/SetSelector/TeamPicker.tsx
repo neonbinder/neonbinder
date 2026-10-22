@@ -576,7 +576,7 @@ export default function TeamPicker({
             // a11y (SC 1.4.3): gray-500 is ~3.0:1 on the chip's own gray-700
             // ground, under the 4.5:1 floor. gray-300 clears it in both themes,
             // and the pink hover/focus is unchanged.
-            className="hit-area-24 text-gray-600 dark:text-gray-300 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            className="hit-area-24 text-gray-600 dark:text-gray-300 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
           >
             ×
           </button>
@@ -731,7 +731,7 @@ export default function TeamPicker({
               ))}
             {candidates && matches.length === 0 && query.trim().length === 0 && (
               <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
-                Start typing a team name…
+                Type a team name…
               </div>
             )}
             <div

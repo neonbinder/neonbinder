@@ -57,6 +57,10 @@ html .radix-themes {
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  /* Focus rings are Marquee Cyan everywhere. `ring-ring` (Button, Tabs,
+   * NavigationMenu) named this token and nothing defined it, so those rings
+   * fell back to the text colour. */
+  --color-ring: #00c2ff;
   --font-mono: var(--font-geist-mono);
 }
 
@@ -556,7 +560,7 @@ body {
   --blue-12: #003a58; /* 900 */
 
   --blue-a1: #0099ff05;
-  --blue-a2: #00b7ff0e;
+  --blue-a2: #00C2FF0e;
   --blue-a3: #00a8ff1d;
   --blue-a4: #00b9ff33;
   --blue-a5: #00b6ff4c;
