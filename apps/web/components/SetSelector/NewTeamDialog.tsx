@@ -513,7 +513,7 @@ export default function NewTeamDialog({
               the viewport is a dialog that cannot be completed. */}
           <div className="shrink-0 space-y-4 border-t border-gray-800 px-5 pt-4 pb-5">
             {error && (
-              <p id={errorId} role="alert" className="text-sm text-[#FF2EB3]">
+              <p id={errorId} role="alert" className="text-sm text-[#FF2E9A]">
                 {error}
               </p>
             )}

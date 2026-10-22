@@ -386,7 +386,7 @@ export default function CardTitlesStep({
       {showShortName && (
         // One answer for every card, set apart from the per-card fields
         // below by a rule down its left edge.
-        <section aria-labelledby={shortLeadId} className="border-l-2 border-[#00B7FF] pl-3">
+        <section aria-labelledby={shortLeadId} className="border-l-2 border-[#00C2FF] pl-3">
           <h3 id={shortLeadId} className="text-sm font-normal text-gray-200">
             {SHORT_LEAD}
           </h3>
@@ -437,7 +437,7 @@ export default function CardTitlesStep({
                   }}
                   aria-disabled={disabled || undefined}
                   // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
-                  className="-my-1 rounded py-1 leading-4 text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+                  className="-my-1 rounded py-1 leading-4 text-[#00C2FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
                 >
                   {USE_SUGGESTION}
                 </button>
@@ -450,7 +450,7 @@ export default function CardTitlesStep({
             id={shortStatusId}
             role="status"
             className={`mt-1 text-[11px] empty:hidden ${
-              shortCheck.error ? "text-[#FF2EB3]" : "text-gray-300"
+              shortCheck.error ? "text-[#FF2E9A]" : "text-gray-300"
             }`}
           >
             {shortStatus}
@@ -585,7 +585,7 @@ function CardList({
   return (
     <details className="text-xs text-gray-400">
       {/* py-1 -my-1: a 24px target (SC 2.5.8) without moving the line. */}
-      <summary className="-my-1 cursor-pointer rounded py-1 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]">
+      <summary className="-my-1 cursor-pointer rounded py-1 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]">
         <span className="tabular-nums">{cards.length}</span> cards
       </summary>
       <ul aria-label={`Cards for ${owner}`} className="mt-1 space-y-0.5 pl-3">
@@ -783,7 +783,7 @@ function TitleRow({
               aria-label={`${card.fitsNow ? USE_GENERATED : "Use trimmed title"} for ${label}`}
               aria-disabled={disabled || undefined}
               // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
-              className="-my-1 rounded py-1 leading-4 text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+              className="-my-1 rounded py-1 leading-4 text-[#00C2FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
             >
               {card.fitsNow ? USE_GENERATED : "Use trimmed title"}
             </button>
@@ -802,7 +802,7 @@ function TitleRow({
             an alert: the step never blocks, so nothing here stops work. Its
             text changes only when the title crosses the cap, so it speaks
             once per crossing rather than per keystroke. */}
-        <p id={alertId} role="status" className="mt-0.5 text-[11px] text-[#FF2EB3] empty:hidden">
+        <p id={alertId} role="status" className="mt-0.5 text-[11px] text-[#FF2E9A] empty:hidden">
           {over ? TITLE_OVER : ""}
         </p>
       </div>

@@ -515,7 +515,7 @@ export default function TeamsOnCardsSection({
         // Quiet and beside the work, not a banner: it is a shortcut for the
         // operator who has just counted thirty identical lines, and a
         // no-op for everyone else.
-        <p className="mt-1.5 border-l-2 border-[#00B7FF]/70 pl-2 text-xs text-gray-300">
+        <p className="mt-1.5 border-l-2 border-[#00C2FF]/70 pl-2 text-xs text-gray-300">
           {SET_TEAM_HINT}
         </p>
       )}
@@ -644,7 +644,7 @@ function TeamsLine({
             onKeyDown={(event) => activateOnEnter(event, () => setOpenState(!expanded))}
             className={[
               markerClass("cards"),
-              "-my-1 rounded py-1 text-left text-xs text-gray-400 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]",
+              "-my-1 rounded py-1 text-left text-xs text-gray-400 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]",
             ].join(" ")}
           >
             <span className="break-words tabular-nums">
@@ -713,7 +713,7 @@ function TeamsLine({
                     }
                     className={[
                       markerClass(`c${cardIdx}-own`),
-                      "-my-1 rounded py-1 text-xs text-gray-400 underline decoration-dotted underline-offset-2 hover:text-[#00B7FF] focus:outline-none focus-visible:text-[#00B7FF] focus-visible:ring-2 focus-visible:ring-[#00B7FF]",
+                      "-my-1 rounded py-1 text-xs text-gray-400 underline decoration-dotted underline-offset-2 hover:text-[#00C2FF] focus:outline-none focus-visible:text-[#00C2FF] focus-visible:ring-2 focus-visible:ring-[#00C2FF]",
                       disabled ? "cursor-not-allowed opacity-60" : "",
                     ].join(" ")}
                   >
@@ -896,7 +896,7 @@ function ChoiceRow({
                 // Shape says the kind of line: pills pick one, squared chips
                 // pick several.
                 multi && isTeam ? "rounded-md" : "rounded-full",
-                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
                 isTeam
                   ? checked
                     ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
@@ -947,19 +947,19 @@ function ChoiceRow({
         }
         className={[
           markerClass("other"),
-          "inline-flex items-center rounded-full px-2.5 py-1 text-xs text-[#00B7FF] underline decoration-dotted underline-offset-2",
-          "hover:text-[#5ED4FF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
+          "inline-flex items-center rounded-full px-2.5 py-1 text-xs text-[#00C2FF] underline decoration-dotted underline-offset-2",
+          "hover:text-[#5ED4FF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
           otherDisabled && !pickerOpen ? "cursor-not-allowed opacity-60" : "",
         ].join(" ")}
       >
         {OTHER_LABEL}
       </button>
       {atCap && (
-        <p id={capNoteId} className="w-full text-xs text-[#00B7FF]">
+        <p id={capNoteId} className="w-full text-xs text-[#00C2FF]">
           {CAP_NOTE}
         </p>
       )}
-      {anyBlocked && <p className="w-full text-xs text-[#FF2EB3]">{FOREIGN_NOTE}</p>}
+      {anyBlocked && <p className="w-full text-xs text-[#FF2E9A]">{FOREIGN_NOTE}</p>}
       {pickerOpen && sportId && (
         <OtherTeamPicker
           hostId={pickerHostId}

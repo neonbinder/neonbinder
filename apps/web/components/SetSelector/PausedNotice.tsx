@@ -107,7 +107,7 @@ export default function PausedNotice({ sites }: PausedNoticeProps) {
         aria-label={PAUSE_NOTICE_COPY.strip.dismissLabel}
         // px-2 py-1.5 keeps the target at or above WCAG 2.5.8's 24px minimum,
         // as ReauthNotice's Dismiss does.
-        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00B7FF] rounded px-2 py-1.5"
+        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded px-2 py-1.5"
       >
         {PAUSE_NOTICE_COPY.strip.dismiss}
       </button>

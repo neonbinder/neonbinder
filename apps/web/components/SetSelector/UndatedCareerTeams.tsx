@@ -218,7 +218,7 @@ export default function UndatedCareerTeams({
                   }}
                   // p-1 -m-1 grows the tap target to the WCAG 2.2 SC 2.5.8
                   // floor without shifting the text — the app's convention.
-                  className="shrink-0 rounded p-1 -m-1 text-xs text-[#00B7FF] underline decoration-dotted transition-colors hover:text-[#00D558] focus:text-[#00D558] focus:outline-none focus:ring-2 focus:ring-[#00B7FF] aria-disabled:opacity-40"
+                  className="shrink-0 rounded p-1 -m-1 text-xs text-[#00C2FF] underline decoration-dotted transition-colors hover:text-[#00D558] focus:text-[#00D558] focus:outline-none focus:ring-2 focus:ring-[#00C2FF] aria-disabled:opacity-40"
                 >
                   Add years
                 </button>
@@ -310,7 +310,7 @@ export default function UndatedCareerTeams({
                   type="button"
                   aria-label={`Cancel years for ${name}`}
                   onClick={close}
-                  className="rounded p-1 -m-1 text-xs text-gray-400 underline decoration-dotted transition-colors hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none focus:ring-2 focus:ring-[#FF2EB3]"
+                  className="rounded p-1 -m-1 text-xs text-gray-400 underline decoration-dotted transition-colors hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none focus:ring-2 focus:ring-[#FF2E9A]"
                 >
                   Cancel
                 </button>
@@ -318,7 +318,7 @@ export default function UndatedCareerTeams({
             )}
 
             {openFor === name && error && (
-              <p id={errorId} role="alert" className="mt-1 text-xs text-[#FF2EB3]">
+              <p id={errorId} role="alert" className="mt-1 text-xs text-[#FF2E9A]">
                 {error}
               </p>
             )}

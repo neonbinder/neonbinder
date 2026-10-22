@@ -204,7 +204,7 @@ export default function CopyButton({
         aria-label={copyLabel}
         // `p-2 -m-2`: grows the hit area to WCAG 2.5.8's 24px minimum without
         // shifting the layout around it.
-        className="text-sm text-neon-teal hover:text-neon-teal/80 underline p-2 -m-2 focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+        className="text-sm text-neon-teal hover:text-neon-teal/80 underline p-2 -m-2 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
       >
         {children}
       </button>

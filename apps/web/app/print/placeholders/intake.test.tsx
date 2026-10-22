@@ -565,9 +565,9 @@ describe("CardIntake", () => {
   it("is reachable — main.tsx mounts the intake page under /print, signed in", () => {
     // NEO-152 moved intake from the standalone /placeholders stopgap into the
     // Print Shop. This asserts the destination rather than the old route.
-    expect(mainSource).toContain('from "@/app/print/placeholders/page"');
+    expect(mainSource).toContain('import("@/app/print/placeholders/page")');
     expect(mainSource).toMatch(
-      /path="placeholders"\s+element=\{<PrintPlaceholders \/>\}/,
+      /path="placeholders"\s+element=\{<Deferred><PrintPlaceholders \/><\/Deferred>\}/,
     );
 
     // Inside ProtectedLayout's subtree, and NOT inside the AdminLayout block —

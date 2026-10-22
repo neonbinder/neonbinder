@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "./NeonButton";
@@ -383,7 +383,7 @@ export default function PublicProfileEditor() {
                 ) : usernameAvailable ? (
                   <span className="text-[#00C2FF]">available</span>
                 ) : (
-                  <span className="text-[#FF2EB3]">taken</span>
+                  <span className="text-[#FF2E9A]">taken</span>
                 )}
               </span>
             )}
@@ -443,11 +443,11 @@ export default function PublicProfileEditor() {
               type="file"
               accept="image/*"
               onChange={handlePhotoChange}
-              className="hidden"
+              className="peer sr-only"
             />
             <label
               htmlFor="pub-photo-input"
-              className="cursor-pointer px-4 py-2 rounded-md bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:bg-slate-700 transition-colors"
+              className="inline-block cursor-pointer px-4 py-2 rounded-md bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:bg-slate-700 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-neon-blue"
             >
               Choose photo
             </label>
@@ -690,75 +690,140 @@ export default function PublicProfileEditor() {
         )}
       </div>
 
-      {/* BSC Modal */}
       {showBscModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowBscModal(false)}>
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-slate-200 mb-3">Find Your BuySportsCards Seller URL</h3>
-            <p className="text-sm text-slate-400 mb-4">
-              To find your BuySportsCards seller URL:
-            </p>
-            <ol className="text-sm text-slate-400 space-y-2 mb-6 list-decimal list-inside">
-              <li>Visit BuySportsCards sellers page</li>
-              <li>Navigate to your seller profile</li>
-              <li>Click the &quot;Share Seller&quot; button</li>
-              <li>Copy the URL from the share dialog</li>
-              <li>Paste it into the field above</li>
-            </ol>
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  window.open("https://www.buysportscards.com/sellers", "_blank");
-                }}
-                className="flex-1 px-4 py-2 rounded-md bg-[#00C2FF] text-black font-medium hover:bg-[#00C2FF]/90 transition-colors"
-              >
-                Open BuySportsCards
-              </button>
-              <button
-                onClick={() => setShowBscModal(false)}
-                className="flex-1 px-4 py-2 rounded-md bg-slate-700 text-slate-200 font-medium hover:bg-slate-600 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <MarketplaceUrlHelpDialog
+          title="Find Your BuySportsCards Seller URL"
+          intro="To find your BuySportsCards seller URL:"
+          steps={[
+            "Visit BuySportsCards sellers page",
+            "Navigate to your seller profile",
+            'Click the "Share Seller" button',
+            "Copy the URL from the share dialog",
+            "Paste it into the field above",
+          ]}
+          openHref="https://www.buysportscards.com/sellers"
+          openLabel="Open BuySportsCards"
+          onClose={() => setShowBscModal(false)}
+        />
       )}
 
-      {/* MySlabs Modal */}
       {showMySlabsModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowMySlabsModal(false)}>
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-slate-200 mb-3">Find Your MySlabs URL</h3>
-            <p className="text-sm text-slate-400 mb-4">
-              To find your MySlabs URL:
-            </p>
-            <ol className="text-sm text-slate-400 space-y-2 mb-6 list-decimal list-inside">
-              <li>Go to your MySlabs account settings</li>
-              <li>Scroll to the bottom of the page</li>
-              <li>Find your profile URL</li>
-              <li>Copy the URL</li>
-              <li>Paste it into the field above</li>
-            </ol>
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  window.open("https://www.myslabs.com/account/", "_blank");
-                }}
-                className="flex-1 px-4 py-2 rounded-md bg-[#00C2FF] text-black font-medium hover:bg-[#00C2FF]/90 transition-colors"
-              >
-                Open MySlabs Account
-              </button>
-              <button
-                onClick={() => setShowMySlabsModal(false)}
-                className="flex-1 px-4 py-2 rounded-md bg-slate-700 text-slate-200 font-medium hover:bg-slate-600 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <MarketplaceUrlHelpDialog
+          title="Find Your MySlabs URL"
+          intro="To find your MySlabs URL:"
+          steps={[
+            "Go to your MySlabs account settings",
+            "Scroll to the bottom of the page",
+            "Find your profile URL",
+            "Copy the URL",
+            "Paste it into the field above",
+          ]}
+          openHref="https://www.myslabs.com/account/"
+          openLabel="Open MySlabs Account"
+          onClose={() => setShowMySlabsModal(false)}
+        />
       )}
+    </div>
+  );
+}
+
+interface MarketplaceUrlHelpDialogProps {
+  title: string;
+  intro: string;
+  steps: string[];
+  openHref: string;
+  openLabel: string;
+  onClose: () => void;
+}
+
+/**
+ * "Where do I find this URL?" help for the BSC and MySlabs fields.
+ *
+ * These were two plain fixed `<div>`s: no dialog role, no Escape, and focus
+ * stayed on the ? button behind the overlay, so a keyboard or screen-reader
+ * user opened something they could neither find nor dismiss (SC 2.4.3, 4.1.2).
+ * Same keyboard contract as `ConfirmDialog`: focus opens on Close, Escape
+ * closes, Tab is trapped, and focus returns to the opener.
+ */
+function MarketplaceUrlHelpDialog({
+  title,
+  intro,
+  steps,
+  openHref,
+  openLabel,
+  onClose,
+}: MarketplaceUrlHelpDialogProps) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    return () => {
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, []);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(
+      dialogRef.current?.querySelectorAll<HTMLElement>("a[href], button:not([disabled])") ?? [],
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <h3 id={titleId} className="text-lg font-semibold text-slate-200 mb-3">{title}</h3>
+        <p className="text-sm text-slate-400 mb-4">{intro}</p>
+        <ol className="text-sm text-slate-400 space-y-2 mb-6 list-decimal list-inside">
+          {steps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+        <div className="flex gap-3">
+          <a
+            href={openHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 inline-flex items-center justify-center text-center px-4 py-2 rounded-md bg-[#00C2FF] text-black font-medium hover:bg-[#00C2FF]/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          >
+            {openLabel}
+          </a>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            className="flex-1 px-4 py-2 rounded-md bg-slate-700 text-slate-200 font-medium hover:bg-slate-600 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

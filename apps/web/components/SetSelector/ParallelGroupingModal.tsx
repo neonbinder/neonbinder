@@ -14,7 +14,8 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -132,8 +133,8 @@ function DraggableRow({
   // that, dnd-kit accepts a Space/Enter bubbling up from any child, calls
   // preventDefault and starts a drag, so pressing Enter on ✕ or on the
   // select button picked the row up instead of pressing the button.
-  // Pointer taps on the inner buttons are unaffected: PointerSensor's
-  // activationConstraint needs 5px of movement before a drag starts.
+  // Taps on the inner buttons are unaffected: a drag needs 5px of mouse
+  // movement or a 180ms touch hold before it starts.
   return (
     <div
       ref={(el) => {
@@ -144,7 +145,7 @@ function DraggableRow({
       {...attributes}
       aria-labelledby={nameId}
       style={{ opacity: isDragging || isRidingAlong ? 0.4 : 1 }}
-      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF] ${baseClass} ${
+      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF] ${baseClass} ${
         isMovable ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       }`}
     >
@@ -268,7 +269,7 @@ function DropZone({
       onClick={isClickTarget ? onClick : undefined}
       className={`rounded-lg border-2 transition-colors ${
         isOver
-          ? "border-[#00B7FF] bg-[#00B7FF]/5"
+          ? "border-[#00C2FF] bg-[#00C2FF]/5"
           : highlight
             ? "border-yellow-600/50 bg-yellow-900/5"
             : "border-gray-700 bg-gray-900/30"
@@ -559,8 +560,12 @@ export default function ParallelGroupingModal({
     [childrenByParent],
   );
 
+  // Mouse and touch, not PointerSensor: a touch drag starts on a 180ms hold,
+  // so a swipe still scrolls the list and a tap still clicks. PointerSensor
+  // lost every touch drag to the browser's own scroll (no `touch-action`).
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
     useSensor(KeyboardSensor),
   );
 
@@ -602,6 +607,14 @@ export default function ParallelGroupingModal({
 
   const handleDragStart = useCallback((e: DragStartEvent) => {
     setActiveDragId(e.active.id as string);
+  }, []);
+
+  // A drag cancelled by Escape or a pointercancel (a touch scroll, a tab
+  // switch) never reaches `onDragEnd`. Without this the carried rows stayed
+  // dimmed and the Escape guard below kept treating every later Escape as
+  // "cancel the drag", so the dialog stopped closing until another drag ran.
+  const handleDragCancel = useCallback(() => {
+    setActiveDragId(null);
   }, []);
 
   const handleDragEnd = useCallback(
@@ -1052,6 +1065,7 @@ export default function ParallelGroupingModal({
               collisionDetection={keyboardAwareCollision}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
             >
               <div className="space-y-4">
                 {/* Top-level / Ungrouped pool */}
@@ -1150,7 +1164,7 @@ export default function ParallelGroupingModal({
                       </div>
                     </div>
                   ) : (
-                    <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
+                    <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
                       <span className="text-gray-200">{activeDragValue}</span>
                     </div>
                   ))}

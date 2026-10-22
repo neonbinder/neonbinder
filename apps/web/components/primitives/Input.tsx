@@ -331,7 +331,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         {(helperText || error) && (
           <p
             id={messageId}
-            className={`text-sm ${error ? "text-[#FF2EB3]" : "text-slate-400"}`}
+            className={`text-sm ${error ? "text-[#FF2E9A]" : "text-slate-400"}`}
           >
             {error || helperText}
           </p>

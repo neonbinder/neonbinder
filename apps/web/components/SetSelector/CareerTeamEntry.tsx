@@ -499,7 +499,7 @@ export default function CareerTeamEntry({
           <button
             type="button"
             onClick={() => pickSuggestion(didYouMean)}
-            className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+            className="text-[#00C2FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
           >
             Did you mean {didYouMean}?
           </button>

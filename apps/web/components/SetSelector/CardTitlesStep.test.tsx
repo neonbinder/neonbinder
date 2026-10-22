@@ -353,7 +353,7 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
-    expect(meter.parentElement?.className).toContain("text-[#FF2EB3]");
+    expect(meter.parentElement?.className).toContain("text-[#FF2E9A]");
     expect(screen.getByText("4 over")).toBeTruthy();
   });
 });

@@ -976,6 +976,17 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
     expect(popover().style.left).toBe("12px");
   });
 
+  it("does not re-measure when only the popover scrolls inside itself", () => {
+    renderInScrollBox();
+    const rect = anchorAt(120, 40);
+    openPopover();
+    expect(popover().style.top).toBe("120px");
+
+    rect.mockReturnValue({ bottom: 60, left: 40, top: 40 } as DOMRect);
+    fireEvent.scroll(popover());
+    expect(popover().style.top).toBe("120px");
+  });
+
   it("Tab from the trigger moves into the popover", () => {
     renderInScrollBox();
     openPopover();

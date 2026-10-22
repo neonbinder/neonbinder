@@ -88,7 +88,7 @@ export default function AdminSetBuilderPage() {
         <h2
           id="set-builder-heading"
           tabIndex={-1}
-          className="text-lg font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+          className="text-lg font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
         >
           Set Builder
         </h2>

@@ -108,7 +108,7 @@ const jsxA11yHouseRules = {
     // Field controls are the shared primitives (`<Input bare>` etc. — see
     // NEO-44 above) and the pickers, not raw <input>s, so tell the rule which
     // components count as controls. `depth` covers labels whose text sits in
-    // a <span> inside the label (print-run's radio cards). The three files
+    // a <span> inside the label (print-run's radio cards). The two files
     // exempted in the block below use a different, documented pattern.
     "jsx-a11y/label-has-associated-control": [
       "error",
@@ -120,7 +120,6 @@ const jsxA11yHouseRules = {
           "PlayerAutocomplete",
           "PlayerPicker",
           "TeamPicker",
-          "SearchableDropdown",
         ],
         depth: 5,
       },
@@ -162,7 +161,7 @@ const jsxA11yHouseRules = {
  * field's `id` in place of its aria-label as the selector handle — see the
  * "Variation of" note in CardDetailPanel.tsx. The Playwright suite has no such
  * constraint. The rule-compliant cleanup is to demote those captions to
- * <span>/<div>, a markup change across three files tracked separately (NEO-259
+ * <span>/<div>, a markup change across two files tracked separately (NEO-259
  * report).
  * Until then the rule is off for exactly these files; it stays on everywhere
  * else so new forms are held to it.
@@ -171,7 +170,6 @@ const visualCaptionLabels = {
   files: [
     "components/SetSelector/CardDetailPanel.tsx",
     "components/SetSelector/CardChecklist.tsx",
-    "components/SetSelector/CardForm.tsx",
   ],
   plugins: jsxA11y.flatConfigs.recommended.plugins,
   rules: {

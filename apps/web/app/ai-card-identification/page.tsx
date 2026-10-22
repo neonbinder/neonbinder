@@ -15,7 +15,7 @@ export default function AiCardIdentificationPage() {
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="w-20" />
@@ -25,7 +25,7 @@ export default function AiCardIdentificationPage() {
         <div className="max-w-5xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-purple to-neon-blue">
+            <h1 className="text-5xl font-bold mb-4 text-neon-purple-text">
               Identify Cards Like a Pro
             </h1>
             <p className="text-xl text-slate-400 mb-8">
@@ -71,21 +71,21 @@ export default function AiCardIdentificationPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Lightning-Fast Speed</h4>
+                    <h3 className="font-semibold text-slate-300">Lightning-Fast Speed</h3>
                     <p>Millisecond identification. No lag, no delays, totally rad.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Zero Manual Work</h4>
+                    <h3 className="font-semibold text-slate-300">Zero Manual Work</h3>
                     <p>No hunting through databases or typing data. The AI handles it all.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Insane Accuracy</h4>
+                    <h3 className="font-semibold text-slate-300">Insane Accuracy</h3>
                     <p>Gets it right almost every time. Sick recognition tech you&apos;ll love.</p>
                   </div>
                 </div>
@@ -133,21 +133,21 @@ export default function AiCardIdentificationPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">All the Details</h4>
+                    <h3 className="font-semibold text-slate-300">All the Details</h3>
                     <p>Player, set, year, condition, rarity — everything extracted automatically.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Zero Manual Entry</h4>
+                    <h3 className="font-semibold text-slate-300">Zero Manual Entry</h3>
                     <p>No typing. No searching. The AI does all the work for you.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Complete Records</h4>
+                    <h3 className="font-semibold text-slate-300">Complete Records</h3>
                     <p>Every card gets a full profile with all relevant information.</p>
                   </div>
                 </div>
@@ -192,21 +192,21 @@ export default function AiCardIdentificationPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Highly Accurate</h4>
+                    <h3 className="font-semibold text-slate-300">Highly Accurate</h3>
                     <p>99%+ accuracy on card identification. That&apos;s rad precision.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Manual Verification</h4>
+                    <h3 className="font-semibold text-slate-300">Manual Verification</h3>
                     <p>Review and verify every ID before it&apos;s added to your collection.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-yellow font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Easy Corrections</h4>
+                    <h3 className="font-semibold text-slate-300">Easy Corrections</h3>
                     <p>Spot an error? Fix it with one click. Your collection, your rules.</p>
                   </div>
                 </div>
@@ -252,21 +252,21 @@ export default function AiCardIdentificationPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Learns From You</h4>
+                    <h3 className="font-semibold text-slate-300">Learns From You</h3>
                     <p>Every correction improves the system for future identifications.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Gets Better Over Time</h4>
+                    <h3 className="font-semibold text-slate-300">Gets Better Over Time</h3>
                     <p>The more you use it, the smarter it becomes. Totally rad improvement.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-pink font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Adaptive AI</h4>
+                    <h3 className="font-semibold text-slate-300">Adaptive AI</h3>
                     <p>The system adapts to your collection style and preferences.</p>
                   </div>
                 </div>

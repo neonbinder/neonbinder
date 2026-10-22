@@ -286,7 +286,7 @@ export default function CardChecklistItem({
         isVariation ? "ml-8 border-l-2 border-l-gray-300 dark:border-l-gray-500" : ""
       } ${
         isSelected
-          ? "ring-2 ring-[#00B7FF] border-[#00B7FF] bg-blue-50/40 dark:bg-blue-900/10"
+          ? "ring-2 ring-[#00C2FF] border-[#00C2FF] bg-blue-50/40 dark:bg-blue-900/10"
           : ""
       }`}
     >
@@ -318,7 +318,7 @@ export default function CardChecklistItem({
                 ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
                 : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
             }
-            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
           >
             <span aria-hidden="true" className="text-xs">
               {isExpanded ? "▾" : "▸"}
@@ -418,7 +418,7 @@ export default function CardChecklistItem({
             badge entirely and the row would look like an ordinary card. */}
         {isCrossListed && (
           <span
-            className="text-xs px-1.5 py-0.5 rounded bg-[#00B7FF]/10 text-[#00B7FF] border border-[#00B7FF]/50"
+            className="text-xs px-1.5 py-0.5 rounded bg-[#00C2FF]/10 text-[#00C2FF] border border-[#00C2FF]/50"
             title={`Cross-release card — physically printed in ${card.homeSetLabel || "another set"}, but it completes this set's checklist.`}
           >
             ↗ {card.homeSetLabel || "another set"}
@@ -445,7 +445,8 @@ export default function CardChecklistItem({
           but the edit panel never opened. Always-on also keeps the
           flow keyboard-accessible (feedback_keyboard_navigation).
           Subtle text-only buttons stay visually quiet enough not
-          to clutter the row. */}
+          to clutter the row. They are drawn ~20px tall; `hit-area-24`
+          takes taps across 24px without making the row any taller. */}
       <div className="flex gap-1 shrink-0">
         <button
           onClick={(e) => {
@@ -453,7 +454,7 @@ export default function CardChecklistItem({
             onEdit(card._id);
           }}
           aria-label={`Edit card ${cardIdentity}`}
-          className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
+          className="hit-area-24 px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
           title="Edit"
         >
           Edit
@@ -469,7 +470,7 @@ export default function CardChecklistItem({
                 ? `Confirm remove card ${cardIdentity} from this set`
                 : `Confirm delete card ${cardIdentity}`
             }
-            className="px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
           >
             Confirm?
           </button>
@@ -485,7 +486,7 @@ export default function CardChecklistItem({
                 ? `Remove card ${cardIdentity} from this set`
                 : `Delete card ${cardIdentity}`
             }
-            className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
             title={
               isCrossListed
                 ? "Remove from this set — the card stays in the set it was printed in"

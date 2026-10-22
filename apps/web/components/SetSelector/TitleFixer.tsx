@@ -130,7 +130,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   return (
     <div className="space-y-3">
       {error && (
-        <p role="alert" className="text-xs text-[#FF2EB3]">
+        <p role="alert" className="text-xs text-[#FF2E9A]">
           {error}
         </p>
       )}
@@ -175,7 +175,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               }
               // a11y (2.5.8): min-h-6 lifts the 15px label line to a 24px
               // target; the 10px caption type stays as it was.
-              className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#00B7FF] underline decoration-dotted focus:outline-none focus:ring-1 focus:ring-[#00B7FF] hover:text-white"
+              className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#00C2FF] underline decoration-dotted focus:outline-none focus:ring-1 focus:ring-[#00C2FF] hover:text-white"
             >
               {preview.loading
                 ? "Rebuilding…"
@@ -228,7 +228,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             id={`${uid}-regen-confirm`}
             role="status"
             aria-atomic="true"
-            className="mt-1 text-[10px] text-[#00B7FF]"
+            className="mt-1 text-[10px] text-[#00C2FF]"
           >
             Regenerate again to replace the title you have typed.
           </p>

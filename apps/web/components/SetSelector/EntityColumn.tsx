@@ -1473,7 +1473,7 @@ export default function EntityColumn({
         aria-label={`${suggestions.length} name${
           suggestions.length === 1 ? "" : "s"
         } to check — review suggestions`}
-        className="text-xs px-2.5 py-1 rounded-full border border-amber-700 dark:border-amber-400/70 bg-amber-400/15 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-[#00B7FF]"
+        className="text-xs px-2.5 py-1 rounded-full border border-amber-700 dark:border-amber-400/70 bg-amber-400/15 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
       >
         {suggestions.length} name{suggestions.length === 1 ? "" : "s"} to check
       </button>

@@ -696,7 +696,7 @@ export default function VariantForm({
                   role={isError ? "alert" : "status"}
                   className={
                     isError
-                      ? "p-3 mb-4 bg-[#FF2EB3]/10 border border-[#FF2EB3] rounded-md text-[#FF2EB3] text-sm"
+                      ? "p-3 mb-4 bg-[#FF2E9A]/10 border border-[#FF2E9A] rounded-md text-[#FF2E9A] text-sm"
                       : "p-3 mb-4 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm"
                   }
                 >

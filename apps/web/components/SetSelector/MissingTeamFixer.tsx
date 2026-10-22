@@ -66,7 +66,7 @@ import {
  *   focused button — a chip toggles), so a chip or the picker is never a
  *   dead end for a keyboard user who has made their pick.
  * - **Colour carries role, not decoration.** Green is a chosen/confirmed
- *   team, blue (#00B7FF) is provenance and the "no team" affirmative, and
+ *   team, blue (#00C2FF) is provenance and the "no team" affirmative, and
  *   pink never appears here — that is Cancel's colour, and recording "no
  *   team" is an answer, not an abandonment.
  */
@@ -295,14 +295,14 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             if (blocked) return;
             toggleChip(chip.teamId);
           }}
-          className={`rounded-full border px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#00B7FF] ${
+          className={`rounded-full border px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#00C2FF] ${
             on
               ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558]"
-              : "border-gray-700 bg-gray-800 text-gray-200 hover:border-[#00B7FF] hover:text-[#00B7FF]"
+              : "border-gray-700 bg-gray-800 text-gray-200 hover:border-[#00C2FF] hover:text-[#00C2FF]"
           } ${blocked ? "opacity-40" : ""}`}
         >
           {chip.label}
-          {opts.suffix && <span className="text-[#00B7FF]">{opts.suffix}</span>}
+          {opts.suffix && <span className="text-[#00C2FF]">{opts.suffix}</span>}
         </button>
       </li>
     );
@@ -409,7 +409,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
       }}
     >
       {error && (
-        <p role="alert" className="text-xs text-[#FF2EB3]">
+        <p role="alert" className="text-xs text-[#FF2E9A]">
           {error}
         </p>
       )}
@@ -434,7 +434,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
                 agrees. The listing's string is plain text, never an anchor or
                 a `title` (untrusted content on an admin screen, the same rule
                 as the card name). */}
-            <p id="attention-team-marketplace" className="text-xs text-[#00B7FF]">
+            <p id="attention-team-marketplace" className="text-xs text-[#00C2FF]">
               {marketplaceHeading(bscName, marketplaceChips.length, marketplaceChips.some((chip) => preselect.includes(chip.teamId)))}
             </p>
             <ul className="flex flex-wrap gap-1.5" aria-labelledby="attention-team-marketplace">
@@ -452,7 +452,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
 
         {careerChips.length > 0 && (
           <div className="space-y-1">
-            <p id="attention-team-suggestions" className="text-xs text-[#00B7FF]">
+            <p id="attention-team-suggestions" className="text-xs text-[#00C2FF]">
               {careerHeading(
                 careerChips.some((chip) => chip.inSetYear),
                 bscDisagrees,
@@ -532,7 +532,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           disabled={busy}
         />
         {atCap && (
-          <p id="attention-team-cap" role="status" className="text-xs text-[#00B7FF]">
+          <p id="attention-team-cap" role="status" className="text-xs text-[#00C2FF]">
             That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to
             add another.
           </p>

@@ -3053,13 +3053,13 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
     );
     const edit = screen.getByRole("button", { name: "Edit attributes" });
     expect(edit.textContent).toBe("Edit attributes ▾");
-    for (const cls of ["py-1", "focus-visible:ring-2", "focus-visible:ring-[#00B7FF]"]) {
+    for (const cls of ["py-1", "focus-visible:ring-2", "focus-visible:ring-[#00C2FF]"]) {
       expect(edit.classList.contains(cls)).toBe(true);
     }
     fireEvent.click(edit);
     const hide = screen.getByRole("button", { name: "Hide attributes" });
     expect(hide.textContent).toBe("Hide attributes ▴");
-    expect(hide.classList.contains("focus-visible:ring-[#00B7FF]")).toBe(true);
+    expect(hide.classList.contains("focus-visible:ring-[#00C2FF]")).toBe(true);
   });
 
   it("Enter on Edit attributes / Hide attributes toggles the panel, once (maestro's synthetic Enter)", () => {
@@ -3101,7 +3101,7 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
         "min-h-6",
         "text-gray-500",
         "focus-visible:ring-2",
-        "focus-visible:ring-[#00B7FF]",
+        "focus-visible:ring-[#00C2FF]",
       ]) {
         expect(el.classList.contains(cls)).toBe(true);
       }

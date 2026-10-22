@@ -421,7 +421,7 @@ export default function NewLeagueForm({
         // announced. The footer's primary is separately blocked on the same
         // check, so this explains a button that will not fire rather than
         // being the only signal.
-        <p role="alert" className="text-sm text-[#FF2EB3]">
+        <p role="alert" className="text-sm text-[#FF2E9A]">
           {error}
         </p>
       )}

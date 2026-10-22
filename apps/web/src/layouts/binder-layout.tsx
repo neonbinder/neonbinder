@@ -42,8 +42,7 @@ import MobileNav from "@/components/modules/mobile-nav";
  * WHY HERE AND NOT ON <body>. `main` is `flex-1` inside a `min-h-screen`
  * column, so this spacer only lengthens the document once real content comes
  * within 208px of filling the fold — a page shorter than that still does not
- * scroll and gains no scrollbar. It also sits OUTSIDE the view-transition
- * element below, so the `page-content` snapshot box is unchanged.
+ * scroll and gains no scrollbar.
  */
 export default function BinderLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -64,10 +63,7 @@ export default function BinderLayout() {
             min-width:auto pins main to its widest child, the document scrolls
             horizontally, and a deep column slides under the fixed nav (NEO-63). */}
         <main className="flex-1 min-w-0 lg:pr-[170px]">
-          <div
-            className="max-w-6xl mx-auto p-6"
-            style={{ viewTransitionName: "page-content" }}
-          >
+          <div className="max-w-6xl mx-auto p-6">
             <Outlet />
           </div>
           {/* Scroll headroom — read the SCROLL HEADROOM note on this component

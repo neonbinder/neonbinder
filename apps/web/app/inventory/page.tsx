@@ -5,7 +5,7 @@ export default function InventoryPage() {
     <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-6">
       <ArchiveBoxIcon className="w-16 h-16 text-neon-yellow mb-6" />
       <h1
-        className="text-4xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-yellow to-neon-green"
+        className="text-4xl font-bold mb-4 text-neon-yellow"
         style={{ fontFamily: "'Lexend', sans-serif" }}
       >
         Your Inventory

@@ -475,8 +475,8 @@ function PickerTrigger({
       inert={inert || undefined}
       onClick={activate}
       onKeyDown={(e) => activateOnEnter(e, activate, disabled)}
-      className={`flex w-full min-h-8 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${
-        open ? "border-[#00B7FF]" : "border-slate-500 hover:border-slate-300"
+      className={`flex w-full min-h-8 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${
+        open ? "border-[#00C2FF]" : "border-slate-500 hover:border-slate-300"
       } ${muted ? "text-slate-400" : "text-gray-100"}`}
     >
       <span className="min-w-0 truncate">{text}</span>
@@ -548,7 +548,7 @@ function PickerList({
             onClick={() => onPick(option.key)}
             onKeyDown={(e) => activateOnEnter(e, () => onPick(option.key))}
             // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum.
-            className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+            className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
               option.current
                 ? "border-[#00D558] text-[#00D558]"
                 : "border-transparent text-gray-200 hover:border-slate-500"
@@ -591,7 +591,7 @@ function TickBox({
       aria-label={label}
       onClick={onToggle}
       onKeyDown={(e) => activateOnEnter(e, onToggle)}
-      className="group/tick flex h-8 w-8 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+      className="group/tick flex h-8 w-8 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
     >
       <span
         aria-hidden="true"
@@ -719,7 +719,7 @@ function NameField({
         aria-describedby={describedBy}
         // `aria-invalid:` (class + attribute) outranks the primitive's own
         // border class without an !important.
-        className="min-w-0 flex-1 rounded-md px-2 py-1 text-sm aria-invalid:border-[#FF2EB3]"
+        className="min-w-0 flex-1 rounded-md px-2 py-1 text-sm aria-invalid:border-[#FF2E9A]"
       />
     </label>
   );
@@ -832,14 +832,14 @@ function ReviewRow({
       reason = <span className="text-slate-400">{slReviewCopy.syncing(setLabel)}</span>;
     } else if (failed) {
       reason = (
-        <span className="flex flex-wrap items-center gap-2 text-[#FF2EB3]">
+        <span className="flex flex-wrap items-center gap-2 text-[#FF2E9A]">
           {slReviewCopy.syncFailed(setLabel)}
           <button
             type="button"
             aria-label={slReviewCopy.retryLabel(setLabel)}
             onClick={() => onRetry(setId)}
             onKeyDown={(e) => activateOnEnter(e, () => onRetry(setId))}
-            className="min-h-6 rounded border border-slate-500 px-2 text-xs text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+            className="min-h-6 rounded border border-slate-500 px-2 text-xs text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
           >
             {slReviewCopy.retry}
           </button>
@@ -892,13 +892,13 @@ function ReviewRow({
           // NEO-325 — the clash in words beside the field, not by its pink
           // border alone; the footer sentence says which name and why Save
           // waits.
-          <p id={clashLineId} className="text-xs text-[#FF2EB3]">
+          <p id={clashLineId} className="text-xs text-[#FF2E9A]">
             {TITLE_CLASH_ROW_LINE}{" "}
             <span className="text-slate-400">{RENAME_TIP}</span>
           </p>
         )}
         {refusal && (
-          <p id={refusalId} className="text-xs text-[#FF2EB3]">
+          <p id={refusalId} className="text-xs text-[#FF2E9A]">
             {refusedReasonText(refusal)}
           </p>
         )}
@@ -1050,14 +1050,14 @@ function BulkBar({
   const status: ReactNode = !setId ? null : phase === "syncing" ? (
     <span className="text-slate-400">{slReviewCopy.syncing(setLabel)}</span>
   ) : failed ? (
-    <span className="flex flex-wrap items-center gap-2 text-[#FF2EB3]">
+    <span className="flex flex-wrap items-center gap-2 text-[#FF2E9A]">
       {slReviewCopy.syncFailed(setLabel)}
       <button
         type="button"
         aria-label={slReviewCopy.retryLabel(setLabel)}
         onClick={() => onRetry(setId)}
         onKeyDown={(e) => activateOnEnter(e, () => onRetry(setId))}
-        className="min-h-6 rounded border border-slate-500 px-2 text-xs text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+        className="min-h-6 rounded border border-slate-500 px-2 text-xs text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
       >
         {slReviewCopy.retry}
       </button>
@@ -1889,7 +1889,7 @@ export default function SlSetReviewModal({
               {/* NEO-325 — why Save is unavailable while two lines share a
                   name. Always mounted, so the region exists before a clash
                   fills it (polite: it can appear as the operator types). */}
-              <div role="status" className="flex flex-col gap-0.5 text-xs text-[#FF2EB3]">
+              <div role="status" className="flex flex-col gap-0.5 text-xs text-[#FF2E9A]">
                 {nameClashes.map((clash, index) => (
                   <p key={clash.key} id={nameClashIdOf(index)}>
                     {titleClashMessage(clash)}
@@ -1898,7 +1898,7 @@ export default function SlSetReviewModal({
               </div>
               {outcome && <p className="text-xs text-amber-300">{outcome}</p>}
               {error && (
-                <p id={errorId} role="alert" className="text-xs text-[#FF2EB3]">
+                <p id={errorId} role="alert" className="text-xs text-[#FF2E9A]">
                   {error}
                 </p>
               )}

@@ -7,7 +7,7 @@
  * being invented under the wrong row, so it is worth pinning directly.
  */
 
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   act,
   fireEvent,
@@ -4544,5 +4544,72 @@ describe("CardPairingModal — BSC's raw team value rides to the commit (NEO-335
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     const [card] = onConfirm.mock.calls[0][0].cards as PairingCard[];
     expect("rawTeamName" in card).toBe(false);
+  });
+});
+
+/**
+ * Drag sensors (MouseSensor distance 5, replacing PointerSensor): a press on
+ * a row only becomes a drag after 5px of mouse movement, so the row's own
+ * Select button still gets its click.
+ */
+describe("CardPairingModal — mouse drag activation", () => {
+  const rowFor = (labelText: string) =>
+    screen.getByLabelText(labelText).closest("li") as HTMLLIElement;
+  const LABEL = "Select BSC card #1 Griffey";
+  const press = () =>
+    fireEvent.mouseDown(screen.getByLabelText(LABEL), {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+    });
+
+  // dnd-kit swallows clicks for 50ms after a drag ends; wait it out.
+  afterEach(async () => {
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+      fireEvent.mouseUp(document);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+  });
+
+  const cards = () =>
+    renderModal({
+      unmatchedBsc: [bscCard("1", "Griffey")],
+      unmatchedSl: [slCard("A1", "Griffey")],
+    });
+
+  test("a press and release without movement is a click: it selects, no drag", () => {
+    cards();
+    act(() => {
+      press();
+      fireEvent.mouseUp(document, { clientX: 10, clientY: 10 });
+    });
+    fireEvent.click(screen.getByLabelText(LABEL));
+    expect(
+      screen.getByLabelText("#1 Griffey, selected. Press to deselect."),
+    ).toBeTruthy();
+    expect(rowFor("#1 Griffey, selected. Press to deselect.").className).not.toContain(
+      "opacity-40",
+    );
+  });
+
+  test("moving the mouse 4px does not start a drag", () => {
+    cards();
+    act(() => {
+      press();
+      fireEvent.mouseMove(document, { clientX: 14, clientY: 10 });
+    });
+    expect(rowFor(LABEL).className).not.toContain("opacity-40");
+  });
+
+  test("moving the mouse 6px starts a drag, and the row dims", () => {
+    cards();
+    act(() => {
+      press();
+      fireEvent.mouseMove(document, { clientX: 16, clientY: 10 });
+    });
+    expect(rowFor(LABEL).className).toContain("opacity-40");
   });
 });

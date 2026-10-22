@@ -19,8 +19,8 @@
  * judgement about our catalogue, not about the marketplaces.
  */
 
-import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
@@ -1048,5 +1048,48 @@ describe("ReconciliationModal — caller-held ids stay out of Ready (NEO-312)", 
     )!;
     expect(blue.platformData.bsc).toEqual(["bsc-blue"]);
     expect(blue.platformData.sportlots).toEqual(["sl-blue"]);
+  });
+});
+
+/**
+ * Drag sensors (MouseSensor distance 5, replacing PointerSensor): a press on
+ * a row's handle only becomes a drag after 5px of mouse movement.
+ */
+describe("ReconciliationModal — mouse drag activation", () => {
+  const handle = () => screen.getByText(BSC_S1.value).parentElement!;
+  const row = () => handle().parentElement!;
+  const press = () =>
+    fireEvent.mouseDown(handle(), { button: 0, clientX: 10, clientY: 10 });
+
+  // dnd-kit swallows clicks for 50ms after a drag ends; wait it out.
+  afterEach(async () => {
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+      fireEvent.mouseUp(document);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+  });
+
+  test("moving the mouse 4px does not start a drag", () => {
+    renderModal(allPending());
+    const draggedRow = row();
+    act(() => {
+      press();
+      fireEvent.mouseMove(document, { clientX: 14, clientY: 10 });
+    });
+    expect(draggedRow.style.opacity).toBe("1");
+  });
+
+  test("moving the mouse 6px starts a drag, and the row dims", () => {
+    renderModal(allPending());
+    // Held before the drag: the overlay adds a second copy of the name.
+    const draggedRow = row();
+    act(() => {
+      press();
+      fireEvent.mouseMove(document, { clientX: 16, clientY: 10 });
+    });
+    expect(draggedRow.style.opacity).toBe("0.4");
   });
 });

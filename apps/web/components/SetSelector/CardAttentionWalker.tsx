@@ -568,7 +568,7 @@ export default function CardAttentionWalker({
                   // "Skip for now" matches. py-2 -my-2: a 24px target (2.5.8)
                   // without moving the footer.
                   aria-label={`Skip for now, card ${current.cardNumber}`}
-                  className="-my-2 py-2 text-xs text-gray-400 underline decoration-dotted focus:text-[#00B7FF] focus:outline-none hover:text-[#00B7FF]"
+                  className="-my-2 py-2 text-xs text-gray-400 underline decoration-dotted focus:text-[#00C2FF] focus:outline-none hover:text-[#00C2FF]"
                 >
                   Skip for now
                 </button>

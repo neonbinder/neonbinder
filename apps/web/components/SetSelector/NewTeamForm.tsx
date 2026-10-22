@@ -969,7 +969,7 @@ export default function NewTeamForm({
             <button
               type="button"
               onClick={closeNewLeague}
-              className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+              className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
             >
               Cancel
             </button>

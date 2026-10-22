@@ -5733,7 +5733,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     const status = screen.getByText("needs a team decision");
     // The cancel colour, because this is the thing standing between the
     // operator and the primary.
-    expect(status.className).toContain("#FF2EB3");
+    expect(status.className).toContain("#FF2E9A");
 
     const primary = screen.getByRole("button", { name: "Add as New Player" });
     expect(primary.getAttribute("aria-disabled")).toBe("true");
@@ -9359,7 +9359,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       const cls = pickHeading()!.className;
       expect(cls).toContain("focus:outline-none");
       expect(cls).toContain("focus-visible:ring-1");
-      expect(cls).toContain("focus-visible:ring-[#00B7FF]/70");
+      expect(cls).toContain("focus-visible:ring-[#00C2FF]/70");
     });
   });
 

@@ -75,7 +75,7 @@ export default function CardDrawer({
           onClick={onClose}
           aria-label="Close card detail"
           title="Close (Esc)"
-          className={`${nav} text-lg hover:text-[#FF2EB3]`}
+          className={`${nav} text-lg hover:text-[#FF2E9A]`}
         >
           ×
         </button>

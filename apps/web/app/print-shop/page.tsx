@@ -29,7 +29,7 @@ export default function PrintShopPage() {
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="w-20" />
@@ -39,7 +39,7 @@ export default function PrintShopPage() {
         <div className="max-w-5xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-teal to-neon-green">
+            <h1 className="text-5xl font-bold mb-4 text-neon-teal">
               The Print Shop
             </h1>
             <p className="text-xl text-slate-400 mb-8">
@@ -104,21 +104,21 @@ export default function PrintShopPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-teal font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Team Colors, Automatic</h4>
+                    <h3 className="font-semibold text-slate-300">Team Colors, Automatic</h3>
                     <p>Search a player and their team&apos;s real colorway fills in. Switch teams with one tap, or enter any colors yourself.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-teal font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Eleven Athletic Typefaces</h4>
+                    <h3 className="font-semibold text-slate-300">Eleven Athletic Typefaces</h3>
                     <p>Jersey-block, varsity, and card-shop fonts. Long names auto-shrink to fit instead of getting chopped.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-teal font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Any Binder, Any Size</h4>
+                    <h3 className="font-semibold text-slate-300">Any Binder, Any Size</h3>
                     <p>1&quot;, 2&quot;, and 3&quot; ring presets or your own width — and one sheet can mix sizes and fonts, packed to waste as little paper as possible.</p>
                   </div>
                 </div>
@@ -180,21 +180,21 @@ export default function PrintShopPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Scan, Drop, Done</h4>
+                    <h3 className="font-semibold text-slate-300">Scan, Drop, Done</h3>
                     <p>One drop zone takes loose photos or a whole zip. Cropping and straightening are automatic.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Fronts Meet Their Backs</h4>
+                    <h3 className="font-semibold text-slate-300">Fronts Meet Their Backs</h3>
                     <p>Cards pair up automatically as they&apos;re read, and you can fix any pairing with two clicks while the rest keep processing.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-green font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">One Sheet, One Page</h4>
+                    <h3 className="font-semibold text-slate-300">One Sheet, One Page</h3>
                     <p>Nine true-size cards per sheet on Letter or A4 — print the backs too and the placeholders are double-sided, just like the real thing.</p>
                   </div>
                 </div>
@@ -246,21 +246,21 @@ export default function PrintShopPage() {
                 <div className="flex items-start gap-3">
                   <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">No Special Printer</h4>
+                    <h3 className="font-semibold text-slate-300">No Special Printer</h3>
                     <p>Plain paper for spine labels, cardstock if you&apos;re fancy. Any printer that takes Letter or A4.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">True To Size</h4>
+                    <h3 className="font-semibold text-slate-300">True To Size</h3>
                     <p>Placeholders print at exactly 2.5&quot; × 3.5&quot; and labels at your binder&apos;s exact width — no shrink-to-fit surprises.</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-neon-purple-text font-bold text-xl">▸</span>
                   <div>
-                    <h4 className="font-semibold text-slate-300">Cut Guides Included</h4>
+                    <h3 className="font-semibold text-slate-300">Cut Guides Included</h3>
                     <p>Corner ticks sit inside the cut line, so the guides end up in the scrap pile — not on your label.</p>
                   </div>
                 </div>

@@ -202,7 +202,7 @@ export function BinderFinderPattern({
         y={y + unit * 2}
         width={unit * 3}
         height={unit * 3}
-        fill="#00B7FF"
+        fill="#00C2FF"
       />
 
       {/* Clasp — white square notch in the right border */}

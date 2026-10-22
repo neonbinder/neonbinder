@@ -1798,7 +1798,7 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
     // The "type to search" hint lives in the filter's placeholder.
     expect(
       screen.getByLabelText("Filter teams").getAttribute("placeholder"),
-    ).toBe("Start typing a team name…");
+    ).toBe("Type a team name…");
   });
 
   it("counts attention over the rows the number names, not the whole window", () => {

@@ -137,7 +137,7 @@ import {
  * a focus indicator in name only.
  */
 const ATTRIBUTES_TOGGLE_CLASS =
-  "text-xs py-1 rounded text-gray-400 hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900";
+  "text-xs py-1 rounded text-gray-400 hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900";
 
 /**
  * NEO-291 — where the Card prefix row is editable.
@@ -1140,7 +1140,7 @@ function BrandUnknownRenameNotice({ value }: { value: string }) {
         onKeyDown={(event) => activateOnEnter(event, reveal)}
         // min-w-6 min-h-6 and the ring, as the real pencil carries them: a
         // bare 16x16 icon is under WCAG 2.5.8's 24x24 minimum target.
-        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 opacity-50 cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 opacity-50 cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
       >
         <PencilSquareIcon className="w-4 h-4" aria-hidden="true" />
       </button>
@@ -1207,7 +1207,7 @@ function SlViaAllBrandsToggle({
       </span>
       <button
         type="button"
-        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
           on
             ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
             : // gray-500: the 3:1 boundary tone on this panel's dark surface
@@ -1978,7 +1978,7 @@ function SetTeamRow({
             type="button"
             onClick={() => void handleClear()}
             disabled={busy}
-            className="text-[11px] text-gray-300 underline decoration-dotted underline-offset-2 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none disabled:opacity-50"
+            className="text-[11px] text-gray-300 underline decoration-dotted underline-offset-2 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none disabled:opacity-50"
           >
             Clear team
           </button>
@@ -2363,7 +2363,7 @@ function DeleteSelectorRowControl({
         // as low-key as it was — a grey icon, pink only on hover — because
         // deleting is the rare act here (NEO-219), and a chip would advertise
         // it beside every name.
-        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 hover:text-[#FF2EB3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-500"
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 hover:text-[#FF2E9A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-500"
       >
         <TrashIcon className="w-4 h-4" aria-hidden="true" />
       </button>

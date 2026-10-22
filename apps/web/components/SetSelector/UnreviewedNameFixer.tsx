@@ -219,7 +219,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       }}
     >
       {error && (
-        <p role="alert" className="text-xs text-[#FF2EB3]">
+        <p role="alert" className="text-xs text-[#FF2E9A]">
           {error}
         </p>
       )}
@@ -238,7 +238,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
 
       {(unlinkedPlayerNames.length > 0 || unlinkedTeamNames.length > 0) && (
         <div className="space-y-1">
-          <p id="attention-unlinked-names" className="text-xs text-[#00B7FF]">
+          <p id="attention-unlinked-names" className="text-xs text-[#00C2FF]">
             Typed on this card, not linked yet
           </p>
           <ul
@@ -253,7 +253,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
                 // Deliberately not a <button>: these are the problem, not an
                 // option. Nothing here toggles, so nothing here is pressable.
                 key={`${kind}:${name}`}
-                className="rounded-full border border-dashed border-[#00B7FF]/60 px-2 py-0.5 text-xs text-[#00B7FF]"
+                className="rounded-full border border-dashed border-[#00C2FF]/60 px-2 py-0.5 text-xs text-[#00C2FF]"
               >
                 {name}
                 <span className="ml-1 text-gray-400">{kind}</span>
@@ -289,7 +289,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
           <p
             id="attention-unreviewed-cap"
             role="status"
-            className="text-xs text-[#00B7FF]"
+            className="text-xs text-[#00C2FF]"
           >
             That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to
             add another.

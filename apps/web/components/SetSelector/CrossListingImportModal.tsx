@@ -659,7 +659,7 @@ export default function CrossListingImportModal({
                           handleConfirmSource(activeIndex - 1);
                         }}
                         aria-label={`Use ${stopParent.value} as the source set`}
-                        className="w-full text-left px-3 py-1.5 rounded-lg border border-[#00B7FF] bg-[#00B7FF]/10 text-sm text-[#00B7FF] hover:bg-[#00B7FF]/20 transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                        className="w-full text-left px-3 py-1.5 rounded-lg border border-[#00C2FF] bg-[#00C2FF]/10 text-sm text-[#00C2FF] hover:bg-[#00C2FF]/20 transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                       >
                         Use {stopParent.value} as the source set
                       </button>
@@ -756,7 +756,7 @@ export default function CrossListingImportModal({
                 {error && (
                   <div
                     role="alert"
-                    className="p-2 rounded-md border border-[#FF2EB3] bg-[#FF2EB3]/10 text-[#FF2EB3] text-sm"
+                    className="p-2 rounded-md border border-[#FF2E9A] bg-[#FF2E9A]/10 text-[#FF2E9A] text-sm"
                   >
                     {error}
                   </div>

@@ -14,7 +14,7 @@ export default function AboutPage() {
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo.png" alt="Neon Binder" width={40} height={40} />
+          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
           <span className="neon-header">Neon Binder</span>
         </div>
         <div className="w-20" />
@@ -24,7 +24,7 @@ export default function AboutPage() {
         <div className="max-w-4xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-12">
-            <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-neon-blue to-neon-green">
+            <h1 className="text-5xl font-bold mb-4 text-neon-blue">
               About Neon Binder
             </h1>
           </div>
