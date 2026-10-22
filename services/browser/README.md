@@ -169,6 +169,51 @@ outage doesn't turn every PR and every promotion red. There is no `if:`
 gating on the jobs themselves — BSC's half of the suite always runs
 unconditionally, and only the SportLots test cases branch on the variable.
 
+## Pausing the prod login canary (NEO-355)
+
+The prod login canary (Cloud Scheduler → `POST /login/<bsc|sportlots>` with
+`{key, canary: true}`) can be paused for one marketplace from the Convex
+env var `NEONBINDER_PAUSED_PLATFORMS`, the same flag that already stops
+Convex calling a paused marketplace on a user's behalf. No deploy and no
+Terraform apply: set the flag and the next canary run reads it.
+
+How it works (`src/canary-pause.ts`):
+
+- Only a canary request consults the flag. `canaryGate` returns "proceed"
+  for every other request without making a lookup, so user traffic never
+  waits on it.
+- A canary request mints a Google OIDC id token for this service's runtime
+  service account from the metadata server (audience = the Convex site
+  origin) and calls `GET <NEONBINDER_CONVEX_SITE_URL>/internal/marketplace-pause`.
+  Convex verifies the token and answers `200 {"paused": [<site keys>]}`.
+  Site keys are `buysportscards` and `sportlots` (`PLATFORM_TO_SITE`).
+- When this platform's site key is in `paused`, the route answers
+  `200 {success: true, skipped: "paused", message}` without constructing an
+  adapter, and logs the usual `browser_login_call` line with
+  `success: true`, `canary: true` and `outcome: "skipped_paused"`. That line
+  is a heartbeat: the duration metric still sees the canary, so the
+  canary-absent alert stays quiet, and the failures metric (success=false)
+  ignores it.
+- **Fail-open.** Every failure means "not paused" and the canary signs in
+  for real: no token, a timeout (`CANARY_PAUSE_LOOKUP_TIMEOUT_MS`, 5 s for
+  mint and request together), a network error, a non-200, a body without a
+  `paused` array, or a malformed site URL. Each writes one line
+  `{"msg":"canary_pause_lookup_failed","platform","reason"}` with `reason` in
+  `token_mint_failed | timeout | network_error | http_<status> | bad_body |
+  bad_site_url` (`timeout` = deadline passed or request aborted;
+  `network_error` = any other request failure),
+  never the token or the response body. A broken lookup can make the canary
+  page for a platform you meant to pause; it can never silence it.
+- `NEONBINDER_CONVEX_SITE_URL` is set only on the prod deploy
+  (`browser-deploy.yml`). Unset (dev, PR previews, local) means the gate is
+  off: no token, no request, no log line.
+
+This is the one call this service makes **to** Convex. It does not change
+any shape Convex sends or reads (Convex never sets `canary`), so it needs no
+`CONTRACT_VERSION` bump. In the release window, when this service is new
+and Convex is not yet, the endpoint 404s, the lookup logs `http_404`, and
+the canary signs in as before.
+
 ## SportLots automated access (NEO-288)
 
 On 2026-09-17 SportLots put Cloudflare Turnstile in front of `signin.tpl`. A

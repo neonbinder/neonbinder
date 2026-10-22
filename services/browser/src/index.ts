@@ -10,6 +10,7 @@ import { credentialRateLimitKey } from "./rate-limit";
 import { createCredentialsRouter } from "./routes/credentials";
 import { createEasypostRouter } from "./routes/easypost";
 import { parseTransientCredentials } from "./transient-credentials";
+import { canaryGate } from "./canary-pause";
 import {
   logBrowserOp,
   classifyBrowserError,
@@ -26,6 +27,11 @@ interface LoginResponse {
   // layer to userProfiles.marketplaceAccountIds.bscSellerId. Other adapters
   // leave this undefined.
   sellerId?: string;
+  // NEO-355: present ONLY on a canary request that was answered without a
+  // sign-in because the platform is paused in Convex. Convex never sets
+  // `canary`, so Convex never receives this field; its only reader is the
+  // Cloud Scheduler canary job, which checks the status code alone.
+  skipped?: "paused";
 }
 
 interface ErrorResponse {
@@ -174,6 +180,31 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
     res.status(400).json({ error: transient.error, error_class: "invalid_credentials" });
     return;
   }
+  // NEO-355: an operator can pause the canary for one marketplace from the
+  // Convex flag NEONBINDER_PAUSED_PLATFORMS. Only canary requests consult it
+  // (canaryGate returns "proceed" for everything else without a lookup), and
+  // every lookup failure proceeds with the real sign-in (fail-open; see
+  // src/canary-pause.ts). Checked before the adapter is constructed, so a
+  // skipped run launches nothing and there is nothing to clean up.
+  if ((await canaryGate({ canary, platform: "sportlots" })) === "skip_paused") {
+    logBrowserOp({
+      msg: "browser_login_call",
+      operation: "login_sportlots",
+      platform: "sportlots",
+      duration_ms: Date.now() - startMs,
+      // A heartbeat, not a failure: see `outcome` on logBrowserOp.
+      success: true,
+      status_code: 200,
+      canary,
+      outcome: "skipped_paused",
+    });
+    res.json({
+      success: true,
+      skipped: "paused",
+      message: "SportLots is paused (NEONBINDER_PAUSED_PLATFORMS); canary sign-in skipped",
+    });
+    return;
+  }
   // Adapter reads credentials from Secret Manager internally. Wrap the call in
   // try/finally so adapter.cleanup() runs no matter what — that closes any
   // Puppeteer Browser child process the adapter launched. SportLots is
@@ -304,6 +335,31 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
       canary,
     });
     res.status(400).json({ error: transient.error, error_class: "invalid_credentials" });
+    return;
+  }
+  // NEO-355: an operator can pause the canary for one marketplace from the
+  // Convex flag NEONBINDER_PAUSED_PLATFORMS. Only canary requests consult it
+  // (canaryGate returns "proceed" for everything else without a lookup), and
+  // every lookup failure proceeds with the real sign-in (fail-open; see
+  // src/canary-pause.ts). Checked before the adapter is constructed, so a
+  // skipped run launches nothing and there is nothing to clean up.
+  if ((await canaryGate({ canary, platform: "bsc" })) === "skip_paused") {
+    logBrowserOp({
+      msg: "browser_login_call",
+      operation: "login_bsc",
+      platform: "bsc",
+      duration_ms: Date.now() - startMs,
+      // A heartbeat, not a failure: see `outcome` on logBrowserOp.
+      success: true,
+      status_code: 200,
+      canary,
+      outcome: "skipped_paused",
+    });
+    res.json({
+      success: true,
+      skipped: "paused",
+      message: "BSC is paused (NEONBINDER_PAUSED_PLATFORMS); canary sign-in skipped",
+    });
     return;
   }
   // Adapter reads credentials from Secret Manager internally. Wrap the call

@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { exchangeMachineToken } from "./machineAuth";
+import { servicePausedPlatforms } from "./marketplacePause";
 import { handleEasypostWebhook } from "./shipmentTracking";
 
 const http = httpRouter();
@@ -44,6 +45,29 @@ http.route({
   pathPrefix: "/webhooks/easypost/",
   method: "POST",
   handler: handleEasypostWebhook,
+});
+
+// ─── Marketplace pause, read by the browser service (NEO-355) ────────────────
+// `GET /internal/marketplace-pause` → `{"paused": [...site keys]}` — the
+// browser service asks before a scheduled login canary, so the one Convex
+// switch (NEONBINDER_PAUSED_PLATFORMS) pauses the canary as well.
+//
+// WHY IDENTITY, NOT A SHARED SECRET: the caller presents a Google id token
+// minted for its own runtime service account, and the handler checks issuer,
+// audience (this deployment's site URL) and an allowlist of emails. That is
+// the reverse of the Cloud Run IAM boundary Convex already relies on, and it
+// leaves nothing to rotate or keep in step across deployments — NEO-20 removed
+// the last shared key between the two sides and this must not bring one back.
+//
+// GET because it is a read with no side effects; every answer carries
+// `cache-control: no-store` since the pause can flip at any moment. The
+// handler lives beside the switch it reads (like the routes above), so this
+// file stays a route table and `marketplacePause.ts` stays the only reader of
+// the variable.
+http.route({
+  path: "/internal/marketplace-pause",
+  method: "GET",
+  handler: servicePausedPlatforms,
 });
 
 export default http;

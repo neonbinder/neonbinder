@@ -69,6 +69,24 @@ export function logBrowserOp(props: {
    * seller-facing failure signal into invisibility.
    */
   canary: boolean;
+  /**
+   * NEO-355: set to "skipped_paused" ONLY when a canary request was answered
+   * without a sign-in because the platform is paused in Convex
+   * (NEONBINDER_PAUSED_PLATFORMS; see src/canary-pause.ts). OMITTED on every
+   * other line, so an ordinary login line carries no `outcome` key at all.
+   *
+   * Such a line is written with `success: true` and `status_code: 200`, and
+   * that is deliberate, not a white lie:
+   *   - `browser_login_duration_ms` (success-agnostic) still counts it, so the
+   *     canary-absent alert keeps seeing a heartbeat for a paused platform and
+   *     does not page for a pause an operator chose;
+   *   - `browser_login_failures` filters on success=false, so a paused
+   *     platform does not page as a failure either.
+   * No metric filter or label changes with this field (NEO-278: editing a
+   * log-based metric's label descriptors recreates it). Operators read it in
+   * Logs Explorer to tell a skipped run from a real sign-in.
+   */
+  outcome?: "skipped_paused";
 }): void {
   try {
     console.log(JSON.stringify(props));
@@ -77,6 +95,52 @@ export function logBrowserOp(props: {
       `[browser_login_call] ${props.platform} ${props.operation} ` +
         `duration_ms=${props.duration_ms} success=${props.success}`,
     );
+  }
+}
+
+/**
+ * NEO-355: the reasons a canary pause lookup can fail. A CLOSED SET of
+ * literals plus `http_<status>`; never the token, the response body or an
+ * error message. Every one of them means the same thing operationally: the
+ * canary went ahead with a real sign-in (fail-open).
+ *
+ *   token_mint_failed — the metadata server would not mint an OIDC id token
+ *   timeout           — the overall lookup deadline passed, or the request
+ *                       was aborted
+ *   network_error     — the request failed for any other reason (DNS,
+ *                       connection refused, TLS); never the error's message
+ *   http_<status>     — Convex answered with anything other than 200
+ *   bad_body          — a 200 whose body was not JSON with a `paused` array
+ *   bad_site_url      — NEONBINDER_CONVEX_SITE_URL is set but is not an
+ *                       https URL, so no token is minted or sent
+ */
+export type CanaryPauseLookupFailureReason =
+  | "token_mint_failed"
+  | "timeout"
+  | "network_error"
+  | `http_${number}`
+  | "bad_body"
+  | "bad_site_url";
+
+export interface CanaryPauseLookupFailedLine {
+  msg: "canary_pause_lookup_failed";
+  platform: "bsc" | "sportlots";
+  reason: CanaryPauseLookupFailureReason;
+}
+
+/**
+ * NEO-355: one structured line per failed canary pause lookup. Built from
+ * three named fields only — the props object is never spread — so nothing a
+ * caller passes by mistake (a token, a body) can reach Cloud Logging. Never
+ * throws.
+ */
+export function logCanaryPauseLookupFailed(props: CanaryPauseLookupFailedLine): void {
+  try {
+    console.log(
+      JSON.stringify({ msg: props.msg, platform: props.platform, reason: props.reason }),
+    );
+  } catch {
+    // Logging must never break the fail-open path.
   }
 }
 

@@ -47,11 +47,20 @@
  * reveals nothing but an operator decision that the UI is about to announce
  * anyway. Components never import this module; they subscribe to the query
  * and take the vocabulary from `lib/marketplacePause.ts`.
+ *
+ * ## What the browser service sees (NEO-355)
+ *
+ * `servicePausedPlatforms` serves the same sorted list over HTTP to the
+ * browser service's login canary, so one `env set` pauses the canary too
+ * instead of a second, Terraform-side switch drifting out of step with this
+ * one. It is routed in `http.ts` and authenticated by the caller's Google
+ * identity (`lib/googleIdTokenVerify.ts`), never by a shared secret.
  */
 
-import { query } from "./_generated/server";
+import { httpAction, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireSignedIn } from "./auth";
+import { verifyGoogleIdToken } from "./lib/googleIdTokenVerify";
 import type { PlatformSide } from "./platformSlots";
 import {
   type KnownSite,
@@ -104,4 +113,78 @@ export const getPausedPlatforms = query({
     await requireSignedIn(ctx);
     return [...pausedPlatforms()].sort();
   },
+});
+
+// ─── the browser service's read (NEO-355) ────────────────────────────────────
+
+/**
+ * Comma-separated service-account emails allowed to read the pause over HTTP:
+ * the browser service's runtime identity. Unset means nobody may (fail closed),
+ * which is the right answer for a dev or preview deployment that has no
+ * canary calling it.
+ */
+export const BROWSER_RUNTIME_SA_ENV = "NEONBINDER_BROWSER_RUNTIME_SA";
+
+/** One caching story for every answer: the pause can flip at any moment. */
+function pauseResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+/**
+ * Error bodies are one fixed word per status, never the verification reason:
+ * telling a caller WHICH check refused it ("not allowlisted" vs "bad token")
+ * would confirm a stolen token is genuine. The reason goes to the log only.
+ */
+const ERROR_BODY: Readonly<Record<401 | 403 | 503, { error: string }>> = {
+  401: { error: "unauthorized" },
+  403: { error: "forbidden" },
+  503: { error: "unavailable" },
+};
+
+/**
+ * `GET /internal/marketplace-pause` → `200 {"paused": [...sorted site keys]}`.
+ *
+ * The caller is the browser service, deciding whether a scheduled canary
+ * sign-in should run. It presents a Google id token minted for its runtime
+ * service account with this deployment's site URL as the audience. Read-only
+ * and side-effect free, so a retry is always safe; the browser treats any
+ * non-200 as "not paused" and signs in for real.
+ */
+export const servicePausedPlatforms = httpAction(async (_ctx, request) => {
+  const started = Date.now();
+  const verdict = await verifyGoogleIdToken(
+    request.headers.get("authorization"),
+    {
+      audience: process.env.CONVEX_SITE_URL,
+      allowedEmails: process.env[BROWSER_RUNTIME_SA_ENV],
+    },
+  );
+  if (!verdict.ok) {
+    // No token, no claim values: the line exists to make a refusal and its
+    // cause visible to the operator, not to help anyone reproduce it.
+    console.warn(
+      JSON.stringify({
+        msg: "marketplace_pause_lookup_refused",
+        status: verdict.status,
+        reason: verdict.reason,
+        duration_ms: Date.now() - started,
+      }),
+    );
+    return pauseResponse(verdict.status, ERROR_BODY[verdict.status]);
+  }
+  const paused = [...pausedPlatforms()].sort();
+  console.log(
+    JSON.stringify({
+      msg: "marketplace_pause_lookup_served",
+      paused,
+      duration_ms: Date.now() - started,
+    }),
+  );
+  return pauseResponse(200, { paused });
 });

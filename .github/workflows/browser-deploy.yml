@@ -339,7 +339,13 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder/neonbinder-browser:${{ github.sha }}
           project_id: neonbinder
-          env_vars: ENVIRONMENT=prod
+          # NEO-355: prod only, on purpose. The canary asks Convex which
+          # platforms are paused (NEONBINDER_PAUSED_PLATFORMS). Dev and
+          # previews leave this unset so the pause lookup is skipped and no
+          # Convex call is made; the canary only runs in prod anyway.
+          env_vars: |
+            ENVIRONMENT=prod
+            NEONBINDER_CONVEX_SITE_URL=https://first-starfish-800.convex.site
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           flags: '--min-instances=0 --max-instances=20'
