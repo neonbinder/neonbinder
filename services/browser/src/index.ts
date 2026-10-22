@@ -10,7 +10,7 @@ import { credentialRateLimitKey } from "./rate-limit";
 import { createCredentialsRouter } from "./routes/credentials";
 import { createEasypostRouter } from "./routes/easypost";
 import { parseTransientCredentials } from "./transient-credentials";
-import { canaryGate } from "./canary-pause";
+import { respondIfCanaryPaused } from "./canary-pause";
 import {
   logBrowserOp,
   classifyBrowserError,
@@ -185,26 +185,9 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
   // (canaryGate returns "proceed" for everything else without a lookup), and
   // every lookup failure proceeds with the real sign-in (fail-open; see
   // src/canary-pause.ts). Checked before the adapter is constructed, so a
-  // skipped run launches nothing and there is nothing to clean up.
-  if ((await canaryGate({ canary, platform: "sportlots" })) === "skip_paused") {
-    logBrowserOp({
-      msg: "browser_login_call",
-      operation: "login_sportlots",
-      platform: "sportlots",
-      duration_ms: Date.now() - startMs,
-      // A heartbeat, not a failure: see `outcome` on logBrowserOp.
-      success: true,
-      status_code: 200,
-      canary,
-      outcome: "skipped_paused",
-    });
-    res.json({
-      success: true,
-      skipped: "paused",
-      message: "SportLots is paused (NEONBINDER_PAUSED_PLATFORMS); canary sign-in skipped",
-    });
-    return;
-  }
+  // skipped run launches nothing and there is nothing to clean up. The
+  // helper logs the skipped_paused heartbeat and sends the 200 itself.
+  if (await respondIfCanaryPaused({ canary, platform: "sportlots", startMs }, res)) return;
   // Adapter reads credentials from Secret Manager internally. Wrap the call in
   // try/finally so adapter.cleanup() runs no matter what — that closes any
   // Puppeteer Browser child process the adapter launched. SportLots is
@@ -342,26 +325,9 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
   // (canaryGate returns "proceed" for everything else without a lookup), and
   // every lookup failure proceeds with the real sign-in (fail-open; see
   // src/canary-pause.ts). Checked before the adapter is constructed, so a
-  // skipped run launches nothing and there is nothing to clean up.
-  if ((await canaryGate({ canary, platform: "bsc" })) === "skip_paused") {
-    logBrowserOp({
-      msg: "browser_login_call",
-      operation: "login_bsc",
-      platform: "bsc",
-      duration_ms: Date.now() - startMs,
-      // A heartbeat, not a failure: see `outcome` on logBrowserOp.
-      success: true,
-      status_code: 200,
-      canary,
-      outcome: "skipped_paused",
-    });
-    res.json({
-      success: true,
-      skipped: "paused",
-      message: "BSC is paused (NEONBINDER_PAUSED_PLATFORMS); canary sign-in skipped",
-    });
-    return;
-  }
+  // skipped run launches nothing and there is nothing to clean up. The
+  // helper logs the skipped_paused heartbeat and sends the 200 itself.
+  if (await respondIfCanaryPaused({ canary, platform: "bsc", startMs }, res)) return;
   // Adapter reads credentials from Secret Manager internally. Wrap the call
   // in try/finally so adapter.cleanup() runs whether login succeeds, fails,
   // or throws. Without this, the Puppeteer Browser child process leaks

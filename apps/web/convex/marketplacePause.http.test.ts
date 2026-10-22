@@ -13,6 +13,10 @@
  *  - **No token anywhere.** Not in a body, a header, or any console channel,
  *    whole or in part.
  *  - **Fail closed.** Unset audience or allowlist never yields a 200.
+ *  - **Google is asked only about plausible tokens.** A bearer that is not a
+ *    JWT, or whose unverified payload names another audience or caller, is
+ *    refused with no tokeninfo call; fixtures are therefore real-shaped JWTs
+ *    (`makeJwt`) whose unverified payload names this deployment and caller.
  */
 
 import { convexTest } from "convex-test";
@@ -26,8 +30,26 @@ const modules = (import.meta as unknown as {
 
 const SITE_URL = "https://happy-animal-123.convex.site";
 const CALLER = "browser-runtime@example-project.iam.gserviceaccount.com";
-const TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig-do-not-leak-0123456789";
 const PATH = "/internal/marketplace-pause";
+
+/** UTF-8 text → unpadded base64url, as a JWT encoder writes each segment. */
+function b64url(text: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A well-formed JWT whose UNVERIFIED payload is `payload`; tokeninfo decides the rest. */
+function makeJwt(payload: Record<string, unknown>): string {
+  const header = b64url(JSON.stringify({ alg: "RS256", kid: "test-kid", typ: "JWT" }));
+  return `${header}.${b64url(JSON.stringify(payload))}.sig-do-not-leak-0123456789`;
+}
+
+function unverifiedClaims(overrides: Record<string, unknown> = {}) {
+  return { iss: "https://accounts.google.com", aud: SITE_URL, email: CALLER, ...overrides };
+}
+
+const TOKEN = makeJwt(unverifiedClaims());
 
 const TOKEN_FRAGMENTS = [
   TOKEN,
@@ -54,17 +76,19 @@ type Upstream = { status: number; body?: unknown; raw?: string } | "throw";
 /** Stub the global fetch as Google's tokeninfo; returns the recorded URLs. */
 function stubTokeninfo(reply: Upstream = { status: 200, body: goodClaims() }) {
   const urls: string[] = [];
+  const inits: Array<RequestInit | undefined> = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: unknown) => {
+    vi.fn(async (input: unknown, init?: RequestInit) => {
       urls.push(String(input));
+      inits.push(init);
       if (reply === "throw") throw new Error(`socket hang up ${TOKEN}`);
       return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), {
         status: reply.status,
       });
     }),
   );
-  return urls;
+  return Object.assign(urls, { inits });
 }
 
 function captureConsole() {
@@ -144,13 +168,20 @@ describe("GET /internal/marketplace-pause: served", () => {
     expect((await request()).headers.get("cache-control")).toBe("no-store");
   });
 
-  test("Google is asked about the caller's token, and only Google", async () => {
+  test("Google is asked about the caller's token by POST form body, and only Google", async () => {
     const urls = stubTokeninfo();
     await asCaller();
     expect(urls).toHaveLength(1);
     const url = new URL(urls[0]);
     expect(url.origin).toBe("https://oauth2.googleapis.com");
-    expect(url.searchParams.get("id_token")).toBe(TOKEN);
+    expect(url.search).toBe("");
+    for (const fragment of TOKEN_FRAGMENTS) expect(urls[0]).not.toContain(fragment);
+    const init = urls.inits[0];
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("content-type")).toBe(
+      "application/x-www-form-urlencoded",
+    );
+    expect(new URLSearchParams(init?.body as string).get("id_token")).toBe(TOKEN);
   });
 
   test("allowlist entries are trimmed and lowercased, so a padded mixed-case entry admits the caller", async () => {
@@ -174,12 +205,29 @@ describe("GET /internal/marketplace-pause: refused", () => {
     ["Bearer with whitespace for a token", "Bearer    "],
     ["a non-Bearer scheme", `Basic ${TOKEN}`],
     ["a raw token with no scheme", TOKEN],
+    ["Bearer garbage", "Bearer garbage"],
+    ["a bearer with four segments", `Bearer ${TOKEN}.x`],
+    ["a bearer whose payload is not JSON", `Bearer a.${b64url("nope")}.c`],
+    ["a JWT for another deployment", `Bearer ${makeJwt(unverifiedClaims({ aud: "https://other-999.convex.site" }))}`],
+    ["a JWT with no audience", `Bearer ${makeJwt(unverifiedClaims({ aud: undefined }))}`],
   ])("%s is 401 and Google is never asked", async (_n, header) => {
     process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
     const urls = stubTokeninfo();
     const res = await request(header);
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
+    expect(urls).toHaveLength(0);
+  });
+
+  test.each([
+    ["a JWT for another caller", makeJwt(unverifiedClaims({ email: "attacker@example.com" }))],
+    ["a JWT with no email", makeJwt(unverifiedClaims({ email: undefined }))],
+  ])("%s is 403 and Google is never asked", async (_n, token) => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const urls = stubTokeninfo();
+    const res = await request(`Bearer ${token}`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "forbidden" });
     expect(urls).toHaveLength(0);
   });
 
@@ -200,6 +248,7 @@ describe("GET /internal/marketplace-pause: refused", () => {
     ["email not allowlisted", { status: 200, body: goodClaims({ email: "attacker@example.com" }) }, 403],
     ["email is the caller plus a suffix", { status: 200, body: goodClaims({ email: `${CALLER}.evil.com` }) }, 403],
     ["email absent", { status: 200, body: withoutEmail }, 403],
+    ["tokeninfo 429", { status: 429, body: {} }, 503],
     ["tokeninfo 500", { status: 500, body: {} }, 503],
     ["tokeninfo 503", { status: 503, body: {} }, 503],
     ["tokeninfo unreachable", "throw", 503],
@@ -290,6 +339,8 @@ describe("GET /internal/marketplace-pause: logging", () => {
     ["wrong issuer echoing the token", { status: 200, body: goodClaims({ iss: TOKEN }) }, `Bearer ${TOKEN}`],
     ["email not allowed echoing the token", { status: 200, body: goodClaims({ email: TOKEN }) }, `Bearer ${TOKEN}`],
     ["malformed header", { status: 200, body: goodClaims() }, `Basic ${TOKEN}`],
+    ["malformed token", { status: 200, body: goodClaims() }, `Bearer ${TOKEN}.x`],
+    ["tokeninfo 429", { status: 429, body: { error: TOKEN } }, `Bearer ${TOKEN}`],
   ];
 
   test.each(scenarios)("%s: no fragment of the token reaches any console channel, body or header", async (_n, reply, header) => {
@@ -317,6 +368,23 @@ describe("GET /internal/marketplace-pause: logging", () => {
       expect(lines).toHaveLength(1);
       expect(JSON.parse(lines[0])).toMatchObject({ status: 401, reason: "audience_mismatch" });
       expect(lines[0]).not.toContain("elsewhere.example");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a garbage bearer logs malformed_token and never reaches Google", async () => {
+    const urls = stubTokeninfo();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await request("Bearer garbage");
+      const lines = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("marketplace_pause_lookup_refused"));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ status: 401, reason: "malformed_token" });
+      expect(lines[0]).not.toContain("garbage");
+      expect(urls).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }

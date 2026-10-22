@@ -1,5 +1,6 @@
 import { GoogleAuth } from "google-auth-library";
 import {
+  logBrowserOp,
   logCanaryPauseLookupFailed,
   type CanaryPauseLookupFailedLine,
   type CanaryPauseLookupFailureReason,
@@ -265,4 +266,85 @@ export async function canaryGate(
   } catch {
     return "proceed";
   }
+}
+
+/**
+ * How each platform names itself in the paused-skip message. Copy only: it is
+ * keyed by the platform slug and read by no logic.
+ */
+const PLATFORM_LABEL: Readonly<Record<CanaryPlatform, string>> = Object.freeze({
+  bsc: "BSC",
+  sportlots: "SportLots",
+});
+
+/** The 200 body a paused canary gets instead of a sign-in. */
+export interface CanaryPausedBody {
+  success: true;
+  skipped: "paused";
+  message: string;
+}
+
+/** The slice of an Express Response this helper writes to. */
+export interface CanaryPausedResponder {
+  json(body: CanaryPausedBody): unknown;
+}
+
+export interface RespondIfCanaryPausedDeps {
+  /** The gate to consult. Default: canaryGate. */
+  gate?: (
+    input: { canary: boolean; platform: CanaryPlatform },
+    deps?: CanaryGateDeps,
+  ) => Promise<CanaryGateDecision>;
+  /** Deps forwarded to the gate (the lookup and its injectables). */
+  gateDeps?: CanaryGateDeps;
+  /** Login-line writer. Default: logBrowserOp. */
+  log?: typeof logBrowserOp;
+  /** Clock for duration_ms. Default: Date.now. */
+  now?: () => number;
+}
+
+/**
+ * The /login/<site> routes' canary pause check, in one place. Call it after
+ * the key and transient-credential checks and BEFORE the adapter is
+ * constructed, so a skipped run launches nothing and needs no cleanup:
+ *
+ *   if (await respondIfCanaryPaused({ canary, platform: "bsc", startMs }, res)) return;
+ *
+ * Resolves true when it has answered the request: the gate said
+ * "skip_paused", so it wrote one browser_login_call heartbeat line
+ * (success true, status 200, outcome "skipped_paused"; see `outcome` on
+ * logBrowserOp) and sent `{success: true, skipped: "paused", message}`.
+ * Resolves false, having sent and logged nothing, on every other path: a
+ * non-canary request (the gate is not even consulted, so user traffic never
+ * waits on the flag) and every "proceed" (fail-open, see shouldSkipCanary).
+ */
+export async function respondIfCanaryPaused(
+  input: { canary: boolean; platform: CanaryPlatform; startMs: number },
+  res: CanaryPausedResponder,
+  deps: RespondIfCanaryPausedDeps = {},
+): Promise<boolean> {
+  const { canary, platform, startMs } = input;
+  if (canary !== true) return false;
+  const gate = deps.gate ?? canaryGate;
+  if ((await gate({ canary, platform }, deps.gateDeps)) !== "skip_paused") return false;
+
+  const log = deps.log ?? logBrowserOp;
+  const now = deps.now ?? Date.now;
+  log({
+    msg: "browser_login_call",
+    operation: `login_${platform}`,
+    platform,
+    duration_ms: now() - startMs,
+    // A heartbeat, not a failure: see `outcome` on logBrowserOp.
+    success: true,
+    status_code: 200,
+    canary,
+    outcome: "skipped_paused",
+  });
+  res.json({
+    success: true,
+    skipped: "paused",
+    message: `${PLATFORM_LABEL[platform]} is paused (NEONBINDER_PAUSED_PLATFORMS); canary sign-in skipped`,
+  });
+  return true;
 }
