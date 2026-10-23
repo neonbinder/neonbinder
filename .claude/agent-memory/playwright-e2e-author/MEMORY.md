@@ -71,3 +71,4 @@
 - [Probe fixture attribute tokens from BSC public catalogue](reference_probe_fixture_attribute_tokens_from_bsc_public_catalogue.md) — productName can say AU, SN99 while playerAttribute is empty; probe before asserting on a token
 - [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these players for <scope>`; read each side's value off the unmatched columns before linking; toBeChecked, exact scopes, no-source negatives
 - [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false positive after reload; second-context profile proof; no-flash is a gap
+- [Read a row name with ariaSnapshot](patterns_read_a_row_name_with_aria_snapshot.md) — pick an unknown seed row by role+regex, read its accessible name via ariaSnapshot, then exact names

@@ -2491,6 +2491,7 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/sets-base.spec.ts`
 - `tests/set-selector/sets-resync-already-loaded.spec.ts`
 - `tests/set-selector/topps-chrome-marketplace-read.spec.ts`
+- `tests/collection/add-edit-remove-copy.spec.ts` (NEO-358 — the collector's `/collection`: drills to Base, reads it, and writes ONLY the signed-in user's `collectionCopies` on one Base card, removing them all before it ends; see "The collection spec's card" below)
 
 **Three flows on this set are NOT read-only, and the list used to say the first two were**
 (corrected NEO-260). Each is **sole writer of one datum on the anchor** —
@@ -2512,6 +2513,38 @@ is now a single positive assertion that the checklist has cards, so an unseeded
 run fails loudly instead of rebuilding a fixture the rest of the queue is
 reading. **Do not re-add a self-heal branch to any consumer of this set: the fix
 for an empty shared set is to fix the seed.**
+
+### The collection spec's card — 2024 Topps Chrome › Base (NEO-358)
+
+`tests/collection/add-edit-remove-copy.spec.ts` proves the real `/collection`
+for a signed-in collector. It writes nothing to the set: its only writes are
+that user's own `collectionCopies` (per account, cleared by the bootstrap
+reset), and it removes every copy it adds through the UI.
+
+**The card.** The FIRST Base row that reads `#N First Last` (two or more
+words, one player, no variation) and is not `#300`. The spec reads the number
+and player off that row's own accessible name (`Details for #N First Last`), so
+the choice follows the seed; the number is **not yet measured** (record it here
+after the first green run). It is a Base card, so it is not one of
+`base-parallels-build-from-section`'s rows (that spec rebuilds a PARALLEL's
+cards, and the parallel's cards are copies OF Base cards, never Base itself).
+Not #300: that card is `signed-by-autofills-from-players`' sole-write card.
+
+**Why copies on it are safe.** A card with a collector's copy cannot be
+deleted: `deleteCard`, the checklist finalize, the parallel rebuild and the
+subtree wipe all refuse or skip it. Checked 2026-10-23 that no spec in
+`tests/` deletes a card of this set: the 22 specs that drill to Topps Chrome
+(`drillToSet` / `drillToBaseVariant`) contain no card delete, and every
+card-deleting path is a parallel rebuild (`base-parallels-build-from-section`,
+which never touches Base) or a re-commit of a DIFFERENT set. The seed's reset
+runs before any spec, and the global reset clears `collectionCopies` before
+the cards (it is in the drain order ahead of `cardChecklist`).
+
+**Concurrency.** Copies are per user and each shard owns one account, so no
+two shards see each other's copies. The spec's search results and "every card
+of this player" list are catalog reads, and cards other specs add or edit
+(`signed-by`'s #300, the autograph and dual-team inserts) change no row this
+spec asserts on.
 
 ### 2024 Topps Chrome › Parallel — the base-parallel build (NEO-321) — approved: Jason, 2026-10-04
 
