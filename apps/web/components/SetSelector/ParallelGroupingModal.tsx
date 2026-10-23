@@ -519,7 +519,7 @@ function DraggableRow({
             e.stopPropagation();
             onReject();
           }}
-          className="text-xs text-neon-pink-text px-3 rounded-r-lg hover:bg-neon-pink/10"
+          className="text-xs text-neon-red-text px-3 rounded-r-lg hover:bg-neon-red/10"
           aria-label={`Remove ${info.value} from parallels`}
         >
           ✕

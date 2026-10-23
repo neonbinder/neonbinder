@@ -16,6 +16,10 @@
  *   - `dark:` as a variant;
  *   - a gray/slate/zinc/neutral/stone STEP on a colour utility (`bg-slate-900`,
  *     `border-t-gray-700`, `placeholder:text-slate-400`, `ring-gray-500/50`);
+ *   - a HUED step on a colour utility (`bg-red-600`, `text-amber-300`,
+ *     `border-green-600`, `from-pink-500`): every hue has a role now, the
+ *     neon set (`bg-neon-red` for destructive, NEO-356), the hued picks
+ *     (`bg-pick-blue`) and the notices (`text-notice-warn-ink`);
  *   - `white` / `black` as paint (`text-white`, `bg-black/60`; a black
  *     shadow or gradient stop is depth and is allowed);
  *   - an arbitrary hex (`bg-[#00D558]`, `text-[color:#fff]`).
@@ -44,6 +48,9 @@ const PAINT_UTILITY =
   "(?:bg|text|border(?:-[xytrblse])?|ring(?:-offset)?|divide(?:-[xy])?|placeholder|outline|fill|stroke|accent|caret|decoration)";
 
 const NEUTRAL_STEP = new RegExp(`^-?${COLOUR_UTILITY}-(?:gray|slate|zinc|neutral|stone)-\\d`);
+const HUED_STEP = new RegExp(
+  `^-?${COLOUR_UTILITY}-(?:red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\\d`,
+);
 const WHITE_BLACK = new RegExp(`^-?${PAINT_UTILITY}-(?:white|black)(?:\\/[\\w.\\[\\]]+)?$`);
 const ARBITRARY_HEX = /-\[(?:color:)?#[0-9a-fA-F]/;
 
@@ -81,6 +88,8 @@ export function findPaletteViolations(text) {
       found.push({ token, reason: "`dark:` (a role already follows the mode)" });
     } else if (NEUTRAL_STEP.test(utility)) {
       found.push({ token, reason: "a gray/slate palette step" });
+    } else if (HUED_STEP.test(utility)) {
+      found.push({ token, reason: "a hued palette step" });
     } else if (WHITE_BLACK.test(utility)) {
       found.push({ token, reason: "white/black" });
     } else if (ARBITRARY_HEX.test(utility)) {
@@ -104,7 +113,7 @@ const rule = {
     schema: [],
     messages: {
       banned:
-        "`{{token}}` is {{reason}}, which cannot follow light/dark mode. Use a colour role (bg-surface, bg-raised, text-ink-2, border-rule, text-neon-pink-text, ...); DESIGN.md lists them.",
+        "`{{token}}` is {{reason}}, which cannot follow light/dark mode. Use a colour role (bg-surface, bg-raised, text-ink-2, border-rule, text-neon-pink-text, bg-neon-red, bg-pick-blue, ...); DESIGN.md lists them.",
     },
   },
   create(context) {

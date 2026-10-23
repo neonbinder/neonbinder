@@ -3,20 +3,29 @@ import React, { forwardRef } from "react";
 import { useTheme } from "@/src/theme/ThemeProvider";
 
 interface NeonButtonProps extends ButtonProps {
+  /** Show-Sign Pink: back out without losing anything (Cancel, Close). */
   cancel?: boolean;
+  /**
+   * Tilt Red: an action that destroys or removes something (Delete, Remove,
+   * Discard, Abort, Clear). Never pink: pink is cancel (NEO-356).
+   */
+  destructive?: boolean;
   secondary?: boolean;
   children: React.ReactNode;
 }
 
 const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
   function NeonButton(
-    { cancel = false, secondary = false, children, ...props },
+    { cancel = false, destructive = false, secondary = false, children, ...props },
     ref,
   ) {
     const { mode } = useTheme();
     let colorClass: ButtonProps["color"] = "green";
     if (cancel) {
       colorClass = "pink";
+    }
+    if (destructive) {
+      colorClass = "red";
     }
     if (secondary) {
       colorClass = "blue";
@@ -29,7 +38,9 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
         style={{
           // The neon fill and its ink, as role variables (app/theme.css,
           // NEO-356) so both follow the mode.
-          backgroundColor: cancel
+          backgroundColor: destructive
+            ? "var(--neon-red)"
+            : cancel
             ? "var(--neon-pink)"
             : secondary
               ? "var(--neon-blue)"
@@ -38,7 +49,9 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
           // 3.44:1 on the pink and 2.07:1 on the cyan (SC 1.4.3 needs 4.5:1);
           // black is 6.11:1, 10.16:1 and 10.66:1 on pink, cyan and green. One
           // ink for all three keeps the buttons reading as one family.
-          color: cancel
+          color: destructive
+            ? "var(--on-neon-red)"
+            : cancel
             ? "var(--on-neon-pink)"
             : secondary
               ? "var(--on-neon-blue)"

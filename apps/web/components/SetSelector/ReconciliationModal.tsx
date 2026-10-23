@@ -992,7 +992,7 @@ function ReadySetRow({
       <button
         type="button"
         onClick={() => onDetach(side, item.platformValue)}
-        className="hit-area-24 text-neon-pink-text px-0.5 rounded"
+        className="hit-area-24 text-neon-red-text px-0.5 rounded"
         title="Remove this mapping"
         aria-label={`Remove ${itemLabel(item, side, dups[side])} from ${label}`}
       >
@@ -1072,7 +1072,7 @@ function ReadySetRow({
         )}
         <button
           onClick={onDisband}
-          className="hit-area-24 text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0"
+          className="hit-area-24 text-xs text-neon-red-text px-2 py-1 rounded hover:bg-neon-red/10 shrink-0"
           title="Remove this set (its mappings return to Pending)"
           aria-label={`Remove set ${label}`}
         >

@@ -614,7 +614,7 @@ export default function PlayerPicker({
             // pointer or focus the × takes a pink FILL with black ink (6:1 in
             // both modes), so "remove" still reads pink. The negative margin
             // keeps the padded pill from moving the chip's layout.
-            className="hit-area-24 -mx-1 rounded-full px-1 text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink focus:bg-neon-pink focus:text-on-neon-pink focus-outline"
+            className="hit-area-24 -mx-1 rounded-full px-1 text-ink-2 hover:bg-neon-red hover:text-on-neon-red focus:bg-neon-red focus:text-on-neon-red focus-outline"
           >
             ×
           </button>

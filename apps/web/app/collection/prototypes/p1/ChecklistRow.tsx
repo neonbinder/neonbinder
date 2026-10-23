@@ -112,7 +112,7 @@ export default function ChecklistRow({
       onClick={onOpen}
       className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md border-rule-strong hover:bg-list-hover-raised cursor-pointer ${
         card.variation ? "ml-8 border-l-2 border-l-control" : ""
-      } ${isSelected ? "ring-2 ring-selection border-selection bg-blue-900/10" : ""}`}
+      } ${isSelected ? "ring-2 ring-selection border-selection bg-pick-blue/10" : ""}`}
     >
       <span className="text-sm font-mono text-ink-3 w-12 text-right shrink-0">
         #{card.cardNumber}

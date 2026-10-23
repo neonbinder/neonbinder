@@ -19,7 +19,11 @@ import { SECTIONS } from "@/src/layouts/print-layout";
  * tool" screen is not a thing worth avoiding here.
  *
  * The cards are driven by the same SECTIONS array the sub-tabs use, so a tool
- * cannot appear in one and be missing from the other.
+ * cannot appear in one and be missing from the other. *
+ * Each tool's icon takes its own neon hue (Jason, 2026-10-22: "use the array
+ * of neon colors for icons so that they all get their own"), never pink
+ * (cancel) or red (destructive). Spine labels are orange here and on the
+ * landing page.
  */
 
 const TOOL_DETAILS: Record<
@@ -52,7 +56,7 @@ const TOOL_DETAILS: Record<
     description:
       "Generate a QR code for an in-person sale that buyers scan to add to their running total.",
     icon: QrCodeIcon,
-    accent: "text-neon-pink-text group-hover:border-neon-pink/50",
+    accent: "text-neon-blue-text group-hover:border-neon-blue/50",
   },
   "/print/placeholders": {
     description:
@@ -64,7 +68,7 @@ const TOOL_DETAILS: Record<
     description:
       "Label a binder spine with a player's name in their team colors. Several labels print on one sheet.",
     icon: BookOpenIcon,
-    accent: "text-neon-blue-text group-hover:border-neon-blue/50",
+    accent: "text-neon-orange-text group-hover:border-neon-orange/50",
   },
 };
 

@@ -1973,7 +1973,7 @@ function SetTeamRow({
             type="button"
             onClick={() => void handleClear()}
             disabled={busy}
-            className="text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline disabled:opacity-50"
+            className="text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-red-text focus:text-neon-red-text focus-outline disabled:opacity-50"
           >
             Clear team
           </button>
@@ -2360,7 +2360,7 @@ function DeleteSelectorRowControl({
         // as low-key as it was — a grey icon, pink only on hover — because
         // deleting is the rare act here (NEO-219), and a chip would advertise
         // it beside every name.
-        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-ink-3 hover:text-neon-pink-text focus-outline aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-ink-3"
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-ink-3 hover:text-neon-red-text focus-outline aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-ink-3"
       >
         <TrashIcon className="w-4 h-4" aria-hidden="true" />
       </button>

@@ -84,6 +84,7 @@ describe("light palette contrast (NEO-356 spec)", () => {
     "neon-orange-text",
     "neon-teal-text",
     "neon-purple-text",
+    "neon-red-text",
   ];
 
   it("text roles reach 4.5:1 on the page, a sheet and a hovered row", () => {
@@ -117,7 +118,7 @@ describe("light palette contrast (NEO-356 spec)", () => {
   });
 
   it("black ink reads on every neon fill", () => {
-    for (const fill of ["neon-green", "neon-pink", "neon-blue", "neon-yellow", "neon-orange", "neon-teal", "neon-purple"] as TokenRole[]) {
+    for (const fill of ["neon-green", "neon-pink", "neon-blue", "neon-yellow", "neon-orange", "neon-teal", "neon-purple", "neon-red"] as TokenRole[]) {
       expect({ fill, ok: contrastRatio("#000000", tokenHex(fill, "light")) >= 4.5 }).toEqual({ fill, ok: true });
     }
   });
@@ -260,5 +261,27 @@ describe("no class string paints text on a surface it fails on", () => {
       }
     }
     expect(hits).toEqual([]);
+  });
+});
+
+describe("shadow-offset's hairline (Jason, 2026-10-22)", () => {
+  const start = themeCss.indexOf("@utility shadow-offset {");
+  const utility = themeCss.slice(start, themeCss.indexOf("\n}", start));
+
+  it("draws a 1px inset left and top edge in light, layered with the offset", () => {
+    expect(utility).toContain('[data-theme="light"] & {\n    --offset-edge: inset 1px 1px 0 var(--rule-strong);');
+    expect(utility).toContain("--tw-shadow: 5px 5px 0 var(--offset-shadow), var(--offset-edge);");
+    expect(utility).toContain("--tw-shadow: 5px 5px 0 var(--offset-shadow-complete), var(--offset-edge);");
+  });
+
+  it("skips it on a sheet with its own full border", () => {
+    expect(utility).toContain('[data-theme="light"] &:is([class~="border"], [class~="border-2"]) {\n    --offset-edge: 0 0 #0000;');
+  });
+
+  it("does nothing in dark", () => {
+    // Every selector in the utility is scoped to light.
+    const selectors = utility.split("\n").filter((l) => /^ {2}\S.*[{,]$/.test(l));
+    expect(selectors.length).toBeGreaterThan(0);
+    expect(selectors.filter((l) => !l.includes('[data-theme="light"]'))).toEqual([]);
   });
 });

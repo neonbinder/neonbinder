@@ -56,7 +56,9 @@ export function clerkAppearance(mode: ThemeMode) {
           // control (4.7:1 on white): Clerk draws input outlines and
           // dividers with it, which need 3:1 (WCAG 1.4.11).
           border: tokenHex("control", "light"),
-          danger: "#C40068", // neon-pink as text
+          // Tilt Red as text: Clerk paints errors and its destructive buttons
+          // (Remove, Delete account) with it, and destructive is red (NEO-356).
+          danger: tokenHex("neon-red-text", "light"),
           success: "#007A3B", // neon-green as text
           warning: "#7A6400", // neon-yellow as text
           // Clerk's alpha scale for ghost controls and hovered rows: ink.
@@ -79,7 +81,7 @@ export function clerkAppearance(mode: ThemeMode) {
           // non-text minimum (WCAG 1.4.11) for the input outlines and
           // dividers Clerk draws with it.
           border: tokenHex("control", "dark"),
-          danger: "#FF2E9A", // neon-pink
+          danger: tokenHex("neon-red-text", "dark"), // Tilt Red as text
           success: "#00D558", // neon-green
           warning: "#FFE600", // neon-yellow
           // Clerk derives an alpha scale from this for ghost/outline controls:

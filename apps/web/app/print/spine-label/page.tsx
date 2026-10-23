@@ -797,7 +797,7 @@ export default function SpineLabelPage() {
                   </span>
                   <NeonButton
                     type="button"
-                    cancel
+                    destructive
                     onClick={() => removeLabel(label.id)}
                     aria-label={`Remove ${label.name}, ${label.widthIn} inch spine in ${label.font.label}, from the sheet`}
                   >

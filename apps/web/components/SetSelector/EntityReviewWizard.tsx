@@ -5116,7 +5116,7 @@ export default function EntityReviewWizard({
                                         // the gray-800 chip), and a real focus
                                         // ring rather than a colour swap behind
                                         // `focus:outline-none` (SC 2.4.7).
-                                        className="hit-area-24 text-ink-3 hover:text-neon-pink-text focus-outline rounded"
+                                        className="hit-area-24 text-ink-3 hover:text-neon-red-text focus-outline rounded"
                                       >
                                         ×
                                       </button>

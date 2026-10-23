@@ -65,7 +65,7 @@ const TERMINAL_STATUSES: readonly RunStatus[] = ["succeeded", "failed"];
  * How the badge reads and how it is coloured.
  *
  * Three visual groups, not eight: terminal-good (green), terminal-bad (pink,
- * the app's destructive colour), and in-flight (yellow for the pipeline stages,
+ * the app's error colour), and in-flight (yellow for the pipeline stages,
  * blue for the two states that are waiting on a person rather than on us).
  * Colour is never the only carrier — the word is the label.
  */
@@ -337,18 +337,19 @@ export default function PipelineRunsPage() {
                   type="button"
                   aria-pressed={active}
                   onClick={() => setStatusFilter(option.value)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors focus-outline ${
+                  // The shared chip roles (NEO-356): a neutral chip with a
+                  // control edge at rest, chip-strong under the pointer, and
+                  // the pressed one lit as a neon sign, green with black ink.
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors focus-outline ${
                     active
-                      ? "bg-neon-green/20 text-neon-green-text font-semibold"
-                      : "bg-rule text-ink-2 hover:bg-rule-strong"
+                      ? "border-neon-green bg-neon-green text-on-neon-green font-semibold"
+                      : "border-control bg-chip text-ink-2 hover:bg-chip-strong hover:text-ink"
                   }`}
                 >
-                  {/* A non-colour cue for the active chip: the green tint and
-                      the grey inactive tint are only ~1.1:1 apart in luminance,
-                      so under grayscale/colour-blindness the selected chip is
-                      otherwise indistinguishable (a11y audit, WCAG 1.4.1). The
-                      check is hidden from AT — aria-pressed already carries the
-                      state name. */}
+                  {/* A non-colour cue for the active chip (a11y audit, WCAG
+                      1.4.1): colour alone must not carry the pressed state.
+                      The check is hidden from AT — aria-pressed already
+                      carries the state name. */}
                   {active && <span aria-hidden="true">✓ </span>}
                   {option.label}
                 </button>
@@ -436,7 +437,7 @@ export default function PipelineRunsPage() {
                   <span className="ml-auto">
                     {!isTerminal && (
                       <NeonButton
-                        cancel
+                        destructive
                         size="1"
                         type="button"
                         // The visible word is "Abort" on every row, so the

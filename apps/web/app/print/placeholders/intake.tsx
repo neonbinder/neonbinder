@@ -411,7 +411,7 @@ export default function CardIntake() {
                 <button
                   type="button"
                   onClick={() => setPendingAction("abort")}
-                  className="text-sm text-ink-3 underline hover:text-neon-pink-text p-2 -m-2"
+                  className="text-sm text-ink-3 underline hover:text-neon-red-text p-2 -m-2"
                 >
                   Discard this batch
                 </button>

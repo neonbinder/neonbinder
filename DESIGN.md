@@ -9,6 +9,7 @@ colors:
   neon-orange: "#FF9E00"
   neon-teal: "#00E5C0"
   neon-purple: "#A44AFF"
+  neon-red: "#FF2D3D"
   ink-on-neon: "#000000"
   dark-surface: "#0A0A0A"
   dark-raised: "#1E2939"
@@ -25,6 +26,8 @@ colors:
   dark-focus: "#00C2FF"
   dark-selection: "#00C2FF"
   dark-neon-purple-text: "#B56BFF"
+  dark-neon-pink-text: "#FF40A3"
+  dark-neon-red-text: "#FF5560"
   light-surface: "#F7F8FC"
   light-raised: "#FFFFFF"
   light-field: "#FFFFFF"
@@ -45,6 +48,7 @@ colors:
   light-neon-orange-text: "#9A4D00"
   light-neon-teal-text: "#007060"
   light-neon-purple-text: "#7A2BD9"
+  light-neon-red-text: "#C4001F"
   paper: "#FFFFFF"
 typography:
   display:
@@ -92,6 +96,11 @@ components:
     typography: "{typography.body}"
   button-cancel:
     backgroundColor: "{colors.neon-pink}"
+    textColor: "{colors.ink-on-neon}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+  button-destructive:
+    backgroundColor: "{colors.neon-red}"
     textColor: "{colors.ink-on-neon}"
     rounded: "{rounded.md}"
     padding: "8px 16px"
@@ -148,18 +157,19 @@ A component paints with **roles**, never with palette steps. Each role is a CSS 
 
 `apps/web/src/theme/tokens.ts` mirrors the values as data, for code that computes with a colour (team livery picked for contrast against the surface it sits on, Clerk's appearance). `tokens.test.tsx` fails on any drift and holds the light palette to its contrast promises.
 
-The ESLint rule `theme/no-raw-palette` bans, in `app/`, `components/`, `src/` and `lib/`: grey palette steps on a colour utility (`bg-gray-900`, `text-slate-300`), white or black as paint (`text-white`, `bg-black/60`), a raw hex in an arbitrary value (`ring-[#00C2FF]`), and any `dark:` variant. Its only allowlist is `scripts/eslint/theme-allowlist.mjs` → `PERMANENT`: print, the QR code, art, and the forced-dark prototypes, each with a reason.
+The ESLint rule `theme/no-raw-palette` bans, in `app/`, `components/`, `src/` and `lib/`: any palette step on a colour utility, grey (`bg-gray-900`, `text-slate-300`) or hued (`bg-red-600`, `text-amber-300`, `from-pink-500`), white or black as paint (`text-white`, `bg-black/60`), a raw hex in an arbitrary value (`ring-[#00C2FF]`), and any `dark:` variant. Its only allowlist is `scripts/eslint/theme-allowlist.mjs` → `PERMANENT`: print, the QR code, art, and the forced-dark prototypes, each with a reason.
 
 ### Neon (the same fills in both modes)
 - **Binder Green** (`neon-green`): the brand and the forward action. Primary buttons, the Dashboard tab, success, the Radix accent (`accentColor="green"`; the green scale's step 9 is this value on sRGB screens, and wide-gamut screens get its Display P3 equivalent).
-- **Show-Sign Pink** (`neon-pink`): cancel, destructive and sign-out. Never a decorative accent; pink always means "stop" or "undo". Destructive is pink, not red.
+- **Show-Sign Pink** (`neon-pink`): cancel. Backing out without losing anything: Cancel, Close, Stop, Sign out. Never a decorative accent and never destructive.
+- **Tilt Red** (`neon-red`, #FF2D3D): destructive. Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip, and the danger notices. A hot red as bright as the pink, so the family stays lit; the pinball machine's TILT light, the one you don't want to see.
 - **Marquee Cyan** (`neon-blue`): secondary buttons, the Collection tab, the light mode's offset shadow.
 - **Hazard Yellow** (`neon-yellow`): Inventory; also warnings.
 - **Admin Amber** (`neon-orange`): Admin and other gated features.
 - **Label Teal** (`neon-teal`): Print Shop, shipping and labels.
 - **Profile Violet** (`neon-purple`): Profile.
 
-Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as text on the page (`text-neon-X-text`), and the ink on the fill (`text-on-neon-X`, black in both modes). In dark the text is the fill itself, except violet (#B56BFF, because #A44AFF fails 4.5:1 on graphite). In light every hue is deepened to 4.5:1 on white (green #007A3B, pink #C40068, cyan #006DA6, yellow #7A6400, amber #9A4D00, teal #007060, violet #7A2BD9). A neon fill under the pointer is `bg-neon-X-hover`.
+Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as text on the page (`text-neon-X-text`), and the ink on the fill (`text-on-neon-X`, black in both modes). In dark the text is the fill itself, except three hues lifted a touch so they reach 4.5:1 on a graphite card: violet #B56BFF (the fill is under 4.5:1), pink #FF40A3 (the fill is 4.27:1) and red #FF5560 (the fill is 3.98:1). In light every hue is deepened to 4.5:1 on white (green #007A3B, pink #C40068, cyan #006DA6, yellow #7A6400, amber #9A4D00, teal #007060, violet #7A2BD9, red #C4001F). A neon fill under the pointer is `bg-neon-X-hover`.
 
 ### Surfaces, lines and ink
 
@@ -196,7 +206,7 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 
 `bg-hover` equals `bg-raised` in dark, so never use it for a hover that sits on a raised surface; that is what `hover-raised` is for.
 
-In dark these tiles are light greys, and `ink-3` and the pink and violet `-text` hues miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a pink fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
+In dark these tiles are light greys, and `ink-3` and the pink, violet and red `-text` hues miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a red fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
 
 ### Panels and washes
 
@@ -212,7 +222,7 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 ### Notices
 
-`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink.
+`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and the Tilt Red text hue as its rule (#C4001F).
 
 ### State that differs by mode
 
@@ -228,7 +238,9 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 **The Text Is Not The Fill Rule.** Neon used as text is `text-neon-X-text`, never `text-neon-X`. In dark they match (violet aside); in light the fill is under 2:1 on white.
 
-**The One Hue Per Section Rule.** A section's colour is fixed by its tab (Dashboard green, Collection cyan, Inventory yellow, Admin amber, Print Shop teal, Profile violet). Don't borrow another section's hue for emphasis.
+**The One Hue Per Section Rule.** A section's colour is fixed by its tab (Dashboard green, Collection cyan, Inventory yellow, Admin amber, Print Shop teal, Profile violet). It governs the section's identity: its tab, its headings, its emphasis. Don't borrow another section's hue for that.
+
+**The Own Hue Per Tool Rule.** Inside a section, a set of sibling tools shown side by side (the Print Shop index, the landing page's feature cards) gives each tool's icon, and its hover edge, its own neon hue, no two alike where the set allows. That is the one place a section shows hues other than its own, because there the colour tells the tools apart rather than saying where you are. Pink (cancel) and red (destructive) are never icon hues. Where a tool appears in two such sets it takes the same hue in both where it can: Spine Labels are orange on the Print Shop index and on the landing page.
 
 **The Role Not Step Rule.** Reach for the role that names the job (`hover-raised`, `chip`, `selection-line`), never for a role that happens to have the right value in one mode (`bg-rule-strong` as a hover fill, `bg-ink/10` as a chip). The second one breaks the other mode.
 
@@ -263,7 +275,7 @@ Depth is mostly tonal: `surface` → `raised` → `field`, separated by `rule` b
 
 - **Floating layer** (Tailwind `shadow-lg` / `shadow-xl`): dialogs, dropdowns, popovers, in both modes.
 - **Neon glow** (dark only): marks "lit", meaning the active binder tab and a few live highlights. Scaled by `--glow`, so it is absent in light.
-- **Hard offset** (light only, `shadow-offset`): a 5px 5px 0 cyan shadow, bottom and right, no blur, under scoreboards, the set picker's columns, sheets, popovers and notices. Green when the element or a child carries `data-complete="true"`. It holds under the pointer too: a `hover:shadow-lg` glow on the same element shows in dark only. Dark keeps whatever shadow the element had.
+- **Hard offset** (light only, `shadow-offset`): a 5px 5px 0 cyan shadow, bottom and right, no blur, under scoreboards, the set picker's columns, sheets, popovers and notices. Green when the element or a child carries `data-complete="true"`. The other two edges get a 1px `rule-strong` hairline, left and top, drawn inset so it moves nothing; without it a white sheet on the cool page barely reads as a card. A sheet with its own full border (`border`, `border-2`) skips the hairline rather than doubling its edge. It holds under the pointer too: a `hover:shadow-lg` glow on the same element shows in dark only. Dark keeps whatever shadow the element had.
 
 ### Shadow Vocabulary
 - **Tab glow** (`0 0 12px 2px <hue>/0.4, inset 0 0 8px <hue>/0.1`): the active binder tab in dark, in its section's hue. Light draws a 4px inset edge in the hue on every tab, 6px on the lit one.
@@ -285,9 +297,9 @@ The physical objects keep their real geometry: placeholder cards are true 2.5" �
 ## Components
 
 ### Signature utilities (app/theme.css)
-Applied explicitly in components; nothing matches class strings.
+Applied explicitly in components. The one class a utility reads is `border`: `shadow-offset` skips its hairline on a sheet with a full border.
 - `focus-outline`: 2px `focus` outline, 2px clear of the control. Focus is always an outline, never a box-shadow ring (a shadow rule can clobber a ring).
-- `shadow-offset`: the light mode's hard neon offset (above).
+- `shadow-offset`: the light mode's hard neon offset and its hairline (above).
 - `selection-edge`: a 4px edge down a row's left in `selection-line`, for a committed selection on a hued pick. A different shape from the keyboard highlight's full ring, so "selected" and "where Enter lands" read apart by more than colour. It composes with ring and shadow utilities.
 - `binder-tab`, `binder-row` + `tab-hue-X`: the index tabs and mobile menu rows; the lit one is `aria-current="page"`.
 - `pip`, `pip-owned`, `pip-want`, `pip-missing`: the collection scoreboard's pips; in light they differ by shape as well as colour (a dot, a thick amber ring, a thin ring).
@@ -298,7 +310,8 @@ Applied explicitly in components; nothing matches class strings.
 Crisp, solid and few. One neon fill per decision.
 - **Shape:** gently rounded (6px).
 - **Primary:** Binder Green fill, black ink, 8px × 16px, `text-sm`. Hover is `neon-green-hover`.
-- **Cancel / Destructive:** Show-Sign Pink fill, black ink.
+- **Cancel:** Show-Sign Pink fill, black ink (`NeonButton cancel`).
+- **Destructive:** Tilt Red fill, black ink (`NeonButton destructive`, `Button variant="destructive"`), `neon-red-hover` under the pointer. A quiet destructive link or × is `ink-3` that turns `text-neon-red-text` under the pointer. In a confirm dialog the destructive button sits beside a cyan Cancel, never a pink one: red beside pink reads as one colour.
 - **Secondary:** Marquee Cyan fill, black ink.
 - **Neutral:** `button-neutral` fill, `ink` or `ink-2` text, `button-neutral-hover` under the pointer.
 - **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. Dark dims the neon to 45% opacity; light swaps it for the `button-neutral` fill and `ink-3` ink, because a neon fill at 45% on white reads as a pale, still-pressable button. Not-allowed cursor in both.
@@ -326,7 +339,7 @@ Crisp, solid and few. One neon fill per decision.
 The right-edge vertical tab stack is the binder metaphor made literal. Each tab is an icon plus a `text-base` label in `ink-3` at rest. Every tab is 170px wide; a resting tab sits 10px past the right edge and the active one slides fully out (hover pulls a resting tab out 6px), so the movement is a transform, never a width change. The active tab takes its section hue for text; in dark it sits on `raised-deep` and glows, in light every tab carries a 4px edge in its hue and the lit one 6px with a soft drop. Below 1024px the same destinations live in a slide-in panel from the right (0.24s, expo ease-out; a 0.15s fade under reduced motion).
 
 ### Header and Wordmark
-The sticky header carries the brand mark and Neon wordmark at left and account actions at right, with sign-out as a Show-Sign Pink button. The pulling logo appears on the public hero only, where it switches on once like a neon sign (dark, two flickers, lit, then it holds). It never loops, and under reduced motion it is simply lit.
+The sticky header carries the brand mark and Neon wordmark at left and account actions at right, with sign-out as a Show-Sign Pink button (leaving, not destroying). The pulling logo appears on the public hero only, where it switches on once like a neon sign (dark, two flickers, lit, then it holds). It never loops, and under reduced motion it is simply lit.
 
 ### Clerk
 `clerkAppearance(mode)` (`components/modules/clerk-appearance.ts`) skins every Clerk surface from `<ClerkProvider>` in the page's mode. Clerk renders outside our CSS, so the colours are literal hexes, taken from `tokens.ts` where they are roles. Clerk paints its text links in `colorPrimary` (our button fill), so the link elements are pointed at `neon-green-text`; in light a field's edge is drawn in `control`, because Clerk's own edge is 11% of `colorBorder`.
@@ -341,6 +354,8 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Do** put black ink on every neon fill, in both modes.
 - **Do** use `text-neon-X-text`, not `text-neon-X`, for neon text.
 - **Do** keep each section in its tab's hue.
+- **Do** give each sibling tool's icon its own neon hue (never pink or red).
+- **Do** paint every destructive action Tilt Red, and keep pink for cancel.
 - **Do** give a selected or active state a line as well as any glow or tint.
 - **Do** scale every glow by `--glow`.
 - **Do** honour `aria-disabled` on disabled buttons.
@@ -357,4 +372,5 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Don't** set headings in gradient text; a heading takes its section's one hue (One Hue Per Section).
 - **Don't** hand-mix a near-neon hex. `#00B7FF` and `#FF2EB3` crept into 80 files before the 2026-10 audit folded them back into Marquee Cyan `#00C2FF` and Show-Sign Pink `#FF2E9A`.
 - **Don't** put a glow on a resting element.
-- **Don't** use neon pink for anything but cancel, destructive and sign-out.
+- **Don't** use neon pink for anything but cancel, or for anything destructive: that is Tilt Red.
+- **Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.

@@ -696,7 +696,7 @@ export default function PrizesPanel() {
                       removeSportsImage(index, editingPrizeId !== null)
                     }
                     aria-label={`Remove sports image ${index + 1}`}
-                    className="absolute -top-2 -right-2 bg-neon-pink hover:bg-neon-pink-hover text-on-neon-pink focus-outline rounded-full w-6 h-6 flex items-center justify-center text-sm"
+                    className="absolute -top-2 -right-2 bg-neon-red hover:bg-neon-red-hover text-on-neon-red focus-outline rounded-full w-6 h-6 flex items-center justify-center text-sm"
                   >
                     <span aria-hidden="true">×</span>
                   </button>
@@ -843,8 +843,9 @@ export default function PrizesPanel() {
                   </NeonButton>
                   <NeonButton
                     onClick={() => handleDeletePrize(prize._id)}
+                    destructive
                     disabled={isLoading}
-                    className="bg-red-600 hover:bg-red-700 px-3 py-1 text-sm"
+                    className="px-3 py-1 text-sm"
                   >
                     Delete
                   </NeonButton>

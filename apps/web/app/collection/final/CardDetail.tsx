@@ -242,7 +242,7 @@ export default function CardDetail({
                     else copyRefs.current.delete(copy.id);
                   }}
                   className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm ${
-                    copy.id === focusCopyId ? "bg-blue-900/20 ring-2 ring-inset ring-selection" : ""
+                    copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                   }`}
                 >
                   <span className="min-w-0 flex-1">
@@ -272,7 +272,7 @@ export default function CardDetail({
                   </button>
                   <button
                     type="button"
-                    className={`${QUIET_BUTTON} hover:text-neon-pink-text`}
+                    className={`${QUIET_BUTTON} hover:text-neon-red-text`}
                     aria-label={`Remove ${name}, ${names[i]}`}
                     onClick={() => remove(copy)}
                   >

@@ -469,7 +469,7 @@ export default function CardChecklistItem({
                 ? `Confirm remove card ${cardIdentity} from this set`
                 : `Confirm delete card ${cardIdentity}`
             }
-            className="hit-area-24 px-1.5 py-0.5 text-xs text-neon-pink-text font-medium"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-neon-red-text font-medium"
           >
             Confirm?
           </button>
@@ -485,7 +485,7 @@ export default function CardChecklistItem({
                 ? `Remove card ${cardIdentity} from this set`
                 : `Delete card ${cardIdentity}`
             }
-            className="hit-area-24 px-1.5 py-0.5 text-xs text-ink-3 hover:text-neon-pink-text"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-ink-3 hover:text-neon-red-text"
             title={
               isCrossListed
                 ? "Remove from this set — the card stays in the set it was printed in"

@@ -69,7 +69,7 @@ export default function CardAttentionBadge({
       // badge's own translucent amber wash, the ink clears 4.5:1 and the
       // rule 3:1 in both modes; a raw amber step cannot do both, since the
       // shade that passes on graphite fails on white and the reverse.
-      className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-notice-warn-rule bg-amber-400/15 text-[11px] font-bold text-notice-warn-ink"
+      className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-notice-warn-rule bg-neon-orange/15 text-[11px] font-bold text-notice-warn-ink"
     >
       <span aria-hidden="true">!</span>
     </span>

@@ -1471,7 +1471,7 @@ export default function EntityColumn({
         aria-label={`${suggestions.length} name${
           suggestions.length === 1 ? "" : "s"
         } to check — review suggestions`}
-        className="text-xs px-2.5 py-1 rounded-full border border-notice-warn-rule bg-amber-400/15 text-notice-warn-ink focus-outline"
+        className="text-xs px-2.5 py-1 rounded-full border border-notice-warn-rule bg-neon-orange/15 text-notice-warn-ink focus-outline"
       >
         {suggestions.length} name{suggestions.length === 1 ? "" : "s"} to check
       </button>

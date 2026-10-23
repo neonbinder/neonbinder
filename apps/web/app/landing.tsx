@@ -152,7 +152,7 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handlePrintShopClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-pink-text hover:shadow-lg hover:shadow-neon-pink-text/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-orange-text hover:shadow-lg hover:shadow-neon-orange-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🏷️</div>
               <h2 className="text-xl font-semibold mb-2">Spine Labels in Team Colors</h2>

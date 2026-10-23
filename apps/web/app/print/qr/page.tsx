@@ -132,7 +132,7 @@ export default function QrCodePage() {
   if (myProfile === null) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
-        <QrCodeIcon className="w-20 h-20 text-neon-pink-text mb-6" />
+        <QrCodeIcon className="w-20 h-20 text-neon-blue-text mb-6" />
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-3">QR Code Generator</h2>
         <p className="text-ink-3 max-w-md mb-6">

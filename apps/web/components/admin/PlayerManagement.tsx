@@ -1121,7 +1121,7 @@ function PlayerSportsField({
               onClick={() => remove(id)}
               aria-disabled={busy || undefined}
               aria-label={`Remove sport ${nameOf(id)}`}
-              className="min-h-6 min-w-6 rounded-full text-ink-3 transition-colors hover:bg-neon-pink/10 hover:text-neon-pink-text focus-outline"
+              className="min-h-6 min-w-6 rounded-full text-ink-3 transition-colors hover:bg-neon-red/10 hover:text-neon-red-text focus-outline"
             >
               ×
             </button>
@@ -1976,7 +1976,7 @@ function PlayerDetail({
                   type="button"
                   onClick={() => removeStint(index)}
                   aria-label={`Remove ${teamName(stint.teamId)} ${stint.fromYear} stint`}
-                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-pink-text transition-colors hover:bg-neon-pink/10 focus-outline"
+                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-red-text transition-colors hover:bg-neon-red/10 focus-outline"
                 >
                   Remove stint
                 </button>

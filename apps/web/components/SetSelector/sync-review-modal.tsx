@@ -1022,7 +1022,7 @@ export default function SyncReviewModal({
                           aria-describedby={
                             orphansOverCap ? "sync-delete-cap" : undefined
                           }
-                          className="h-4 w-4 shrink-0 accent-neon-pink aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                          className="h-4 w-4 shrink-0 accent-neon-red aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                           aria-label={`Delete #${r.cardNumber} ${r.cardName}`}
                         />
                         <label
@@ -1243,7 +1243,7 @@ export default function SyncReviewModal({
                   Cancel
                 </NeonButton>
                 <NeonButton
-                  cancel
+                  destructive
                   size="2"
                   onClick={submit}
                   aria-label={`Confirm deleting ${selectedDeleteIds.length.toLocaleString()} cards`}

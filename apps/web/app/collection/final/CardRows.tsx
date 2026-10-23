@@ -248,7 +248,7 @@ export default function CardRowGroup({
       className={`overflow-hidden rounded-md border border-rule-strong ${
         card.variation ? "ml-8 border-l-2 border-l-control" : ""
       } ${stacked ? "border-l-2 border-l-neon-blue/70" : ""} ${
-        isSelected || highlighted ? "border-selection bg-blue-900/10 ring-2 ring-selection" : ""
+        isSelected || highlighted ? "border-selection bg-pick-blue/10 ring-2 ring-selection" : ""
       }`}
     >
       {copies.length === 0 ? (

@@ -70,14 +70,22 @@
   --neon-orange: #ff9e00;
   --neon-teal: #00e5c0;
   --neon-purple: #a44aff;
+  /* Tilt Red (NEO-356, Jason 2026-10-22): destructive actions only. A hot
+   * red in the family's spirit, as bright as the pink it takes the job from. */
+  --neon-red: #ff2d3d;
 
   --neon-green-text: #00d558;
-  --neon-pink-text: #ff2e9a;
+  /* Pink as text is a touch lighter than the fill so it reaches 4.5:1 on a
+   * graphite card (the fill is 4.27:1 there). */
+  --neon-pink-text: #ff40a3;
   --neon-blue-text: #00c2ff;
   --neon-yellow-text: #ffe600;
   --neon-orange-text: #ff9e00;
   --neon-teal-text: #00e5c0;
   --neon-purple-text: #b56bff;
+  /* Lighter than the fill for the same reason as violet: #ff2d3d is 3.98:1 on
+   * a graphite card. */
+  --neon-red-text: #ff5560;
 
   --on-neon-green: #000000;
   --on-neon-pink: #000000;
@@ -86,6 +94,7 @@
   --on-neon-orange: #000000;
   --on-neon-teal: #000000;
   --on-neon-purple: #000000;
+  --on-neon-red: #000000;
 
   /* A neon fill under the pointer: 85% of the fill over what is behind it. */
   --neon-green-hover: color-mix(in oklab, #00d558 85%, transparent);
@@ -95,6 +104,7 @@
   --neon-orange-hover: color-mix(in oklab, #ff9e00 85%, transparent);
   --neon-teal-hover: color-mix(in oklab, #00e5c0 85%, transparent);
   --neon-purple-hover: color-mix(in oklab, #a44aff 85%, transparent);
+  --neon-red-hover: color-mix(in oklab, #ff2d3d 85%, transparent);
 
   /* Notices: a tinted ground, readable ink, a rule. Dark is the family the
    * app's notices already used most (blue/amber/red/green 900 ground, 200-300
@@ -266,6 +276,7 @@
   --neon-orange-text: #9a4d00;
   --neon-teal-text: #007060;
   --neon-purple-text: #7a2bd9;
+  --neon-red-text: #c4001f;
 
   --neon-green-hover: #33e07c;
   --neon-pink-hover: #ff5cb0;
@@ -274,6 +285,7 @@
   --neon-orange-hover: #ffb133;
   --neon-teal-hover: #33eacd;
   --neon-purple-hover: #b66eff;
+  --neon-red-hover: #ff5764;
 
   --notice-info-bg: #eaf5fc;
   --notice-info-ink: #005f8f;
@@ -281,9 +293,10 @@
   --notice-warn-bg: #fff5d6;
   --notice-warn-ink: #6b4e00;
   --notice-warn-rule: #a36a00;
-  --notice-danger-bg: #fde9f2;
-  --notice-danger-ink: #a8005a;
-  --notice-danger-rule: #c40068;
+  /* Danger keys off Tilt Red, as dark's red-900 family already does. */
+  --notice-danger-bg: #fdecee;
+  --notice-danger-ink: #a3001a;
+  --notice-danger-rule: #c4001f;
   --notice-success-bg: #e7f7ed;
   --notice-success-ink: #006632;
   --notice-success-rule: #007a3b;
@@ -372,18 +385,29 @@
  * ring still draws. Focus on an offset sheet sits 4px out, clear of the
  * shadow. */
 @utility shadow-offset {
+  /* The sheet's other two edges (Jason, 2026-10-22: "it is hard to make out
+   * that they are a card"): a 1px hairline down the left and across the top,
+   * drawn inset so it shifts nothing and is never clipped. A sheet that
+   * already has a full border (`border`, `border-2`) keeps its own edge and
+   * skips the hairline, or the two would double up. */
+  [data-theme="light"] & {
+    --offset-edge: inset 1px 1px 0 var(--rule-strong);
+  }
+  [data-theme="light"] &:is([class~="border"], [class~="border-2"]) {
+    --offset-edge: 0 0 #0000;
+  }
   /* `:hover` too, at (0,3,0): a `hover:shadow-lg` glow on the same element
    * (the dark mode's lit hover) must not swap the offset out in light. */
   [data-theme="light"] &,
   [data-theme="light"] &:hover {
-    --tw-shadow: 5px 5px 0 var(--offset-shadow);
+    --tw-shadow: 5px 5px 0 var(--offset-shadow), var(--offset-edge);
     box-shadow:
       var(--tw-inset-shadow, 0 0 #0000), var(--tw-inset-ring-shadow, 0 0 #0000),
       var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000),
       var(--tw-shadow);
   }
   [data-theme="light"] &:is([data-complete="true"], :has([data-complete="true"])) {
-    --tw-shadow: 5px 5px 0 var(--offset-shadow-complete);
+    --tw-shadow: 5px 5px 0 var(--offset-shadow-complete), var(--offset-edge);
   }
   [data-theme="light"] &:focus-visible {
     outline-offset: 4px;
@@ -550,6 +574,7 @@
   --color-neon-orange: var(--neon-orange);
   --color-neon-teal: var(--neon-teal);
   --color-neon-purple: var(--neon-purple);
+  --color-neon-red: var(--neon-red);
 
   --color-neon-green-text: var(--neon-green-text);
   --color-neon-pink-text: var(--neon-pink-text);
@@ -558,6 +583,7 @@
   --color-neon-orange-text: var(--neon-orange-text);
   --color-neon-teal-text: var(--neon-teal-text);
   --color-neon-purple-text: var(--neon-purple-text);
+  --color-neon-red-text: var(--neon-red-text);
 
   --color-on-neon-green: var(--on-neon-green);
   --color-on-neon-pink: var(--on-neon-pink);
@@ -566,6 +592,7 @@
   --color-on-neon-orange: var(--on-neon-orange);
   --color-on-neon-teal: var(--on-neon-teal);
   --color-on-neon-purple: var(--on-neon-purple);
+  --color-on-neon-red: var(--on-neon-red);
 
   --color-neon-green-hover: var(--neon-green-hover);
   --color-neon-pink-hover: var(--neon-pink-hover);
@@ -574,6 +601,7 @@
   --color-neon-orange-hover: var(--neon-orange-hover);
   --color-neon-teal-hover: var(--neon-teal-hover);
   --color-neon-purple-hover: var(--neon-purple-hover);
+  --color-neon-red-hover: var(--neon-red-hover);
 
   --color-notice-info-bg: var(--notice-info-bg);
   --color-notice-info-ink: var(--notice-info-ink);

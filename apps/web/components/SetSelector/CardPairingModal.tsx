@@ -2893,7 +2893,7 @@ export default function CardPairingModal({
                         </span>
                         <button
                           type="button"
-                          className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
+                          className="text-xs text-ink-3 hover:text-neon-red-text px-2 py-1.5"
                           onClick={() => {
                             dispatch({ type: "UNLINK", index: i });
                             refocus(matchedToggleRef.current);
@@ -3413,7 +3413,7 @@ export default function CardPairingModal({
                       <span>BSC: {label(c)}</span>
                       <button
                         type="button"
-                        className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
+                        className="text-xs text-ink-3 hover:text-neon-red-text px-2 py-1.5"
                         onClick={() => {
                           dispatch({
                             type: "UNKEEP",
@@ -3436,7 +3436,7 @@ export default function CardPairingModal({
                       <span>SL: {label(c)}</span>
                       <button
                         type="button"
-                        className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
+                        className="text-xs text-ink-3 hover:text-neon-red-text px-2 py-1.5"
                         onClick={() => {
                           dispatch({
                             type: "UNKEEP",

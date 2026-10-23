@@ -1566,7 +1566,7 @@ export default function CardDetailPanel({
                       }}
                       aria-label={`Unlink card from ${link.setLabel}`}
                       title="Remove this card from that set — the card itself is not deleted"
-                      className="px-2 py-0.5 rounded text-neon-pink-text hover:bg-neon-pink/10 border border-transparent hover:border-neon-pink-text/50 shrink-0"
+                      className="px-2 py-0.5 rounded text-neon-red-text hover:bg-neon-red/10 border border-transparent hover:border-neon-red-text/50 shrink-0"
                     >
                       Unlink
                     </button>

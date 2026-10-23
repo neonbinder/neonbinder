@@ -36,6 +36,7 @@ export type TokenRole =
   | "neon-orange"
   | "neon-teal"
   | "neon-purple"
+  | "neon-red"
   | "neon-green-text"
   | "neon-pink-text"
   | "neon-blue-text"
@@ -43,6 +44,7 @@ export type TokenRole =
   | "neon-orange-text"
   | "neon-teal-text"
   | "neon-purple-text"
+  | "neon-red-text"
   | "notice-info-ink"
   | "notice-warn-ink"
   | "notice-danger-ink"
@@ -145,6 +147,7 @@ export type TextRole =
   | "neon-orange-text"
   | "neon-teal-text"
   | "neon-purple-text"
+  | "neon-red-text"
   | "notice-info-ink"
   | "notice-warn-ink"
   | "notice-danger-ink"
@@ -163,29 +166,19 @@ export type TextRole =
  * text. Light's -text hues are cut for white and the page; the one-step-up
  * grey (chip-strong, button-neutral-hover) is the only place they miss.
  *
- * `neon-pink-text` on `raised`/`hover` in dark (4.27:1) is origin/main's own
- * pairing (pink copy on a graphite card) and is listed so the table is
- * honest, not because it is fine: lifting it means a new dark pink, which is
- * a design decision, not a token fix.
+ * Dark `neon-pink-text` is #ff40a3, a touch lighter than the fill, so pink
+ * copy on a graphite card (`raised`, `hover`) reaches 4.5:1 (the fill was
+ * 4.27:1; Jason, 2026-10-22).
  */
 export const TEXT_NEVER_ON: Record<ThemeMode, Partial<Record<TextRole, readonly SurfaceRole[]>>> = {
   dark: {
     "ink-3": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
     "neon-green-text": ["row-hover", "chip-strong", "button-neutral-hover"],
-    "neon-pink-text": [
-      "raised",
-      "hover",
-      "row",
-      "row-hover",
-      "hover-raised",
-      "chip",
-      "chip-strong",
-      "button-neutral",
-      "button-neutral-hover",
-    ],
+    "neon-pink-text": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
     "neon-blue-text": ["row-hover", "chip-strong", "button-neutral-hover"],
     "neon-orange-text": ["row-hover", "chip-strong", "button-neutral-hover"],
     "neon-purple-text": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
+    "neon-red-text": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
   },
   light: {
     "neon-green-text": ["chip-strong", "button-neutral-hover"],
@@ -203,6 +196,7 @@ const NEON_FILLS = {
   "neon-orange": "#ff9e00",
   "neon-teal": "#00e5c0",
   "neon-purple": "#a44aff",
+  "neon-red": "#ff2d3d",
 } as const;
 
 /** The CSS value of every role, per mode, exactly as app/theme.css writes it. */
@@ -226,12 +220,13 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     selection: "#00c2ff",
     ...NEON_FILLS,
     "neon-green-text": "#00d558",
-    "neon-pink-text": "#ff2e9a",
+    "neon-pink-text": "#ff40a3",
     "neon-blue-text": "#00c2ff",
     "neon-yellow-text": "#ffe600",
     "neon-orange-text": "#ff9e00",
     "neon-teal-text": "#00e5c0",
     "neon-purple-text": "#b56bff",
+    "neon-red-text": "#ff5560",
     "notice-info-ink": "oklch(88.2% 0.059 254.128)",
     "notice-warn-ink": "oklch(87.9% 0.169 91.605)",
     "notice-danger-ink": "oklch(88.5% 0.062 18.334)",
@@ -312,9 +307,10 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "neon-orange-text": "#9a4d00",
     "neon-teal-text": "#007060",
     "neon-purple-text": "#7a2bd9",
+    "neon-red-text": "#c4001f",
     "notice-info-ink": "#005f8f",
     "notice-warn-ink": "#6b4e00",
-    "notice-danger-ink": "#a8005a",
+    "notice-danger-ink": "#a3001a",
     "notice-success-ink": "#006632",
     "pip-owned": "#006da6",
     "pip-want": "#a36a00",
