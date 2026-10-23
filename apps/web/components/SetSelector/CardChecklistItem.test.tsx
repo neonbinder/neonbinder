@@ -21,7 +21,8 @@
  * (string-mocked) query/mutation reference.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { ConvexError } from "convex/values";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,11 +37,13 @@ vi.mock("../../convex/_generated/api", () => ({
     },
     selectorOptions: {
       deleteCard: "deleteCard",
+      removeCrossListing: "removeCrossListing",
     },
   },
 }));
 
 const mockDeleteCard = vi.fn();
+const mockRemoveCrossListing = vi.fn();
 
 /**
  * The rows `teams.getManyByIds` resolves to. `undefined` (the default, and
@@ -52,7 +55,12 @@ let currentTeamRows: unknown;
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) =>
     ref === "teams.getManyByIds" ? currentTeamRows : undefined,
-  useMutation: (ref: string) => (ref === "deleteCard" ? mockDeleteCard : vi.fn()),
+  useMutation: (ref: string) =>
+    ref === "deleteCard"
+      ? mockDeleteCard
+      : ref === "removeCrossListing"
+        ? mockRemoveCrossListing
+        : vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -84,7 +92,12 @@ function renderItem(
 ) {
   const onEdit = vi.fn();
   const utils = render(
-    <CardChecklistItem card={makeCard()} onEdit={onEdit} {...props} />,
+    <CardChecklistItem
+      card={makeCard()}
+      onEdit={onEdit}
+      onDeleteFailed={vi.fn()}
+      {...props}
+    />,
   );
   return { ...utils, onEdit };
 }
@@ -597,6 +610,7 @@ describe("CardChecklistItem — NEO-236 team names", () => {
           ...cardOverrides,
         })}
         onEdit={vi.fn()}
+        onDeleteFailed={vi.fn()}
       />,
     );
   }
@@ -653,6 +667,7 @@ describe("CardChecklistItem — NEO-272 accessible names carry the row's identit
             cardName: "Jon Larson",
           })}
           onEdit={vi.fn()}
+          onDeleteFailed={vi.fn()}
         />
         <CardChecklistItem
           card={makeCard({
@@ -661,6 +676,7 @@ describe("CardChecklistItem — NEO-272 accessible names carry the row's identit
             cardName: "Craig Herr",
           })}
           onEdit={vi.fn()}
+          onDeleteFailed={vi.fn()}
         />
       </>,
     );
@@ -688,6 +704,7 @@ describe("CardChecklistItem — NEO-272 accessible names carry the row's identit
           crossListingId: "xl-1" as unknown as Id<"cardCrossListings">,
         })}
         onEdit={vi.fn()}
+        onDeleteFailed={vi.fn()}
       />,
     );
 
@@ -701,7 +718,7 @@ describe("CardChecklistItem — NEO-272 accessible names carry the row's identit
 
   it("falls back to the bare card number when the row has no name — no trailing separator, no 'undefined'", () => {
     render(
-      <CardChecklistItem card={makeCard({ cardName: "" })} onEdit={vi.fn()} />,
+      <CardChecklistItem card={makeCard({ cardName: "" })} onEdit={vi.fn()} onDeleteFailed={vi.fn()} />,
     );
 
     expect(screen.getByLabelText("Edit card 42")).toBeTruthy();
@@ -710,9 +727,135 @@ describe("CardChecklistItem — NEO-272 accessible names carry the row's identit
 
   it("ignores a whitespace-only card name rather than labelling a row with a space", () => {
     render(
-      <CardChecklistItem card={makeCard({ cardName: "   " })} onEdit={vi.fn()} />,
+      <CardChecklistItem card={makeCard({ cardName: "   " })} onEdit={vi.fn()} onDeleteFailed={vi.fn()} />,
     );
 
     expect(screen.getByLabelText("Edit card 42")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-358 — a refused delete is handed up, and the row puts itself back
+//
+// `deleteCard` refuses a card collectors own with a ConvexError carrying the
+// sentence to show. Before this the row awaited it with no catch: an
+// unhandled rejection, nothing said, and "Confirm?" left standing. The
+// checklist's banner says the sentence (CardChecklist.deleteRefused.test.tsx);
+// here, the row's half: the sentence handed up, the control back to "Del",
+// focus on it.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklistItem — NEO-358 refused delete", () => {
+  const REFUSAL =
+    "Hold up! 3 collectors have this card, so it stays in the catalog.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentTeamRows = undefined;
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function pressDeleteThenConfirm(identity = "42, Mike Trout") {
+    fireEvent.click(screen.getByLabelText(`Delete card ${identity}`));
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(`Confirm delete card ${identity}`));
+    });
+  }
+
+  it("hands the server's sentence up, closes the confirm and puts focus on Del", async () => {
+    mockDeleteCard.mockRejectedValue(new ConvexError(REFUSAL));
+    const onDeleteFailed = vi.fn();
+    renderItem({ onDeleteFailed });
+
+    await pressDeleteThenConfirm();
+
+    expect(mockDeleteCard).toHaveBeenCalledWith({ id: CARD_ID });
+    expect(onDeleteFailed).toHaveBeenCalledTimes(1);
+    expect(onDeleteFailed).toHaveBeenCalledWith(REFUSAL);
+    expect(screen.queryByLabelText("Confirm delete card 42, Mike Trout")).toBeNull();
+    const del = screen.getByLabelText("Delete card 42, Mike Trout");
+    expect(document.activeElement).toBe(del);
+  });
+
+  it("says the fallback, never the raw message, for a failure that is not a ConvexError", async () => {
+    mockDeleteCard.mockRejectedValue(
+      new Error("[CONVEX M(selectorOptions:deleteCard)] Server Error"),
+    );
+    const onDeleteFailed = vi.fn();
+    renderItem({ onDeleteFailed });
+
+    await pressDeleteThenConfirm();
+
+    expect(onDeleteFailed).toHaveBeenCalledWith(
+      "That delete didn't go through. Give it another shot.",
+    );
+  });
+
+  it("does the same for a cross-release unlink, in its own words", async () => {
+    mockRemoveCrossListing.mockRejectedValue(new Error("network"));
+    const onDeleteFailed = vi.fn();
+    renderItem({
+      onDeleteFailed,
+      card: makeCard({
+        isCrossListed: true,
+        crossListingId: "xl-1" as unknown as Id<"cardCrossListings">,
+      }),
+    });
+
+    fireEvent.click(screen.getByLabelText("Remove card 42, Mike Trout from this set"));
+    await act(async () => {
+      fireEvent.click(
+        screen.getByLabelText("Confirm remove card 42, Mike Trout from this set"),
+      );
+    });
+
+    expect(mockDeleteCard).not.toHaveBeenCalled();
+    expect(onDeleteFailed).toHaveBeenCalledWith(
+      "That unlink didn't go through. Give it another shot.",
+    );
+    expect(document.activeElement).toBe(
+      screen.getByLabelText("Remove card 42, Mike Trout from this set"),
+    );
+  });
+
+  it("does not pull focus back when the operator moved on during the round trip", async () => {
+    let reject: (e: unknown) => void = () => {};
+    mockDeleteCard.mockReturnValue(
+      new Promise((_, r) => {
+        reject = r;
+      }),
+    );
+    render(
+      <>
+        <CardChecklistItem card={makeCard()} onEdit={vi.fn()} onDeleteFailed={vi.fn()} />
+        <button type="button">Elsewhere</button>
+      </>,
+    );
+    fireEvent.click(screen.getByLabelText("Delete card 42, Mike Trout"));
+    fireEvent.click(screen.getByLabelText("Confirm delete card 42, Mike Trout"));
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    elsewhere.focus();
+
+    await act(async () => {
+      reject(new ConvexError(REFUSAL));
+    });
+
+    expect(screen.getByLabelText("Delete card 42, Mike Trout")).toBeTruthy();
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it("sends one delete for a double press on Confirm", async () => {
+    mockDeleteCard.mockReturnValue(new Promise(() => {}));
+    renderItem();
+
+    fireEvent.click(screen.getByLabelText("Delete card 42, Mike Trout"));
+    const confirm = screen.getByLabelText("Confirm delete card 42, Mike Trout");
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    expect(mockDeleteCard).toHaveBeenCalledTimes(1);
   });
 });

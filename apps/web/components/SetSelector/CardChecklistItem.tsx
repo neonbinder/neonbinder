@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardAttentionBadge from "./CardAttentionBadge";
@@ -99,7 +100,33 @@ type CardChecklistItemProps = {
   // rather than depending on a DOM relationship to a node that may not be
   // mounted.
   parentCardNumber?: string;
+  /**
+   * NEO-358 — the server said no to a delete or an unlink. Most often
+   * `deleteCard` holding a card collectors own ("Hold up! 3 collectors have
+   * this card, so it stays in the catalog."), handed up as the sentence to
+   * show.
+   *
+   * Said by the CHECKLIST, not the row: the checklist's notice banner is the
+   * set builder's one live region for results (role="alert" for a failure),
+   * and a row is the wrong home for it twice over. A message inside the row
+   * would change its height, which re-measures the Virtuoso list (see the
+   * reserved-height notes below); and a row can be unmounted by
+   * virtualisation while the mutation is in flight, taking a row-owned
+   * message with it unheard.
+   *
+   * Required, so no caller can drop a refusal on the floor again: before
+   * this, the rejection went unhandled, nothing was said and the Confirm
+   * button stayed up.
+   */
+  onDeleteFailed: (message: string) => void;
 };
+
+/** Said when a delete fails for a reason the server did not put into words. */
+const DELETE_FAILED_FALLBACK =
+  "That delete didn't go through. Give it another shot.";
+/** The same, for unlinking a cross-release card. */
+const UNLINK_FAILED_FALLBACK =
+  "That unlink didn't go through. Give it another shot.";
 
 /**
  * Map raw attribute tokens to display-friendly badge content. Each attribute
@@ -139,8 +166,20 @@ export default function CardChecklistItem({
   isExpanded,
   onToggleVariations,
   parentCardNumber,
+  onDeleteFailed,
 }: CardChecklistItemProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /**
+   * NEO-358 — the Del/Confirm control (both states are one slot; the ref
+   * follows whichever is rendered), and a counter that asks for focus to come
+   * back to it once a refused delete has put it back to "Del". The counter is
+   * read in an effect so the focus lands on the button as rendered AFTER the
+   * reset, not the Confirm state it replaced.
+   */
+  const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  const [refocusDelete, setRefocusDelete] = useState(0);
+  /** One delete at a time: a second Confirm press while one is in flight is dropped. */
+  const deletingRef = useRef(false);
 
   // Resolve team display names for the row sub-line. Skipped when the card
   // has no teams.
@@ -162,13 +201,47 @@ export default function CardChecklistItem({
   const isCrossListed = card.isCrossListed === true && !!card.crossListingId;
 
   const handleDelete = async () => {
-    if (isCrossListed) {
-      await removeCrossListing({ crossListingId: card.crossListingId! });
-    } else {
-      await deleteCard({ id: card._id });
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+    try {
+      if (isCrossListed) {
+        await removeCrossListing({ crossListingId: card.crossListingId! });
+      } else {
+        await deleteCard({ id: card._id });
+      }
+      setConfirmDelete(false);
+    } catch (error) {
+      // NEO-358: the card is still here. Put the control back to "Del", hand
+      // the server's sentence to the checklist's banner (a ConvexError's
+      // `data`; anything else gets the fallback, never `.message`), and bring
+      // focus back to the control the operator pressed.
+      setConfirmDelete(false);
+      setRefocusDelete((n) => n + 1);
+      onDeleteFailed(
+        userFacingMessage(
+          error,
+          isCrossListed ? UNLINK_FAILED_FALLBACK : DELETE_FAILED_FALLBACK,
+        ),
+      );
+    } finally {
+      deletingRef.current = false;
     }
-    setConfirmDelete(false);
   };
+
+  // a11y (WCAG 2.4.3) — after a refusal, focus returns to this row's delete
+  // control, so a keyboard user is still on the card they acted on rather
+  // than on <body> at the top of a virtualised list; the banner's alert says
+  // why. Only when focus is still on the control or has fallen to <body>: an
+  // operator who moved on during the round trip is not pulled back.
+  useEffect(() => {
+    if (refocusDelete === 0) return;
+    const button = deleteButtonRef.current;
+    if (!button) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || active === button) {
+      button.focus();
+    }
+  }, [refocusDelete]);
 
   // NEO-236: the FULL name ("San Diego Padres"), composed from the row's
   // nickname and its optional location. A checklist sub-line is a reading
@@ -460,6 +533,7 @@ export default function CardChecklistItem({
         </button>
         {confirmDelete ? (
           <button
+            ref={deleteButtonRef}
             onClick={(e) => {
               e.stopPropagation();
               void handleDelete();
@@ -475,6 +549,7 @@ export default function CardChecklistItem({
           </button>
         ) : (
           <button
+            ref={deleteButtonRef}
             onClick={(e) => {
               e.stopPropagation();
               setConfirmDelete(true);

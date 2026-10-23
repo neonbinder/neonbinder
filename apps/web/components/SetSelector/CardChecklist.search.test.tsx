@@ -488,7 +488,7 @@ describe("what the row shows is what search finds (NEO-343)", () => {
       teamOnCardIds: [],
       platformData,
     });
-    const { container } = render(<CardChecklistItem card={asRow(c)} onEdit={() => {}} />);
+    const { container } = render(<CardChecklistItem card={asRow(c)} onEdit={() => {}} onDeleteFailed={() => {}} />);
     const badges = [...container.querySelectorAll("span.rounded.border")];
     expect(badges).toHaveLength(1);
     const text = badges[0].textContent!;
@@ -504,7 +504,7 @@ describe("what the row shows is what search finds (NEO-343)", () => {
       features: { autographed: "On-Card" },
       platformData: { bsc: { ref: "b1" }, sportlots: { ref: "s1" } },
     });
-    const { container } = render(<CardChecklistItem card={asRow(c)} onEdit={() => {}} />);
+    const { container } = render(<CardChecklistItem card={asRow(c)} onEdit={() => {}} onDeleteFailed={() => {}} />);
     const row = within(container as HTMLElement);
     const subLine = row.getByText(/\/99/).textContent!;
     const parts = subLine.split(" · ");

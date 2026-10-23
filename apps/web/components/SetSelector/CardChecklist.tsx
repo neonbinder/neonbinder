@@ -895,6 +895,11 @@ export default function CardChecklist({
     },
     [setSyncNotice],
   );
+  /** NEO-358 — a row's delete or unlink the server refused, said here. */
+  const onRowDeleteFailed = useCallback(
+    (message: string) => setSyncMessage(message, "error"),
+    [setSyncMessage],
+  );
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form's TEXT fields are UNCONTROLLED (refs, read at
   // submit) rather than controlled React state. CardChecklist re-renders on
@@ -3554,6 +3559,11 @@ export default function CardChecklist({
                   isVariation={row.isVariation}
                   isExpanded={row.expanded}
                   parentCardNumber={row.parentCardNumber}
+                  // NEO-358: a refused delete ("Hold up! 3 collectors have
+                  // this card…") is said in the notice banner, the
+                  // checklist's one live region for results, as an alert.
+                  // The row puts focus back on its own Del control.
+                  onDeleteFailed={onRowDeleteFailed}
                   // NEO-343: withdrawn while searching — every match is
                   // already listed open (see `displayRows`), so a toggle
                   // would change nothing.
