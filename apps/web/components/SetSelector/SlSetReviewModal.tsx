@@ -470,12 +470,12 @@ function PickerTrigger({
       inert={inert || undefined}
       onClick={activate}
       onKeyDown={(e) => activateOnEnter(e, activate, disabled)}
-      className={`flex w-full min-h-8 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${
-        open ? "border-[#00C2FF]" : "border-slate-500 hover:border-slate-300"
-      } ${muted ? "text-slate-400" : "text-gray-100"}`}
+      className={`flex w-full min-h-8 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-left text-sm focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${
+        open ? "border-selection" : "border-control hover:border-ink-2"
+      } ${muted ? "text-ink-3" : "text-ink"}`}
     >
       <span className="min-w-0 truncate">{text}</span>
-      <span aria-hidden="true" className="shrink-0 text-xs text-slate-400">
+      <span aria-hidden="true" className="shrink-0 text-xs text-ink-3">
         {open ? "▴" : "▾"}
       </span>
     </button>
@@ -531,7 +531,7 @@ function PickerList({
       role="group"
       aria-label={label}
       onKeyDown={onKeyDown}
-      className="mt-1 rounded-md border border-slate-500 bg-slate-950 p-1"
+      className="mt-1 rounded-md border border-control bg-sheet p-1"
     >
       <div className="flex max-h-44 flex-col gap-0.5 overflow-y-auto">
         {options.map((option) => (
@@ -543,10 +543,10 @@ function PickerList({
             onClick={() => onPick(option.key)}
             onKeyDown={(e) => activateOnEnter(e, () => onPick(option.key))}
             // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum.
-            className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
+            className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-outline ${
               option.current
-                ? "border-[#00D558] text-[#00D558]"
-                : "border-transparent text-gray-200 hover:border-slate-500"
+                ? "border-neon-green-text text-neon-green-text"
+                : "border-transparent text-ink-2 hover:border-control"
             }`}
           >
             <span className="flex min-w-0 items-baseline gap-1">
@@ -555,7 +555,7 @@ function PickerList({
               <span className="break-words">{option.label}</span>
             </span>
             {option.tag && (
-              <span className="shrink-0 text-xs text-slate-400">
+              <span className="shrink-0 text-xs text-ink-3">
                 <span className="sr-only">, </span>
                 {option.tag}
               </span>
@@ -586,14 +586,14 @@ function TickBox({
       aria-label={label}
       onClick={onToggle}
       onKeyDown={(e) => activateOnEnter(e, onToggle)}
-      className="group/tick flex h-8 w-8 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+      className="group/tick flex h-8 w-8 items-center justify-center rounded focus-outline"
     >
       <span
         aria-hidden="true"
         className={`flex h-4 w-4 items-center justify-center rounded-[4px] border text-[10px] leading-none ${
           checked
-            ? "border-neon-blue bg-neon-blue text-gray-950"
-            : "border-gray-400 bg-gray-900 group-hover/tick:border-neon-blue"
+            ? "border-selection bg-neon-blue text-on-neon-blue"
+            : "border-ink-3 bg-raised-deep group-hover/tick:border-selection"
         }`}
       >
         {checked === "mixed" ? "–" : checked ? "✓" : ""}
@@ -680,7 +680,7 @@ function NameField({
   const describedBy =
     [clashLineId, refusalId, clashId].filter(Boolean).join(" ") || undefined;
   return (
-    <label className="flex w-full max-w-sm items-center gap-2 text-xs text-slate-400">
+    <label className="flex w-full max-w-sm items-center gap-2 text-xs text-ink-3">
       <span className="shrink-0">{slReviewCopy.nameLabel}</span>
       <Input
         bare
@@ -714,7 +714,7 @@ function NameField({
         aria-describedby={describedBy}
         // `aria-invalid:` (class + attribute) outranks the primitive's own
         // border class without an !important.
-        className="min-w-0 flex-1 rounded-md px-2 py-1 text-sm aria-invalid:border-[#FF2E9A]"
+        className="min-w-0 flex-1 rounded-md px-2 py-1 text-sm aria-invalid:border-neon-pink-text"
       />
     </label>
   );
@@ -824,26 +824,26 @@ function ReviewRow({
   let reason: ReactNode = null;
   if (setId) {
     if (phase === "syncing") {
-      reason = <span className="text-slate-400">{slReviewCopy.syncing(setLabel)}</span>;
+      reason = <span className="text-ink-3">{slReviewCopy.syncing(setLabel)}</span>;
     } else if (failed) {
       reason = (
-        <span className="flex flex-wrap items-center gap-2 text-[#FF2E9A]">
+        <span className="flex flex-wrap items-center gap-2 text-neon-pink-text">
           {slReviewCopy.syncFailed(setLabel)}
           <button
             type="button"
             aria-label={slReviewCopy.retryLabel(setLabel)}
             onClick={() => onRetry(setId)}
             onKeyDown={(e) => activateOnEnter(e, () => onRetry(setId))}
-            className="min-h-6 rounded border border-slate-500 px-2 text-xs text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="min-h-6 rounded border border-control px-2 text-xs text-ink-2 hover:border-neon-green-text hover:text-neon-green-text focus-outline"
           >
             {slReviewCopy.retry}
           </button>
         </span>
       );
     } else if (phase === "ready" && types.length === 0) {
-      reason = <span className="text-amber-300">{slReviewCopy.noTypes(setLabel)}</span>;
+      reason = <span className="text-notice-warn-ink">{slReviewCopy.noTypes(setLabel)}</span>;
     } else if (!chosenType && phase === "ready") {
-      reason = <span className="text-amber-300">{slReviewCopy.needsType}</span>;
+      reason = <span className="text-notice-warn-ink">{slReviewCopy.needsType}</span>;
     }
   }
   const typeBlocked = phase !== "ready" || types.length === 0;
@@ -852,21 +852,21 @@ function ReviewRow({
     <div
       role="row"
       data-review-row={entry.slId}
-      className={`grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-x-3 gap-y-1.5 border-b border-slate-800 px-2 py-2 sm:grid-cols-[2rem_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] ${
+      className={`grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-x-3 gap-y-1.5 border-b border-rule px-2 py-2 sm:grid-cols-[2rem_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] ${
         selected ? "bg-neon-blue/5" : ""
       }`}
     >
       <div role="cell">
         <TickBox label={slReviewCopy.selectRow(name)} checked={selected} onToggle={onToggleSelect} />
       </div>
-      <div role="cell" className="flex min-h-8 flex-col justify-center gap-1 text-sm text-gray-100">
+      <div role="cell" className="flex min-h-8 flex-col justify-center gap-1 text-sm text-ink">
         <span className="break-words">
           {display.name}
           {display.suffix && (
             <>
               {" "}
               {/* The SL side's id hue (ReconciliationModal's), a size down. */}
-              <span className="text-[11px] font-normal tabular-nums text-purple-300/80">
+              <span className="text-[11px] font-normal tabular-nums text-neon-purple-text/80">
                 {display.suffix}
               </span>
             </>
@@ -887,25 +887,25 @@ function ReviewRow({
           // NEO-325 — the clash in words beside the field, not by its pink
           // border alone; the footer sentence says which name and why Save
           // waits.
-          <p id={clashLineId} className="text-xs text-[#FF2E9A]">
+          <p id={clashLineId} className="text-xs text-neon-pink-text">
             {TITLE_CLASH_ROW_LINE}{" "}
-            <span className="text-slate-400">{RENAME_TIP}</span>
+            <span className="text-ink-3">{RENAME_TIP}</span>
           </p>
         )}
         {refusal && (
-          <p id={refusalId} className="text-xs text-[#FF2E9A]">
+          <p id={refusalId} className="text-xs text-neon-pink-text">
             {refusedReasonText(refusal)}
           </p>
         )}
         {!refusal && parkedRefusal && (
           // Amber, not pink: nothing on this line is invalid as it stands.
-          <p className="text-xs text-amber-300">
+          <p className="text-xs text-notice-warn-ink">
             {slReviewCopy.refusedParked(refusedReasonText(parkedRefusal))}
           </p>
         )}
       </div>
       <div role="cell" className="col-start-2 sm:col-start-auto">
-        <span aria-hidden="true" className="mb-0.5 block text-[11px] text-slate-400 sm:hidden">
+        <span aria-hidden="true" className="mb-0.5 block text-[11px] text-ink-3 sm:hidden">
           {slReviewCopy.headerOf}
         </span>
         <PickerTrigger
@@ -926,7 +926,7 @@ function ReviewRow({
             onPick={(key) => onPickSet(key === "" ? null : (key as RowId))}
             onClose={onClosePicker}
             footer={
-              <p className="px-2 pb-1 pt-1.5 text-[11px] text-slate-400">
+              <p className="px-2 pb-1 pt-1.5 text-[11px] text-ink-3">
                 {ofSetsTruncated
                   ? `${slReviewCopy.setsTruncated(ofSets.length)} `
                   : ""}
@@ -943,7 +943,7 @@ function ReviewRow({
       >
         {setId ? (
           <>
-            <span aria-hidden="true" className="mb-0.5 block text-[11px] text-slate-400 sm:hidden">
+            <span aria-hidden="true" className="mb-0.5 block text-[11px] text-ink-3 sm:hidden">
               {slReviewCopy.headerType}
             </span>
             <PickerTrigger
@@ -986,7 +986,7 @@ function ReviewRow({
             )}
           </>
         ) : (
-          <span aria-hidden="true" className="hidden min-h-8 items-center text-sm text-slate-600 sm:flex">
+          <span aria-hidden="true" className="hidden min-h-8 items-center text-sm text-control sm:flex">
             —
           </span>
         )}
@@ -1043,28 +1043,28 @@ function BulkBar({
     selectedCount === 0 ? slReviewCopy.bulkNeedsRows : !chosenType ? slReviewCopy.bulkNeedsType : null;
 
   const status: ReactNode = !setId ? null : phase === "syncing" ? (
-    <span className="text-slate-400">{slReviewCopy.syncing(setLabel)}</span>
+    <span className="text-ink-3">{slReviewCopy.syncing(setLabel)}</span>
   ) : failed ? (
-    <span className="flex flex-wrap items-center gap-2 text-[#FF2E9A]">
+    <span className="flex flex-wrap items-center gap-2 text-neon-pink-text">
       {slReviewCopy.syncFailed(setLabel)}
       <button
         type="button"
         aria-label={slReviewCopy.retryLabel(setLabel)}
         onClick={() => onRetry(setId)}
         onKeyDown={(e) => activateOnEnter(e, () => onRetry(setId))}
-        className="min-h-6 rounded border border-slate-500 px-2 text-xs text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+        className="min-h-6 rounded border border-control px-2 text-xs text-ink-2 hover:border-neon-green-text hover:text-neon-green-text focus-outline"
       >
         {slReviewCopy.retry}
       </button>
     </span>
   ) : phase === "ready" && types.length === 0 ? (
-    <span className="text-amber-300">{slReviewCopy.noTypes(setLabel)}</span>
+    <span className="text-notice-warn-ink">{slReviewCopy.noTypes(setLabel)}</span>
   ) : null;
 
   return (
-    <div className="flex flex-col gap-1.5 rounded-md border border-slate-700 bg-slate-950/60 p-2">
+    <div className="flex flex-col gap-1.5 rounded-md border border-rule-strong bg-sheet/60 p-2">
       <div className="flex flex-wrap items-start gap-2">
-        <span className="flex min-h-8 items-center text-xs text-slate-300">
+        <span className="flex min-h-8 items-center text-xs text-ink-2">
           {slReviewCopy.bulkLead}
         </span>
         <div className="w-44" aria-busy={phase === "syncing" || undefined}>
@@ -1086,14 +1086,14 @@ function BulkBar({
               onPick={(key) => onPickSet(key as RowId)}
               onClose={onClosePicker}
               footer={
-                <p className="px-2 pb-1 pt-1.5 text-[11px] text-slate-400">
+                <p className="px-2 pb-1 pt-1.5 text-[11px] text-ink-3">
                   {slReviewCopy.onlyLinkedSets}
                 </p>
               }
             />
           )}
         </div>
-        <span aria-hidden="true" className="flex min-h-8 items-center text-slate-500">
+        <span aria-hidden="true" className="flex min-h-8 items-center text-ink-3">
           ›
         </span>
         <div className="w-40">
@@ -1157,7 +1157,7 @@ function BulkBar({
         </NeonButton>
       </div>
       {(status || applyReason) && (
-        <p className="flex flex-wrap gap-x-3 text-xs text-slate-400">
+        <p className="flex flex-wrap gap-x-3 text-xs text-ink-3">
           {status && <span id={statusId}>{status}</span>}
           {applyReason && <span id={applyReasonId}>{applyReason}</span>}
         </p>
@@ -1748,28 +1748,28 @@ export default function SlSetReviewModal({
         aria-busy={busy || undefined}
         tabIndex={-1}
         onKeyDown={onDialogKeyDown}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 outline-none sm:p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-2 outline-none sm:p-4"
       >
-        <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-xl">
-          <header className="flex flex-col gap-2 border-b border-slate-800 px-4 pb-3 pt-4">
-            <h2 id={titleId} className="text-lg font-semibold text-gray-100">
+        <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-rule-strong bg-field shadow-xl shadow-offset">
+          <header className="flex flex-col gap-2 border-b border-rule px-4 pb-3 pt-4">
+            <h2 id={titleId} className="text-lg font-semibold text-ink">
               {brand ? slReviewCopy.title(brand) : slReviewCopy.titleEmpty}
             </h2>
-            <p id={descriptionId} className="max-w-[70ch] text-sm text-slate-400">
+            <p id={descriptionId} className="max-w-[70ch] text-sm text-ink-3">
               {brand ? slReviewCopy.description(brand) : slReviewCopy.empty}
             </p>
             {review && review.moreNextSync > 0 && (
-              <p className="text-xs text-slate-400">{slReviewCopy.moreNextSync(review.moreNextSync)}</p>
+              <p className="text-xs text-ink-3">{slReviewCopy.moreNextSync(review.moreNextSync)}</p>
             )}
             {review?.partial && !outcome && !busy && (
-              <p className="text-xs text-amber-300">{slReviewCopy.partial}</p>
+              <p className="text-xs text-notice-warn-ink">{slReviewCopy.partial}</p>
             )}
             {/* NEO-325 — lines a save refused for their name, on a reopened
                 review too (`lastRefusal`): how many, since they may sit
                 anywhere in the list. After a save in this dialog the outcome
                 line already says it. */}
             {refusedShown > 0 && !outcome && !busy && (
-              <p className="text-xs text-amber-300">{slReviewCopy.needNames(refusedShown)}</p>
+              <p className="text-xs text-notice-warn-ink">{slReviewCopy.needNames(refusedShown)}</p>
             )}
             {hasEntries && (
               <>
@@ -1783,7 +1783,7 @@ export default function SlSetReviewModal({
                     onChange={(e) => setFilter(e.target.value)}
                     className="w-full max-w-xs rounded-md px-2.5 py-1.5 text-sm"
                   />
-                  {q && <span className="text-xs text-slate-400">{slReviewCopy.filterCount(shown.length)}</span>}
+                  {q && <span className="text-xs text-ink-3">{slReviewCopy.filterCount(shown.length)}</span>}
                 </div>
                 <BulkBar
                   ofSets={ofSets}
@@ -1806,15 +1806,15 @@ export default function SlSetReviewModal({
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             {review === undefined ? (
-              <p className="px-4 py-6 text-sm text-slate-400">{slReviewCopy.loading}</p>
+              <p className="px-4 py-6 text-sm text-ink-3">{slReviewCopy.loading}</p>
             ) : !hasEntries ? (
-              <p className="px-4 py-6 text-sm text-slate-400">{slReviewCopy.empty}</p>
+              <p className="px-4 py-6 text-sm text-ink-3">{slReviewCopy.empty}</p>
             ) : (
               <div role="table" aria-labelledby={titleId}>
-                <div role="rowgroup" className="sticky top-0 z-10 bg-slate-900">
+                <div role="rowgroup" className="sticky top-0 z-10 bg-field">
                   <div
                     role="row"
-                    className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-3 border-b border-slate-700 px-2 py-1 sm:grid-cols-[2rem_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)]"
+                    className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-3 border-b border-rule-strong px-2 py-1 sm:grid-cols-[2rem_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)]"
                   >
                     <div role="columnheader">
                       <TickBox
@@ -1823,13 +1823,13 @@ export default function SlSetReviewModal({
                         onToggle={toggleAllShown}
                       />
                     </div>
-                    <div role="columnheader" className="text-xs font-medium text-slate-300">
+                    <div role="columnheader" className="text-xs font-medium text-ink-2">
                       {slReviewCopy.headerName}
                     </div>
-                    <div role="columnheader" className="sr-only text-xs font-medium text-slate-300 sm:not-sr-only">
+                    <div role="columnheader" className="sr-only text-xs font-medium text-ink-2 sm:not-sr-only">
                       {slReviewCopy.headerOf}
                     </div>
-                    <div role="columnheader" className="sr-only text-xs font-medium text-slate-300 sm:not-sr-only">
+                    <div role="columnheader" className="sr-only text-xs font-medium text-ink-2 sm:not-sr-only">
                       {slReviewCopy.headerType}
                     </div>
                   </div>
@@ -1871,33 +1871,33 @@ export default function SlSetReviewModal({
             )}
           </div>
 
-          <footer className="flex flex-col gap-2 border-t border-slate-700 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <footer className="flex flex-col gap-2 border-t border-rule-strong px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 flex-col gap-0.5 text-sm">
               {hasEntries && tallyParts.length > 0 && (
                 // The one loud line: what Save will do, in the words its
                 // toast will use ("Saved …").
-                <p className="font-semibold text-[#00D558] tabular-nums">
+                <p className="font-semibold text-neon-green-text tabular-nums">
                   {slReviewCopy.willFile(tallyParts)}
                 </p>
               )}
               {needingType > 0 && (
-                <p id={saveReasonId} className="text-xs text-amber-300">
+                <p id={saveReasonId} className="text-xs text-notice-warn-ink">
                   {slReviewCopy.rowsNeedType(needingType)}
                 </p>
               )}
               {/* NEO-325 — why Save is unavailable while two lines share a
                   name. Always mounted, so the region exists before a clash
                   fills it (polite: it can appear as the operator types). */}
-              <div role="status" className="flex flex-col gap-0.5 text-xs text-[#FF2E9A]">
+              <div role="status" className="flex flex-col gap-0.5 text-xs text-neon-pink-text">
                 {nameClashes.map((clash, index) => (
                   <p key={clash.key} id={nameClashIdOf(index)}>
                     {titleClashMessage(clash)}
                   </p>
                 ))}
               </div>
-              {outcome && <p className="text-xs text-amber-300">{outcome}</p>}
+              {outcome && <p className="text-xs text-notice-warn-ink">{outcome}</p>}
               {error && (
-                <p id={errorId} role="alert" className="text-xs text-[#FF2E9A]">
+                <p id={errorId} role="alert" className="text-xs text-neon-pink-text">
                   {error}
                 </p>
               )}

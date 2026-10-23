@@ -614,7 +614,7 @@ function FilterInput({
           type="button"
           onClick={clear}
           aria-label={`Clear ${ariaLabel.toLowerCase()}`}
-          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:text-gray-100 hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-ink-3 hover:text-ink hover:bg-rule-strong focus-outline"
         >
           <span aria-hidden="true">×</span>
         </button>
@@ -675,8 +675,8 @@ const DRAG_INSTRUCTIONS =
  * beside it without competing with the name. Unique names get no suffix.
  */
 const ID_SUFFIX: Record<Side, string> = {
-  bsc: "text-[11px] font-normal tabular-nums text-blue-300/80",
-  sl: "text-[11px] font-normal tabular-nums text-purple-300/80",
+  bsc: "text-[11px] font-normal tabular-nums text-notice-info-ink/80",
+  sl: "text-[11px] font-normal tabular-nums text-neon-purple-text/80",
 };
 
 /**
@@ -764,8 +764,8 @@ function DraggableItem({
   const platformLabel = platform === "bsc" ? "BSC" : "SL";
   const platformColor =
     platform === "bsc"
-      ? "bg-blue-900/40 text-blue-300 border-blue-700"
-      : "bg-purple-900/40 text-purple-300 border-purple-700";
+      ? "bg-notice-info-bg text-notice-info-ink border-notice-info-rule"
+      : "bg-neon-purple/15 text-neon-purple-text border-neon-purple/60";
 
   // The row's whole box is the sortable node — so it is still the drop target
   // a pairing drag lands on, button area included — while only the handle
@@ -775,13 +775,13 @@ function DraggableItem({
       ref={setNodeRef}
       style={style}
       className={`
-        group flex items-center rounded-lg border
-        text-sm font-medium transition-colors select-none
-        ${isSelected
-          ? "ring-2 ring-[#00C2FF] bg-[#00C2FF]/10 border-[#00C2FF]"
-          : "bg-gray-800 border-gray-600 hover:border-gray-400"
+ group flex items-center rounded-lg border
+ text-sm font-medium transition-colors select-none
+ ${isSelected
+          ? "ring-2 ring-selection bg-neon-blue/10 border-selection"
+          : "bg-raised border-control hover:border-ink-3"
         }
-      `}
+ `}
     >
       <div
         ref={setActivatorNodeRef}
@@ -793,7 +793,7 @@ function DraggableItem({
             : attributes["aria-describedby"]
         }
         onClick={onClick}
-        className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#00C2FF]"
+        className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-outline focus-visible:outline-offset-[-2px]"
       >
         {status && <RunGlyph kind={status.kind} tones={CHECK_GLYPH_TONE} />}
         <span
@@ -801,7 +801,7 @@ function DraggableItem({
         >
           {platformLabel}
         </span>
-        <span className="text-gray-200 break-words min-w-0">{name}</span>
+        <span className="text-ink-2 break-words min-w-0">{name}</span>
         {status && <span className="sr-only">{`, ${status.srText}`}</span>}
       </div>
       {action && <div className="shrink-0 py-1.5 pr-1.5">{action}</div>}
@@ -820,9 +820,9 @@ function DraggableItem({
  * `min-h-[28px]`: WCAG 2.5.8 wants 24px; 28 keeps the row a single line.
  */
 const OWN_SET_BUTTON =
-  "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF]";
-const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-gray-500 text-gray-300 hover:border-[#00D558] hover:text-[#00D558] hover:bg-[#00D558]/10 focus-visible:text-[#00D558]`;
-const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] hover:bg-[#00D558]/10 hover:border-[#00D558] aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent`;
+  "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-outline";
+const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-control text-ink-2 hover:border-neon-green-text hover:text-neon-green-text hover:bg-neon-green/10 focus-visible:text-neon-green-text`;
+const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-neon-green-text/70 text-neon-green-text hover:bg-neon-green/10 hover:border-neon-green-text aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent`;
 
 // ===== BASE CHECK (NEO-325) =====
 
@@ -834,24 +834,24 @@ const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] ho
  * 3:1 against gray-800 (SC 1.4.11); the state is also said in words.
  */
 const CHECK_GLYPH_TONE: Record<RunLineKind, string> = {
-  waiting: "text-gray-400",
-  building: "text-[#00C2FF] motion-safe:animate-spin",
-  built: "text-[#00D558]",
-  skipped: "text-gray-300",
-  blocked: "text-amber-300",
-  stopped: "text-gray-400",
-  failed: "text-pink-300",
-  unfinished: "text-amber-300",
+  waiting: "text-ink-3",
+  building: "text-neon-blue-text motion-safe:animate-spin",
+  built: "text-neon-green-text",
+  skipped: "text-ink-2",
+  blocked: "text-notice-warn-ink",
+  stopped: "text-ink-3",
+  failed: "text-notice-danger-ink",
+  unfinished: "text-notice-warn-ink",
 };
 const CHECK_SLEEVE_TONE: Record<RunLineKind, string> = {
-  waiting: "border-gray-500 bg-transparent",
-  building: "border-[#00C2FF] bg-[#00C2FF]/40 motion-safe:animate-pulse",
-  built: "border-[#00D558] bg-[#00D558]",
-  skipped: "border-gray-400 bg-gray-400/40",
-  blocked: "border-amber-400 bg-amber-400",
-  stopped: "border-gray-600 bg-gray-600/40",
-  failed: "border-pink-400 bg-[#FF2E9A]",
-  unfinished: "border-amber-400 bg-transparent",
+  waiting: "border-control bg-transparent",
+  building: "border-selection bg-neon-blue/40 motion-safe:animate-pulse",
+  built: "border-neon-green-text bg-neon-green",
+  skipped: "border-ink-3 bg-ink-3/40",
+  blocked: "border-neon-orange-text bg-neon-orange",
+  stopped: "border-control bg-control/40",
+  failed: "border-neon-pink-text bg-neon-pink",
+  unfinished: "border-neon-orange-text bg-transparent",
 };
 /** The column's sleeve strip draws at most this many; the rest are "+N". */
 const SLEEVE_CAP = 200;
@@ -964,18 +964,18 @@ function ReadySetRow({
 
   const confidenceColor =
     set.confidence >= 0.9
-      ? "text-green-400"
+      ? "text-neon-green-text"
       : set.confidence >= 0.75
-        ? "text-yellow-400"
-        : "text-orange-400";
+        ? "text-neon-yellow-text"
+        : "text-neon-orange-text";
 
   const chip = (side: Side, item: PlatformItem) => (
     <span
       key={`${side}-${item.platformValue}`}
       className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border ${
         side === "bsc"
-          ? "bg-blue-900/40 text-blue-200 border-blue-700"
-          : "bg-purple-900/40 text-purple-200 border-purple-700"
+          ? "bg-notice-info-bg text-notice-info-ink border-notice-info-rule"
+          : "bg-neon-purple/15 text-neon-purple-text border-neon-purple/60"
       }`}
     >
       <span className="opacity-70">{side === "bsc" ? "BSC" : "SL"}</span>
@@ -992,7 +992,7 @@ function ReadySetRow({
       <button
         type="button"
         onClick={() => onDetach(side, item.platformValue)}
-        className="hit-area-24 text-pink-400 hover:text-pink-300 px-0.5 rounded"
+        className="hit-area-24 text-neon-pink-text px-0.5 rounded"
         title="Remove this mapping"
         aria-label={`Remove ${itemLabel(item, side, dups[side])} from ${label}`}
       >
@@ -1008,9 +1008,9 @@ function ReadySetRow({
       // carries cannot save, so its rail turns the dialog's error pink until
       // the titles differ; the sentence beside Save says why.
       className={`border-l-4 ${
-        clashMessageId ? "border-[#FF2E9A]" : "border-[#00D558]"
+        clashMessageId ? "border-neon-pink-text" : "border-neon-green-text"
       } rounded-r-lg p-3 mb-2 transition-colors ${
-        isOver ? "bg-[#00C2FF]/10 ring-1 ring-[#00C2FF]" : "bg-gray-800/50"
+        isOver ? "bg-neon-blue/10 ring-1 ring-selection" : "bg-raised/50"
       }`}
     >
       <div className="flex items-center gap-3">
@@ -1050,8 +1050,8 @@ function ReadySetRow({
           aria-describedby={
             clashMessageId ? `${clashLineId} ${clashMessageId}` : undefined
           }
-          className={`flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border rounded focus:border-[#00C2FF] ${
-            clashMessageId ? "border-[#FF2E9A]" : "border-gray-700"
+          className={`flex-1 min-w-0 px-2 py-1 text-sm font-medium text-ink bg-raised-deep/60 border rounded focus:border-selection ${
+            clashMessageId ? "border-neon-pink-text" : "border-rule-strong"
           }`}
         />
         {set.confidence > 0 && (
@@ -1063,7 +1063,7 @@ function ReadySetRow({
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="hit-area-24 text-xs text-gray-400 hover:text-gray-200 px-2"
+            className="hit-area-24 text-xs text-ink-3 hover:text-ink-2 px-2"
             aria-label={`Toggle details for ${label}`}
             aria-expanded={expanded}
           >
@@ -1072,7 +1072,7 @@ function ReadySetRow({
         )}
         <button
           onClick={onDisband}
-          className="hit-area-24 text-xs text-pink-400 hover:text-pink-300 px-2 py-1 rounded hover:bg-pink-900/20 shrink-0"
+          className="hit-area-24 text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0"
           title="Remove this set (its mappings return to Pending)"
           aria-label={`Remove set ${label}`}
         >
@@ -1080,10 +1080,10 @@ function ReadySetRow({
         </button>
       </div>
       {clashMessageId && (
-        <p id={clashLineId} className="mt-1 text-xs text-[#FF2E9A]">
+        <p id={clashLineId} className="mt-1 text-xs text-neon-pink-text">
           {TITLE_CLASH_ROW_LINE}{" "}
           {/* gray-400: a hint, quieter than the pink fact it follows. */}
-          <span className="text-gray-400">{RENAME_TIP}</span>
+          <span className="text-ink-3">{RENAME_TIP}</span>
         </p>
       )}
 
@@ -1091,10 +1091,10 @@ function ReadySetRow({
         {set.bsc.map((i) => chip("bsc", i))}
         {set.sl.map((i) => chip("sl", i))}
         {set.bsc.length === 0 && (
-          <span className="text-[11px] text-gray-400 italic">no BSC mapping</span>
+          <span className="text-[11px] text-ink-3 italic">no BSC mapping</span>
         )}
         {set.sl.length === 0 && (
-          <span className="text-[11px] text-gray-400 italic">no SL mapping</span>
+          <span className="text-[11px] text-ink-3 italic">no SL mapping</span>
         )}
       </div>
 
@@ -1102,7 +1102,7 @@ function ReadySetRow({
         <button
           type="button"
           onClick={onAttachClick}
-          className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-[#00C2FF] text-gray-900 hover:bg-[#33C6FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF]"
+          className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-neon-blue text-on-neon-blue hover:bg-neon-blue-hover focus-outline"
           // WCAG 2.5.3: the name begins with the visible words, then names
           // the set — every Ready row offers this button at once, so "this
           // set" alone would be the same name a dozen times.
@@ -1136,11 +1136,11 @@ function MetadataEditor({
   // see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   return (
-    <div className="mt-2 pt-2 border-t border-gray-700 flex flex-wrap gap-3 items-center">
+    <div className="mt-2 pt-2 border-t border-rule-strong flex flex-wrap gap-3 items-center">
       {/* NEO-291: the Insert/Parallel checkboxes that sat before this field
           are gone — a row's kind comes from the hierarchy, never from a tick.
           The same words the Attributes panel uses for the same fact. */}
-      <label className="flex items-center gap-1.5 text-xs text-gray-400">
+      <label className="flex items-center gap-1.5 text-xs text-ink-3">
         Card prefix
         <Input
           bare
@@ -2344,7 +2344,7 @@ function ReconciliationDialog({
             <p
               id={reasonId}
               className={`text-[11px] mt-0.5 px-1 ${
-                reason.verdict === "mismatch" ? "text-amber-300" : "text-gray-400"
+                reason.verdict === "mismatch" ? "text-notice-warn-ink" : "text-ink-3"
               }`}
             >
               {reason.reason}
@@ -2367,7 +2367,7 @@ function ReconciliationDialog({
         <div className="flex items-center justify-between gap-2 mb-2">
           <div
             className={`text-xs font-medium uppercase tracking-wide ${
-              isBsc ? "text-blue-400" : "text-purple-400"
+              isBsc ? "text-neon-blue-text" : "text-neon-purple-text"
             }`}
           >
             {sideName} ({filtered.length}
@@ -2399,7 +2399,7 @@ function ReconciliationDialog({
           // sleeves are decorative (aria-hidden); the counter and the rows say
           // it all in words, and the dialog's one live line speaks the run.
           <div className="mb-2">
-            <p className="text-[11px] text-gray-400 tabular-nums">
+            <p className="text-[11px] text-ink-3 tabular-nums">
               {checkHeader}
             </p>
             <SleeveStrip
@@ -2417,7 +2417,7 @@ function ReconciliationDialog({
               })}
               tones={CHECK_SLEEVE_TONE}
               more={Math.max(0, scoped.length - SLEEVE_CAP)}
-              moreClassName="text-[10px] leading-[14px] text-gray-400 tabular-nums"
+              moreClassName="text-[10px] leading-[14px] text-ink-3 tabular-nums"
             />
           </div>
         )}
@@ -2427,7 +2427,7 @@ function ReconciliationDialog({
           // live line says it to a screen reader; this says it to everyone,
           // in the dialog's amber "a person should look at this" tone (the
           // twin notice). Not itself a live region: said once, up there.
-          <p className="mb-2 text-xs text-amber-300">
+          <p className="mb-2 text-xs text-notice-warn-ink">
             {BASE_MATCH_COPY.stoppedNotice(probeSide)}
           </p>
         )}
@@ -2443,18 +2443,18 @@ function ReconciliationDialog({
           // filter worth toggling.
           <div className="mb-2 h-[18px]" aria-hidden="true" />
         ) : (
-          <label className="flex items-center gap-2 mb-2 text-xs text-gray-400 select-none cursor-pointer">
+          <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
             <input
               type="checkbox"
               checked={showAllSl}
               onChange={(e) => setShowAllSl(e.target.checked)}
               aria-label="Show all SportLots items"
-              className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-1 focus:ring-purple-400"
+              className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-purple-text focus-outline"
             />
             Show all SportLots items
           </label>
         )}
-        <label className="flex items-center gap-2 mb-2 text-xs text-gray-400 select-none cursor-pointer">
+        <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
           <input
             type="checkbox"
             checked={showMapped}
@@ -2462,10 +2462,10 @@ function ReconciliationDialog({
               (isBsc ? setShowMappedBsc : setShowMappedSl)(e.target.checked)
             }
             aria-label={`Show ${isBsc ? "BSC" : "SportLots"} sets already mapped`}
-            className={`h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 focus:ring-1 ${
+            className={`h-3.5 w-3.5 rounded border-control bg-raised focus-outline ${
               isBsc
-                ? "text-blue-500 focus:ring-blue-400"
-                : "text-purple-500 focus:ring-purple-400"
+                ? "text-neon-blue-text"
+                : "text-neon-purple-text"
             }`}
           />
           Show sets already mapped
@@ -2485,7 +2485,7 @@ function ReconciliationDialog({
             aria-label={BASE_MATCH_COPY.toggleName(toggleVisible, probeSide)}
             onClick={toggleMismatched}
             onKeyDown={(event) => activateOnEnter(event, toggleMismatched)}
-            className="group mb-2 inline-flex items-center gap-1 min-h-[24px] rounded-sm text-xs font-medium text-amber-300 hover:text-amber-200 underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF]"
+            className="group mb-2 inline-flex items-center gap-1 min-h-[24px] rounded-sm text-xs font-medium text-notice-warn-ink underline decoration-dotted underline-offset-2 hover:decoration-solid focus-outline"
           >
             <ChevronRightIcon
               aria-hidden="true"
@@ -2504,7 +2504,7 @@ function ReconciliationDialog({
               id={mismatchGroupId}
               role="group"
               aria-labelledby={toggleTextId}
-              className="space-y-1.5 border-l-2 border-amber-400/70 pl-2 pb-1"
+              className="space-y-1.5 border-l-2 border-notice-warn-rule pl-2 pb-1"
             >
               {mismatched.map((item, index) => pendingRow(item, index))}
             </div>
@@ -2525,18 +2525,18 @@ function ReconciliationDialog({
                 onClick={() => handlePendingClick(side, item.platformValue)}
               />
               {/* gray-400: gray-500 on the gray-900 panel is 3.67:1. */}
-              <p className="text-[11px] text-gray-400 mt-0.5 px-1 truncate">
+              <p className="text-[11px] text-ink-3 mt-0.5 px-1 truncate">
                 mapped to {usedBy.join(", ")}
               </p>
             </div>
           ))}
           {all.length === 0 && mapped.length === 0 && (
-            <p className="text-xs text-gray-400 italic py-2">
+            <p className="text-xs text-ink-3 italic py-2">
               Nothing pending on {isBsc ? "BSC" : "SportLots"}
             </p>
           )}
           {all.length > 0 && filtered.length === 0 && mismatched.length === 0 && (
-            <p className="text-xs text-gray-400 italic py-2">
+            <p className="text-xs text-ink-3 italic py-2">
               {query
                 ? `No ${isBsc ? "BSC" : "SL"} items contain "${query}"`
                 : !isBsc && activeSlPrefixes.length > 0
@@ -2556,7 +2556,7 @@ function ReconciliationDialog({
     // needed — createPortal(document.body) escapes the root Theme's CSS scope.
     <Theme>
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
+      className="fixed inset-0 bg-scrim flex items-center justify-center z-50 p-4 outline-none"
       // NEO-220: this dialog announced itself to nothing. Every other modal in
       // this directory carries the role/aria-modal/labelledby trio and owns its
       // keyboard contract; this one had no role, no name and no keydown
@@ -2609,18 +2609,18 @@ function ReconciliationDialog({
       }}
     >
       <div
-        className="bg-gray-900 border border-gray-700 rounded-xl max-w-6xl w-full max-h-[90vh] flex flex-col"
+        className="bg-raised-deep border border-rule-strong shadow-offset rounded-xl max-w-6xl w-full max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-700">
+        <div className="px-6 py-4 border-b border-rule-strong">
           <h2
             id="reconciliation-heading"
-            className="text-xl font-semibold text-white"
+            className="text-xl font-semibold text-ink"
           >
             Reconcile {levelLabel}
           </h2>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-ink-3 mt-1">
             {saveCount} ready
             {pendingCount > 0 ? `, ${pendingCount} pending` : ""}
           </p>
@@ -2628,7 +2628,7 @@ function ReconciliationDialog({
             // NEO-325 — why this opened instead of saving on its own. Amber,
             // the builder's "a person should look at this" tone; not live:
             // it is on screen when the dialog opens, read with its heading.
-            <p id={twinNoticeId} className="text-sm text-amber-300 mt-1 max-w-[80ch]">
+            <p id={twinNoticeId} className="text-sm text-notice-warn-ink mt-1 max-w-[80ch]">
               {twinNotice}
             </p>
           )}
@@ -2669,14 +2669,14 @@ function ReconciliationDialog({
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
             {/* ── READY ─────────────────────────────────────────────── */}
             <div>
-              <h3 className="text-sm font-medium text-gray-300 mb-1">
+              <h3 className="text-sm font-medium text-ink-2 mb-1">
                 Ready ({filteredReady.length}
                 {filteredReady.length !== state.ready.length
                   ? ` of ${state.ready.length}`
                   : ""}
                 )
               </h3>
-              <p className="text-xs text-gray-400 mb-2">
+              <p className="text-xs text-ink-3 mb-2">
                 These become NeonBinder sets. The title is ours — edit it freely.
                 Each set can map to any number of BSC and SportLots sets.
               </p>
@@ -2691,11 +2691,11 @@ function ReconciliationDialog({
                 </div>
               )}
               {state.ready.length === 0 ? (
-                <p className="text-xs text-gray-400 italic py-2">
+                <p className="text-xs text-ink-3 italic py-2">
                   No sets yet. Pair two items below, or make one its own set.
                 </p>
               ) : filteredReady.length === 0 ? (
-                <p className="text-xs text-gray-400 italic py-2">
+                <p className="text-xs text-ink-3 italic py-2">
                   No sets match "{readyQuery}"
                 </p>
               ) : (
@@ -2731,10 +2731,10 @@ function ReconciliationDialog({
 
             {/* ── PENDING ───────────────────────────────────────────── */}
             <div>
-              <h3 className="text-sm font-medium text-gray-300 mb-1">
+              <h3 className="text-sm font-medium text-ink-2 mb-1">
                 Pending ({pendingCount})
               </h3>
-              <p className="text-xs text-gray-400 mb-2">
+              <p className="text-xs text-ink-3 mb-2">
                 Drag one onto the other to make a set, or onto a set above to add
                 it there. Anything left here is not saved.
               </p>
@@ -2756,8 +2756,8 @@ function ReconciliationDialog({
 
           <DragOverlay>
             {activeDragItem && (
-              <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
-                <span className="text-gray-200">
+              <div className="px-3 py-2 rounded-lg border bg-raised border-selection ring-2 ring-selection shadow-lg text-sm font-medium">
+                <span className="text-ink-2">
                   <ItemName
                     item={activeDragItem.item}
                     side={activeDragItem.side}
@@ -2770,13 +2770,13 @@ function ReconciliationDialog({
         </DndContext>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-700 flex justify-end items-center gap-3 flex-wrap">
+        <div className="px-6 py-4 border-t border-rule-strong flex justify-end items-center gap-3 flex-wrap">
           {saveError && (
             // role="alert": the operator pressed Save and is watching the
             // button, not this spot, so this has to interrupt.
             <span
               role="alert"
-              className="mr-auto text-sm text-[#FF2E9A] max-w-md"
+              className="mr-auto text-sm text-neon-pink-text max-w-md"
             >
               {saveError}
             </span>
@@ -2786,7 +2786,7 @@ function ReconciliationDialog({
               it appears as the operator types). Empty, it takes no room. */}
           <div
             role="status"
-            className="max-w-md text-right text-sm text-[#FF2E9A] space-y-1"
+            className="max-w-md text-right text-sm text-neon-pink-text space-y-1"
           >
             {titleClashes.map((clash, index) => (
               <p key={clash.key} id={clashMessageIdOf(index)}>

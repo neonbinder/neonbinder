@@ -303,7 +303,7 @@ export default function NewLeagueForm({
   return (
     <div className="flex flex-col gap-3">
       {neededBy && (
-        <p className="text-xs text-gray-400">Needed by: {neededBy}</p>
+        <p className="text-xs text-ink-3">Needed by: {neededBy}</p>
       )}
 
       <Input
@@ -320,7 +320,7 @@ export default function NewLeagueForm({
         onChange={(e) => onChange({ name: e.target.value })}
       />
       {showHelp && (
-        <p id={helpId} className="text-xs text-gray-400">
+        <p id={helpId} className="text-xs text-ink-3">
           The competition this team plays in. One league, asked once for the
           whole batch.
         </p>
@@ -347,17 +347,17 @@ export default function NewLeagueForm({
           aria-expanded={open}
           disabled={disabled}
           onClick={() => setDetailsOpen(!open)}
-          className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none disabled:opacity-50"
+          className="py-2 -my-2 text-xs text-ink-3 underline decoration-dotted hover:text-neon-green-text focus-visible:text-neon-green-text focus-outline disabled:opacity-50"
         >
           {open ? "Hide details" : "Add abbreviation, years and aliases"}
         </button>
         {!open && summary && (
-          <span className="min-w-0 truncate text-xs text-gray-400">{summary}</span>
+          <span className="min-w-0 truncate text-xs text-ink-3">{summary}</span>
         )}
       </div>
 
       {open && (
-        <div className="flex flex-col gap-3 border-l-2 border-gray-700 pl-3">
+        <div className="flex flex-col gap-3 border-l-2 border-rule-strong pl-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Input
               label="Abbreviation"
@@ -421,7 +421,7 @@ export default function NewLeagueForm({
         // announced. The footer's primary is separately blocked on the same
         // check, so this explains a button that will not fire rather than
         // being the only signal.
-        <p role="alert" className="text-sm text-[#FF2E9A]">
+        <p role="alert" className="text-sm text-neon-pink-text">
           {error}
         </p>
       )}

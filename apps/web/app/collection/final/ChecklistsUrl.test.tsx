@@ -11,7 +11,8 @@ import PublicCollectionDemo from "./PublicCollectionDemo";
  * unknown id falls back quietly, the search box writes `q` without a Back
  * step per letter, and the tab title names the view.
  */
-vi.mock("@clerk/clerk-react", () => ({}));
+// NEO-356: the demo bar's theme switch asks Clerk who is looking.
+vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }) }));
 vi.mock("convex/react", () => ({}));
 
 const DEMO = "/binder-tracking?demo=on";

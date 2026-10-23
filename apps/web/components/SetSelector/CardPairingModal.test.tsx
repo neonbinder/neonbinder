@@ -3513,7 +3513,7 @@ describe("CardPairingModal — the Matched header sits above the scroller (NEO-3
     expect(bar.className).not.toMatch(/(^|\s)(sticky|fixed|absolute)(\s|$)/);
     // A non-scrolling flex child, opaque and the dialog body's colour.
     expect(bar.className).toContain("flex-none");
-    expect(bar.className).toContain("bg-gray-900");
+    expect(bar.className).toContain("bg-raised-deep");
     // Its own edge is what reads as the header of the list below.
     expect(bar.className).toContain("border-b");
   });

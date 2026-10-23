@@ -169,7 +169,7 @@ export function SetShapeDialog({
         [...(description ? [descriptionId] : []), ...(error ? [errorId] : [])].join(" ") ||
         undefined
       }
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 outline-none"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 outline-none"
       // The header's bottom plus the same 1rem margin the other three sides get.
       style={{ paddingTop: headerBottom + 16 }}
       onKeyDown={onKeyDown}
@@ -179,7 +179,7 @@ export function SetShapeDialog({
     >
       <div
         // max-h-full: the height the overlay leaves under the header.
-        className="flex max-h-full w-full max-w-md flex-col rounded-lg border border-slate-700 bg-slate-900 shadow-xl"
+        className="flex max-h-full w-full max-w-md flex-col rounded-lg border border-rule-strong bg-field shadow-xl shadow-offset"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="px-5 pt-5">
@@ -187,7 +187,7 @@ export function SetShapeDialog({
             {title}
           </h2>
           {description && (
-            <p id={descriptionId} className="mt-1 text-sm text-slate-400">
+            <p id={descriptionId} className="mt-1 text-sm text-ink-3">
               {description}
             </p>
           )}
@@ -198,13 +198,13 @@ export function SetShapeDialog({
         {preview !== undefined && preview !== null && (
           <div
             aria-live="polite"
-            className="mx-5 mb-3 rounded border border-slate-500 px-3 py-2 text-sm"
+            className="mx-5 mb-3 rounded border border-control px-3 py-2 text-sm"
           >
             {preview}
           </div>
         )}
         {error && (
-          <p id={errorId} role="alert" className="mx-5 mb-3 text-sm text-[#FF2E9A]">
+          <p id={errorId} role="alert" className="mx-5 mb-3 text-sm text-neon-pink-text">
             {error}
           </p>
         )}
@@ -434,10 +434,10 @@ export function ChoiceList({
 
   if (folded && chosen && onExpand) {
     return (
-      <div className="flex items-center justify-between gap-3 rounded bg-slate-800/70 py-1 pl-2 pr-1 text-sm">
-        <p className="flex min-w-0 items-baseline gap-1.5 text-slate-200">
+      <div className="flex items-center justify-between gap-3 rounded bg-hover/70 py-1 pl-2 pr-1 text-sm">
+        <p className="flex min-w-0 items-baseline gap-1.5 text-ink-2">
           {/* The checked radio's mark, carried onto the line it folded to. */}
-          <span aria-hidden="true" className="text-[#00D558]">
+          <span aria-hidden="true" className="text-neon-green-text">
             ✓
           </span>
           {/* One text node, so the whole answer is one match for a flow. */}
@@ -451,7 +451,7 @@ export function ChoiceList({
           onClick={onExpand}
           onKeyDown={(event) => activateOnEnter(event, onExpand)}
           // min-h-6: WCAG 2.5.8's 24px target.
-          className="min-h-6 shrink-0 rounded px-2 text-xs font-medium text-[#00C2FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+          className="min-h-6 shrink-0 rounded px-2 text-xs font-medium text-neon-blue-text hover:underline focus-outline"
         >
           {CHANGE_LABEL}
         </button>
@@ -461,7 +461,7 @@ export function ChoiceList({
 
   return (
     <div>
-      <p id={legendId} className="mb-1 text-xs text-slate-400">
+      <p id={legendId} className="mb-1 text-xs text-ink-3">
         {legend}
       </p>
       {choices.length > CHOICE_FILTER_THRESHOLD && (
@@ -476,7 +476,7 @@ export function ChoiceList({
           />
           {/* Always rendered once there is a filter, so the region exists
               before its text changes and the count is actually announced. */}
-          <p aria-live="polite" className="mb-1 text-xs text-slate-400">
+          <p aria-live="polite" className="mb-1 text-xs text-ink-3">
             {q ? filterCountText(shown.length) : ""}
           </p>
         </>
@@ -487,10 +487,10 @@ export function ChoiceList({
         aria-labelledby={legendId}
         aria-describedby={describedBy}
         onKeyDown={onKeyDown}
-        className="max-h-40 overflow-y-auto flex flex-col gap-0.5 rounded border border-slate-500 p-1"
+        className="max-h-40 overflow-y-auto flex flex-col gap-0.5 rounded border border-control p-1"
       >
         {shown.length === 0 && choices.length <= CHOICE_FILTER_THRESHOLD && (
-          <p className="px-2 py-1.5 text-xs text-slate-400">{filterCountText(0)}</p>
+          <p className="px-2 py-1.5 text-xs text-ink-3">{filterCountText(0)}</p>
         )}
         {shown.map((choice) => {
           const checked = choice.id === selectedId;
@@ -514,10 +514,10 @@ export function ChoiceList({
                 activateOnEnter(event, () => pick(choice.id), unavailable)
               }
               // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum.
-              className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
+              className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-outline ${
                 checked
-                  ? "border-[#00D558] text-[#00D558]"
-                  : "border-transparent text-slate-200 hover:border-slate-500"
+                  ? "border-neon-green-text text-neon-green-text"
+                  : "border-transparent text-ink-2 hover:border-control"
               } ${unavailable ? "cursor-not-allowed opacity-60" : ""}`}
             >
               <span className="flex items-baseline gap-1">
@@ -528,7 +528,7 @@ export function ChoiceList({
                 <span>{choice.label}</span>
               </span>
               {(choice.tag || unavailable) && (
-                <span className="shrink-0 text-xs text-slate-400">
+                <span className="shrink-0 text-xs text-ink-3">
                   {unavailable ? "unavailable" : choice.tag}
                 </span>
               )}
@@ -556,19 +556,19 @@ export function LandingPath({
   const last = segments[segments.length - 1];
   const lead = segments.slice(0, -1);
   return (
-    <p className="text-slate-400">
+    <p className="text-ink-3">
       <span className="sr-only">Lands at </span>
       {lead.map((s, i) => (
         <span key={`${i}-${s}`}>
           {s}
-          <span aria-hidden="true" className="mx-1.5 text-slate-500">
+          <span aria-hidden="true" className="mx-1.5 text-ink-3">
             ›
           </span>
           <span className="sr-only">, </span>
         </span>
       ))}
-      <span className="font-semibold text-[#00D558]">{last}</span>
-      <span className="ml-2 text-xs text-slate-400">{verb}</span>
+      <span className="font-semibold text-neon-green-text">{last}</span>
+      <span className="ml-2 text-xs text-ink-3">{verb}</span>
     </p>
   );
 }

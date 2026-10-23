@@ -15,6 +15,7 @@ import {
 import Chip from "../../prototypes/p3/Chip";
 import { FOCUS, PRIMARY_BUTTON, QUIET_BUTTON } from "../../prototypes/p3/classes";
 import { printRunText, variantFilterOf, variantKey } from "../../prototypes/p3/wallModel";
+import { useLiverySurface } from "../../prototypes/p1/ui";
 import { useMyCards } from "./context";
 import { wantedFirst } from "./model";
 
@@ -26,6 +27,7 @@ import { wantedFirst } from "./model";
  */
 export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; focusOnMount: boolean }) {
   const api = useMyCards();
+  const page = useLiverySurface("surface");
   const { store, scopedName } = api;
   const building = store.state.buildingSetIds;
   const [chosen, setChosen] = useState<SetId[]>(() => (onlySet ? [onlySet] : building));
@@ -61,7 +63,7 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
       <button
         type="button"
         onClick={() => api.go("home")}
-        className={`mb-3 inline-flex min-h-11 items-center gap-1 rounded-md pr-2 text-sm text-slate-300 hover:text-white sm:min-h-8 ${FOCUS}`}
+        className={`mb-3 inline-flex min-h-11 items-center gap-1 rounded-md pr-2 text-sm text-ink-2 hover:text-ink sm:min-h-8 ${FOCUS}`}
       >
         <ChevronLeftIcon aria-hidden="true" className="size-4" />
         All my sets
@@ -73,16 +75,16 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
             id="mc-needs-heading"
             ref={heading}
             tabIndex={-1}
-            className="text-2xl font-bold text-white focus:outline-none"
+            className="text-2xl font-bold text-ink focus:outline-none"
           >
             Take it to the show
           </h2>
-          <p className="mt-1 text-sm text-slate-300">
+          <p className="mt-1 text-sm text-ink-2">
             {total} {total === 1 ? "card" : "cards"} to hunt
             {scopedName ? ` for ${scopedName}` : ""}
             {wantedCount > 0 && (
               <>
-                , {wantedCount} starred <StarIcon aria-hidden="true" className="inline size-3.5 text-neon-yellow" /> from
+                , {wantedCount} starred <StarIcon aria-hidden="true" className="inline size-3.5 text-neon-yellow-text" /> from
                 your Want List
               </>
             )}
@@ -117,7 +119,7 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
           off as you go.
         </p>
         {sets.length === 0 && (
-          <p className="rounded-lg border border-dashed border-slate-700 p-6 text-center text-sm text-slate-300">
+          <p className="rounded-lg border border-dashed border-rule-strong p-6 text-center text-sm text-ink-2">
             {building.length === 0
               ? "No sets on the board yet. Start building one and its needs land here."
               : "Pick a set above to see what you still need."}
@@ -128,14 +130,14 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
           const whole = store.completionInScope(id);
           return (
             <section key={id} aria-label={setLabel(set)} className="mb-6 break-inside-avoid-page">
-              <h3 className="border-b border-slate-700 pb-1 text-lg font-bold text-white">
+              <h3 className="border-b border-rule-strong pb-1 text-lg font-bold text-ink">
                 {setLabel(set)}{" "}
-                <span className="text-sm font-normal text-slate-400">
+                <span className="text-sm font-normal text-ink-3">
                   need {whole.missing.length} of {whole.total}
                 </span>
               </h3>
               {whole.missing.length === 0 && (
-                <p className="mt-2 text-sm text-neon-green">Every card on this checklist is in hand. Radical!</p>
+                <p className="mt-2 text-sm text-neon-green-text">Every card on this checklist is in hand. Radical!</p>
               )}
               {set.variants.map((v) => {
                 const missing = wantedFirst(
@@ -146,9 +148,9 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
                 const run = printRunText(v);
                 return (
                   <div key={variantKey(v)} className="mt-3">
-                    <h4 className="text-sm font-bold text-slate-200">
+                    <h4 className="text-sm font-bold text-ink-2">
                       {variantLabel(v.path)}
-                      {run && ` ${run}`} <span className="font-normal text-slate-400">({missing.length})</span>
+                      {run && ` ${run}`} <span className="font-normal text-ink-3">({missing.length})</span>
                     </h4>
                     <ul className="mc-print-columns mt-1 sm:columns-2 lg:columns-3">
                       {missing.map((c) => {
@@ -156,22 +158,22 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
                         return (
                           <li
                             key={c.id}
-                            className="flex min-h-11 break-inside-avoid items-center gap-2 border-b border-slate-900 py-0.5 text-sm sm:min-h-8 print:min-h-0 print:border-b-0"
+                            className="flex min-h-11 break-inside-avoid items-center gap-2 border-b border-rule py-0.5 text-sm sm:min-h-8 print:min-h-0 print:border-b-0"
                           >
                             <span aria-hidden="true" className="hidden size-3 shrink-0 border print:inline-block" />
-                            <span className="flex w-12 shrink-0 items-center gap-0.5 font-bold tabular-nums text-white">
+                            <span className="flex w-12 shrink-0 items-center gap-0.5 font-bold tabular-nums text-ink">
                               {wanted ? (
-                                <StarIcon aria-hidden="true" className="size-3.5 shrink-0 text-neon-yellow" />
+                                <StarIcon aria-hidden="true" className="size-3.5 shrink-0 text-neon-yellow-text" />
                               ) : (
                                 <span aria-hidden="true" className="size-3.5 shrink-0" />
                               )}
                               #{c.cardNumber}
                             </span>
-                            <span className="min-w-0 flex-1 truncate text-slate-200">
+                            <span className="min-w-0 flex-1 truncate text-ink-2">
                               {wanted && <span className="sr-only">On your Want List: </span>}
                               {playerNames(c)}
                               {c.variation ? ` (${c.variation})` : ""}{" "}
-                              <span style={{ color: teamTextColor(leadTeam(c), "#000000") }}>{leadTeam(c).name}</span>
+                              <span style={{ color: teamTextColor(leadTeam(c), page) }}>{leadTeam(c).name}</span>
                             </span>
                             <button
                               type="button"
@@ -180,7 +182,7 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
                                 c.variation ? `, ${c.variation} variation` : ""
                               }`}
                               onClick={() => gotIt(c.id)}
-                              className={`mc-noprint min-h-11 shrink-0 rounded-md border border-neon-green px-2 text-xs font-bold text-neon-green hover:bg-neon-green hover:text-black sm:min-h-7 ${FOCUS}`}
+                              className={`mc-noprint min-h-11 shrink-0 rounded-md border border-neon-green-text px-2 text-xs font-bold text-neon-green-text hover:bg-neon-green hover:text-on-neon-green sm:min-h-7 ${FOCUS}`}
                             >
                               Got it
                             </button>

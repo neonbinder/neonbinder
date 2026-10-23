@@ -34,13 +34,13 @@ const TOOL_DETAILS: Record<
     description:
       "Build set parameters from marketplace data, map them to NeonBinder sets, and reconcile card checklists.",
     icon: SquaresPlusIcon,
-    accent: "text-neon-orange group-hover:border-neon-orange/50",
+    accent: "text-neon-orange-text group-hover:border-neon-orange/50",
   },
   "/admin/players": {
     description:
       "Search every player we know, add one by hand, and correct names, Hall of Fame status and career history.",
     icon: UserIcon,
-    accent: "text-neon-blue group-hover:border-neon-blue/50",
+    accent: "text-neon-blue-text group-hover:border-neon-blue/50",
   },
   "/admin/teams": {
     description:
@@ -60,13 +60,13 @@ const TOOL_DETAILS: Record<
     description:
       "Name the leagues teams play in, set abbreviations and eras, and fold duplicate spellings into one row.",
     icon: TrophyIcon,
-    accent: "text-neon-teal group-hover:border-neon-teal/50",
+    accent: "text-neon-teal-text group-hover:border-neon-teal/50",
   },
   "/admin/pipeline-runs": {
     description:
       "Watch every user's placeholder pipeline runs and abort the ones that are wedged.",
     icon: SignalIcon,
-    accent: "text-neon-green group-hover:border-neon-green/50",
+    accent: "text-neon-green-text group-hover:border-neon-green/50",
   },
 };
 
@@ -81,14 +81,14 @@ export default function AdminHubPage() {
           <li key={section.path}>
             <Link
               to={section.path}
-              className={`group flex h-full gap-4 rounded-lg border border-slate-800 bg-slate-900/40 p-5 transition-colors hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${detail.accent}`}
+              className={`group flex h-full gap-4 rounded-lg border border-rule bg-raised-deep/40 shadow-offset p-5 transition-colors hover:bg-raised-deep focus-outline ${detail.accent}`}
             >
               <Icon className="w-8 h-8 shrink-0" aria-hidden="true" />
               <div>
                 <h2 className="text-lg font-semibold text-foreground mb-1">
                   {section.label}
                 </h2>
-                <p className="text-sm text-slate-400">{detail.description}</p>
+                <p className="text-sm text-ink-3">{detail.description}</p>
               </div>
             </Link>
           </li>

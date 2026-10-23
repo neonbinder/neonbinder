@@ -288,11 +288,11 @@ export default function CredentialsPanel() {
   };
 
   return (
-  <section className="space-y-6 p-6 border border-slate-200 dark:border-slate-800 rounded-lg">
+  <section className="space-y-6 p-6 border border-rule rounded-lg">
     {profile === undefined ? (
       <p
         data-testid="credentials-loading"
-        className="text-sm text-slate-400"
+        className="text-sm text-ink-3"
       >
         Loading credentials…
       </p>
@@ -329,10 +329,10 @@ export default function CredentialsPanel() {
                 onClick={() => { if (!credsBusy) setSelectedSite(site.key); }}
                 disabled={credsBusy}
                 className={
-                  "px-4 py-2 rounded-md border text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:opacity-50 disabled:cursor-not-allowed " +
+                  "px-4 py-2 rounded-md border text-sm font-medium transition-colors focus-outline disabled:opacity-50 disabled:cursor-not-allowed " +
                   (isSelected
-                    ? "border-green-500 bg-green-500/10 text-green-700 dark:text-green-300"
-                    : "border-slate-300 dark:border-slate-600 hover:border-green-500 text-foreground")
+                    ? "border-neon-green-text bg-neon-green/10 text-notice-success-ink"
+                    : "border-control hover:border-neon-green-text text-foreground")
                 }
               >
                 {site.label}
@@ -369,7 +369,7 @@ export default function CredentialsPanel() {
           key={panelState}
           role="status"
           aria-live="polite"
-          className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md"
+          className="p-4 bg-notice-warn-bg text-notice-warn-ink border border-notice-warn-rule rounded-md"
         >
           <strong>{PAUSE_NOTICE_COPY.profile.heading(siteName)}</strong>
           <p className="text-sm mt-1">
@@ -383,7 +383,7 @@ export default function CredentialsPanel() {
             server-side would be a control that claims to work. */}
         {hasStoredCredentials && (
           <>
-            <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
+            <div className="p-4 bg-notice-info-bg text-notice-info-ink border border-notice-info-rule rounded-md">
               <strong>Connected to {siteMeta?.label}</strong>
               <p className="text-sm mt-1">
                 {PAUSE_NOTICE_COPY.profile.connectedBody(siteName)}
@@ -409,7 +409,7 @@ export default function CredentialsPanel() {
               <NeonButton
                 type="button"
                 disabled
-                className="flex-1 bg-slate-600 hover:bg-slate-700"
+                className="flex-1"
               >
                 {PAUSE_NOTICE_COPY.profile.testPaused}
               </NeonButton>
@@ -431,7 +431,7 @@ export default function CredentialsPanel() {
           key={panelState}
           role="status"
           aria-live="polite"
-          className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md"
+          className="p-4 bg-notice-warn-bg text-notice-warn-ink border border-notice-warn-rule rounded-md"
         >
           <strong>Sign in to {siteMeta?.label} again</strong>
           <p className="text-sm mt-1">
@@ -471,7 +471,7 @@ export default function CredentialsPanel() {
           key={panelState}
           role="status"
           aria-live="polite"
-          className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md"
+          className="p-4 bg-notice-info-bg text-notice-info-ink border border-notice-info-rule rounded-md"
         >
           <strong>Connected to {siteMeta?.label}</strong>
           <p className="text-sm mt-1">
@@ -508,7 +508,7 @@ export default function CredentialsPanel() {
             type="button"
             onClick={handleTestCredentials}
             disabled={credsBusy}
-            className="flex-1 bg-slate-600 hover:bg-slate-700"
+            className="flex-1"
           >
             {credsBusy ? "Testing..." : "Test Credentials"}
           </NeonButton>
@@ -583,7 +583,7 @@ export default function CredentialsPanel() {
           {selectedSite === "sportlots" && (
             <p
               id="sportlots-password-advice"
-              className="text-xs text-amber-600 dark:text-amber-400"
+              className="text-xs text-notice-warn-ink"
             >
               SportLots has no API, so we sign in as you. We never store your password — but a unique one for SportLots is still a good idea.
             </p>
@@ -601,7 +601,7 @@ export default function CredentialsPanel() {
             type="button"
             onClick={handleTestCredentials}
             disabled={credsBusy || !hasStoredCredentials}
-            className="flex-1 bg-slate-600 hover:bg-slate-700"
+            className="flex-1"
           >
             {credsBusy ? "Testing..." : "Test Stored Credentials"}
           </NeonButton>
@@ -635,7 +635,7 @@ export default function CredentialsPanel() {
       // "Yes, Clear" tap when the panel scrolled near the top (NEO-39).
       <div
         ref={clearDialogRef}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="clear-confirm-title"
@@ -643,12 +643,12 @@ export default function CredentialsPanel() {
         onKeyDown={handleClearModalKeyDown}
       >
         <div
-          className="w-full max-w-md p-6 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 rounded-lg shadow-xl"
+          className="w-full max-w-md p-6 bg-raised border border-notice-warn-rule rounded-lg shadow-xl shadow-offset"
           onClick={(e) => e.stopPropagation()}
         >
           <p
             id="clear-confirm-title"
-            className="text-amber-800 dark:text-amber-200 font-medium mb-4"
+            className="text-notice-warn-ink font-medium mb-4"
           >
             Clear your {siteMeta?.label} connection?
           </p>
@@ -696,8 +696,8 @@ export default function CredentialsPanel() {
         aria-atomic="true"
         className={`p-4 rounded-md ${
           messageType === "success"
-            ? "bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800"
-            : "bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800"
+            ? "bg-notice-success-bg text-notice-success-ink border border-notice-success-rule"
+            : "bg-notice-danger-bg text-notice-danger-ink border border-notice-danger-rule"
         }`}
       >
         <div className="font-medium">{message}</div>
@@ -706,8 +706,8 @@ export default function CredentialsPanel() {
             <hr
               className={`my-2 border-t ${
                 messageType === "success"
-                  ? "border-green-200 dark:border-green-700"
-                  : "border-red-200 dark:border-red-700"
+                  ? "border-notice-success-rule"
+                  : "border-notice-danger-rule"
               }`}
             />
             {messageDetails}
@@ -724,7 +724,7 @@ export default function CredentialsPanel() {
       !needsReauth &&
       !sitePaused &&
       !verifiedThisSession && (
-      <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
+      <div className="p-4 bg-notice-info-bg text-notice-info-ink border border-notice-info-rule rounded-md">
         <strong>Connection not yet verified</strong>
         <p className="text-sm mt-1">
           Click &quot;Test Stored Credentials&quot; to check that{" "}
@@ -734,11 +734,11 @@ export default function CredentialsPanel() {
     )}
 
       {/* Security Information */}
-      <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-        <h3 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">
+      <div className="p-4 bg-notice-info-bg border border-notice-info-rule rounded-lg">
+        <h3 className="font-semibold text-notice-info-ink mb-2">
           Security Information
         </h3>
-        <ul className="text-sm text-blue-800 dark:text-blue-200 space-y-1">
+        <ul className="text-sm text-notice-info-ink space-y-1">
           <li>
             • Your password is used once to sign in and is never stored
           </li>

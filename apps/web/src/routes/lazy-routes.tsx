@@ -22,7 +22,7 @@ export function Deferred({ children }: { children: ReactNode }) {
   return (
     <Suspense
       fallback={
-        <p role="status" className="text-sm text-slate-400">
+        <p role="status" className="text-sm text-ink-3">
           Sleeving the cards…
         </p>
       }

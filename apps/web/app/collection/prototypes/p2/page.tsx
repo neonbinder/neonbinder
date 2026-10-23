@@ -55,6 +55,7 @@ import NewBinderDialog from "./NewBinderDialog";
 import PackTray, { AIMED_TARGET, type SlotTarget, type StatusNote } from "./PackTray";
 import Shelf from "./Shelf";
 import "./p2.css";
+import { ForceDark } from "@/components/primitives/ForceDark";
 
 /**
  * NEO-350 — collection prototype 2, "Nine-Pocket". The collection IS binders:
@@ -116,7 +117,7 @@ function slotCopyId(binder: Binder | undefined, slot: SlotRef): string | null {
   return binder.layout?.[slot.page]?.slots[slot.slot] ?? null;
 }
 
-export default function CollectionPrototype2() {
+function CollectionPrototype2Page() {
   const name = prototypeName(2);
   useDocumentTitle(`${name} · Collection prototype`);
   const store = usePrototypeStore("p2");
@@ -670,5 +671,18 @@ function MobileSummary({
       <Tally {...t} />
       <p>{blurb(view, binder, mode)[0]}</p>
     </div>
+  );
+}
+
+/**
+ * NEO-356 — this prototype was only ever designed dark and is not migrated to
+ * the colour roles, so it keeps the whole page dark while it is open, whatever
+ * the collector's setting. Leaving restores their own mode.
+ */
+export default function CollectionPrototype2() {
+  return (
+    <ForceDark>
+      <CollectionPrototype2Page />
+    </ForceDark>
   );
 }

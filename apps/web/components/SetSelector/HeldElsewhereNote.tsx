@@ -57,9 +57,9 @@ export default function HeldElsewhereNote({
   const summaryId = externalSummaryId ?? ownSummaryId;
   if (rows.length === 0 && !(total !== undefined && total > 0)) return null;
 
-  const text = tone === "modal" ? "text-gray-400" : "";
-  const name = tone === "modal" ? "text-gray-200" : "font-medium";
-  const arrow = tone === "modal" ? "text-[#00C2FF]" : "";
+  const text = tone === "modal" ? "text-ink-3" : "";
+  const name = tone === "modal" ? "text-ink-2" : "font-medium";
+  const arrow = tone === "modal" ? "text-neon-blue-text" : "";
 
   return (
     <div className={`text-sm ${text}`}>
@@ -75,7 +75,7 @@ export default function HeldElsewhereNote({
         onClick={() => setOpen((o) => !o)}
         // WCAG 2.5.8: padding grows the hit area to 24px+ tall; the negative
         // vertical margin keeps the line from growing with it.
-        className="inline-block min-h-6 px-1 py-0.5 -my-0.5 underline underline-offset-2 hover:text-[#00C2FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF] rounded"
+        className="inline-block min-h-6 px-1 py-0.5 -my-0.5 underline underline-offset-2 hover:text-neon-blue-text focus-outline rounded"
       >
         {toggleLabel}
       </button>
@@ -97,7 +97,7 @@ export default function HeldElsewhereNote({
           role="group"
           aria-labelledby={summaryId}
           tabIndex={0}
-          className="mt-1 max-h-40 overflow-y-auto overscroll-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF]"
+          className="mt-1 max-h-40 overflow-y-auto overscroll-contain rounded focus-outline"
         >
           <ul className="space-y-0.5 pl-3">
             {rows.map((r) => (

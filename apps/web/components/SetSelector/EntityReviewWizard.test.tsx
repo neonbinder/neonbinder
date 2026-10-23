@@ -2659,10 +2659,9 @@ describe("EntityReviewWizard — near matches", () => {
     expect(add.textContent).toBe("Add as New Player");
     expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
     expect((add as HTMLElement).style.backgroundColor).not.toBe(GREEN);
-    // NeonButton's own `secondary` foreground is white — 2.07:1 on #00C2FF.
-    // The call site overrides it to black (10.2:1) rather than repainting the
-    // shared primitive; assert the override is actually applied.
-    expect((add as HTMLElement).style.color).toBe("#000000");
+    // The call site pins the ink on the cyan fill to the on-neon role (black
+    // in both modes, 10.2:1); assert the override is actually applied.
+    expect((add as HTMLElement).style.color).toBe("var(--on-neon-blue)");
   });
 
   it("EXACT: the green button becomes 'Link to {name}' and create demotes to a text link", () => {
@@ -3421,12 +3420,12 @@ describe("EntityReviewWizard — readability", () => {
     expect(prompt.className).toContain("text-sm");
   });
 
-  it("lifts the kind/sport tag from text-gray-500 to text-gray-400", () => {
+  it("paints the kind/sport tag in the hint ink (was gray-500, too dim)", () => {
     currentRows = [makeRow({ kind: "player", sportValue: "Baseball", status: "ready" })];
     renderWizard();
 
     const tag = screen.getByText(/\(Player · Baseball\)/);
-    expect(tag.className).toContain("text-gray-400");
+    expect(tag.className).toContain("text-ink-3");
     expect(tag.className).not.toContain("text-gray-500");
   });
 });
@@ -4245,7 +4244,7 @@ describe("EntityReviewWizard — back and re-decide", () => {
 
     const back = screen.getByRole("button", { name: "Back to previous decision" });
     expect(back.textContent).toBe("Back");
-    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("border-neon-blue-text");
     // 32px tall, the primary NeonButton's height; laid out as 16px (-my-2) so
     // a wrapped row keeps the footer at the height the text link gave it.
     expect(back.className).toContain("h-8");
@@ -4551,7 +4550,7 @@ describe("EntityReviewWizard — commit failure", () => {
 
     const back = screen.getByRole("button", { name: "Back to review" });
     // The wizard's one Back style: the outlined button, never a text link.
-    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("border-neon-blue-text");
     expect(back.className).toContain("-btn-back-to-review");
     expect(back.className).not.toContain("underline");
     fireEvent.click(back);
@@ -5733,7 +5732,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     const status = screen.getByText("needs a team decision");
     // The cancel colour, because this is the thing standing between the
     // operator and the primary.
-    expect(status.className).toContain("#FF2E9A");
+    expect(status.className).toContain("text-neon-pink-text");
 
     const primary = screen.getByRole("button", { name: "Add as New Player" });
     expect(primary.getAttribute("aria-disabled")).toBe("true");
@@ -8556,7 +8555,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     expect(screen.queryByLabelText("Back to previous decision")).toBeNull();
     // …and it looks like every other Back in the wizard: the outlined button,
     // not a dotted link (Jason, 2026-10-13: "yes stay consistent").
-    expect(backToList.className).toContain("border-[#00C2FF]");
+    expect(backToList.className).toContain("border-neon-blue-text");
     expect(backToList.className).toContain("h-8");
     expect(backToList.className).toContain("-my-2");
     expect(backToList.className).not.toContain("underline");
@@ -9276,13 +9275,14 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       });
     });
 
-    it("N1: the heading shows a focus ring for a keyboard operator only", () => {
+    it("N1: the heading shows a focus outline for a keyboard operator only", () => {
       currentRows = [ambiguousRow()];
       renderWizard();
       const cls = pickHeading()!.className;
-      expect(cls).toContain("focus:outline-none");
-      expect(cls).toContain("focus-visible:ring-1");
-      expect(cls).toContain("focus-visible:ring-[#00C2FF]/70");
+      // focus-outline draws on :focus-visible only (NEO-356), so a pointer
+      // landing focus on the heading shows nothing.
+      expect(cls).toContain("focus-outline");
+      expect(cls).not.toMatch(/(^|\s)focus:ring/);
     });
   });
 

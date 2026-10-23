@@ -77,7 +77,7 @@ export default function P3Dialog({
 
   return createPortal(
     <div className="fixed inset-0 z-[60]">
-      <div aria-hidden="true" className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div aria-hidden="true" className="absolute inset-0 bg-scrim" onClick={onClose} />
       <div
         ref={panel}
         role="dialog"
@@ -85,24 +85,24 @@ export default function P3Dialog({
         aria-label={title}
         data-shape={shape}
         onKeyDown={onKeyDown}
-        className={`p3-slide absolute flex flex-col overflow-hidden border-t border-slate-700 bg-slate-950 text-slate-100 shadow-[0_0_24px_rgba(0,194,255,0.18)] ${frame}`}
+        className={`p3-slide absolute flex flex-col overflow-hidden border-t border-rule-strong bg-sheet text-ink shadow-[0_0_24px_rgba(0,194,255,0.18)] shadow-offset ${frame}`}
       >
-        <div className="flex items-start gap-3 border-b border-slate-800 px-4 py-3 sm:px-5">
+        <div className="flex items-start gap-3 border-b border-rule px-4 py-3 sm:px-5">
           <div className="min-w-0 flex-1">
             <h2
               ref={heading}
               tabIndex={-1}
-              className="text-lg font-bold text-white focus:outline-none"
+              className="text-lg font-bold text-ink focus:outline-none"
             >
               {title}
             </h2>
-            {subtitle && <p className="text-sm text-slate-400">{subtitle}</p>}
+            {subtitle && <p className="text-sm text-ink-3">{subtitle}</p>}
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label={`Close ${title}`}
-            className="grid size-11 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] sm:size-9"
+            className="grid size-11 shrink-0 place-items-center rounded-md text-ink-2 hover:bg-hover hover:text-ink focus-outline sm:size-9"
           >
             <XMarkIcon aria-hidden="true" className="size-5" />
           </button>

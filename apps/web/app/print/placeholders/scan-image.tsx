@@ -18,7 +18,7 @@ export function ScanImage({
   // The caller owns the box. This started life as a fixed `h-40` thumbnail for
   // a list, and a pocket in the 9-up grid needs to be FILLED instead — the
   // default keeps every existing caller rendering as before.
-  className = "h-40 w-auto rounded border border-slate-800 object-contain",
+  className = "h-40 w-auto rounded border border-rule object-contain",
   forcePortrait = false,
 }: {
   jobId: string;
@@ -73,7 +73,7 @@ export function ScanImage({
   if (failed) {
     return (
       <div
-        className={`flex items-center justify-center bg-slate-900/60 p-2 text-center text-xs text-slate-400 ${className}`}
+        className={`flex items-center justify-center bg-field/60 p-2 text-center text-xs text-ink-3 ${className}`}
       >
         Image unavailable
       </div>
@@ -83,7 +83,7 @@ export function ScanImage({
   if (!url) {
     return (
       <div
-        className={`flex items-center justify-center bg-slate-900/60 p-2 text-center text-xs text-slate-400 ${className}`}
+        className={`flex items-center justify-center bg-field/60 p-2 text-center text-xs text-ink-3 ${className}`}
       >
         Loading image…
       </div>

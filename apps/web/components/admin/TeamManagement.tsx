@@ -164,7 +164,7 @@ type Status = { text: string; isError: boolean } | null;
 function ColorSwatch({ hex, label }: { hex?: string; label: string }) {
   return (
     <span
-      className="inline-block h-4 w-4 shrink-0 rounded border border-slate-600 align-middle"
+      className="inline-block h-4 w-4 shrink-0 rounded border border-control align-middle"
       style={{ background: hex ?? "transparent" }}
       title={hex ? `${label}: ${hex}` : `${label}: not set`}
       aria-label={hex ? `${label} ${hex}` : `${label} not set`}
@@ -739,8 +739,8 @@ function TeamDetail({
       </div>
 
       {(team.colorCandidates?.length ?? 0) > 0 && (
-        <div className="rounded-md border border-neon-orange/40 bg-neon-orange/5 p-3 space-y-2">
-          <p className="text-sm text-neon-orange">
+        <div className="rounded-md border border-neon-orange/40 bg-neon-orange/5 p-3 shadow-offset space-y-2">
+          <p className="text-sm text-neon-orange-text">
             {team.colorCandidates!.length} source pages match this name. Pick
             the right team — nothing is applied until you do.
           </p>
@@ -832,14 +832,14 @@ function TeamDetail({
           <div
             id={errorId}
             role="alert"
-            className="sm:col-span-2 flex flex-wrap items-center gap-3 text-sm text-neon-pink"
+            className="sm:col-span-2 flex flex-wrap items-center gap-3 text-sm text-neon-pink-text"
           >
             <span>{saveError}</span>
             {nameTakenId && (
               <button
                 type="button"
                 onClick={() => onSelect(nameTakenId)}
-                className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-pink"
+                className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus-outline"
               >
                 Open the existing team
               </button>
@@ -881,14 +881,14 @@ function TeamDetail({
               {draftAliases.map((alias) => (
                 <li
                   key={alias}
-                  className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 text-xs text-slate-300"
+                  className="rounded-full border border-rule-strong bg-field px-2.5 py-0.5 text-xs text-ink-2"
                 >
                   {alias}
                 </li>
               ))}
             </ul>
           )}
-          <p id={aliasCaptionId} className="mt-2 text-xs text-slate-400">
+          <p id={aliasCaptionId} className="mt-2 text-xs text-ink-3">
             Separate with commas. Other names this team answers to &mdash; the
             school, an old nickname, how a checklist spells it.
           </p>
@@ -902,7 +902,7 @@ function TeamDetail({
               channel below instead, one debounce behind, and this node stays
               synchronous for the eyes. */}
           {aliasNote && (
-            <p className="mt-1 text-xs text-slate-400">{aliasNote}</p>
+            <p className="mt-1 text-xs text-ink-3">{aliasNote}</p>
           )}
           {/* The announced note. Mounted unconditionally and from the first
               render, empty or not: a live region that appears at the same
@@ -916,7 +916,7 @@ function TeamDetail({
         <div>
           <label
             htmlFor="team-league"
-            className="block text-sm font-medium mb-1 text-slate-300"
+            className="block text-sm font-medium mb-1 text-ink-2"
           >
             League
           </label>
@@ -936,7 +936,7 @@ function TeamDetail({
               }
               setLeagueId(value);
             }}
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+            className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
           >
             <option value={NO_LEAGUE}>— none —</option>
             {leagueOptions.map((league) => (
@@ -960,7 +960,7 @@ function TeamDetail({
             // line box, which leaves this link's pointer target 8px short of
             // WCAG 2.2 SC 2.5.8's 24px floor. 16 + 2x4 = 24 exactly, and the
             // padding grows the hit area without moving the text.
-            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-blue underline underline-offset-2 transition-colors hover:text-neon-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-blue-text underline underline-offset-2 transition-colors hover:text-neon-blue-text/80 focus-outline"
           >
             Manage leagues
           </Link>
@@ -1004,7 +1004,7 @@ function TeamDetail({
               matches for SC 2.5.3), and a <label> may not contain the list.
               The id sits on the WRAPPER above, never on the input — an id
               there would replace "Franchise" as its Maestro resource-id. */}
-          <span className="block text-sm font-medium mb-1 text-slate-300">
+          <span className="block text-sm font-medium mb-1 text-ink-2">
             Franchise
           </span>
           <div className="relative">
@@ -1035,7 +1035,7 @@ function TeamDetail({
                 text. Decorative; the combobox role says it to assistive tech. */}
             <span
               aria-hidden="true"
-              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400"
+              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-3"
             >
               ▾
             </span>
@@ -1050,7 +1050,7 @@ function TeamDetail({
                 ? `/admin/franchises?franchise=${franchiseId}`
                 : "/admin/franchises"
             }
-            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-purple-text underline underline-offset-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-purple-text underline underline-offset-2 transition-colors hover:text-ink focus-outline"
           >
             See the franchise
           </Link>
@@ -1089,7 +1089,7 @@ function TeamDetail({
       </div>
 
       {ratio !== null && (
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-ink-3">
           Contrast {ratio.toFixed(1)}:1 — how the spine label will read.
         </p>
       )}
@@ -1124,7 +1124,7 @@ function TeamDetail({
           <p
             role={panelStatus.isError ? "alert" : "status"}
             className={`self-center text-sm ${
-              panelStatus.isError ? "text-neon-pink" : "text-slate-300"
+              panelStatus.isError ? "text-neon-pink-text" : "text-ink-2"
             }`}
           >
             {panelStatus.text}
@@ -1631,7 +1631,7 @@ export default function TeamManagement() {
     filter.trim().length >= SEARCH_MIN_CHARS && searchAnswer === undefined;
 
   if (management === undefined) {
-    return <p className="text-sm text-slate-400">Loading teams…</p>;
+    return <p className="text-sm text-ink-3">Loading teams…</p>;
   }
 
   return (
@@ -1668,7 +1668,7 @@ export default function TeamManagement() {
         <div className="w-72">
           <label
             htmlFor="league-filter"
-            className="block text-sm font-medium mb-1 text-slate-300"
+            className="block text-sm font-medium mb-1 text-ink-2"
           >
             League
           </label>
@@ -1687,7 +1687,7 @@ export default function TeamManagement() {
               // this deployment does not carry, which nothing selected.
               syncUrl(selectedId ?? teamParam, value);
             }}
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+            className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
           >
             <option value={ALL_LEAGUES}>All leagues</option>
             <option value="none">No league</option>
@@ -1710,7 +1710,7 @@ export default function TeamManagement() {
             under the operator's eyes. On its own line its length moves
             nothing: one line at every width the admin screens are used at,
             and floored so the first render does not collapse it. */}
-        <p className="basis-full min-h-5 text-xs leading-5 text-slate-400">
+        <p className="basis-full min-h-5 text-xs leading-5 text-ink-3">
           {/* NEO-330 — one string in ONE text node, as the E2E flows read
               it: "2,000 teams" browsing, "12 matches" / "50+ matches"
               filtering, plus " · K need attention". Not a live region: it
@@ -1729,11 +1729,11 @@ export default function TeamManagement() {
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,18rem)_1fr] gap-4">
         {/* Master */}
-        <div className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto">
+        <div className="rounded-lg border border-rule max-h-[32rem] overflow-y-auto">
           {visible.length === 0 && awaitingSearch ? (
-            <p className="p-3 text-sm text-slate-400">Searching…</p>
+            <p className="p-3 text-sm text-ink-3">Searching…</p>
           ) : visible.length === 0 ? (
-            <p className="p-3 text-sm text-slate-400">
+            <p className="p-3 text-sm text-ink-3">
               No teams match that filter.
             </p>
           ) : (
@@ -1822,10 +1822,10 @@ export default function TeamManagement() {
                       aria-describedby={
                         attention || league ? `team-row-${team._id}` : undefined
                       }
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
-                          : "border-transparent text-slate-300 hover:bg-slate-900"
+                          : "border-transparent text-ink-2 hover:bg-field"
                       }`}
                     >
                       <ColorSwatch hex={team.colors?.primary} label="Primary" />
@@ -1844,7 +1844,7 @@ export default function TeamManagement() {
                           {teamShortName(team)}
                         </span>
                         {(team.location || league || era) && (
-                          <span className="flex items-baseline gap-x-2 text-xs text-slate-400">
+                          <span className="flex items-baseline gap-x-2 text-xs text-ink-3">
                             {team.location && (
                               <span className="min-w-0 truncate">
                                 {team.location}
@@ -1856,7 +1856,7 @@ export default function TeamManagement() {
                               // appears only when there are two facts to hold
                               // apart.
                               <span
-                                className={`shrink-0 ${team.location ? "border-l border-slate-700 pl-2" : ""}`}
+                                className={`shrink-0 ${team.location ? "border-l border-rule-strong pl-2" : ""}`}
                               >
                                 {league.abbreviation ?? league.name}
                               </span>
@@ -1880,7 +1880,7 @@ export default function TeamManagement() {
                               <span
                                 className={`shrink-0 font-mono tabular-nums ${
                                   team.location || league
-                                    ? "border-l border-slate-700 pl-2"
+                                    ? "border-l border-rule-strong pl-2"
                                     : ""
                                 }`}
                               >
@@ -1896,7 +1896,7 @@ export default function TeamManagement() {
                         // below. `title` stays for the pointer.
                         <span
                           aria-hidden="true"
-                          className="text-xs text-neon-orange"
+                          className="text-xs text-neon-orange-text"
                           title={
                             attention === "choice"
                               ? "Several color sources match — needs a pick"
@@ -1927,7 +1927,7 @@ export default function TeamManagement() {
         </div>
 
         {/* Detail */}
-        <div className="rounded-lg border border-slate-800 p-4">
+        <div className="rounded-lg border border-rule p-4">
           {selected ? (
             <TeamDetail
               key={selected._id}
@@ -1937,7 +1937,7 @@ export default function TeamManagement() {
               onSelect={selectTeam}
             />
           ) : (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-3">
               Select a team to see and edit everything we know about it.
             </p>
           )}

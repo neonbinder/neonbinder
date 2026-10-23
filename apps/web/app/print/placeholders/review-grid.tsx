@@ -291,7 +291,7 @@ export function ReviewGrid({
       tabIndex={-1}
       aria-label={pairs.length > 0 ? undefined : "Cards not yet paired"}
       aria-labelledby={pairs.length > 0 ? "review-heading" : undefined}
-      className="space-y-6 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+      className="space-y-6 rounded focus-outline"
     >
       {/* Only once there is something to check. Mid-batch the pile can be all
           backs with no pairs yet, and heading that "Check the pairs" — directly
@@ -302,7 +302,7 @@ export function ReviewGrid({
           <h3 id="review-heading" className="text-2xl font-bold mb-1">
             Check the pairs
           </h3>
-          <p className="text-slate-400 max-w-2xl">
+          <p className="text-ink-3 max-w-2xl">
             Each card needs its own front and back. Fix anything that looks
             wrong — nothing prints until you say so.
           </p>
@@ -310,7 +310,7 @@ export function ReviewGrid({
       )}
 
       {/* Always mounted so a failure is announced rather than appearing silently. */}
-      <p role="alert" className="text-sm text-neon-pink">
+      <p role="alert" className="text-sm text-neon-pink-text">
         {error ?? ""}
       </p>
 
@@ -318,7 +318,7 @@ export function ReviewGrid({
           move between the pile and the list above; a screen-reader user gets
           nothing else telling them the action actually happened (WCAG 4.1.3).
           Always mounted for the same reason as the error region above. */}
-      <p role="status" aria-live="polite" className="text-sm text-neon-green">
+      <p role="status" aria-live="polite" className="text-sm text-neon-green-text">
         {notice ?? ""}
       </p>
 
@@ -337,10 +337,10 @@ export function ReviewGrid({
                 // below WCAG 1.4.3 contrast. Only the pictures dim (see the
                 // figures); the border and background carry the excluded state.
                 isExcluded
-                  ? "border-slate-800 bg-slate-900/20"
+                  ? "border-rule bg-field/20"
                   : settled
-                    ? "border-neon-green/40 bg-slate-900/40"
-                    : "border-neon-yellow/40 bg-slate-900/40",
+                    ? "border-neon-green/40 bg-field/40"
+                    : "border-neon-yellow/40 bg-field/40",
               ].join(" ")}
             >
               <div className="flex flex-wrap items-start gap-4">
@@ -371,9 +371,9 @@ export function ReviewGrid({
                       jobId={jobId}
                       entryIndex={pair.frontIndex}
                       alt={`Front of ${cardName(pair)}`}
-                      className="h-28 w-auto max-w-full rounded border border-slate-700 object-contain"
+                      className="h-28 w-auto max-w-full rounded border border-rule-strong object-contain"
                     />
-                    <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-slate-400 wrap-anywhere">
+                    <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-ink-3 wrap-anywhere">
                       {sideCaption("Front", nameByIndex.get(pair.frontIndex))}
                     </figcaption>
                   </figure>
@@ -382,32 +382,32 @@ export function ReviewGrid({
                       jobId={jobId}
                       entryIndex={pair.backIndex}
                       alt={`Back of ${cardName(pair)}`}
-                      className="h-28 w-auto max-w-full rounded border border-slate-700 object-contain"
+                      className="h-28 w-auto max-w-full rounded border border-rule-strong object-contain"
                     />
-                    <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-slate-400 wrap-anywhere">
+                    <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-ink-3 wrap-anywhere">
                       {sideCaption("Back", nameByIndex.get(pair.backIndex))}
                     </figcaption>
                   </figure>
                 </div>
 
                 <div className="min-w-[12rem] flex-1 space-y-1">
-                  <p className="text-slate-200">{cardName(pair)}</p>
+                  <p className="text-ink-2">{cardName(pair)}</p>
                   {/* Text, not a colour swatch: the border already carries the
                       colour, and colour alone fails WCAG 1.4.1. */}
                   <p
-                    className={`text-xs ${settled ? "text-neon-green" : "text-neon-yellow"}`}
+                    className={`text-xs ${settled ? "text-neon-green-text" : "text-neon-yellow-text"}`}
                   >
                     {evidence(pair)}
                   </p>
                 </div>
 
                 <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <label className="flex items-center gap-2 text-sm text-ink-2">
                     <input
                       type="checkbox"
                       checked={!isExcluded}
                       onChange={() => onToggleExcluded(key)}
-                      className="accent-[#00D558]"
+                      className="accent-neon-green-text"
                     />
                     Print
                   </label>
@@ -415,7 +415,7 @@ export function ReviewGrid({
                     type="button"
                     disabled={busy !== null}
                     onClick={() => void swapSides(pair)}
-                    className="rounded border border-slate-700 px-2 py-1 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                    className="rounded border border-rule-strong px-2 py-1 text-sm text-ink-2 hover:bg-hover disabled:opacity-50"
                   >
                     {busy === `swap-${key}` ? "Swapping…" : "Swap sides"}
                   </button>
@@ -423,7 +423,7 @@ export function ReviewGrid({
                     type="button"
                     disabled={busy !== null}
                     onClick={() => void split(pair)}
-                    className="rounded border border-slate-700 px-2 py-1 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                    className="rounded border border-rule-strong px-2 py-1 text-sm text-ink-2 hover:bg-hover disabled:opacity-50"
                   >
                     {busy === key ? "Splitting…" : "Split"}
                   </button>
@@ -442,7 +442,7 @@ export function ReviewGrid({
           <h4 className="text-lg font-semibold">
             Not paired ({loose.length})
           </h4>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-ink-3">
             {looseFronts === 0
               ? "Only backs here so far — their fronts are still being read. They will pair up as those finish."
               : looseBacks === 0
@@ -470,9 +470,9 @@ export function ReviewGrid({
                     jobId={jobId}
                     entryIndex={image.entryIndex}
                     alt={image.originalName}
-                    className="h-32 w-full rounded border border-slate-700 object-contain"
+                    className="h-32 w-full rounded border border-rule-strong object-contain"
                   />
-                  <p className="truncate text-[10px] text-slate-400">
+                  <p className="truncate text-[10px] text-ink-3">
                     {image.originalName}
                   </p>
 
@@ -494,7 +494,7 @@ export function ReviewGrid({
                         // a11y (2.5.8): min-h-6 makes each row 24px, so the
                         // 13px radio's centre sits 24px+ from the checkbox
                         // below it. The whole label is the hit area anyway.
-                        className="flex min-h-6 items-center gap-1 text-slate-300 capitalize"
+                        className="flex min-h-6 items-center gap-1 text-ink-2 capitalize"
                       >
                         <input
                           type="radio"
@@ -502,27 +502,27 @@ export function ReviewGrid({
                           checked={side === value}
                           disabled={busy !== null}
                           onChange={() => void setSide(image.entryIndex, value)}
-                          className="accent-[#A44AFF]"
+                          className="accent-neon-purple"
                         />
                         {value}
                       </label>
                     ))}
                   </fieldset>
                   {side === null && (
-                    <p className="text-[10px] text-neon-yellow">
+                    <p className="text-[10px] text-neon-yellow-text">
                       Side unclear — pick one
                     </p>
                   )}
 
                   {/* Separate from the side, because they answer different
                       questions: what IS this, and do I want to pair it now. */}
-                  <label className="flex min-h-6 items-center gap-1 text-xs text-slate-300">
+                  <label className="flex min-h-6 items-center gap-1 text-xs text-ink-2">
                     <input
                       type="checkbox"
                       checked={isPicked}
                       disabled={busy !== null}
                       onChange={() => toggleSelected(image.entryIndex)}
-                      className="accent-[#00D558]"
+                      className="accent-neon-green-text"
                     />
                     Pair this
                   </label>
@@ -540,13 +540,13 @@ export function ReviewGrid({
           {/* Say WHY it is unavailable. A disabled button with no explanation
               is the same dead end as an error with no next step. */}
           {picked.length === 2 && !canPair && (
-            <p className="text-sm text-neon-pink">
+            <p className="text-sm text-neon-pink-text">
               Those are both {front ? "fronts" : "backs"} — a pair needs one of
               each. Change a side above, or pick a different card.
             </p>
           )}
           {picked.length === 1 && (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-3">
               Pick one more — a pair needs a front and a back.
             </p>
           )}

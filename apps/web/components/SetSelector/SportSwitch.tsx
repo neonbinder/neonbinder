@@ -245,14 +245,14 @@ export default function SportSwitch({
         // `p-1.5 -m-1.5`: a 28px-tall hit area (SC 2.5.8) around text that
         // still sits exactly where it did — the padding is cancelled by the
         // margin, so nothing around it moves.
-        className="-m-1.5 inline-flex items-baseline gap-1 rounded-sm p-1.5 text-xs text-gray-400 hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
+        className="-m-1.5 inline-flex items-baseline gap-1 rounded-sm p-1.5 text-xs text-ink-3 hover:text-ink-2 focus-outline aria-disabled:cursor-not-allowed aria-disabled:hover:text-ink-3"
       >
         {prefix ? <span>{prefix}</span> : null}
         <span
           className={
             overridden
-              ? "text-[#FFE600] underline decoration-dotted underline-offset-2"
-              : "underline decoration-dotted decoration-gray-600 underline-offset-2"
+              ? "text-neon-yellow-text underline decoration-dotted underline-offset-2"
+              : "underline decoration-dotted decoration-control underline-offset-2"
           }
         >
           {currentName}
@@ -273,7 +273,7 @@ export default function SportSwitch({
             ref={listRef}
             role="listbox"
             aria-label="Choose a sport"
-            className="max-h-48 min-w-[10rem] overflow-y-auto overscroll-contain rounded-md border border-gray-600 bg-gray-950 p-1 shadow-lg shadow-black/60"
+            className="max-h-48 min-w-[10rem] overflow-y-auto overscroll-contain rounded-md border border-control bg-sheet p-1 shadow-lg shadow-black/60 shadow-offset"
             onKeyDown={(e) => {
               const last = options.length - 1;
               if (e.key === "ArrowDown") {
@@ -321,16 +321,16 @@ export default function SportSwitch({
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => pick(o.id)}
                   onMouseEnter={() => setActiveIdx(idx)}
-                  className={`flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left text-xs focus:outline-none ${
+                  className={`flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left text-xs focus-outline ${
                     idx === activeIdx
-                      ? "bg-gray-800 text-gray-100"
-                      : "text-gray-300"
-                  } focus-visible:ring-2 focus-visible:ring-[#00C2FF]`}
+                      ? "bg-hover text-ink ring-1 ring-inset ring-selection"
+                      : "text-ink-2"
+                  }`}
                 >
                   <span>{o.name}</span>
                   {/* What "default" means here, said once, in the list itself —
                     never as a banner outside it. */}
-                  <span className="inline-flex items-baseline gap-1.5 text-[0.625rem] text-gray-400">
+                  <span className="inline-flex items-baseline gap-1.5 text-[0.625rem] text-ink-3">
                     {isSetSport && <span>set&apos;s sport</span>}
                     {/* aria-selected carries this for assistive tech. */}
                     {selected && <span aria-hidden="true">✓</span>}

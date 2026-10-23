@@ -63,17 +63,16 @@ export default function Shelf({ store, onOpen, onNewBinder }: ShelfProps) {
         My Binders
       </h2>
       <p
-        className="neon-header text-[1.7rem] leading-tight text-white sm:text-[2.1rem]"
-        style={{ textShadow: "0 0 18px rgba(0,194,255,0.55), 0 0 2px #00C2FF" }}
+        className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]"
       >
         {total} cards, {store.state.binders.length} binders, {forSale} for sale.
       </p>
-      <p className="mt-2 max-w-2xl text-slate-300">
+      <p className="mt-2 max-w-2xl text-ink-2">
         Pull a binder off the shelf, or hunt for a card down below and we&apos;ll show you where it
         lives.{" "}
         {scopeName ? (
           <>
-            Checklists and My Cards are looking through <strong className="text-white">{scopeName}</strong>.
+            Checklists and My Cards are looking through <strong className="text-ink">{scopeName}</strong>.
           </>
         ) : (
           <>Checklists and My Cards are looking through everything.</>
@@ -82,7 +81,7 @@ export default function Shelf({ store, onOpen, onNewBinder }: ShelfProps) {
 
       <div className="mt-6 grid gap-x-8 gap-y-10 xl:grid-cols-[minmax(0,1fr)_auto]">
         <section aria-labelledby="nb-my-shelf" className="min-w-0">
-          <h3 id="nb-my-shelf" className="text-xl font-bold text-white">
+          <h3 id="nb-my-shelf" className="text-xl font-bold text-ink">
             Your binders
           </h3>
           <ul className="p2-shelf mt-1" aria-label="Your binders">
@@ -98,7 +97,7 @@ export default function Shelf({ store, onOpen, onNewBinder }: ShelfProps) {
               <button
                 type="button"
                 onClick={onNewBinder}
-                className="p2-spine p2-spine--new h-[196px] w-[58px] justify-center gap-3 text-slate-300 hover:text-white sm:h-[236px]"
+                className="p2-spine p2-spine--new h-[196px] w-[58px] justify-center gap-3 text-ink-2 hover:text-ink sm:h-[236px]"
                 style={{ "--i": mine.length + 1 } as CSSProperties}
               >
                 <PlusIcon aria-hidden="true" className="h-6 w-6 shrink-0" />
@@ -106,14 +105,14 @@ export default function Shelf({ store, onOpen, onNewBinder }: ShelfProps) {
               </button>
             </li>
           </ul>
-          <div className="p2-ledge" aria-hidden="true" />
+          <div className="p2-ledge shelf-ledge" aria-hidden="true" />
         </section>
 
         <section aria-labelledby="nb-special-shelf" className="nb-special w-fit max-w-full min-w-0">
           <h3 id="nb-special-shelf" className="nb-special-sign">
             Special places
           </h3>
-          <p className="mt-1 max-w-[22rem] px-1 text-sm text-slate-300">
+          <p className="mt-1 max-w-[22rem] px-1 text-sm text-ink-2">
             Everything at once, what you&apos;re chasing, what you&apos;d swap and what&apos;s for sale.
           </p>
           <ul className="p2-shelf nb-special-shelf" aria-label="Special places">
@@ -130,7 +129,7 @@ export default function Shelf({ store, onOpen, onNewBinder }: ShelfProps) {
               <InventoryBox forSale={forSale} />
             </li>
           </ul>
-          <div className="nb-special-ledge" aria-hidden="true" />
+          <div className="nb-special-ledge shelf-ledge-special" aria-hidden="true" />
         </section>
       </div>
 
@@ -195,7 +194,7 @@ function BinderSpine({
   let badge: ReactNode = null;
   if (binder.kind === "smart") {
     badge = (
-      <span className="rounded-sm bg-neon-purple px-1 text-[10px] font-bold leading-4 text-black">Smart</span>
+      <span className="rounded-sm bg-neon-purple px-1 text-[10px] font-bold leading-4 text-on-neon-purple">Smart</span>
     );
   }
 
@@ -266,7 +265,7 @@ const ALL_SETS = setsInOrder();
 const YEARS = [...new Set(ALL_SETS.map((s) => s.year))].sort((a, b) => a - b);
 
 const FILTER_SELECT =
-  "min-h-10 rounded-md border border-slate-600 bg-slate-900 px-2 text-sm text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
+  "min-h-10 rounded-md border border-control bg-field px-2 text-sm text-ink focus-outline";
 
 function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view: ViewKey) => void }) {
   const filter = store.browseFilter;
@@ -276,7 +275,7 @@ function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view:
   const countId = useId();
 
   const yearSelect = (key: "from" | "to", text: string) => (
-    <label className="flex items-center gap-2 text-sm text-slate-300">
+    <label className="flex items-center gap-2 text-sm text-ink-2">
       {/* The select names itself: a wrapping label's name would include the
           chosen year ("From 1996"). */}
       <span aria-hidden="true">{text}</span>
@@ -298,15 +297,15 @@ function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view:
 
   return (
     <section aria-labelledby="nb-catalog-shelf" className="mt-12">
-      <h3 id="nb-catalog-shelf" className="text-xl font-bold text-white">
+      <h3 id="nb-catalog-shelf" className="text-xl font-bold text-ink">
         Browse a set
       </h3>
-      <p className="mt-1 max-w-xl text-sm text-slate-300">
+      <p className="mt-1 max-w-xl text-sm text-ink-2">
         Every card in the set, sleeve by sleeve. Spot one you&apos;ve got? Hit Add.
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div role="group" aria-label="Sport" className="flex rounded-lg border border-slate-600 bg-slate-900 p-0.5">
+        <div role="group" aria-label="Sport" className="flex rounded-lg border border-control bg-field p-0.5">
           {[{ id: "all" as const, name: "All" }, ...sports].map((s) => (
             <button
               key={s.id}
@@ -315,8 +314,8 @@ function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view:
               // "All" alone is a substring of "Baseball" and "Football".
               aria-label={s.id === "all" ? "All sports" : undefined}
               onClick={() => set({ sport: s.id })}
-              className={`min-h-9 rounded-md px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] max-sm:min-h-11 ${
-                filter.sport === s.id ? "bg-neon-blue text-black" : "text-slate-200 hover:text-white"
+              className={`min-h-9 rounded-md px-3 text-sm font-medium focus-outline max-sm:min-h-11 ${
+                filter.sport === s.id ? "bg-neon-blue text-on-neon-blue ring-1 ring-inset ring-selection" : "text-ink-2 hover:text-ink"
               }`}
             >
               {s.name}
@@ -343,18 +342,18 @@ function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view:
           }}
           className="min-h-10 w-full px-3 text-sm sm:w-56"
         />
-        <p id={countId} aria-live="polite" className="text-sm tabular-nums text-slate-300">
+        <p id={countId} aria-live="polite" className="text-sm tabular-nums text-ink-2">
           {shown.length} of {ALL_SETS.length} sets
         </p>
       </div>
 
       {shown.length === 0 ? (
-        <div className="mt-3 rounded-lg border border-dashed border-slate-600 px-4 py-8 text-center">
-          <p className="text-slate-200">No sets on this shelf fit those filters.</p>
+        <div className="mt-3 rounded-lg border border-dashed border-control px-4 py-8 text-center">
+          <p className="text-ink-2">No sets on this shelf fit those filters.</p>
           <button
             type="button"
             onClick={() => store.setBrowseFilter(NO_BROWSE_FILTER)}
-            className="mt-2 rounded-sm text-sm text-neon-blue underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="mt-2 rounded-sm text-sm text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
           >
             Clear filters
           </button>
@@ -391,12 +390,12 @@ function BrowseShelf({ store, onOpen }: { store: CollectionStore; onOpen: (view:
               );
             })}
           </ul>
-          <div className="p2-ledge" aria-hidden="true" />
+          <div className="p2-ledge shelf-ledge" aria-hidden="true" />
           {filtering && (
             <button
               type="button"
               onClick={() => store.setBrowseFilter(NO_BROWSE_FILTER)}
-              className="mt-2 rounded-sm text-sm text-neon-blue underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+              className="mt-2 rounded-sm text-sm text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
             >
               Clear filters
             </button>

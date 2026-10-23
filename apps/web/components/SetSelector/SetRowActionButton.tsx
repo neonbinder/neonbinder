@@ -91,21 +91,17 @@ type Props = CommonProps &
 
 const BASE =
   "shrink-0 inline-flex items-center gap-1.5 min-h-8 px-3 border text-xs whitespace-nowrap " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 " +
+  "focus-outline " +
   "aria-disabled:opacity-50 aria-disabled:cursor-not-allowed";
 
 export const SET_ROW_ACTION_TONE_CLASSES: Record<SetRowActionTone, string> = {
   quiet:
-    "rounded-md border-slate-500 font-medium text-gray-200 " +
-    "hover:border-[#00D558] hover:text-[#00D558] " +
-    "aria-disabled:hover:border-slate-500 aria-disabled:hover:text-gray-200 " +
-    // The attributes panel is dark in both themes.
-    "focus-visible:ring-offset-gray-900",
+    "rounded-md border-control font-medium text-ink-2 " +
+    "hover:border-neon-green-text hover:text-neon-green-text " +
+    "aria-disabled:hover:border-control aria-disabled:hover:text-ink-2",
   attention:
-    "rounded-full border-amber-700 dark:border-amber-400/70 bg-amber-400/15 font-semibold " +
-    "text-amber-800 dark:text-amber-300 hover:bg-amber-400/25 aria-disabled:hover:bg-amber-400/15 " +
-    // The checklist card is `bg-white dark:bg-gray-800`, so the offset follows it.
-    "focus-visible:ring-offset-white dark:focus-visible:ring-offset-gray-800",
+    "rounded-full border-notice-warn-rule bg-notice-warn-bg font-semibold " +
+    "text-notice-warn-ink hover:bg-notice-warn-rule/20 aria-disabled:hover:bg-notice-warn-bg",
 };
 
 export default function SetRowActionButton(props: Props) {

@@ -37,6 +37,9 @@ import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 // comes from the one module that also gates the href — see
 // lib/players/wikidata-id.ts.
 import { WIKIDATA_QID, wikidataUrl } from "@/lib/players/wikidata-id";
+import { useTheme } from "@/src/theme/ThemeProvider";
+import { surfaceHex } from "@/src/theme/tokens";
+import type { ThemeMode } from "@/src/theme/theme-mode";
 
 /**
  * NEO-212 — Player Management, the `/admin/teams` twin.
@@ -234,17 +237,21 @@ function primaryTeamId(
  * than in a NeonBinder accent, because a franchise's colours are how a
  * collector recognises it before they have finished reading the word.
  *
- * These are the two backgrounds a row is ever painted on. `ROW_BG_IDLE` is
- * slate-900, the HOVER fill — not the page's near-black underneath it. The
- * hover state is the lightest an unselected row ever gets, so a light colour
- * that clears 4.5:1 there clears it everywhere else on that row; a dark one
- * fails against both and is rejected either way. `ROW_BG_SELECTED` is
- * `bg-neon-blue/10` (#00C2FF at 10%) composited over that near-black, worked
- * out once here rather than guessed at, because the selected row is measurably
- * lighter and a colour can pass on one row and fail on the other.
+ * These are the two backgrounds a row is ever painted on, per mode (NEO-356).
+ * The idle row is measured against its WORST background: in dark that is the
+ * hover fill (`hover:bg-field`, slate-900), the lightest an unselected row ever
+ * gets, so a light colour that clears 4.5:1 there clears it everywhere else on
+ * the row; in light it is the page surface under the list, darker than the
+ * white hover fill. The selected row is `bg-neon-blue/10` (#00C2FF at 10%)
+ * composited over the page, worked out once here rather than guessed at,
+ * because the selected row is measurably different and a colour can pass on
+ * one row and fail on the other.
  */
-const ROW_BG_IDLE = "#0f172a";
-const ROW_BG_SELECTED = "#02192e";
+function rowBackgrounds(mode: ThemeMode): { idle: string; selected: string } {
+  return mode === "dark"
+    ? { idle: surfaceHex("field", mode), selected: "#02192e" }
+    : { idle: surfaceHex("surface", mode), selected: "#def3fc" };
+}
 
 /** WCAG 2.2 SC 1.4.3 for text this size. Not a readout, a gate — this is UI. */
 const ROW_TEXT_MIN_CONTRAST = 4.5;
@@ -422,7 +429,7 @@ const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
  * line nearest its own field.
  */
 const STINT_LABEL_CLASS =
-  "mb-1 flex min-h-[2.25rem] items-end text-sm font-medium leading-tight text-slate-300";
+  "mb-1 flex min-h-[2.25rem] items-end text-sm font-medium leading-tight text-ink-2";
 
 // ---------------------------------------------------------------------------
 // Add form
@@ -680,7 +687,7 @@ function AddPlayerForm({
       <div>
         <label
           htmlFor="new-player-sport"
-          className="block text-sm font-medium mb-1 text-slate-300"
+          className="block text-sm font-medium mb-1 text-ink-2"
         >
           Sport
         </label>
@@ -689,7 +696,7 @@ function AddPlayerForm({
           value={sportId}
           disabled={formBusy}
           onChange={(e) => setSportId(e.target.value)}
-          className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">— pick a sport —</option>
           {sports.map((sport) => (
@@ -841,7 +848,7 @@ function AddPlayerForm({
             // The pulse is motion-only; `opacity-70` is the busy cue a
             // reduced-motion operator still sees (NeonButton dims its own
             // aria-disabled state, so the primary needs nothing extra).
-            className={`min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-slate-300 ${
+            className={`min-h-6 rounded px-2 py-1 text-sm text-ink-2 underline underline-offset-2 transition-colors hover:text-neon-green-text focus-outline disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-ink-2 ${
               busyOn === "anyway"
                 ? "opacity-70 motion-safe:animate-pulse"
                 : formBusy
@@ -865,7 +872,7 @@ function AddPlayerForm({
              row already exists and is on screen whenever Create is, so the
              refusal costs no extra height; it wraps to its own line only when
              the column is too narrow to hold it beside the buttons. */
-          <p role="alert" className="self-center text-sm text-neon-pink">
+          <p role="alert" className="self-center text-sm text-neon-pink-text">
             {error}
           </p>
         )}
@@ -891,7 +898,7 @@ function AddPlayerForm({
 /** NEO-319 — one skeleton block: the screen's inline skeleton vocabulary
  *  (BaseSetPicker's, on this screen's slate surface). */
 const SKELETON_BLOCK =
-  "rounded-md border border-slate-700 bg-slate-800/60 motion-safe:animate-pulse";
+  "rounded-md border border-rule-strong bg-rule/60 motion-safe:animate-pulse";
 
 /**
  * NEO-319 — what the detail column shows while the player it is opening
@@ -948,7 +955,7 @@ function PlayerDetailSkeleton() {
     <div
       ref={holderRef}
       tabIndex={-1}
-      className="min-h-[28rem] rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+      className="min-h-[28rem] rounded-sm focus-outline"
     >
       <p role="status" className="sr-only">
         Loading player…
@@ -1093,19 +1100,19 @@ function PlayerSportsField({
 
   return (
     <div role="group" aria-labelledby={labelId} className="space-y-2">
-      <span id={labelId} className="block text-sm font-medium text-slate-300">
+      <span id={labelId} className="block text-sm font-medium text-ink-2">
         Sports
       </span>
       <div className="flex flex-wrap items-center gap-2">
         {/* The home sport: fixed, and the one every automated lookup scopes by. */}
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-950 px-2.5 py-1 text-sm text-slate-300">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-rule bg-sheet px-2.5 py-1 text-sm text-ink-2">
           {nameOf(player.sportId)}
-          <span className="text-xs text-slate-400">home</span>
+          <span className="text-xs text-ink-3">home</span>
         </span>
         {held.map((id) => (
           <span
             key={id}
-            className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-900 py-1 pl-2.5 pr-1 text-sm text-slate-200"
+            className="inline-flex items-center gap-1 rounded-full border border-rule-strong bg-field py-1 pl-2.5 pr-1 text-sm text-ink-2"
           >
             {nameOf(id)}
             <button
@@ -1113,7 +1120,7 @@ function PlayerSportsField({
               onClick={() => remove(id)}
               aria-disabled={busy || undefined}
               aria-label={`Remove sport ${nameOf(id)}`}
-              className="min-h-6 min-w-6 rounded-full text-slate-400 transition-colors hover:bg-neon-pink/10 hover:text-neon-pink focus:outline-none focus:ring-2 focus:ring-neon-pink"
+              className="min-h-6 min-w-6 rounded-full text-ink-3 transition-colors hover:bg-neon-pink/10 hover:text-neon-pink-text focus-outline"
             >
               ×
             </button>
@@ -1126,7 +1133,7 @@ function PlayerSportsField({
             onClick={() => setChoosing((c) => !c)}
             aria-expanded={choosing}
             aria-disabled={busy || undefined}
-            className="min-h-6 rounded-full border border-dashed border-slate-500 px-2.5 py-1 text-sm text-slate-300 transition-colors hover:border-neon-green hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+            className="min-h-6 rounded-full border border-dashed border-control px-2.5 py-1 text-sm text-ink-2 transition-colors hover:border-neon-green-text hover:text-neon-green-text focus-outline"
           >
             Add sport
           </button>
@@ -1152,7 +1159,7 @@ function PlayerSportsField({
               onClick={() => void add(s._id)}
               aria-disabled={busy || undefined}
               aria-label={`Add sport ${s.value}`}
-              className="min-h-6 rounded-full border border-slate-700 px-2.5 py-1 text-sm text-slate-200 transition-colors hover:border-neon-green hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+              className="min-h-6 rounded-full border border-control px-2.5 py-1 text-sm text-ink-2 transition-colors hover:border-neon-green-text hover:text-neon-green-text focus-outline"
             >
               + {s.value}
             </button>
@@ -1167,7 +1174,7 @@ function PlayerSportsField({
         <p
           key={`${message.isError ? "alert" : "status"}:${message.text}`}
           role={message.isError ? "alert" : "status"}
-          className={`text-sm ${message.isError ? "text-neon-pink" : "text-slate-400"}`}
+          className={`text-sm ${message.isError ? "text-neon-pink-text" : "text-ink-3"}`}
         >
           {message.text}
         </p>
@@ -1204,12 +1211,12 @@ function PlayerCardsSection({ player }: { player: Player }) {
   );
 
   return (
-    <div className="space-y-3 border-t border-slate-800 pt-4">
+    <div className="space-y-3 border-t border-rule pt-4">
       <h3 className="text-base font-semibold">Cards</h3>
       {cards === undefined ? (
-        <p className="text-sm text-slate-400">Loading cards…</p>
+        <p className="text-sm text-ink-3">Loading cards…</p>
       ) : cards.length === 0 ? (
-        <p className="rounded-md border border-dashed border-slate-800 px-3 py-2 text-sm text-slate-400">
+        <p className="rounded-md border border-dashed border-rule px-3 py-2 text-sm text-ink-3">
           No cards link to {player.name} yet. Link them from a set&apos;s
           checklist.
         </p>
@@ -1217,19 +1224,19 @@ function PlayerCardsSection({ player }: { player: Player }) {
         <>
           <ul
             aria-label={`Cards for ${player.name}`}
-            className="max-h-72 divide-y divide-slate-800 overflow-y-auto rounded-md border border-slate-800"
+            className="max-h-72 divide-y divide-rule overflow-y-auto rounded-md border border-rule"
           >
             {cards.map((card) => (
               <li
                 key={card.cardId}
                 className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 px-3 py-1.5 text-sm"
               >
-                <span className="tabular-nums text-slate-400">
+                <span className="tabular-nums text-ink-3">
                   {card.cardNumber ? `#${card.cardNumber}` : ""}
                 </span>
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-slate-200">
+                    <span className="truncate text-ink-2">
                       {card.cardName || "Untitled card"}
                     </span>
                     {!ownSports.has(card.sportId as string) && (
@@ -1237,7 +1244,7 @@ function PlayerCardsSection({ player }: { player: Player }) {
                     )}
                   </span>
                   <span
-                    className="block truncate text-xs text-slate-400"
+                    className="block truncate text-xs text-ink-3"
                     title={card.setLabel}
                   >
                     {card.setLabel}
@@ -1247,7 +1254,7 @@ function PlayerCardsSection({ player }: { player: Player }) {
             ))}
           </ul>
           {cards.length >= PLAYER_CARDS_CAP && (
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               Showing the first {PLAYER_CARDS_CAP} cards.
             </p>
           )}
@@ -1715,7 +1722,7 @@ function PlayerDetail({
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="scroll-mt-20 text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-blue"
+          className="scroll-mt-20 text-lg font-semibold leading-tight focus-outline focus-visible:rounded-sm"
         >
           {player.name}
         </h3>
@@ -1726,7 +1733,7 @@ function PlayerDetail({
               href={qidUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-neon-blue underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-blue rounded-sm"
+              className="text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
             >
               Wikidata {qid}
               <span className="sr-only"> (opens in new tab)</span>
@@ -1737,20 +1744,20 @@ function PlayerDetail({
             // operator can see the bad value and fix it in the editor below;
             // never as a link, because the id would be interpolated into the
             // href verbatim.
-            <span className="text-sm text-slate-400">Wikidata {qid}</span>
+            <span className="text-sm text-ink-3">Wikidata {qid}</span>
           ))}
       </div>
 
       {nameTakenId && (
         <div
           role="alert"
-          className="flex flex-wrap items-center gap-3 rounded-md border border-neon-pink/40 bg-neon-pink/5 p-3 text-sm text-neon-pink"
+          className="flex flex-wrap items-center gap-3 rounded-md border border-neon-pink/40 bg-neon-pink/5 p-3 shadow-offset text-sm text-neon-pink-text"
         >
           <span>That name already exists</span>
           <button
             type="button"
             onClick={() => onSelect(nameTakenId)}
-            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-pink"
+            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus-outline"
           >
             Open the existing player
           </button>
@@ -1788,7 +1795,7 @@ function PlayerDetail({
               `Sport: {label}` — the E2E flow reads this line to prove the row
               was created under the sport that was picked. */}
           <p
-            className={`w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-300 ${FIELD_BOX_HEIGHT}`}
+            className={`w-full rounded-md border border-rule bg-sheet px-3 py-2 text-base text-ink-2 ${FIELD_BOX_HEIGHT}`}
           >
             Sport: {sportLabel}
           </p>
@@ -1838,7 +1845,7 @@ function PlayerDetail({
             /* `role="status"`, not `alert`: nothing is wrong. The shared alias
                is the feature working — a card carrying that name will offer
                both men and the years will usually settle it. */
-            <p role="status" className="mt-1 text-xs text-slate-400">
+            <p role="status" className="mt-1 text-xs text-ink-3">
               {(sharedAliases ?? [])
                 .map(
                   (hit) =>
@@ -1864,13 +1871,13 @@ function PlayerDetail({
           />
 
           <label
-            className={`flex items-center gap-2 text-sm text-slate-200 ${FIELD_BOX_HEIGHT}`}
+            className={`flex items-center gap-2 text-sm text-ink-2 ${FIELD_BOX_HEIGHT}`}
           >
             <input
               type="checkbox"
               checked={isHallOfFame}
               onChange={(e) => setIsHallOfFame(e.target.checked)}
-              className="h-6 w-6 shrink-0 rounded border-slate-700 bg-slate-900 text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+              className="h-6 w-6 shrink-0 rounded border-control bg-field text-neon-green-text focus-outline"
             />
             Hall of Fame
           </label>
@@ -1881,7 +1888,7 @@ function PlayerDetail({
         <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
           <p
             id={qidCaptionId}
-            className={`text-sm ${qidValid ? "text-slate-400" : "text-neon-pink"}`}
+            className={`text-sm ${qidValid ? "text-ink-3" : "text-neon-pink-text"}`}
           >
             {qidValid
               ? "Leave empty to clear it."
@@ -1897,14 +1904,14 @@ function PlayerDetail({
       {rowMovedUnderDraft && (
         <div
           role="status"
-          className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-neon-orange/40 bg-neon-orange/5 px-3 py-2 text-sm text-neon-orange"
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-neon-orange/40 bg-neon-orange/5 px-3 py-2 shadow-offset text-sm text-neon-orange-text"
         >
           <span>This player was updated elsewhere — Reload to see the latest.</span>
           <button
             type="button"
             onClick={reloadFromRow}
             aria-label={`Reload player ${player.name}`}
-            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 transition-colors hover:bg-neon-orange/10 focus:outline-none focus:ring-2 focus:ring-neon-orange"
+            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 transition-colors hover:bg-neon-orange/10 focus-outline"
           >
             Reload
           </button>
@@ -1921,7 +1928,7 @@ function PlayerDetail({
 
       {/* A hairline, not a card: the career history is a second subject within
           the same panel, and boxing it would have implied a second surface. */}
-      <div className="space-y-3 border-t border-slate-800 pt-4">
+      <div className="space-y-3 border-t border-rule pt-4">
         {/* Stays a plain, non-interactive heading directly above the add row:
             the E2E flow taps this text to dismiss TeamPicker's popover, which
             can only ever hang BELOW the trigger, so the heading is the one
@@ -1929,18 +1936,18 @@ function PlayerDetail({
         <h3 className="text-base font-semibold">Career history</h3>
 
         {stints.length === 0 ? (
-          <p className="rounded-md border border-dashed border-slate-800 px-3 py-2 text-sm text-slate-400">
+          <p className="rounded-md border border-dashed border-rule px-3 py-2 text-sm text-ink-3">
             No stints recorded yet.
           </p>
         ) : (
           <ul
             aria-label="Career history"
-            className="divide-y divide-slate-800 rounded-md border border-slate-800"
+            className="divide-y divide-rule rounded-md border border-rule"
           >
             {stints.map((stint, index) => (
               <li
                 key={`${stint.teamId}-${stint.fromYear}`}
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-slate-200"
+                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-ink-2"
               >
                 {/* NEO-235 — the stint row is a way INTO the team.
                     Correcting a stint usually means the team behind it needs
@@ -1959,7 +1966,7 @@ function PlayerDetail({
                   <Link
                     to={`/admin/teams?team=${stint.teamId}`}
                     title={`Open ${teamName(stint.teamId)} in Team Management`}
-                    className="rounded-sm text-neon-blue underline underline-offset-2 transition-colors hover:text-neon-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+                    className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:text-neon-blue-text/80 focus-outline"
                   >
                     {teamName(stint.teamId)} · {stintRange(stint)}
                   </Link>
@@ -1968,7 +1975,7 @@ function PlayerDetail({
                   type="button"
                   onClick={() => removeStint(index)}
                   aria-label={`Remove ${teamName(stint.teamId)} ${stint.fromYear} stint`}
-                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-pink transition-colors hover:bg-neon-pink/10 focus:outline-none focus:ring-2 focus:ring-neon-pink"
+                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-pink-text transition-colors hover:bg-neon-pink/10 focus-outline"
                 >
                   Remove stint
                 </button>
@@ -2044,7 +2051,7 @@ function PlayerDetail({
           <NeonButton
             type="button"
             secondary
-            style={{ color: "#000000" }}
+            style={{ color: "var(--on-neon-blue)" }}
             onClick={addStint}
             className="justify-self-start"
           >
@@ -2053,13 +2060,13 @@ function PlayerDetail({
         </div>
 
         {stintError && (
-          <p role="alert" className="text-sm text-neon-pink">
+          <p role="alert" className="text-sm text-neon-pink-text">
             {stintError}
           </p>
         )}
       </div>
 
-      <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-4">
+      <div className="flex flex-wrap gap-2 border-t border-rule pt-4">
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>
           {busy === "save" ? "Saving…" : "Save"}
         </NeonButton>
@@ -2069,7 +2076,7 @@ function PlayerDetail({
         <NeonButton
           type="button"
           secondary
-          style={{ color: "#000000" }}
+          style={{ color: "var(--on-neon-blue)" }}
           onClick={() => void reEnrich()}
           disabled={busy !== null}
         >
@@ -2079,7 +2086,7 @@ function PlayerDetail({
 
       {status && (
         <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
+          className={`text-sm ${status.isError ? "text-neon-pink-text" : "text-ink-2"}`}
           role={status.isError ? "alert" : "status"}
         >
           {status.text}
@@ -2099,6 +2106,8 @@ function PlayerDetail({
 // ---------------------------------------------------------------------------
 
 export default function PlayerManagement() {
+  const { mode } = useTheme();
+  const rowBg = rowBackgrounds(mode);
   const [filter, setFilter] = useState("");
   const [debouncedFilter, setDebouncedFilter] = useState("");
   const [sportFilter, setSportFilter] = useState<string>("all");
@@ -2546,7 +2555,7 @@ export default function PlayerManagement() {
         <div className="w-44">
           <label
             htmlFor="sport-filter"
-            className="block text-sm font-medium mb-1 text-slate-300"
+            className="block text-sm font-medium mb-1 text-ink-2"
           >
             Sport
           </label>
@@ -2554,7 +2563,7 @@ export default function PlayerManagement() {
             id="sport-filter"
             value={sportFilter}
             onChange={(e) => setSportFilter(e.target.value)}
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+            className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
           >
             <option value="all">All sports</option>
             {sportList.map((sport) => (
@@ -2578,7 +2587,7 @@ export default function PlayerManagement() {
         <p
           role="status"
           aria-live="polite"
-          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
+          className={`flex items-center text-xs text-ink-3 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>
@@ -2598,14 +2607,14 @@ export default function PlayerManagement() {
         {/* Master */}
         <div
           ref={masterListRef}
-          className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto"
+          className="rounded-lg border border-rule max-h-[32rem] overflow-y-auto"
         >
           {searching && results === undefined ? (
-            <p className="p-3 text-sm text-slate-400">Searching…</p>
+            <p className="p-3 text-sm text-ink-3">Searching…</p>
           ) : management === undefined && !searching ? (
-            <p className="p-3 text-sm text-slate-400">Loading players…</p>
+            <p className="p-3 text-sm text-ink-3">Loading players…</p>
           ) : visible.length === 0 ? (
-            <p className="p-3 text-sm text-slate-400">
+            <p className="p-3 text-sm text-ink-3">
               No players match that filter.
             </p>
           ) : (
@@ -2629,7 +2638,7 @@ export default function PlayerManagement() {
                 const teamColor = rowTeam
                   ? teamTextColor(
                       rowTeam.colors,
-                      isSelected ? ROW_BG_SELECTED : ROW_BG_IDLE,
+                      isSelected ? rowBg.selected : rowBg.idle,
                     )
                   : null;
                 return (
@@ -2655,10 +2664,10 @@ export default function PlayerManagement() {
                       // here precisely because nobody scans this list: the
                       // filter takes focus on load and typing a name is how you
                       // get to a player.
-                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
+                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
-                          ? "border-neon-blue bg-neon-blue/10 text-neon-blue"
-                          : "border-transparent text-slate-300 hover:bg-slate-900"
+                          ? "border-selection bg-neon-blue/10 text-neon-blue-text"
+                          : "border-transparent text-ink-2 hover:bg-field"
                       }`}
                     >
                       {/* NEO-235 — the row answers "which of the people with
@@ -2677,7 +2686,7 @@ export default function PlayerManagement() {
                             on this row is 4.0:1, under SC 1.4.3's 4.5:1 floor
                             for text this size. slate-400 clears it. */}
                         {sportLabel && (
-                          <span className="shrink-0 text-slate-400">
+                          <span className="shrink-0 text-ink-3">
                             {sportLabel}
                           </span>
                         )}
@@ -2700,7 +2709,7 @@ export default function PlayerManagement() {
                             Allens. Same muted treatment as the sport, and only
                             when the row has one. */}
                         {player.birthYear !== undefined && (
-                          <span className="shrink-0 text-slate-400">
+                          <span className="shrink-0 text-ink-3">
                             b. {player.birthYear}
                           </span>
                         )}
@@ -2716,7 +2725,7 @@ export default function PlayerManagement() {
                             readable here (see `teamTextColor`); the rule earns
                             its keep twice over, holding a fixed neutral apart
                             from a segment that changes colour row to row.
-                            `text-slate-300` stays on the element as the fallback
+                            `text-ink-2` stays on the element as the fallback
                             the inline colour overrides, so a team with no
                             readable colour is simply muted rather than absent.
 
@@ -2726,7 +2735,7 @@ export default function PlayerManagement() {
                             matcher and for assistive tech. */}
                         {rowTeam && (
                           <span
-                            className="min-w-0 truncate border-l border-slate-700 pl-2 text-slate-300"
+                            className="min-w-0 truncate border-l border-rule-strong pl-2 text-ink-2"
                             title={rowTeam.label}
                             style={teamColor ? { color: teamColor } : undefined}
                           >
@@ -2745,7 +2754,7 @@ export default function PlayerManagement() {
         {/* Detail — the add form takes this column while it is open, rather
             than opening a dialog. A modal here would hide the very list the
             operator is checking their new name against. */}
-        <div className="rounded-lg border border-slate-800 p-4">
+        <div className="rounded-lg border border-rule p-4">
           {createdNotice && selected && !adding && (
             /* The add form's confirmation, at the head of the column that
                replaced the form — and `sticky`, so it is under the header
@@ -2771,7 +2780,7 @@ export default function PlayerManagement() {
                swallowed tap. There is nothing here to click. */
             <p
               role="status"
-              className="pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm text-slate-300"
+              className="pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-rule bg-surface px-3 py-2 text-sm text-ink-2"
             >
               {createdNotice}
             </p>
@@ -2806,7 +2815,7 @@ export default function PlayerManagement() {
             <p
               ref={placeholderRef}
               tabIndex={-1}
-              className="rounded-sm text-sm text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+              className="rounded-sm text-sm text-ink-3 focus-outline"
             >
               Select a player to see and edit everything we know about them.
             </p>

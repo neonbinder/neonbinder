@@ -131,10 +131,10 @@ export default function OwnedShelf() {
 
   return (
     <section aria-labelledby="mc-shelf-heading" className="mt-10">
-      <h2 id="mc-shelf-heading" className="text-xl font-bold text-white">
+      <h2 id="mc-shelf-heading" className="text-xl font-bold text-ink">
         Everything else I own
       </h2>
-      <p className="mt-1 text-sm text-slate-400">
+      <p className="mt-1 text-sm text-ink-3">
         Singles, slabs and PC cards that aren&apos;t part of a set build, plus your binders.
       </p>
 
@@ -153,7 +153,7 @@ export default function OwnedShelf() {
               name="Every card I own"
               detail={`${ownedAll} cards${scopeNote}`}
             />
-            <li className="hidden pt-2 text-xs font-bold text-slate-400 lg:block" aria-hidden="true">
+            <li className="hidden pt-2 text-xs font-bold text-ink-3 lg:block" aria-hidden="true">
               Binders
             </li>
             {fileable.map((b) => (
@@ -166,7 +166,7 @@ export default function OwnedShelf() {
               />
             ))}
             {smart.length > 0 && (
-              <li className="hidden pt-2 text-xs font-bold text-slate-400 lg:block" aria-hidden="true">
+              <li className="hidden pt-2 text-xs font-bold text-ink-3 lg:block" aria-hidden="true">
                 Smart binders
               </li>
             )}
@@ -185,18 +185,18 @@ export default function OwnedShelf() {
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="text-base font-bold text-white">{title}</h3>
-            <p className="text-sm text-slate-400" role="status">
+            <h3 className="text-base font-bold text-ink">{title}</h3>
+            <p className="text-sm text-ink-3" role="status">
               {shown.length} {shown.length === 1 ? "card" : "cards"}
             </p>
           </div>
           {binder?.kind === "smart" && (
-            <p className="mt-1 text-sm text-slate-300">
-              Fills itself: <span className="text-white">{describeRule(binder.rule)}</span>. Needs show dimmed.
+            <p className="mt-1 text-sm text-ink-2">
+              Fills itself: <span className="text-ink">{describeRule(binder.rule)}</span>. Needs show dimmed.
             </p>
           )}
           {binder?.kind === "manual" && binder.description && (
-            <p className="mt-1 text-sm text-slate-300">{binder.description}</p>
+            <p className="mt-1 text-sm text-ink-2">{binder.description}</p>
           )}
 
           <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
@@ -248,7 +248,7 @@ export default function OwnedShelf() {
           </div>
 
           {visible.length === 0 ? (
-            <p className="mt-6 rounded-lg border border-dashed border-slate-700 p-6 text-center text-sm text-slate-300">
+            <p className="mt-6 rounded-lg border border-dashed border-rule-strong p-6 text-center text-sm text-ink-2">
               {shelf === "else" && items.length === 0
                 ? "Every card here is on a set build. Gnarly."
                 : items.length === 0
@@ -311,8 +311,8 @@ function RailItem({
         onClick={onClick}
         className={`flex min-h-11 w-48 flex-col items-start rounded-lg border px-3 py-2 text-left lg:w-full ${FOCUS} ${
           active
-            ? "border-neon-blue bg-neon-blue/10 text-white shadow-[0_0_12px_2px_rgba(0,194,255,0.25)]"
-            : "border-slate-800 text-slate-200 hover:border-slate-500"
+            ? "border-selection bg-neon-blue/10 text-ink shadow-[0_0_12px_2px_rgba(0,194,255,0.25)]"
+            : "border-rule text-ink-2 hover:border-control"
         }`}
       >
         <span className="flex w-full items-center gap-1.5 text-sm font-bold">
@@ -323,7 +323,7 @@ function RailItem({
           )}
           <span className="truncate">{name}</span>
         </span>
-        <span className="line-clamp-2 text-xs text-slate-400">{detail}</span>
+        <span className="line-clamp-2 text-xs text-ink-3">{detail}</span>
       </button>
     </li>
   );
@@ -346,7 +346,7 @@ function ShelfCard({ item, tabIndex, onOpen }: { item: Item; tabIndex: number; o
         {count > 1 && (
           <span
             aria-hidden="true"
-            className="absolute -right-1.5 -top-1.5 rounded bg-neon-yellow px-1 text-[11px] font-bold leading-4 text-black"
+            className="absolute -right-1.5 -top-1.5 rounded bg-neon-yellow px-1 text-[11px] font-bold leading-4 text-on-neon-yellow"
           >
             ×{count}
           </span>
@@ -355,7 +355,7 @@ function ShelfCard({ item, tabIndex, onOpen }: { item: Item; tabIndex: number; o
       <p
         aria-hidden="true"
         title={cardCaption(card)}
-        className="mt-1 line-clamp-2 w-[5.5rem] text-center text-xs leading-tight text-slate-300"
+        className="mt-1 line-clamp-2 w-[5.5rem] text-center text-xs leading-tight text-ink-2"
       >
         {cardCaption(card)}
       </p>

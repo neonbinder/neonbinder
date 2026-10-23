@@ -40,7 +40,7 @@ import PurchasedTracking from "@/components/modules/PurchasedTracking";
  */
 
 const FIELD_CLASS = "w-full px-3 py-2";
-const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
+const LABEL_CLASS = "block text-sm font-medium mb-1 text-ink-2";
 
 /**
  * First-Class letter rates tier at 1/2/3oz, so the seller has to tell us which.
@@ -388,7 +388,7 @@ export default function ShippingLabelsPage() {
   if (saved === undefined) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-ink border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -398,10 +398,10 @@ export default function ShippingLabelsPage() {
   if (saved === null) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center px-4">
-        <TagIcon className="w-20 h-20 text-neon-teal mb-6" />
+        <TagIcon className="w-20 h-20 text-neon-teal-text mb-6" />
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-3">Shipping Labels</h2>
-        <p className="text-gray-400 max-w-md mb-6">
+        <p className="text-ink-3 max-w-md mb-6">
           Add your return address on your profile first — it prints as the
           return address on every label.
         </p>
@@ -430,9 +430,9 @@ export default function ShippingLabelsPage() {
   return (
     <div className="flex flex-col items-center gap-8 py-12 px-4">
       <div className="text-center">
-        <TagIcon className="w-16 h-16 text-neon-teal mx-auto mb-4" />
+        <TagIcon className="w-16 h-16 text-neon-teal-text mx-auto mb-4" />
         <h2 className="text-3xl font-bold mb-2">Shipping Labels</h2>
-        <p className="text-gray-400 max-w-md">
+        <p className="text-ink-3 max-w-md">
           Type where it&apos;s going and print a 4&quot; × 6&quot; label. Your
           return address is filled in automatically.
         </p>
@@ -452,7 +452,7 @@ export default function ShippingLabelsPage() {
             the easiest place to introduce a typo that misdelivers a card.
             Filling on paste (rather than behind a button) is the whole point —
             the button below is only for text that was typed or edited here. */}
-        <div className="rounded-lg border border-slate-800 p-3 space-y-2">
+        <div className="rounded-lg border border-rule p-3 space-y-2">
           <label htmlFor="to-paste" className={LABEL_CLASS}>
             Paste an address
           </label>
@@ -481,7 +481,7 @@ export default function ShippingLabelsPage() {
               type="button"
               onClick={() => applyPaste(pasteText)}
               disabled={pasteText.trim() === ""}
-              className="text-sm text-neon-teal hover:text-neon-teal/80 underline disabled:opacity-40 disabled:no-underline p-2 -m-2"
+              className="text-sm text-neon-teal-text hover:text-neon-teal-text/80 underline disabled:opacity-40 disabled:no-underline p-2 -m-2"
             >
               Fill fields
             </button>
@@ -491,7 +491,7 @@ export default function ShippingLabelsPage() {
             id="to-paste-status"
             role="status"
             aria-live="polite"
-            className="text-xs text-slate-400"
+            className="text-xs text-ink-3"
           >
             {pasteStatus}
           </p>
@@ -514,7 +514,7 @@ export default function ShippingLabelsPage() {
 
         <div>
           <label htmlFor="to-company" className={LABEL_CLASS}>
-            Company <span className="text-slate-400 text-xs">(optional)</span>
+            Company <span className="text-ink-3 text-xs">(optional)</span>
           </label>
           <Input
             bare
@@ -545,7 +545,7 @@ export default function ShippingLabelsPage() {
         <div>
           <label htmlFor="to-line2" className={LABEL_CLASS}>
             Apt / Suite{" "}
-            <span className="text-slate-400 text-xs">(optional)</span>
+            <span className="text-ink-3 text-xs">(optional)</span>
           </label>
           <Input
             bare
@@ -635,7 +635,7 @@ export default function ShippingLabelsPage() {
               <button
                 type="button"
                 onClick={clearForm}
-                className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2"
+                className="text-sm text-ink-3 hover:text-ink-2 underline p-2 -m-2"
               >
                 Clear form
               </button>
@@ -646,7 +646,7 @@ export default function ShippingLabelsPage() {
           {!canPrint && (
             <p
               id="print-requirements"
-              className="text-xs text-slate-400 text-center mt-2"
+              className="text-xs text-ink-3 text-center mt-2"
             >
               {fromIsComplete
                 ? "Fill in name, street, city, state, and ZIP to print a label."
@@ -664,8 +664,8 @@ export default function ShippingLabelsPage() {
           <div className="space-y-4">
             {/* Weight — required to rate a letter, and the seller is the only
                 one who knows it. Card counts are guidance, not a promise. */}
-            <fieldset className="border border-slate-800 rounded-lg p-3">
-              <legend className="text-sm font-medium text-slate-300 px-1">
+            <fieldset className="border border-rule rounded-lg p-3">
+              <legend className="text-sm font-medium text-ink-2 px-1">
                 Envelope weight
               </legend>
               <div className="flex flex-wrap gap-2 mt-1">
@@ -674,8 +674,8 @@ export default function ShippingLabelsPage() {
                     key={opt.oz}
                     className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer transition-colors ${
                       weightOz === opt.oz
-                        ? "border-neon-teal text-neon-teal"
-                        : "border-slate-700 text-slate-300 hover:border-slate-500"
+                        ? "border-neon-teal-text text-neon-teal-text"
+                        : "border-rule-strong text-ink-2 hover:border-control"
                     }`}
                   >
                     <input
@@ -684,7 +684,7 @@ export default function ShippingLabelsPage() {
                       value={opt.oz}
                       checked={weightOz === opt.oz}
                       onChange={() => changeWeight(opt.oz)}
-                      className="accent-[#00E5C0]"
+                      className="accent-neon-teal-text"
                     />
                     <span className="font-medium">{opt.oz} oz</span>
                     {/* The price IS the selector's payload: every weight was
@@ -698,11 +698,11 @@ export default function ShippingLabelsPage() {
                           ? "…"
                           : ""}
                     </span>
-                    <span className="text-slate-400 text-xs">{opt.hint}</span>
+                    <span className="text-ink-3 text-xs">{opt.hint}</span>
                   </label>
                 ))}
               </div>
-              <p className="text-xs text-slate-400 mt-2">
+              <p className="text-xs text-ink-3 mt-2">
                 Weigh it if you can — underpaid mail comes back.
               </p>
             </fieldset>
@@ -728,7 +728,7 @@ export default function ShippingLabelsPage() {
                       : "Buy postage"}
               </NeonButton>
               {quotes[weightOz] && (
-                <p className="text-xs text-slate-400 text-center mt-2 max-w-sm">
+                <p className="text-xs text-ink-3 text-center mt-2 max-w-sm">
                   USPS verified this address — {weightOz}oz First-Class letter.
                   Buying charges your EasyPost account.
                 </p>
@@ -737,11 +737,11 @@ export default function ShippingLabelsPage() {
           </div>
         )}
         {easypostKeySaved === false && (
-          <p className="text-sm text-slate-400 text-center">
+          <p className="text-sm text-ink-3 text-center">
             Want to buy the postage too?{" "}
             <Link
               to="/profile/postage"
-              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+              className="text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
             >
               Add your EasyPost key
             </Link>{" "}
@@ -767,7 +767,7 @@ export default function ShippingLabelsPage() {
         <p
           role="status"
           aria-live="polite"
-          className="text-sm text-neon-yellow text-center"
+          className="text-sm text-neon-yellow-text text-center"
         >
           {lastPurchase && !lastPurchase.historySaved && !boughtAwaitingEdit
             ? "Heads up — the label's ready, but it couldn't be saved to your Label History. Print or save it now; it won't be reprintable from here."
@@ -777,7 +777,7 @@ export default function ShippingLabelsPage() {
         {/* Always mounted so the announcement is reliable. Postage failures are
             seller-actionable ("address not found", "insufficient funds"), so the
             message from EasyPost is surfaced rather than flattened. */}
-        <p role="alert" className="text-sm text-neon-pink text-center">
+        <p role="alert" className="text-sm text-neon-pink-text text-center">
           {postageError}
         </p>
 
@@ -789,7 +789,7 @@ export default function ShippingLabelsPage() {
           <p className="text-sm text-center">
             <Link
               to="/print/labels"
-              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+              className="text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
             >
               Go to Label History
             </Link>
@@ -798,7 +798,7 @@ export default function ShippingLabelsPage() {
 
         {/* Always mounted: a live region inserted at the same moment its text
             appears is unreliably announced (notably VoiceOver). */}
-        <p role="alert" className="text-sm text-neon-pink text-center">
+        <p role="alert" className="text-sm text-neon-pink-text text-center">
           {printError}
         </p>
       </form>
@@ -819,7 +819,7 @@ export default function ShippingLabelsPage() {
           tabIndex={0}
           className="max-w-full overflow-x-auto"
         >
-          <div className="border border-neon-teal/30 rounded-lg p-2 bg-white/5 w-fit">
+          <div className="border border-neon-teal/30 rounded-lg p-2 bg-ink/5 w-fit">
             <ShippingLabel
               ref={labelRef}
               from={returnAddress}
@@ -828,7 +828,7 @@ export default function ShippingLabelsPage() {
             />
           </div>
         </div>
-        <p className="text-xs text-gray-400 text-center max-w-md">
+        <p className="text-xs text-ink-3 text-center max-w-md">
           Shown at actual size. Print at 100% scale — not &quot;fit to
           page&quot; — so the label lands square on the media.
         </p>

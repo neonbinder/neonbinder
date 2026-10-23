@@ -19,13 +19,13 @@ export default function BinderPicker({ store }: { store: CollectionStore }) {
   const options = store.state.binders.filter((b) => b.kind === "manual");
   return (
     <label className="flex items-center gap-2 text-sm">
-      <span aria-hidden="true" className="text-slate-300">Binder</span>
+      <span aria-hidden="true" className="text-ink-2">Binder</span>
       <select
         aria-label="Binder"
         value={store.selectedBinderId}
         onChange={(e) => setScope(e.target.value)}
-        className={`min-h-8 rounded-md border bg-slate-900 py-1 pl-2 pr-8 text-sm font-medium text-slate-100 hover:border-neon-blue ${FOCUS} ${
-          store.selectedBinderId === "all" ? "border-slate-600" : "border-neon-blue"
+        className={`min-h-8 rounded-md border bg-field py-1 pl-2 pr-8 text-sm font-medium text-ink hover:border-neon-blue ${FOCUS} ${
+          store.selectedBinderId === "all" ? "border-control" : "border-selection"
         }`}
       >
         <option value="all">All</option>

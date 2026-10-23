@@ -419,10 +419,10 @@ function DraggableRow({
   // still shows, and the tick carries the state for anyone who can't tell
   // the colours apart.
   const baseClass = isSelected
-    ? "ring-1 ring-neon-blue bg-neon-blue/10 border-neon-blue"
+    ? "ring-1 ring-selection bg-neon-blue/10 border-selection"
     : isSuggested
-      ? "border-yellow-700 bg-yellow-900/20"
-      : "bg-gray-800 border-gray-600 hover:border-gray-400";
+      ? "border-notice-warn-rule bg-notice-warn-bg"
+      : "bg-raised border-control hover:border-ink-3";
 
   // The outer div is the drag source and its own tab stop: Space/Enter on IT
   // starts a keyboard drag (tabIndex and the onKeyDown listener, not the
@@ -442,7 +442,7 @@ function DraggableRow({
       {...attributes}
       aria-labelledby={nameId}
       style={{ opacity: isDragging || isRidingAlong ? 0.4 : 1 }}
-      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00C2FF] ${baseClass} ${
+      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-outline ${baseClass} ${
         isMovable ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       }`}
     >
@@ -460,7 +460,7 @@ function DraggableRow({
         disabled={!isMovable}
         onClick={onTickClick}
         onKeyDown={(e) => onNavKey(e, "tick")}
-        className={`group/tick shrink-0 w-8 flex items-center justify-center rounded-l-lg focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-neon-blue ${
+        className={`group/tick shrink-0 w-8 flex items-center justify-center rounded-l-lg focus-outline focus-visible:-outline-offset-2 ${
           isMovable ? "cursor-pointer" : "cursor-default"
         }`}
       >
@@ -468,10 +468,10 @@ function DraggableRow({
           aria-hidden="true"
           className={`h-4 w-4 rounded-[4px] border flex items-center justify-center transition-colors ${
             isSelected
-              ? "bg-neon-blue border-neon-blue text-gray-950"
+              ? "bg-neon-blue border-selection text-on-neon-blue"
               : isMovable
-                ? "border-gray-400 bg-gray-900 group-hover/tick:border-neon-blue"
-                : "border-gray-700 bg-transparent"
+                ? "border-ink-3 bg-raised-deep group-hover/tick:border-selection"
+                : "border-rule-strong bg-transparent"
           }`}
         >
           {isSelected && (
@@ -498,16 +498,16 @@ function DraggableRow({
           isMovable ? "cursor-pointer" : "cursor-default"
         } disabled:opacity-100`}
       >
-        <span id={nameId} className="text-gray-200 break-words flex-1">
+        <span id={nameId} className="text-ink-2 break-words flex-1">
           {info.value}
         </span>
         {isSuggested && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-300 border border-yellow-700">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-notice-warn-bg text-notice-warn-ink border border-notice-warn-rule">
             Suggested
           </span>
         )}
         {!isMovable && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300 border border-gray-600">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rule-strong text-ink-2 border border-control">
             has parallels
           </span>
         )}
@@ -519,7 +519,7 @@ function DraggableRow({
             e.stopPropagation();
             onReject();
           }}
-          className="text-xs text-pink-400 hover:text-pink-300 px-3 rounded-r-lg hover:bg-pink-900/20"
+          className="text-xs text-neon-pink-text px-3 rounded-r-lg hover:bg-neon-pink/10"
           aria-label={`Remove ${info.value} from parallels`}
         >
           ✕
@@ -566,23 +566,23 @@ function DropZone({
       onClick={isClickTarget ? onClick : undefined}
       className={`rounded-lg border-2 transition-colors ${
         isOver
-          ? "border-[#00C2FF] bg-[#00C2FF]/5"
+          ? "border-selection bg-neon-blue/5"
           : highlight
-            ? "border-yellow-600/50 bg-yellow-900/5"
-            : "border-gray-700 bg-gray-900/30"
-      } ${isClickTarget ? "cursor-pointer hover:border-gray-500" : ""}`}
+            ? "border-notice-warn-rule/50 bg-notice-warn-bg/25"
+            : "border-rule-strong bg-raised-deep/30"
+      } ${isClickTarget ? "cursor-pointer hover:border-control" : ""}`}
     >
-      <div className="px-4 pt-3 pb-2 border-b border-gray-700/60">
-        <div className="text-sm font-semibold text-gray-200 break-words">
+      <div className="px-4 pt-3 pb-2 border-b border-rule-strong/60">
+        <div className="text-sm font-semibold text-ink-2 break-words">
           {title}
         </div>
         {subtitle && (
-          <div className="text-xs text-gray-400 mt-0.5">{subtitle}</div>
+          <div className="text-xs text-ink-3 mt-0.5">{subtitle}</div>
         )}
       </div>
       <div className="p-3 space-y-1.5 min-h-[48px]">
         {showEmpty ? (
-          <p className="text-xs text-gray-400 italic py-1">
+          <p className="text-xs text-ink-3 italic py-1">
             {emptyText ?? "Drop rows here"}
           </p>
         ) : (
@@ -598,9 +598,9 @@ function DropZone({
 function ModalSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="h-24 rounded-lg border border-gray-700 bg-gray-900/30 animate-pulse" />
-      <div className="h-32 rounded-lg border border-gray-700 bg-gray-900/30 animate-pulse" />
-      <div className="h-24 rounded-lg border border-gray-700 bg-gray-900/30 animate-pulse" />
+      <div className="h-24 rounded-lg border border-rule-strong bg-raised-deep/30 animate-pulse" />
+      <div className="h-32 rounded-lg border border-rule-strong bg-raised-deep/30 animate-pulse" />
+      <div className="h-24 rounded-lg border border-rule-strong bg-raised-deep/30 animate-pulse" />
     </div>
   );
 }
@@ -1123,7 +1123,7 @@ export default function ParallelGroupingModal({
     // needed — createPortal(document.body) escapes the root Theme's CSS scope.
     <Theme>
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
+      className="fixed inset-0 bg-scrim flex items-center justify-center z-50 p-4 outline-none"
       // NEO-220 a11y fix: this dialog announced itself to nothing — no role,
       // no accessible name, and (until the Tab trap below) no keyboard
       // containment, unlike every sibling dialog in this directory.
@@ -1184,11 +1184,11 @@ export default function ParallelGroupingModal({
       }}
     >
       <div
-        className="bg-gray-900 border border-gray-700 rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col"
+        className="bg-raised-deep border border-rule-strong shadow-offset rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-700 flex items-start justify-between gap-4">
+        <div className="px-6 py-4 border-b border-rule-strong flex items-start justify-between gap-4">
           <div>
             <h2
               id="parallel-grouping-heading"
@@ -1196,11 +1196,11 @@ export default function ParallelGroupingModal({
               // NEO-308 — the parked-focus target (see `headingRef`), so it
               // needs a visible ring of its own (WCAG 2.4.7).
               tabIndex={-1}
-              className="text-xl font-semibold text-white rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+              className="text-xl font-semibold text-ink rounded-sm focus-outline"
             >
               Group Parallels
             </h2>
-            <p className="text-sm text-gray-400 mt-1">
+            <p className="text-sm text-ink-3 mt-1">
               Drag inserts under a parent to make them parallels. Drag
               parallels back to "Top-level" to demote them.
             </p>
@@ -1311,24 +1311,24 @@ export default function ParallelGroupingModal({
                     <div className="relative">
                       <div
                         aria-hidden="true"
-                        className="absolute inset-0 translate-x-2 translate-y-2 rotate-[1.5deg] rounded-lg border border-neon-blue/35 bg-gray-800"
+                        className="absolute inset-0 translate-x-2 translate-y-2 rotate-[1.5deg] rounded-lg border border-neon-blue-text/35 bg-raised"
                       />
                       <div
                         aria-hidden="true"
-                        className="absolute inset-0 translate-x-1 translate-y-1 rotate-[0.75deg] rounded-lg border border-neon-blue/60 bg-gray-800"
+                        className="absolute inset-0 translate-x-1 translate-y-1 rotate-[0.75deg] rounded-lg border border-neon-blue-text/60 bg-raised"
                       />
-                      <div className="relative px-3 py-2 rounded-lg border bg-gray-800 border-neon-blue ring-2 ring-neon-blue shadow-lg text-sm font-medium flex items-center gap-3">
-                        <span className="text-gray-200 break-words flex-1">
+                      <div className="relative px-3 py-2 rounded-lg border bg-raised border-selection ring-2 ring-selection shadow-lg text-sm font-medium flex items-center gap-3">
+                        <span className="text-ink-2 break-words flex-1">
                           {activeDragValue}
                         </span>
-                        <span className="shrink-0 rounded-full bg-neon-blue px-2 py-0.5 text-[11px] font-bold leading-4 text-gray-950 tabular-nums">
+                        <span className="shrink-0 rounded-full bg-neon-blue px-2 py-0.5 text-[11px] font-bold leading-4 text-on-neon-blue tabular-nums">
                           {dragCount} rows
                         </span>
                       </div>
                     </div>
                   ) : (
-                    <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
-                      <span className="text-gray-200">{activeDragValue}</span>
+                    <div className="px-3 py-2 rounded-lg border bg-raised border-selection ring-2 ring-selection shadow-lg text-sm font-medium">
+                      <span className="text-ink-2">{activeDragValue}</span>
                     </div>
                   ))}
               </DragOverlay>
@@ -1337,15 +1337,15 @@ export default function ParallelGroupingModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-700 flex flex-wrap items-center justify-between gap-3">
+        <div className="px-6 py-4 border-t border-rule-strong flex flex-wrap items-center justify-between gap-3">
           {/* The counts keep their own element: a Maestro flow reads
               "0 promotions, 1 demotion, 1 re-parented" off exactly this. */}
           <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-          <div className="text-xs text-gray-400">
+          <div className="text-xs text-ink-3">
             {error ? (
               // role="alert": the operator pressed Save and is watching the
               // button, so a refusal has to be announced, not just painted.
-              <span role="alert" className="text-red-300">
+              <span role="alert" className="text-notice-danger-ink">
                 {error}
               </span>
             ) : totalChanges > 0 ? (
@@ -1359,7 +1359,7 @@ export default function ParallelGroupingModal({
                   : ""}
               </>
             ) : (
-              <span className="text-gray-400">No changes yet</span>
+              <span className="text-ink-3">No changes yet</span>
             )}
           </div>
           {/* NEO-300 — the selection count, in the footer because the footer
@@ -1373,7 +1373,7 @@ export default function ParallelGroupingModal({
               data-selection-count
               className={
                 selectedCount > 0
-                  ? "rounded-full border border-neon-blue/60 bg-neon-blue/10 px-2.5 py-0.5 font-semibold text-neon-blue tabular-nums"
+                  ? "rounded-full border border-neon-blue-text/60 bg-neon-blue/10 px-2.5 py-0.5 font-semibold text-neon-blue-text tabular-nums"
                   : "sr-only"
               }
             >
@@ -1389,7 +1389,7 @@ export default function ParallelGroupingModal({
                   // the dialog, where Escape and Tab still work.
                   headingRef.current?.focus();
                 }}
-                className="rounded-sm px-1 text-gray-300 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+                className="rounded-sm px-1 text-ink-2 underline underline-offset-2 hover:text-ink focus-outline"
               >
                 Clear
               </button>

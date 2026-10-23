@@ -175,7 +175,7 @@ function TextValueControl({
         className={className}
       />
       {error && (
-        <span id={errorId} className="text-[10px] text-[#FF2E9A]" role="alert">
+        <span id={errorId} className="text-[10px] text-neon-pink-text" role="alert">
           {error}
         </span>
       )}
@@ -238,14 +238,14 @@ function CheckboxValueControl({
         aria-pressed={checked}
         className={`text-xs px-2 py-0.5 rounded border transition-colors ${
           checked
-            ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-            : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+            ? "bg-neon-green text-on-neon-green border-neon-green-text font-semibold"
+            : "bg-transparent text-ink-3 border-control hover:border-neon-green-text hover:text-neon-green-text"
         }`}
       >
         {label}
       </button>
       {error && (
-        <span className="text-[10px] text-[#FF2E9A]" role="alert">
+        <span className="text-[10px] text-neon-pink-text" role="alert">
           {error}
         </span>
       )}
@@ -309,8 +309,8 @@ function ToggleOptionsValueControl({
               aria-pressed={active}
               className={`text-xs px-2 py-0.5 rounded border transition-colors ${
                 active
-                  ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-                  : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+                  ? "bg-neon-green text-on-neon-green border-neon-green-text font-semibold"
+                  : "bg-transparent text-ink-3 border-control hover:border-neon-green-text hover:text-neon-green-text"
               }`}
             >
               {pillLabel}
@@ -319,7 +319,7 @@ function ToggleOptionsValueControl({
         })}
       </div>
       {error && (
-        <span className="text-[10px] text-[#FF2E9A]" role="alert">
+        <span className="text-[10px] text-neon-pink-text" role="alert">
           {error}
         </span>
       )}
@@ -411,7 +411,7 @@ function SelectValueControl({
         ))}
       </select>
       {error && (
-        <span id={errorId} className="text-[10px] text-[#FF2E9A]" role="alert">
+        <span id={errorId} className="text-[10px] text-neon-pink-text" role="alert">
           {error}
         </span>
       )}

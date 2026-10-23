@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
+import { BrandMark } from "@/components/primitives/BrandMark";
 
 /**
  * NEO-207 — public walkthrough for connecting an EasyPost account, the
@@ -30,7 +31,7 @@ export default function EasypostSetupPage() {
             href="https://www.easypost.com"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-neon-teal underline hover:text-neon-green"
+            className="text-neon-teal-text underline hover:text-neon-green-text"
           >
             easypost.com
           </a>{" "}
@@ -57,7 +58,7 @@ export default function EasypostSetupPage() {
         <>
           In EasyPost, go to <strong>Account Settings → API Keys</strong>. You
           will see two kinds of key: use the <strong>Production</strong> key —
-          it starts with <code className="text-neon-green">EZAK</code>. (A Test
+          it starts with <code className="text-neon-green-text">EZAK</code>. (A Test
           key lets you price labels without being charged, but it can&apos;t
           buy real postage.) Treat the key like a password — it can spend your
           EasyPost balance.
@@ -80,48 +81,48 @@ export default function EasypostSetupPage() {
 
   return (
     <>
-      <header className="sticky top-0 z-10 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center">
+      <header className="sticky top-0 z-10 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center">
         <button
           onClick={() => navigate(-1)}
-          className="flex items-center gap-2 px-4 py-2 rounded-md hover:bg-slate-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 rounded-md hover:bg-hover focus-outline transition-colors"
         >
           <span className="text-xl">←</span>
           <span>Back</span>
         </button>
         <div className="flex items-center gap-2">
-          <img src="/logo-120.png" alt="Neon Binder" width={40} height={40} />
-          <span className="neon-header">Neon Binder</span>
+          <BrandMark />
+          <span className="neon-header text-wordmark">Neon Binder</span>
         </div>
         <div className="w-20" />
       </header>
 
-      <main className="min-h-screen bg-background p-8">
+      <main className="min-h-screen bg-surface p-8">
         <div className="max-w-4xl mx-auto">
           {/* Hero Section */}
           <div className="text-center py-16">
-            <h1 className="text-5xl font-bold mb-4 text-neon-teal">
+            <h1 className="text-5xl font-bold mb-4 text-neon-teal-text">
               Get Your EasyPost Key
             </h1>
-            <p className="text-xl text-slate-400 mb-8">
+            <p className="text-xl text-ink-3 mb-8">
               Five minutes of setup, and real USPS letter postage is one button
               away — about 80¢ for a card in a plain white envelope.
             </p>
           </div>
 
           {/* Steps */}
-          <div className="my-8 p-8 rounded-lg bg-gradient-to-br from-green-900/20 to-blue-900/20 border border-green-500/30">
+          <div className="my-8 p-8 rounded-lg bg-gradient-to-br from-neon-green/10 to-neon-blue/10 border border-neon-green/30">
             <h2 className="text-3xl font-bold mb-8 text-center">
               Four Steps, One Time
             </h2>
             <div className="space-y-6">
               {steps.map((step, i) => (
                 <div key={step.title} className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-black font-bold">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-neon-green flex items-center justify-center text-on-neon-green font-bold">
                     {i + 1}
                   </div>
                   <div>
                     <h3 className="text-lg font-semibold mb-2">{step.title}</h3>
-                    <p className="text-slate-600 dark:text-slate-400">
+                    <p className="text-ink-3">
                       {step.body}
                     </p>
                   </div>
@@ -133,11 +134,11 @@ export default function EasypostSetupPage() {
           {/* Good to know */}
           <div className="my-16">
             <h2 className="text-3xl font-bold mb-6 text-center">Good To Know</h2>
-            <div className="space-y-4 text-slate-400 max-w-2xl mx-auto">
+            <div className="space-y-4 text-ink-3 max-w-2xl mx-auto">
               <div className="flex items-start gap-3">
-                <span className="text-neon-teal font-bold text-xl">▸</span>
+                <span className="text-neon-teal-text font-bold text-xl">▸</span>
                 <div>
-                  <h3 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-ink-2">
                     Your Key Is Treated Like A Password
                   </h3>
                   <p>
@@ -149,9 +150,9 @@ export default function EasypostSetupPage() {
                 </div>
               </div>
               <div className="flex items-start gap-3">
-                <span className="text-neon-teal font-bold text-xl">▸</span>
+                <span className="text-neon-teal-text font-bold text-xl">▸</span>
                 <div>
-                  <h3 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-ink-2">
                     Your Money Stays Yours
                   </h3>
                   <p>
@@ -162,9 +163,9 @@ export default function EasypostSetupPage() {
                 </div>
               </div>
               <div className="flex items-start gap-3">
-                <span className="text-neon-teal font-bold text-xl">▸</span>
+                <span className="text-neon-teal-text font-bold text-xl">▸</span>
                 <div>
-                  <h3 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-ink-2">
                     Labels Are Free Without It
                   </h3>
                   <p>
@@ -175,9 +176,9 @@ export default function EasypostSetupPage() {
                 </div>
               </div>
               <div className="flex items-start gap-3">
-                <span className="text-neon-teal font-bold text-xl">▸</span>
+                <span className="text-neon-teal-text font-bold text-xl">▸</span>
                 <div>
-                  <h3 className="font-semibold text-slate-300">
+                  <h3 className="font-semibold text-ink-2">
                     Addresses Are Checked Before You Pay
                   </h3>
                   <p>
@@ -191,16 +192,16 @@ export default function EasypostSetupPage() {
           </div>
 
           {/* CTA Section */}
-          <div className="text-center py-16 border-t border-slate-800">
+          <div className="text-center py-16 border-t border-rule">
             <h2 className="text-3xl font-bold mb-4">
               Ready to Ship for Less Than a Stamp?
             </h2>
-            <p className="text-lg text-slate-400 mb-8 max-w-2xl mx-auto">
+            <p className="text-lg text-ink-3 mb-8 max-w-2xl mx-auto">
               Create your free Neon Binder account, save your return address,
               and connect EasyPost when you&apos;re ready to buy postage.
             </p>
             <SignUpButton mode="modal">
-              <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green/85 text-black text-lg font-semibold transition-colors">
+              <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
                 Get Started
               </button>
             </SignUpButton>

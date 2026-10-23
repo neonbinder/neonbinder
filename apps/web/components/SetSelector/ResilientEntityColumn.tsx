@@ -275,10 +275,10 @@ export default function ResilientEntityColumn(
   return (
     <div className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4">
       {isVisible && gaveUp ? (
-        <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
+        <div className="bg-raised p-4 rounded-lg shadow shadow-offset">
           <div
             role="alert"
-            className="p-3 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            className="p-3 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
           >
             Couldn&apos;t load {label.toLowerCase()}. The connection may have
             stalled.
@@ -297,7 +297,7 @@ export default function ResilientEntityColumn(
           */}
           {connection ? (
             <p
-              className="mb-3 font-mono text-[11px] leading-tight text-red-700 dark:text-red-300 break-words"
+              className="mb-3 font-mono text-[11px] leading-tight text-notice-danger-ink break-words"
               data-testid="stall-connection-state"
             >
               {connection.text}

@@ -187,7 +187,7 @@ export function PrintRun({
           Print your placeholders
         </h3>
         {/* The sentence that says how much paper this costs, before it costs it. */}
-        <p role="status" aria-live="polite" className="text-slate-300">
+        <p role="status" aria-live="polite" className="text-ink-2">
           {pairs.length} card{pairs.length === 1 ? "" : "s"} on {paperCount}{" "}
           sheet{paperCount === 1 ? "" : "s"} of {format.shortLabel},{" "}
           {duplex ? "printed both sides" : "front only"}. {perSheet} fit on a
@@ -196,13 +196,13 @@ export function PrintRun({
       </div>
 
       <fieldset className="space-y-2">
-        <legend className="block text-sm font-medium text-slate-300 mb-1">
+        <legend className="block text-sm font-medium text-ink-2 mb-1">
           Paper size
         </legend>
         {SHEET_FORMATS.map((option) => (
           <label
             key={option.id}
-            className="flex items-start gap-3 rounded-lg border border-slate-800 p-3 cursor-pointer hover:bg-slate-900/60 focus-within:ring-2 focus-within:ring-neon-purple"
+            className="flex items-start gap-3 rounded-lg border border-rule p-3 cursor-pointer hover:bg-field/60 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus"
           >
             <input
               type="radio"
@@ -210,27 +210,27 @@ export function PrintRun({
               value={option.id}
               checked={formatId === option.id}
               onChange={() => setFormatId(option.id)}
-              className="mt-1 accent-[#A44AFF]"
+              className="mt-1 accent-neon-purple"
             />
-            <span className="text-sm text-slate-200">{option.label}</span>
+            <span className="text-sm text-ink-2">{option.label}</span>
           </label>
         ))}
       </fieldset>
 
       <fieldset className="space-y-2">
-        <legend className="block text-sm font-medium text-slate-300 mb-1">
+        <legend className="block text-sm font-medium text-ink-2 mb-1">
           Two-sided printing
         </legend>
-        <label className="flex items-start gap-3 rounded-lg border border-slate-800 p-3 cursor-pointer hover:bg-slate-900/60 focus-within:ring-2 focus-within:ring-neon-purple">
+        <label className="flex items-start gap-3 rounded-lg border border-rule p-3 cursor-pointer hover:bg-field/60 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus">
           <input
             type="checkbox"
             checked={duplex}
             onChange={(e) => setDuplex(e.target.checked)}
-            className="mt-1 accent-[#A44AFF]"
+            className="mt-1 accent-neon-purple"
           />
-          <span className="text-sm text-slate-200">
+          <span className="text-sm text-ink-2">
             Print the backs too
-            <span className="block text-xs text-slate-400">
+            <span className="block text-xs text-ink-3">
               Adds a mirrored back sheet for every front.
             </span>
           </span>
@@ -238,7 +238,7 @@ export function PrintRun({
 
         {duplex && (
           <fieldset className="mt-2 space-y-2">
-            <legend className="block text-sm font-medium text-slate-300 mb-1">
+            <legend className="block text-sm font-medium text-ink-2 mb-1">
               Which edge your printer flips
             </legend>
             {(
@@ -249,7 +249,7 @@ export function PrintRun({
             ).map(([value, label, hint]) => (
               <label
                 key={value}
-                className="flex items-start gap-3 rounded-lg border border-slate-800 p-3 cursor-pointer hover:bg-slate-900/60 focus-within:ring-2 focus-within:ring-neon-purple"
+                className="flex items-start gap-3 rounded-lg border border-rule p-3 cursor-pointer hover:bg-field/60 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus"
               >
                 <input
                   type="radio"
@@ -257,15 +257,15 @@ export function PrintRun({
                   value={value}
                   checked={flipEdge === value}
                   onChange={() => setFlipEdge(value)}
-                  className="mt-1 accent-[#A44AFF]"
+                  className="mt-1 accent-neon-purple"
                 />
                 <span>
-                  <span className="block text-sm text-slate-200">{label}</span>
-                  <span className="block text-xs text-slate-400">{hint}</span>
+                  <span className="block text-sm text-ink-2">{label}</span>
+                  <span className="block text-xs text-ink-3">{hint}</span>
                 </span>
               </label>
             ))}
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               Copy this from your printer&apos;s two-sided setting. Get it wrong
               and every back lands on the wrong card.
             </p>
@@ -275,16 +275,16 @@ export function PrintRun({
 
       {/* Guides default OFF for a card run — see the `guides` prop. On is the
           calibration mode you reach for when checking the duplex alignment. */}
-      <label className="flex items-start gap-3 rounded-lg border border-slate-800 p-3 cursor-pointer hover:bg-slate-900/60 focus-within:ring-2 focus-within:ring-neon-purple">
+      <label className="flex items-start gap-3 rounded-lg border border-rule p-3 cursor-pointer hover:bg-field/60 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus">
         <input
           type="checkbox"
           checked={guides}
           onChange={(e) => setGuides(e.target.checked)}
-          className="mt-1 accent-[#A44AFF]"
+          className="mt-1 accent-neon-purple"
         />
-        <span className="text-sm text-slate-200">
+        <span className="text-sm text-ink-2">
           Show cutting guides
-          <span className="block text-xs text-slate-400">
+          <span className="block text-xs text-ink-3">
             Off for a real run — the lines print over the artwork. The corner
             ticks stay either way, and the card edges themselves show you where
             to cut.
@@ -296,7 +296,7 @@ export function PrintRun({
         <NeonButton type="button" disabled={busy} onClick={() => void handlePrint()}>
           {busy ? "Preparing..." : "Print these"}
         </NeonButton>
-        <p role="alert" className="text-sm text-neon-pink">
+        <p role="alert" className="text-sm text-neon-pink-text">
           {error}
         </p>
       </div>
@@ -314,7 +314,7 @@ export function PrintRun({
               key={`${sheet.sheetIndex}-${sheet.side}`}
               className="flex flex-col items-center gap-2"
             >
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-ink-3">
                 Sheet {sheet.sheetIndex + 1} — {sheet.side}
               </span>
               {/*
@@ -366,7 +366,7 @@ export function PrintRun({
             </li>
           ))}
         </ul>
-        <p className="text-xs text-gray-400 text-center max-w-md">
+        <p className="text-xs text-ink-3 text-center max-w-md">
           Shown reduced to fit. Print at 100% scale — not &quot;fit to page&quot;
           — or the cut cards will not fit the pockets.
         </p>

@@ -42,10 +42,10 @@ export default function LabelEditorDialog({
   return (
     <Modal labelledBy={titleId} onClose={onClose} className="max-w-xl">
       <form onSubmit={submit} className="p-5">
-        <h2 id={titleId} className="text-xl font-bold text-white">
+        <h2 id={titleId} className="text-xl font-bold text-ink">
           Spine label for {binder.name}
         </h2>
-        <p className="mt-1 text-sm text-slate-300">Colors and lettering, the way the Print Shop does them.</p>
+        <p className="mt-1 text-sm text-ink-2">Colors and lettering, the way the Print Shop does them.</p>
 
         <div className="mt-4">
           <LabelDesigner
@@ -59,7 +59,7 @@ export default function LabelEditorDialog({
           />
         </div>
 
-        <p role="alert" className="mt-3 text-sm text-amber-300 empty:hidden">
+        <p role="alert" className="mt-3 text-sm text-notice-warn-ink empty:hidden">
           {error ?? ""}
         </p>
 
@@ -70,20 +70,20 @@ export default function LabelEditorDialog({
               setDraft(fallback);
               setError(null);
             }}
-            className="mr-auto min-h-10 rounded-md px-1 text-sm text-slate-300 underline underline-offset-4 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="mr-auto min-h-10 rounded-md px-1 text-sm text-ink-2 underline underline-offset-4 hover:text-ink focus-outline"
           >
             Back to the default
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="min-h-10 rounded-md border border-slate-600 px-4 text-sm font-medium text-slate-200 hover:border-slate-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="min-h-10 rounded-md border border-control px-4 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink focus-outline"
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="min-h-10 rounded-md bg-neon-green px-4 text-sm font-bold text-black hover:bg-[#33e07c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+            className="min-h-10 rounded-md bg-neon-green px-4 text-sm font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline"
           >
             Save label
           </button>

@@ -386,11 +386,11 @@ export default function CardTitlesStep({
       {showShortName && (
         // One answer for every card, set apart from the per-card fields
         // below by a rule down its left edge.
-        <section aria-labelledby={shortLeadId} className="border-l-2 border-[#00C2FF] pl-3">
-          <h3 id={shortLeadId} className="text-sm font-normal text-gray-200">
+        <section aria-labelledby={shortLeadId} className="border-l-2 border-neon-blue-text pl-3">
+          <h3 id={shortLeadId} className="text-sm font-normal text-ink-2">
             {SHORT_LEAD}
           </h3>
-          <label className="mt-2 block text-xs text-gray-400">
+          <label className="mt-2 block text-xs text-ink-3">
             {SHORT_LABEL}
             <Input
               bare
@@ -420,7 +420,7 @@ export default function CardTitlesStep({
           </label>
           {suggestion && (
             <div className="mt-1 flex flex-wrap items-center gap-x-3 text-[11px]">
-              <span id={shortSuggestId} className="text-gray-400">
+              <span id={shortSuggestId} className="text-ink-3">
                 {suggestedLine(suggestion)}
               </span>
               {shortDraft.trim() !== suggestion && (
@@ -437,7 +437,7 @@ export default function CardTitlesStep({
                   }}
                   aria-disabled={disabled || undefined}
                   // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
-                  className="-my-1 rounded py-1 leading-4 text-[#00C2FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+                  className="-my-1 rounded py-1 leading-4 text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
                 >
                   {USE_SUGGESTION}
                 </button>
@@ -450,7 +450,7 @@ export default function CardTitlesStep({
             id={shortStatusId}
             role="status"
             className={`mt-1 text-[11px] empty:hidden ${
-              shortCheck.error ? "text-[#FF2E9A]" : "text-gray-300"
+              shortCheck.error ? "text-neon-pink-text" : "text-ink-2"
             }`}
           >
             {shortStatus}
@@ -460,10 +460,10 @@ export default function CardTitlesStep({
 
       {variationGroups.length > 0 && (
         <section aria-labelledby={variationsId}>
-          <h3 id={variationsId} className="text-sm font-normal text-gray-200">
+          <h3 id={variationsId} className="text-sm font-normal text-ink-2">
             {VARIATION_LEAD}
           </h3>
-          <ul className="mt-1 divide-y divide-gray-800">
+          <ul className="mt-1 divide-y divide-rule">
             {variationGroups.map((group) => (
               <VariationLine
                 key={group.key}
@@ -491,7 +491,7 @@ export default function CardTitlesStep({
 
       {titleGroups.length > 0 && (
         <section aria-labelledby={titlesId}>
-          <h3 id={titlesId} className="text-sm font-normal text-gray-200">
+          <h3 id={titlesId} className="text-sm font-normal text-ink-2">
             {TITLES_LEAD}
           </h3>
           <TitleGroups
@@ -577,21 +577,21 @@ function CardList({
   if (cards.length === 1) {
     const card = cards[0];
     return (
-      <p className="break-words text-xs text-gray-400">
-        <span className="text-[#00D558]">#{card.cardNumber}</span> {card.cardName}
+      <p className="break-words text-xs text-ink-3">
+        <span className="text-neon-green-text">#{card.cardNumber}</span> {card.cardName}
       </p>
     );
   }
   return (
-    <details className="text-xs text-gray-400">
+    <details className="text-xs text-ink-3">
       {/* py-1 -my-1: a 24px target (SC 2.5.8) without moving the line. */}
-      <summary className="-my-1 cursor-pointer rounded py-1 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]">
+      <summary className="-my-1 cursor-pointer rounded py-1 hover:text-ink-2 focus-outline">
         <span className="tabular-nums">{cards.length}</span> cards
       </summary>
       <ul aria-label={`Cards for ${owner}`} className="mt-1 space-y-0.5 pl-3">
         {cards.map((card) => (
           <li key={card.index} className="break-words">
-            <span className="text-[#00D558]">#{card.cardNumber}</span> {card.cardName}
+            <span className="text-neon-green-text">#{card.cardNumber}</span> {card.cardName}
           </li>
         ))}
       </ul>
@@ -633,7 +633,7 @@ function TitleGroups({
   const hidden = total - shown.reduce((n, k) => n + k, 0);
   return (
     <>
-      <ul className="mt-1 divide-y divide-gray-800">
+      <ul className="mt-1 divide-y divide-rule">
         {groups.map((group, groupIndex) => {
           if (shown[groupIndex] === 0) return null;
           const lineId = `${uid}-group-${groupIndex}`;
@@ -650,10 +650,10 @@ function TitleGroups({
                     Absent when the only losses are each card's own names, which
                     every row states for itself. */}
                 {hasLine && (
-                  <p id={lineId} className="mb-1.5 break-words text-xs text-[#FFB020]">
+                  <p id={lineId} className="mb-1.5 break-words text-xs text-notice-warn-ink">
                     Left out to fit: {group.leftOut.join(", ")}
                     {group.cards.length > 1 && (
-                      <span className="text-gray-400">
+                      <span className="text-ink-3">
                         {" "}
                         (<span className="tabular-nums">{group.cards.length}</span> cards)
                       </span>
@@ -682,7 +682,7 @@ function TitleGroups({
         })}
       </ul>
       {hidden > 0 && (
-        <p className="mt-1 text-xs text-gray-400">{moreRowsLine(hidden)}</p>
+        <p className="mt-1 text-xs text-ink-3">{moreRowsLine(hidden)}</p>
       )}
     </>
   );
@@ -723,8 +723,8 @@ function TitleRow({
   const edited = draft !== undefined && draft.trim() !== card.title;
   return (
     <li className="sm:grid sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)] sm:items-start sm:gap-x-3">
-      <p className="break-words pt-1.5 text-xs text-gray-400">
-        <span className="text-[#00D558]">#{card.cardNumber}</span> {card.cardName}
+      <p className="break-words pt-1.5 text-xs text-ink-3">
+        <span className="text-neon-green-text">#{card.cardNumber}</span> {card.cardName}
       </p>
       <div className="min-w-0">
         <Textarea
@@ -753,7 +753,7 @@ function TitleRow({
         {card.ownLeftOut.length > 0 && (
           // The card's own names the trim cost it — the loss an operator most
           // wants to put back, so it sits right under the field.
-          <p id={ownLineId} className="mt-0.5 break-words text-[11px] text-[#FFB020]">
+          <p id={ownLineId} className="mt-0.5 break-words text-[11px] text-notice-warn-ink">
             Left out to fit: {card.ownLeftOut.join(", ")}
           </p>
         )}
@@ -761,7 +761,7 @@ function TitleRow({
           // NEO-335 — the short name made the generated title fit; the row
           // stays because this title is the operator's, and theirs is what
           // saves until they switch.
-          <p id={fitsNowId} className="mt-0.5 break-words text-[11px] text-gray-300">
+          <p id={fitsNowId} className="mt-0.5 break-words text-[11px] text-ink-2">
             {FITS_NOW}
           </p>
         )}
@@ -783,7 +783,7 @@ function TitleRow({
               aria-label={`${card.fitsNow ? USE_GENERATED : "Use trimmed title"} for ${label}`}
               aria-disabled={disabled || undefined}
               // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
-              className="-my-1 rounded py-1 leading-4 text-[#00C2FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+              className="-my-1 rounded py-1 leading-4 text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
             >
               {card.fitsNow ? USE_GENERATED : "Use trimmed title"}
             </button>
@@ -802,7 +802,7 @@ function TitleRow({
             an alert: the step never blocks, so nothing here stops work. Its
             text changes only when the title crosses the cap, so it speaks
             once per crossing rather than per keystroke. */}
-        <p id={alertId} role="status" className="mt-0.5 text-[11px] text-[#FF2E9A] empty:hidden">
+        <p id={alertId} role="status" className="mt-0.5 text-[11px] text-neon-pink-text empty:hidden">
           {over ? TITLE_OVER : ""}
         </p>
       </div>

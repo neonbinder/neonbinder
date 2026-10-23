@@ -123,8 +123,8 @@ export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
  */
 function secondaryTone(highlighted: boolean): string {
   return highlighted
-    ? "text-gray-700 dark:text-gray-300"
-    : "text-gray-600 dark:text-gray-400";
+    ? "text-ink-2"
+    : "text-ink-3";
 }
 
 export default function TeamPicker({
@@ -558,7 +558,7 @@ export default function TeamPicker({
       {value.map((id) => (
         <span
           key={id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-xs"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rule-strong text-xs"
         >
           <span className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
             {labelById.get(id as unknown as string) ?? "Loading…"}
@@ -576,7 +576,7 @@ export default function TeamPicker({
             // a11y (SC 1.4.3): gray-500 is ~3.0:1 on the chip's own gray-700
             // ground, under the 4.5:1 floor. gray-300 clears it in both themes,
             // and the pink hover/focus is unchanged.
-            className="hit-area-24 text-gray-600 dark:text-gray-300 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
+            className="hit-area-24 text-ink-2 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
           >
             ×
           </button>
@@ -619,7 +619,7 @@ export default function TeamPicker({
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
           // the dark surface — under the 3:1 floor. gray-500 is 3.67:1 there
           // and the light-theme gray-400 already passes.
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-500 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
+          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
         >
           {/* The visible text IS the accessible name, plus the "+": an
               instance that renames the trigger renames what people see, so
@@ -647,7 +647,7 @@ export default function TeamPicker({
             anchorRef={triggerRef}
             popoverRef={popoverRef}
             onTabOut={closePopover}
-            className="w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
+            className="w-64 bg-raised border border-control rounded-md shadow-lg shadow-offset p-2 space-y-1"
           >
             <Input
               bare
@@ -708,7 +708,7 @@ export default function TeamPicker({
                 is 4.87:1 there, and gray-600 is 7.85:1 on the white surface,
                 so the pair clears 4.5:1 in both themes. */}
             {!candidates && (
-              <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
+              <div className="text-xs text-ink-3 px-2 py-1">
                 Loading…
               </div>
             )}
@@ -725,12 +725,12 @@ export default function TeamPicker({
                   {"\u00a0"}
                 </div>
               ) : (
-                <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
+                <div className="text-xs text-ink-3 px-2 py-1">
                   No matches.
                 </div>
               ))}
             {candidates && matches.length === 0 && query.trim().length === 0 && (
-              <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
+              <div className="text-xs text-ink-3 px-2 py-1">
                 Type a team name…
               </div>
             )}
@@ -766,8 +766,8 @@ export default function TeamPicker({
                     aria-selected={idx === highlightIdx}
                     className={`w-full text-left px-2 py-1 text-sm rounded ${
                       idx === highlightIdx
-                        ? "bg-[#00D558]/20 text-[#00D558]"
-                        : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                        ? "bg-neon-green/20 text-neon-green-text"
+                        : "hover:bg-rule-strong"
                     }`}
                   >
                     {fullName}
@@ -830,10 +830,10 @@ export default function TeamPicker({
                 aria-label={`New team ${query.trim()}`}
                 onClick={openNewTeam}
                 onMouseEnter={() => setHighlightIdx(matches.length)}
-                className={`w-full text-left px-2 py-1 text-sm rounded border-t border-gray-200 dark:border-gray-700 mt-1 pt-2 ${
+                className={`w-full text-left px-2 py-1 text-sm rounded border-t border-rule-strong mt-1 pt-2 ${
                   highlightIdx === matches.length
-                    ? "bg-[#00D558]/20 text-[#00D558]"
-                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                    ? "bg-neon-green/20 text-neon-green-text"
+                    : "hover:bg-rule-strong"
                 }`}
               >
                 + New team “{query.trim()}”…
@@ -871,7 +871,7 @@ export default function TeamPicker({
                 and below the rows so every option lands where it always has.
                 Tab from the last row reaches it; Tab again leaves the picker. */}
             {sportId && (
-              <div className="border-t border-gray-200 dark:border-gray-700 px-2 pt-1">
+              <div className="border-t border-rule-strong px-2 pt-1">
                 <SportSwitch
                   // Only one picker's popover is ever open, but the review
                   // wizard's own switch ("Sport for this name") can share the

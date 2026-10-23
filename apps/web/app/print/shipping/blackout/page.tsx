@@ -56,12 +56,12 @@ export default function BlackoutLabelPage() {
     <div className="flex flex-col items-center gap-8 py-12 px-4">
       <div className="text-center">
         <EyeSlashIcon
-          className="w-16 h-16 text-neon-yellow mx-auto mb-4"
+          className="w-16 h-16 text-neon-yellow-text mx-auto mb-4"
           aria-hidden="true"
         />
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-2">Blackout Label</h2>
-        <p className="text-gray-400 max-w-md">
+        <p className="text-ink-3 max-w-md">
           Reusing a mailer? Print a solid black 4&Prime; × 6&Prime; label and
           stick it right over the old one, barcode and all.
         </p>
@@ -77,7 +77,7 @@ export default function BlackoutLabelPage() {
         </NeonButton>
         {/* Always mounted: a live region inserted at the same moment its text
             appears is unreliably announced (notably VoiceOver). */}
-        <p role="alert" className="text-sm text-neon-pink text-center">
+        <p role="alert" className="text-sm text-neon-pink-text text-center">
           {printError}
         </p>
       </div>
@@ -95,9 +95,9 @@ export default function BlackoutLabelPage() {
           role="group"
           aria-labelledby="blackout-preview-heading"
           tabIndex={0}
-          className="max-w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+          className="max-w-full overflow-x-auto rounded-lg focus-outline"
         >
-          <div className="border border-neon-yellow/30 rounded-lg p-2 bg-white/5 w-fit">
+          <div className="border border-neon-yellow/30 rounded-lg p-2 bg-ink/5 w-fit">
             {/* Pure #000, not a theme near-black: this is the ink that prints.
                 The soft glow is screen-only — it lifts a black slab off a dark
                 page so it reads as a label rather than a hole. */}
@@ -113,7 +113,7 @@ export default function BlackoutLabelPage() {
             />
           </div>
         </div>
-        <p className="text-xs text-gray-400 text-center max-w-md">
+        <p className="text-xs text-ink-3 text-center max-w-md">
           Shown at actual size. Print at 100% scale — not &quot;fit to
           page&quot; — so the black covers the label edge to edge.
         </p>

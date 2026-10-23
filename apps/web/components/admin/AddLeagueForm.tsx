@@ -106,7 +106,7 @@ export const LEVELS: ReadonlyArray<{ value: LeagueLevel; label: string }> = [
  */
 const NEAR_MATCH_DEBOUNCE_MS = 300;
 
-export const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
+export const LABEL_CLASS = "block text-sm font-medium mb-1 text-ink-2";
 
 /**
  * Height of an `Input` box: 24px line-height + 2×8px padding + 2×1px border.
@@ -259,10 +259,10 @@ export function LevelGroup({
               // to answer at a glance. Weight rather than a leading glyph on
               // purpose — the label text stays byte-identical, so neither the
               // accessible name nor a Maestro `tapOn: "Major"` moves.
-              className={`min-h-8 rounded-md border px-2.5 py-1 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-neon-teal ${
+              className={`min-h-8 rounded-md border px-2.5 py-1 text-sm transition-colors focus-outline ${
                 checked
-                  ? "border-neon-teal bg-neon-teal/15 font-semibold text-neon-teal"
-                  : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:text-slate-100"
+                  ? "border-neon-teal-text bg-neon-teal/15 font-semibold text-neon-teal-text"
+                  : "border-control bg-field text-ink-2 hover:border-ink-3 hover:text-ink"
               }`}
             >
               {level.label}
@@ -447,7 +447,7 @@ export function AddLeagueForm({
         id={headingId}
         ref={headingRef}
         tabIndex={-1}
-        className="text-lg font-semibold focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
+        className="text-lg font-semibold focus-outline focus-visible:rounded-sm"
       >
         Add a league
       </h3>
@@ -477,7 +477,7 @@ export function AddLeagueForm({
         // and for the same reason: `disabled`'s opacity would take the text
         // under SC 1.4.3's 4.5:1 floor.
         <p
-          className={`w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-300 ${FIELD_BOX_HEIGHT}`}
+          className={`w-full rounded-md border border-rule bg-sheet px-3 py-2 text-base text-ink-2 ${FIELD_BOX_HEIGHT}`}
         >
           Sport: {sportLabel}
         </p>
@@ -490,7 +490,7 @@ export function AddLeagueForm({
             id="new-league-sport"
             value={sportId}
             onChange={(e) => setSportId(e.target.value)}
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+            className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
           >
             <option value="">— pick a sport —</option>
             {sports.map((sport) => (
@@ -588,7 +588,7 @@ export function AddLeagueForm({
             aria-label={
               busy ? "Adding league" : `Create league ${trimmed} anyway`
             }
-            className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+            className="min-h-6 rounded px-2 py-1 text-sm text-ink-2 underline underline-offset-2 transition-colors hover:text-neon-green-text focus-outline disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
           >
             {busy ? "Adding…" : "Create anyway"}
           </button>

@@ -96,7 +96,7 @@ const TRAY_LIMIT = 24;
 /** Places listed under an owned card before "and N more". */
 const PLACE_LIMIT = 3;
 
-const FOCUS = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
+const FOCUS = "focus-outline";
 
 export default function PackTray(props: PackTrayProps) {
   const {
@@ -216,14 +216,14 @@ export default function PackTray(props: PackTrayProps) {
       <div className="pointer-events-auto mx-auto max-w-6xl px-2 sm:px-6">
         <div className="p2-pack px-3 pb-[max(env(safe-area-inset-bottom),10px)] pt-3 sm:px-4">
           <div className={notice ? "mb-2 flex flex-wrap items-center gap-2" : ""}>
-            <p role="status" className="min-w-0 flex-1 basis-56 text-sm text-slate-100">
+            <p role="status" className="min-w-0 flex-1 basis-56 text-sm text-ink">
               {notice?.message ?? ""}
             </p>
             {notice?.undo && (
               <button
                 type="button"
                 onClick={onUndo}
-                className="min-h-8 rounded-md bg-neon-blue px-3 text-sm font-bold text-black hover:bg-[#4dd5ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white max-sm:min-h-11"
+                className="min-h-8 rounded-md bg-neon-blue px-3 text-sm font-bold text-on-neon-blue hover:bg-neon-blue-hover focus-outline max-sm:min-h-11"
               >
                 Undo
               </button>
@@ -233,7 +233,7 @@ export default function PackTray(props: PackTrayProps) {
                 type="button"
                 onClick={onDismissNotice}
                 aria-label="Dismiss message"
-                className={`inline-flex min-h-8 min-w-8 items-center justify-center rounded-md text-slate-300 hover:text-white max-sm:min-h-11 max-sm:min-w-11 ${FOCUS}`}
+                className={`inline-flex min-h-8 min-w-8 items-center justify-center rounded-md text-ink-2 hover:text-ink max-sm:min-h-11 max-sm:min-w-11 ${FOCUS}`}
               >
                 <XMarkIcon aria-hidden="true" className="h-4 w-4" />
               </button>
@@ -242,13 +242,13 @@ export default function PackTray(props: PackTrayProps) {
 
           {aimedAt && !choosing && !moving && !wantMode && (
             <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-neon-blue/60 bg-neon-blue/10 px-3 py-1.5">
-              <p className="min-w-0 flex-1 basis-56 text-sm text-slate-100">
+              <p className="min-w-0 flex-1 basis-56 text-sm text-ink">
                 Filling {aimedAt}. Hunt for a card, then press Move here or Put here.
               </p>
               <button
                 type="button"
                 onClick={onCancelAim}
-                className={`min-h-8 rounded-md border border-slate-500 px-3 text-sm text-slate-100 hover:border-slate-300 max-sm:min-h-11 ${FOCUS}`}
+                className={`min-h-8 rounded-md border border-control px-3 text-sm text-ink hover:border-ink-2 max-sm:min-h-11 ${FOCUS}`}
               >
                 Stop filling
               </button>
@@ -261,10 +261,10 @@ export default function PackTray(props: PackTrayProps) {
               role="group"
               aria-label={`Where should ${shortName(choosing)} go?`}
               onKeyDown={onChooserKey}
-              className="mb-2 rounded-lg border border-slate-600 bg-slate-900 p-2"
+              className="mb-2 rounded-lg border border-control bg-field p-2"
             >
-              <p className="mb-2 px-1 text-sm text-slate-200">
-                Slot <strong className="text-white">{shortName(choosing)}</strong> into:
+              <p className="mb-2 px-1 text-sm text-ink-2">
+                Slot <strong className="text-ink">{shortName(choosing)}</strong> into:
               </p>
               <div className="flex flex-wrap gap-2">
                 {targets.map((t) => (
@@ -276,7 +276,7 @@ export default function PackTray(props: PackTrayProps) {
                       setChoosing(null);
                       inputRef.current?.focus();
                     }}
-                    className={`min-h-9 rounded-md border border-slate-600 bg-slate-950 px-3 text-sm text-slate-100 hover:border-neon-green hover:text-white max-sm:min-h-11 ${FOCUS}`}
+                    className={`min-h-9 rounded-md border border-control bg-sheet px-3 text-sm text-ink hover:border-neon-green hover:text-ink max-sm:min-h-11 ${FOCUS}`}
                   >
                     {t.label}
                   </button>
@@ -292,10 +292,10 @@ export default function PackTray(props: PackTrayProps) {
               role="group"
               aria-label={`Which ${shortName(moving)} moves to ${moveTo.name}?`}
               onKeyDown={onChooserKey}
-              className="mb-2 rounded-lg border border-slate-600 bg-slate-900 p-2"
+              className="mb-2 rounded-lg border border-control bg-field p-2"
             >
-              <p className="mb-2 px-1 text-sm text-slate-200">
-                Which <strong className="text-white">{shortName(moving)}</strong> moves to {moveTo.name}?
+              <p className="mb-2 px-1 text-sm text-ink-2">
+                Which <strong className="text-ink">{shortName(moving)}</strong> moves to {moveTo.name}?
               </p>
               <div className="flex flex-wrap gap-2">
                 {movingCopies.map((copy, i) => (
@@ -307,7 +307,7 @@ export default function PackTray(props: PackTrayProps) {
                       onMove(moving, copy.id);
                       inputRef.current?.focus();
                     }}
-                    className={`min-h-9 rounded-md border border-slate-600 bg-slate-950 px-3 text-sm text-slate-100 hover:border-neon-green hover:text-white max-sm:min-h-11 ${FOCUS}`}
+                    className={`min-h-9 rounded-md border border-control bg-sheet px-3 text-sm text-ink hover:border-neon-green hover:text-ink max-sm:min-h-11 ${FOCUS}`}
                   >
                     {movingNames[i]}
                   </button>
@@ -319,10 +319,10 @@ export default function PackTray(props: PackTrayProps) {
 
           {trimmed && (
             <div className="nb-hunt-results mb-2">
-              <p className="mb-1 text-xs text-slate-300">{summary}</p>
+              <p className="mb-1 text-xs text-ink-2">{summary}</p>
               {mine.length > 0 && (
                 <>
-                  <h3 id={ownedHeadingId} className="mt-1 text-sm font-bold text-white">
+                  <h3 id={ownedHeadingId} className="mt-1 text-sm font-bold text-ink">
                     In your binders
                   </h3>
                   <ul className="nb-owned-results" aria-labelledby={ownedHeadingId}>
@@ -348,7 +348,7 @@ export default function PackTray(props: PackTrayProps) {
               )}
               {others.length > 0 && (
                 <>
-                  <h3 id={catalogHeadingId} className="mt-2 text-sm font-bold text-white">
+                  <h3 id={catalogHeadingId} className="mt-2 text-sm font-bold text-ink">
                     Not in your binders yet
                   </h3>
                   <ul className="p2-results" aria-labelledby={catalogHeadingId}>
@@ -370,7 +370,7 @@ export default function PackTray(props: PackTrayProps) {
           )}
 
           <div className="flex items-center gap-2">
-            <MagnifyingGlassIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-neon-blue" />
+            <MagnifyingGlassIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-neon-blue-text" />
             <Input
               bare
               ref={inputRef}
@@ -398,7 +398,7 @@ export default function PackTray(props: PackTrayProps) {
                   onQuery("");
                   inputRef.current?.focus();
                 }}
-                className={`min-h-10 rounded-md px-2 text-sm text-slate-300 hover:text-white max-sm:min-h-11 ${FOCUS}`}
+                className={`min-h-10 rounded-md px-2 text-sm text-ink-2 hover:text-ink max-sm:min-h-11 ${FOCUS}`}
               >
                 Clear
               </button>
@@ -415,7 +415,7 @@ function NeverMind({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className={`min-h-9 rounded-md px-3 text-sm text-slate-300 underline underline-offset-4 hover:text-white max-sm:min-h-11 ${FOCUS}`}
+      className={`min-h-9 rounded-md px-3 text-sm text-ink-2 underline underline-offset-4 hover:text-ink max-sm:min-h-11 ${FOCUS}`}
     >
       Never mind
     </button>
@@ -452,7 +452,7 @@ function DragFace({ card, name, lifted }: { card: Card; name: string; lifted: bo
 }
 
 const ACT =
-  "min-h-7 rounded-md px-2 text-xs font-bold max-sm:min-h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950";
+  "min-h-7 rounded-md px-2 text-xs font-bold max-sm:min-h-11 focus-outline";
 
 /** An owned card: where every copy lives, and Move here / Add another. */
 function OwnedCard({
@@ -496,8 +496,8 @@ function OwnedCard({
         />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <p className="text-xs font-bold leading-tight text-white">{short}</p>
-        <p aria-hidden="true" className="line-clamp-2 text-[11px] leading-tight text-slate-300">
+        <p className="text-xs font-bold leading-tight text-ink">{short}</p>
+        <p aria-hidden="true" className="line-clamp-2 text-[11px] leading-tight text-ink-2">
           {cardCaption(card)}
         </p>
         <ul aria-label={`Where ${short} lives`} className="flex flex-col items-start gap-1">
@@ -509,14 +509,14 @@ function OwnedCard({
                   type="button"
                   aria-label={`Find ${short} in ${where}`}
                   onClick={() => onFind(place)}
-                  className={`rounded-sm text-left text-xs leading-snug text-neon-blue underline decoration-neon-blue/50 underline-offset-2 hover:text-white max-sm:min-h-8 ${FOCUS}`}
+                  className={`rounded-sm text-left text-xs leading-snug text-neon-blue-text underline decoration-neon-blue/50 underline-offset-2 hover:text-ink max-sm:min-h-8 ${FOCUS}`}
                 >
                   In {where}
                 </button>
               </li>
             );
           })}
-          {more > 0 && <li className="text-xs text-slate-300">and {more} more</li>}
+          {more > 0 && <li className="text-xs text-ink-2">and {more} more</li>}
         </ul>
         <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
           {wantMode ? (
@@ -526,7 +526,7 @@ function OwnedCard({
               onClick={onAdd}
               disabled={wanted}
               aria-label={wanted ? `${label} is on your Want List` : `Want ${label}`}
-              className={`${ACT} bg-neon-green text-black hover:bg-[#33e07c] disabled:cursor-default disabled:bg-slate-700 disabled:text-slate-200`}
+              className={`${ACT} bg-neon-green text-on-neon-green hover:bg-neon-green-hover disabled:cursor-default disabled:bg-rule-strong disabled:text-ink-2`}
             >
               {wanted ? "Wanted" : "Want it"}
             </button>
@@ -538,7 +538,7 @@ function OwnedCard({
                   type="button"
                   onClick={onMove}
                   aria-label={`Move here: ${label}, to ${moveTo.name}`}
-                  className={`${ACT} bg-neon-blue text-black hover:bg-[#4dd5ff]`}
+                  className={`${ACT} bg-neon-blue text-on-neon-blue hover:bg-neon-blue-hover`}
                 >
                   Move here
                 </button>
@@ -548,7 +548,7 @@ function OwnedCard({
                 type="button"
                 onClick={onAdd}
                 aria-label={`Add another ${label}`}
-                className={`${ACT} border border-neon-green text-neon-green hover:bg-neon-green hover:text-black`}
+                className={`${ACT} border border-neon-green-text text-neon-green-text hover:bg-neon-green hover:text-on-neon-green`}
               >
                 Add another
               </button>
@@ -581,17 +581,17 @@ function TrayCard({
   return (
     <li className="flex w-[88px] flex-none flex-col items-center gap-1">
       <DragFace card={card} name={`${label}, need`} lifted={lifted} />
-      <p aria-hidden="true" className="line-clamp-3 h-[3.75em] w-full text-center text-[11px] leading-tight text-slate-300">
+      <p aria-hidden="true" className="line-clamp-3 h-[3.75em] w-full text-center text-[11px] leading-tight text-ink-2">
         {cardCaption(card)}
       </p>
-      <p className="text-center text-[11px] leading-tight text-slate-300">Need</p>
+      <p className="text-center text-[11px] leading-tight text-ink-2">Need</p>
       <button
         ref={buttonRef}
         type="button"
         onClick={onAct}
         disabled={wanted}
         aria-label={wanted ? `${label} is on your Want List` : name}
-        className="min-h-7 w-full rounded-md bg-neon-green px-1 text-xs font-bold text-black hover:bg-[#33e07c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-default disabled:bg-slate-700 disabled:text-slate-200 max-sm:min-h-11"
+        className="min-h-7 w-full rounded-md bg-neon-green px-1 text-xs font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline disabled:cursor-default disabled:bg-rule-strong disabled:text-ink-2 max-sm:min-h-11"
       >
         {wanted ? "Wanted" : verb}
       </button>

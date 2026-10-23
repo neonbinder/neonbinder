@@ -96,7 +96,7 @@ export default function PausedNotice({ sites }: PausedNoticeProps) {
   return (
     <div
       role="status"
-      className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 border border-l-4 border-amber-700 dark:border-amber-400/70 bg-amber-400/10 rounded-md text-amber-800 dark:text-amber-300 text-sm"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 border border-l-4 border-notice-warn-rule bg-notice-warn-bg shadow-offset rounded-md text-notice-warn-ink text-sm"
     >
       <p className="min-w-0 flex-1 basis-64">
         <strong className="font-semibold">{lead}</strong> {body}
@@ -107,7 +107,7 @@ export default function PausedNotice({ sites }: PausedNoticeProps) {
         aria-label={PAUSE_NOTICE_COPY.strip.dismissLabel}
         // px-2 py-1.5 keeps the target at or above WCAG 2.5.8's 24px minimum,
         // as ReauthNotice's Dismiss does.
-        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded px-2 py-1.5"
+        className="shrink-0 text-xs underline hover:no-underline focus-outline rounded px-2 py-1.5"
       >
         {PAUSE_NOTICE_COPY.strip.dismiss}
       </button>

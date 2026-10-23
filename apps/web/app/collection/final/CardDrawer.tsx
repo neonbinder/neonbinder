@@ -46,21 +46,21 @@ export default function CardDrawer({
 }) {
   const headingId = useId();
   const nav =
-    "flex h-8 w-8 items-center justify-center rounded text-slate-300 hover:text-[#00C2FF] disabled:opacity-30 disabled:cursor-not-allowed " +
+    "flex h-8 w-8 items-center justify-center rounded text-ink-2 hover:text-neon-blue-text disabled:opacity-30 disabled:cursor-not-allowed " +
     FOCUS;
   return (
     <Overlay labelledBy={headingId} onClose={onClose}>
-      <div className="flex items-center gap-2 border-b border-gray-700 px-4 py-3">
+      <div className="flex items-center gap-2 border-b border-rule-strong px-4 py-3">
         <div className="min-w-0 flex-1">
           <h2
             id={headingId}
             tabIndex={-1}
             aria-label={cardLabel(card)}
-            className="truncate text-sm font-semibold text-slate-100 focus:outline-none"
+            className="truncate text-sm font-semibold text-ink focus:outline-none"
           >
             {shortCardName(card)}
           </h2>
-          <p className="truncate text-xs text-slate-400">{setAndVariant(card)}</p>
+          <p className="truncate text-xs text-ink-3">{setAndVariant(card)}</p>
         </div>
         <button
           type="button"
@@ -87,7 +87,7 @@ export default function CardDrawer({
           onClick={onClose}
           aria-label="Close card detail"
           title="Close (Esc)"
-          className={`${nav} text-lg hover:text-[#FF2E9A]`}
+          className={`${nav} text-lg hover:text-neon-pink-text`}
         >
           ×
         </button>

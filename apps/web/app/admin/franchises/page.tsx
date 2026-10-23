@@ -15,7 +15,7 @@ export default function AdminFranchisesPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold mb-1">Franchise Management</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           String a club's old names together — Oilers to Titans, Expos to Nats.
           Franchises are globally shared rows, so edits here affect everyone.
         </p>

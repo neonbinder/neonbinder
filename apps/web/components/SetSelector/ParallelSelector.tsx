@@ -28,7 +28,9 @@ export default function ParallelSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-amber-100 dark:bg-amber-900 border-amber-300 dark:border-amber-700"
+      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
+      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
+      selectedColor="bg-[color:light-dark(oklch(96.2%_0.059_95.617),oklch(41.4%_0.112_45.904))] border-amber-700"
       isItemTerminal={() => true}
     />
   );

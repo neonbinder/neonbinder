@@ -54,14 +54,14 @@ export default function PrimitivesPage() {
   );
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-surface">
       {/* Header */}
-      <div className="border-b border-slate-200 bg-white">
+      <div className="border-b border-rule bg-raised">
         <div className="max-w-7xl mx-auto px-6 py-8">
-          <h1 className="text-3xl font-semibold text-slate-900 tracking-tight">
+          <h1 className="text-3xl font-semibold text-ink tracking-tight">
             Primitives
           </h1>
-          <p className="mt-2 text-xl text-slate-600 max-w-2xl">
+          <p className="mt-2 text-xl text-ink-3 max-w-2xl">
             Those are the atomic parts that make your components, do NOT edit
             unless you strictly want to.
           </p>
@@ -72,7 +72,7 @@ export default function PrimitivesPage() {
         <div className="space-y-16">
           {/* Button Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Button
             </h2>
             <div className="grid grid-cols-2 gap-8">
@@ -100,13 +100,13 @@ export default function PrimitivesPage() {
 
           {/* Input Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Input
             </h2>
-            {/* NEO-44: Input is now the app's dark-neon field, so show it on the
-                dark surface it actually renders against rather than this
-                gallery's white page. */}
-            <div className="grid grid-cols-2 gap-8 rounded-lg bg-slate-950 p-8">
+            {/* NEO-44: show the field on a sheet, the surface it renders
+                against in forms. NEO-356: the gallery follows the mode, so
+                the sheet is dark or light with the rest of the page. */}
+            <div className="grid grid-cols-2 gap-8 rounded-lg bg-sheet p-8">
               <div className="space-y-6">
                 <Input
                   label="Email"
@@ -159,13 +159,13 @@ export default function PrimitivesPage() {
 
           {/* Form Controls Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Form Controls
             </h2>
             <div className="grid grid-cols-3 gap-8">
               {/* Checkbox */}
               <div className="space-y-4">
-                <h3 className="text-lg font-medium text-slate-900">Checkbox</h3>
+                <h3 className="text-lg font-medium text-ink">Checkbox</h3>
                 <Checkbox
                   label="Accept terms and condition"
                   checked={checkboxChecked}
@@ -180,7 +180,7 @@ export default function PrimitivesPage() {
 
               {/* Switch */}
               <div className="space-y-4">
-                <h3 className="text-lg font-medium text-slate-900">Switch</h3>
+                <h3 className="text-lg font-medium text-ink">Switch</h3>
                 <Switch
                   label="Airplane mode"
                   checked={switchChecked}
@@ -190,7 +190,7 @@ export default function PrimitivesPage() {
 
               {/* Radio Button */}
               <div className="space-y-4">
-                <h3 className="text-lg font-medium text-slate-900">
+                <h3 className="text-lg font-medium text-ink">
                   Radio Button
                 </h3>
                 <RadioButton
@@ -213,11 +213,11 @@ export default function PrimitivesPage() {
 
           {/* Textarea Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Textarea
             </h2>
             {/* Dark surface — see the Input section note. */}
-            <div className="grid grid-cols-2 gap-8 rounded-lg bg-slate-950 p-8">
+            <div className="grid grid-cols-2 gap-8 rounded-lg bg-sheet p-8">
               <Textarea
                 label="Your message"
                 placeholder="Type your message here"
@@ -234,17 +234,17 @@ export default function PrimitivesPage() {
 
           {/* Autocomplete Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Autocomplete
             </h2>
-            <p className="-mt-4 mb-6 text-slate-600 max-w-2xl">
+            <p className="-mt-4 mb-6 text-ink-3 max-w-2xl">
               ARIA 1.2 combobox. Fully keyboard operable: ↑/↓ move the
               highlight, Home/End jump to the ends, Enter confirms, Escape
               closes. Escape is only swallowed while the list is open, so a
               host dialog&rsquo;s own Escape-to-cancel still works.
             </p>
             {/* Dark surface — see the Input section note. */}
-            <div className="rounded-lg bg-slate-950 p-8">
+            <div className="rounded-lg bg-sheet p-8">
               <div className="max-w-md">
                 <Autocomplete
                   query={autocompleteQuery}
@@ -261,7 +261,7 @@ export default function PrimitivesPage() {
                   placeholder="Try typing “Ken”…"
                   emptyMessage="No players found"
                 />
-                <p className="mt-3 text-sm text-slate-400">
+                <p className="mt-3 text-sm text-ink-3">
                   {autocompletePicked
                     ? `Selected: ${autocompletePicked}`
                     : "Nothing selected yet."}
@@ -272,7 +272,7 @@ export default function PrimitivesPage() {
 
           {/* Tabs Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">Tabs</h2>
+            <h2 className="text-2xl font-semibold text-ink mb-8">Tabs</h2>
             <div className="max-w-md">
               <Tabs defaultValue="account">
                 <TabsList>
@@ -281,9 +281,9 @@ export default function PrimitivesPage() {
                 </TabsList>
                 <TabsContent
                   value="account"
-                  className="mt-6 p-6 border border-slate-200 rounded-md"
+                  className="mt-6 p-6 border border-rule rounded-md"
                 >
-                  <p className="text-sm text-slate-500 mb-4">
+                  <p className="text-sm text-ink-3 mb-4">
                     Make changes to your account here. Click save when
                     you&apos;re done.
                   </p>
@@ -295,9 +295,9 @@ export default function PrimitivesPage() {
                 </TabsContent>
                 <TabsContent
                   value="password"
-                  className="mt-6 p-6 border border-slate-200 rounded-md"
+                  className="mt-6 p-6 border border-rule rounded-md"
                 >
-                  <p className="text-sm text-slate-500">
+                  <p className="text-sm text-ink-3">
                     Change your password here.
                   </p>
                 </TabsContent>
@@ -307,7 +307,7 @@ export default function PrimitivesPage() {
 
           {/* Avatar Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Avatar
             </h2>
             <div className="flex items-center gap-4">
@@ -321,8 +321,8 @@ export default function PrimitivesPage() {
 
           {/* Menu Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">Menu</h2>
-            <div className="max-w-sm border border-slate-200 rounded-md bg-white">
+            <h2 className="text-2xl font-semibold text-ink mb-8">Menu</h2>
+            <div className="max-w-sm border border-rule rounded-md bg-raised">
               <div className="p-2">
                 <MenuItem leftIcon={<span>←</span>} rightText="⌘[">
                   Back
@@ -334,7 +334,7 @@ export default function PrimitivesPage() {
                 <MenuItem rightIcon={<span>→</span>} selected>
                   More Tools
                 </MenuItem>
-                <div className="my-2 h-px bg-slate-200" />
+                <div className="my-2 h-px bg-rule" />
                 <MenuSectionTitle withPaddingLeft>People</MenuSectionTitle>
                 <MenuItem>Pedro Duarte</MenuItem>
                 <MenuItem>Colm Tuite</MenuItem>
@@ -345,7 +345,7 @@ export default function PrimitivesPage() {
 
           {/* Navigation Menu Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Navigation Menu
             </h2>
             <NavigationMenu>
@@ -363,7 +363,7 @@ export default function PrimitivesPage() {
 
           {/* Menubar Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Menubar
             </h2>
             <Menubar>
@@ -376,7 +376,7 @@ export default function PrimitivesPage() {
 
           {/* Accordion Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Accordion
             </h2>
             <div className="max-w-md">
@@ -400,7 +400,7 @@ export default function PrimitivesPage() {
 
           {/* Collapsible Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Collapsible
             </h2>
             <div className="max-w-sm">
@@ -419,10 +419,10 @@ export default function PrimitivesPage() {
 
           {/* Table Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Table
             </h2>
-            <table className="border-collapse border border-slate-200">
+            <table className="border-collapse border border-rule">
               <thead>
                 <tr>
                   <TableItem type="head">King&apos;s Treasury</TableItem>
@@ -441,10 +441,10 @@ export default function PrimitivesPage() {
 
           {/* CopyButton Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Copy Button
             </h2>
-            <p className="text-sm text-slate-600 mb-6 max-w-2xl">
+            <p className="text-sm text-ink-3 mb-6 max-w-2xl">
               The one clipboard affordance (NEO-212, G10). Icon-only and
               fixed-size so it can sit inline beside a name without the row
               reflowing when it is pressed — the glyph swaps, the box does not.
@@ -455,15 +455,15 @@ export default function PrimitivesPage() {
             </p>
             <div className="space-y-4">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-900">Ken Griffey Jr.</span>
+                <span className="text-sm text-ink">Ken Griffey Jr.</span>
                 <CopyButton value="Ken Griffey Jr." label="player name" />
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-ink-3">
                   size=&quot;sm&quot; (default, 24x24 — the WCAG 2.2 SC 2.5.8
                   floor)
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-900">
+                <span className="text-sm text-ink">
                   1993 Topps Finest Refractor #199
                 </span>
                 <CopyButton
@@ -471,7 +471,7 @@ export default function PrimitivesPage() {
                   label="card title"
                   size="md"
                 />
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-ink-3">
                   size=&quot;md&quot; (32x32)
                 </span>
               </div>
@@ -480,13 +480,13 @@ export default function PrimitivesPage() {
 
           {/* Utility Components Section */}
           <section>
-            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+            <h2 className="text-2xl font-semibold text-ink mb-8">
               Utility Components
             </h2>
             <div className="grid grid-cols-4 gap-8">
               {/* Palette */}
               <div>
-                <h3 className="text-lg font-medium text-slate-900 mb-4">
+                <h3 className="text-lg font-medium text-ink mb-4">
                   Palette
                 </h3>
                 <Palette color="#FCFCFD" name="slate" shade="50" />
@@ -494,7 +494,7 @@ export default function PrimitivesPage() {
 
               {/* Inline Code */}
               <div>
-                <h3 className="text-lg font-medium text-slate-900 mb-4">
+                <h3 className="text-lg font-medium text-ink mb-4">
                   Inline Code
                 </h3>
                 <InlineCode>@radix-ui/react-alert-dialog</InlineCode>
@@ -502,7 +502,7 @@ export default function PrimitivesPage() {
 
               {/* Scroll List Item */}
               <div>
-                <h3 className="text-lg font-medium text-slate-900 mb-4">
+                <h3 className="text-lg font-medium text-ink mb-4">
                   Scroll List Item
                 </h3>
                 <ScrollListItem>v1.2.0-beta.50</ScrollListItem>
@@ -510,13 +510,13 @@ export default function PrimitivesPage() {
 
               {/* Poster */}
               <div>
-                <h3 className="text-lg font-medium text-slate-900 mb-4">
+                <h3 className="text-lg font-medium text-ink mb-4">
                   Poster
                 </h3>
                 <Poster
                   title="shadcn/ui"
                   description="Beautifully designed components built with Radix UI and Tailwind CSS."
-                  icon={<div className="w-6 h-6 bg-white rounded-full" />}
+                  icon={<div className="w-6 h-6 rounded-full" style={{ background: "#fff" }} />}
                 />
               </div>
             </div>

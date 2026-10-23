@@ -19,7 +19,7 @@ export default function SleeveStrip({
         <span
           key={c.id}
           className={`h-3.5 w-2.5 rounded-[2px] border ${
-            ownedIds.has(c.id) ? "border-neon-blue bg-neon-blue" : "border-slate-500 bg-transparent"
+            ownedIds.has(c.id) ? "border-neon-blue bg-neon-blue" : "border-control bg-transparent"
           }`}
         />
       ))}

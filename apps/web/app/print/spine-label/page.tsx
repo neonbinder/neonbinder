@@ -487,7 +487,7 @@ export default function SpineLabelPage() {
       </div>
       <div>
         <h2 className="text-2xl font-semibold mb-1">Spine Labels</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           Print a binder spine label with a player&rsquo;s name in their team
           colors. Several labels print on one sheet.
         </p>
@@ -499,7 +499,7 @@ export default function SpineLabelPage() {
         {/* ---------------------------------------------------------------- */}
         <div className="space-y-6">
           <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-slate-300">Player</h3>
+            <h3 className="text-sm font-semibold text-ink-2">Player</h3>
             {/* A real <label>, not a styled span. The shared Input primitive
                 emits no id, so association is IMPLICIT — the label has to wrap
                 the control, and that wrapping is also what makes clicking the
@@ -509,7 +509,7 @@ export default function SpineLabelPage() {
                 string on purpose (WCAG 2.5.3 Label in Name): `label` here is
                 what becomes the input's aria-label. */}
             <label className="block">
-              <span className="block text-sm font-medium mb-1 text-slate-300">
+              <span className="block text-sm font-medium mb-1 text-ink-2">
                 Find a player
               </span>
               <PlayerAutocomplete
@@ -528,8 +528,8 @@ export default function SpineLabelPage() {
 
           {showCareerTeams && (
             <section className="space-y-2">
-              <h3 className="text-sm font-semibold text-slate-300">Team</h3>
-              <p className="text-xs text-slate-400">
+              <h3 className="text-sm font-semibold text-ink-2">Team</h3>
+              <p className="text-xs text-ink-3">
                 Defaults to the team {player?.name} spent longest with.
               </p>
               <div className="flex flex-wrap gap-2" role="group" aria-label="Team colors">
@@ -545,22 +545,22 @@ export default function SpineLabelPage() {
                         applyTeamColors(team._id);
                       }}
                       aria-pressed={isActive}
-                      className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
+                      className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors focus-outline ${
                         isActive
-                          ? "border-neon-teal text-neon-teal"
-                          : "border-slate-700 text-slate-300 hover:border-slate-500"
+                          ? "border-neon-teal-text text-neon-teal-text"
+                          : "border-rule-strong text-ink-2 hover:border-control"
                       }`}
                     >
                       <span
                         aria-hidden="true"
-                        className="h-3 w-3 rounded-full border border-slate-600"
+                        className="h-3 w-3 rounded-full border border-control"
                         style={{
                           background: team.colors?.primary ?? "transparent",
                         }}
                       />
                       {teamFullName(team)}
                       {!hasColors && (
-                        <span className="text-xs text-slate-400">(no colors)</span>
+                        <span className="text-xs text-ink-3">(no colors)</span>
                       )}
                     </button>
                   );
@@ -576,7 +576,7 @@ export default function SpineLabelPage() {
               thing. Typed names get the search, matched players get chips. */}
           {!showCareerTeams && (
           <section className="space-y-2">
-            <h3 className="text-sm font-semibold text-slate-300">
+            <h3 className="text-sm font-semibold text-ink-2">
               Team colors
             </h3>
             {/* One grid, two equal columns: these are a matched pair of
@@ -594,7 +594,7 @@ export default function SpineLabelPage() {
                   id="spine-league-filter"
                   value={leagueFilter}
                   onChange={(e) => setLeagueFilter(e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+                  className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
                 >
                   <option value="all">All leagues</option>
                   {leagueList.map((league) => (
@@ -605,7 +605,7 @@ export default function SpineLabelPage() {
                 </select>
               </div>
               <label className="block">
-                <span className="block text-sm font-medium mb-1 text-slate-300">
+                <span className="block text-sm font-medium mb-1 text-ink-2">
                   Find a team
                 </span>
                 <Autocomplete
@@ -679,10 +679,10 @@ export default function SpineLabelPage() {
           <SpineLabelLettering fontId={fontId} onFontChange={setFontId} />
 
           <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-slate-300">
+            <h3 className="text-sm font-semibold text-ink-2">
               Binder size
             </h3>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               Ring size belongs to this binder. It carries over to the next
               label so a run of same-size binders is one choice, and changing it
               never touches a label already on the sheet.
@@ -694,10 +694,10 @@ export default function SpineLabelPage() {
                   type="button"
                   onClick={() => setWidthIn(preset.widthIn)}
                   aria-pressed={widthIn === preset.widthIn}
-                  className={`rounded-md border px-3 py-1.5 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
+                  className={`rounded-md border px-3 py-1.5 text-sm transition-colors focus-outline ${
                     widthIn === preset.widthIn
-                      ? "border-neon-teal text-neon-teal"
-                      : "border-slate-700 text-slate-300 hover:border-slate-500"
+                      ? "border-neon-teal-text text-neon-teal-text"
+                      : "border-rule-strong text-ink-2 hover:border-control"
                   }`}
                 >
                   {preset.label}
@@ -728,7 +728,7 @@ export default function SpineLabelPage() {
                 className="w-36"
               />
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               {perSheet} label{perSheet === 1 ? "" : "s"} per sheet at{" "}
               {widthIn}
               &Prime; wide — a sheet fits any mix that totals 8&Prime;.
@@ -757,7 +757,7 @@ export default function SpineLabelPage() {
             <h3
               ref={sheetHeadingRef}
               tabIndex={-1}
-              className="text-sm font-semibold text-slate-300 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+              className="text-sm font-semibold text-ink-2 rounded-sm focus-outline"
             >
               Sheet ({labels.length} label{labels.length === 1 ? "" : "s"},{" "}
               {sheetCount} page{sheetCount === 1 ? "" : "s"})
@@ -776,11 +776,11 @@ export default function SpineLabelPage() {
               {labels.map((label) => (
                 <li
                   key={label.id}
-                  className="flex items-center gap-2 rounded-md border border-slate-800 px-3 py-1.5 text-sm"
+                  className="flex items-center gap-2 rounded-md border border-rule px-3 py-1.5 text-sm"
                 >
                   <span
                     aria-hidden="true"
-                    className="h-3 w-3 rounded-full border border-slate-600"
+                    className="h-3 w-3 rounded-full border border-control"
                     style={{ background: label.background }}
                   />
                   {/* Set in its OWN face, and showing its own ring size: each
@@ -792,7 +792,7 @@ export default function SpineLabelPage() {
                   >
                     {label.name}
                   </span>
-                  <span className="text-xs text-slate-400">
+                  <span className="text-xs text-ink-3">
                     {label.widthIn}&Prime; · {label.font.label}
                   </span>
                   <NeonButton
@@ -809,15 +809,18 @@ export default function SpineLabelPage() {
           )}
 
           <div>
-            <h3 className="text-sm font-semibold text-slate-300 mb-2">Preview</h3>
+            <h3 className="text-sm font-semibold text-ink-2 mb-2">Preview</h3>
             {previewLabels.length === 0 ? (
-              <p className="text-sm text-slate-400">
+              <p className="text-sm text-ink-3">
                 Pick a player, or type a name, to see the label.
               </p>
             ) : (
               <div
-                className="overflow-hidden rounded-md border border-slate-800 bg-white"
+                className="overflow-hidden rounded-md border border-rule"
                 style={{
+                  // Printed paper: white in both modes, never a theme surface
+                  // (NEO-356). The labels on it carry their own team colours.
+                  background: "#ffffff",
                   width: PREVIEW_WIDTH_PX,
                   // Scale the real 8.5in sheet down to the preview width. The
                   // container height has to follow the scaled content or the
@@ -840,7 +843,7 @@ export default function SpineLabelPage() {
                 </div>
               </div>
             )}
-            <p className="mt-2 text-xs text-slate-400">
+            <p className="mt-2 text-xs text-ink-3">
               Preview shows the first page, including the label you are
               designing — it joins the sheet when you press Add. Dashed lines
               are cut guides, printed inside the label so cutting removes them.

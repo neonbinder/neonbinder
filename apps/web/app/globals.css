@@ -97,6 +97,10 @@ body {
     --background: #fff;
     --foreground: #000;
     --color-background: #fff;
+    /* NEO-356: `bg-background` / `bg-surface` now read --surface directly
+     * (theme.css's `@theme inline`), so --color-background above no longer
+     * reaches them. Paper is white whichever mode the screen is in. */
+    --surface: #fff;
   }
 }
 
@@ -432,31 +436,6 @@ body {
   width: max(100%, 24px);
   height: max(100%, 24px);
   transform: translate(-50%, -50%);
-}
-
-/* Neon glow utilities for binder tabs. The app shell's tabs moved to
- * `.binder-tab` + `tab-hue-*` in app/theme.css (NEO-356); the collection
- * demo's own tab (DemoChrome) still uses these until it migrates, then they go. */
-.binder-tab-glow-green {
-  box-shadow: 0 0 12px 2px rgba(0, 213, 88, 0.4), inset 0 0 8px rgba(0, 213, 88, 0.1);
-}
-.binder-tab-glow-blue {
-  box-shadow: 0 0 12px 2px rgba(0, 194, 255, 0.4), inset 0 0 8px rgba(0, 194, 255, 0.1);
-}
-.binder-tab-glow-yellow {
-  box-shadow: 0 0 12px 2px rgba(255, 230, 0, 0.4), inset 0 0 8px rgba(255, 230, 0, 0.1);
-}
-.binder-tab-glow-pink {
-  box-shadow: 0 0 12px 2px rgba(255, 46, 154, 0.4), inset 0 0 8px rgba(255, 46, 154, 0.1);
-}
-.binder-tab-glow-purple {
-  box-shadow: 0 0 12px 2px rgba(164, 74, 255, 0.4), inset 0 0 8px rgba(164, 74, 255, 0.1);
-}
-.binder-tab-glow-orange {
-  box-shadow: 0 0 12px 2px rgba(255, 158, 0, 0.4), inset 0 0 8px rgba(255, 158, 0, 0.1);
-}
-.binder-tab-glow-teal {
-  box-shadow: 0 0 12px 2px rgba(0, 229, 192, 0.4), inset 0 0 8px rgba(0, 229, 192, 0.1);
 }
 
 /* Dark ink on Radix's solid pink and blue, in both modes. Radix ships white

@@ -109,21 +109,21 @@ type CardChecklistItemProps = {
 function badgeLabel(token: string): { label: string; cls: string } {
   switch (token) {
     case "RC":
-      return { label: "RC", cls: "bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700" };
+      return { label: "RC", cls: "bg-notice-warn-bg text-notice-warn-ink border-notice-warn-rule" };
     case "AU":
-      return { label: "AU", cls: "bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-700" };
+      return { label: "AU", cls: "bg-neon-purple/15 text-neon-purple-text border-neon-purple-text/50" };
     case "RELIC":
-      return { label: "RELIC", cls: "bg-pink-100 dark:bg-pink-900 text-pink-700 dark:text-pink-300 border-pink-300 dark:border-pink-700" };
+      return { label: "RELIC", cls: "bg-neon-pink/15 text-neon-pink-text border-neon-pink-text/50" };
     case "SP":
     case "SSP":
-      return { label: token, cls: "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 border-red-300 dark:border-red-700" };
+      return { label: token, cls: "bg-notice-danger-bg text-notice-danger-ink border-notice-danger-rule" };
     case "NUM":
-      return { label: "#'d", cls: "bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700" };
+      return { label: "#'d", cls: "bg-notice-success-bg text-notice-success-ink border-notice-success-rule" };
     case "unmatched-bsc":
     case "unmatched-sl":
-      return { label: token === "unmatched-bsc" ? "SL only" : "BSC only", cls: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 border-orange-300 dark:border-orange-700" };
+      return { label: token === "unmatched-bsc" ? "SL only" : "BSC only", cls: "bg-neon-orange/15 text-neon-orange-text border-neon-orange-text/50" };
     default:
-      return { label: token, cls: "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600" };
+      return { label: token, cls: "bg-ink/10 text-ink-2 border-control" };
   }
 }
 
@@ -279,12 +279,12 @@ export default function CardChecklistItem({
   return (
     <div
       onClick={() => onEdit(card._id)}
-      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 group cursor-pointer ${
-        isVariation ? "ml-8 border-l-2 border-l-gray-300 dark:border-l-gray-500" : ""
+      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md hover:bg-ink/5 group cursor-pointer ${
+        isVariation ? "ml-8 border-l-2 border-l-control" : ""
       } ${
         isSelected
-          ? "ring-2 ring-[#00C2FF] border-[#00C2FF] bg-blue-50/40 dark:bg-blue-900/10"
-          : ""
+          ? "ring-2 ring-selection border-selection bg-selection/10"
+          : "border-rule-strong"
       }`}
     >
       {/* NEO-189: the disclosure sits in a fixed-width slot on EVERY row, not
@@ -315,7 +315,7 @@ export default function CardChecklistItem({
                 ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
                 : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
             }
-            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
+            className="w-6 h-6 flex items-center justify-center text-ink-3 hover:text-ink focus-outline rounded"
           >
             <span aria-hidden="true" className="text-xs">
               {isExpanded ? "▾" : "▸"}
@@ -323,7 +323,7 @@ export default function CardChecklistItem({
           </button>
         )}
       </span>
-      <span className="text-sm font-mono text-gray-500 dark:text-gray-400 w-12 text-right shrink-0">
+      <span className="text-sm font-mono text-ink-3 w-12 text-right shrink-0">
         #{card.cardNumber}
       </span>
       {/* Clicking anywhere on the row opens the detail panel (the whole row
@@ -348,7 +348,7 @@ export default function CardChecklistItem({
             fills the reserved space instead of growing the row. min-h matches
             the filled text-xs line height so the reserved line is invisible. */}
         <div
-          className="text-xs text-gray-500 dark:text-gray-400 truncate min-h-[1rem]"
+          className="text-xs text-ink-3 truncate min-h-[1rem]"
           aria-hidden={subParts.length === 0 ? true : undefined}
         >
           {subParts.join(" · ")}
@@ -386,7 +386,7 @@ export default function CardChecklistItem({
       <div className="flex gap-1 shrink-0 items-center flex-wrap justify-end">
         {card.platformData.sportlots && (
           <span
-            className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300"
+            className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2"
             title={
               sourceLabelMaps?.sportlots[card.platformData.sportlots.src ?? ""]
                 ? `SL source: ${sourceLabelMaps.sportlots[card.platformData.sportlots.src!]}`
@@ -398,7 +398,7 @@ export default function CardChecklistItem({
         )}
         {card.platformData.bsc && (
           <span
-            className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300"
+            className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2"
             title={
               sourceLabelMaps?.bsc[card.platformData.bsc.src ?? ""]
                 ? `BSC source: ${sourceLabelMaps.bsc[card.platformData.bsc.src!]}`
@@ -415,7 +415,7 @@ export default function CardChecklistItem({
             badge entirely and the row would look like an ordinary card. */}
         {isCrossListed && (
           <span
-            className="text-xs px-1.5 py-0.5 rounded bg-[#00C2FF]/10 text-[#00C2FF] border border-[#00C2FF]/50"
+            className="text-xs px-1.5 py-0.5 rounded bg-neon-blue/10 text-neon-blue-text border border-neon-blue-text/50"
             title={`Cross-release card — physically printed in ${card.homeSetLabel || "another set"}, but it completes this set's checklist.`}
           >
             ↗ {card.homeSetLabel || "another set"}
@@ -451,7 +451,7 @@ export default function CardChecklistItem({
             onEdit(card._id);
           }}
           aria-label={`Edit card ${cardIdentity}`}
-          className="hit-area-24 px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
+          className="hit-area-24 px-1.5 py-0.5 text-xs text-ink-3 hover:text-neon-blue-text"
           title="Edit"
         >
           Edit
@@ -467,7 +467,7 @@ export default function CardChecklistItem({
                 ? `Confirm remove card ${cardIdentity} from this set`
                 : `Confirm delete card ${cardIdentity}`
             }
-            className="hit-area-24 px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-neon-pink-text font-medium"
           >
             Confirm?
           </button>
@@ -483,7 +483,7 @@ export default function CardChecklistItem({
                 ? `Remove card ${cardIdentity} from this set`
                 : `Delete card ${cardIdentity}`
             }
-            className="hit-area-24 px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
+            className="hit-area-24 px-1.5 py-0.5 text-xs text-ink-3 hover:text-neon-pink-text"
             title={
               isCrossListed
                 ? "Remove from this set — the card stays in the set it was printed in"

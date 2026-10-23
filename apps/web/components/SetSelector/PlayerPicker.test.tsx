@@ -652,39 +652,57 @@ describe("PlayerPicker — per-theme livery contrast (NEO-313)", () => {
     });
   }
 
-  it("uses the colour on the light-theme class+variable when it clears 4.5:1 there", () => {
+  // NEO-356: the decision is made for the mode the page is in. Outside a
+  // ThemeProvider, `useTheme` reads `<html data-theme>`, so each test sets it.
+  afterEach(() => {
+    delete document.documentElement.dataset.theme;
+  });
+
+  /** The same colour as the browser would normalise it, for comparing `style.color`. */
+  const normalised = (hex: string) => {
+    const probe = document.createElement("span");
+    probe.style.color = hex;
+    return probe.style.color;
+  };
+
+  it("uses the colour in light when it clears 4.5:1 on every light surface", () => {
+    document.documentElement.dataset.theme = "light";
     renderCrossSportStint("#001B3D");
 
     const label = screen.getByText("Raiders");
-    expect(label.className).toContain("text-[color:var(--livery-light)]");
-    expect(label.style.getPropertyValue("--livery-light")).toBe("#001b3d");
+    expect(label.style.color).toBe(normalised("#001b3d"));
+    expect(label.className).not.toContain("text-ink-2");
   });
 
-  it("falls back to the muted light class when the colour fails 4.5:1 there, even though it clears dark", () => {
+  it("falls back to the muted ink in light when the colour fails 4.5:1 there, even though it clears dark", () => {
+    document.documentElement.dataset.theme = "light";
     renderCrossSportStint("#FFD700");
 
     const label = screen.getByText("Raiders");
-    expect(label.className).toContain("text-gray-700");
-    expect(label.style.getPropertyValue("--livery-light")).toBe("");
+    expect(label.className).toContain("text-ink-2");
+    expect(label.style.color).toBe("");
   });
 
-  it("uses the colour on the dark-theme class+variable when it clears 4.5:1 there", () => {
+  it("uses the colour in dark when it clears 4.5:1 on every dark surface", () => {
+    document.documentElement.dataset.theme = "dark";
     renderCrossSportStint("#FFD700");
 
     const label = screen.getByText("Raiders");
-    expect(label.className).toContain("dark:text-[color:var(--livery-dark)]");
-    expect(label.style.getPropertyValue("--livery-dark")).toBe("#ffd700");
+    expect(label.style.color).toBe(normalised("#ffd700"));
+    expect(label.className).not.toContain("text-ink-2");
   });
 
-  it("drops both themes' colour for one that clears neither surface", () => {
-    renderCrossSportStint("#808080");
+  it.each(["light", "dark"] as const)(
+    "drops the colour in %s for one that clears none of its surfaces",
+    (mode) => {
+      document.documentElement.dataset.theme = mode;
+      renderCrossSportStint("#808080");
 
-    const label = screen.getByText("Raiders");
-    expect(label.className).toContain("text-gray-700");
-    expect(label.className).toContain("dark:text-gray-300");
-    expect(label.style.getPropertyValue("--livery-light")).toBe("");
-    expect(label.style.getPropertyValue("--livery-dark")).toBe("");
-  });
+      const label = screen.getByText("Raiders");
+      expect(label.className).toContain("text-ink-2");
+      expect(label.style.color).toBe("");
+    },
+  );
 });
 
 /**
@@ -856,7 +874,7 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
       expect(child.getAttribute("role")).toBe("option");
     }
     expect(popover().className).toContain("w-64");
-    expect(popover().className).toContain("dark:bg-gray-800");
+    expect(popover().className).toContain("bg-raised");
     expect(popover().className).toContain("z-[55]");
     expect(popover().className).not.toContain("absolute");
   });

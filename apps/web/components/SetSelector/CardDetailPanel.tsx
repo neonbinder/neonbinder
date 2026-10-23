@@ -251,19 +251,18 @@ function FieldFeedback({
   return (
     <>
       {busy && (
-        <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+        <p className="mt-1 text-[10px] text-ink-3">
           Saving…
         </p>
       )}
       {error && (
-        // a11y: NOT the brand `#FF2E9A` — measured 3.34:1 on this drawer's
-        // light-mode `bg-white` and 4.4:1 on its `dark:bg-gray-800`, both under
-        // WCAG 1.4.3's 4.5:1 floor. This darkened/lightened pair in the same
-        // hue measures 5.55:1 / 5.87:1 and is the file's existing precedent.
+        // a11y: NOT the neon pink as text — 4.4:1 on this drawer's raised
+        // surface in dark, under WCAG 1.4.3's 4.5:1 floor. The danger notice
+        // ink clears 4.5:1 here in both modes (NEO-356).
         <p
           id={errorId}
           role="alert"
-          className="mt-1 text-[10px] text-[#C2178A] dark:text-[#FF6FCB]"
+          className="mt-1 text-[10px] text-notice-danger-ink"
         >
           {error}
         </p>
@@ -786,7 +785,7 @@ export default function CardDetailPanel({
           name input to dismiss the TeamPicker popover does not close the
           panel. */}
       <div
-        className="absolute inset-0 bg-black/60"
+        className="absolute inset-0 bg-scrim"
         aria-hidden="true"
         onClick={onClose}
       />
@@ -802,7 +801,7 @@ export default function CardDetailPanel({
           so for its few seconds it swallowed the tap meant for the field. */}
       {toast && (
         <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
           role="status"
           aria-live="polite"
         >
@@ -877,13 +876,13 @@ export default function CardDetailPanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby={`card-detail-title-${card._id}`}
-        className="absolute top-0 right-0 h-full w-full sm:w-[45rem] max-w-[95vw] bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 shadow-xl flex flex-col animate-slide-in-right"
+        className="absolute top-0 right-0 h-full w-full sm:w-[45rem] max-w-[95vw] bg-raised border-l border-rule-strong shadow-xl flex flex-col animate-slide-in-right"
       >
         {/* Header */}
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
+        <div className="px-4 py-3 border-b border-rule-strong flex items-center gap-2">
           <h2
             id={`card-detail-title-${card._id}`}
-            className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex-1 truncate"
+            className="text-sm font-semibold text-ink flex-1 truncate"
           >
             Card #{card.cardNumber}
           </h2>
@@ -892,7 +891,7 @@ export default function CardDetailPanel({
             disabled={!hasPrev}
             aria-label="Previous card"
             title="Previous card (↑)"
-            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00C2FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-ink-3 hover:text-neon-blue-text disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↑
           </button>
@@ -901,7 +900,7 @@ export default function CardDetailPanel({
             disabled={!hasNext}
             aria-label="Next card"
             title="Next card (↓)"
-            className="px-2 py-1 text-sm rounded text-gray-400 hover:text-[#00C2FF] disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-2 py-1 text-sm rounded text-ink-3 hover:text-neon-blue-text disabled:opacity-30 disabled:cursor-not-allowed"
           >
             ↓
           </button>
@@ -909,7 +908,7 @@ export default function CardDetailPanel({
             onClick={onClose}
             aria-label="Close card detail"
             title="Close (Esc)"
-            className="px-2 py-1 text-lg leading-none rounded text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
+            className="px-2 py-1 text-lg leading-none rounded text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
           >
             ×
           </button>
@@ -921,7 +920,7 @@ export default function CardDetailPanel({
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 min-h-0">
           {/* Card name */}
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               Card name
             </label>
             <Input
@@ -953,7 +952,7 @@ export default function CardDetailPanel({
 
           {/* Teams */}
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               Teams
             </label>
             {/* NEO-208 — unresolved typed names, above the picker and
@@ -964,7 +963,7 @@ export default function CardDetailPanel({
                 can happen to it are stated in the hint rather than wired to a
                 control the operator would have to find. */}
             {(card.pendingTeamNames?.length ?? 0) > 0 && (
-              <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+              <div className="mb-2 text-xs text-ink-3">
                 <div className="flex flex-wrap gap-x-2">
                   {/* Index-qualified key, not the name itself: `pendingTeamNames`
                       is not deduplicated, and legacy rows written before
@@ -977,26 +976,19 @@ export default function CardDetailPanel({
                   {card.pendingTeamNames!.map((name, index) => (
                     <span key={`${index}-${name}`}>
                       {name}{" "}
-                      {/* a11y: this MUST stay `text-gray-500 dark:text-gray-400`
-                          (the container's own pair, two lines up) and never the
-                          reverse — `text-gray-400 dark:text-gray-500` measures
-                          2.54:1 on this panel's light-mode `bg-white` and 3.04:1
-                          on its `dark:bg-gray-800`, both under WCAG 1.4.3's
-                          4.5:1 floor for normal text (script-verified). The
-                          reversed pair was in here before; if you're tempted to
-                          dim this relative to the name, use weight/size, not a
-                          lighter gray in light mode. */}
-                      <span className="text-gray-500 dark:text-gray-400">
+                      {/* a11y: `text-ink-3`, the container's own role (two
+                          lines up), which clears WCAG 1.4.3's 4.5:1 on this
+                          panel in both modes. To dim this relative to the
+                          name, use weight or size, never a paler ink. */}
+                      <span className="text-ink-3">
                         (unconfirmed)
                       </span>
                     </span>
                   ))}
                 </div>
-                {/* Same a11y note as above — text-gray-500 (light) /
-                    text-gray-400 (dark) is the pair that clears 4.5:1 against
-                    this panel's bg-white / dark:bg-gray-800; the reverse fails
-                    both. */}
-                <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                {/* Same a11y note as above: text-ink-3 clears 4.5:1 on this
+                    panel in both modes. */}
+                <p className="mt-0.5 text-[11px] text-ink-3">
                   Typed on the card before it was linked — resolves at the next
                   sync, or pick a team to replace it.
                 </p>
@@ -1042,7 +1034,7 @@ export default function CardDetailPanel({
               handle every Maestro flow taps (`id: "Card title"`), so it and the
               field's position in the drawer are both unchanged. */}
           <div>
-            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               <span>Card title</span>
               <span className="flex items-center gap-2">
                 <TitleLengthMeter length={titleLength} soft />
@@ -1065,16 +1057,12 @@ export default function CardDetailPanel({
                   aria-describedby={
                     preview.confirming ? `${uid}-regen-confirm` : undefined
                   }
-                  // a11y (1.4.3, audit fix): #00C2FF alone measures 2.28:1
-                  // against this drawer's light-mode `bg-white` (fails
-                  // 4.5:1) — this panel is genuinely bi-themed
-                  // (`bg-white dark:bg-gray-800`), unlike TitleFixer's
-                  // always-dark walker dialog. #0369A1 measures 5.93:1
-                  // against white; #00C2FF unchanged for dark mode (6.44:1
-                  // against gray-800).
+                  // a11y (1.4.3, audit fix): the neon blue as text role —
+                  // #00C2FF in dark (6.44:1 on the raised surface), deepened
+                  // in light, where #00C2FF alone is 2.28:1 on white.
                   // inline-flex + min-h-6: the 10px label alone is a 15px-tall target;
                   // SC 2.5.8 needs 24px (axe target-size).
-                  className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00C2FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
+                  className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
                 >
                   {preview.loading
                     ? "Rebuilding…"
@@ -1128,11 +1116,9 @@ export default function CardDetailPanel({
                 id={`${uid}-regen-confirm`}
                 role="status"
                 aria-atomic="true"
-                // a11y (1.4.3, audit fix): same light/dark split as the
-                // Regenerate button above, same reason — this panel is
-                // bi-themed and #00C2FF alone fails 4.5:1 against its
-                // light-mode `bg-white`.
-                className="mt-1 text-[10px] text-[#0369A1] dark:text-[#00C2FF]"
+                // a11y (1.4.3, audit fix): the same text role as the
+                // Regenerate button above, for the same reason.
+                className="mt-1 text-[10px] text-neon-blue-text"
               >
                 Regenerate again to replace the title you have typed.
               </p>
@@ -1156,18 +1142,12 @@ export default function CardDetailPanel({
                 {preview.chips.map((chip, idx) => (
                   <li
                     key={`${chip.label}-${chip.value}-${idx}`}
-                    // a11y (1.4.3, audit fix): this exact chip className,
-                    // unchanged, is also what TitleFixer.tsx renders — safe
-                    // there (always-dark surface) but not here. Composited
-                    // over this panel's light-mode `bg-white`, the original
-                    // `bg-gray-800/60 text-gray-200` measured 3.27:1 (fails
-                    // 4.5:1) and the label's `text-gray-400` measured 1.56:1
-                    // (fails badly). Light-mode values below measure 9.36:1
-                    // / 6.87:1 against their own `bg-gray-100`; dark-mode
-                    // values are the untouched originals.
-                    className="rounded-full border border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-800/60 px-2 py-0.5 text-[10px] text-gray-700 dark:text-gray-200"
+                    // a11y (1.4.3, audit fix): TitleFixer.tsx renders the
+                    // same chip. The ink-2 value and ink-3 label clear 4.5:1
+                    // on this panel in both modes (NEO-356 roles).
+                    className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
                   >
-                    <span className="mr-1 uppercase tracking-wide text-gray-600 dark:text-gray-400">
+                    <span className="mr-1 uppercase tracking-wide text-ink-3">
                       {chip.label}
                     </span>
                     {chip.value}
@@ -1175,12 +1155,12 @@ export default function CardDetailPanel({
                 ))}
               </ul>
             )}
-            <p className="text-[10px] text-gray-400 mt-1">
+            <p className="text-[10px] text-ink-3 mt-1">
               Stored once and reused by every marketplace listing.
             </p>
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               Card description
             </label>
             <Textarea
@@ -1207,15 +1187,12 @@ export default function CardDetailPanel({
               placeholder="Listing description reused across marketplaces"
               aria-label="Card description"
             />
-            {/* a11y (audit fix): text-gray-500/text-gray-400, not a bare
-                text-gray-400 — this panel is genuinely bi-themed
-                (bg-white dark:bg-gray-800) and gray-400 alone measures
-                2.6:1 against the light-mode background (fails WCAG 1.4.3's
-                4.5:1). This pairing measures 4.84:1 light / 5.64:1 dark,
-                matching FieldFeedback's own busy-text pair two lines below. */}
+            {/* a11y (audit fix): text-ink-3 clears WCAG 1.4.3's 4.5:1 on
+                this panel in both modes, matching FieldFeedback's own
+                busy-text two lines below. */}
             <p
               id={descriptionHintId}
-              className="mt-1 text-[10px] text-gray-500 dark:text-gray-400"
+              className="mt-1 text-[10px] text-ink-3"
             >
               Enter adds a line break. ⌘/Ctrl+Enter or leaving the field saves.
             </p>
@@ -1228,7 +1205,7 @@ export default function CardDetailPanel({
 
           {/* Attributes */}
           <div>
-            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               <span>Attributes</span>
               {/* The busy state in words as well as the dimmed chips: a
                   disabled-looking pill is a colour-only signal, and this row is
@@ -1269,8 +1246,8 @@ export default function CardDetailPanel({
                     onClick={() => void toggleAttribute(token)}
                     className={`text-xs px-2 py-0.5 rounded border transition-colors aria-disabled:cursor-progress aria-disabled:opacity-60 ${
                       active
-                        ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
-                        : "bg-transparent text-gray-400 border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+                        ? "bg-neon-green text-on-neon-green border-neon-green-text font-semibold"
+                        : "bg-transparent text-ink-3 border-control hover:border-neon-green-text hover:text-neon-green-text"
                     }`}
                   >
                     {ATTRIBUTE_LABEL[token]}
@@ -1281,7 +1258,7 @@ export default function CardDetailPanel({
                 <span
                   key={token}
                   title="Set during marketplace reconciliation — not editable here"
-                  className="text-xs px-2 py-0.5 rounded border bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 border-orange-300 dark:border-orange-700"
+                  className="text-xs px-2 py-0.5 rounded border bg-neon-orange/15 text-neon-orange-text border-neon-orange-text/50"
                 >
                   {token === "unmatched-bsc"
                     ? "SL only"
@@ -1307,7 +1284,7 @@ export default function CardDetailPanel({
               Sticker/Label options. Removed in favor of one control. */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
                 Print run (/N)
               </label>
               <Input
@@ -1370,7 +1347,7 @@ export default function CardDetailPanel({
                 a marketplace item-specific value, which caps at 65 — but which
                 NB field maps to which aspect is not settled, so the counter
                 tells the truth and the save goes through either way. */}
-            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               <span>Variation</span>
               <TitleLengthMeter
                 length={variationLength}
@@ -1443,7 +1420,7 @@ export default function CardDetailPanel({
                 this label stays a purely visual caption — same pattern every
                 other field in this panel already uses — and the input's own
                 `aria-label` below carries the accessible name instead. */}
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               Variation of
             </label>
             {parentCard ? (
@@ -1455,7 +1432,7 @@ export default function CardDetailPanel({
                   ref={clearButtonRef}
                   type="button"
                   onClick={() => void applyVariationParent("")}
-                  className="text-xs px-2 py-1 rounded border border-gray-600 hover:bg-gray-700"
+                  className="text-xs px-2 py-1 rounded border border-control hover:bg-ink/10"
                   aria-label="Clear variation parent"
                 >
                   Clear
@@ -1481,17 +1458,11 @@ export default function CardDetailPanel({
               />
             )}
             {parentError && (
-              // a11y: NOT the brand `#FF2E9A` used for errors/destructive
-              // actions elsewhere in this file — measured contrast for that
-              // hex against this panel's own background is 3.34:1 on white and
-              // 4.4:1 on dark:bg-gray-800, both under WCAG 1.4.3's 4.5:1
-              // minimum for normal-size text. This is a systemic app-wide
-              // issue (the same hex is used as text-on-light elsewhere
-              // already), out of scope to fix everywhere here, but an *error
-              // message* specifically has to be legible, so this instance uses
-              // a darkened/lightened variant in the same hue: 5.55:1 on white,
-              // 5.87:1 on dark:bg-gray-800.
-              <p className="text-xs text-[#C2178A] dark:text-[#FF6FCB] mt-1" role="alert">
+              // a11y: NOT the neon pink as text — 4.4:1 on this panel's
+              // raised surface in dark, under WCAG 1.4.3's 4.5:1 minimum. An
+              // error message has to be legible, so it uses the danger notice
+              // ink, which clears 4.5:1 here in both modes (NEO-356).
+              <p className="text-xs text-notice-danger-ink mt-1" role="alert">
                 {parentError}
               </p>
             )}
@@ -1502,7 +1473,7 @@ export default function CardDetailPanel({
                 something demanding interruption. */}
             {parentStatus && !parentError && (
               <p
-                className="text-xs text-gray-600 dark:text-gray-300 mt-1"
+                className="text-xs text-ink-2 mt-1"
                 role="status"
                 aria-live="polite"
               >
@@ -1513,7 +1484,7 @@ export default function CardDetailPanel({
 
           {/* Players */}
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
               Players
             </label>
             <PlayerPicker
@@ -1534,7 +1505,7 @@ export default function CardDetailPanel({
             {printedNameNotes.length > 0 && (
               <ul className="mt-1 space-y-0.5">
                 {printedNameNotes.map((note) => (
-                  <li key={note.playerId} className="text-[11px] text-gray-400">
+                  <li key={note.playerId} className="text-[11px] text-ink-3">
                     As printed: {note.nameOnCard}
                   </li>
                 ))}
@@ -1552,17 +1523,17 @@ export default function CardDetailPanel({
               in" below; these levels are never overridden per-card. */}
           {inheritedLevels.length > 0 && (
             <div>
-              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
                 Inherited from set
               </label>
-              <dl className="rounded border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
+              <dl className="rounded border border-rule-strong divide-y divide-rule-strong">
                 {inheritedLevels.map((lvl) => (
                   <div
                     key={lvl.level}
                     className="flex items-center justify-between px-2.5 py-1.5 text-xs"
                   >
-                    <dt className="text-gray-400">{LEVEL_LABEL[lvl.level]}</dt>
-                    <dd className="text-gray-500 dark:text-gray-400 truncate ml-3">
+                    <dt className="text-ink-3">{LEVEL_LABEL[lvl.level]}</dt>
+                    <dd className="text-ink-3 truncate ml-3">
                       {lvl.value}
                     </dd>
                   </div>
@@ -1576,16 +1547,16 @@ export default function CardDetailPanel({
               printed in, which is why this is separate from any delete. */}
           {crossListings && crossListings.length > 0 && (
             <div>
-              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
                 Also appears in
               </label>
-              <ul className="rounded border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
+              <ul className="rounded border border-rule-strong divide-y divide-rule-strong">
                 {crossListings.map((link) => (
                   <li
                     key={link._id}
                     className="flex items-center justify-between px-2.5 py-1.5 text-xs gap-3"
                   >
-                    <span className="text-gray-500 dark:text-gray-400 truncate">
+                    <span className="text-ink-3 truncate">
                       {link.setLabel}
                     </span>
                     <button
@@ -1595,7 +1566,7 @@ export default function CardDetailPanel({
                       }}
                       aria-label={`Unlink card from ${link.setLabel}`}
                       title="Remove this card from that set — the card itself is not deleted"
-                      className="px-2 py-0.5 rounded text-[#FF2E9A] hover:bg-[#FF2E9A]/10 border border-transparent hover:border-[#FF2E9A]/50 shrink-0"
+                      className="px-2 py-0.5 rounded text-neon-pink-text hover:bg-neon-pink/10 border border-transparent hover:border-neon-pink-text/50 shrink-0"
                     >
                       Unlink
                     </button>
@@ -1613,19 +1584,19 @@ export default function CardDetailPanel({
                   <img
                     src={front}
                     alt={`${card.cardName} front`}
-                    className="h-40 w-auto rounded border border-gray-200 dark:border-gray-700 object-contain bg-gray-100 dark:bg-gray-900"
+                    className="h-40 w-auto rounded border border-rule-strong object-contain bg-raised-deep"
                   />
                 )}
                 {back && (
                   <img
                     src={back}
                     alt={`${card.cardName} back`}
-                    className="h-40 w-auto rounded border border-gray-200 dark:border-gray-700 object-contain bg-gray-100 dark:bg-gray-900"
+                    className="h-40 w-auto rounded border border-rule-strong object-contain bg-raised-deep"
                   />
                 )}
               </>
             ) : (
-              <div className="h-40 w-28 rounded border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-[10px] text-center text-gray-400 px-2">
+              <div className="h-40 w-28 rounded border border-dashed border-control flex items-center justify-center text-[10px] text-center text-ink-3 px-2">
                 No image yet
               </div>
             )}
@@ -1641,14 +1612,14 @@ export default function CardDetailPanel({
             tabbing off the final field lands outside a modal that is still
             open — the NEO-189 stranding finding. "Done" is that element, and
             it does exactly what Escape and the × do. */}
-        <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
-          <span className="text-[10px] text-gray-500 dark:text-gray-400">
+        <div className="px-4 py-3 border-t border-rule-strong flex items-center justify-between gap-3">
+          <span className="text-[10px] text-ink-3">
             Changes save as you leave each field.
           </span>
           <button
             onClick={onClose}
             aria-label="Done editing card"
-            className="px-3 py-1.5 text-xs bg-[#00D558] text-black rounded hover:bg-[#00D558]/85 font-semibold"
+            className="px-3 py-1.5 text-xs bg-neon-green text-on-neon-green rounded hover:bg-neon-green-hover font-semibold"
           >
             Done
           </button>

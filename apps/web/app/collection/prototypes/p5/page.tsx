@@ -23,6 +23,7 @@ import {
   type TeamMode,
 } from "./model";
 import "./p5.css";
+import { ForceDark } from "@/components/primitives/ForceDark";
 
 /**
  * NEO-350 — collection prototype 5, "Player PC".
@@ -76,7 +77,7 @@ interface Toast {
   undo?: () => void;
 }
 
-export default function CollectionPrototype5() {
+function CollectionPrototype5Page() {
   useDocumentTitle(`${prototypeName(5)} · Collection prototype`);
   const store = usePrototypeStore("p5");
   const [params, setParams] = useSearchParams();
@@ -397,5 +398,18 @@ export default function CollectionPrototype5() {
         document.body,
       )}
     </P5Context.Provider>
+  );
+}
+
+/**
+ * NEO-356 — this prototype was only ever designed dark and is not migrated to
+ * the colour roles, so it keeps the whole page dark while it is open, whatever
+ * the collector's setting. Leaving restores their own mode.
+ */
+export default function CollectionPrototype5() {
+  return (
+    <ForceDark>
+      <CollectionPrototype5Page />
+    </ForceDark>
   );
 }

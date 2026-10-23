@@ -67,7 +67,9 @@ export default function SetVariantSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={noDescription}
-      selectedColor="bg-orange-100 dark:bg-orange-900 border-orange-300 dark:border-orange-700"
+      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
+      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
+      selectedColor="bg-[color:light-dark(oklch(95.4%_0.038_75.164),oklch(40.8%_0.123_38.172))] border-orange-700"
       isItemTerminal={isBaseTerminal}
     />
   );

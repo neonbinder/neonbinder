@@ -76,7 +76,7 @@ export default function Modal({ labelledBy, onClose, children, className = "", f
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 sm:items-center sm:p-6"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim sm:items-center sm:p-6"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onCloseRef.current();
       }}
@@ -88,7 +88,7 @@ export default function Modal({ labelledBy, onClose, children, className = "", f
         aria-labelledby={labelledBy}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className={`max-h-[calc(100dvh-1rem)] w-full overflow-y-auto rounded-t-2xl border border-slate-700 bg-slate-950 text-slate-100 shadow-2xl focus:outline-none sm:max-h-[calc(100dvh-3rem)] sm:rounded-2xl ${className}`}
+        className={`max-h-[calc(100dvh-1rem)] w-full overflow-y-auto rounded-t-2xl border border-rule-strong bg-sheet text-ink shadow-2xl shadow-offset focus:outline-none sm:max-h-[calc(100dvh-3rem)] sm:rounded-2xl ${className}`}
       >
         {children}
       </div>

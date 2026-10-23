@@ -70,26 +70,26 @@ const TERMINAL_STATUSES: readonly RunStatus[] = ["succeeded", "failed"];
  * Colour is never the only carrier — the word is the label.
  */
 const STATUS_META: Record<RunStatus, { label: string; className: string }> = {
-  pending: { label: "Pending", className: "bg-slate-800 text-slate-300" },
-  uploaded: { label: "Uploaded", className: "bg-slate-800 text-slate-300" },
+  pending: { label: "Pending", className: "bg-rule text-ink-2" },
+  uploaded: { label: "Uploaded", className: "bg-rule text-ink-2" },
   collecting: {
     label: "Collecting",
-    className: "bg-neon-blue/15 text-neon-blue",
+    className: "bg-neon-blue/15 text-neon-blue-text",
   },
   extracting: {
     label: "Extracting",
-    className: "bg-neon-yellow/15 text-neon-yellow",
+    className: "bg-neon-yellow/15 text-neon-yellow-text",
   },
   processing: {
     label: "Processing",
-    className: "bg-neon-yellow/15 text-neon-yellow",
+    className: "bg-neon-yellow/15 text-neon-yellow-text",
   },
-  pairing: { label: "Pairing", className: "bg-neon-yellow/15 text-neon-yellow" },
+  pairing: { label: "Pairing", className: "bg-neon-yellow/15 text-neon-yellow-text" },
   succeeded: {
     label: "Succeeded",
-    className: "bg-neon-green/15 text-neon-green",
+    className: "bg-neon-green/15 text-neon-green-text",
   },
-  failed: { label: "Failed", className: "bg-neon-pink/15 text-neon-pink" },
+  failed: { label: "Failed", className: "bg-neon-pink/15 text-neon-pink-text" },
 };
 
 const MODE_LABELS: Record<PipelineRun["mode"], string> = {
@@ -158,9 +158,9 @@ function useNow(intervalMs: number): number {
 type Notice = { tone: "success" | "info" | "error"; text: string };
 
 const NOTICE_CLASSES: Record<Notice["tone"], string> = {
-  success: "border border-neon-green/40 bg-neon-green/10 text-neon-green",
-  info: "border border-neon-blue/40 bg-neon-blue/10 text-neon-blue",
-  error: "border border-neon-pink/40 bg-neon-pink/10 text-neon-pink",
+  success: "border border-neon-green/40 bg-neon-green/10 text-neon-green-text",
+  info: "border border-neon-blue/40 bg-neon-blue/10 text-neon-blue-text",
+  error: "border border-neon-pink/40 bg-neon-pink/10 text-neon-pink-text",
 };
 
 export default function PipelineRunsPage() {
@@ -283,7 +283,7 @@ export default function PipelineRunsPage() {
         {/* h2, not h1 — the Admin section layout above owns the page's one
             h1, same as every other admin panel. */}
         <h2 className="text-lg font-semibold mb-2">Pipeline Runs</h2>
-        <p className="text-slate-400 max-w-2xl">
+        <p className="text-ink-3 max-w-2xl">
           Every user&apos;s placeholder pipeline runs. Abort a run that is
           wedged — the owner can start it again from their upload.
         </p>
@@ -307,11 +307,11 @@ export default function PipelineRunsPage() {
       </div>
 
       {runs === undefined && (
-        <p className="text-sm text-slate-400">Loading pipeline runs…</p>
+        <p className="text-sm text-ink-3">Loading pipeline runs…</p>
       )}
 
       {runs !== undefined && runs.length === 0 && (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           No pipeline runs yet. Placeholder uploads and scanner sessions appear
           here as soon as they start.
         </p>
@@ -337,10 +337,10 @@ export default function PipelineRunsPage() {
                   type="button"
                   aria-pressed={active}
                   onClick={() => setStatusFilter(option.value)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue ${
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors focus-outline ${
                     active
-                      ? "bg-neon-green/20 text-neon-green font-semibold"
-                      : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                      ? "bg-neon-green/20 text-neon-green-text font-semibold"
+                      : "bg-rule text-ink-2 hover:bg-rule-strong"
                   }`}
                 >
                   {/* A non-colour cue for the active chip: the green tint and
@@ -357,14 +357,14 @@ export default function PipelineRunsPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <label htmlFor="run-sort" className="text-sm text-slate-400">
+            <label htmlFor="run-sort" className="text-sm text-ink-3">
               Sort by
             </label>
             <select
               id="run-sort"
               value={sortKey}
               onChange={(event) => setSortKey(event.target.value as SortKey)}
-              className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+              className="rounded-md border border-field-rule bg-field px-2 py-1 text-sm text-ink-2 focus-outline"
             >
               {SORT_OPTIONS.map((option) => (
                 <option key={option.key} value={option.key}>
@@ -381,7 +381,7 @@ export default function PipelineRunsPage() {
           incomplete for a status with older runs off the end of the list. Said
           plainly here rather than left as a trap. */}
       {runs !== undefined && runs.length > 0 && (
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-ink-3">
           Showing the {runs.length} most recent runs (up to 100). Filters and
           sorting apply to these, not the full history.
         </p>
@@ -393,7 +393,7 @@ export default function PipelineRunsPage() {
           the notice-banner pattern above. */}
       <div role="status" aria-live="polite" aria-atomic="true">
         {runs !== undefined && runs.length > 0 && visibleRuns.length === 0 && (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-ink-3">
             No runs match this filter. Choose “All” to see every loaded run.
           </p>
         )}
@@ -414,7 +414,7 @@ export default function PipelineRunsPage() {
             return (
               <li
                 key={run.jobId}
-                className="rounded-lg border border-slate-800 bg-slate-900/40 p-4"
+                className="rounded-lg border border-rule bg-raised-deep/40 p-4"
               >
                 <div className="flex flex-wrap items-center gap-3 mb-3">
                   <h3
@@ -424,7 +424,7 @@ export default function PipelineRunsPage() {
                     // Focus lands here after every abort attempt, so it needs a
                     // ring of its own — `outline-none` alone left a keyboard
                     // user with no idea where focus went (WCAG 2.4.7).
-                    className="font-mono text-base font-semibold outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+                    className="font-mono text-base font-semibold outline-none focus-outline"
                   >
                     Run {short}
                   </h3>
@@ -453,7 +453,7 @@ export default function PipelineRunsPage() {
 
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm">
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Owner</dt>
+                    <dt className="text-ink-3">Owner</dt>
                     {/* The resolved human label, with the raw Clerk id kept on
                         `title` for support. Falls back to the id itself until
                         (or if) resolution returns, so it is never blank.
@@ -465,7 +465,7 @@ export default function PipelineRunsPage() {
                         below do the same, for the same reason). When the label
                         IS the id, there is nothing extra to announce. */}
                     <dd
-                      className="text-slate-200 break-all"
+                      className="text-ink-2 break-all"
                       title={run.userId}
                       aria-label={
                         ownerLabel === run.userId
@@ -477,26 +477,26 @@ export default function PipelineRunsPage() {
                     </dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Mode</dt>
-                    <dd className="text-slate-200">{MODE_LABELS[run.mode]}</dd>
+                    <dt className="text-ink-3">Mode</dt>
+                    <dd className="text-ink-2">{MODE_LABELS[run.mode]}</dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Source</dt>
+                    <dt className="text-ink-3">Source</dt>
                     <dd>
                       {/* Text label, never colour alone. Neutral chip so it
                           reads as metadata, not a status. */}
-                      <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-300">
+                      <span className="rounded-full bg-rule px-2 py-0.5 text-xs font-medium text-ink-2">
                         {sourceLabel(sourceOf(run))}
                       </span>
                     </dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Progress</dt>
-                    <dd className="text-slate-200">{progressText(run)}</dd>
+                    <dt className="text-ink-3">Progress</dt>
+                    <dd className="text-ink-2">{progressText(run)}</dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Created</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-ink-3">Created</dt>
+                    <dd className="text-ink-2">
                       {/* The exact timestamp is in the accessible name as well
                           as the `title`: a native tooltip is mouse-only, and
                           "3h ago" is not enough to line a run up against a log
@@ -512,8 +512,8 @@ export default function PipelineRunsPage() {
                   </div>
                   {run.lastActivityAt !== undefined && (
                     <div className="flex gap-2">
-                      <dt className="text-slate-400">Last activity</dt>
-                      <dd className="text-slate-200">
+                      <dt className="text-ink-3">Last activity</dt>
+                      <dd className="text-ink-2">
                         <time
                           dateTime={new Date(run.lastActivityAt).toISOString()}
                           title={formatAbsoluteTime(run.lastActivityAt)}
@@ -526,8 +526,8 @@ export default function PipelineRunsPage() {
                   )}
                   {run.errorCode !== undefined && (
                     <div className="flex gap-2">
-                      <dt className="text-slate-400">Error</dt>
-                      <dd className="font-mono text-neon-pink">
+                      <dt className="text-ink-3">Error</dt>
+                      <dd className="font-mono text-neon-pink-text">
                         {run.errorCode}
                       </dd>
                     </div>

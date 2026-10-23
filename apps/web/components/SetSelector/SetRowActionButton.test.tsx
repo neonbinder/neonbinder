@@ -21,12 +21,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const RING = [
-  "focus-visible:outline-none",
-  "focus-visible:ring-2",
-  "focus-visible:ring-[#00C2FF]",
-  "focus-visible:ring-offset-2",
-];
+const RING = ["focus-outline"];
 
 function hasAll(el: HTMLElement, classes: string) {
   return classes.split(" ").every((cls) => el.classList.contains(cls));
@@ -150,7 +145,7 @@ describe("SetRowActionButton", () => {
     expect(button.getAttribute("aria-describedby")).toBe("reason-1");
   });
 
-  it("quiet (the default) is the outlined chip: slate-500 boundary, gray-200 text, 32px, the one ring", () => {
+  it("quiet (the default) is the outlined chip: control boundary, ink-2 text, 32px, the one ring", () => {
     render(
       <SetRowActionButton icon={Square2StackIcon} onActivate={vi.fn()}>
         Go
@@ -158,10 +153,10 @@ describe("SetRowActionButton", () => {
     );
     const button = screen.getByRole("button", { name: "Go" });
     expect(hasAll(button, SET_ROW_ACTION_TONE_CLASSES.quiet)).toBe(true);
-    for (const cls of ["min-h-8", "border", "border-slate-500", "text-gray-200", ...RING]) {
+    for (const cls of ["min-h-8", "border", "border-control", "text-ink-2", ...RING]) {
       expect(button.classList.contains(cls)).toBe(true);
     }
-    expect(button.classList.contains("bg-amber-400/15")).toBe(false);
+    expect(button.classList.contains("bg-notice-warn-bg")).toBe(false);
   });
 
   it("attention is the amber pill with the exclamation icon, and the same ring", () => {
@@ -175,14 +170,14 @@ describe("SetRowActionButton", () => {
     for (const cls of [
       "min-h-8",
       "rounded-full",
-      "border-amber-700",
-      "bg-amber-400/15",
-      "text-amber-800",
+      "border-notice-warn-rule",
+      "bg-notice-warn-bg",
+      "text-notice-warn-ink",
       ...RING,
     ]) {
       expect(button.classList.contains(cls)).toBe(true);
     }
-    expect(button.classList.contains("border-slate-500")).toBe(false);
+    expect(button.classList.contains("border-control")).toBe(false);
     // The icon is part of what the tone means; it never joins the name.
     expect(button.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
   });

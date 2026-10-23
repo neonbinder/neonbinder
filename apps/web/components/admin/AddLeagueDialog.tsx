@@ -180,7 +180,7 @@ export function AddLeagueDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby={headingId}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 outline-none"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 outline-none"
       onKeyDown={handleKeyDown}
       onClick={() => {
         if (!busy) close();
@@ -193,7 +193,7 @@ export function AddLeagueDialog({
           viewport puts its primary action below the fold with no way to reach
           it — the failure NEO-110 documents on the review wizard. */}
       <div
-        className="max-h-full w-full max-w-xl overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-xl"
+        className="max-h-full w-full max-w-xl overflow-y-auto rounded-lg border border-rule-strong bg-raised-deep p-6 shadow-xl shadow-offset"
         onClick={(event) => event.stopPropagation()}
       >
         <AddLeagueForm
@@ -219,7 +219,7 @@ export function AddLeagueDialog({
             failure routed only there is a failure the operator cannot read. */}
         {status && (
           <p
-            className={`mt-4 text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
+            className={`mt-4 text-sm ${status.isError ? "text-neon-pink-text" : "text-ink-2"}`}
             role={status.isError ? "alert" : "status"}
           >
             {status.text}

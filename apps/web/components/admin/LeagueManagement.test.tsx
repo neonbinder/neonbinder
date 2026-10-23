@@ -185,7 +185,7 @@ const LEAGUES_BY_ID: Record<string, unknown> = {
 
 /**
  * The colour pairs are chosen for what they SCORE against the team chip's
- * slate-900 surface, not for realism. The Yankees' navy is 1.1:1 there — the
+ * dark `field` surface (slate-900), not for realism. The Yankees' navy is 1.1:1 there — the
  * shape of the problem the fallback exists for, since a franchise's signature
  * colour is very often the one that cannot carry small text on a near-black
  * surface — and its white secondary is what the team prints that navy on.
@@ -1042,6 +1042,24 @@ describe("LeagueManagement — the detail panel", () => {
     ).toBe("/admin/teams?league=lg-al");
   });
 
+  it("measures team chip colours against the light chip surface in light mode", () => {
+    // NEO-356: the chip is `bg-field`, white in light. The Yankees' navy now
+    // reads (14:1) and the Mariners' pale teal does not (1.7:1, no secondary),
+    // the reverse of the dark chip.
+    document.documentElement.dataset.theme = "light";
+    try {
+      render(<LeagueManagement />);
+      selectAL();
+      const links = within(
+        screen.getByRole("list", { name: "Teams in this league" }),
+      ).getAllByRole("link");
+      expect((links[0] as HTMLElement).style.color).toBe("#132448");
+      expect((links[1] as HTMLElement).style.color).toBe("");
+    } finally {
+      delete document.documentElement.dataset.theme;
+    }
+  });
+
   it("says a league has no teams rather than showing an empty list", () => {
     teamsIn = [];
     render(<LeagueManagement />);
@@ -1093,7 +1111,8 @@ describe("LeagueManagement — the detail panel", () => {
     const button = screen.getByRole("button", {
       name: "Re-enrich from Wikidata",
     }) as HTMLElement;
-    expect(button.style.color).toBe("#000000");
+    // NEO-356: the role, black on every neon fill in both modes.
+    expect(button.style.color).toBe("var(--on-neon-blue)");
   });
 
   it("queues a re-enrichment and says it is coming", async () => {

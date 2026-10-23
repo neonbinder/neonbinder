@@ -278,15 +278,15 @@ function SuggestionSideRow({
     // py-0.5 landed at ~22px. border-gray-500 (not -600): -600 measures 2.35:1
     // against this dialog's bg-gray-900 — fails 1.4.11's 3:1 non-text minimum;
     // -500 measures 3.67:1.
-    `text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:opacity-50 ${
+    `text-xs px-2 py-1 rounded border transition-colors focus-outline disabled:opacity-50 ${
       active
-        ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558] font-semibold"
-        : "border-gray-500 text-gray-300 hover:border-gray-400"
+        ? "border-neon-green-text bg-neon-green/20 text-neon-green-text font-semibold"
+        : "border-control text-ink-2 hover:border-ink-3"
     }`;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <span className="text-sm text-gray-200 min-w-0 break-words">
+      <span className="text-sm text-ink-2 min-w-0 break-words">
         {/* NEO-239 copy pass: reads as a sentence about the marketplace, not
             as a log line: it says whose name it is and that it is only THEIR
             name — the whole point of the row — where "BSC: …" read like a field
@@ -297,7 +297,7 @@ function SuggestionSideRow({
         {`${sideName} calls it "${entry.label}"`}
         {entry.foldEqual && (
           // Says WHY this one arrived pre-accepted. Words, not a colour.
-          <span className="ml-1.5 text-[10px] uppercase tracking-wide text-gray-400">
+          <span className="ml-1.5 text-[10px] uppercase tracking-wide text-ink-3">
             style only
           </span>
         )}
@@ -437,7 +437,7 @@ export default function SelectorSyncReviewModal({
   return createPortal(
     <Theme>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="selector-sync-suggestions-heading"
@@ -471,11 +471,11 @@ export default function SelectorSyncReviewModal({
           }
         }}
       >
-        <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-2xl max-h-[92vh] flex flex-col">
-          <header className="p-4 border-b border-gray-700">
+        <div className="bg-raised-deep border border-rule-strong shadow-offset rounded-lg w-full max-w-2xl max-h-[92vh] flex flex-col">
+          <header className="p-4 border-b border-rule-strong">
             <h2
               id="selector-sync-suggestions-heading"
-              className="text-lg font-semibold text-gray-100"
+              className="text-lg font-semibold text-ink"
             >
               Name Check{columnLabel ? ` — ${columnLabel}` : ""}
             </h2>
@@ -484,7 +484,7 @@ export default function SelectorSyncReviewModal({
               // bg-gray-900 (no dark: split), and gray-500 measures 3.67:1
               // against it — fails WCAG 1.4.3's 4.5:1. gray-400 clears it
               // (6.82:1).
-              <p className="text-xs text-gray-400 mt-0.5 truncate" title={breadcrumb}>
+              <p className="text-xs text-ink-3 mt-0.5 truncate" title={breadcrumb}>
                 {breadcrumb}
               </p>
             )}
@@ -493,7 +493,7 @@ export default function SelectorSyncReviewModal({
                 here") stated a rule about the system; this one states what
                 happens to the operator's data. Same information, none of the
                 machinery. */}
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-ink-3 mt-1">
               A marketplace calls {suggestions.length} of your {nounPlural}{" "}
               something else. Yours{" "}
               {suggestions.length === 1 ? "stays" : "stay"} — unless you take
@@ -507,16 +507,16 @@ export default function SelectorSyncReviewModal({
               // live-shrank-to-empty case (a bulk decline, or another admin got
               // there first). Deliberately does not auto-close: that would fire
               // mid-keystroke on a slow bulk decline.
-              <p className="text-sm text-gray-400">
+              <p className="text-sm text-ink-3">
                 All caught up — nothing left to review.
               </p>
             ) : (
               suggestions.map((row) => (
                 <div
                   key={row.existingId as string}
-                  className="border border-gray-700 rounded-md p-3 space-y-1.5"
+                  className="border border-rule-strong rounded-md p-3 space-y-1.5"
                 >
-                  <p className="text-sm font-semibold text-gray-100 break-words">
+                  <p className="text-sm font-semibold text-ink break-words">
                     {row.currentValue}
                   </p>
                   {ALL_SIDES.flatMap((side) =>
@@ -543,11 +543,11 @@ export default function SelectorSyncReviewModal({
             )}
           </div>
 
-          <footer className="p-4 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap">
+          <footer className="p-4 border-t border-rule-strong flex items-center justify-between gap-2 flex-wrap">
             {/* WCAG 4.1.3: the running total changes on every press and is the
                 only feedback that a choice registered. role="status" already
                 implies polite + atomic, so no explicit aria-live. */}
-            <span className="text-xs text-gray-400" role="status">
+            <span className="text-xs text-ink-3" role="status">
               {summary.accepting} to take · {summary.declining} to keep
             </span>
             <div className="flex gap-2 flex-wrap">

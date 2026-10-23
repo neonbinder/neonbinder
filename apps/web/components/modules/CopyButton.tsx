@@ -156,8 +156,8 @@ export default function CopyButton({
     const glyph = size === "md" ? "h-5 w-5" : "h-4 w-4";
     const tone =
       copyState === "failed"
-        ? "text-neon-pink hover:text-neon-pink/80"
-        : "text-neon-teal hover:text-neon-teal/80";
+        ? "text-neon-pink-text hover:text-neon-pink-text/80"
+        : "text-neon-teal-text hover:text-neon-teal-text/80";
     const Icon =
       copyState === "copied"
         ? ClipboardDocumentCheckIcon
@@ -171,7 +171,7 @@ export default function CopyButton({
           type="button"
           onClick={() => void copy()}
           aria-label={copyLabel}
-          className={`${box} ${tone} inline-flex shrink-0 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue`}
+          className={`${box} ${tone} inline-flex shrink-0 items-center justify-center rounded-sm transition-colors focus-outline`}
         >
           {/* Both glyphs share heroicons' 24x24 box and render at one size, so
               the swap cannot change the button's width. */}
@@ -187,7 +187,7 @@ export default function CopyButton({
           role="status"
           aria-live="polite"
           className={
-            copyState === "failed" ? "ml-2 text-xs text-neon-pink" : "sr-only"
+            copyState === "failed" ? "ml-2 text-xs text-neon-pink-text" : "sr-only"
           }
         >
           {statusText}
@@ -204,7 +204,7 @@ export default function CopyButton({
         aria-label={copyLabel}
         // `p-2 -m-2`: grows the hit area to WCAG 2.5.8's 24px minimum without
         // shifting the layout around it.
-        className="text-sm text-neon-teal hover:text-neon-teal/80 underline p-2 -m-2 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+        className="text-sm text-neon-teal-text hover:text-neon-teal-text/80 underline p-2 -m-2 focus-outline rounded-sm"
       >
         {children}
       </button>
@@ -214,7 +214,7 @@ export default function CopyButton({
       <span
         role="status"
         aria-live="polite"
-        className="block text-xs text-slate-400"
+        className="block text-xs text-ink-3"
       >
         {statusText}
       </span>

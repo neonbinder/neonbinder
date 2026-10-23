@@ -278,7 +278,7 @@ const PLAYERS_BY_ID: Record<string, unknown> = {
  */
 /**
  * The colour pairs are chosen for what they SCORE against the master row's two
- * backgrounds (slate-900 #0f172a idle, #02192e selected), not for realism — the
+ * backgrounds in dark mode (slate-900 #0f172a idle, #02192e selected), not for realism — the
  * exact ratios are in the comment on each team. Every one of the four branches
  * of `teamTextColor` has a team here, so none of them can rot unnoticed.
  */
@@ -704,11 +704,24 @@ describe("PlayerManagement — the list", () => {
     expect(teamNod(/Still Playing/).style.color).toBe("#ffffff");
   });
 
+  it("measures the colour against the light surface in light mode", () => {
+    // NEO-356: the same Mariners teal that reads on the dark row is 1.8:1 on
+    // the light page, so the row takes the navy the team prints it beside.
+    document.documentElement.dataset.theme = "light";
+    try {
+      management = { players: [GRIFFEY], totalCount: 1, truncated: false };
+      render(<PlayerManagement />);
+      expect(teamNod(/Ken Griffey Jr\./).style.color).toBe("#0c2c56");
+    } finally {
+      delete document.documentElement.dataset.theme;
+    }
+  });
+
   it("stays muted when neither team colour clears the contrast floor", () => {
     management = { players: [DRAB_PLAYER], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
 
-    // No inline colour at all — the class-level slate-300 is what shows, and
+    // No inline colour at all — the class-level ink-2 is what shows, and
     // the label still names the team, so nothing is lost but the livery.
     const nod = teamNod(/Drab Fixture/);
     expect(nod.style.color).toBe("");
@@ -1815,7 +1828,8 @@ describe("PlayerManagement — the detail panel", () => {
     const button = screen.getByRole("button", {
       name: "Re-enrich from Wikidata",
     }) as HTMLElement;
-    expect(button.style.color).toBe("#000000");
+    // NEO-356: the role, black on every neon fill in both modes.
+    expect(button.style.color).toBe("var(--on-neon-blue)");
   });
 
   it("queues a re-enrichment and says it is coming", async () => {
@@ -2093,15 +2107,15 @@ describe("PlayerManagement — accessibility", () => {
   it("renders the row's sport tag at a contrast-passing slate", () => {
     // happy-dom performs no layout and resolves no Tailwind, so the class that
     // produces the colour is the only observable — same idiom the wizard's
-    // readability block uses. slate-500 on the row is 4.0:1, under SC 1.4.3.
+    // readability block uses. slate-500 on the row is 4.0:1, under SC 1.4.3;
+    // `ink-3` is slate-400 in dark and 7.6:1 in light (NEO-356).
     render(<PlayerManagement />);
     // Scoped to the row: "Baseball" is also an <option> in the sport filter.
     const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
     const tag = Array.from(row.querySelectorAll("span")).find(
       (el) => el.textContent === "Baseball",
     );
-    expect(tag?.className).toContain("text-slate-400");
-    expect(tag?.className).not.toContain("text-slate-500");
+    expect(tag?.className).toContain("text-ink-3");
   });
 });
 

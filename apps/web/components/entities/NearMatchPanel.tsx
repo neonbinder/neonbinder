@@ -158,7 +158,7 @@ export function NearMatchPanel({
         <div
           className={`rounded-md border border-neon-blue/40 bg-neon-blue/5 p-3 space-y-2 ${className}`.trim()}
         >
-          <p className="text-sm font-medium text-neon-blue">Possible matches</p>
+          <p className="text-sm font-medium text-neon-blue-text">Possible matches</p>
           <ul className="space-y-1" aria-label={`Possible ${kind} matches`}>
             {ordered.map((match) => {
               // NEO-284 — an alias hit is exact by confidence but not by
@@ -199,13 +199,13 @@ export function NearMatchPanel({
                     aria-describedby={aliasNoteId}
                     // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor
                     // even when the name wraps to a single short line.
-                    className="flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-200 transition-colors hover:bg-neon-blue/10 focus:outline-none focus:ring-2 focus:ring-neon-blue"
+                    className="flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-ink-2 transition-colors hover:bg-neon-blue/10 focus-outline"
                   >
                     <span className="flex-1 truncate">{match.name}</span>
                     {sameName && (
                       <span
                         aria-hidden="true"
-                        className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue"
+                        className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue-text"
                       >
                         same name
                       </span>
@@ -220,7 +220,7 @@ export function NearMatchPanel({
                          which is what the button is, always keeps the floor. */
                       <span
                         id={aliasNoteId}
-                        className="min-w-0 max-w-[50%] truncate text-xs text-slate-400"
+                        className="min-w-0 max-w-[50%] truncate text-xs text-ink-3"
                       >
                         also known as “{match.matchedAlias}”
                       </span>

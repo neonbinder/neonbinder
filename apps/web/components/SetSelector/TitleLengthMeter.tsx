@@ -36,39 +36,14 @@ import {
  * colour used for every inline field error in this directory — plus two warm
  * steps between them.
  *
- * ## Two surfaces, two colour strategies (a11y fix, NEO-101 audit)
+ * ## Two surfaces (NEO-101 audit), one set of roles (NEO-356)
  *
- * Superseded by NEO-341: `dark:` is now class-based (globals.css
- * `@custom-variant dark`, `class="dark"` on <html>), so the app renders dark
- * whatever the OS says and both surfaces below are always dark. The history is
- * kept because the light-mode halves still exist in the code; they are dead.
- *
- * This component renders on two DIFFERENT kinds of surface, and one fixed set
- * of hexes cannot be correct on both:
- *
- *   - `TitleFixer`'s dialog (`CardAttentionWalker`) hardcodes `bg-gray-900`
- *     with no `dark:` qualifier anywhere in that file — it is unconditionally
- *     dark, the same reasoning `BASE_INPUT` in components/primitives/Input.tsx
- *     documents: a `dark:` pair would render its LIGHT half on that surface
- *     for anyone whose OS is in light mode, since Tailwind's `dark:` variant
- *     follows `prefers-color-scheme`, not this app's forced Radix
- *     `appearance="dark"`. Fixed hexes are correct and required there.
- *   - `CardDetailPanel`'s own drawer chrome is `bg-white dark:bg-gray-800` —
- *     genuinely bi-themed, unlike the walker. The SAME fixed hexes measured
- *     (WCAG relative-luminance) at 1.83–3.34:1 against white — all fail
- *     4.5:1 — and the error tone even measures 4.40:1 against this drawer's
- *     own `gray-800` (still fails, if narrowly). Verified: no forced `.dark`
- *     class exists anywhere in `src/main.tsx`/`index.html`, so an operator
- *     whose OS is in light mode really does render this drawer on white.
- *
- * `surface` picks which of the two applies. Default `"themed"` — safe with NO
- * caller change for `CardDetailPanel`, which already uses `dark:` pairs
- * elsewhere in the same file for exactly this reason (e.g. its own
- * `text-[#C2178A] dark:text-[#FF6FCB]` error line, `text-gray-500
- * dark:text-gray-400` secondary text — the light-mode halves here are chosen
- * to match that existing precedent). `TitleFixer` passes `surface="dark"`
- * explicitly, since its dialog is the one surface where a `dark:` pair would
- * be the wrong, trap-prone choice.
+ * This renders on TitleFixer's walker dialog (`surface="dark"`) and on
+ * CardDetailPanel's drawer (`"themed"`, the default). Both now paint with
+ * colour roles, which follow the light/dark mode, so each tone reads 4.5:1 on
+ * either surface in either mode. The two maps differ only in the over-cap
+ * tone: on the drawer's graphite the brand pink measures 4.4:1, so it takes
+ * the danger notice ink there. `surface` stays so callers need no change.
  *
  * ## The bands are display truncation, not rules
  *
@@ -102,28 +77,21 @@ export type TitleLengthState = {
 /** Which ambient surface a caller renders this on. See the header note. */
 export type TitleLengthSurface = "themed" | "dark";
 
-/** Safe ONLY on an unconditionally-dark surface (TitleFixer's walker dialog). */
+/** TitleFixer's walker dialog. */
 const TONE_CLASS_DARK: Record<TitleLengthTone, string> = {
-  ok: "text-gray-400",
-  mobile: "text-[#FFB020]",
-  search: "text-[#FF7A45]",
-  over: "text-[#FF2E9A]",
+  ok: "text-ink-3",
+  mobile: "text-notice-warn-ink",
+  search: "text-neon-orange-text",
+  over: "text-neon-pink-text",
 };
 
-/**
- * Safe on a genuinely bi-themed surface (CardDetailPanel's `bg-white
- * dark:bg-gray-800`). Light halves are new, chosen to clear 4.5:1 against
- * white; dark halves reuse the values above unchanged (already verified safe
- * against `gray-800`).
- */
+/** CardDetailPanel's drawer (`bg-raised`). */
 const TONE_CLASS_THEMED: Record<TitleLengthTone, string> = {
-  ok: "text-gray-500 dark:text-gray-400",
-  mobile: "text-[#973C00] dark:text-[#FFB020]",
-  search: "text-[#A8431A] dark:text-[#FF7A45]",
-  // Reuses this app's own error-pink dark-split precedent verbatim (see
-  // CardDetailPanel.tsx's variation-parent error line) rather than inventing
-  // a third pink.
-  over: "text-[#C2178A] dark:text-[#FF6FCB]",
+  ok: "text-ink-3",
+  mobile: "text-notice-warn-ink",
+  search: "text-neon-orange-text",
+  // The brand pink is 4.4:1 on the dark drawer; the danger ink clears 4.5:1.
+  over: "text-notice-danger-ink",
 };
 
 function toneClass(tone: TitleLengthTone, surface: TitleLengthSurface): string {

@@ -548,14 +548,14 @@ export default function ParallelForm({
         ref={panelRef}
         tabIndex={-1}
         aria-labelledby={headingId}
-        className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+        className="bg-raised p-6 rounded-lg shadow shadow-offset"
       >
         <h2 id={headingId} className="text-xl font-semibold mb-4">
           Syncing Parallels
         </h2>
 
         {loading && (
-          <p className="text-gray-600 dark:text-gray-400 mb-4">
+          <p className="text-ink-3 mb-4">
             Fetching parallels for <strong>{setNameValue || "..."}</strong>...
           </p>
         )}
@@ -591,8 +591,8 @@ export default function ParallelForm({
                   role={isError ? "alert" : "status"}
                   className={
                     isError
-                      ? "p-3 mb-4 bg-[#FF2E9A]/10 border border-[#FF2E9A] rounded-md text-[#FF2E9A] text-sm"
-                      : "p-3 mb-4 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm"
+                      ? "p-3 mb-4 bg-neon-pink/10 border border-neon-pink-text rounded-md text-neon-pink-text text-sm"
+                      : "p-3 mb-4 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm"
                   }
                 >
                   {message}

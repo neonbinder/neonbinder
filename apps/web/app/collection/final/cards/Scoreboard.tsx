@@ -38,10 +38,10 @@ export default function Scoreboard({ returnTo }: { returnTo: SetId | null }) {
   return (
     <section ref={root} aria-labelledby="mc-board-heading">
       <div className="flex items-baseline justify-between gap-3">
-        <h2 id="mc-board-heading" className="text-xl font-bold text-white">
+        <h2 id="mc-board-heading" className="text-xl font-bold text-ink">
           Sets I&apos;m building
         </h2>
-        <p className="text-sm text-slate-400">{building.length} on the board</p>
+        <p className="text-sm text-ink-3">{building.length} on the board</p>
       </div>
 
       <ul className="mt-3 grid gap-4 md:grid-cols-2">
@@ -54,11 +54,11 @@ export default function Scoreboard({ returnTo }: { returnTo: SetId | null }) {
           <button
             type="button"
             onClick={() => setPicking(true)}
-            className={`flex size-full min-h-40 flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-600 p-6 text-slate-200 hover:border-neon-blue hover:text-white ${FOCUS}`}
+            className={`flex size-full min-h-40 flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-control p-6 text-ink-2 hover:border-neon-blue hover:text-ink ${FOCUS}`}
           >
-            <PlusIcon aria-hidden="true" className="size-8 text-neon-blue" />
+            <PlusIcon aria-hidden="true" className="size-8 text-neon-blue-text" />
             <span className="text-base font-bold">Start building a set</span>
-            <span className="text-sm text-slate-400">
+            <span className="text-sm text-ink-3">
               {building.length === 0
                 ? "Nothing on the board yet. Pick a set and light it up."
                 : "Put another checklist on the board."}
@@ -79,13 +79,15 @@ function ScoreCard({ setId }: { setId: SetId }) {
   const complete = base.total > 0 && base.owned === base.total;
 
   return (
-    <article className="mc-led relative flex h-full flex-col gap-3 rounded-2xl border border-slate-800 p-4 transition-colors focus-within:border-neon-blue hover:border-neon-blue">
+    <article
+      className="mc-led shadow-offset relative flex h-full flex-col gap-3 rounded-2xl border border-rule p-4 transition-colors focus-within:border-selection hover:border-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-4 has-[:focus-visible]:outline-focus"
+    >
       <div>
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-ink-3">
           {getSport(set.sportId).name}, {getBrand(set.brandId).name}
-          {scopedName && <span className="text-neon-blue">, in {scopedName}</span>}
+          {scopedName && <span className="text-neon-blue-text">, in {scopedName}</span>}
         </p>
-        <h3 className="text-lg font-bold leading-tight text-white">
+        <h3 className="text-lg font-bold leading-tight text-ink">
           <ParamLink
             search={{ tab: "cards", set: setId }}
             data-board={setId}
@@ -99,21 +101,21 @@ function ScoreCard({ setId }: { setId: SetId }) {
       <div className="flex items-end justify-between gap-3">
         <p>
           <span
-            className={`mc-percent block text-6xl ${complete ? "text-neon-green" : "text-neon-blue"}`}
+            className={`mc-percent block text-6xl ${complete ? "text-neon-green-text" : "text-neon-blue-text"}`}
             data-complete={complete}
           >
             {base.percent}%
           </span>
-          <span className="text-xs text-slate-300">{complete ? "Base set complete!" : "of the base set"}</span>
+          <span className="text-xs text-ink-2">{complete ? "Base set complete!" : "of the base set"}</span>
         </p>
         <dl className="flex gap-4 text-right">
           <div>
-            <dt className="text-xs text-slate-400">Have</dt>
-            <dd className="text-2xl font-bold tabular-nums text-white">{base.owned}</dd>
+            <dt className="text-xs text-ink-3">Have</dt>
+            <dd className="text-2xl font-bold tabular-nums text-ink">{base.owned}</dd>
           </div>
           <div>
-            <dt className="text-xs text-slate-400">Need</dt>
-            <dd className="text-2xl font-bold tabular-nums text-white">{base.total - base.owned}</dd>
+            <dt className="text-xs text-ink-3">Need</dt>
+            <dd className="text-2xl font-bold tabular-nums text-ink">{base.total - base.owned}</dd>
           </div>
         </dl>
       </div>
@@ -125,27 +127,24 @@ function ScoreCard({ setId }: { setId: SetId }) {
           const run = printRunText(v);
           return (
             <li key={variantKey(v)} className="grid grid-cols-[7.5rem_1fr_auto] items-center gap-2 text-xs">
-              <span className="truncate text-slate-300" title={variantLabel(v.path)}>
+              <span className="truncate text-ink-2" title={variantLabel(v.path)}>
                 {variantLabel(v.path)}
-                {run && <span className="text-slate-400"> {run}</span>}
+                {run && <span className="text-ink-3"> {run}</span>}
               </span>
               <span aria-hidden="true" className="flex flex-wrap gap-[3px]">
                 {list.map((c) =>
                   store.ownedInScope(c.id) > 0 ? (
-                    <span
-                      key={c.id}
-                      className="size-[7px] rounded-full bg-neon-blue shadow-[0_0_4px_rgba(0,194,255,0.8)]"
-                    />
+                    <span key={c.id} className="pip pip-owned" />
                   ) : store.isWanted(c.id) ? (
-                    <span key={c.id} className="size-[7px] rounded-full border border-neon-yellow" />
+                    <span key={c.id} className="pip pip-want" />
                   ) : (
-                    <span key={c.id} className="size-[7px] rounded-full border border-slate-600" />
+                    <span key={c.id} className="pip pip-missing" />
                   ),
                 )}
               </span>
-              <span className="tabular-nums text-slate-200">
+              <span className="tabular-nums text-ink-2">
                 {owned}
-                <span className="text-slate-400">/{list.length}</span>
+                <span className="text-ink-3">/{list.length}</span>
               </span>
             </li>
           );

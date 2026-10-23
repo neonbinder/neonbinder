@@ -27,7 +27,7 @@ import {
  */
 
 const FIELD_CLASS = "w-full px-3 py-2";
-const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
+const LABEL_CLASS = "block text-sm font-medium mb-1 text-ink-2";
 
 export default function ReturnAddressEditor() {
   const saved = useQuery(api.shipping.getMyReturnAddress);
@@ -163,7 +163,7 @@ export default function ReturnAddressEditor() {
       }}
       onKeyDown={handleKeyDown}
     >
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-ink-3">
         Printed as the return address on your shipping labels. Only you can see
         it.
       </p>
@@ -188,7 +188,7 @@ export default function ReturnAddressEditor() {
           autoComplete="name"
           aria-describedby="ship-name-hint"
         />
-        <p id="ship-name-hint" className="text-xs text-slate-400 mt-1">
+        <p id="ship-name-hint" className="text-xs text-ink-3 mt-1">
           {fallbackName
             ? `Leave blank to use "${fallbackName}" from your public profile.`
             : "Leave blank to use your public profile display name or username."}
@@ -213,7 +213,7 @@ export default function ReturnAddressEditor() {
 
       <div>
         <label htmlFor="ship-line2" className={LABEL_CLASS}>
-          Apt / Suite <span className="text-slate-400 text-xs">(optional)</span>
+          Apt / Suite <span className="text-ink-3 text-xs">(optional)</span>
         </label>
         <Input
           bare
@@ -299,7 +299,7 @@ export default function ReturnAddressEditor() {
           <button
             type="button"
             onClick={handleRevert}
-            className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2"
+            className="text-sm text-ink-3 hover:text-ink-2 underline p-2 -m-2"
           >
             Discard changes
           </button>
@@ -309,7 +309,7 @@ export default function ReturnAddressEditor() {
       {/* A natively-disabled button leaves the tab order and announces only as
           "unavailable", so the reason has to live outside it. */}
       {!canSave && !isSaving && (
-        <p id="ship-save-requirements" className="text-xs text-slate-400">
+        <p id="ship-save-requirements" className="text-xs text-ink-3">
           Fill in street, city, state, and ZIP to save.
         </p>
       )}
@@ -321,7 +321,7 @@ export default function ReturnAddressEditor() {
         role={saveMessageType === "error" ? "alert" : "status"}
         aria-live={saveMessageType === "error" ? "assertive" : "polite"}
         className={`text-sm ${
-          saveMessageType === "success" ? "text-neon-green" : "text-neon-pink"
+          saveMessageType === "success" ? "text-neon-green-text" : "text-neon-pink-text"
         }`}
       >
         {saveMessage}

@@ -79,7 +79,9 @@ export default function SetSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={view ? describeByBrand : noDescription}
-      selectedColor="bg-purple-100 dark:bg-purple-900 border-purple-300 dark:border-purple-700"
+      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
+      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
+      selectedColor="bg-[color:light-dark(oklch(94.6%_0.033_307.174),oklch(38.1%_0.176_304.987))] border-purple-700"
     />
   );
 }

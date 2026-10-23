@@ -16,7 +16,8 @@ import { PUBLIC_STORAGE_KEY } from "./store";
  * The auth and Convex client modules are mocked EMPTY: any hook or client the
  * demo reached for would throw "No … export is defined on the mock".
  */
-vi.mock("@clerk/clerk-react", () => ({}));
+// NEO-356: the demo bar's theme switch asks Clerk who is looking.
+vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }) }));
 vi.mock("convex/react", () => ({}));
 
 const DEMO_URL = "/binder-tracking?demo=on";

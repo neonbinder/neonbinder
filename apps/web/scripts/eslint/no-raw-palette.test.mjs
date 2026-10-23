@@ -7,7 +7,6 @@ import { RuleTester } from "eslint";
 import tsParser from "@typescript-eslint/parser";
 import { describe, expect, it } from "vitest";
 import { findPaletteViolations, splitVariants, themePlugin, WEB_ROOT } from "./no-raw-palette.mjs";
-import { PENDING } from "./theme-allowlist.mjs";
 
 const tokens = (text) => findPaletteViolations(text).map((v) => v.token);
 
@@ -77,7 +76,6 @@ const tester = new RuleTester({
 });
 
 const fresh = path.join(WEB_ROOT, "components/modules/a-new-file.tsx");
-const pending = path.join(WEB_ROOT, PENDING[0]);
 const permanent = path.join(WEB_ROOT, "lib/print/a-new-label.ts");
 
 tester.run("theme/no-raw-palette", themePlugin.rules["no-raw-palette"], {
@@ -85,7 +83,6 @@ tester.run("theme/no-raw-palette", themePlugin.rules["no-raw-palette"], {
     { filename: fresh, code: `const a = <div className="bg-raised text-ink-2 border-rule" />;` },
     { filename: fresh, code: "const c = `p-4 ${on ? \"bg-hover\" : \"text-ink-3\"}`;" },
     // Allowlisted files are not checked.
-    { filename: pending, code: `const a = <div className="bg-gray-900" />;` },
     { filename: permanent, code: `const ink = "text-black bg-white";` },
     // A forced-dark prototype page.
     { filename: path.join(WEB_ROOT, "app/collection/prototypes/p4/Counter.tsx"), code: `const a = "bg-gray-900";` },

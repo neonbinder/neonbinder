@@ -219,7 +219,7 @@ describe("EntitySelector — re-expanding opens at the selection (NEO-276)", () 
       screen.getByRole("combobox").getAttribute("aria-controls"),
     );
     expect(list().parentElement?.className).toBe(
-      "bg-white dark:bg-gray-800 p-6 rounded-lg shadow",
+      "bg-raised p-6 rounded-lg shadow shadow-offset",
     );
     for (const option of screen.getAllByRole("option")) {
       expect(option.parentElement).toBe(list());

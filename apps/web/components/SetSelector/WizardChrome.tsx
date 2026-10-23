@@ -100,12 +100,12 @@ export default function WizardChrome({
     <header className="shrink-0">
       <div className="px-6 pt-4 pb-3">
         <div className="flex items-baseline justify-between gap-4">
-          <h2 id={titleId} className="min-w-0 text-lg font-semibold text-gray-100">
+          <h2 id={titleId} className="min-w-0 text-lg font-semibold text-ink">
             {title}
           </h2>
           {/* Always mounted, so the first step is announced as reliably as
               the rest. Empty while there is no count to give. */}
-          <p role="status" className="shrink-0 text-sm tabular-nums text-gray-300">
+          <p role="status" className="shrink-0 text-sm tabular-nums text-ink-2">
             {total > 0 ? stepCounterText(step, total) : ""}
           </p>
         </div>
@@ -116,23 +116,23 @@ export default function WizardChrome({
             wrapping never moves the body below. Narrower than its 12rem basis
             it drops under the subtitle instead. */}
         <div className="mt-0.5 flex min-h-5 flex-wrap items-baseline justify-between gap-x-4 sm:min-h-8">
-          <p className="min-w-0 shrink-0 text-sm text-gray-400">{subtitle}</p>
+          <p className="min-w-0 shrink-0 text-sm text-ink-3">{subtitle}</p>
           <p
             aria-live="polite"
             data-growth-line=""
-            className="min-w-0 flex-1 basis-48 text-right text-xs text-gray-400 sm:whitespace-normal"
+            className="min-w-0 flex-1 basis-48 text-right text-xs text-ink-3 sm:whitespace-normal"
           >
             {announcement ?? ""}
           </p>
         </div>
         {children}
       </div>
-      <div aria-hidden="true" className="relative h-[3px] w-full bg-gray-800">
+      <div aria-hidden="true" className="relative h-[3px] w-full bg-rule">
         <div
           data-rail-fill=""
           data-rail-forward={forward ? "true" : "false"}
           className={[
-            "absolute inset-y-0 left-0 bg-[#00D558] shadow-[0_0_10px_rgba(0,213,88,0.65)]",
+            "absolute inset-y-0 left-0 bg-neon-green shadow-[0_0_10px_rgba(0,213,88,0.65)]",
             forward
               ? "transition-[width] duration-300 ease-out motion-reduce:transition-none"
               : "transition-none",

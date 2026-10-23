@@ -56,16 +56,12 @@
   padding-top: 14px;
 }
 
-/* Its ledge glows pink, not blue: a different shelf, at a glance. */
+/* Its ledge glows pink, not blue: a different shelf, at a glance. Its
+   colours are `shelf-ledge-special` (app/theme.css, NEO-356). */
 .nb-special-ledge {
   height: 14px;
   margin: 0 -12px;
   border-radius: 0 0 6px 6px;
-  background: linear-gradient(#2a1023, #12070f 70%);
-  box-shadow:
-    0 -1px 0 #ff2e9a inset,
-    0 10px 24px rgba(255, 46, 154, 0.16),
-    0 2px 0 rgba(0, 0, 0, 0.6);
 }
 
 /* The Trade sticker riding the top of the Up for Trade spine. */
@@ -338,4 +334,144 @@
   .p2-sleeve.nb-sleeve--found {
     animation: none;
   }
+}
+
+/* ---------------------------------------------- headings that glow in dark */
+
+/* The Neon-face lines on My Binders glow in the Collection accent (pink on
+   the Want List's cover). A glow means "lit" on black; on paper it is a
+   smudge, so light mode drops it. */
+.nb-glow-title {
+  text-shadow: 0 0 18px rgba(0, 194, 255, 0.55), 0 0 2px #00c2ff;
+}
+.nb-glow-blue {
+  text-shadow: 0 0 14px rgba(0, 194, 255, 0.6);
+}
+.nb-glow-pink {
+  text-shadow: 0 0 14px rgba(255, 46, 154, 0.7);
+}
+[data-theme="light"] :is(.nb-glow-title, .nb-glow-blue, .nb-glow-pink) {
+  text-shadow: none;
+}
+
+/* ------------------------------------------------------------ light mode */
+
+/* NEO-356 — the shelf, the open binder and the pack tray on a light page
+   (theme 6, "Trapper Keeper Glo"). The vinyl, the spine labels, the card
+   faces and the long box are physical objects and keep their colours; only
+   the furniture around them (pages, sleeves, the tray, the cabinet) turns
+   to paper. These rules cover p2.css too, which the forced-dark prototype
+   shares, so they are scoped to light and never reach it. The ledges are
+   `shelf-ledge` / `shelf-ledge-special` (app/theme.css). */
+
+/* Focus: one outline in the focus colour, drawn inside things that sit in a
+   sideways scroller (the shelf clips anything outside a spine). */
+[data-theme="light"] :is(.p2-spine, .nb-longbox, .p2-handle, button.p2-sleeve):focus-visible {
+  box-shadow: none;
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+[data-theme="light"] .p2-spine.nb-spine:focus-visible {
+  box-shadow: none;
+}
+[data-theme="light"] .p2-sleeve:has(> button:focus-visible) {
+  box-shadow: none;
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+[data-theme="light"] .p2-sleeve > button:focus-visible {
+  outline: none;
+}
+
+[data-theme="light"] .p2-spine {
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35), 0 6px 12px -4px rgb(0 0 0 / 0.3);
+}
+/* The catalog's clear binders: a violet-tinted clear vinyl. */
+[data-theme="light"] .p2-spine--clear {
+  background: linear-gradient(90deg, rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.4) 40%, rgb(0 0 0 / 0.04)), #f7f3ff;
+  box-shadow: 0 0 0 1px #b7a3e6, 0 6px 12px -6px rgb(0 0 0 / 0.2);
+}
+[data-theme="light"] .p2-spine--new {
+  border-color: var(--control);
+  box-shadow: none;
+}
+
+[data-theme="light"] .p2-page {
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--rule) inset;
+}
+[data-theme="light"] :is(.p2-page-head, .p2-page-foot) {
+  color: var(--ink-3);
+}
+[data-theme="light"] .p2-cover {
+  background: repeating-linear-gradient(135deg, rgb(0 0 0 / 0.025) 0 6px, transparent 6px 12px), var(--hover);
+  box-shadow: 0 0 0 1px var(--rule) inset;
+}
+[data-theme="light"] .p2-sleeve {
+  background: rgb(15 23 42 / 0.03);
+  box-shadow: 0 0 0 1px rgb(15 23 42 / 0.16) inset, 0 1px 0 rgb(255 255 255 / 0.8);
+}
+[data-theme="light"] .p2-sleeve::before {
+  background: linear-gradient(rgb(15 23 42 / 0.06), rgb(15 23 42 / 0.02));
+  border-bottom-color: rgb(15 23 42 / 0.12);
+}
+[data-theme="light"] .p2-sleeve--over {
+  box-shadow: 0 0 0 2px var(--neon-green-text);
+}
+[data-theme="light"] .p2-sleeve--target {
+  box-shadow: 0 0 0 2px var(--selection), 0 0 0 5px color-mix(in oklab, var(--selection) 20%, transparent);
+}
+[data-theme="light"] .p2-ghost {
+  border-color: var(--control);
+  color: var(--ink-3);
+}
+[data-theme="light"] .p2-ghost-number {
+  color: var(--ink-2);
+}
+[data-theme="light"] .p2-ghost-need {
+  color: var(--ink);
+}
+[data-theme="light"] button.p2-sleeve:hover .p2-ghost {
+  border-color: var(--neon-green-text);
+  color: var(--ink);
+}
+[data-theme="light"] .p2-pack {
+  border-color: var(--rule-strong);
+  background: var(--raised);
+  box-shadow: 0 -10px 30px -12px rgb(0 0 0 / 0.18);
+}
+[data-theme="light"] .p2-pack::before {
+  background:
+    linear-gradient(135deg, transparent 50%, var(--rule-strong) 50%) 0 0 / 8px 7px repeat-x,
+    linear-gradient(225deg, transparent 50%, var(--rule-strong) 50%) 4px 0 / 8px 7px repeat-x;
+}
+[data-theme="light"] .p2-overlay {
+  filter: drop-shadow(0 12px 14px rgb(0 0 0 / 0.25));
+}
+[data-theme="light"] .nb-owned {
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--rule);
+}
+[data-theme="light"] :is(.nb-pip, .nb-scope-dot) {
+  background: var(--selection);
+  box-shadow: none;
+}
+[data-theme="light"] .p2-sleeve.nb-sleeve--found {
+  box-shadow: 0 0 0 3px var(--neon-pink-text), 0 0 0 6px color-mix(in oklab, var(--neon-pink-text) 25%, transparent);
+  animation: none;
+}
+
+/* The special shelf: a pale cabinet under the pink sign. */
+[data-theme="light"] .nb-special {
+  background: linear-gradient(color-mix(in oklab, var(--neon-pink) 7%, var(--raised)), var(--raised));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--neon-pink-text) 35%, transparent) inset;
+}
+[data-theme="light"] .nb-special-sign {
+  color: var(--neon-pink-text);
+  border-color: var(--neon-pink-text);
+  text-shadow: none;
+  box-shadow: none;
+}
+[data-theme="light"] .nb-longbox-box {
+  box-shadow: 0 0 0 1px #8a8170, 0 6px 12px -6px rgb(0 0 0 / 0.35);
 }

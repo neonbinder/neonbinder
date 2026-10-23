@@ -68,7 +68,7 @@ export default function Shelf({ store, h1Ref, onOpen, onNewBinder }: ShelfProps)
             </button>
           </li>
         </ul>
-        <div className="p2-ledge" aria-hidden="true" />
+        <div className="p2-ledge shelf-ledge" aria-hidden="true" />
       </section>
 
       <section aria-labelledby="p2-catalog-shelf" className="mt-12">
@@ -101,7 +101,7 @@ export default function Shelf({ store, h1Ref, onOpen, onNewBinder }: ShelfProps)
             );
           })}
         </ul>
-        <div className="p2-ledge" aria-hidden="true" />
+        <div className="p2-ledge shelf-ledge" aria-hidden="true" />
       </section>
 
       <p className="mt-10 text-sm text-slate-400">

@@ -70,7 +70,7 @@ export default function BinderView({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-slate-600 px-3 text-sm font-medium text-slate-100 hover:border-neon-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-control px-3 text-sm font-medium text-ink hover:border-neon-blue focus-outline"
         >
           <ArrowLeftIcon aria-hidden="true" className="h-4 w-4" />
           Back to the shelf
@@ -79,7 +79,7 @@ export default function BinderView({
           <h2
             ref={headingRef}
             tabIndex={-1}
-            className="truncate text-2xl font-bold text-white focus:outline-none sm:text-3xl"
+            className="truncate text-2xl font-bold text-ink focus:outline-none sm:text-3xl"
           >
             {open.title}
           </h2>
@@ -87,15 +87,15 @@ export default function BinderView({
             <span
               className={
                 open.badge.tone === "smart"
-                  ? "rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-black"
-                  : "rounded border border-neon-blue px-1.5 text-xs font-bold leading-5 text-neon-blue"
+                  ? "rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-on-neon-purple"
+                  : "rounded border border-neon-blue-text px-1.5 text-xs font-bold leading-5 text-neon-blue-text"
               }
             >
               {open.badge.text}
             </span>
           )}
         </div>
-        <p aria-live="polite" className="text-sm tabular-nums text-slate-300">
+        <p aria-live="polite" className="text-sm tabular-nums text-ink-2">
           {whereLabel(pages.length, wide, at)}
         </p>
         <div className="ml-auto flex flex-wrap items-center gap-2">

@@ -37,3 +37,19 @@
 .nb-idtip .rt-TooltipArrow {
   fill: #00c2ff;
 }
+
+/* NEO-356 — light mode: a white slip with a rule edge and a soft drop. */
+[data-theme="light"] .rt-TooltipContent.nb-idtip {
+  background: var(--raised);
+  border-color: var(--rule-strong);
+  box-shadow: 0 8px 20px -8px rgb(0 0 0 / 0.25);
+}
+[data-theme="light"] .nb-idtip .rt-TooltipText {
+  color: var(--ink-2);
+}
+[data-theme="light"] .nb-idtip .nb-idtip-title {
+  color: var(--ink);
+}
+[data-theme="light"] .nb-idtip .rt-TooltipArrow {
+  fill: var(--rule-strong);
+}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
@@ -14,6 +14,9 @@ import {
   normalizeHexColor,
   parseHexColor,
 } from "../../lib/print/contrast";
+import { useTheme } from "../../src/theme/ThemeProvider";
+import type { ThemeMode } from "../../src/theme/theme-mode";
+import { TOKENS, tokenHex } from "../../src/theme/tokens";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
 
@@ -58,7 +61,7 @@ export function SportTag({
 }) {
   return (
     <span
-      className={`inline-block rounded-sm border border-gray-400 dark:border-gray-500 px-1 text-[10px] font-normal leading-4 text-gray-700 dark:text-gray-300 align-middle ${className}`}
+      className={`inline-block rounded-sm border border-control px-1 text-[10px] font-normal leading-4 text-ink-2 align-middle ${className}`}
     >
       {label}
     </span>
@@ -101,26 +104,24 @@ function composite(base: string, tint: string, alpha: number): string {
   return `#${mix(b.r, t.r)}${mix(b.g, t.g)}${mix(b.b, t.b)}`;
 }
 
-/** The ArrowDown highlight: `bg-[#00D558]/20` in BOTH themes (no dark split). */
-const HIGHLIGHT_TINT = "#00D558";
+/** The ArrowDown highlight: `bg-neon-green/20`, the same fill in both modes. */
+const HIGHLIGHT_TINT = TOKENS.dark["neon-green"];
 const HIGHLIGHT_ALPHA = 0.2;
 
 /**
- * Every surface a result row can sit on, per theme. The popover is
- * `bg-white dark:bg-gray-800`, a row under the pointer adds
- * `hover:bg-gray-100 dark:hover:bg-gray-700`, and the ArrowDown row adds the
- * green highlight over the base. Tailwind 4's gray-800 / gray-700, as hex.
+ * Every surface a result row can sit on in a mode. The popover is `bg-raised`,
+ * a row under the pointer is `hover:bg-rule-strong`, and the ArrowDown row adds
+ * the green highlight over the popover. Read from the theme's own values
+ * (src/theme/tokens.ts), so a change to a role cannot leave this stale.
  */
-const LIGHT_SURFACES = [
-  "#ffffff",
-  "#f3f4f6",
-  composite("#ffffff", HIGHLIGHT_TINT, HIGHLIGHT_ALPHA),
-];
-const DARK_SURFACES = [
-  "#1e2939",
-  "#364153",
-  composite("#1e2939", HIGHLIGHT_TINT, HIGHLIGHT_ALPHA),
-];
+function rowSurfaces(mode: ThemeMode): string[] {
+  const raised = tokenHex("raised", mode);
+  return [
+    raised,
+    tokenHex("rule-strong", mode),
+    composite(raised, HIGHLIGHT_TINT, HIGHLIGHT_ALPHA),
+  ];
+}
 
 function readsOnAll(hex: string, surfaces: readonly string[]): boolean {
   return surfaces.every((bg) => {
@@ -130,23 +131,17 @@ function readsOnAll(hex: string, surfaces: readonly string[]): boolean {
 }
 
 /**
- * A team name in its own livery, decided PER THEME (SC 1.4.3, 4.5:1): the
- * colour is used in a theme only when it reads on every surface the row can
- * sit on in that theme, and the row stays muted there otherwise. No single
- * colour can clear both a white and a gray-800 popover, so the two answers
- * are independent — navy survives the light popover, gold the dark one.
- * The name is the information, the colour is only the nod.
+ * A team name in its own livery, decided for the mode the page is in (SC
+ * 1.4.3, 4.5:1): the colour is used only when it reads on every surface the
+ * row can sit on, and the row stays muted otherwise. No single colour clears
+ * both a white and a graphite popover, so the answer is per mode — navy
+ * survives the light popover, gold the dark one. The name is the
+ * information, the colour is only the nod.
  */
-function liveryColors(primary: string | undefined): {
-  light: string | null;
-  dark: string | null;
-} {
+function liveryColor(primary: string | undefined, mode: ThemeMode): string | null {
   const hex = primary ? normalizeHexColor(primary) : null;
-  if (!hex) return { light: null, dark: null };
-  return {
-    light: readsOnAll(hex, LIGHT_SURFACES) ? hex : null,
-    dark: readsOnAll(hex, DARK_SURFACES) ? hex : null,
-  };
+  if (!hex) return null;
+  return readsOnAll(hex, rowSurfaces(mode)) ? hex : null;
 }
 
 /**
@@ -275,6 +270,7 @@ export default function PlayerPicker({
    */
   labels?: PlayerPickerLabels;
 }) {
+  const { mode } = useTheme();
   const selectedRows = useQuery(api.players.getManyByIds, { ids: value });
   const setSportPool = useQuery(
     api.players.list,
@@ -593,7 +589,7 @@ export default function PlayerPicker({
       {value.map((id) => (
         <span
           key={id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-xs"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rule-strong text-xs"
         >
           <span
             className="truncate max-w-[140px]"
@@ -613,7 +609,7 @@ export default function PlayerPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
-            className="hit-area-24 text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
+            className="hit-area-24 text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
           >
             ×
           </button>
@@ -644,7 +640,7 @@ export default function PlayerPicker({
           }}
           aria-label={labels.trigger}
           aria-expanded={popoverOpen}
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-600 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
+          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
         >
           + Add player
         </button>
@@ -665,7 +661,7 @@ export default function PlayerPicker({
             anchorRef={triggerRef}
             popoverRef={popoverRef}
             onTabOut={closePopover}
-            className="w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
+            className="w-64 bg-raised border border-control rounded-md shadow-lg shadow-offset p-2 space-y-1"
           >
             <Input
               bare
@@ -711,27 +707,24 @@ export default function PlayerPicker({
             />
 
             {createError && (
-              // a11y: NOT the brand `#FF2E9A` — measured against this
-              // popover's own `bg-white dark:bg-gray-800` it is 3.34:1 /
-              // 4.4:1, both under WCAG 1.4.3's 4.5:1 floor for normal text.
-              // Same-hue darkened/lightened pair CardDetailPanel's
-              // `parentError` and TeamPicker already use: 5.55:1 on white,
-              // 5.87:1 on dark:bg-gray-800.
+              // a11y: NOT the brand pink — on this popover's graphite it is
+              // 4.4:1, under WCAG 1.4.3's 4.5:1 floor for normal text. The
+              // danger notice ink clears 4.5:1 on the popover in both modes.
               <p
                 role="alert"
-                className="px-2 py-1 text-xs text-[#C2178A] dark:text-[#FF6FCB]"
+                className="px-2 py-1 text-xs text-notice-danger-ink"
               >
                 {createError}
               </p>
             )}
 
             {!candidates && (
-              <div className="text-xs text-gray-400 px-2 py-1">Loading…</div>
+              <div className="text-xs text-ink-3 px-2 py-1">Loading…</div>
             )}
             {candidates &&
               matches.length === 0 &&
               query.trim().length === 0 && (
-                <div className="text-xs text-gray-400 px-2 py-1">
+                <div className="text-xs text-ink-3 px-2 py-1">
                   Type a player name…
                 </div>
               )}
@@ -751,8 +744,8 @@ export default function PlayerPicker({
                   aria-selected={idx === highlightIdx}
                   className={`w-full text-left px-2 py-1 text-sm rounded ${
                     idx === highlightIdx
-                      ? "bg-[#00D558]/20 text-[#00D558]"
-                      : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                      ? "bg-neon-green/20 text-neon-green-text"
+                      : "hover:bg-rule-strong"
                   }`}
                 >
                   {m.name}
@@ -773,33 +766,18 @@ export default function PlayerPicker({
                             // 3.8:1 in gray-400 on the green-tinted ArrowDown
                             // row, so that row's small print is gray-300.
                             idx === highlightIdx
-                              ? "text-gray-700 dark:text-gray-300"
-                              : "text-gray-600 dark:text-gray-400"
+                              ? "text-ink-2"
+                              : "text-ink-3"
                           }`}
                         >
                           {m.stints.slice(0, RESULT_STINT_LIMIT).map((st, i) => {
-                            const color = liveryColors(st.primaryColor);
-                            // Each theme reads its own custom property, so a
-                            // colour that fails one theme is dropped there
-                            // only (see `liveryColors`).
-                            const style = {
-                              ...(color.light ? { "--livery-light": color.light } : {}),
-                              ...(color.dark ? { "--livery-dark": color.dark } : {}),
-                            } as CSSProperties;
+                            const color = liveryColor(st.primaryColor, mode);
                             return (
                               <span key={i}>
                                 {i > 0 && ", "}
                                 <span
-                                  style={style}
-                                  className={`${
-                                    color.light
-                                      ? "text-[color:var(--livery-light)]"
-                                      : "text-gray-700"
-                                  } ${
-                                    color.dark
-                                      ? "dark:text-[color:var(--livery-dark)]"
-                                      : "dark:text-gray-300"
-                                  }`}
+                                  className={color ? undefined : "text-ink-2"}
+                                  style={color ? { color } : undefined}
                                 >
                                   {st.label}
                                 </span>{" "}
@@ -834,10 +812,10 @@ export default function PlayerPicker({
                   aria-label={`Create player ${query.trim()}`}
                   role="option"
                   aria-selected={highlightIdx === matches.length}
-                  className={`w-full text-left px-2 py-1 text-sm rounded border-t border-gray-200 dark:border-gray-700 ${
+                  className={`w-full text-left px-2 py-1 text-sm rounded border-t border-rule-strong ${
                     highlightIdx === matches.length
-                      ? "bg-[#00D558]/20 text-[#00D558]"
-                      : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                      ? "bg-neon-green/20 text-neon-green-text"
+                      : "hover:bg-rule-strong"
                   }`}
                 >
                   {creating ? "Creating…" : `+ Create "${query.trim()}"`}
@@ -855,7 +833,7 @@ export default function PlayerPicker({
                 the rows so the options land where they always have. Tab from
                 the last option reaches it; Tab again leaves the picker. */}
             {sportId && (
-              <div className="border-t border-gray-200 dark:border-gray-700 px-2 pt-1">
+              <div className="border-t border-rule-strong px-2 pt-1">
                 <SportSwitch
                   // Only one picker's popover is ever open, but the review
                   // wizard's own switch ("Sport for this name") can share the

@@ -11,6 +11,9 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { activateOnEnter } from "../../lib/dom/activate-on-enter";
 import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
+import { useTheme } from "../../src/theme/ThemeProvider";
+import type { ThemeMode } from "../../src/theme/theme-mode";
+import { tokenHex } from "../../src/theme/tokens";
 import { teamFullName } from "../../lib/teams/team-name";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
@@ -103,8 +106,6 @@ import {
  * `id:` as an unanchored regex). Focus is never taken on arrival.
  */
 
-/** The chip ground, for the livery contrast check. Tailwind v4 gray-800. */
-const CHIP_GROUND = "#1e2939";
 /** WCAG 2.2 SC 1.4.3 for text this size. */
 const LIVERY_MIN_CONTRAST = 4.5;
 
@@ -115,12 +116,14 @@ const LIVERY_MIN_CONTRAST = 4.5;
  * near-black navy usually prints on its pale secondary. Colour is never the
  * only carrier; the name reads the same either way (SC 1.4.1).
  */
-function liveryTextColor(colors: TeamRef["colors"]): string | null {
+function liveryTextColor(colors: TeamRef["colors"], mode: ThemeMode): string | null {
+  // The chip ground: `bg-raised` in the mode the page is in.
+  const ground = tokenHex("raised", mode);
   for (const candidate of [colors?.primary, colors?.secondary]) {
     if (!candidate) continue;
     const hex = normalizeHexColor(candidate);
     if (!hex) continue;
-    const ratio = contrastRatio(hex, CHIP_GROUND);
+    const ratio = contrastRatio(hex, ground);
     if (ratio !== null && ratio >= LIVERY_MIN_CONTRAST) return hex;
   }
   return null;
@@ -515,7 +518,7 @@ export default function TeamsOnCardsSection({
         // Quiet and beside the work, not a banner: it is a shortcut for the
         // operator who has just counted thirty identical lines, and a
         // no-op for everyone else.
-        <p className="mt-1.5 border-l-2 border-[#00C2FF]/70 pl-2 text-xs text-gray-300">
+        <p className="mt-1.5 border-l-2 border-neon-blue-text/70 pl-2 text-xs text-ink-2">
           {SET_TEAM_HINT}
         </p>
       )}
@@ -524,7 +527,7 @@ export default function TeamsOnCardsSection({
       <p role="status" className="sr-only">
         {loadStatus}
       </p>
-      <ul className="mt-1 divide-y divide-gray-800">
+      <ul className="mt-1 divide-y divide-rule">
         {groups.map((group, groupIndex) => {
           const lineChoice = effectiveChoice(group, choices[group.key]);
           return (
@@ -624,11 +627,11 @@ function TeamsLine({
         {/* Wraps rather than truncating: a title tooltip is mouse-only, and
             "Ken Griffey Jr. & Ken Griffey Sr." cut short is the one part an
             operator needed. */}
-        <p className="break-words text-sm text-gray-100">
+        <p className="break-words text-sm text-ink">
           {group.players.length > 0 ? group.players.join(" & ") : noPlayersLabel(group.cards.length)}
         </p>
         {!grouped && (
-          <p className="break-words text-xs text-gray-400">
+          <p className="break-words text-xs text-ink-3">
             #{first.cardNumber} · {first.cardName}
           </p>
         )}
@@ -644,7 +647,7 @@ function TeamsLine({
             onKeyDown={(event) => activateOnEnter(event, () => setOpenState(!expanded))}
             className={[
               markerClass("cards"),
-              "-my-1 rounded py-1 text-left text-xs text-gray-400 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]",
+              "-my-1 rounded py-1 text-left text-xs text-ink-3 hover:text-ink-2 focus-outline",
             ].join(" ")}
           >
             <span className="break-words tabular-nums">
@@ -664,15 +667,15 @@ function TeamsLine({
           // Invariant 8 — the listing's claim, shown so the operator knows why
           // nothing is pre-filled. Plain text, never a chip: a marketplace
           // string is never something a click turns into a team row.
-          <p className="mt-0.5 break-words text-xs text-gray-400">
+          <p className="mt-0.5 break-words text-xs text-ink-3">
             {LISTED_PREFIX}{" "}
-            <span className="text-gray-200">{group.listedNames.join(", ")}</span>
+            <span className="text-ink-2">{group.listedNames.join(", ")}</span>
           </p>
         )}
       </div>
       {/* The line's grammar — "Johnny Bench → Reds". Decoration to a screen
           reader, which hears the group's own name instead. */}
-      <span aria-hidden="true" className="hidden pt-1 text-sm text-gray-500 sm:block">
+      <span aria-hidden="true" className="hidden pt-1 text-sm text-ink-3 sm:block">
         →
       </span>
       <div className="mt-1.5 min-w-0 sm:mt-0">
@@ -682,7 +685,7 @@ function TeamsLine({
         <ul
           id={panelId}
           aria-label={`Cards for ${owner}`}
-          className="mt-2 space-y-2 border-l border-gray-700 pl-3 text-xs text-gray-400 sm:col-span-3"
+          className="mt-2 space-y-2 border-l border-rule-strong pl-3 text-xs text-ink-3 sm:col-span-3"
         >
           {group.cards.map((card, cardIdx) => {
             const own = hasOverride(card.index);
@@ -690,7 +693,7 @@ function TeamsLine({
             return (
               <li key={card.index} className="min-w-0">
                 <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-                  <span className="break-words text-gray-300">
+                  <span className="break-words text-ink-2">
                     #{card.cardNumber} · {card.cardName}
                   </span>
                   {/* ONE button that flips between the two actions, so
@@ -713,7 +716,7 @@ function TeamsLine({
                     }
                     className={[
                       markerClass(`c${cardIdx}-own`),
-                      "-my-1 rounded py-1 text-xs text-gray-400 underline decoration-dotted underline-offset-2 hover:text-[#00C2FF] focus:outline-none focus-visible:text-[#00C2FF] focus-visible:ring-2 focus-visible:ring-[#00C2FF]",
+                      "-my-1 rounded py-1 text-xs text-ink-3 underline decoration-dotted underline-offset-2 hover:text-neon-blue-text focus-outline focus-visible:text-neon-blue-text",
                       disabled ? "cursor-not-allowed opacity-60" : "",
                     ].join(" ")}
                   >
@@ -896,21 +899,21 @@ function ChoiceRow({
                 // Shape says the kind of line: pills pick one, squared chips
                 // pick several.
                 multi && isTeam ? "rounded-md" : "rounded-full",
-                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
+                "focus-outline",
                 isTeam
                   ? checked
-                    ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
-                    : "border-gray-500 bg-gray-800 text-gray-200 hover:border-gray-400"
+                    ? "border-neon-green-text bg-neon-green/10 text-ink"
+                    : "border-control bg-raised text-ink-2 hover:border-ink-3"
                   : checked
-                    ? "border-gray-300 text-gray-100"
-                    : "border-dashed border-gray-500 text-gray-400 hover:border-gray-400 hover:text-gray-300",
+                    ? "border-ink-2 text-ink"
+                    : "border-dashed border-control text-ink-3 hover:border-ink-3 hover:text-ink-2",
                 off ? "cursor-not-allowed opacity-60" : "",
               ].join(" ")}
             >
               {/* 1.4.1 — checked is not colour alone. Outside the label text,
                   so the words a flow or a voice user matches are unchanged. */}
               {checked ? (
-                <span aria-hidden="true" className={isTeam ? "text-[#00D558]" : ""}>
+                <span aria-hidden="true" className={isTeam ? "text-neon-green-text" : ""}>
                   ✓
                 </span>
               ) : (
@@ -918,7 +921,7 @@ function ChoiceRow({
                 isTeam && (
                   <span
                     aria-hidden="true"
-                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-gray-400"
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-ink-3"
                   />
                 )
               )}
@@ -947,19 +950,19 @@ function ChoiceRow({
         }
         className={[
           markerClass("other"),
-          "inline-flex items-center rounded-full px-2.5 py-1 text-xs text-[#00C2FF] underline decoration-dotted underline-offset-2",
-          "hover:text-[#5ED4FF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
+          "inline-flex items-center rounded-full px-2.5 py-1 text-xs text-neon-blue-text underline decoration-dotted underline-offset-2",
+          "hover:decoration-solid focus-outline",
           otherDisabled && !pickerOpen ? "cursor-not-allowed opacity-60" : "",
         ].join(" ")}
       >
         {OTHER_LABEL}
       </button>
       {atCap && (
-        <p id={capNoteId} className="w-full text-xs text-[#00C2FF]">
+        <p id={capNoteId} className="w-full text-xs text-neon-blue-text">
           {CAP_NOTE}
         </p>
       )}
-      {anyBlocked && <p className="w-full text-xs text-[#FF2E9A]">{FOREIGN_NOTE}</p>}
+      {anyBlocked && <p className="w-full text-xs text-neon-pink-text">{FOREIGN_NOTE}</p>}
       {pickerOpen && sportId && (
         <OtherTeamPicker
           hostId={pickerHostId}
@@ -1086,7 +1089,7 @@ function OtherTeamPicker({
           and only "+ New team …" is left. Flows wait on it before Enter
           (which then can only mean "create"). */}
       {typed !== "" && typed === term && searched !== undefined && searched.length === 0 && (
-        <p className="mt-1 px-1 text-xs text-gray-400">No matches.</p>
+        <p className="mt-1 px-1 text-xs text-ink-3">No matches.</p>
       )}
       {creating !== null && (
         <NewTeamDialog
@@ -1118,7 +1121,8 @@ function OtherTeamPicker({
  * chip read as a selected radio. The ✓ is the only selection signal.
  */
 function TeamLabel({ teamRef }: { teamRef: TeamRef }) {
-  const color = liveryTextColor(teamRef.colors);
+  const { mode } = useTheme();
+  const color = liveryTextColor(teamRef.colors, mode);
   return (
     <span className="min-w-0 break-words" style={color ? { color } : undefined}>
       {teamRef.label}

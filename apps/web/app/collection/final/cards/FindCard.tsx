@@ -10,6 +10,7 @@ import {
   teamTextColor,
 } from "../../prototypes/_shared/data";
 import { FOCUS } from "../../prototypes/p3/classes";
+import { useLiverySurface } from "../../prototypes/p1/ui";
 import { useMyCards } from "./context";
 
 /**
@@ -24,6 +25,7 @@ const SHOW = 4;
 
 export default function FindCard() {
   const api = useMyCards();
+  const sheet = useLiverySurface("sheet");
   const { store } = api;
   const [query, setQuery] = useState("");
   const q = query.trim();
@@ -51,8 +53,8 @@ export default function FindCard() {
         }}
       />
       {q.length >= 2 && (
-        <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950 p-2">
-          <p role="status" className="px-2 py-1 text-sm text-slate-300">
+        <div className="mt-2 rounded-xl border border-rule bg-sheet p-2 shadow-offset">
+          <p role="status" className="px-2 py-1 text-sm text-ink-2">
             {list.length === 0
               ? `Nothing matches “${q}”. Try the year, set or last name.`
               : exact.length === 0
@@ -69,14 +71,14 @@ export default function FindCard() {
               return (
                 <li
                   key={card.id}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-900 px-2 py-2 first:border-t-0"
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-rule px-2 py-2 first:border-t-0"
                 >
                   <span
                     aria-hidden="true"
                     className={`grid h-9 min-w-9 shrink-0 place-items-center rounded-md px-1 text-xs font-bold tabular-nums ${
                       n > 0
-                        ? "mc-lit bg-neon-blue text-black"
-                        : "border-[1.5px] border-dashed border-slate-500 text-slate-300"
+                        ? "mc-lit bg-neon-blue text-on-neon-blue"
+                        : "border-[1.5px] border-dashed border-control text-ink-2"
                     }`}
                   >
                     {card.cardNumber}
@@ -85,28 +87,28 @@ export default function FindCard() {
                     type="button"
                     aria-label={`Show ${short} in Checklists`}
                     onClick={() => api.goToTab("checklists", { cardId: card.id })}
-                    className={`min-w-0 flex-1 rounded-md text-left hover:text-neon-blue ${FOCUS}`}
+                    className={`min-w-0 flex-1 rounded-md text-left hover:text-neon-blue-text ${FOCUS}`}
                   >
-                    <span className="block truncate text-sm font-bold text-white">
+                    <span className="block truncate text-sm font-bold text-ink">
                       {playerNames(card)}{" "}
-                      <span className="font-normal" style={{ color: teamTextColor(leadTeam(card), "#020617") }}>
+                      <span className="font-normal" style={{ color: teamTextColor(leadTeam(card), sheet) }}>
                         {teamNames(card)}
                       </span>
                     </span>
-                    <span className="block truncate text-xs text-slate-400">
+                    <span className="block truncate text-xs text-ink-3">
                       {setLabel(set)}, {row}
                       {variation}
                       {card.printRun ? `, /${card.printRun}` : ""}
                     </span>
                   </button>
-                  <span className={`text-sm font-bold ${n > 0 ? "text-neon-blue" : "text-slate-300"}`}>
+                  <span className={`text-sm font-bold ${n > 0 ? "text-neon-blue-text" : "text-ink-2"}`}>
                     {n > 0 ? `Have ${n}` : "Need"}
                   </span>
                   <button
                     type="button"
                     aria-label={`Add 1: ${short}`}
                     onClick={() => api.addOne(card)}
-                    className={`min-h-11 rounded-md bg-neon-green px-3 text-sm font-bold text-black hover:bg-neon-green/85 sm:min-h-8 ${FOCUS}`}
+                    className={`min-h-11 rounded-md bg-neon-green px-3 text-sm font-bold text-on-neon-green hover:bg-neon-green-hover sm:min-h-8 ${FOCUS}`}
                   >
                     Add 1
                   </button>
@@ -118,7 +120,7 @@ export default function FindCard() {
             <button
               type="button"
               onClick={() => api.goToTab("checklists", { q })}
-              className={`m-1 min-h-11 rounded-md px-2 text-sm text-neon-blue underline-offset-4 hover:underline sm:min-h-8 ${FOCUS}`}
+              className={`m-1 min-h-11 rounded-md px-2 text-sm text-neon-blue-text underline-offset-4 hover:underline sm:min-h-8 ${FOCUS}`}
             >
               {list.length > visible.length ? `See all ${list.length} in Checklists` : "Open in Checklists"}
             </button>

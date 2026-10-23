@@ -52,7 +52,7 @@ export function SpineLabelColors({
 
   return (
     <section className="space-y-3">
-      <h3 className="text-sm font-semibold text-slate-300">Colors</h3>
+      <h3 className="text-sm font-semibold text-ink-2">Colors</h3>
       <div className="flex flex-wrap items-end gap-3">
         <Input
           label="Background"
@@ -73,15 +73,15 @@ export function SpineLabelColors({
 
       <p className="text-xs" aria-live="polite">
         {ratio === null ? (
-          <span className="text-amber-400">
+          <span className="text-notice-warn-ink">
             Enter two hex colors (e.g. #01214b) to see contrast.
           </span>
         ) : (
           <span
             className={
               gradeContrast(ratio) === "poor"
-                ? "text-amber-400"
-                : "text-slate-400"
+                ? "text-notice-warn-ink"
+                : "text-ink-3"
             }
           >
             Contrast {ratio.toFixed(1)}:1 —{" "}
@@ -110,7 +110,7 @@ export function SpineLabelLettering({ fontId, onFontChange }: SpineLabelLetterin
   const font = spineFontById(fontId);
   return (
     <section className="space-y-2">
-      <h3 className="text-sm font-semibold text-slate-300">Lettering</h3>
+      <h3 className="text-sm font-semibold text-ink-2">Lettering</h3>
       <div
         className="flex flex-wrap gap-2"
         role="radiogroup"
@@ -126,10 +126,10 @@ export function SpineLabelLettering({ fontId, onFontChange }: SpineLabelLetterin
               aria-checked={isActive}
               onClick={() => onFontChange(option.id)}
               title={option.note}
-              className={`rounded-md border px-3 py-1.5 text-lg leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
+              className={`rounded-md border px-3 py-1.5 text-lg leading-tight transition-colors focus-outline ${
                 isActive
-                  ? "border-neon-teal text-neon-teal"
-                  : "border-slate-700 text-slate-300 hover:border-slate-500"
+                  ? "border-neon-teal-text text-neon-teal-text"
+                  : "border-rule-strong text-ink-2 hover:border-control"
               }`}
               style={{ fontFamily: spineFontFamilyCss(option) }}
             >
@@ -138,7 +138,7 @@ export function SpineLabelLettering({ fontId, onFontChange }: SpineLabelLetterin
           );
         })}
       </div>
-      <p className="text-xs text-slate-400">{font.note}</p>
+      <p className="text-xs text-ink-3">{font.note}</p>
     </section>
   );
 }

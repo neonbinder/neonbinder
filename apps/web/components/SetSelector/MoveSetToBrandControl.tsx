@@ -306,9 +306,9 @@ export default function MoveSetToBrandControl({
           // full-width list would push "Make parallel of…" onto a new line,
           // moving it out from under a pointer on its way there. The DOM order
           // (and so the Tab order) is unchanged: trigger, then its list.
-          // border-gray-500: the 3:1 boundary tone on this panel's surface;
+          // border-control: the 3:1 boundary role on this panel's surface;
           // gray-600 measures ~2.0:1 against gray-800 and fails SC 1.4.11.
-          className="order-last w-full mt-1 rounded border border-gray-500 bg-gray-900/40 p-2"
+          className="order-last w-full mt-1 rounded border border-control bg-raised-deep/40 p-2"
           // NEO-294 (a11y) — the list stays MOUNTED behind the confirm so
           // Cancel returns to the same open list rather than making the
           // operator find their brand again. Mounted is not the same as
@@ -328,16 +328,16 @@ export default function MoveSetToBrandControl({
             closeList();
           }}
         >
-          <p className="text-[11px] text-gray-400 mb-1">{MOVE_SET_PROMPT}</p>
+          <p className="text-[11px] text-ink-3 mb-1">{MOVE_SET_PROMPT}</p>
           {brands === undefined ? (
-            <p className="text-[11px] text-gray-400">Finding this year's brands…</p>
+            <p className="text-[11px] text-ink-3">Finding this year's brands…</p>
           ) : choices.length === 0 ? (
             // An empty list is a statement about the year, not a failure —
             // so it says what to do about it. "This year has no other brand
             // to move it to." was a dead end: the operator came here because
             // the set is misfiled, and a shrug is not an answer. The remedy
             // is one column to the left.
-            <p className="text-[11px] text-gray-400">
+            <p className="text-[11px] text-ink-3">
               {`No other brand in ${yearLabel ?? "this year"} yet. Add one in the Manufacturers column, then come back.`}
             </p>
           ) : (
@@ -365,7 +365,7 @@ export default function MoveSetToBrandControl({
                   onKeyDown={(event) => activateOnEnter(event, () => choose(brand))}
                   // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum target height;
                   // px-2 py-1 measured ~23px at this text size.
-                  className="text-left text-xs px-2 py-1.5 rounded border border-transparent text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+                  className="text-left text-xs px-2 py-1.5 rounded border border-transparent text-ink-2 hover:border-neon-green-text hover:text-neon-green-text focus-outline"
                 >
                   {brand.value}
                 </button>

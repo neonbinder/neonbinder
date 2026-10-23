@@ -526,12 +526,12 @@ function MakeInsertDialog({
   // ── body ──────────────────────────────────────────────────────────────
   let body;
   if (targets === undefined) {
-    body = <p className="text-sm text-slate-400">{makeInsertCopy.loading}</p>;
+    body = <p className="text-sm text-ink-3">{makeInsertCopy.loading}</p>;
   } else if (!targets.ok) {
-    body = <p className="text-sm text-[#FF2E9A]">{targets.reason}</p>;
+    body = <p className="text-sm text-neon-pink-text">{targets.reason}</p>;
   } else if (targets.targets.length === 0) {
     body = (
-      <p className="text-sm text-slate-400">{makeInsertCopy.noTargets(targets.brandValue)}</p>
+      <p className="text-sm text-ink-3">{makeInsertCopy.noTargets(targets.brandValue)}</p>
     );
   } else {
     body = (
@@ -560,7 +560,7 @@ function MakeInsertDialog({
         {targetReason && (
           // The server's own sentence: most often "no Insert type yet", with
           // the step that fixes it.
-          <p id={targetReasonId} className="text-sm text-slate-300">
+          <p id={targetReasonId} className="text-sm text-ink-2">
             {targetReason}
           </p>
         )}
@@ -584,7 +584,7 @@ function MakeInsertDialog({
           />
         )}
         {whereReason && (
-          <p id={whereReasonId} className="text-sm text-slate-300">
+          <p id={whereReasonId} className="text-sm text-ink-2">
             {whereReason}
           </p>
         )}
@@ -615,7 +615,7 @@ function MakeInsertDialog({
               }}
             />
             {nameReason && (
-              <p id={nameReasonId} className="mt-1 text-sm text-slate-300">
+              <p id={nameReasonId} className="mt-1 text-sm text-ink-2">
                 {nameReason}
               </p>
             )}
@@ -638,12 +638,12 @@ function MakeInsertDialog({
           />
         )}
         {underReason && (
-          <p id={underReasonId} className="text-sm text-slate-300">
+          <p id={underReasonId} className="text-sm text-ink-2">
             {underReason}
           </p>
         )}
         {leftBehind.length > 0 && (
-          <p id={leftBehindId} className="text-sm text-slate-300">
+          <p id={leftBehindId} className="text-sm text-ink-2">
             {makeParallelCopy.leftBehind(leftBehind)}
           </p>
         )}

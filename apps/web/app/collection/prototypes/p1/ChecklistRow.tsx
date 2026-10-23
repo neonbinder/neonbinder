@@ -5,6 +5,7 @@ import {
   FOCUS,
   QUIET_BUTTON,
   liveryOn,
+  useLiverySurface,
   printRunText,
   setAndVariant,
   shortCardName,
@@ -39,21 +40,21 @@ export function HaveToggle({
         }}
         className={`inline-flex min-h-8 items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors ${FOCUS} ${
           have
-            ? "border-neon-blue bg-neon-blue text-black"
-            : "border-slate-500 text-slate-200 hover:border-neon-blue hover:text-neon-blue"
+            ? "border-selection bg-neon-blue text-on-neon-blue"
+            : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"
         }`}
       >
         <span
           aria-hidden="true"
           className={`flex h-4 w-4 items-center justify-center rounded-sm border ${
-            have ? "border-black bg-black text-neon-blue" : "border-current"
+            have ? "border-on-neon-blue bg-on-neon-blue text-neon-blue" : "border-current"
           }`}
         >
           {have && <CheckIcon className="h-3.5 w-3.5" />}
         </span>
         Have
       </button>
-      <span className="w-7 text-xs tabular-nums text-slate-300">{owned > 1 ? `×${owned}` : ""}</span>
+      <span className="w-7 text-xs tabular-nums text-ink-2">{owned > 1 ? `×${owned}` : ""}</span>
     </span>
   );
 }
@@ -96,6 +97,7 @@ export default function ChecklistRow({
   showSet?: boolean;
   onOpenChecklist?: () => void;
 }) {
+  const panel = useLiverySurface("raised");
   // Search results span sets, so their controls carry the full label; inside
   // one checklist the number, player and variation already tell rows apart.
   const name = showSet ? cardLabel(card) : shortCardName(card);
@@ -108,19 +110,19 @@ export default function ChecklistRow({
   return (
     <li
       onClick={onOpen}
-      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md border-gray-600 hover:bg-gray-700/50 cursor-pointer ${
-        card.variation ? "ml-8 border-l-2 border-l-gray-500" : ""
-      } ${isSelected ? "ring-2 ring-[#00C2FF] border-[#00C2FF] bg-blue-900/10" : ""}`}
+      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md border-rule-strong cx-row-hover cursor-pointer ${
+        card.variation ? "ml-8 border-l-2 border-l-control" : ""
+      } ${isSelected ? "ring-2 ring-selection border-selection bg-blue-900/10" : ""}`}
     >
-      <span className="text-sm font-mono text-slate-400 w-12 text-right shrink-0">
+      <span className="text-sm font-mono text-ink-3 w-12 text-right shrink-0">
         #{card.cardNumber}
       </span>
       <div className="flex-1 min-w-0 max-sm:basis-[calc(100%-4rem)]">
-        <div className="text-sm font-medium text-slate-100 truncate">
+        <div className="text-sm font-medium text-ink truncate">
           {playerNames(card)}
         </div>
-        <div className="text-xs text-slate-400 truncate min-h-[1rem]">
-          <span style={{ color: liveryOn(card) }} title={`${team.location} ${team.name}`}>
+        <div className="text-xs text-ink-3 truncate min-h-[1rem]">
+          <span style={{ color: liveryOn(card, panel) }} title={`${team.location} ${team.name}`}>
             {teamNames(card)}
           </span>
           {sub.length > 0 && <span> · {sub.join(" · ")}</span>}

@@ -45,11 +45,11 @@ export default function SetPicker({ onClose }: { onClose: () => void }) {
           return (
             <li
               key={s.id}
-              className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2"
+              className="flex items-center gap-3 rounded-lg border border-rule bg-field/60 px-3 py-2"
             >
               <div className="min-w-0 flex-1">
-                <p className="font-bold text-white">{setLabel(s)}</p>
-                <p className="text-sm text-slate-400">
+                <p className="font-bold text-ink">{setLabel(s)}</p>
+                <p className="text-sm text-ink-3">
                   {getSport(s.sportId).name}, {getBrand(s.brandId).name}.{" "}
                   {cardsInSet(s.id, { type: "Base" }).length} base cards, you have {base.owned}.
                 </p>
@@ -61,8 +61,8 @@ export default function SetPicker({ onClose }: { onClose: () => void }) {
                 onClick={() => store.toggleBuilding(s.id)}
                 className={`min-h-11 shrink-0 rounded-full border px-4 text-sm font-medium sm:min-h-9 ${FOCUS} ${
                   on
-                    ? "border-neon-blue bg-neon-blue text-black"
-                    : "border-slate-600 text-slate-200 hover:border-neon-blue"
+                    ? "border-selection bg-neon-blue text-on-neon-blue"
+                    : "border-control text-ink-2 hover:border-neon-blue"
                 }`}
               >
                 {on ? "On the board" : "Build it"}
@@ -71,7 +71,7 @@ export default function SetPicker({ onClose }: { onClose: () => void }) {
           );
         })}
         {shown.length === 0 && (
-          <li className="text-sm text-slate-300">No set matches “{query}”. Try a year or a brand.</li>
+          <li className="text-sm text-ink-2">No set matches “{query}”. Try a year or a brand.</li>
         )}
       </ul>
       <div className="mt-4 flex justify-end">

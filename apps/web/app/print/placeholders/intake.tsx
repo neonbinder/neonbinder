@@ -85,9 +85,9 @@ const MECHANISM_LABELS: Record<PlaceholderPair["mechanism"], string> = {
 type Notice = { tone: "success" | "info" | "error"; text: string };
 
 const NOTICE_CLASSES: Record<Notice["tone"], string> = {
-  success: "border border-neon-green/40 bg-neon-green/10 text-neon-green",
-  info: "border border-neon-blue/40 bg-neon-blue/10 text-neon-blue",
-  error: "border border-neon-pink/40 bg-neon-pink/10 text-neon-pink",
+  success: "border border-neon-green/40 bg-neon-green/10 text-neon-green-text",
+  info: "border border-neon-blue/40 bg-neon-blue/10 text-neon-blue-text",
+  error: "border border-neon-pink/40 bg-neon-pink/10 text-neon-pink-text",
 };
 
 
@@ -313,7 +313,7 @@ export default function CardIntake() {
       <div>
         {/* h3: PrintLayout owns the h1 and the page owns the h2 (NEO-145). */}
         <h3 className="text-2xl font-bold mb-2">Upload your cards</h3>
-        <p className="text-slate-400 max-w-2xl">
+        <p className="text-ink-3 max-w-2xl">
           Photograph the cards you want placeholders for, then drop them here.
           They are cropped and matched into front/back pairs, nine to a sheet.
         </p>
@@ -360,7 +360,7 @@ export default function CardIntake() {
           <h3
             id="session-heading"
             tabIndex={-1}
-            className="text-lg font-semibold focus-visible:ring-2 focus-visible:ring-neon-purple rounded"
+            className="text-lg font-semibold focus-outline rounded"
           >
             {stage === "done"
               ? "Your cards are ready"
@@ -371,8 +371,8 @@ export default function CardIntake() {
 
           {/* ONE sentence saying what is happening, and one saying what to do.
               This is the whole answer to "how would a new user know to wait?" */}
-          <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 space-y-2">
-            <p role="status" aria-live="polite" className="text-slate-200">
+          <div className="rounded-lg border border-rule bg-field/40 p-4 space-y-2">
+            <p role="status" aria-live="polite" className="text-ink-2">
               {stage === "uploading" && "Sending your photos…"}
               {stage === "working" &&
                 (totalCount === 0
@@ -385,7 +385,7 @@ export default function CardIntake() {
                 `${pairs?.length ?? 0} pair${(pairs?.length ?? 0) === 1 ? "" : "s"} ready to print.`}
               {stage === "failed" && failureHeadline(job)}
             </p>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-3">
               {stage === "working" &&
                 "Pairs appear below as each card finishes. This takes a few minutes — you can close this tab and come back to it."}
               {stage === "waiting" &&
@@ -411,7 +411,7 @@ export default function CardIntake() {
                 <button
                   type="button"
                   onClick={() => setPendingAction("abort")}
-                  className="text-sm text-slate-400 underline hover:text-neon-pink p-2 -m-2"
+                  className="text-sm text-ink-3 underline hover:text-neon-pink-text p-2 -m-2"
                 >
                   Discard this batch
                 </button>
@@ -425,7 +425,7 @@ export default function CardIntake() {
             <p
               role="status"
               aria-live="polite"
-              className="flex items-center gap-2 rounded-md border border-neon-blue/40 bg-neon-blue/10 p-3 text-sm text-neon-blue"
+              className="flex items-center gap-2 rounded-md border border-neon-blue/40 bg-neon-blue/10 p-3 text-sm text-neon-blue-text"
             >
               <span
                 aria-hidden="true"
@@ -449,8 +449,8 @@ export default function CardIntake() {
               <ul className="space-y-1 text-sm list-none p-0">
                 {inFlight.map((image) => (
                   <li key={image.entryIndex} className="flex flex-wrap gap-2">
-                    <span className="text-slate-300">{image.originalName}</span>
-                    <span className="text-slate-400">{imageSummary(image)}</span>
+                    <span className="text-ink-2">{image.originalName}</span>
+                    <span className="text-ink-3">{imageSummary(image)}</span>
                   </li>
                 ))}
               </ul>
@@ -493,7 +493,7 @@ export default function CardIntake() {
           {/* Photos the cropper could not read at all — distinct from unmatched,
               and actionable in a different way (re-shoot, not re-pair). */}
           {failedCount > 0 && (
-            <details className="text-sm text-slate-400">
+            <details className="text-sm text-ink-3">
               <summary className="cursor-pointer">
                 {failedCount} photo{failedCount === 1 ? "" : "s"} couldn&apos;t be
                 read
@@ -505,7 +505,7 @@ export default function CardIntake() {
                     <li key={image.entryIndex}>{image.originalName}</li>
                   ))}
               </ul>
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-ink-3">
                 Usually a blurry or very dark photo. Re-shoot those and add them
                 to a new batch.
               </p>
@@ -514,7 +514,7 @@ export default function CardIntake() {
 
           {/* The id is support information, not a heading. Kept, small and
               selectable, because it is what identifies a run in a bug report. */}
-          <p className="text-xs text-slate-400 font-mono select-all">{jobId}</p>
+          <p className="text-xs text-ink-3 font-mono select-all">{jobId}</p>
         </section>
       )}
 

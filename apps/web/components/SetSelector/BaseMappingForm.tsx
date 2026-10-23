@@ -424,9 +424,9 @@ export default function BaseMappingForm({
           re-running doSync is always a safe, idempotent action here.
           Loading lives inside BaseSetPicker via skeletons. */}
       {!pickerOpen && message && (
-        <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
+        <div className="bg-raised p-4 rounded-lg shadow">
           <h3 className="text-sm font-semibold mb-2">Base mapping</h3>
-          <div className="p-3 mb-2 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm">
+          <div className="p-3 mb-2 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm">
             {message}
           </div>
           <div className="flex gap-2">

@@ -591,7 +591,7 @@ export function ParallelBuildDetails({
   return (
     <div
       id={id}
-      className="mt-1 mb-2 ml-[1.375rem] border-l border-blue-300 dark:border-blue-700 pl-3 space-y-2"
+      className="mt-1 mb-2 ml-[1.375rem] border-l border-notice-info-rule pl-3 space-y-2"
     >
       {buckets.map((bucket) => (
         <div key={bucket.label}>
@@ -1123,7 +1123,7 @@ export default function ParallelBuildPanel({
                 <span className="min-w-0 break-words">{text}</span>
               )}
               {only && (
-                <span className="ml-auto shrink-0 rounded-full border border-blue-500 dark:border-blue-400 px-1.5 text-[11px] font-medium leading-4 mt-0.5">
+                <span className="ml-auto shrink-0 rounded-full border border-notice-info-rule px-1.5 text-[11px] font-medium leading-4 mt-0.5">
                   {only}
                 </span>
               )}
@@ -1152,7 +1152,7 @@ export default function ParallelBuildPanel({
       ref={panelRef}
       tabIndex={-1}
       aria-labelledby={PARALLEL_BUILD_HEADING_ID}
-      className="p-3 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+      className="p-3 mb-3 bg-notice-info-bg border border-notice-info-rule shadow-offset rounded-md text-notice-info-ink text-sm focus-outline"
     >
       <div className="flex items-center justify-between gap-3">
         <Heading
@@ -1204,7 +1204,7 @@ export default function ParallelBuildPanel({
             role="group"
             aria-label={RESULTS_GROUP_LABEL}
             tabIndex={0}
-            className="relative max-h-[70vh] overflow-y-auto pr-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+            className="relative max-h-[70vh] overflow-y-auto pr-1 rounded-sm focus-outline"
           >
             {list}
           </div>

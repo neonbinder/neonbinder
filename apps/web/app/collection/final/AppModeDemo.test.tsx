@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "./FinalCollectionPage";
+
+// NEO-356: the demo bar's theme switch asks Clerk who is looking (signed in here).
+vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
 
 /**
  * NEO-350 — `/collection` for a signed-in collector is the same hard-coded

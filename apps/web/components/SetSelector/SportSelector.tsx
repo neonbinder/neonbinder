@@ -26,7 +26,9 @@ export default function SportSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-pink-100 dark:bg-pink-900 border-pink-300 dark:border-pink-700"
+      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
+      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
+      selectedColor="bg-[color:light-dark(oklch(94.8%_0.028_342.258),oklch(40.8%_0.153_2.432))] border-pink-700"
     />
   );
 }

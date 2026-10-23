@@ -196,7 +196,7 @@ const readyCount = (n: number) => screen.queryByText(new RegExp(`Ready \\(${n}\\
  */
 const allStatuses = () => screen.queryAllByRole("status");
 const isDndRegion = (el: HTMLElement) => el.id.startsWith("DndLiveRegion");
-const isSaveNotice = (el: HTMLElement) => el.className.includes("text-[#FF2E9A]");
+const isSaveNotice = (el: HTMLElement) => el.className.includes("text-neon-pink-text");
 const ourStatuses = () =>
   allStatuses().filter((el) => !isDndRegion(el) && !isSaveNotice(el));
 

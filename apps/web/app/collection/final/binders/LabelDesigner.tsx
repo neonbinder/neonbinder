@@ -34,12 +34,15 @@ import SpineLabel, { SpineFontFaces } from "./SpineLabel";
  *
  * Wrapped in its own Radix `Theme`: it lives in the prototype's modal, which
  * portals to <body>, outside the app's Theme, and the shared fields' Invert
- * is a Radix button that needs the theme's tokens to draw.
+ * is a Radix button that needs the theme's tokens to draw. NEO-356: that
+ * Theme no longer pins dark. The controls follow the page's mode like the
+ * rest of the dialog; the preview is the spine itself, painted in the
+ * label's own colours, so it reads the same on a light or a dark page.
  */
 
 const LEAGUES: Team["league"][] = ["MLB", "NFL", "NHL", "NCAA", "NPB"];
 const SELECT =
-  "w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
+  "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
 
 export const PREVIEW_SPINE = 76;
 
@@ -99,7 +102,6 @@ export default function LabelDesigner({
 
   return (
     <Theme
-      appearance="dark"
       accentColor="green"
       grayColor="sage"
       radius="large"
@@ -115,13 +117,13 @@ export default function LabelDesigner({
         >
           <SpineLabel name={shown} label={valid ?? draft} spineWidth={PREVIEW_SPINE} count={0} />
         </div>
-        <p className="text-xs text-slate-400">On the shelf</p>
+        <p className="text-xs text-ink-3">On the shelf</p>
       </div>
 
       <div className="min-w-0 space-y-4">
         {picks.length > 0 && (
           <div>
-            <p id={picksLabelId} className="mb-1 text-sm font-medium text-slate-300">
+            <p id={picksLabelId} className="mb-1 text-sm font-medium text-ink-2">
               Teams on its cards
             </p>
             <div role="group" aria-labelledby={picksLabelId} className="flex flex-wrap gap-2">
@@ -136,21 +138,21 @@ export default function LabelDesigner({
                     aria-pressed={on}
                     aria-label={`${pickName(pick)}, ${why}`}
                     onClick={() => pickQuick(team)}
-                    className={`inline-flex min-h-9 items-center gap-2 rounded-md border px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
+                    className={`inline-flex min-h-9 items-center gap-2 rounded-md border px-2.5 text-sm transition-colors focus-outline ${
                       on
-                        ? "border-neon-teal text-neon-teal"
-                        : "border-slate-600 text-slate-200 hover:border-slate-400 hover:text-white"
+                        ? "border-neon-teal-text text-neon-teal-text"
+                        : "border-control text-ink-2 hover:border-ink-3 hover:text-ink"
                     }`}
                   >
                     <span
                       aria-hidden="true"
-                      className="h-4 w-4 shrink-0 rounded-sm border border-slate-500"
+                      className="h-4 w-4 shrink-0 rounded-sm border border-control"
                       style={{
                         background: `linear-gradient(135deg, ${team.primary} 0 55%, ${team.secondary} 55% 100%)`,
                       }}
                     />
                     <span>{pickName(pick)}</span>
-                    <span aria-hidden="true" className="text-slate-400">
+                    <span aria-hidden="true" className="text-ink-3">
                       · {why}
                     </span>
                   </button>
@@ -161,7 +163,7 @@ export default function LabelDesigner({
         )}
 
         <div>
-          <label htmlFor={teamSelectId} className="mb-1 block text-sm font-medium text-slate-300">
+          <label htmlFor={teamSelectId} className="mb-1 block text-sm font-medium text-ink-2">
             Start from a team&apos;s colors
           </label>
           <select id={teamSelectId} className={SELECT} value={teamId} onChange={(e) => pickTeam(e.target.value)}>
@@ -188,7 +190,7 @@ export default function LabelDesigner({
           onTextChange={(text) => edit({ text })}
           onInvert={() => edit({ background: draft.text, text: draft.background })}
         />
-        <p aria-live="polite" className="-mt-2 text-xs text-amber-300">
+        <p aria-live="polite" className="-mt-2 text-xs text-notice-warn-ink">
           {shelf?.swapped
             ? `So it stays readable, the shelf letters it in ${
                 shelf.text === "#FFFFFF" ? "white" : "black"
@@ -198,11 +200,11 @@ export default function LabelDesigner({
 
         <SpineLabelLettering fontId={draft.fontId} onFontChange={(fontId) => edit({ fontId })} />
 
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-ink-3">
           Want it on the real binder?{" "}
           <PrintShopLink
             appHref={spineLabelPrintHref({ name: name.trim(), ...draft })}
-            className="rounded-sm text-neon-blue underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
           >
             Print this label
           </PrintShopLink>{" "}

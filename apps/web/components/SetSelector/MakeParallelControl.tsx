@@ -333,12 +333,12 @@ function MakeParallelDialog({
 
   let body;
   if (targets === undefined) {
-    body = <p className="text-sm text-slate-400">{makeParallelCopy.loading}</p>;
+    body = <p className="text-sm text-ink-3">{makeParallelCopy.loading}</p>;
   } else if (!targets.ok) {
-    body = <p className="text-sm text-[#FF2E9A]">{targets.reason}</p>;
+    body = <p className="text-sm text-neon-pink-text">{targets.reason}</p>;
   } else if (targets.targets.length === 0) {
     body = (
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-ink-3">
         {makeParallelCopy.noTargets(targets.brandValue)}
       </p>
     );
@@ -369,7 +369,7 @@ function MakeParallelDialog({
         {targetReason && (
           // The server's own sentence: most often "no Parallel type yet",
           // with the step that fixes it.
-          <p id={targetReasonId} className="text-sm text-slate-300">
+          <p id={targetReasonId} className="text-sm text-ink-2">
             {targetReason}
           </p>
         )}
@@ -390,12 +390,12 @@ function MakeParallelDialog({
           />
         )}
         {destinationReason && (
-          <p id={destinationReasonId} className="text-sm text-slate-300">
+          <p id={destinationReasonId} className="text-sm text-ink-2">
             {destinationReason}
           </p>
         )}
         {leftBehind.length > 0 && (
-          <p id={leftBehindId} className="text-sm text-slate-300">
+          <p id={leftBehindId} className="text-sm text-ink-2">
             {makeParallelCopy.leftBehind(leftBehind)}
           </p>
         )}

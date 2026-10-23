@@ -184,19 +184,19 @@ function focusAdjacentColumn(
  *
  * - `ring-inset`, not an outer ring: the listbox is `overflow-y-auto`, which
  *   clips an outer ring on every row's left and right edge (rows are w-full).
- * - Light: emerald-700, because `#00D558` is under 2:1 on white and on the
- *   -100 selection fills; emerald-700 clears 3:1 (WCAG 1.4.11) on all of them.
- *   Dark: the brand neon, which clears 3:1 on every -900 fill and gray-700.
+ * - `ring-neon-green-text`: the brand neon in dark, which clears 3:1 on every
+ *   -900 fill and the idle row; deepened in light, where `#00D558` is under
+ *   2:1 on white (WCAG 1.4.11).
  * - Dark only, a faint inner glow, so the row reads as a lit tube rather than
- *   a boxed one. Static, never animated (NEO-85: nothing moves under a
- *   coordinate-tap driver).
+ *   a boxed one (light drops it: on paper a glow is a smudge). Static,
+ *   never animated (NEO-85: nothing moves under a coordinate-tap driver).
  * - A transparent outline, which Windows High Contrast paints in a system
  *   colour where it drops box-shadows (and so the ring) entirely.
  */
 const HIGHLIGHT_STROKE =
-  "ring-2 ring-inset ring-emerald-700 dark:ring-[#00D558] dark:shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] outline-2 -outline-offset-2 outline-transparent";
+  "ring-2 ring-inset ring-neon-green-text shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] [[data-theme=light]_&]:shadow-none outline-2 -outline-offset-2 outline-transparent";
 const HIGHLIGHT_TINT =
-  "bg-[#00D558]/20 border-emerald-700 dark:border-[#00D558]";
+  "bg-neon-green/20 border-neon-green-text";
 /**
  * NEO-325 — the `(#id)` after a twin's name: a step down in size and weight,
  * and in the row's OWN text colour at reduced opacity rather than a fixed
@@ -210,9 +210,20 @@ const TWIN_SUFFIX = "text-xs font-normal tabular-nums opacity-75";
  * the green /20 over the dark card) and is no better on the selected `*-900`
  * fills or the idle gray-700 row (~4:1). gray-300 clears 6.5:1 on all of them.
  */
-const DESCRIPTION_TONE = "text-sm text-gray-600 dark:text-gray-300";
+const DESCRIPTION_TONE = "text-sm text-ink-2";
 const ROW_IDLE =
-  "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600";
+  "bg-ink/10 border-control hover:bg-ink/15";
+/**
+ * NEO-356 — the committed selection's line, light mode only. Dark draws the
+ * selection as the column's own neon-tinted fill (unchanged); on paper a
+ * tint alone is a colour-only mark (WCAG 1.4.1), so light adds a 2px inset
+ * line in the selection colour. Inset for the same reason as the highlight
+ * stroke (the listbox clips an outer ring). The highlight stroke replaces it
+ * while the highlight sits on the selected row, so the two never fight over
+ * the ring colour.
+ */
+const SELECTED_LINE =
+  "[[data-theme=light]_&]:ring-2 [[data-theme=light]_&]:ring-inset [[data-theme=light]_&]:ring-selection";
 
 /**
  * NEO-224 — what each column's polite region says about its filter. The
@@ -613,7 +624,7 @@ function EntitySelector({
       <button
         ref={collapsedCardRef}
         type="button"
-        className="w-full text-left bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+        className="w-full text-left bg-raised p-6 rounded-lg shadow shadow-offset flex items-center justify-between cursor-pointer focus-outline"
         aria-label={`${title}: ${nameOf(selected)}${
           suffixOf(selected) ? ` ${suffixOf(selected)}` : ""
         } — change`}
@@ -630,7 +641,7 @@ function EntitySelector({
             </>
           )}
         </div>
-        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+        <ChevronDownIcon className="w-5 h-5 text-ink-3" />
       </button>
     );
   }
@@ -650,7 +661,7 @@ function EntitySelector({
   // put, and the filter simply applies once there are rows to filter.
   return (
     <div
-      className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+      className="bg-raised p-6 rounded-lg shadow shadow-offset"
       aria-busy={loading ? "true" : undefined}
     >
       <div className="flex items-center justify-between mb-4">
@@ -669,9 +680,9 @@ function EntitySelector({
             aria-expanded={true}
             // a11y (2.5.8): `p-2 -m-2` grows the 20px chevron's hit area to
             // 36px without moving it or the heading beside it.
-            className="p-2 -m-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
+            className="p-2 -m-2 focus-outline rounded"
           >
-            <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+            <ChevronUpIcon className="w-5 h-5 text-ink-3" />
           </button>
         )}
       </div>
@@ -765,7 +776,7 @@ function EntitySelector({
         // own page region. With the role gone, an `aria-label` on this plain
         // div would be a prohibited attribute, so it went too.
         <div className="space-y-2" aria-hidden="true">
-          <div className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700" />
+          <div className="h-[50px] rounded-md border border-control bg-ink/10" />
         </div>
       ) : (
         // NEO-341: no wrapper any more. The listbox carries `popupId` itself
@@ -773,7 +784,7 @@ function EntitySelector({
         <>
           {rows.length === 0 ? (
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
-              <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
+              <div className="text-sm text-ink-3 py-2">
                 {emptyText}
               </div>
             </div>
@@ -829,18 +840,24 @@ function EntitySelector({
                     // not focusable by key any more, but a pointer press can
                     // still focus one; Enter there picks it, once.
                     onKeyDown={(e) => activateOnEnter(e, pick)}
-                    className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
+                    className={`w-full text-left p-3 rounded-md border transition-colors focus-outline ${
                       isSelected
                         ? selectedColor
                         : isHighlighted
                           ? HIGHLIGHT_TINT
                           : ROW_IDLE
-                    }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}${
+                    }${
+                      isHighlighted
+                        ? ` ${HIGHLIGHT_STROKE}`
+                        : isSelected
+                          ? ` ${SELECTED_LINE}`
+                          : ""
+                    }${
                       // A pinned view is a lens on the column, not one of its
                       // rows: the same row geometry with a rail in the accent
                       // blue down its left edge — the one colour the cascade
                       // does not already spend on a state.
-                      pinned ? " border-l-4 border-l-[#00C2FF]" : ""
+                      pinned ? " border-l-4 border-l-neon-blue-text" : ""
                     }`}
                   >
                     <div className="flex items-center gap-2">
@@ -856,12 +873,12 @@ function EntitySelector({
                         </>
                       )}
                       {showPills && pd?.sportlots && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
+                        <span className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2">
                           SL
                         </span>
                       )}
                       {showPills && pd?.bsc && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
+                        <span className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2">
                           BSC
                         </span>
                       )}
@@ -885,7 +902,7 @@ function EntitySelector({
       )}
       {!loading && rows.length > 0 && filteredItems.length === 0 && (
         // Pinned entries only: the view is listed, the data rows are not.
-        <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
+        <div className="text-sm text-ink-3 py-2">
           {emptyText}
         </div>
       )}

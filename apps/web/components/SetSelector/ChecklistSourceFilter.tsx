@@ -70,7 +70,7 @@ export default function ChecklistSourceFilter({
         );
         return (
           <div key={side} className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-24 shrink-0">
+            <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide w-24 shrink-0">
               {title}
             </span>
             <Chip
@@ -127,10 +127,10 @@ export function Chip({
       title={title}
       aria-pressed={active}
       aria-label={ariaLabel ?? `Filter source: ${label}${active ? " (selected)" : ""}`}
-      className={`text-xs px-2.5 py-1 rounded-full border transition-colors focus:outline-none focus:ring-1 focus:ring-[#00D558] ${
+      className={`text-xs px-2.5 py-1 rounded-full border transition-colors focus-outline ${
         active
-          ? "border-[#00D558] bg-[#00D558]/15 text-[#00D558]"
-          : "border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-500"
+          ? "border-neon-green-text bg-neon-green/15 text-neon-green-text"
+          : "border-control bg-raised text-ink-2 hover:border-ink-3"
       }`}
     >
       {label}

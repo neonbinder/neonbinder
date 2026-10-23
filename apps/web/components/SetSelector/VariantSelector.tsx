@@ -30,7 +30,9 @@ export default function VariantSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-teal-100 dark:bg-teal-900 border-teal-300 dark:border-teal-700"
+      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
+      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
+      selectedColor="bg-[color:light-dark(oklch(95.3%_0.051_180.801),oklch(38.6%_0.063_188.416))] border-teal-700"
       isItemTerminal={() => true}
     />
   );

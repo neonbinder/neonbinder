@@ -178,15 +178,15 @@ export default function UndatedCareerTeams({
   };
 
   return (
-    <div className="mt-2 border-l-2 border-dashed border-gray-700 pl-3">
-      <p id={headingId} className="text-xs text-gray-400">
+    <div className="mt-2 border-l-2 border-dashed border-rule-strong pl-3">
+      <p id={headingId} className="text-xs text-ink-3">
         Also on Wikidata, no years yet
       </p>
       {/* Says what each outcome means, so "leave it" is a real choice rather
           than the thing that happens when you ignore the list. */}
       {/* gray-400, not gray-500: gray-500 is 3.67:1 on the dialog's
           gray-900, under SC 1.4.3's 4.5:1 floor for normal text. */}
-      <p className="text-xs text-gray-400">
+      <p className="text-xs text-ink-3">
         Add the years and it joins the career list. Leave it and we keep the
         name on file.
       </p>
@@ -194,7 +194,7 @@ export default function UndatedCareerTeams({
         {names.map((name) => (
           <li key={name} className="text-sm">
             <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-gray-300">{name}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-2">{name}</span>
               {openFor !== name && (
                 <button
                   type="button"
@@ -218,7 +218,7 @@ export default function UndatedCareerTeams({
                   }}
                   // p-1 -m-1 grows the tap target to the WCAG 2.2 SC 2.5.8
                   // floor without shifting the text — the app's convention.
-                  className="shrink-0 rounded p-1 -m-1 text-xs text-[#00C2FF] underline decoration-dotted transition-colors hover:text-[#00D558] focus:text-[#00D558] focus:outline-none focus:ring-2 focus:ring-[#00C2FF] aria-disabled:opacity-40"
+                  className="shrink-0 rounded p-1 -m-1 text-xs text-neon-blue-text underline decoration-dotted transition-colors hover:text-neon-green-text focus:text-neon-green-text focus-outline aria-disabled:opacity-40"
                 >
                   Add years
                 </button>
@@ -297,7 +297,7 @@ export default function UndatedCareerTeams({
                   aria-disabled={disabled}
                   aria-label={`Save years for ${name}`}
                   onClick={() => save(name)}
-                  className="rounded border border-[#00D558] px-2 py-1.5 text-sm text-[#00D558] transition-colors hover:bg-[#00D558]/20 focus:bg-[#00D558]/20 focus:outline-none focus:ring-2 focus:ring-[#00D558] aria-disabled:opacity-40"
+                  className="rounded border border-neon-green-text px-2 py-1.5 text-sm text-neon-green-text transition-colors hover:bg-neon-green/20 focus:bg-neon-green/20 focus-outline aria-disabled:opacity-40"
                 >
                   Save years
                 </button>
@@ -310,7 +310,7 @@ export default function UndatedCareerTeams({
                   type="button"
                   aria-label={`Cancel years for ${name}`}
                   onClick={close}
-                  className="rounded p-1 -m-1 text-xs text-gray-400 underline decoration-dotted transition-colors hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none focus:ring-2 focus:ring-[#FF2E9A]"
+                  className="rounded p-1 -m-1 text-xs text-ink-3 underline decoration-dotted transition-colors hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
                 >
                   Cancel
                 </button>
@@ -318,7 +318,7 @@ export default function UndatedCareerTeams({
             )}
 
             {openFor === name && error && (
-              <p id={errorId} role="alert" className="mt-1 text-xs text-[#FF2E9A]">
+              <p id={errorId} role="alert" className="mt-1 text-xs text-neon-pink-text">
                 {error}
               </p>
             )}

@@ -15,10 +15,10 @@ import EasypostKeyEditor from "@/components/modules/EasypostKeyEditor";
  */
 export default function PostagePanel() {
   return (
-    <section className="space-y-6 p-6 border border-slate-800 rounded-lg">
+    <section className="space-y-6 p-6 border border-rule rounded-lg">
       <div>
         <h2 className="text-xl font-semibold">Postage</h2>
-        <p className="text-sm text-slate-400 mt-1">
+        <p className="text-sm text-ink-3 mt-1">
           Buy USPS letter postage for your labels
         </p>
       </div>

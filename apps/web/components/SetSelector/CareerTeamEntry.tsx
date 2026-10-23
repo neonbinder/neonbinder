@@ -377,7 +377,7 @@ export default function CareerTeamEntry({
   };
 
   return (
-    <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1.5">
+    <div className="border border-rule-strong rounded-md bg-raised-deep/60 p-2 space-y-1.5">
       {/* NEO-236: one box. The team's Location is asked on its own New Team
           step, which is also the only place its League can be asked. */}
       <div className="relative" ref={comboRef} onBlur={handleComboBlur}>
@@ -448,7 +448,7 @@ export default function CareerTeamEntry({
           <ul
             role="listbox"
             aria-label="Existing team suggestions"
-            className="absolute z-10 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-md border border-gray-700 bg-gray-900 shadow-lg"
+            className="absolute z-10 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-md border border-rule-strong bg-raised-deep shadow-lg shadow-offset"
           >
             {suggestions.map((s, idx) => (
               <li key={s.key} role="none">
@@ -478,8 +478,8 @@ export default function CareerTeamEntry({
                   onClick={() => pickSuggestion(s.name)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
                     idx === highlightIdx
-                      ? "bg-[#00D558]/20 text-[#00D558]"
-                      : "hover:bg-gray-800 text-gray-200"
+                      ? "bg-neon-green/20 text-neon-green-text"
+                      : "hover:bg-hover text-ink-2"
                   }`}
                 >
                   <span className="flex-1 truncate">{s.name}</span>
@@ -491,7 +491,7 @@ export default function CareerTeamEntry({
       </div>
 
       {didYouMean && (
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-ink-3">
           {/* NEO-212 (a11y): no aria-label. The visible text IS the name, so
               an "Use {name}" override replaced a readable label with one that
               shares none of its words — a voice-control user saying "Did you
@@ -499,7 +499,7 @@ export default function CareerTeamEntry({
           <button
             type="button"
             onClick={() => pickSuggestion(didYouMean)}
-            className="text-[#00C2FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+            className="text-neon-blue-text underline decoration-dotted hover:text-neon-green-text focus:text-neon-green-text focus-outline"
           >
             Did you mean {didYouMean}?
           </button>
@@ -537,7 +537,7 @@ export default function CareerTeamEntry({
           onClick={commit}
           disabled={!canAdd}
           aria-label="Add career team"
-          className="px-2 py-1.5 text-sm rounded border border-[#00D558] text-[#00D558] hover:bg-[#00D558]/20 focus:bg-[#00D558]/20 focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-2 py-1.5 text-sm rounded border border-neon-green-text text-neon-green-text hover:bg-neon-green/20 focus:bg-neon-green/20 focus-outline disabled:opacity-40 disabled:cursor-not-allowed"
         >
           + Add
         </button>

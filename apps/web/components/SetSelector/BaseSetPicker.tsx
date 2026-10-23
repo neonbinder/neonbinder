@@ -634,47 +634,47 @@ export default function BaseSetPicker({
         aria-modal="true"
         aria-labelledby="base-set-picker-title"
         aria-describedby="base-set-picker-description"
-        className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
+        className="fixed inset-0 bg-scrim flex items-center justify-center z-50 p-4 outline-none"
         onKeyDown={onDialogKeyDown}
         onClick={() => {
           if (!confirming) onClose();
         }}
       >
         <div
-          className="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full max-h-[85vh] flex flex-col"
+          className="bg-raised-deep border border-rule-strong rounded-xl shadow-offset max-w-lg w-full max-h-[85vh] flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="px-6 py-4 border-b border-gray-700">
+          <div className="px-6 py-4 border-b border-rule-strong">
             <h2
               id="base-set-picker-title"
-              className="text-xl font-semibold text-white"
+              className="text-xl font-semibold text-ink"
             >
               Select Base Set
             </h2>
             <p
               id="base-set-picker-description"
-              className="text-sm text-gray-400 mt-1"
+              className="text-sm text-ink-3 mt-1"
             >
               Choose the SportLots and BSC sets that hold{" "}
-              <strong className="text-gray-200">{setName}</strong>&rsquo;s base
+              <strong className="text-ink-2">{setName}</strong>&rsquo;s base
               cards. Only what you pick is linked; nothing else changes.
             </p>
             {showImpact && remapNotice && (
-              <div className="mt-2 text-sm text-amber-300">
+              <div className="mt-2 text-sm text-notice-warn-ink">
                 <p>
                   {remapTotal > 0
                     ? `${remapTotal} cards are linked through the current mapping; their refs will point at the new set.`
                     : "No cards are linked through the current mapping yet."}
                 </p>
                 {showRemapBreakdown && (
-                  <p className="text-xs text-amber-200/80 mt-0.5">
+                  <p className="text-xs text-notice-warn-ink mt-0.5">
                     {remapNotice.slCards} through SportLots,{" "}
                     {remapNotice.bscCards} through BSC.
                   </p>
                 )}
                 {currentMapping.length > 0 && (
-                  <p className="text-xs text-gray-400 mt-0.5">
+                  <p className="text-xs text-ink-3 mt-0.5">
                     Currently mapped: {currentMapping.join(" · ")}
                   </p>
                 )}
@@ -685,7 +685,7 @@ export default function BaseSetPicker({
           {notice && (
             <div
               role="alert"
-              className="mx-6 mt-4 p-3 rounded-md border border-amber-600 bg-amber-900/25 text-sm text-amber-200"
+              className="mx-6 mt-4 p-3 rounded-md border border-notice-warn-rule bg-notice-warn-bg text-sm text-notice-warn-ink"
             >
               {notice}
             </div>
@@ -694,35 +694,35 @@ export default function BaseSetPicker({
           {/* BSC candidates */}
           {bscPaused && (
             <div className="px-6 pt-4">
-              <div className="text-xs text-blue-400 font-medium uppercase tracking-wide mb-1.5">
+              <div className="text-xs text-neon-blue-text font-medium uppercase tracking-wide mb-1.5">
                 BSC base
               </div>
               {/* NEO-287: the side was never asked. Not a skeleton (nothing is
                   loading) and not the empty copy (BSC did not "return" anything).
                   Amber, the house "nothing broke" colour. */}
-              <p className="text-sm text-amber-300">
+              <p className="text-sm text-notice-warn-ink">
                 {PAUSE_NOTICE_COPY.pane(sideLabel("bsc"))}
               </p>
             </div>
           )}
           {!bscPaused && loading && (
             <div className="px-6 pt-4">
-              <div className="text-xs text-blue-400 font-medium uppercase tracking-wide mb-1.5">
+              <div className="text-xs text-neon-blue-text font-medium uppercase tracking-wide mb-1.5">
                 BSC base
               </div>
-              <div className="h-9 rounded-lg bg-gray-800/60 border border-gray-700 animate-pulse" />
+              <div className="h-9 rounded-lg bg-raised/60 border border-rule-strong animate-pulse" />
             </div>
           )}
           {!bscPaused && !loading && (
             <div className="px-6 pt-4">
               <div
-                className="text-xs text-blue-400 font-medium uppercase tracking-wide mb-1.5"
+                className="text-xs text-neon-blue-text font-medium uppercase tracking-wide mb-1.5"
                 id="bsc-base-list-label"
               >
                 BSC base
               </div>
               {bscCandidates.length === 0 ? (
-                <p className="text-sm text-gray-400">
+                <p className="text-sm text-ink-3">
                   {/* gray-500 measured ~3.7:1 against this dialog's bg-gray-900 —
                       under WCAG 1.4.3's 4.5:1 for normal text. */}
                   BSC returned no base set for {setName}
@@ -758,26 +758,26 @@ export default function BaseSetPicker({
                             { sl: selectedSl, bsc: cand.item },
                           )
                         }
-                        className={`w-full text-left px-3 py-1.5 rounded-md border transition-all text-sm focus:outline-none focus:ring-2 focus:ring-[#00C2FF] ${
+                        className={`w-full text-left px-3 py-1.5 rounded-md border transition-all text-sm focus-outline ${
                           selected
-                            ? "border-blue-400 bg-blue-900/30 ring-1 ring-blue-400"
-                            : "border-gray-600 bg-gray-800 hover:border-gray-400"
+                            ? "border-selection bg-selection/10 ring-1 ring-selection"
+                            : "border-control bg-raised hover:border-ink-3"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-gray-200">
+                          <span className="text-ink-2">
                             {cand.isSetListing ? (
                               cand.label
                             ) : (
                               <CandidateName
                                 parts={itemLabelParts(cand.item, "bsc", bscDups)}
-                                tone="text-blue-300/80"
+                                tone="text-neon-blue-text"
                               />
                             )}
                           </span>
                           {cand.score !== null &&
                             cand.score >= LIKELY_MATCH_SCORE && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700 shrink-0">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-notice-info-bg text-notice-info-ink border border-notice-info-rule shrink-0">
                                 likely match
                               </span>
                             )}
@@ -793,7 +793,7 @@ export default function BaseSetPicker({
           {/* SL Search */}
           <div className="px-6 pt-3">
             <div
-              className="text-xs text-purple-400 font-medium uppercase tracking-wide mb-1.5"
+              className="text-xs text-neon-purple-text font-medium uppercase tracking-wide mb-1.5"
               id="sl-base-list-label"
             >
               SportLots base
@@ -824,7 +824,7 @@ export default function BaseSetPicker({
             {slPaused ? (
               // NEO-287: see the BSC pane above. The confirm still works off a
               // BSC pick alone — the one-marketplace flows rely on it.
-              <p className="text-sm text-amber-300 py-4">
+              <p className="text-sm text-notice-warn-ink py-4">
                 {PAUSE_NOTICE_COPY.pane(sideLabel("sportlots"))}
               </p>
             ) : loading ? (
@@ -832,13 +832,13 @@ export default function BaseSetPicker({
                 {Array.from({ length: 6 }).map((_, i) => (
                   <div
                     key={`skel-${i}`}
-                    className="h-10 rounded-lg bg-gray-800/60 border border-gray-700 animate-pulse"
+                    className="h-10 rounded-lg bg-raised/60 border border-rule-strong animate-pulse"
                     style={{ animationDelay: `${i * 60}ms` }}
                   />
                 ))}
               </>
             ) : slOptions.length === 0 ? (
-              <p className="text-sm text-gray-400 py-4">
+              <p className="text-sm text-ink-3 py-4">
                 SportLots returned no base set for {setName}
               </p>
             ) : (
@@ -884,21 +884,21 @@ export default function BaseSetPicker({
                             },
                           )
                         }
-                        className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all text-sm focus:outline-none focus:ring-2 focus:ring-[#00D558] ${
+                        className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all text-sm focus-outline ${
                           selected
-                            ? "border-[#00D558] bg-[#00D558]/10 ring-1 ring-[#00D558]"
-                            : "border-gray-600 bg-gray-800 hover:border-gray-400"
+                            ? "border-neon-green-text bg-neon-green/10 ring-1 ring-neon-green-text"
+                            : "border-control bg-raised hover:border-ink-3"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-gray-200">
+                          <span className="text-ink-2">
                             <CandidateName
                               parts={{ name, suffix }}
-                              tone="text-purple-300/80"
+                              tone="text-neon-purple-text"
                             />
                           </span>
                           {opt.score >= LIKELY_MATCH_SCORE && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 border border-green-700 shrink-0">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-notice-success-bg text-notice-success-ink border border-notice-success-rule shrink-0">
                               likely match
                             </span>
                           )}
@@ -908,7 +908,7 @@ export default function BaseSetPicker({
                   })}
                 </div>
                 {filteredSlOptions.length === 0 && (
-                  <p className="text-sm text-gray-400 py-4 text-center">
+                  <p className="text-sm text-ink-3 py-4 text-center">
                     No matching sets found
                   </p>
                 )}
@@ -917,11 +917,11 @@ export default function BaseSetPicker({
           </div>
 
           {/* Footer */}
-          <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between gap-3">
+          <div className="px-6 py-4 border-t border-rule-strong flex items-center justify-between gap-3">
             {/* The disabled-state REASON lives here rather than on the button:
                 the confirm label is a Maestro landmark in five flows and has to
                 stay constant. */}
-            <p className="text-xs text-gray-400" role="status">
+            <p className="text-xs text-ink-3" role="status">
               {loading
                 ? "Loading marketplace options…"
                 : hasPick

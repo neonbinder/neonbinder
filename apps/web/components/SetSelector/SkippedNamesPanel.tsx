@@ -115,12 +115,12 @@ export default function SkippedNamesPanel({
   const message = (
     <>
       {status && (
-        <p role="status" aria-live="polite" className="mt-2 text-sm text-blue-800 dark:text-blue-200">
+        <p role="status" aria-live="polite" className="mt-2 text-sm text-notice-info-ink">
           {status}
         </p>
       )}
       {error && (
-        <p role="alert" className="mt-2 text-sm text-pink-800 dark:text-pink-200">
+        <p role="alert" className="mt-2 text-sm text-notice-danger-ink">
           {error}
         </p>
       )}
@@ -142,12 +142,12 @@ export default function SkippedNamesPanel({
         // suffix says what "skipped" MEANT — the wizard's wording, not a
         // generic "hidden".
         aria-label={`Skipped names (${rows.length}) — not players or teams`}
-        className="cursor-pointer select-none py-1.5 text-gray-600 dark:text-gray-400"
+        className="cursor-pointer select-none py-1.5 text-ink-3"
       >
         Skipped names ({rows.length})
       </summary>
 
-      <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+      <p className="mt-1 text-sm text-ink-3">
         These names were marked not a person or team and will not be offered
         again for this set. Unskip a name to review it on the next sync.
       </p>
@@ -158,7 +158,7 @@ export default function SkippedNamesPanel({
             key={skip._id as unknown as string}
             className="flex flex-wrap items-center gap-2"
           >
-            <span className="text-gray-700 dark:text-gray-300">
+            <span className="text-ink-2">
               {`${skip.name} · ${skip.kind} · skipped ${formatSkippedAt(skip.skippedAt)}`}
             </span>
             <button

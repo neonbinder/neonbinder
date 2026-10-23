@@ -81,9 +81,12 @@ describe("ApiKeysPanel", () => {
     render(<ApiKeysPanel />);
     expect(screen.getByTestId("clerk-api-keys")).not.toBeNull();
     // Without `fallback`, the slot is an unexplained blank while clerk-js
-    // downloads; without `appearance`, it paints in Clerk's stock palette.
+    // downloads.
     expect(mocks.apiKeysProps?.fallback).toBeTruthy();
-    expect(mocks.apiKeysProps?.appearance).toBeTruthy();
+    // No per-component `appearance` (NEO-356): one would pin the widget to a
+    // single palette, while <ClerkProvider appearance={clerkAppearance(mode)}>
+    // already skins it in the page's light or dark mode.
+    expect(mocks.apiKeysProps?.appearance).toBeUndefined();
   });
 
   it("keeps the explanation when Clerk's component throws", () => {

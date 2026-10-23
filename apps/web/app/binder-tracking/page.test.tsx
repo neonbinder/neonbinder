@@ -13,8 +13,10 @@ import BinderTrackingPage from "./page";
  * the tour's own Get Started button, stubbed here; Convex is mocked empty so
  * any client use would throw.
  */
+// A signed-out visitor: the demo's theme toggle (NEO-356) reads useAuth.
 vi.mock("@clerk/clerk-react", () => ({
   SignUpButton: ({ children }: { children: ReactNode }) => children,
+  useAuth: () => ({ isLoaded: true, isSignedIn: false }),
 }));
 vi.mock("convex/react", () => ({}));
 

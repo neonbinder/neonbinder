@@ -2698,7 +2698,27 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     expect(screen.getByText("Knights").style.color).toBe("#e8e8e8");
     const muted = screen.getByText("Shadows");
     expect(muted.style.color).toBe("");
-    expect(muted.className).toContain("text-gray-300");
+    expect(muted.className).toContain("text-ink-2");
+  });
+
+  it("judges the livery against the light panel in light mode (NEO-356)", () => {
+    document.documentElement.dataset.theme = "light";
+    try {
+      currentRow = makeRow({ level: "setName", teamIds: ["team-muted"] });
+      currentTeamRows = [
+        { _id: "team-muted", name: "Shadows", colors: { primary: "#111111" } },
+      ];
+      render(
+        <SetAttributesPanel
+          selectorOptionId={SELECTOR_OPTION_ID}
+          defaultCollapsed
+        />,
+      );
+      // Near-black is unreadable on the dark panel and plain ink on the white one.
+      expect(screen.getByText("Shadows").style.color).toBe("#111111");
+    } finally {
+      delete document.documentElement.dataset.theme;
+    }
   });
 
   it("does not show the bar chip at a level that has no Team row", () => {
@@ -3036,13 +3056,13 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
     );
     const edit = screen.getByRole("button", { name: "Edit attributes" });
     expect(edit.textContent).toBe("Edit attributes ▾");
-    for (const cls of ["py-1", "focus-visible:ring-2", "focus-visible:ring-[#00C2FF]"]) {
+    for (const cls of ["py-1", "focus-outline"]) {
       expect(edit.classList.contains(cls)).toBe(true);
     }
     fireEvent.click(edit);
     const hide = screen.getByRole("button", { name: "Hide attributes" });
     expect(hide.textContent).toBe("Hide attributes ▴");
-    expect(hide.classList.contains("focus-visible:ring-[#00C2FF]")).toBe(true);
+    expect(hide.classList.contains("focus-outline")).toBe(true);
   });
 
   it("Enter on Edit attributes / Hide attributes toggles the panel, once (maestro's synthetic Enter)", () => {
@@ -3082,9 +3102,8 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
       for (const cls of [
         "min-w-6",
         "min-h-6",
-        "text-gray-500",
-        "focus-visible:ring-2",
-        "focus-visible:ring-[#00C2FF]",
+        "text-ink-3",
+        "focus-outline",
       ]) {
         expect(el.classList.contains(cls)).toBe(true);
       }

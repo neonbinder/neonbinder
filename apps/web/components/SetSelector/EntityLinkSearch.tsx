@@ -5,6 +5,9 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { teamFullName } from "../../lib/teams/team-name";
 import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
 import { Input } from "../primitives/Input";
+import { useTheme } from "../../src/theme/ThemeProvider";
+import type { ThemeMode } from "../../src/theme/theme-mode";
+import { tokenHex } from "../../src/theme/tokens";
 
 /**
  * NEO-92: single-select existing-player/team search for the review wizard's
@@ -67,24 +70,44 @@ const MAX_STINTS_SHOWN = 3;
 
 /**
  * The two grounds a result row is ever painted on: the panel over the
- * dialog's gray-900, and the highlighted row (`bg-[#00D558]/20` composited
- * over that same gray-900, worked out once here). A livery colour must clear
- * 4.5:1 on BOTH, or it would read on one row and vanish when highlighted.
+ * dialog's `raised-deep`, and the highlighted row (`bg-neon-green/20`
+ * composited over that same ground). A livery colour must clear 4.5:1 on
+ * BOTH, or it would read on one row and vanish when highlighted. Both follow
+ * the mode (NEO-356): dark is gray-900 and #0e3e31, as before; light is white
+ * and a pale green.
  */
-const RESULT_BG_IDLE = "#111827";
-const RESULT_BG_HIGHLIGHT = "#0e3e31";
 const STINT_TEXT_MIN_CONTRAST = 4.5;
+
+/** `fg` at `alpha` over an opaque `bg`, both `#rrggbb`. */
+function compositeHex(fg: string, bg: string, alpha: number): string {
+  const ch = (hex: string, i: number) => parseInt(hex.slice(i, i + 2), 16);
+  return `#${[1, 3, 5]
+    .map((i) =>
+      Math.round(alpha * ch(fg, i) + (1 - alpha) * ch(bg, i))
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+}
+
+function resultGrounds(mode: ThemeMode): string[] {
+  const idle = tokenHex("raised-deep", mode);
+  return [idle, compositeHex(tokenHex("neon-green", mode), idle, 0.2)];
+}
 
 /**
  * The team's own colour for its name in the career line — the house "Padres
  * in the Padres colour" pattern — or null to leave it muted. Colour is never
  * the only carrier: the label reads the same words either way (SC 1.4.1).
  */
-function stintColor(primaryColor: string | undefined): string | null {
+function stintColor(
+  primaryColor: string | undefined,
+  mode: ThemeMode,
+): string | null {
   if (!primaryColor) return null;
   const hex = normalizeHexColor(primaryColor);
   if (!hex) return null;
-  for (const bg of [RESULT_BG_IDLE, RESULT_BG_HIGHLIGHT]) {
+  for (const bg of resultGrounds(mode)) {
     const ratio = contrastRatio(hex, bg);
     if (ratio === null || ratio < STINT_TEXT_MIN_CONTRAST) return null;
   }
@@ -119,6 +142,7 @@ export default function EntityLinkSearch({
   ) => void;
   onCancel: () => void;
 }) {
+  const { mode } = useTheme();
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
@@ -235,7 +259,7 @@ export default function EntityLinkSearch({
     // the listbox. It holds a search box, status lines and the Cancel button,
     // and a listbox may own only options — so the role sits on the results
     // list below, under the same name, rendered for the panel's whole life.
-    <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1">
+    <div className="border border-rule-strong rounded-md bg-raised-deep/60 p-2 space-y-1">
       <Input
         bare
         ref={inputRef}
@@ -284,10 +308,10 @@ export default function EntityLinkSearch({
       />
 
       {idle && (
-        <div className="text-xs text-gray-400 px-2 py-1">Type to search</div>
+        <div className="text-xs text-ink-3 px-2 py-1">Type to search</div>
       )}
-      {searching && <div className="text-xs text-gray-400 px-2 py-1">Loading…</div>}
-      {empty && <div className="text-xs text-gray-400 px-2 py-1">No matches</div>}
+      {searching && <div className="text-xs text-ink-3 px-2 py-1">Loading…</div>}
+      {empty && <div className="text-xs text-ink-3 px-2 py-1">No matches</div>}
       <div
         role="listbox"
         aria-label={`Search existing ${label}s`}
@@ -311,8 +335,8 @@ export default function EntityLinkSearch({
               aria-selected={idx === highlightIdx}
               className={`w-full text-left px-2 py-1 text-sm rounded ${
                 idx === highlightIdx
-                  ? "bg-[#00D558]/20 text-[#00D558]"
-                  : "hover:bg-gray-800 text-gray-200"
+                  ? "bg-neon-green/20 text-neon-green-text"
+                  : "hover:bg-hover text-ink-2"
               }`}
             >
               {/* The name in its own element, so a flow's `text:` match on it
@@ -320,20 +344,20 @@ export default function EntityLinkSearch({
               <span className="flex items-baseline gap-2">
                 <span>{m.name}</span>
                 {m.sportValue && (
-                  <span className="rounded border border-gray-600 px-1 text-[0.625rem] leading-4 text-gray-400">
+                  <span className="rounded border border-control px-1 text-[0.625rem] leading-4 text-ink-3">
                     {m.sportValue}
                   </span>
                 )}
               </span>
               {shown.length > 0 && (
-                <span className="block truncate text-xs text-gray-400">
+                <span className="block truncate text-xs text-ink-3">
                   {shown.map((st, i) => {
-                    const color = stintColor(st.primaryColor);
+                    const color = stintColor(st.primaryColor, mode);
                     return (
                       <span key={`${st.label}-${st.fromYear}-${i}`}>
                         {i > 0 && ", "}
                         <span
-                          className={color ? "font-medium" : "text-gray-300"}
+                          className={color ? "font-medium" : "text-ink-2"}
                           style={color ? { color } : undefined}
                         >
                           {st.label}
@@ -354,7 +378,7 @@ export default function EntityLinkSearch({
         type="button"
         onClick={onCancel}
         aria-label="Cancel linking"
-        className="w-full text-left px-2 py-1 text-xs text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
+        className="w-full text-left px-2 py-1 text-xs text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
       >
         Cancel (Esc)
       </button>
