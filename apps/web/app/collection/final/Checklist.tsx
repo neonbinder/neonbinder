@@ -5,7 +5,7 @@ import { CHIP, CHIP_OFF, CHIP_ON, FOCUS } from "../prototypes/p1/ui";
 import BinderPicker from "./BinderPicker";
 import CardRowGroup, { type RowActions } from "./CardRows";
 import ChipGroup from "./ChipGroup";
-import { cardsCount, haveLine, isComplete, totalKnown } from "./catalog/format";
+import { checklistCount, haveLine, isComplete, totalKnown } from "./catalog/format";
 import { copiesByCard, fold, useHomeName, useScopedName } from "./catalog/home";
 import { SkeletonBars, SkeletonPips } from "./catalog/Skeleton";
 import { blockedMessage, pickFirstLabel, runPlan } from "./cards/model";
@@ -36,7 +36,8 @@ type Show = "all" | "have" | "need";
  * until both reads are in.
  *
  * Live regions: the count line is one status, mounted from the start, that
- * says "Dealing out the checklist…" and then the count; the range's preview
+ * says "Dealing out the checklist…" and then the count (base cards, and
+ * "N with variations" on a second line; `checklistCount`); the range's preview
  * is another, with an alert for text it cannot read. Marking a range puts
  * the caret back in its box.
  */
@@ -88,6 +89,16 @@ const Checklist = forwardRef<
     const hay = fold(`${c.cardNumber} ${playerNames(c)} ${teamNames(c)} ${c.cardVariation ?? ""} ${c.features.join(" ")}`);
     return needle.split(" ").every((t) => hay.includes(t));
   });
+  // Base first, like the "Have 2 of 300" above it; variations on a second line.
+  const count =
+    cards && copies
+      ? checklistCount({
+          shownBase: visible.filter((c) => !c.isVariation).length,
+          shownAll: visible.length,
+          base: list.filter((c) => !c.isVariation).length,
+          all: list.length,
+        })
+      : null;
 
   // A card number is never unique: `parseRange` hands back every number two
   // cards share in `shared`. Stop and ask: until each one is picked (or taken
@@ -307,12 +318,21 @@ const Checklist = forwardRef<
         </div>
       </div>
 
-      <p role="status" className={!cards || !copies ? "sr-only" : "text-xs tabular-nums text-ink-3"}>
-        {!cards || !copies
-          ? "Dealing out the checklist…"
-          : visible.length === cards.length
-            ? cardsCount(cards.length)
-            : `${visible.length} of ${cardsCount(cards.length)}`}
+      <p role="status" className={!count ? "sr-only" : "text-xs tabular-nums text-ink-3"}>
+        {!count ? (
+          "Dealing out the checklist…"
+        ) : (
+          <>
+            <span className="block">{count.base}</span>
+            {count.withVariations && (
+              <>
+                {/* Two lines on screen, one sentence to a reader. */}
+                <span className="sr-only">, </span>
+                <span className="block">{count.withVariations}</span>
+              </>
+            )}
+          </>
+        )}
       </p>
       {!cards || !copies ? (
         <div aria-busy="true" className="space-y-2">

@@ -186,6 +186,9 @@ function VariantStrip({ variant, setLabelText, startOpen }: { variant: Variant; 
   const run = printRun(variant);
   const word = open ? "Hide the cards" : "Show the cards";
   const lit = cards && copies ? cards.filter((c) => owned.has(c.id)).length : 0;
+  // NEO-358: spoken base first, like "Have 2 of 300"; variations after.
+  const baseCards = cards ? cards.filter((c) => !c.isVariation) : [];
+  const litBase = copies ? baseCards.filter((c) => owned.has(c.id)).length : 0;
   const starred = cards && copies ? cards.filter((c) => !owned.has(c.id) && isWanted(c.id)).length : 0;
 
   return (
@@ -199,7 +202,9 @@ function VariantStrip({ variant, setLabelText, startOpen }: { variant: Variant; 
           (cards && copies ? (
             <span className="flex flex-wrap gap-[3px]">
               <span className="sr-only">
-                {`${lit} of ${cards.length} lit up${starred > 0 ? `, ${starred} on your Want List` : ""}.`}
+                {`${litBase} of ${baseCards.length} lit up${
+                  cards.length > baseCards.length ? `, ${lit} of ${cards.length} with variations` : ""
+                }${starred > 0 ? `, ${starred} on your Want List` : ""}.`}
               </span>
               {cards.map((c) =>
                 owned.has(c.id) ? (

@@ -30,3 +30,32 @@ export function isComplete(c: Pick<Completion, "owned" | "total">): boolean {
 export function cardsCount(n: number): string {
   return `${n} ${n === 1 ? "card" : "cards"}`;
 }
+
+/**
+ * NEO-358 — a checklist's count line, base first so it agrees with "Have 2 of
+ * 300" above it (Jason, 2026-10-23): "300 cards", and under it "335 with
+ * variations" when the checklist lists image variations too. A filter or a
+ * search counts the rows it kept against each total, the same two ways:
+ * "2 of 300 cards" / "3 of 335 with variations". With no variations there is
+ * no second line.
+ *
+ * `shown*` are the rows on screen; `base` / `all` the whole checklist. The
+ * line reads unfiltered whenever every row is showing.
+ */
+export function checklistCount({
+  shownBase,
+  shownAll,
+  base,
+  all,
+}: {
+  shownBase: number;
+  shownAll: number;
+  base: number;
+  all: number;
+}): { base: string; withVariations: string | null } {
+  const filtered = shownAll !== all;
+  return {
+    base: filtered ? `${shownBase} of ${cardsCount(base)}` : cardsCount(base),
+    withVariations: all > base ? (filtered ? `${shownAll} of ${all} with variations` : `${all} with variations`) : null,
+  };
+}

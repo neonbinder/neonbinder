@@ -306,7 +306,16 @@ function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem
 }
 
 function drillColumn(level: DrillLevel, parents: DrillParents, state: DemoState): DrillItem[] {
-  const completion = state.completionInScope;
+  // NEO-358: the drill's "300 base cards" / "have 2 of 30" read base cards
+  // only, the same pair as the checklist's "Have 2 of 300"; the shared
+  // prototype completion counts image variations in.
+  const completion = (setId: string, variant?: VariantFilter) => {
+    const c = state.completionInScope(setId, variant);
+    const total = cardsInSet(setId, variant).filter((card) => card.variation === null).length;
+    const missing = c.missing.filter((card) => card.variation === null);
+    const owned = total - missing.length;
+    return { ...c, total, owned, missing, percent: total ? Math.floor((owned / total) * 100) : 0 };
+  };
   switch (level) {
     case "sport":
       return sportItems().map((i) => drillItem(level, i));
@@ -330,7 +339,8 @@ function drillColumn(level: DrillLevel, parents: DrillParents, state: DemoState)
         const kind = KIND_OF[type];
         if (type !== "Base") return drillItem(level, i, { kind });
         const variantId = demoVariantId(set.id, { type, name: null });
-        return drillItem(level, i, { kind, variantId, hasChildren: false, ...countsOf(variantId) });
+        // The prototype's "N cards" counts variations; the cascade reads the base count instead.
+        return drillItem(level, { ...i, description: undefined }, { kind, variantId, hasChildren: false, ...countsOf(variantId) });
       });
     }
     case "variant": {

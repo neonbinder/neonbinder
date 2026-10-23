@@ -36,10 +36,15 @@ const SELECTED_FOR: Record<DrillStep, string> = {
   sub: SELECTED.variant,
 };
 
-/** "/50 · have 2 of 30", or "335 cards": the line under a checklist row. */
+/**
+ * "/50 · have 2 of 30", or "300 cards": the line under a checklist row. Base
+ * cards only, the number the checklist's "Have 2 of 300" reads (NEO-358); a
+ * row whose base count is not known yet shows no count rather than one with
+ * the variations in it.
+ */
 function describe(item: DrillItem): string | undefined {
   if (item.description) return item.description;
-  const n = item.baseCardCount ?? item.cardCount;
+  const n = item.baseCardCount;
   if (n === null || n === undefined || !item.variantId) return undefined;
   return `${n} ${n === 1 ? "card" : "cards"}`;
 }

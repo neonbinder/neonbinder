@@ -3,10 +3,10 @@
 // copy in the drawer with a condition and notes, see identical copies fold into
 // one line and different ones sit apart, edit and remove the copies, and the
 // card reads "need" again. My Cards lists the card while it is owned. Along the
-// way: the checklist's total is the number of regular cards it lists (the
-// stored count is what the page reads), the card drawer rides on the URL (Back
-// closes it), and the drawer fits the phone as a sheet and the desktop as a
-// side panel.
+// way: the checklist's count line reads base cards first (the same total as
+// "Have X of T"), then the rows with variations (the stored count is what the
+// page reads), the card drawer rides on the URL (Back closes it), and the
+// drawer fits the phone as a sheet and the desktop as a side panel.
 //
 // The signed-in page is the REAL collection (Convex, per user), not the demo:
 // it shows only "My Cards" and "Checklists", no demo bar and no "Demo theme"
@@ -101,22 +101,31 @@ test(
 
     // --- The total is the stored count, and it is the right one --------------
     // "Have 0 of T" reads the row's stored count of regular cards (the server
-    // counts by hand only when the stored one is missing). T must be the number
-    // of regular cards the checklist lists: a stale count, or the count with
-    // photo variations swapped in, makes the two differ. A missing count that
-    // the server can still tally by hand reads the same number, so the page
-    // shows the right total either way; one it cannot tally reads "N owned",
-    // which fails the "Have 0 of" read above, and a Base row with no count
-    // fails the catalog read below.
-    const countLine = checklist.getByRole("status").filter({ hasText: /^\d+ cards?$/ });
+    // counts by hand only when the stored one is missing). The checklist's count
+    // line reads base cards first, the same T ("300 cards"), and, when the
+    // checklist also lists photo variations, a second figure ("335 with
+    // variations") that is every row it lists. So T must equal the first
+    // number, and the second must equal the rows on screen: a stale count, or
+    // the count with photo variations swapped in, makes them differ. A missing
+    // count that the server can still tally by hand reads the same number, so
+    // the page shows the right total either way; one it cannot tally reads "N
+    // owned", which fails the "Have 0 of" read above, and a Base row with no
+    // count fails the catalog read below.
+    const countLine = checklist
+      .getByRole("status")
+      .filter({ hasText: /^\d+ cards?(, \d+ with variations)?$/ });
     await expect(countLine).toBeVisible();
-    const listed = Number(/^\d+/.exec((await countLine.textContent()) ?? "")?.[0]);
+    const counts = /^(\d+) cards?(?:, (\d+) with variations)?$/.exec((await countLine.textContent()) ?? "");
+    expect(counts, "the count line reads 'N cards' or 'N cards, M with variations'").not.toBeNull();
+    const baseListed = Number(counts![1]);
+    const withVariations = counts![2] === undefined ? null : Number(counts![2]);
     // The list is fully on screen: one Details button per listed card (nothing is owned yet).
+    const listed = withVariations ?? baseListed;
     await expect(checklist.getByRole("button", { name: /^Details for / })).toHaveCount(listed);
-    const variationRows = await checklist
-      .getByRole("button", { name: /^Details for .*, [^,]+ variation$/ })
-      .count();
-    expect(total, "T equals the regular cards listed").toBe(listed - variationRows);
+    expect(baseListed, "the count line's first figure is T").toBe(total);
+    if (withVariations !== null) {
+      expect(withVariations, "'with variations' includes the base cards").toBeGreaterThan(baseListed);
+    }
     expect(catalogTotal, "the cascade's count for Base is the same T").toBe(total);
 
     // The card this spec uses: the first Base row that reads "#N First Last"
