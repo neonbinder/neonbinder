@@ -216,7 +216,8 @@ export default function PackTray(props: PackTrayProps) {
     >
       <div className="pointer-events-auto mx-auto max-w-6xl px-2 sm:px-6">
         <div className="p2-pack px-3 pb-[max(env(safe-area-inset-bottom),10px)] pt-3 sm:px-4">
-          <div className={notice ? "mb-2 flex flex-wrap items-center gap-2" : ""}>
+          {/* data-notice-hold: the page holds the line's timer while it is pointed at or focused. */}
+          <div className={notice ? "mb-2 flex flex-wrap items-center gap-2" : ""} data-notice-hold="">
             <p role="status" className="min-w-0 flex-1 basis-56 text-sm text-ink">
               {notice?.message ?? ""}
             </p>

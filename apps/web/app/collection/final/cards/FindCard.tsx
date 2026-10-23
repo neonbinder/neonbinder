@@ -4,7 +4,7 @@ import { Input } from "@/components/primitives/Input";
 import { FOCUS } from "../../prototypes/p3/classes";
 import { useLiverySurface } from "../../prototypes/p1/ui";
 import { useSearchText } from "../catalog/search";
-import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
+import { SkeletonBars } from "../catalog/Skeleton";
 import Suggestions from "../catalog/Suggestions";
 import { playerNames, printRunLabel, setLabel, teamNames, teamTextColor, variantLabel } from "../data/labels";
 import { searchable, useCopiesOf, useDemoExtension, useSearch } from "../data/store";
@@ -31,6 +31,7 @@ export default function FindCard() {
   const hits = result?.cards ?? [];
   const visible = hits.slice(0, SHOW);
   const settled = result !== undefined && text === typed;
+  const searching = searchable(typed);
 
   return (
     <div role="search" className="max-w-3xl">
@@ -50,44 +51,52 @@ export default function FindCard() {
           }
         }}
       />
-      {searchable(typed) && (
-        <div className="mt-2 space-y-2 rounded-xl border border-rule bg-sheet p-2 shadow-offset">
+      {/* One live status for the whole search, always mounted (a region
+          inserted with words in it says nothing): the suggestions and the
+          skeleton below stay quiet and let it speak. */}
+      <div className={searching ? "mt-2 space-y-2 rounded-xl border border-rule bg-sheet p-2 shadow-offset" : undefined}>
+        {searching && (
           <div className="px-2 pt-1">
-            <Suggestions text={text} onPick={api.openSuggestion} />
+            <Suggestions text={text} onPick={api.openSuggestion} silent />
           </div>
-          <p role="status" className="px-2 py-1 text-sm text-ink-2">
-            {!settled
+        )}
+        <p role="status" className={searching ? "px-2 py-1 text-sm text-ink-2" : "sr-only"}>
+          {!searching
+            ? ""
+            : !settled
               ? "Flipping through the catalog…"
               : hits.length === 0
                 ? `No card matches “${typed}”. It isn't in the catalog yet.`
                 : result?.truncated
                   ? `Lots of matches. Enter opens them in Checklists.`
                   : `${hits.length} ${hits.length === 1 ? "card matches" : "cards match"}. Enter opens them all in Checklists.`}
-          </p>
-          {!settled && result === undefined && (
-            <div className="px-2">
-              <SkeletonBars rows={2} />
-              <LoadingNote>Searching…</LoadingNote>
-            </div>
-          )}
-          {visible.length > 0 && (
-            <ul className="flex flex-col">
-              {visible.map((card) => (
-                <Hit key={card.id} card={card} />
-              ))}
-            </ul>
-          )}
-          {settled && hits.length > 0 && (
-            <button
-              type="button"
-              onClick={() => api.goToChecklists({ q: typed })}
-              className={`m-1 min-h-11 rounded-md px-2 text-sm text-neon-blue-text underline-offset-4 hover:underline sm:min-h-8 ${FOCUS}`}
-            >
-              {hits.length > visible.length ? `See all ${result?.truncated ? "" : `${hits.length} `}in Checklists` : "Open in Checklists"}
-            </button>
-          )}
-        </div>
-      )}
+        </p>
+        {searching && (
+          <>
+            {!settled && result === undefined && (
+              <div className="px-2">
+                <SkeletonBars rows={2} />
+              </div>
+            )}
+            {visible.length > 0 && (
+              <ul className="flex flex-col">
+                {visible.map((card) => (
+                  <Hit key={card.id} card={card} />
+                ))}
+              </ul>
+            )}
+            {settled && hits.length > 0 && (
+              <button
+                type="button"
+                onClick={() => api.goToChecklists({ q: typed })}
+                className={`m-1 min-h-11 rounded-md px-2 text-sm text-neon-blue-text underline-offset-4 hover:underline sm:min-h-8 ${FOCUS}`}
+              >
+                {hits.length > visible.length ? `See all ${result?.truncated ? "" : `${hits.length} `}in Checklists` : "Open in Checklists"}
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -107,6 +116,11 @@ function Hit({ card }: { card: Card }) {
   const short = `${setLabel(card.set)} ${row} #${card.cardNumber}${players ? ` ${players}` : ""}${variation}`;
   const run = printRunLabel(card);
   const team = card.teams[0];
+  // The name starts with the words on the button (label in name), then the
+  // number, which tells two of one player's cards apart, then what it does.
+  const shown = `${players || "Player unknown"}${team ? ` ${teamNames(card)}` : ""}, ${setLabel(card.set)}, ${row}${variation}${
+    run ? `, ${run}` : ""
+  }`;
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-rule px-2 py-2 first:border-t-0">
       <span
@@ -119,7 +133,7 @@ function Hit({ card }: { card: Card }) {
       </span>
       <button
         type="button"
-        aria-label={`Show ${short} in Checklists`}
+        aria-label={`${shown}, #${card.cardNumber}. Show it in Checklists`}
         onClick={() => api.goToChecklists({ card })}
         className={`min-w-0 flex-1 rounded-md text-left hover:text-neon-blue-text ${FOCUS}`}
       >

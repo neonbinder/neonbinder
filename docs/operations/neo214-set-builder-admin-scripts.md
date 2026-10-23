@@ -102,6 +102,7 @@ On success it prints the per-table counts:
   "cardTeamLinksDeleted": 398,
   "checklistCandidatesDeleted": 0,
   "collectionBuildingSetsDeleted": 3,
+  "collectionContainersDeleted": 4,
   "collectionCopiesDeleted": 27,
   "crossListingsDeleted": 5,
   "entityReviewQueueDeleted": 0,
@@ -118,12 +119,14 @@ On success it prints the per-table counts:
 }
 ```
 
-NEO-358: `collectionCopiesDeleted` and `collectionBuildingSetsDeleted` are
-collectors' copies and "Sets I'm building" entries **across every account**:
-this is a whole-deployment wipe, and a collector's row that pointed at a
-deleted card or set would be stranded. They drain before the selector rows and
-the cards, in both scopes. Collectors' binders and boxes
-(`collectionContainers`) hold no catalog id and are left alone.
+NEO-358: `collectionCopiesDeleted`, `collectionContainersDeleted` and
+`collectionBuildingSetsDeleted` are collectors' copies, the binders and boxes
+they live in, and "Sets I'm building" entries **across every account**: this
+is a whole-deployment wipe, and a collector's row that pointed at a deleted
+card or set would be stranded. Copies drain first and their containers right
+after them (a copy names its home), all before the selector rows and the
+cards, in both scopes. A collector's Main binder is re-created on their next
+add.
 `cardTeamLinksDeleted` is the derived team → cards index, drained before the
 cards like `cardPlayerLinksDeleted`.
 
@@ -251,19 +254,27 @@ sure a reset is what you want.
 1. **Ask whether it is really a reset.** If one set is wrong, re-sync that set
    in the admin and edit inline — NEO-190 §2.1. A reset is for a corrupted or
    abandoned catalogue, not a bad row.
-2. **Backup Now.** Convex dashboard → the prod deployment →
+2. **Know that it deletes every collector's collection.** NEO-358: the
+   reset drains `collectionCopies`, `collectionContainers` and
+   `collectionBuildingSets` for **every account**, not only the catalogue:
+   every collector's copies, their binders and boxes, and the sets they said
+   they are building. Nothing rebuilds a collection: a re-sync restores
+   catalogue rows, never what a collector owns. The Convex backup from the
+   next step is the only way to get collections back. If any real collector
+   has a collection on prod, a reset is almost certainly the wrong tool.
+3. **Backup Now.** Convex dashboard → the prod deployment →
    Settings → Backups → **Backup Now**. NEO-190 §3: take a manual backup
    before any deliberate destructive operation. This is the only undo that
    exists.
-3. **Close the app.** Every tab, yours and any other admin's. Resetting while
+4. **Close the app.** Every tab, yours and any other admin's. Resetting while
    the Set Selector is open lets the page immediately re-sync the sport column
    and write rows straight back — exactly what happened on dev during NEO-137.
-4. **Arm:**
+5. **Arm:**
    ```bash
    cd apps/web
    npx convex env set ALLOW_RESET_SET_BUILDER_DATA true --prod
    ```
-5. **Confirm the target before you fire:**
+6. **Confirm the target before you fire:**
    ```bash
    npx convex env get ALLOW_RESET_SET_BUILDER_DATA --prod   # expect: true
    ```
@@ -272,22 +283,24 @@ sure a reset is what you want.
    the command prints the deployment it queried. A `true` here from a
    deployment you did not mean to arm is your last chance to notice before the
    next step deletes everything in it.
-6. **Run:**
+7. **Run:**
    ```bash
    npx convex run selectorOptions:resetSetBuilderDataFromCli \
      '{"confirm":"RESET"}' --prod
    ```
    No `--identity` — see §2.1.
-7. **Disarm, immediately, in the same sitting:**
+8. **Disarm, immediately, in the same sitting:**
    ```bash
    npx convex env remove ALLOW_RESET_SET_BUILDER_DATA --prod
    npx convex env get ALLOW_RESET_SET_BUILDER_DATA --prod   # expect: not set
    ```
-   Step 7 is not optional bookkeeping. A prod deployment left armed has the
+   Step 8 is not optional bookkeeping. A prod deployment left armed has the
    same blast radius as the button NEO-214 deleted, minus the confirmation
    dialog.
-8. **Tell the admins.** Everything in those six tables is gone for everyone,
-   and rebuilding it is operator time.
+9. **Tell the admins, and any collector.** Everything the reset drains is
+   gone for everyone, and rebuilding the catalogue is operator time. A
+   collector's collection does not come back without restoring the backup
+   (step 3).
 
 If the run fails partway, re-run it — it is idempotent and picks up where it
 stopped. Do not disarm until it has completed.
@@ -314,11 +327,11 @@ stopped. Do not disarm until it has completed.
   The script now refuses outright when it detects one; do not defeat that by
   unsetting the check instead of the key. Keep prod keys out of any shell you
   run E2E tooling in.
-- **Do not leave production armed** (§4 step 7).
+- **Do not leave production armed** (§4 step 8).
 - **Do not run it without a fresh backup on prod.** Not "there was one last
   night" — take one now (NEO-190 §3). The RPO on the automatic daily backup is
   up to 24 hours of operator work.
-- **Do not run it with the app open** (§4 step 3).
+- **Do not run it with the app open** (§4 step 4).
 - **Do not add a client-callable wrapper around it.** That is the thing
   NEO-214 removed; `convex/publicFunctionAuth.test.ts` pins it, and
   `convex/resetSetBuilderData.test.ts` pins the arming gate.
@@ -390,5 +403,5 @@ reintroduced into `resetSetBuilderDataFromCli` or one of the eleven batch
 mutations. `convex/resetSetBuilderData.test.ts` should have caught it.
 
 **"I reset the wrong deployment."** If it was prod: NEO-190 §4.1, restore the
-backup you took in §4 step 2. If it was dev or a preview: re-sync from the
+backup you took in §4 step 3. If it was dev or a preview: re-sync from the
 marketplace in the admin; nothing there is irreplaceable.

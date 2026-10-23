@@ -46,7 +46,12 @@ function stop(fn: () => void) {
   };
 }
 
-/** The Have toggle: a filled neon box with a check when pressed; "Have" either way. */
+/**
+ * The Have toggle: a filled neon box with a check when pressed; "Have" either
+ * way. While the copies load it stays focusable and says it is busy and
+ * unavailable (`aria-disabled`, `aria-busy`), and a press does nothing: a
+ * native `disabled` would drop the keyboard out from under it.
+ */
 function HaveToggle({
   pressed,
   label,
@@ -64,9 +69,11 @@ function HaveToggle({
       aria-pressed={pressed}
       aria-label={label}
       aria-busy={busy || undefined}
-      disabled={busy}
-      onClick={stop(onToggle)}
-      className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors disabled:cursor-wait disabled:opacity-60 ${FOCUS} ${
+      aria-disabled={busy || undefined}
+      onClick={stop(() => {
+        if (!busy) onToggle();
+      })}
+      className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors aria-disabled:cursor-wait aria-disabled:opacity-60 ${FOCUS} ${
         pressed
           ? "border-selection bg-neon-blue text-on-neon-blue"
           : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"

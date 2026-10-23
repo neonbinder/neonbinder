@@ -388,17 +388,29 @@ function distinctCards(rows: CopyRow[]): Set<string> {
   return new Set(rows.map((r) => r.cardId as string));
 }
 
-/** How many of `cardIds` are regular cards (no `variationOfCardId`). Gone cards don't count. */
-async function countRegular(
+/**
+ * How many of `cardIds` sit on `variantId` today: `owned` counts the regular
+ * cards (no `variationOfCardId`), `ownedAll` every one. Gone cards don't
+ * count. Neither does a card that has MOVED off the variant while its copies
+ * still name it: `setShapeMove.moveCards` re-points the first
+ * `MAX_COPIES_PER_MOVE` copies in the move and pages the rest
+ * (`repointMovedCardCopies`), so for that short window a copy's `variantId` is
+ * stale, and an owned count must never read past the variant's total.
+ */
+async function ownedOnVariant(
   ctx: Pick<QueryCtx, "db">,
+  variantId: Id<"selectorOptions">,
   cardIds: Iterable<string>,
-): Promise<number> {
-  let n = 0;
+): Promise<{ owned: number; ownedAll: number }> {
+  let owned = 0;
+  let ownedAll = 0;
   for (const raw of cardIds) {
     const card = await ctx.db.get(raw as Id<"cardChecklist">);
-    if (card && !card.variationOfCardId) n += 1;
+    if (!card || card.selectorOptionId !== variantId) continue;
+    ownedAll += 1;
+    if (!card.variationOfCardId) owned += 1;
   }
-  return n;
+  return { owned, ownedAll };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -547,12 +559,12 @@ export const variantCompletion = query({
           )
           .take(MAX_VARIANT_COPIES)
       : [];
-    const owned = distinctCards(copies);
+    const counted = await ownedOnVariant(ctx, variantId, distinctCards(copies));
     const totals = await cardTotals(ctx, row, { left: COMPLETION_COUNT_BUDGET });
     return {
-      owned: await countRegular(ctx, owned),
+      owned: counted.owned,
       total: totals.base,
-      ownedAll: owned.size,
+      ownedAll: counted.ownedAll,
       totalAll: totals.all,
     };
   },
@@ -598,10 +610,10 @@ export const setCompletion = query({
     let ownedAll = 0;
     const variants = [];
     for (const entry of byVariant.values()) {
-      const regular = await countRegular(ctx, entry.cards);
-      owned += regular;
-      ownedAll += entry.cards.size;
-      variants.push({ variantId: entry.variantId, owned: regular, ownedAll: entry.cards.size });
+      const counted = await ownedOnVariant(ctx, entry.variantId, entry.cards);
+      owned += counted.owned;
+      ownedAll += counted.ownedAll;
+      variants.push({ variantId: entry.variantId, ...counted });
     }
     return { owned, ownedAll, variants, truncated };
   },

@@ -41,8 +41,10 @@ import type { BinderSelection, CollectionBinder } from "./store";
  * `ParamLink`), each Checklists drill step included. In-view tweaks replace
  * the current entry instead (`useReplaceParams`): the search box's `q` as
  * you type, a jump that only rings another row of the checklist on screen,
- * the binder-scope picker. Page turns, filters and the card drawer stay in
- * local state and touch no URL. Public mode also keeps its own params on
+ * the binder-scope picker. Page turns and filters stay in local state and
+ * touch no URL. The card drawer opens ON a view: `detail=<cardId>` (and
+ * `mode=add`), pushed (`usePushParams`) so Back closes it, its ↑ ↓ replacing
+ * the card in place (`./drawerParams`). Public mode also keeps its own params on
  * every view URL (`keepParams`, the marketing page's `demo=on`) and counts
  * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
  * tour" can return to the entry the visitor came from in one step.
@@ -244,6 +246,30 @@ export function useReplaceParams(): (update: (params: URLSearchParams) => void) 
       void navigate({ search }, { replace: true, state: latestRef.current.state });
     },
     [navigate, latestRef],
+  );
+}
+
+/**
+ * Opens something ON the current view (the card drawer): `update` edits a
+ * copy of the newest URL the page has asked for, and the result is PUSHED, so
+ * Back steps out of it to the view underneath. The mode's kept params and the
+ * scope carry on as for any view change; `state` rides on the new entry next
+ * to the demo's depth count.
+ */
+export function usePushParams(): (update: (params: URLSearchParams) => void, state?: Record<string, unknown>) => void {
+  const navigate = useNavigate();
+  const target = useViewTarget();
+  const latestRef = useLatestEntry();
+  return useCallback(
+    (update, extra) => {
+      const next = new URLSearchParams(latestRef.current.search);
+      update(next);
+      const t = target(next);
+      const state = extra ? { ...((t.state ?? {}) as object), ...extra } : t.state;
+      latestRef.current = { search: t.search, state, scope: t.scope };
+      void navigate({ search: t.search }, { state });
+    },
+    [navigate, target, latestRef],
   );
 }
 

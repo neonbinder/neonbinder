@@ -170,7 +170,9 @@ function printRun(v: Variant): string | null {
 /**
  * One checklist's strip on a board. Base starts open; the rest open on
  * request, and only then read their cards (the demo, which holds every card
- * in memory, opens them all).
+ * in memory, opens them all). The Show / Hide button is a disclosure that
+ * stays put either way; the bulbs carry a spoken count, since a reader cannot
+ * see which are lit.
  */
 function VariantStrip({ variant, setLabelText, startOpen }: { variant: Variant; setLabelText: string; startOpen: boolean }) {
   const { isWanted } = useMyCards();
@@ -182,6 +184,9 @@ function VariantStrip({ variant, setLabelText, startOpen }: { variant: Variant; 
   const owned = useMemo(() => copiesByCard(copies), [copies]);
   const name = variantLabel(variant);
   const run = printRun(variant);
+  const word = open ? "Hide the cards" : "Show the cards";
+  const lit = cards && copies ? cards.filter((c) => owned.has(c.id)).length : 0;
+  const starred = cards && copies ? cards.filter((c) => !owned.has(c.id) && isWanted(c.id)).length : 0;
 
   return (
     <li className="grid grid-cols-[7.5rem_1fr_auto] items-center gap-2 text-xs">
@@ -189,34 +194,40 @@ function VariantStrip({ variant, setLabelText, startOpen }: { variant: Variant; 
         {name}
         {run && <span className="text-ink-3"> {run}</span>}
       </span>
-      {open ? (
-        cards && copies ? (
-          <span aria-hidden="true" className="flex flex-wrap gap-[3px]">
-            {cards.map((c) =>
-              owned.has(c.id) ? (
-                <span key={c.id} className="pip pip-owned" />
-              ) : isWanted(c.id) ? (
-                <span key={c.id} className="pip pip-want" />
-              ) : (
-                <span key={c.id} className="pip pip-missing" />
-              ),
-            )}
-          </span>
-        ) : (
-          <SkeletonPips count={Math.min(variant.baseCardCount || 12, 40)} />
-        )
-      ) : (
+      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        {open &&
+          (cards && copies ? (
+            <span className="flex flex-wrap gap-[3px]">
+              <span className="sr-only">
+                {`${lit} of ${cards.length} lit up${starred > 0 ? `, ${starred} on your Want List` : ""}.`}
+              </span>
+              {cards.map((c) =>
+                owned.has(c.id) ? (
+                  <span key={c.id} aria-hidden="true" className="pip pip-owned" />
+                ) : isWanted(c.id) ? (
+                  <span key={c.id} aria-hidden="true" className="pip pip-want" />
+                ) : (
+                  <span key={c.id} aria-hidden="true" className="pip pip-missing" />
+                ),
+              )}
+            </span>
+          ) : (
+            <SkeletonPips count={Math.min(variant.baseCardCount || 12, 40)} />
+          ))}
         <button
           type="button"
-          aria-expanded={false}
-          aria-label={`Show the ${name} cards of ${setLabelText}`}
-          onClick={() => setOpen(true)}
+          aria-expanded={open}
+          aria-label={`${word}, ${name} of ${setLabelText}`}
+          onClick={() => setOpen(!open)}
           className={`relative z-10 inline-flex min-h-8 w-fit items-center gap-1 rounded-md px-1.5 text-ink-3 hover:text-neon-blue-text ${FOCUS}`}
         >
-          <ChevronDownIcon aria-hidden="true" className="size-3.5" />
-          Show the cards
+          <ChevronDownIcon
+            aria-hidden="true"
+            className={`size-3.5 transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+          />
+          {word}
         </button>
-      )}
+      </span>
       <span className="tabular-nums text-ink-2">
         {completion ? (
           totalKnown(completion) ? (

@@ -390,6 +390,33 @@ describe("a player's and a team's cards", () => {
     expect(mets.cards).toHaveLength(3);
   });
 
+  test("a team cursor outside the team list, or with a bad time, starts from the first page", async () => {
+    const { as, fx } = await setup();
+    const args = { teamId: fx.exposId, includeFranchise: true, limit: 1 };
+    const fresh = await as.query(api.collectionCatalog.cardsByTeam, args);
+    expect(fresh.cards).toHaveLength(1);
+    const bad = [
+      { i: -1, t: 0 }, // negative: would read teamIds[-1]
+      { i: -1, t: Number.MAX_SAFE_INTEGER },
+      { i: 2, t: 0 }, // the franchise has two teams: 2 is one past the end
+      { i: 99, t: 0 },
+      { i: 0, t: -5 },
+    ].map((c) => JSON.stringify(c));
+    bad.push('{"i":0,"t":1e999}'); // JSON.parse makes this Infinity
+    for (const cursor of bad) {
+      const page = await as.query(api.collectionCatalog.cardsByTeam, { ...args, cursor });
+      expect(page, cursor).toEqual(fresh);
+    }
+    // Without the franchise the list is one team, so i = 1 is already out.
+    const single = await as.query(api.collectionCatalog.cardsByTeam, { teamId: fx.exposId });
+    expect(
+      await as.query(api.collectionCatalog.cardsByTeam, {
+        teamId: fx.exposId,
+        cursor: JSON.stringify({ i: 1, t: 0 }),
+      }),
+    ).toEqual(single);
+  });
+
   test("a bad id is an empty list", async () => {
     const { as } = await setup();
     expect(await as.query(api.collectionCatalog.cardsByPlayer, { playerId: "x" })).toEqual({

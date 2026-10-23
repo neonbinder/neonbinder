@@ -71,7 +71,7 @@ const pick = (column: string, option: RegExp) =>
   fireEvent.click(within(screen.getByRole("listbox", { name: column })).getByRole("option", { name: option }));
 const checklistHeading = (name: string) => screen.queryByRole("heading", { level: 3, name });
 /** Any checklist on screen: each one has its Show chips. */
-const anyChecklist = () => screen.queryByRole("group", { name: "Show" });
+const anyChecklist = () => screen.queryByRole("radiogroup", { name: "Show" });
 
 beforeEach(() => {
   window.sessionStorage.clear();

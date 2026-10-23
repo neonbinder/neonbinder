@@ -3309,7 +3309,9 @@ export default defineSchema({
    * `selectorOptionId`, and that row's `setName` ancestor) so a variant's
    * "1 of N" and a set's completion are one indexed range, never a walk. They
    * change only when the card itself moves (`setShapeMove.moveCards`, the
-   * single re-pointer), which patches every copy on `by_card`.
+   * single re-pointer), which patches the copies on `by_card`: the first
+   * `MAX_COPIES_PER_MOVE` in the move, the rest in the scheduled
+   * `repointMovedCardCopies` chain. A move never refuses for copies.
    *
    * NB data only: no marketplace field. A future listing lives in its own
    * table (`{ownerId, copyId, platform, listingRef, listedQuantity}`), never

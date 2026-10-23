@@ -30,6 +30,7 @@
  */
 
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -89,13 +90,17 @@ export const MAX_CROSS_LISTINGS_PER_MOVE = 200;
 export const MAX_CARDS_PER_ROW_READ = MAX_CARDS_PER_MOVE * 4;
 
 /**
- * NEO-358 — collectors' copies one move re-points. Each is one `patch` on top
- * of the card's own, in the same transaction, so a move carrying more refuses
- * whole rather than straining the budget `MAX_CARDS_PER_MOVE` is sized to.
- * Collections are young; a set with this many copies of the cards being moved
- * is far from anything real today.
+ * NEO-358 — collectors' copies one move re-points IN its own transaction. Each
+ * is one `patch` on top of the card's own, so the move stops re-pointing
+ * inline here rather than straining the budget `MAX_CARDS_PER_MOVE` is sized
+ * to. It never refuses: what is left over is re-pointed by the scheduled
+ * `repointMovedCardCopies` chain, a page at a time. A collector's pile can
+ * never block an operator's move.
  */
 export const MAX_COPIES_PER_MOVE = 500;
+
+/** Copies one `repointMovedCardCopies` page reads (and at most patches). */
+export const COPY_REPOINT_PAGE = 500;
 
 /**
  * NEO-358 — "Sets I'm building" entries one conversion re-points from the set
@@ -103,11 +108,6 @@ export const MAX_COPIES_PER_MOVE = 500;
  * then a patch or a delete).
  */
 export const MAX_BUILDING_SETS_PER_MOVE = 500;
-
-/** What the operator reads when a move would re-point too many copies. */
-export const tooManyCopiesToMove = (): string =>
-  `Whoa, collectors own more than ${MAX_COPIES_PER_MOVE} copies of these ` +
-  `cards, which is more than one move can carry. Nothing was moved.`;
 
 /** Sets a door's target picker lists for one brand. */
 export const MAX_TARGET_SETS = 500;
@@ -616,10 +616,16 @@ export async function readConversionSource(
  * of what is denormalised from a card's row:
  *  - the counts: each card leaves its old row and lands on `destId`
  *    (`CardCountLedger`, flushed here, once);
- *  - collectors' copies: every copy of a moved card (`collectionCopies.by_card`,
- *    one read per card) gets `variantId = destId` and `setId` = the
- *    destination's set. More than `MAX_COPIES_PER_MOVE` refuses the whole
- *    move (`tooManyCopiesToMove`), nothing written.
+ *  - collectors' copies: every copy of a moved card (`collectionCopies.by_card`)
+ *    gets `variantId = destId` and `setId` = the destination's set. The first
+ *    `MAX_COPIES_PER_MOVE` are re-pointed here, in the move's transaction; a
+ *    card whose copies run past that budget is handed to the scheduled
+ *    `repointMovedCardCopies` chain, which pages through them. The move never
+ *    refuses for copies. Until the chain lands, a left-over copy still names
+ *    the card's OLD variant and set; `collection.variantCompletion` only
+ *    counts a copy whose card is still on the variant, so no count over-reads
+ *    in that window. The chain reads the card's CURRENT row for its target, so
+ *    it is safe to retry and safe against a second move in between.
  */
 export async function moveCards(
   ctx: MutationCtx,
@@ -651,7 +657,9 @@ export async function moveCards(
   const countLedger = createCardCountLedger();
   // Walked lazily: only a move that carries a collector's copy needs it.
   let destSet: { id: RowId | undefined } | undefined;
-  let copiesMoved = 0;
+  // Copies re-pointed inline so far; past the budget, cards go to `later`.
+  let copiesRepointed = 0;
+  const later: Array<Id<"cardChecklist">> = [];
   for (let i = 0; i < ordered.length; i++) {
     const { card, slotMap } = ordered[i];
     await ctx.db.patch(card._id, {
@@ -667,26 +675,37 @@ export async function moveCards(
         variationOfCardId: card.variationOfCardId,
       });
     }
-    const copies = await ctx.db
-      .query("collectionCopies")
-      .withIndex("by_card", (q) => q.eq("cardId", card._id))
-      .take(MAX_COPIES_PER_MOVE - copiesMoved + 1);
+    const budget = MAX_COPIES_PER_MOVE - copiesRepointed;
+    // One read past the budget tells "all of them" from "more than fit".
+    const copies =
+      budget > 0
+        ? await ctx.db
+            .query("collectionCopies")
+            .withIndex("by_card", (q) => q.eq("cardId", card._id))
+            .take(budget + 1)
+        : await ctx.db
+            .query("collectionCopies")
+            .withIndex("by_card", (q) => q.eq("cardId", card._id))
+            .take(1);
     if (copies.length === 0) continue;
-    copiesMoved += copies.length;
-    if (copiesMoved > MAX_COPIES_PER_MOVE) {
-      throw new ConvexError(tooManyCopiesToMove());
-    }
     destSet ??= { id: await findSetForSelectorOption(ctx, destId) };
     const setId = destSet.id;
     if (!setId) {
       // A destination with no set above it cannot hold a collector's copy.
       // Every door moves cards to a row under a set, so this is a broken
-      // chain; refuse rather than strand the copy.
+      // chain (a structural refusal, not a collector-driven one); refuse
+      // rather than strand the copy.
       throw new ConvexError(
         "That destination isn't under a set, so collectors' copies can't follow the cards there. Nothing was moved.",
       );
     }
-    for (const copy of copies) {
+    if (copies.length > budget) {
+      // Re-point what fits now; the chain finishes this card from the start
+      // (it skips a copy already pointing at the card's row).
+      later.push(card._id);
+    }
+    for (const copy of copies.slice(0, budget)) {
+      copiesRepointed += 1;
       if (copy.variantId === destId && copy.setId === setId) continue;
       await ctx.db.patch(copy._id, {
         variantId: destId,
@@ -696,6 +715,20 @@ export async function moveCards(
     }
   }
   await countLedger.flush(ctx);
+  if (later.length > 0) {
+    console.log(
+      JSON.stringify({
+        msg: "move_cards_copies_deferred",
+        cards: later.length,
+        repointedInline: copiesRepointed,
+      }),
+    );
+    await ctx.scheduler.runAfter(0, internal.setShapeMove.repointMovedCardCopies, {
+      cardIds: later,
+      index: 0,
+      cursor: null,
+    });
+  }
   if (existing.length > 0) {
     await ctx.scheduler.runAfter(
       0,
@@ -704,6 +737,73 @@ export async function moveCards(
     );
   }
 }
+
+/**
+ * NEO-358 — the tail of `moveCards`: re-point the copies of `cardIds` that the
+ * move's own transaction had no budget for, one page of one card per run,
+ * scheduling itself until the list is done.
+ *
+ * The target is read from the card's CURRENT row (its `selectorOptionId`, and
+ * that row's set), never carried in the args, so the chain is idempotent and
+ * correct after a second move in between: a re-run, or a copy already
+ * pointing at the card's row, writes nothing. A card that is gone, or whose
+ * row reaches no set, is skipped with a log line; the delete guard
+ * (`removeCardRow`) never lets a card with copies go, so the first is a
+ * stale list, and the second a broken chain no copy can follow.
+ *
+ * One `paginate` per run (Convex allows one per function); a card with fewer
+ * copies than a page costs one run, which only happens to the cards the move
+ * could not finish inline.
+ */
+export const repointMovedCardCopies = internalMutation({
+  args: {
+    cardIds: v.array(v.id("cardChecklist")),
+    index: v.number(),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({ repointed: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const index = Number.isInteger(args.index) && args.index >= 0 ? args.index : 0;
+    if (index >= args.cardIds.length) return { repointed: 0, done: true };
+    const cardId = args.cardIds[index];
+    const card = await ctx.db.get(cardId);
+    let repointed = 0;
+    let next: { index: number; cursor: string | null } = { index: index + 1, cursor: null };
+    const setId = card ? await findSetForSelectorOption(ctx, card.selectorOptionId) : undefined;
+    if (!card || !setId) {
+      console.log(
+        JSON.stringify({
+          msg: "repoint_moved_card_copies_skipped",
+          reason: card ? "no_set" : "card_gone",
+        }),
+      );
+    } else {
+      const page = await ctx.db
+        .query("collectionCopies")
+        .withIndex("by_card", (q) => q.eq("cardId", cardId))
+        .paginate({ cursor: args.cursor, numItems: COPY_REPOINT_PAGE });
+      const now = Date.now();
+      for (const copy of page.page) {
+        if (copy.variantId === card.selectorOptionId && copy.setId === setId) continue;
+        await ctx.db.patch(copy._id, {
+          variantId: card.selectorOptionId,
+          setId,
+          lastUpdated: now,
+        });
+        repointed += 1;
+      }
+      if (!page.isDone) next = { index, cursor: page.continueCursor };
+    }
+    const done = next.index >= args.cardIds.length;
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.setShapeMove.repointMovedCardCopies, {
+        cardIds: args.cardIds,
+        ...next,
+      });
+    }
+    return { repointed, done };
+  },
+});
 
 /**
  * NEO-358 — before a conversion ends a SET row, its collectors' "Sets I'm

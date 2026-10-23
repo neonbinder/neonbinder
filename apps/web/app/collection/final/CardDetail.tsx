@@ -49,6 +49,10 @@ function fromForm(v: FormValue, withDemo: boolean): CopyDetails {
  *
  * The demo adds its own: the Want toggle, binders on the form, and the sale
  * fields. The real collection keeps a copy in its one home and no price.
+ *
+ * The keyboard is never dropped: Edit puts it in the copy's form, and Save
+ * copy or Cancel brings it back to that copy's Edit button (Remove's parking
+ * is `CopyList`'s).
  */
 export default function CardDetail({
   card,
@@ -95,6 +99,27 @@ export default function CardDetail({
   const [editing, setEditing] = useState<{ id: string; value: FormValue } | null>(null);
 
   const addRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * Where the keyboard goes once the copy's form closes or opens: back to its
+   * Edit button, or into the form's first field.
+   */
+  const [refocus, setRefocus] = useState<{ copyId: CopyId; into: "edit" | "form" } | null>(null);
+  useEffect(() => {
+    if (!refocus) return;
+    const frame = requestAnimationFrame(() => {
+      const root = rootRef.current;
+      const id = CSS.escape(refocus.copyId);
+      const target =
+        refocus.into === "edit"
+          ? root?.querySelector<HTMLElement>(`[data-copy-edit="${id}"]`)
+          : root?.querySelector<HTMLElement>(`[data-copy-editor="${id}"] input, [data-copy-editor="${id}"] select`);
+      target?.focus();
+      // Only this move: a newer one asked for meanwhile still runs.
+      setRefocus((current) => (current === refocus ? null : current));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [refocus]);
   const copyRefs = useRef(new Map<CopyId, HTMLLIElement>());
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -141,7 +166,10 @@ export default function CardDetail({
         () => `Saved ${name}, ${lineSummary({ ...copy, ...details }, binders)}`,
       )
       .then((r) => {
-        if (r) setEditing(null);
+        if (r) {
+          setEditing(null);
+          setRefocus({ copyId: copy.id, into: "edit" });
+        }
       });
   };
 
@@ -163,7 +191,7 @@ export default function CardDetail({
     .join(", ");
 
   return (
-    <div className="space-y-5">
+    <div ref={rootRef} className="space-y-5">
       <div className="grid grid-cols-[6.5rem_1fr] gap-4 sm:grid-cols-[9rem_1fr]">
         <CardFace model={card} size="fill" state={owned > 0 ? "owned" : "need"} />
         <div className="min-w-0 space-y-2 text-sm">
@@ -251,7 +279,10 @@ export default function CardDetail({
               value={editing.value}
               onChange={(value) => setEditing({ id: copy.id, value })}
               onSave={(value) => save(copy, value)}
-              onCancel={() => setEditing(null)}
+              onCancel={() => {
+                setEditing(null);
+                setRefocus({ copyId: copy.id, into: "edit" });
+              }}
               binders={formBinders}
               hideSaleFields={!capabilities.saleFields}
               heading={`Edit ${names[i]}`}
@@ -259,7 +290,10 @@ export default function CardDetail({
             />
           )
         }
-        onEdit={(copy) => setEditing({ id: copy.id, value: toForm(copy) })}
+        onEdit={(copy) => {
+          setEditing({ id: copy.id, value: toForm(copy) });
+          setRefocus({ copyId: copy.id, into: "form" });
+        }}
         onRemove={remove}
         tradeBinderId={capabilities.trade ? demo?.tradeBinderId : undefined}
       />
@@ -288,6 +322,10 @@ export default function CardDetail({
  * "Your copies": each line item with Edit and Remove. Shared by a card's
  * detail and by a card the catalog no longer holds, whose copies the
  * collector can still see and take out.
+ *
+ * Remove takes the row, and the button with it, away once the write lands:
+ * the keyboard moves to the next copy's Edit (or Remove), else the one
+ * before, else the "Your copies" heading.
  */
 export function CopyList({
   name,
@@ -316,9 +354,36 @@ export function CopyList({
   onRemove: (copy: Copy) => void;
 }) {
   const lines = copies ?? [];
+  const sectionRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  /** A removal in flight from this list: the copy going, and whose button takes the keyboard. */
+  const [park, setPark] = useState<{ gone: CopyId; next: CopyId | null } | null>(null);
+  const goneYet = park !== null && !lines.some((c) => c.id === park.gone);
+  useEffect(() => {
+    if (!park || !goneYet) return;
+    const frame = requestAnimationFrame(() => {
+      setPark((current) => (current === park ? null : current));
+      // Only when the keyboard fell with the row: never pull it from where the collector moved it.
+      const active = document.activeElement;
+      if (active && active !== document.body && document.contains(active)) return;
+      const id = park.next ? CSS.escape(park.next) : null;
+      const root = sectionRef.current;
+      const target =
+        (id &&
+          (root?.querySelector<HTMLElement>(`[data-copy-edit="${id}"]`) ??
+            root?.querySelector<HTMLElement>(`[data-copy-remove="${id}"]`))) ||
+        headingRef.current;
+      target?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [park, goneYet]);
+  const removeAt = (copy: Copy, i: number) => {
+    setPark({ gone: copy.id, next: (lines[i + 1] ?? lines[i - 1])?.id ?? null });
+    onRemove(copy);
+  };
   return (
-    <section aria-label={`Your copies of ${name}`} className="space-y-2">
-      <h3 className="text-base font-semibold text-ink">
+    <section ref={sectionRef} aria-label={`Your copies of ${name}`} className="space-y-2">
+      <h3 ref={headingRef} tabIndex={-1} className="rounded-sm text-base font-semibold text-ink focus-outline">
         Your copies{lines.length > 0 ? ` (${lines.length} ${lines.length === 1 ? "line" : "lines"})` : ""}
       </h3>
       {copies === undefined ? (
@@ -334,7 +399,7 @@ export function CopyList({
         <ul className="divide-y divide-rule rounded-md border border-rule">
           {lines.map((copy, i) =>
             editing?.id === copy.id && renderEditor ? (
-              <li key={copy.id} className="p-2">
+              <li key={copy.id} className="p-2" data-copy-editor={copy.id}>
                 {renderEditor(copy, i)}
               </li>
             ) : (
@@ -373,15 +438,22 @@ export function CopyList({
                   </span>
                 </span>
                 {onEdit && (
-                  <button type="button" className={QUIET_BUTTON} aria-label={`Edit ${name}, ${names[i]}`} onClick={() => onEdit(copy)}>
+                  <button
+                    type="button"
+                    className={QUIET_BUTTON}
+                    data-copy-edit={copy.id}
+                    aria-label={`Edit ${name}, ${names[i]}`}
+                    onClick={() => onEdit(copy)}
+                  >
                     Edit
                   </button>
                 )}
                 <button
                   type="button"
                   className={`${QUIET_BUTTON} hover:text-neon-pink-text`}
+                  data-copy-remove={copy.id}
                   aria-label={`Remove ${name}, ${names[i]}`}
-                  onClick={() => onRemove(copy)}
+                  onClick={() => removeAt(copy, i)}
                 >
                   Remove
                 </button>

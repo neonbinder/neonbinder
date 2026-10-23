@@ -337,6 +337,30 @@ function bscSide(row: Row | null) {
 
 const RED_INK = { id: "SL-RED-INK", label: "All-America Game Autos Red Ink" };
 
+/**
+ * NEO-358 — "Sets I'm building" around an S1 conversion: `a` builds only the
+ * source set, `b` builds the source AND the target, `c` only the target.
+ */
+async function buildingEntries(t: T, sourceSetId: RowId, targetSetId: RowId) {
+  await t.run(async (ctx) => {
+    const add = (ownerId: string, setId: RowId) =>
+      ctx.db.insert("collectionBuildingSets", { ownerId, setId, lastUpdated: SENTINEL });
+    await add("collector_a", sourceSetId);
+    await add("collector_b", sourceSetId);
+    await add("collector_b", targetSetId);
+    await add("collector_c", targetSetId);
+  });
+}
+
+/** Every "Sets I'm building" row as `owner -> set`, sorted. */
+async function buildingRows(t: T) {
+  return t.run(async (ctx) =>
+    (await ctx.db.query("collectionBuildingSets").collect())
+      .map((r) => `${r.ownerId}->${r.setId}`)
+      .sort(),
+  );
+}
+
 function convert(
   t: T,
   rowId: RowId,
@@ -730,6 +754,30 @@ describe("convertToInsert — the landings", () => {
     expect((await get(t, ids.brandId))!.children).not.toContain(setId);
     const ids2 = await covered(t, ids.brandId);
     expect(ids2).toEqual(expect.arrayContaining(["SL-STARS", "SL-STARS-UPDATE"]));
+  });
+
+  test("S1: a collector building the source set is building the target after, one entry per owner", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const { setId, baseId } = await slSet(t, ids.brandId, "Bowman Stars", [
+      { id: "SL-STARS", label: "Bowman Stars" },
+    ]);
+    await addCards(t, baseId, [{ n: "BS-1", sl: { ref: "#1", src: "s0" } }]);
+    await buildingEntries(t, setId, ids.bowmanId);
+
+    await convert(t, setId, ids.insertTypeId, { kind: "newInsert" });
+
+    expect(await get(t, setId)).toBeNull();
+    // a moved to the target; b's source entry folded into the one it already
+    // had (never two rows for one owner and set); c untouched; nothing names
+    // the deleted source.
+    expect(await buildingRows(t)).toEqual(
+      [
+        `collector_a->${ids.bowmanId}`,
+        `collector_b->${ids.bowmanId}`,
+        `collector_c->${ids.bowmanId}`,
+      ].sort(),
+    );
   });
 
   test("S2 → joinInsert: the link joins BSC's insert; its BSC side is byte-for-byte what it was", async () => {

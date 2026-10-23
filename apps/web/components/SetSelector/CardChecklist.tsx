@@ -2125,8 +2125,8 @@ export default function CardChecklist({
       if (result.collectedDeleteSkipped) {
         notes.push(
           result.collectedDeleteSkipped === 1
-            ? "Kept 1 a collector owns — it stays in the catalog."
-            : `Kept ${result.collectedDeleteSkipped} collectors own — they stay in the catalog.`,
+            ? "Kept 1 card a collector owns — it stays in the catalog."
+            : `Kept ${result.collectedDeleteSkipped} cards collectors own — they stay in the catalog.`,
         );
       }
       if (result.staleDecisions) {

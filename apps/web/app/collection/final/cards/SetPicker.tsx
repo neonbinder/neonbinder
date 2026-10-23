@@ -181,7 +181,10 @@ function SetRows({ sets }: { sets: SetRef[] }) {
                 on ? "border-selection bg-neon-blue text-on-neon-blue" : "border-control text-ink-2 hover:border-neon-blue"
               }`}
             >
-              {on ? "On the board" : "Build it"}
+              {/* Stable words, like Checklists' "Building this set": the name starts
+                  with them and never flips; on or off is aria-pressed (and the tick). */}
+              {on && <span aria-hidden="true">✓ </span>}
+              Building
             </button>
           </li>
         );

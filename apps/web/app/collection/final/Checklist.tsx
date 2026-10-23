@@ -1,12 +1,13 @@
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useId, useMemo, useRef, useState } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { CHIP, CHIP_OFF, CHIP_ON, FOCUS } from "../prototypes/p1/ui";
 import BinderPicker from "./BinderPicker";
 import CardRowGroup, { type RowActions } from "./CardRows";
+import ChipGroup from "./ChipGroup";
 import { cardsCount, haveLine, isComplete, totalKnown } from "./catalog/format";
 import { copiesByCard, fold, useHomeName, useScopedName } from "./catalog/home";
-import { LoadingNote, SkeletonBars, SkeletonPips } from "./catalog/Skeleton";
+import { SkeletonBars, SkeletonPips } from "./catalog/Skeleton";
 import { blockedMessage, pickFirstLabel, runPlan } from "./cards/model";
 import { parseRange } from "./cards/range";
 import { playerNames, setLabel, shortCardName, teamNames } from "./data/labels";
@@ -33,6 +34,11 @@ type Show = "all" | "have" | "need";
  * One checklist's cards and copies (`useVariantCards`, `useCopiesInVariant`),
  * never the whole set. Its heading shows at once; the rows show a skeleton
  * until both reads are in.
+ *
+ * Live regions: the count line is one status, mounted from the start, that
+ * says "Dealing out the checklist…" and then the count; the range's preview
+ * is another, with an alert for text it cannot read. Marking a range puts
+ * the caret back in its box.
  */
 const Checklist = forwardRef<
   HTMLHeadingElement,
@@ -69,6 +75,9 @@ const Checklist = forwardRef<
   const [rangeText, setRangeText] = useState("");
   /** For numbers two cards share: which of them the collector means. */
   const [sharedPicks, setSharedPicks] = useState<Set<string>>(new Set());
+  const rangeRef = useRef<HTMLInputElement>(null);
+  const rangePreviewId = useId();
+  const rangeErrorId = useId();
 
   const needle = fold(query).replace(/^#/, "");
   const visible = list.filter((c) => {
@@ -96,6 +105,8 @@ const Checklist = forwardRef<
     );
     setRangeText("");
     setSharedPicks(new Set());
+    // The button goes quiet once the box clears: keep the keyboard in the box.
+    rangeRef.current?.focus();
   };
 
   const toggleBuilding = () => {
@@ -121,17 +132,6 @@ const Checklist = forwardRef<
     });
     return () => cancelAnimationFrame(frame);
   }, [ringed, ready]);
-
-  const showButton = (value: Show, label: string) => (
-    <button
-      type="button"
-      aria-pressed={show === value}
-      onClick={() => setShow(value)}
-      className={`${CHIP} ${show === value ? CHIP_ON : CHIP_OFF}`}
-    >
-      {label}
-    </button>
-  );
 
   const headingId = `checklist-${variantId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
@@ -171,7 +171,8 @@ const Checklist = forwardRef<
             onClick={toggleBuilding}
             className={`${CHIP} ${isBuilding ? CHIP_ON : CHIP_OFF} disabled:cursor-wait disabled:opacity-60`}
           >
-            {isBuilding ? "✓ " : ""}Building this set
+            {isBuilding && <span aria-hidden="true">✓ </span>}
+            Building this set
           </button>
         </div>
       </div>
@@ -195,17 +196,25 @@ const Checklist = forwardRef<
               autoComplete="off"
             />
           </div>
-          <div role="group" aria-label="Show" className="flex gap-1.5 pb-1">
-            {showButton("all", "All")}
-            {showButton("have", "Haves")}
-            {showButton("need", "Needs")}
-          </div>
+          <ChipGroup
+            label="Show"
+            value={show}
+            options={[
+              { value: "all", label: "All" },
+              { value: "have", label: "Haves" },
+              { value: "need", label: "Needs" },
+            ]}
+            onChange={setShow}
+            className="flex gap-1.5 pb-1"
+            chipClass={(on) => `${CHIP} ${on ? CHIP_ON : CHIP_OFF}`}
+          />
         </div>
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-[12rem] flex-1">
               <Input
+                ref={rangeRef}
                 surface="dark"
                 label="Mark a range as Have"
                 placeholder="1-20, -12"
@@ -226,6 +235,8 @@ const Checklist = forwardRef<
                 }}
                 autoComplete="off"
                 spellCheck={false}
+                aria-invalid={range?.invalid || undefined}
+                aria-describedby={range?.invalid ? rangeErrorId : rangePreviewId}
               />
             </div>
             <NeonButton
@@ -238,17 +249,30 @@ const Checklist = forwardRef<
               {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Mark ${toAdd.length} as Have` : "Mark as Have")}
             </NeonButton>
           </div>
-          {range && (
-            <div className="space-y-2 text-sm text-ink-2">
-              <p>
-                {toAdd.length === 0 && rangeCards.length === 0
-                  ? "No cards picked yet."
-                  : `${toAdd.length} to add to ${into}`}
-                {alreadyHave > 0 && `, ${alreadyHave} already in your collection`}
-                {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
+          <div className="space-y-2 text-sm text-ink-2">
+            {range?.invalid && (
+              <p id={rangeErrorId} role="alert" className="text-neon-yellow-text">
+                Can&apos;t read that. Try numbers and runs like 1-20, -12.
               </p>
-              {blocked && <p className="text-neon-yellow-text">{blockedMessage(plan)}</p>}
-              {range.shared.map((s) => (
+            )}
+            {/* Always mounted, so each change to the range is read as it lands. */}
+            <div id={rangePreviewId} role="status" className={range && !range.invalid ? "space-y-2" : "sr-only"}>
+              {range && !range.invalid && (
+                <>
+                  <p>
+                    {toAdd.length === 0 && rangeCards.length === 0
+                      ? "No cards picked yet."
+                      : `${toAdd.length} to add to ${into}`}
+                    {alreadyHave > 0 && `, ${alreadyHave} already in your collection`}
+                    {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
+                  </p>
+                  {blocked && <p className="text-neon-yellow-text">{blockedMessage(plan)}</p>}
+                </>
+              )}
+            </div>
+            {range &&
+              !range.invalid &&
+              range.shared.map((s) => (
                 <div
                   key={s.number}
                   role="group"
@@ -279,21 +303,23 @@ const Checklist = forwardRef<
                   })}
                 </div>
               ))}
-            </div>
-          )}
+          </div>
         </div>
       </div>
 
+      <p role="status" className={!cards || !copies ? "sr-only" : "text-xs tabular-nums text-ink-3"}>
+        {!cards || !copies
+          ? "Dealing out the checklist…"
+          : visible.length === cards.length
+            ? cardsCount(cards.length)
+            : `${visible.length} of ${cardsCount(cards.length)}`}
+      </p>
       {!cards || !copies ? (
         <div aria-busy="true" className="space-y-2">
           <SkeletonBars rows={6} />
-          <LoadingNote>Dealing out the checklist…</LoadingNote>
         </div>
       ) : (
         <>
-          <p role="status" className="text-xs tabular-nums text-ink-3">
-            {visible.length === cards.length ? cardsCount(cards.length) : `${visible.length} of ${cardsCount(cards.length)}`}
-          </p>
           {visible.length === 0 ? (
             <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
               {cards.length === 0

@@ -8182,6 +8182,8 @@ type SetBuilderResetResult = {
   slSetReviewsDeleted: number;
   /** NEO-358 — collectors' copies, drained before the cards they name. */
   collectionCopiesDeleted: number;
+  /** NEO-358 — collectors' binders and boxes, drained after the copies in them. */
+  collectionContainersDeleted: number;
   /** NEO-358 — collectors' "Sets I'm building", drained before the sets. */
   collectionBuildingSetsDeleted: number;
   selectorOptionsDeleted: number;
@@ -8284,6 +8286,7 @@ async function runSetBuilderReset(
   const counts = {
     slSetReviewsDeleted: 0,
     collectionCopiesDeleted: 0,
+    collectionContainersDeleted: 0,
     collectionBuildingSetsDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
@@ -8317,11 +8320,19 @@ async function runSetBuilderReset(
     // "Sets I'm building" at a set. Both go BEFORE the selector rows and the
     // cards, so an interrupted reset never leaves a collector's row pointing
     // at something deleted. Not reference-seed tables: every scope drains
-    // them. (`collectionContainers` holds no catalog id and is per-user state;
-    // `testing.resetMyTestState` clears it per account.)
+    // them.
     [
       "collectionCopiesDeleted",
       internal.selectorOptions.resetCollectionCopiesBatch,
+    ],
+    // NEO-358 — the binders and boxes those copies lived in, AFTER the copies
+    // (a copy's `homeId` names one), so an interrupted reset never leaves a
+    // copy without its home. Every collector's Main is gone too; it is
+    // re-created lazily on their next add. A container holds no catalog id,
+    // so its place relative to the selector rows does not matter.
+    [
+      "collectionContainersDeleted",
+      internal.selectorOptions.resetCollectionContainersBatch,
     ],
     [
       "collectionBuildingSetsDeleted",
@@ -8587,8 +8598,10 @@ export const resetSetBuilderDataFromCli = internalAction({
   returns: v.object({
     // NEO-306 — pending SportLots set reviews, drained first.
     slSetReviewsDeleted: v.number(),
-    // NEO-358 — collectors' copies and "Sets I'm building".
+    // NEO-358 — collectors' copies, their binders and boxes, and "Sets I'm
+    // building".
     collectionCopiesDeleted: v.number(),
+    collectionContainersDeleted: v.number(),
     collectionBuildingSetsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     // NEO-313 — the derived player → cards index.
@@ -9003,6 +9016,31 @@ export const resetCollectionCopiesBatch = internalMutation({
   handler: async (ctx) => {
     assertResetArmed();
     const rows = await ctx.db.query("collectionCopies").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `collectionContainers`, looped by `runSetBuilderReset` right
+ * AFTER `collectionCopies` (a copy's `homeId` names a container). NEO-358.
+ * Every collector's binders and boxes, across every account; a collector's
+ * Main is re-created lazily on their next add. Without this a global reset
+ * left every account's emptied containers behind.
+ */
+export const resetCollectionContainersBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("collectionContainers")
+      .take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }

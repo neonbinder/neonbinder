@@ -31,10 +31,15 @@ export function SkeletonPips({ count = 18, size = "pip" }: { count?: number; siz
   );
 }
 
-/** The screen reader's half of a skeleton. Polite, and said once. */
-export function LoadingNote({ children }: { children: string }) {
+/**
+ * The screen reader's half of a skeleton. Polite, and said once. `silent`
+ * where the view already has a status line of its own saying the same thing:
+ * the words stay for a reader browsing past, but nothing is announced, so a
+ * view never talks over itself (one live status per view).
+ */
+export function LoadingNote({ children, silent = false }: { children: string; silent?: boolean }) {
   return (
-    <p role="status" className="sr-only">
+    <p role={silent ? undefined : "status"} className="sr-only">
       {children}
     </p>
   );

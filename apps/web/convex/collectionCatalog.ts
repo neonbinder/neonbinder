@@ -672,7 +672,7 @@ function isPlayerCursor(x: unknown): x is PlayerCursor {
   return (
     typeof x === "object" && x !== null &&
     typeof (x as PlayerCursor).s === "string" &&
-    typeof (x as PlayerCursor).t === "number"
+    Number.isFinite((x as PlayerCursor).t)
   );
 }
 
@@ -682,6 +682,23 @@ function isTeamCursor(x: unknown): x is TeamCursor {
     Number.isInteger((x as TeamCursor).i) &&
     typeof (x as TeamCursor).t === "number"
   );
+}
+
+/**
+ * A team cursor is caller-supplied: it is honoured only when it points INSIDE
+ * this query's team list (`0 <= i < teamCount`) and carries a real creation
+ * time (finite, not negative; `JSON.parse("1e999")` is Infinity). Anything
+ * else starts from the first page, as a missing cursor does, rather than
+ * reading `teamIds[-1]` (undefined) or skipping the list entirely.
+ */
+export function teamCursorInRange(
+  cursor: TeamCursor | null,
+  teamCount: number,
+): TeamCursor | null {
+  if (!cursor) return null;
+  if (cursor.i < 0 || cursor.i >= teamCount) return null;
+  if (!Number.isFinite(cursor.t) || cursor.t < 0) return null;
+  return cursor;
 }
 
 async function hydrateLinked(
@@ -780,7 +797,7 @@ export const cardsByTeam = query({
     }
 
     const limit = clampInt(args.limit, ENTITY_CARDS_DEFAULT_LIMIT, ENTITY_CARDS_MAX_LIMIT);
-    const cursor = parseCursor(args.cursor, isTeamCursor);
+    const cursor = teamCursorInRange(parseCursor(args.cursor, isTeamCursor), teamIds.length);
     let index = cursor ? cursor.i : 0;
     let after = cursor ? cursor.t : null;
     const links: Array<Doc<"cardTeamLinks"> & { at: number }> = [];

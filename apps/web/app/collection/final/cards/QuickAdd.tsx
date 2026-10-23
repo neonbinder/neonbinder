@@ -21,12 +21,21 @@ import { parseRange } from "./range";
  * "Add a run": "1-50, -12, -33", previewed before it lands. A number two
  * cards share stops and asks which one is yours; nothing is added for it, or
  * for the rest of the run, until you pick (or take it out with -N).
+ *
+ * The keyboard never falls to the page: adding a run, or picking one of the
+ * cards a typed number shares, puts the caret back in its box. The run's
+ * preview is one live region, mounted from the start; text it cannot read is
+ * an alert, and the box says it is invalid.
  */
 export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; onSpot: (ids: string[]) => void }) {
   const api = useMyCards();
   const numberHintId = useId();
   const rangeHelpId = useId();
+  const rangePreviewId = useId();
+  const rangeErrorId = useId();
   const choicesRef = useRef<HTMLUListElement>(null);
+  const numberRef = useRef<HTMLInputElement>(null);
+  const rangeRef = useRef<HTMLInputElement>(null);
 
   const [rowId, setRowId] = useState(() => variants[0]?.id ?? "");
   const row = variants.find((v) => v.id === rowId) ?? variants[0];
@@ -94,6 +103,8 @@ export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; on
     api.addMany(toAdd, (into) => `Lit up ${n} ${n === 1 ? "card" : "cards"} in ${rowName}, into ${into}.`);
     setRangeText("");
     setPicks(new Set());
+    // The Add button goes with the preview: back to the box for the next run.
+    rangeRef.current?.focus();
   }
 
   const addLabel =
@@ -128,6 +139,7 @@ export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; on
       </div>
       <div>
         <Input
+          ref={numberRef}
           label="Type a number"
           inputMode="text"
           autoComplete="off"
@@ -149,6 +161,8 @@ export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; on
                   onClick={() => {
                     api.addOne(c, ownedOf(c.id));
                     setNumText("");
+                    // The choices go once the box clears: back to it for the next card.
+                    numberRef.current?.focus();
                   }}
                   className={`flex min-h-11 w-full items-center gap-2 rounded-md border border-field-rule px-3 text-left text-sm text-ink hover:border-neon-blue sm:min-h-9 ${FOCUS}`}
                 >
@@ -168,6 +182,7 @@ export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; on
 
       <div>
         <Input
+          ref={rangeRef}
           label="Add a run of numbers"
           autoComplete="off"
           spellCheck={false}
@@ -186,17 +201,22 @@ export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; on
               setRangeText("");
             }
           }}
-          aria-describedby={rangeHelpId}
+          aria-invalid={range?.invalid || undefined}
+          aria-describedby={`${rangeHelpId} ${range?.invalid ? rangeErrorId : rangePreviewId}`}
         />
         <p id={rangeHelpId} className="mt-2 text-xs text-ink-3">
           Commas between pieces. A minus leaves a number out.
         </p>
 
-        {range && (
-          <div className="mt-3 rounded-lg border border-rule-strong bg-surface/40 p-3">
-            {range.invalid ? (
-              <p className="text-sm text-neon-yellow-text">Can&apos;t read that. Try numbers and runs like 1-50, -12.</p>
-            ) : (
+        <div className={range ? "mt-3 rounded-lg border border-rule-strong bg-surface/40 p-3" : undefined}>
+          {range?.invalid && (
+            <p id={rangeErrorId} role="alert" className="text-sm text-neon-yellow-text">
+              Can&apos;t read that. Try numbers and runs like 1-50, -12.
+            </p>
+          )}
+          {/* Always mounted, so each change to the run is read as it lands. */}
+          <div id={rangePreviewId} role="status" className={range && !range.invalid ? undefined : "sr-only"}>
+            {range && !range.invalid && (
               <>
                 <p className="text-sm text-ink-2">
                   <strong className="text-lg text-ink">
@@ -208,51 +228,55 @@ export default function QuickAdd({ variants, onSpot }: { variants: Variant[]; on
                   <p className="mt-1 text-sm text-ink-3">Not on this checklist: {range.unknown.join(", ")}.</p>
                 )}
                 {blocked && <p className="mt-1 text-sm text-neon-yellow-text">{blockedMessage(plan)}</p>}
-                {range.shared.map((group) => (
-                  <div
-                    key={group.number}
-                    role="group"
-                    aria-label={`Which #${group.number} is yours?`}
-                    className="mt-2 rounded-md border border-neon-yellow/50 bg-neon-yellow/5 px-2 py-1.5"
-                  >
-                    <p className="text-sm text-ink-2">
-                      #{group.number} is on {group.cards.length} cards. Which one&apos;s yours?
-                    </p>
-                    <div className="mt-1 flex flex-wrap gap-1.5">
-                      {group.cards.map((c) => {
-                        const on = picks.has(c.id);
-                        return (
-                          <button
-                            key={c.id}
-                            type="button"
-                            aria-pressed={on}
-                            onClick={() =>
-                              setPicks((prev) => {
-                                const next = new Set(prev);
-                                if (on) next.delete(c.id);
-                                else next.add(c.id);
-                                return next;
-                              })
-                            }
-                            className={`min-h-11 rounded-full border px-3 text-sm sm:min-h-8 ${FOCUS} ${
-                              on ? "border-selection bg-neon-blue text-on-neon-blue" : "border-control text-ink-2 hover:border-neon-blue"
-                            }`}
-                          >
-                            #{c.cardNumber} {playerNames(c)}
-                            {c.cardVariation ? `, ${c.cardVariation} variation` : ", regular"}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-                <button type="button" onClick={commitRange} disabled={blocked || toAdd.length === 0} className={`${PRIMARY_BUTTON} mt-3`}>
-                  {addLabel}
-                </button>
               </>
             )}
           </div>
-        )}
+          {range && !range.invalid && (
+            <>
+              {range.shared.map((group) => (
+                <div
+                  key={group.number}
+                  role="group"
+                  aria-label={`Which #${group.number} is yours?`}
+                  className="mt-2 rounded-md border border-neon-yellow/50 bg-neon-yellow/5 px-2 py-1.5"
+                >
+                  <p className="text-sm text-ink-2">
+                    #{group.number} is on {group.cards.length} cards. Which one&apos;s yours?
+                  </p>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {group.cards.map((c) => {
+                      const on = picks.has(c.id);
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            setPicks((prev) => {
+                              const next = new Set(prev);
+                              if (on) next.delete(c.id);
+                              else next.add(c.id);
+                              return next;
+                            })
+                          }
+                          className={`min-h-11 rounded-full border px-3 text-sm sm:min-h-8 ${FOCUS} ${
+                            on ? "border-selection bg-neon-blue text-on-neon-blue" : "border-control text-ink-2 hover:border-neon-blue"
+                          }`}
+                        >
+                          #{c.cardNumber} {playerNames(c)}
+                          {c.cardVariation ? `, ${c.cardVariation} variation` : ", regular"}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              <button type="button" onClick={commitRange} disabled={blocked || toAdd.length === 0} className={`${PRIMARY_BUTTON} mt-3`}>
+                {addLabel}
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronDownIcon, ChevronLeftIcon, ChevronUpIcon, EllipsisHorizontalIcon, ListBulletIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, ChevronLeftIcon, EllipsisHorizontalIcon, ListBulletIcon } from "@heroicons/react/24/outline";
 import { StarIcon } from "@heroicons/react/20/solid";
 import NeonButton from "@/components/modules/NeonButton";
-import Chip from "../../prototypes/p3/Chip";
 import { useRoving } from "../../prototypes/p3/hooks";
+import ChipGroup from "../ChipGroup";
 import { haveShort, isComplete, totalKnown } from "../catalog/format";
 import { copiesByCard } from "../catalog/home";
 import { LoadingNote, SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
@@ -32,6 +32,12 @@ import { baseOf } from "./Scoreboard";
  *
  * One Tab stop for the whole wall (roving tabindex). Arrows move, Space marks
  * have / need, Enter opens the card drawer, whose ↑ ↓ walk the wall.
+ *
+ * A tile's name never changes with its state: "Base #4 Reggie White", with
+ * have or need in `aria-pressed` while a click marks it. When a click opens
+ * details instead, the tile is not a toggle; it says have or need in its name.
+ * A tile marked while a filter would now hide it stays put until the
+ * keyboard leaves it, so focus is never dropped on the floor.
  */
 
 type Filter = "all" | "needs" | "haves" | "dupes" | "wanted";
@@ -49,6 +55,8 @@ export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMo
   const [tapDoes, setTapDoes] = useState<TapDoes>("toggle");
   const [spot, setSpot] = useState<string[]>([]);
   const [tiles, setTiles] = useState<Record<string, string[]>>({});
+  /** The tile just marked, kept on the wall while it holds focus (see above). */
+  const [keep, setKeep] = useState<string | null>(null);
 
   const variants = useMemo(() => summary?.variants ?? [], [summary]);
   const base = baseOf(variants);
@@ -76,11 +84,12 @@ export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMo
     [],
   );
 
-  // Scroll the number box's first match into view.
+  // Scroll the number box's first match into view (no glide for anyone who asks for less motion).
   useEffect(() => {
     if (spot.length === 0) return;
     const el = container.current?.querySelector(`[data-rove="${CSS.escape(spot[0])}"]`);
-    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    el?.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" });
   }, [spot]);
 
   if (summary === undefined) {
@@ -190,30 +199,31 @@ export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMo
       <QuickAdd variants={variants} onSpot={setSpot} />
 
       <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div role="group" aria-label="Show on the wall" className="flex flex-wrap gap-1.5">
-          {chips.map(([value, text]) => (
-            <Chip key={value} pressed={filter === value} onClick={() => setFilter(value)}>
-              {text}
-            </Chip>
-          ))}
-        </div>
-        <div role="group" aria-label="Clicking a tile" className="flex items-center gap-1.5">
-          <span aria-hidden="true" className="text-sm text-ink-3">
-            Click a tile to
-          </span>
-          <Chip pressed={tapDoes === "toggle"} onClick={() => setTapDoes("toggle")}>
-            Mark have
-          </Chip>
-          <Chip pressed={tapDoes === "details"} onClick={() => setTapDoes("details")}>
-            Open details
-          </Chip>
-        </div>
+        <ChipGroup
+          label="Show on the wall"
+          value={filter}
+          options={chips.map(([value, text]) => ({ value, label: text }))}
+          onChange={setFilter}
+        />
+        <ChipGroup
+          label="Clicking a tile"
+          value={tapDoes}
+          options={[
+            { value: "toggle", label: "Mark have" },
+            { value: "details", label: "Open details" },
+          ]}
+          onChange={setTapDoes}
+          className="flex items-center gap-1.5"
+          lead={<span className="text-sm text-ink-3">Click a tile to</span>}
+        />
       </div>
 
       <Legend wants={capabilities.wants} />
 
       <p id="mc-wall-help" className="sr-only">
-        Arrow keys move between cards. Space marks a card have or need. Enter opens its details.
+        {tapDoes === "toggle"
+          ? "Arrow keys move between cards. A click or Space marks a card have or need. Enter opens its details."
+          : "Arrow keys move between cards. A click or Enter opens a card's details. Space marks it have or need."}
       </p>
       <div
         ref={container}
@@ -232,6 +242,8 @@ export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMo
             filter={filter}
             tapDoes={tapDoes}
             spot={spot}
+            keep={keep}
+            onKeep={setKeep}
             tabIndexFor={roving.tabIndexFor}
             wallList={wallList}
             report={report}
@@ -270,6 +282,8 @@ function WallStrip({
   filter,
   tapDoes,
   spot,
+  keep,
+  onKeep,
   tabIndexFor,
   wallList,
   report,
@@ -279,6 +293,8 @@ function WallStrip({
   filter: Filter;
   tapDoes: TapDoes;
   spot: string[];
+  keep: string | null;
+  onKeep: (cardId: string | null) => void;
   tabIndexFor: (key: string) => number;
   wallList: () => CardId[];
   report: (variantId: string, ids: string[]) => void;
@@ -295,6 +311,7 @@ function WallStrip({
 
   const countOf = (id: string) => (byCard.get(id) ?? []).reduce((n, c) => n + c.quantity, 0);
   const passes = (c: Card) => {
+    if (c.id === keep) return true;
     const n = countOf(c.id);
     if (filter === "needs") return n === 0;
     if (filter === "haves") return n > 0;
@@ -312,21 +329,26 @@ function WallStrip({
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span aria-hidden="true" className="size-2.5 shrink-0 rounded-full border border-control" style={{ background: finishSwatch(variant) }} />
+        {/* The heading is the disclosure: its name ("Gold Refractor /50 tiles")
+            starts with what it shows and never changes; open or folded is in
+            aria-expanded, and the chevron turns. */}
         <h3 className="text-sm font-bold text-ink-2">
-          {name}
-          {run && <span className="font-normal text-ink-3"> {run}</span>}
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+            className="inline-flex min-h-11 items-center gap-1 rounded-md pr-1.5 text-left hover:text-neon-blue-text focus-outline sm:min-h-8"
+          >
+            {name}
+            {run && <span className="font-normal text-ink-3"> {run}</span>}
+            <span className="sr-only"> tiles</span>
+            <ChevronDownIcon
+              aria-hidden="true"
+              className={`size-3.5 shrink-0 transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+            />
+          </button>
         </h3>
         <span className="text-xs tabular-nums text-ink-3">{completion ? haveShort(completion) : "…"}</span>
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-label={open ? `Fold up ${name}` : `Show the ${name} tiles`}
-          onClick={() => setOpen(!open)}
-          className="inline-flex min-h-11 items-center gap-1 rounded-md px-1.5 text-xs text-ink-3 hover:text-neon-blue-text focus-outline sm:min-h-8"
-        >
-          {open ? <ChevronUpIcon aria-hidden="true" className="size-3.5" /> : <ChevronDownIcon aria-hidden="true" className="size-3.5" />}
-          {open ? "Fold up" : "Show the tiles"}
-        </button>
       </div>
       {open &&
         (cards && copies ? (
@@ -345,6 +367,7 @@ function WallStrip({
                   tapDoes={tapDoes}
                   tabIndex={tabIndexFor(card.id)}
                   wallList={wallList}
+                  onKeep={onKeep}
                 />
               ))}
             </div>
@@ -365,6 +388,7 @@ function Tile({
   tapDoes,
   tabIndex,
   wallList,
+  onKeep,
 }: {
   card: Card;
   rowLabel: string;
@@ -374,6 +398,8 @@ function Tile({
   tapDoes: TapDoes;
   tabIndex: number;
   wallList: () => CardId[];
+  /** Keep this tile on the wall while it holds focus (null lets it go). */
+  onKeep: (cardId: string | null) => void;
 }) {
   const api = useMyCards();
   const count = copies.reduce((n, c) => n + c.quantity, 0);
@@ -391,11 +417,19 @@ function Tile({
   }
 
   const players = playerNames(card);
-  const name = `${rowLabel} #${card.cardNumber}${card.cardVariation ? `, ${card.cardVariation} variation` : ""}${
-    players ? ` ${players}` : ""
-  }, ${have ? (count > 1 ? `have ${count}` : "have") : "need"}${wanted ? ", on your Want List" : ""}`;
+  const toggles = tapDoes === "toggle";
+  // Stable while a click marks it: have or need is aria-pressed. The copy
+  // count and the Want List are facts about the card, not this control's state.
+  const name = `${rowLabel} #${card.cardNumber}${players ? ` ${players}` : ""}${
+    card.cardVariation ? `, ${card.cardVariation} variation` : ""
+  }${toggles ? "" : have ? ", have" : ", need"}${count > 1 ? `, ${count} copies` : ""}${wanted ? ", on your Want List" : ""}`;
 
   const open = () => api.openCard(card.id, { list: wallList(), seed: card });
+  const mark = (button: HTMLButtonElement) => {
+    // A filter may hide this tile once it is marked: keep it while it has focus.
+    if (document.activeElement === button) onKeep(card.id);
+    api.toggleHave(card, copies, wallList());
+  };
 
   function onKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
     if (e.key === "Enter") {
@@ -403,14 +437,14 @@ function Tile({
       open();
     } else if (e.key === " ") {
       e.preventDefault();
-      if (!e.repeat) api.toggleHave(card, copies, wallList());
+      if (!e.repeat) mark(e.currentTarget);
     }
   }
   function onClick(e: MouseEvent<HTMLButtonElement>) {
     // Keyboard presses were handled on keydown; a click with detail 0 is one.
     if (e.detail === 0) return;
     if (tapDoes === "details") open();
-    else api.toggleHave(card, copies, wallList());
+    else mark(e.currentTarget);
   }
 
   const look = have
@@ -425,8 +459,9 @@ function Tile({
         type="button"
         data-rove={card.id}
         tabIndex={tabIndex}
-        aria-pressed={have}
+        aria-pressed={toggles ? have : undefined}
         aria-label={name}
+        onBlur={() => onKeep(null)}
         title={`${rowLabel} #${card.cardNumber} ${players}${wanted ? " (wanted)" : ""}`}
         onKeyDown={onKeyDown}
         onKeyUp={(e) => e.key === " " && e.preventDefault()}

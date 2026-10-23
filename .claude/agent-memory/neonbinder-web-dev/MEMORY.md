@@ -142,3 +142,4 @@
 - [Printed output is a srcdoc capture](reference_printed_output_is_srcdoc_capture.md) — prove print unchanged by hooking the print iframe srcdoc / QR popup, not page screenshots
 - [App-wide useQuery needs its own boundary](reference_app_wide_usequery_needs_its_own_boundary.md) — a failing/missing Convex function throws in render; boundary + Sentry once
 - [Radix button box beats Tailwind](reference_radix_button_box_beats_tailwind.md) — on NeonButton, Tailwind display/height/padding/radius classes lose to Radix; use min-h, `contents` wrappers, asChild, inline style
+- [rAF focus request clears by identity](reference_raf_focus_request_clear_by_identity.md) — functional clear or a stale frame drops a newer move; happy-dom blur() fires no focusout

@@ -256,7 +256,7 @@ describe("My Cards on the real collection", () => {
     expect(log.variantCards).toContain(BASE.id);
     expect(log.variantCards).not.toContain(GOLD.id);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show the Gold Refractor cards of 2024 Topps Chrome" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show the cards, Gold Refractor of 2024 Topps Chrome" }));
     expect(log.variantCards).toContain(GOLD.id);
   });
 
@@ -288,9 +288,10 @@ describe("My Cards on the real collection", () => {
   it("a wall's checklists fold until opened, Base first", () => {
     const { log } = renderAt(`/collection?tab=cards&set=${SET.id}`);
     expect(screen.getByRole("group", { name: "2024 Topps Chrome checklist wall" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Show the Gold Refractor tiles" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: "Gold Refractor /50 tiles" }).getAttribute("aria-expanded")).toBe("false");
     expect(log.variantCards).not.toContain(GOLD.id);
-    expect(screen.getByRole("button", { name: "Base #2 Aaron Judge, need" })).toBeTruthy();
+    // The tile's name is stable; have or need is its pressed state.
+    expect(screen.getByRole("button", { name: "Base #2 Aaron Judge" }).getAttribute("aria-pressed")).toBe("false");
   });
 });
 
@@ -344,16 +345,16 @@ describe("Checklists on the real collection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Every New York Mets card" }));
     expect(pageUrl()).toBe("/collection?tab=checklists&team=tm-mets&franchise=fr-mets");
     expect(log.entity.at(-1)).toEqual({ kind: "team", id: "tm-mets", wholeFranchise: false });
-    const which = screen.getByRole("group", { name: "Which teams" });
-    expect(within(which).getByRole("button", { name: "Just this team" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(within(which).getByRole("button", { name: "Include the whole franchise" }));
+    const which = screen.getByRole("radiogroup", { name: "Which teams" });
+    expect(within(which).getByRole("radio", { name: "Just this team" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(within(which).getByRole("radio", { name: "Include the whole franchise" }));
     await waitFor(() => expect(pageUrl()).toBe("/collection?tab=checklists&team=tm-mets&franchise=fr-mets&whole=1"));
     expect(log.entity.at(-1)).toEqual({ kind: "team", id: "tm-mets", wholeFranchise: true });
     cleanup();
 
     renderAt("/collection?tab=checklists&team=tm-yankees");
     expect(screen.getByRole("region", { name: "Every New York Yankees card" })).toBeTruthy();
-    expect(screen.queryByRole("group", { name: "Which teams" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Which teams" })).toBeNull();
   });
 
   it("a set suggestion opens its checklist's set", async () => {

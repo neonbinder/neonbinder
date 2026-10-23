@@ -14,8 +14,11 @@ import { usePageApi } from "./pageApi";
  * The one right-side card drawer every tab opens through `openCard`: the
  * admin CardDetailPanel's shell (header with ↑ ↓ ×, scrolling body) around
  * the collector's card detail. ↑ and ↓ step through the list it was opened
- * from. While it is open the page behind is inert, so it carries its own
- * copy of the status line.
+ * from, and a polite line says where you are ("Card 3 of 12, …") while
+ * focus stays on the arrow; at either end the arrow stays focusable and says
+ * it is unavailable rather than dropping out from under the keyboard. While
+ * it is open the page behind is inert, so it carries its own copy of the
+ * status line.
  *
  * It reads the card live (`useCard`), drawing the opener's copy (`seed`) in
  * the meantime. A card the catalog no longer holds still opens: it says so,
@@ -34,6 +37,7 @@ export default function CardDrawer({
   onClose,
   onPrev,
   onNext,
+  position = null,
 }: {
   cardId: CardId;
   /** The card as the opener had it. */
@@ -50,13 +54,18 @@ export default function CardDrawer({
   onClose: () => void;
   onPrev: (() => void) | null;
   onNext: (() => void) | null;
+  /** Where the card sits in the list ↑ ↓ step through; null for a list of one. */
+  position?: { index: number; total: number } | null;
 }) {
   const headingId = useId();
   const live = useCard(cardId);
   const card = live === null ? null : (live ?? (seed?.id === cardId ? seed : undefined));
   const nav =
-    "flex h-8 w-8 items-center justify-center rounded text-ink-2 hover:text-neon-blue-text disabled:opacity-30 disabled:cursor-not-allowed " +
+    "flex h-8 w-8 items-center justify-center rounded text-ink-2 hover:text-neon-blue-text aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:text-ink-2 " +
     FOCUS;
+  const where = position
+    ? `Card ${position.index + 1} of ${position.total}${card ? `, ${cardLabel(card)}` : ""}`
+    : "";
   return (
     <Overlay labelledBy={headingId} onClose={onClose}>
       <div className="flex items-center gap-2 border-b border-rule-strong px-4 py-3">
@@ -71,10 +80,24 @@ export default function CardDrawer({
           </h2>
           <p className="truncate text-xs text-ink-3">{card ? setAndVariant(card) : " "}</p>
         </div>
-        <button type="button" onClick={onPrev ?? undefined} disabled={!onPrev} aria-label="Previous card" title="Previous card" className={nav}>
+        <button
+          type="button"
+          onClick={() => onPrev?.()}
+          aria-disabled={!onPrev || undefined}
+          aria-label="Previous card"
+          title="Previous card"
+          className={nav}
+        >
           ↑
         </button>
-        <button type="button" onClick={onNext ?? undefined} disabled={!onNext} aria-label="Next card" title="Next card" className={nav}>
+        <button
+          type="button"
+          onClick={() => onNext?.()}
+          aria-disabled={!onNext || undefined}
+          aria-label="Next card"
+          title="Next card"
+          className={nav}
+        >
           ↓
         </button>
         <button
@@ -87,6 +110,9 @@ export default function CardDrawer({
           ×
         </button>
       </div>
+      <p role="status" className="sr-only">
+        {where}
+      </p>
       <div className="px-4 pt-3">
         <NoticeLine notice={notice} onUndo={onUndo} onDismiss={onDismissNotice} />
       </div>
@@ -105,7 +131,8 @@ export default function CardDrawer({
         ) : (
           <div aria-busy="true">
             <SkeletonBars rows={6} />
-            <LoadingNote>Loading the card…</LoadingNote>
+            {/* The heading already says it; the position line says the card once it lands. */}
+            <LoadingNote silent>Loading the card…</LoadingNote>
           </div>
         )}
       </div>

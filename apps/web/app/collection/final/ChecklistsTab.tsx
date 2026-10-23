@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { MagnifyingGlassIcon } from "@heroicons/react/20/solid";
 import { Input } from "@/components/primitives/Input";
 import { DRILL_ROW_ATTR } from "../prototypes/p1/StaticColumn";
@@ -45,6 +45,7 @@ export default function ChecklistsTab({
   onFranchise,
   onClearEntity,
   missingCard,
+  arrivalRef,
 }: {
   actions: RowActions;
   query: string;
@@ -64,6 +65,12 @@ export default function ChecklistsTab({
   onClearEntity: () => void;
   /** A jump to a card the catalog no longer holds. */
   missingCard: boolean;
+  /**
+   * Where the keyboard goes once the URL catches up: a picked player or team
+   * puts it on their cards' heading, "Back to the search" back in the box.
+   * Set by the page (a pick from My Cards lands here too); taken once.
+   */
+  arrivalRef: MutableRefObject<"entity" | "search" | null>;
 }) {
   const capabilities = useCapabilities();
   const demo = useDemoExtension();
@@ -79,8 +86,23 @@ export default function ChecklistsTab({
   const canRequest = capabilities.cardRequests && !!demo;
 
   const checklistHeading = useRef<HTMLHeadingElement>(null);
+  const entityHeading = useRef<HTMLHeadingElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const entityKey = entity ? `${entity.kind}:${entity.id}` : "";
+  useEffect(() => {
+    const want = arrivalRef.current;
+    if (want === "entity" && entityKey) {
+      arrivalRef.current = null;
+      entityHeading.current?.focus();
+    } else if (want === "search" && !entityKey) {
+      arrivalRef.current = null;
+      searchInput.current?.focus();
+    }
+  }, [entityKey, arrivalRef]);
   const focusChecklist = useCallback(() => {
-    checklistHeading.current?.focus();
+    const heading = checklistHeading.current;
+    heading?.focus();
+    return !!heading;
   }, []);
 
   // A cascade rebuilt from outside (a deep link, Back or Forward, a search
@@ -126,6 +148,7 @@ export default function ChecklistsTab({
             className="pointer-events-none absolute left-3 top-[2.65rem] h-5 w-5 text-ink-3"
           />
           <Input
+            ref={searchInput}
             surface="dark"
             type="search"
             label="Search every card"
@@ -154,10 +177,12 @@ export default function ChecklistsTab({
             That card is no longer in the catalog. Your copies of it are safe.
           </p>
         )}
-        {!entity && <Suggestions text={text} onPick={onPickSuggestion} />}
+        {/* The status line above speaks for the search; the suggestions keep quiet. */}
+        {!entity && <Suggestions text={text} onPick={onPickSuggestion} silent />}
 
         {entity ? (
           <EntityResults
+            ref={entityHeading}
             entity={entity}
             actions={actions}
             selectedCardId={selectedCardId}

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/primitives/Input";
 import CardFace from "../../prototypes/_shared/CardFace";
 import Chip from "../../prototypes/p3/Chip";
@@ -28,8 +28,30 @@ import { useMyCards } from "./context";
  *
  * "Everything else" and "Every card I own" read through the binder picker's
  * scope; picking a binder on the rail shows that binder's cards whatever the
- * picker says.
+ * picker says. The rail is navigation: the shelf showing is `aria-current`.
+ *
+ * "Show 36 more of 120" counts the whole shelf. The keyboard goes to the
+ * first card it adds, even when the button goes away with the last page.
  */
+
+/**
+ * After "Show more": put the keyboard on the first card the page added, once
+ * it is on screen (the real collection's arrive a read later). Returns the
+ * setter to call with the count on screen before the click.
+ */
+function useFocusFirstNew(ids: readonly string[], focusKey: (key: string) => void): (shownBefore: number) => void {
+  const [from, setFrom] = useState<number | null>(null);
+  const target = from !== null && ids.length > from ? ids[from] : null;
+  useEffect(() => {
+    if (!target) return;
+    const frame = requestAnimationFrame(() => {
+      setFrom((current) => (current === from ? null : current));
+      focusKey(target);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [target, from, focusKey]);
+  return setFrom;
+}
 
 type Shelf = "else" | "all" | string;
 type Sort = "set" | "player" | "team" | "added";
@@ -127,6 +149,7 @@ function Shelf({
   const visible = shown.slice(0, limit);
   const visibleIds = visible.map((it) => it.card.id);
   const roving = useRoving(grid, visibleIds);
+  const focusFirstNew = useFocusFirstNew(visibleIds, roving.focusKey);
 
   const fileable = store.fileableBinders;
   const smart = store.ownBinders.filter((b) => b.kind === "smart");
@@ -293,8 +316,15 @@ function Shelf({
             </ul>
           )}
           {shown.length > visible.length && (
-            <button type="button" onClick={() => setLimit(limit + PAGE)} className={`${QUIET_BUTTON} mt-4`}>
-              Show {Math.min(PAGE, shown.length - visible.length)} more of {shown.length - visible.length}
+            <button
+              type="button"
+              onClick={() => {
+                focusFirstNew(visible.length);
+                setLimit(limit + PAGE);
+              }}
+              className={`${QUIET_BUTTON} mt-4`}
+            >
+              Show {Math.min(PAGE, shown.length - visible.length)} more of {shown.length}
             </button>
           )}
         </div>
@@ -333,7 +363,7 @@ function RailItem({
     <li className="shrink-0">
       <button
         type="button"
-        aria-pressed={active}
+        aria-current={active ? "true" : undefined}
         onClick={onClick}
         className={`flex min-h-11 w-48 flex-col items-start rounded-lg border px-3 py-2 text-left lg:w-full ${FOCUS} ${
           active
@@ -406,6 +436,7 @@ export function CollectionTally() {
   const grid = useRef<HTMLUListElement>(null);
   const ids = useMemo(() => owned?.cards.map((c) => c.id) ?? [], [owned]);
   const roving = useRoving(grid, ids);
+  const focusFirstNew = useFocusFirstNew(ids, roving.focusKey);
   const more = owned ? owned.total - owned.cards.length - owned.goneCardIds.length : 0;
 
   return (
@@ -463,8 +494,15 @@ export function CollectionTally() {
         </p>
       )}
       {owned?.truncated && more > 0 && (
-        <button type="button" onClick={() => setLimit(limit + OWNED_PAGE)} className={`${QUIET_BUTTON} mt-4`}>
-          Show {Math.min(OWNED_PAGE, more)} more of {more}
+        <button
+          type="button"
+          onClick={() => {
+            focusFirstNew(ids.length);
+            setLimit(limit + OWNED_PAGE);
+          }}
+          className={`${QUIET_BUTTON} mt-4`}
+        >
+          Show {Math.min(OWNED_PAGE, more)} more of {owned.total}
         </button>
       )}
     </section>

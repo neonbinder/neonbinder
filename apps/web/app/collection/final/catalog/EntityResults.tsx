@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { forwardRef, useState } from "react";
 import { FOCUS } from "../../prototypes/p1/ui";
-import Chip from "../../prototypes/p3/Chip";
 import { SearchHitRow, type RowActions } from "../CardRows";
+import ChipGroup from "../ChipGroup";
 import type { EntityParam } from "../checklistParams";
 import { useEntityCards } from "../data/store";
 import type { Card } from "../data/types";
 import { cardsCount } from "./format";
-import { LoadingNote, SkeletonBars } from "./Skeleton";
+import { SkeletonBars } from "./Skeleton";
 
 const FIRST_PAGE = 25;
 
@@ -15,23 +15,23 @@ const FIRST_PAGE = 25;
  * or every card the team is printed on (just this team by default; its whole
  * franchise when the collector asks and the team has one), in catalog order.
  * Each row has Have and Details, and opens its own checklist.
+ *
+ * The heading takes the keyboard when the collector picked the suggestion
+ * (the ref, `tabIndex={-1}`); the count line is one live region, mounted
+ * from the start, whose words change as the cards land.
  */
-export default function EntityResults({
-  entity,
-  actions,
-  selectedCardId,
-  onJump,
-  onFranchise,
-  onClear,
-}: {
-  entity: EntityParam;
-  actions: RowActions;
-  selectedCardId: string | null;
-  onJump: (card: Card) => void;
-  /** Take in the whole franchise, or go back to just this team. */
-  onFranchise: (whole: boolean) => void;
-  onClear: () => void;
-}) {
+const EntityResults = forwardRef<
+  HTMLHeadingElement,
+  {
+    entity: EntityParam;
+    actions: RowActions;
+    selectedCardId: string | null;
+    onJump: (card: Card) => void;
+    /** Take in the whole franchise, or go back to just this team. */
+    onFranchise: (whole: boolean) => void;
+    onClear: () => void;
+  }
+>(function EntityResults({ entity, actions, selectedCardId, onJump, onFranchise, onClear }, headingRef) {
   const result = useEntityCards(
     entity.kind === "player"
       ? { kind: "player", id: entity.id }
@@ -53,7 +53,9 @@ export default function EntityResults({
   return (
     <section aria-label={heading} className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-lg font-semibold text-ink">{heading}</h3>
+        <h3 ref={headingRef} tabIndex={-1} className="rounded-sm text-lg font-semibold text-ink focus-outline">
+          {heading}
+        </h3>
         <button
           type="button"
           onClick={onClear}
@@ -63,29 +65,32 @@ export default function EntityResults({
         </button>
       </div>
       {entity.kind === "team" && entity.franchiseId && (
-        <div role="group" aria-label="Which teams" className="flex flex-wrap items-center gap-2">
-          <Chip pressed={!entity.wholeFranchise} onClick={() => onFranchise(false)}>
-            Just this team
-          </Chip>
-          <Chip pressed={entity.wholeFranchise} onClick={() => onFranchise(true)}>
-            Include the whole franchise
-          </Chip>
-        </div>
+        <ChipGroup
+          label="Which teams"
+          value={entity.wholeFranchise ? "whole" : "team"}
+          options={[
+            { value: "team", label: "Just this team" },
+            { value: "whole", label: "Include the whole franchise" },
+          ]}
+          onChange={(v) => onFranchise(v === "whole")}
+          className="flex flex-wrap items-center gap-2"
+        />
       )}
+      <p role="status" className={cards ? "text-xs text-ink-3" : "sr-only"}>
+        {!cards
+          ? "Pulling the cards…"
+          : cards.length === 0
+            ? "No cards in the catalog yet."
+            : result?.truncated
+              ? `The first ${cardsCount(cards.length)}. Add a word to the search to narrow it down.`
+              : cardsCount(cards.length)}
+      </p>
       {!cards ? (
         <div aria-busy="true">
           <SkeletonBars rows={5} />
-          <LoadingNote>Pulling the cards…</LoadingNote>
         </div>
       ) : (
         <>
-          <p role="status" className="text-xs text-ink-3">
-            {cards.length === 0
-              ? "No cards in the catalog yet."
-              : result.truncated
-                ? `The first ${cardsCount(cards.length)}. Add a word to the search to narrow it down.`
-                : cardsCount(cards.length)}
-          </p>
           {shown.length > 0 && (
             <ul className="space-y-1.5 rounded-lg bg-raised p-3 shadow-offset sm:p-4">
               {shown.map((card) => (
@@ -114,7 +119,9 @@ export default function EntityResults({
       )}
     </section>
   );
-}
+});
+
+export default EntityResults;
 
 /** The picked player's or team's name, as the cards print it. */
 function nameIn(entity: EntityParam, cards: Card[]): string | null {

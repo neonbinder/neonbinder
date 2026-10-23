@@ -1,5 +1,5 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigationType } from "react-router";
+import { startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useNavigationType } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import CardDrawer from "./CardDrawer";
@@ -33,6 +33,7 @@ import {
   writeErrorMessage,
 } from "./data/store";
 import type { Capabilities, Card, CardId, CopyId, Suggestion, Undo } from "./data/types";
+import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
 import { lineSummary } from "./lineItems";
 import MyBindersTab from "./MyBindersTab";
 import MyCardsTab from "./MyCardsTab";
@@ -42,6 +43,7 @@ import {
   scopeFromParams,
   useCollectionMode,
   useCollectionParams,
+  usePushParams,
   useReplaceParams,
   ViewScopeProvider,
   type CollectionMode,
@@ -111,15 +113,25 @@ const QUERY_SETTLE_MS = 300;
 /** The params that say a picked search suggestion. */
 const ENTITY_PARAMS = [PLAYER_PARAM, TEAM_PARAM, FRANCHISE_PARAM, WHOLE_PARAM];
 
-interface DrawerState {
+/**
+ * What the opener knew that the URL does not carry: the list the drawer's
+ * ↑ ↓ step through, the card as drawn, the copy to ring. Kept for the card
+ * it was set for; a drawer reopened from the URL alone steps through just
+ * its own card.
+ */
+interface DrawerExtras {
   cardId: CardId;
   listIds: CardId[];
   seed?: Card;
-  mode: "view" | "add";
   copyId?: CopyId;
   /** Demo: the binder the add form ticks instead of the page's target. */
   binderId?: string;
   key: number;
+}
+
+/** The history state on an entry the drawer pushed: Close steps Back off it. */
+interface DrawerHistoryState {
+  drawer?: boolean;
 }
 
 export interface FinalCollectionPageProps {
@@ -185,9 +197,13 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
 
   const location = useLocation();
   const navigationType = useNavigationType();
-  const [seenEntry, setSeenEntry] = useState(location.key);
-  if (seenEntry !== location.key) {
-    setSeenEntry(location.key);
+  const [seenEntry, setSeenEntry] = useState({ key: location.key, view: viewOf(location.search) });
+  const view = viewOf(location.search);
+  if (seenEntry.key !== location.key && seenEntry.view === view) {
+    // Only the card drawer opened, stepped or closed: the view under it stays as it is.
+    setSeenEntry({ key: location.key, view });
+  } else if (seenEntry.key !== location.key) {
+    setSeenEntry({ key: location.key, view });
     if (navigationType !== "REPLACE") setQuery(urlQuery);
     if (pending && (navigationType === "POP" || !onChecklists || sameDrill(pending.drill, urlDrill))) {
       setPending(null);
@@ -242,15 +258,18 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
 
   // --- Status line -----------------------------------------------------------
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The line waits while the pointer rests on it or the keyboard is in it, so
+  // Undo can always be reached in time (WCAG 2.2.1); it counts again after.
+  const held = useNoticeHold();
   // No manual memo here: the React Compiler memoizes these handlers itself.
   const notify = (message: string, undo?: () => void) => {
     setNotice((prev) => ({ id: (prev?.id ?? 0) + 1, message, undo }));
   };
   useEffect(() => {
-    if (!notice) return;
+    if (!notice || held) return;
     const t = setTimeout(() => setNotice(null), NOTICE_MS);
     return () => clearTimeout(t);
-  }, [notice]);
+  }, [notice, held]);
   const undo = () => {
     const run = notice?.undo;
     setNotice((prev) => (prev ? { id: prev.id + 1, message: "Undone." } : null));
@@ -269,34 +288,6 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
       return null;
     }
   };
-
-  // --- Card drawer -----------------------------------------------------------
-  const [drawer, setDrawer] = useState<DrawerState | null>(null);
-  const openCard = (cardId: CardId, opts: OpenCardOptions = {}) => {
-    setDrawer((prev) => ({
-      cardId,
-      listIds: opts.list && opts.list.includes(cardId) ? opts.list : [cardId],
-      seed: opts.seed,
-      mode: opts.mode ?? "view",
-      copyId: opts.copyId,
-      binderId: opts.binderId,
-      key: (prev?.key ?? 0) + 1,
-    }));
-  };
-  const drawerIndex = drawer ? drawer.listIds.indexOf(drawer.cardId) : -1;
-  const step = (delta: 1 | -1) =>
-    drawer && drawerIndex + delta >= 0 && drawerIndex + delta < drawer.listIds.length
-      ? () =>
-          setDrawer({
-            ...drawer,
-            cardId: drawer.listIds[drawerIndex + delta],
-            seed: undefined,
-            mode: "view",
-            copyId: undefined,
-            binderId: undefined,
-            key: drawer.key + 1,
-          })
-      : null;
 
   // --- Checklists: writing the URL ------------------------------------------
   const writeQuery = useCallback(
@@ -317,6 +308,73 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
   const settleQuery = () => {
     if (onChecklists && query !== urlQuery) writeQuery(query);
   };
+
+  // --- Card drawer -----------------------------------------------------------
+  // Opening a card pushes `detail=<id>` (Back closes it); ↑ ↓ replace it (Back
+  // never walks the cards one by one); Close steps Back off an entry the
+  // drawer pushed, and otherwise (a shared link, a refresh in a new tab)
+  // takes the params off in place.
+  const navigate = useNavigate();
+  const pushParams = usePushParams();
+  const [extras, setExtras] = useState<DrawerExtras | null>(null);
+  const drawerId = params.get(DRAWER_PARAM);
+  const ours = extras && extras.cardId === drawerId ? extras : null;
+  const drawer = drawerId
+    ? {
+        cardId: drawerId,
+        listIds: extras && extras.listIds.includes(drawerId) ? extras.listIds : [drawerId],
+        seed: ours?.seed,
+        mode: params.get(DRAWER_MODE_PARAM) === "add" ? ("add" as const) : ("view" as const),
+        copyId: ours?.copyId,
+        binderId: ours?.binderId,
+        key: extras?.key ?? 0,
+      }
+    : null;
+  const pushedDrawer = (location.state as DrawerHistoryState | null)?.drawer === true;
+  const openCard = (cardId: CardId, opts: OpenCardOptions = {}) => {
+    settleQuery();
+    // The URL commits in a transition: let the opener's extras land with it.
+    startTransition(() =>
+      setExtras((prev) => ({
+        cardId,
+        listIds: opts.list && opts.list.includes(cardId) ? opts.list : [cardId],
+        seed: opts.seed,
+        copyId: opts.copyId,
+        binderId: opts.binderId,
+        key: (prev?.key ?? 0) + 1,
+      })),
+    );
+    const write = (p: URLSearchParams) => {
+      p.set(DRAWER_PARAM, cardId);
+      if (opts.mode === "add") p.set(DRAWER_MODE_PARAM, "add");
+      else p.delete(DRAWER_MODE_PARAM);
+    };
+    // Already open (a card picked from inside it): swap the card in place.
+    if (drawerId) replaceParams(write);
+    else pushParams(write, { drawer: true } satisfies DrawerHistoryState);
+  };
+  const closeDrawer = () => {
+    if (pushedDrawer) void navigate(-1);
+    else
+      replaceParams((p) => {
+        p.delete(DRAWER_PARAM);
+        p.delete(DRAWER_MODE_PARAM);
+      });
+  };
+  const drawerIndex = drawer ? drawer.listIds.indexOf(drawer.cardId) : -1;
+  const step = (delta: 1 | -1) =>
+    drawer && drawerIndex + delta >= 0 && drawerIndex + delta < drawer.listIds.length
+      ? () => {
+          const next = drawer.listIds[drawerIndex + delta];
+          startTransition(() =>
+            setExtras((prev) => ({ cardId: next, listIds: drawer.listIds, key: (prev?.key ?? 0) + 1 })),
+          );
+          replaceParams((p) => {
+            p.set(DRAWER_PARAM, next);
+            p.delete(DRAWER_MODE_PARAM);
+          });
+        }
+      : null;
 
   const checklistsSearch = (q?: string) => {
     const p = new URLSearchParams({ tab: "checklists" });
@@ -375,7 +433,11 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
   };
 
   const openEntity = (e: EntityParam) => goToChecklists({ entity: e });
+  /** Where Checklists puts the keyboard once the URL catches up (see `ChecklistsTab`). */
+  const arrival = useRef<"entity" | "search" | null>(null);
   const pickSuggestion = (s: Suggestion) => {
+    // The suggestion goes away with the search: the cards' heading takes the keyboard.
+    arrival.current = s.kind === "set" ? null : "entity";
     if (s.kind === "player") openEntity({ kind: "player", id: s.id });
     else if (s.kind === "team") openEntity({ kind: "team", id: s.id, franchiseId: s.franchise?.id ?? null, wholeFranchise: false });
     else goToChecklists({ setId: s.id });
@@ -386,6 +448,7 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
       else p.delete(WHOLE_PARAM);
     });
   const clearEntity = () => {
+    arrival.current = "search";
     const p = checklistsSearch();
     for (const key of ENTITY_PARAMS) p.delete(key);
     setParams(p);
@@ -504,6 +567,7 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
                 onFranchise={setFranchise}
                 onClearEntity={clearEntity}
                 missingCard={jumpCard === null}
+                arrivalRef={arrival}
               />
             )}
           </div>
@@ -524,13 +588,61 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
               notice={notice}
               onUndo={undo}
               onDismissNotice={() => setNotice(null)}
-              onClose={() => setDrawer(null)}
+              onClose={closeDrawer}
               onPrev={step(-1)}
               onNext={step(1)}
+              position={drawer.listIds.length > 1 ? { index: drawerIndex, total: drawer.listIds.length } : null}
             />
           )}
         </div>
       </ViewScopeProvider>
     </PageApiContext.Provider>
   );
+}
+
+/** Marks a status line whose timer waits while it is pointed at or focused (`../prototypes/p1/notice`, the pack tray). */
+const NOTICE_HOLD_ATTR = "data-notice-hold";
+
+/**
+ * True while the pointer rests on, or the keyboard focus is inside, an
+ * element marked `data-notice-hold` (the status line with its Undo, wherever
+ * it is drawn: the page toast, the card drawer, the pack tray).
+ */
+function useNoticeHold(): boolean {
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    let hover = false;
+    let focus = false;
+    const inLine = (t: EventTarget | null) => t instanceof Element && t.closest(`[${NOTICE_HOLD_ATTR}]`) !== null;
+    const sync = () => setHeld(hover || focus);
+    const onOver = (e: MouseEvent) => {
+      hover = inLine(e.target);
+      sync();
+    };
+    const onOut = (e: MouseEvent) => {
+      if (e.relatedTarget === null) {
+        hover = false;
+        sync();
+      }
+    };
+    const onFocusIn = (e: FocusEvent) => {
+      focus = inLine(e.target);
+      sync();
+    };
+    const onFocusOut = (e: FocusEvent) => {
+      focus = inLine(e.relatedTarget);
+      sync();
+    };
+    document.addEventListener("mouseover", onOver);
+    document.addEventListener("mouseout", onOut);
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    return () => {
+      document.removeEventListener("mouseover", onOver);
+      document.removeEventListener("mouseout", onOut);
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+    };
+  }, []);
+  return held;
 }

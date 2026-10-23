@@ -17,7 +17,13 @@ import type { DrillState } from "./useDrillState";
  * screen exactly as the Set Builder does. A pick collapses its column to a
  * summary card and moves the caret into the next column (or onto the
  * checklist heading once the drill reaches one). A column still loading shows
- * its title over a skeleton; the caret waits for it.
+ * its title over a skeleton; the caret waits for it, parked meanwhile on the
+ * summary card of the column just picked (the option pressed is gone). The
+ * wait ends when the next column or checklist lands, when the drill stops
+ * short of it, or when the collector takes the keyboard elsewhere: it never
+ * pulls focus back later.
+ *
+ * One loading line for the whole row, however many columns are loading.
  */
 
 const SELECTED_FOR: Record<DrillStep, string> = {
@@ -52,8 +58,8 @@ export default function Cascade({
   onDrill: (next: Drill) => void;
   /** The row's accessible name, e.g. "Sport, year, brand and set". */
   label: string;
-  /** Called after a pick lands on a checklist, to move focus to it. */
-  onReachedChecklist: () => void;
+  /** Called after a pick lands on a checklist, to move focus to it; true once it took. */
+  onReachedChecklist: () => boolean;
 }) {
   const { kind } = useCollectionStore();
   // Only what the collector toggled is held; otherwise a column with a pick
@@ -61,21 +67,36 @@ export default function Cascade({
   // Back, a search jump) reads as a trail of picks.
   const [expanded, setExpanded] = useState<Partial<Record<DrillStep, boolean>>>({});
   const rowRef = useRef<HTMLDivElement>(null);
-  const [focusStep, setFocusStep] = useState<DrillStep | "checklist" | null>(null);
+  /** A pick's keyboard plan: park on the picked column, then move on to `next` once it is there. */
+  const [focusStep, setFocusStep] = useState<{ picked: DrillStep; next: DrillStep | "checklist" } | null>(null);
 
   // The next column may still be loading: wait for its box, then move in.
   useEffect(() => {
     if (!focusStep) return;
     const frame = requestAnimationFrame(() => {
-      if (focusStep === "checklist") {
-        onReachedChecklist();
-        setFocusStep(null);
+      const row = rowRef.current;
+      const picked = row?.querySelector<HTMLElement>(`[data-level="${focusStep.picked}"]`) ?? null;
+      const active = document.activeElement;
+      const fell = !active || active === document.body || !document.contains(active);
+      if (fell) {
+        // The option pressed went with the list: hold the keyboard on the picked column's summary card.
+        picked?.querySelector<HTMLElement>("button")?.focus();
+      } else if (!picked?.contains(active)) {
+        // The collector moved on: drop the plan rather than pull focus back later.
+        setFocusStep((current) => (current === focusStep ? null : current));
         return;
       }
-      const box = rowRef.current?.querySelector<HTMLElement>(`[data-level="${focusStep}"] [role="combobox"]`);
+      if (focusStep.next === "checklist") {
+        if (onReachedChecklist() || !state.pending) setFocusStep((current) => (current === focusStep ? null : current));
+        return;
+      }
+      const box = row?.querySelector<HTMLElement>(`[data-level="${focusStep.next}"] [role="combobox"]`);
       if (box) {
         box.focus();
-        setFocusStep(null);
+        setFocusStep((current) => (current === focusStep ? null : current));
+      } else if (!state.pending && !state.columns.some((c) => c.step === focusStep.next)) {
+        // The drill stopped short of that column: stay on the summary card.
+        setFocusStep((current) => (current === focusStep ? null : current));
       }
     });
     return () => cancelAnimationFrame(frame);
@@ -98,8 +119,11 @@ export default function Cascade({
       variant: "sub",
       sub: null,
     };
-    setFocusStep(item.variantId || !item.hasChildren || !next[step] ? "checklist" : next[step]);
+    setFocusStep({ picked: step, next: item.variantId || !item.hasChildren || !next[step] ? "checklist" : next[step] });
   };
+
+  const loading =
+    state.pending && state.columns.length === 0 ? "Sports" : (state.columns.find((c) => c.items === undefined)?.title ?? null);
 
   return (
     <div
@@ -109,6 +133,7 @@ export default function Cascade({
       {...{ [DRILL_ROW_ATTR]: "" }}
       className="relative flex flex-row items-start gap-4 overflow-x-auto pr-2 pb-4"
     >
+      <LoadingNote>{loading ? `Loading ${loading.toLowerCase()}…` : ""}</LoadingNote>
       {state.pending && state.columns.length === 0 && <ColumnSkeleton title="Sports" />}
       {state.columns.map((column) => {
         if (column.items === undefined) return <ColumnSkeleton key={column.step} title={column.title} />;
@@ -144,7 +169,6 @@ function ColumnSkeleton({ title }: { title: string }) {
       <div className={COLUMN_CARD} aria-busy="true">
         <p className="mb-4 text-lg font-semibold text-ink">{title}</p>
         <SkeletonBars rows={4} />
-        <LoadingNote>{`Loading ${title.toLowerCase()}…`}</LoadingNote>
       </div>
     </div>
   );

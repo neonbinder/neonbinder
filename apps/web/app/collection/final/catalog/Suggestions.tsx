@@ -41,12 +41,15 @@ export default function Suggestions({
   text,
   onPick,
   only,
+  silent = false,
 }: {
   /** Already paused on (`useSearchText`). */
   text: string;
   onPick: (s: Suggestion) => void;
   /** Offer one kind only (the set picker offers sets). */
   only?: Suggestion["kind"];
+  /** The host search has its own status line: say nothing while loading, so it speaks once. */
+  silent?: boolean;
 }) {
   const all = useSuggestions(text);
   if (!searchable(text)) return null;
@@ -56,7 +59,7 @@ export default function Suggestions({
         {[7, 10, 6].map((w) => (
           <span key={w} aria-hidden="true" className="h-9 rounded-full bg-rule motion-safe:animate-pulse" style={{ width: `${w}rem` }} />
         ))}
-        <LoadingNote>Looking for players, teams and sets…</LoadingNote>
+        <LoadingNote silent={silent}>Looking for players, teams and sets…</LoadingNote>
       </div>
     );
   }
