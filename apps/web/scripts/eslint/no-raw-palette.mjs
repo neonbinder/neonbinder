@@ -18,7 +18,7 @@
  *     `border-t-gray-700`, `placeholder:text-slate-400`, `ring-gray-500/50`);
  *   - a HUED step on a colour utility (`bg-red-600`, `text-amber-300`,
  *     `border-green-600`, `from-pink-500`): every hue has a role now, the
- *     neon set (`bg-neon-red` for destructive, NEO-356), the hued picks
+ *     neon set (`bg-neon-pink`, NEO-356), the hued picks
  *     (`bg-pick-blue`) and the notices (`text-notice-warn-ink`);
  *   - `white` / `black` as paint (`text-white`, `bg-black/60`; a black
  *     shadow or gradient stop is depth and is allowed);
@@ -113,7 +113,7 @@ const rule = {
     schema: [],
     messages: {
       banned:
-        "`{{token}}` is {{reason}}, which cannot follow light/dark mode. Use a colour role (bg-surface, bg-raised, text-ink-2, border-rule, text-neon-pink-text, bg-neon-red, bg-pick-blue, ...); DESIGN.md lists them.",
+        "`{{token}}` is {{reason}}, which cannot follow light/dark mode. Use a colour role (bg-surface, bg-raised, text-ink-2, border-rule, text-neon-pink-text, bg-neon-pink, bg-pick-blue, ...); DESIGN.md lists them.",
     },
   },
   create(context) {

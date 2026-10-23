@@ -657,7 +657,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           {busy ? "Saving…" : "Save & Next (Enter)"}
         </NeonButton>
         <NeonButton
-          secondary
+          variant="secondary"
           // Not natively disabled, for the same reason as Save above: this is
           // the button an operator most likely just pressed (it's the ONE
           // that sets `busy`), so native `disabled` would blur the browser's

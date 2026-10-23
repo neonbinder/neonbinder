@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import CopyButton from "@/components/modules/CopyButton";
 import TrackingCode from "@/components/modules/TrackingCode";
+import NeonButton from "@/components/modules/NeonButton";
 import { formatUsd } from "@/lib/format/money";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time/relative-time";
 import { imageBodyHtml, printHtmlDocument } from "@/lib/print/print-html";
@@ -431,7 +432,9 @@ export default function LabelHistoryPage() {
                     {status.label}
                   </span>
                   <span className="ml-auto flex flex-wrap items-center gap-2">
-                    <button
+                    <NeonButton
+                      variant="secondary"
+                      outline
                       type="button"
                       onClick={() => void handleCheckScans(row)}
                       // Also disabled while a reprint is running: both actions
@@ -452,10 +455,9 @@ export default function LabelHistoryPage() {
                           ? `Checking for new scans for ${rowLabel}`
                           : `Check for new scans for ${rowLabel}`
                       }
-                      className="rounded-md border border-control px-3 py-1.5 text-sm font-medium text-ink-2 transition-colors hover:border-ink-3 hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed focus-outline"
                     >
                       {checking ? "Checking…" : "Check for new scans"}
-                    </button>
+                    </NeonButton>
                     {expired ? (
                       // No reprint button: EasyPost has deleted the image, so
                       // the only thing a press could produce is a failure
@@ -465,7 +467,9 @@ export default function LabelHistoryPage() {
                         Label expired — EasyPost keeps labels for 180 days
                       </span>
                     ) : (
-                      <button
+                      <NeonButton
+                        variant="primary"
+                        outline
                         type="button"
                         onClick={() => void handleReprint(row)}
                         // Same mutual exclusion as the check button above,
@@ -487,10 +491,9 @@ export default function LabelHistoryPage() {
                             ? `Reprinting the label for ${rowLabel}`
                             : `Reprint the label for ${rowLabel}`
                         }
-                        className="rounded-md border border-neon-teal/60 px-3 py-1.5 text-sm font-medium text-neon-teal-text transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus-outline"
                       >
                         {busy ? "Reprinting…" : "Reprint"}
-                      </button>
+                      </NeonButton>
                     )}
                   </span>
                 </div>

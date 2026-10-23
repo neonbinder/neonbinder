@@ -3800,12 +3800,7 @@ export default function EntityReviewWizard({
         */}
         <NeonButton
           ref={primaryDecisionRef}
-          secondary={pickStep || (!showExactHierarchy && hasCloseOnly)}
-          style={
-            pickStep || (!showExactHierarchy && hasCloseOnly)
-              ? { color: "var(--on-neon-blue)" }
-              : undefined
-          }
+          variant={pickStep || (!showExactHierarchy && hasCloseOnly) ? "secondary" : "primary"}
           aria-disabled={
             busy || (!pickStep && createHeld && !(showExactHierarchy && exactMatch))
               ? true
@@ -4664,7 +4659,7 @@ export default function EntityReviewWizard({
                     </p>
                     <div className="flex items-center gap-3">
                       <NeonButton
-                        secondary
+                        variant="secondary"
                         style={{ color: "var(--on-neon-blue)" }}
                         aria-disabled={busy}
                         onClick={() => {
@@ -5116,7 +5111,7 @@ export default function EntityReviewWizard({
                                         // the gray-800 chip), and a real focus
                                         // ring rather than a colour swap behind
                                         // `focus:outline-none` (SC 2.4.7).
-                                        className="hit-area-24 text-ink-3 hover:text-neon-red-text focus-outline rounded"
+                                        className="hit-area-24 text-ink-3 hover:text-neon-pink-text focus-outline rounded"
                                       >
                                         ×
                                       </button>
@@ -5552,7 +5547,7 @@ export default function EntityReviewWizard({
               {expired ? (
                 // Nothing to discard — the rows are already gone, so this is a
                 // plain acknowledgement, not a cancel.
-                <NeonButton cancel onClick={onCancel}>
+                <NeonButton variant="negative" onClick={onCancel}>
                   Close
                 </NeonButton>
               ) : (
@@ -5602,7 +5597,7 @@ export default function EntityReviewWizard({
                     </button>
                   )}
                   <NeonButton
-                    cancel
+                    variant="negative"
                     /* The sibling that used to win the XPath race against
                        Confirm & Save. Its own marker class is what stops the
                        two collapsing into one XPath — see `footerFieldClass`. */

@@ -492,7 +492,7 @@ export default function NewTeamDialog({
                 {creating ? "Creating…" : "Create team"}
               </NeonButton>
               <NeonButton
-                cancel
+                variant="negative"
                 type="button"
                 onClick={onClose}
                 disabled={creating}

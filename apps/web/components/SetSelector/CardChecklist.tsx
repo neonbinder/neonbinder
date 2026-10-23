@@ -3009,7 +3009,7 @@ export default function CardChecklist({
                 Add Card
               </NeonButton>
               <NeonButton
-                secondary
+                variant="secondary"
                 onClick={() => {
                   if (!editsHeld) setShowCrossListingModal(true);
                 }}
@@ -3024,7 +3024,7 @@ export default function CardChecklist({
                 ) : (
                   <NeonButton
                     ref={syncButtonRef}
-                    secondary
+                    variant="secondary"
                     onClick={handleSync}
                     disabled={busy}
                     aria-label="Sync card checklist"
@@ -3196,7 +3196,7 @@ export default function CardChecklist({
                 Add
               </NeonButton>
               <NeonButton
-                cancel
+                variant="negative"
                 onClick={closeAddForm}
                 aria-label="Cancel new card"
               >

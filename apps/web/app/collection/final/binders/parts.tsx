@@ -4,6 +4,7 @@ import type { CollectionBinder } from "../store";
 import { labelOf } from "./label";
 import type { OpenView, Tally } from "./openView";
 import PrintShopLink from "./PrintShopLink";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * The open binder's furniture, from prototype 2's page: the layout toggle,
@@ -115,14 +116,17 @@ function TallyLine({ tally, want }: { tally: Tally; want: boolean }) {
 /** The cover's small "Edit label" control: restyles the binder's spine. */
 export function EditLabelButton({ name, onClick }: { name: string; onClick: () => void }) {
   return (
-    <button
+    <NeonButton
       type="button"
+      variant="secondary"
+      outline
+      size="1"
       onClick={onClick}
       aria-label={`Edit label for ${name}`}
-      className={`inline-flex min-h-8 items-center self-start rounded-md border border-control px-2.5 text-xs font-medium text-ink hover:border-neon-blue hover:text-ink max-sm:min-h-11 ${FOCUS}`}
+      className="min-h-8 self-start max-sm:min-h-11"
     >
       Edit label
-    </button>
+    </NeonButton>
   );
 }
 

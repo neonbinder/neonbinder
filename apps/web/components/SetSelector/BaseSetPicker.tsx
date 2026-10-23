@@ -929,7 +929,7 @@ export default function BaseSetPicker({
                   : "Pick a SportLots or BSC set to continue."}
             </p>
             <div className="flex justify-end gap-3 shrink-0">
-              <NeonButton cancel onClick={onClose} disabled={confirming}>
+              <NeonButton variant="negative" onClick={onClose} disabled={confirming}>
                 Cancel
               </NeonButton>
               <NeonButton

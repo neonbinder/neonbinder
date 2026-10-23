@@ -72,7 +72,7 @@ describe("findPaletteViolations", () => {
   it("lets roles and the neon set through", () => {
     expect(
       tokens(
-        "bg-surface bg-raised/80 text-ink-2 border-rule text-neon-pink-text bg-neon-green text-on-neon-green bg-neon-red hover:bg-neon-red-hover text-neon-red-text bg-pick-blue/10 bg-neon-orange/15 accent-neon-red ring-selection focus-outline shadow-offset w-[170px] grid-cols-[1fr_2fr] text-red",
+        "bg-surface bg-raised/80 text-ink-2 border-rule text-neon-pink-text bg-neon-green text-on-neon-green bg-neon-pink hover:bg-neon-pink-hover text-neon-pink-text bg-pick-blue/10 bg-neon-orange/15 accent-neon-pink ring-selection focus-outline shadow-offset w-[170px] grid-cols-[1fr_2fr] text-red",
       ),
     ).toEqual([]);
   });

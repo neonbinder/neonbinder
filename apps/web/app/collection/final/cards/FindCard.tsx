@@ -12,6 +12,7 @@ import {
 import { FOCUS } from "../../prototypes/p3/classes";
 import { useLiverySurface } from "../../prototypes/p1/ui";
 import { useMyCards } from "./context";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — "Find a card": type it the way you'd say it at the table ("96
@@ -104,14 +105,14 @@ export default function FindCard() {
                   <span className={`text-sm font-bold ${n > 0 ? "text-neon-blue-text" : "text-ink-2"}`}>
                     {n > 0 ? `Have ${n}` : "Need"}
                   </span>
-                  <button
+                  <NeonButton
                     type="button"
                     aria-label={`Add 1: ${short}`}
                     onClick={() => api.addOne(card)}
-                    className={`min-h-11 rounded-md bg-neon-green px-3 text-sm font-bold text-on-neon-green hover:bg-neon-green-hover sm:min-h-8 ${FOCUS}`}
+                    className="min-h-11 sm:min-h-8"
                   >
                     Add 1
-                  </button>
+                  </NeonButton>
                 </li>
               );
             })}

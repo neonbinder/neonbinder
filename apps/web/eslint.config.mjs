@@ -6,6 +6,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import playwright from "eslint-plugin-playwright";
 import themePlugin from "./scripts/eslint/no-raw-palette.mjs";
+import neonButtonOnly from "./scripts/eslint/neon-button-only.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -295,7 +296,8 @@ const playwrightFixturesFile = {
  * `dark:` in the app's own source; DESIGN.md (Colors) names the role to use
  * instead. Its allowlist (PERMANENT: print, physical objects, the
  * forced-dark prototypes) lives in scripts/eslint/theme-allowlist.mjs, which
- * the rule reads itself. `.ts` files
+ * the rule reads itself. `theme/neon-button-only` sends a neon-filled raw
+ * <button> to NeonButton, the one place a button's colour is decided. `.ts` files
  * are in scope because class constants live in them too, so this block gives
  * them the TypeScript parser.
  */
@@ -306,9 +308,11 @@ const themeColourRoles = {
     parser: tsParser,
     parserOptions: { ecmaFeatures: { jsx: true }, sourceType: "module" },
   },
-  plugins: { theme: themePlugin },
+  plugins: { theme: { rules: { ...themePlugin.rules, "neon-button-only": neonButtonOnly } } },
   rules: {
     "theme/no-raw-palette": "error",
+    // A neon-filled action button is a <NeonButton> (scripts/eslint/neon-button-only.mjs).
+    "theme/neon-button-only": "error",
   },
 };
 

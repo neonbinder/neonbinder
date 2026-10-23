@@ -18,6 +18,7 @@ import { printRunText, variantFilterOf, variantKey } from "../../prototypes/p3/w
 import { useLiverySurface } from "../../prototypes/p1/ui";
 import { useMyCards } from "./context";
 import { wantedFirst } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — "Take it to the show": what's missing from the sets on the board,
@@ -175,17 +176,19 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
                               {c.variation ? ` (${c.variation})` : ""}{" "}
                               <span style={{ color: teamTextColor(leadTeam(c), page) }}>{leadTeam(c).name}</span>
                             </span>
-                            <button
+                            <NeonButton
                               type="button"
+                              outline
+                              size="1"
                               data-need={c.id}
                               aria-label={`Got it: ${variantLabel(v.path)} #${c.cardNumber} ${playerNames(c)}${
                                 c.variation ? `, ${c.variation} variation` : ""
                               }`}
                               onClick={() => gotIt(c.id)}
-                              className={`mc-noprint min-h-11 shrink-0 rounded-md border border-neon-green-text px-2 text-xs font-bold text-neon-green-text hover:bg-neon-green hover:text-on-neon-green sm:min-h-7 ${FOCUS}`}
+                              className="mc-noprint min-h-11 sm:min-h-7"
                             >
                               Got it
-                            </button>
+                            </NeonButton>
                           </li>
                         );
                       })}

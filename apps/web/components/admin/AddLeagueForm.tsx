@@ -593,7 +593,7 @@ export function AddLeagueForm({
             {busy ? "Adding…" : "Create anyway"}
           </button>
         )}
-        <NeonButton type="button" cancel onClick={onCancel} disabled={busy}>
+        <NeonButton type="button" variant="negative" onClick={onCancel} disabled={busy}>
           Cancel
         </NeonButton>
       </div>

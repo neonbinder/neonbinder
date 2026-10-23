@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
 import type { DemoHistoryState } from "@/app/collection/final/mode";
 import { BrandMark } from "@/components/primitives/BrandMark";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the collection demo, playable right here with no account.
@@ -412,9 +413,9 @@ export default function BinderTrackingPage() {
               Start tracking your collection like a true collector. Upload your first batch of cards and watch Neon Binder do its magic.
             </p>
             <SignUpButton mode="modal">
-              <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
+              <NeonButton size="3">
                 Get Started
-              </button>
+              </NeonButton>
             </SignUpButton>
           </div>
         </div>
@@ -481,16 +482,19 @@ function TakeItForASpin({ linkRef }: { linkRef: RefObject<HTMLAnchorElement | nu
           A whole collection, already sleeved. Hunt down a card, fill a page, light up a checklist.
         </p>
         <p className="text-ink-3">It&apos;s all pretend cards, so go wild.</p>
-        <Link
-          ref={linkRef}
-          to={{ search: `?${DEMO_PARAM}=on` }}
-          state={{ demoFrom: "tour" }}
-          onPointerEnter={warmDemo}
-          onFocus={warmDemo}
-          className="inline-flex min-h-12 items-center rounded-lg bg-neon-blue px-6 text-lg font-semibold text-on-neon-blue transition-colors hover:bg-neon-blue-hover focus-outline"
-        >
-          Open the demo binder
-        </Link>
+        {/* A link that looks like the button: NeonButton paints it (asChild),
+            so its colour comes from the one place a button's colour is set. */}
+        <NeonButton asChild variant="secondary" size="3" className="min-h-12">
+          <Link
+            ref={linkRef}
+            to={{ search: `?${DEMO_PARAM}=on` }}
+            state={{ demoFrom: "tour" }}
+            onPointerEnter={warmDemo}
+            onFocus={warmDemo}
+          >
+            Open the demo binder
+          </Link>
+        </NeonButton>
         <p className="text-sm text-ink-3">No sign-up. Your changes stay in this tab.</p>
       </div>
     </section>

@@ -444,6 +444,29 @@ body {
   transform: translate(-50%, -50%);
 }
 
+/* NeonButton (components/modules/NeonButton.tsx), the one action button. It
+ * sets its paint as `--nb-*` role variables on the element; this rule only
+ * reads them, at rest and under the pointer, so the colour is decided in that
+ * one file. At (0,2,0) it outranks Radix's unlayered (0,1,0) solid-button
+ * fill, hover, press and grey disabled state, which a layered Tailwind utility
+ * cannot. A disabled button's inline style outranks the hover. */
+.rt-BaseButton.neon-button {
+  background-color: var(--nb-fill);
+  color: var(--nb-ink);
+  box-shadow: inset 0 0 0 1px var(--nb-edge);
+}
+@media (hover: hover) {
+  .rt-BaseButton.neon-button:hover {
+    background-color: var(--nb-fill-hover);
+    color: var(--nb-ink-hover);
+    box-shadow: inset 0 0 0 1px var(--nb-edge-hover);
+  }
+}
+.rt-BaseButton.neon-button:active {
+  background-color: var(--nb-fill-hover);
+  color: var(--nb-ink-hover);
+}
+
 /* Dark ink on Radix's solid pink and blue, in both modes. Radix ships white
  * (`--pink-contrast` / `--blue-contrast` on `:root`), which is 3.9:1 on its
  * dark pink-9 and 3.2:1 on its dark blue-9, under SC 1.4.3's 4.5:1. Black is

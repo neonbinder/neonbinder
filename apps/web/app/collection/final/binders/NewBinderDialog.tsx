@@ -8,6 +8,7 @@ import type { BinderLabel } from "../store";
 import { binderTeamPicks, defaultLabelForNew, sameLabel, shelfColors, validLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * A new binder off the shelf (p2's dialog): one you fill yourself (with real
@@ -221,14 +222,16 @@ export default function NewBinderDialog({
               Spine label
             </h3>
             {!styling && <LabelChip name={trimmed || "Your binder"} label={draft} />}
-            <button
+            <NeonButton
               type="button"
+              variant="secondary"
+              outline
               aria-expanded={styling}
               onClick={() => setStyling((v) => !v)}
-              className="ml-auto min-h-10 rounded-md border border-control px-3 text-sm font-medium text-ink hover:border-neon-blue focus-outline"
+              className="ml-auto min-h-10"
             >
               {styling ? "Done styling" : "Style the spine"}
-            </button>
+            </NeonButton>
           </div>
           {!styling && (
             <p className="mt-1 text-xs text-ink-3">
@@ -260,19 +263,12 @@ export default function NewBinderDialog({
         </section>
 
         <div className="mt-6 flex flex-wrap justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-10 rounded-md border border-control px-4 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink focus-outline"
-          >
+          <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
             Cancel
-          </button>
-          <button
-            type="submit"
-            className="min-h-10 rounded-md bg-neon-green px-4 text-sm font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline"
-          >
+          </NeonButton>
+          <NeonButton type="submit" className="min-h-10">
             Put it on the shelf
-          </button>
+          </NeonButton>
         </div>
       </form>
     </Modal>

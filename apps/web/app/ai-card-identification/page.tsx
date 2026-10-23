@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
 import { BrandMark } from "@/components/primitives/BrandMark";
+import NeonButton from "@/components/modules/NeonButton";
 
 export default function AiCardIdentificationPage() {
   const navigate = useNavigate();
@@ -282,9 +283,9 @@ export default function AiCardIdentificationPage() {
               Let the AI handle the heavy lifting while you focus on collecting. Lightning-fast, accurate identification for every card in your collection.
             </p>
             <SignUpButton mode="modal">
-              <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
+              <NeonButton size="3">
                 Get Started
-              </button>
+              </NeonButton>
             </SignUpButton>
           </div>
         </div>

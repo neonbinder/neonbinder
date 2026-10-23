@@ -36,7 +36,6 @@ export type TokenRole =
   | "neon-orange"
   | "neon-teal"
   | "neon-purple"
-  | "neon-red"
   | "neon-green-text"
   | "neon-pink-text"
   | "neon-blue-text"
@@ -44,7 +43,6 @@ export type TokenRole =
   | "neon-orange-text"
   | "neon-teal-text"
   | "neon-purple-text"
-  | "neon-red-text"
   | "notice-info-ink"
   | "notice-warn-ink"
   | "notice-danger-ink"
@@ -147,7 +145,6 @@ export type TextRole =
   | "neon-orange-text"
   | "neon-teal-text"
   | "neon-purple-text"
-  | "neon-red-text"
   | "notice-info-ink"
   | "notice-warn-ink"
   | "notice-danger-ink"
@@ -178,7 +175,6 @@ export const TEXT_NEVER_ON: Record<ThemeMode, Partial<Record<TextRole, readonly 
     "neon-blue-text": ["row-hover", "chip-strong", "button-neutral-hover"],
     "neon-orange-text": ["row-hover", "chip-strong", "button-neutral-hover"],
     "neon-purple-text": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
-    "neon-red-text": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
   },
   light: {
     "neon-green-text": ["chip-strong", "button-neutral-hover"],
@@ -196,7 +192,6 @@ const NEON_FILLS = {
   "neon-orange": "#ff9e00",
   "neon-teal": "#00e5c0",
   "neon-purple": "#a44aff",
-  "neon-red": "#ff2d3d",
 } as const;
 
 /** The CSS value of every role, per mode, exactly as app/theme.css writes it. */
@@ -226,7 +221,6 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "neon-orange-text": "#ff9e00",
     "neon-teal-text": "#00e5c0",
     "neon-purple-text": "#b56bff",
-    "neon-red-text": "#ff5560",
     "notice-info-ink": "oklch(88.2% 0.059 254.128)",
     "notice-warn-ink": "oklch(87.9% 0.169 91.605)",
     "notice-danger-ink": "oklch(88.5% 0.062 18.334)",
@@ -307,7 +301,6 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "neon-orange-text": "#9a4d00",
     "neon-teal-text": "#007060",
     "neon-purple-text": "#7a2bd9",
-    "neon-red-text": "#c4001f",
     "notice-info-ink": "#005f8f",
     "notice-warn-ink": "#6b4e00",
     "notice-danger-ink": "#a3001a",

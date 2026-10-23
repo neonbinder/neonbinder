@@ -9,7 +9,6 @@ colors:
   neon-orange: "#FF9E00"
   neon-teal: "#00E5C0"
   neon-purple: "#A44AFF"
-  neon-red: "#FF2D3D"
   ink-on-neon: "#000000"
   dark-surface: "#0A0A0A"
   dark-raised: "#1E2939"
@@ -27,7 +26,6 @@ colors:
   dark-selection: "#00C2FF"
   dark-neon-purple-text: "#B56BFF"
   dark-neon-pink-text: "#FF40A3"
-  dark-neon-red-text: "#FF5560"
   light-surface: "#F7F8FC"
   light-raised: "#FFFFFF"
   light-field: "#FFFFFF"
@@ -48,7 +46,6 @@ colors:
   light-neon-orange-text: "#9A4D00"
   light-neon-teal-text: "#007060"
   light-neon-purple-text: "#7A2BD9"
-  light-neon-red-text: "#C4001F"
   paper: "#FFFFFF"
 typography:
   display:
@@ -94,18 +91,18 @@ components:
     rounded: "{rounded.md}"
     padding: "8px 16px"
     typography: "{typography.body}"
-  button-cancel:
-    backgroundColor: "{colors.neon-pink}"
-    textColor: "{colors.ink-on-neon}"
-    rounded: "{rounded.md}"
-    padding: "8px 16px"
-  button-destructive:
-    backgroundColor: "{colors.neon-red}"
-    textColor: "{colors.ink-on-neon}"
-    rounded: "{rounded.md}"
-    padding: "8px 16px"
   button-secondary:
     backgroundColor: "{colors.neon-blue}"
+    textColor: "{colors.ink-on-neon}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+  button-tertiary:
+    backgroundColor: "{colors.neon-purple}"
+    textColor: "{colors.ink-on-neon}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+  button-negative:
+    backgroundColor: "{colors.neon-pink}"
     textColor: "{colors.ink-on-neon}"
     rounded: "{rounded.md}"
     padding: "8px 16px"
@@ -161,15 +158,14 @@ The ESLint rule `theme/no-raw-palette` bans, in `app/`, `components/`, `src/` an
 
 ### Neon (the same fills in both modes)
 - **Binder Green** (`neon-green`): the brand and the forward action. Primary buttons, the Dashboard tab, success, the Radix accent (`accentColor="green"`; the green scale's step 9 is this value on sRGB screens, and wide-gamut screens get its Display P3 equivalent).
-- **Show-Sign Pink** (`neon-pink`): cancel. Backing out without losing anything: Cancel, Close, Stop, Sign out. Never a decorative accent and never destructive.
-- **Tilt Red** (`neon-red`, #FF2D3D): destructive. Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip, and the danger notices. A hot red as bright as the pink, so the family stays lit; the pinball machine's TILT light, the one you don't want to see.
+- **Show-Sign Pink** (`neon-pink`): negative. Backing out (Cancel, Close, Stop, Sign out) and taking something away (Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip). Never a decorative accent. (A Tilt Red for destructive was tried in NEO-356 and dropped: Jason, 2026-10-23, "the red has really lost the Neon vibe".)
 - **Marquee Cyan** (`neon-blue`): secondary buttons, the Collection tab, the light mode's offset shadow.
 - **Hazard Yellow** (`neon-yellow`): Inventory; also warnings.
 - **Admin Amber** (`neon-orange`): Admin and other gated features.
 - **Label Teal** (`neon-teal`): Print Shop, shipping and labels.
-- **Profile Violet** (`neon-purple`): Profile.
+- **Profile Violet** (`neon-purple`): Profile, and the tertiary button.
 
-Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as text on the page (`text-neon-X-text`), and the ink on the fill (`text-on-neon-X`, black in both modes). In dark the text is the fill itself, except three hues lifted a touch so they reach 4.5:1 on a graphite card: violet #B56BFF (the fill is under 4.5:1), pink #FF40A3 (the fill is 4.27:1) and red #FF5560 (the fill is 3.98:1). In light every hue is deepened to 4.5:1 on white (green #007A3B, pink #C40068, cyan #006DA6, yellow #7A6400, amber #9A4D00, teal #007060, violet #7A2BD9, red #C4001F). A neon fill under the pointer is `bg-neon-X-hover`.
+Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as text on the page (`text-neon-X-text`), and the ink on the fill (`text-on-neon-X`, black in both modes). In dark the text is the fill itself, except two hues lifted a touch so they reach 4.5:1 on a graphite card: violet #B56BFF (the fill is under 4.5:1) and pink #FF40A3 (the fill is 4.27:1). In light every hue is deepened to 4.5:1 on white (green #007A3B, pink #C40068, cyan #006DA6, yellow #7A6400, amber #9A4D00, teal #007060, violet #7A2BD9). A neon fill under the pointer is `bg-neon-X-hover`.
 
 ### Surfaces, lines and ink
 
@@ -206,7 +202,7 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 
 `bg-hover` equals `bg-raised` in dark, so never use it for a hover that sits on a raised surface; that is what `hover-raised` is for.
 
-In dark these tiles are light greys, and `ink-3` and the pink, violet and red `-text` hues miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a red fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
+In dark these tiles are light greys, and `ink-3` and the pink and violet `-text` hues miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a pink fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
 
 ### Panels and washes
 
@@ -222,7 +218,7 @@ In dark these tiles are light greys, and `ink-3` and the pink, violet and red `-
 
 ### Notices
 
-`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and the Tilt Red text hue as its rule (#C4001F).
+`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red.
 
 ### State that differs by mode
 
@@ -240,7 +236,7 @@ In dark these tiles are light greys, and `ink-3` and the pink, violet and red `-
 
 **The One Hue Per Section Rule.** A section's colour is fixed by its tab (Dashboard green, Collection cyan, Inventory yellow, Admin amber, Print Shop teal, Profile violet). It governs the section's identity: its tab, its headings, its emphasis. Don't borrow another section's hue for that.
 
-**The Own Hue Per Tool Rule.** Inside a section, a set of sibling tools shown side by side (the Print Shop index, the landing page's feature cards) gives each tool's icon, and its hover edge, its own neon hue, no two alike where the set allows. That is the one place a section shows hues other than its own, because there the colour tells the tools apart rather than saying where you are. Pink (cancel) and red (destructive) are never icon hues. Where a tool appears in two such sets it takes the same hue in both where it can: Spine Labels are orange on the Print Shop index and on the landing page.
+**The Own Hue Per Tool Rule.** Inside a section, a set of sibling tools shown side by side (the Print Shop index, the landing page's feature cards) gives each tool's icon, and its hover edge, its own neon hue, no two alike where the set allows. That is the one place a section shows hues other than its own, because there the colour tells the tools apart rather than saying where you are. Pink (negative: cancel and destructive) is never an icon hue. Where a tool appears in two such sets it takes the same hue in both where it can: Spine Labels are orange on the Print Shop index and on the landing page.
 
 **The Role Not Step Rule.** Reach for the role that names the job (`hover-raised`, `chip`, `selection-line`), never for a role that happens to have the right value in one mode (`bg-rule-strong` as a hover fill, `bg-ink/10` as a chip). The second one breaks the other mode.
 
@@ -307,14 +303,15 @@ Applied explicitly in components. The one class a utility reads is `border`: `sh
 - `brand-mark-mask`: the light mode's single-colour Mark (`public/logo-mark.svg`); `BrandMark` applies it, and dark keeps the neon PNG.
 
 ### Buttons
-Crisp, solid and few. One neon fill per decision.
-- **Shape:** gently rounded (6px).
-- **Primary:** Binder Green fill, black ink, 8px × 16px, `text-sm`. Hover is `neon-green-hover`.
-- **Cancel:** Show-Sign Pink fill, black ink (`NeonButton cancel`).
-- **Destructive:** Tilt Red fill, black ink (`NeonButton destructive`, `Button variant="destructive"`), `neon-red-hover` under the pointer. A quiet destructive link or × is `ink-3` that turns `text-neon-red-text` under the pointer. In a confirm dialog the destructive button sits beside a cyan Cancel, never a pink one: red beside pink reads as one colour.
-- **Secondary:** Marquee Cyan fill, black ink.
+Crisp, solid and few. One neon fill per decision. Every action button is `NeonButton` (`apps/web/components/modules/NeonButton.tsx`), the one place a button's colour is decided (Jason, 2026-10-23: "when we try to update things like the color again it is one single button"). The lint rule `theme/neon-button-only` refuses a neon fill on a raw `<button>`; a selected chip, tab or toggle is state, not a button, and stays a `<button>`.
+- **Shape:** gently rounded (6px). `size` is Radix's 1, 2 (the default) or 3.
+- **`variant="primary"`:** Binder Green fill, black ink. Hover is `neon-green-hover`.
+- **`variant="secondary"`:** Marquee Cyan fill, black ink.
+- **`variant="tertiary"`:** Profile Violet fill, black ink.
+- **`variant="negative"`:** Show-Sign Pink fill, black ink. Cancel and destructive alike. A quiet destructive link or × is `ink-3` that turns `text-neon-pink-text` under the pointer. In a confirm dialog the pink confirm sits beside a cyan (`secondary`) Cancel, so the two read apart.
+- **`outline`:** any of the four as an outline: the hue's `-text` role as text and a 1px edge on a clear ground, filling with the neon and its black ink under the pointer. A quiet neutral action (Back, Swap sides, Check for new scans) is `secondary outline`.
 - **Neutral:** `button-neutral` fill, `ink` or `ink-2` text, `button-neutral-hover` under the pointer.
-- **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. Dark dims the neon to 45% opacity; light swaps it for the `button-neutral` fill and `ink-3` ink, because a neon fill at 45% on white reads as a pale, still-pressable button. Not-allowed cursor in both.
+- **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. A fill: dark dims the neon to 45% opacity; light swaps it for the `button-neutral` fill and `ink-3` ink, because a neon fill at 45% on white reads as a pale, still-pressable button. An outline fades to 50%. Not-allowed cursor in both.
 - **Quiet actions:** text or ghost buttons in `ink-2` that brighten on hover, for everything that isn't the decision.
 
 ### Inputs / Fields
@@ -354,8 +351,9 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Do** put black ink on every neon fill, in both modes.
 - **Do** use `text-neon-X-text`, not `text-neon-X`, for neon text.
 - **Do** keep each section in its tab's hue.
-- **Do** give each sibling tool's icon its own neon hue (never pink or red).
-- **Do** paint every destructive action Tilt Red, and keep pink for cancel.
+- **Do** give each sibling tool's icon its own neon hue (never pink).
+- **Do** paint every cancel and destructive action Show-Sign Pink (`NeonButton variant="negative"`).
+- **Do** build every action button with `NeonButton`; never hand-roll a neon-filled `<button>`.
 - **Do** give a selected or active state a line as well as any glow or tint.
 - **Do** scale every glow by `--glow`.
 - **Do** honour `aria-disabled` on disabled buttons.
@@ -372,5 +370,5 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Don't** set headings in gradient text; a heading takes its section's one hue (One Hue Per Section).
 - **Don't** hand-mix a near-neon hex. `#00B7FF` and `#FF2EB3` crept into 80 files before the 2026-10 audit folded them back into Marquee Cyan `#00C2FF` and Show-Sign Pink `#FF2E9A`.
 - **Don't** put a glow on a resting element.
-- **Don't** use neon pink for anything but cancel, or for anything destructive: that is Tilt Red.
+- **Don't** use neon pink for anything but negative actions (cancel and destructive).
 - **Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.

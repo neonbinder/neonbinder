@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Input } from "../primitives/Input";
 import type { CareerTeamDraft } from "./CareerTeamEntry";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-254 — the Wikidata teams with no years on them, and a way to put years
@@ -292,15 +293,16 @@ export default function UndatedCareerTeams({
                   }}
                   className="w-28 p-1.5 text-sm"
                 />
-                <button
+                <NeonButton
                   type="button"
+                  variant="primary"
+                  outline
                   aria-disabled={disabled}
                   aria-label={`Save years for ${name}`}
                   onClick={() => save(name)}
-                  className="rounded border border-neon-green-text px-2 py-1.5 text-sm text-neon-green-text transition-colors hover:bg-neon-green/20 focus:bg-neon-green/20 focus-outline aria-disabled:opacity-40"
                 >
                   Save years
-                </button>
+                </NeonButton>
                 {/* Deliberately NOT disabled while the wizard is busy: Cancel
                     only closes a local form and returns focus, so refusing it
                     would strand the operator in a form they cannot leave. The

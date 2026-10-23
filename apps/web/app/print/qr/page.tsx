@@ -225,7 +225,7 @@ export default function QrCodePage() {
           </p>
 
           <div className="flex gap-3">
-            <NeonButton secondary onClick={handleDownload} size="3">
+            <NeonButton variant="secondary" onClick={handleDownload} size="3">
               <ArrowDownTrayIcon className="w-5 h-5 mr-2" />
               Download
             </NeonButton>

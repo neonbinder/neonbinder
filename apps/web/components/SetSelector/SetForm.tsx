@@ -81,10 +81,10 @@ export default function SetForm({
           {message?.startsWith("Error") || message?.startsWith("Failed") ? (
             <>
               <NeonButton onClick={doSync}>Retry</NeonButton>
-              <NeonButton cancel onClick={onDone}>Cancel</NeonButton>
+              <NeonButton variant="negative" onClick={onDone}>Cancel</NeonButton>
             </>
           ) : (
-            <NeonButton cancel onClick={onDone}>Close</NeonButton>
+            <NeonButton variant="negative" onClick={onDone}>Close</NeonButton>
           )}
         </div>
       )}

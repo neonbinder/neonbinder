@@ -2600,9 +2600,9 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
 // ---------------------------------------------------------------------------
 
 describe("EntityReviewWizard — near matches", () => {
-  // NeonButton paints its neon as an INLINE style, so the variant is readable
-  // straight off the node. Since NEO-356 the style names the role variable
-  // (so it follows light/dark), and happy-dom keeps it as written.
+  // NeonButton sets its paint as inline `--nb-*` role variables, so the
+  // variant is readable straight off the node: `--nb-fill` names the fill's
+  // role (NEO-356), and happy-dom keeps it as written.
   const GREEN = "var(--neon-green)";
   const BLUE = "var(--neon-blue)"; // NeonButton's `secondary`
 
@@ -2642,7 +2642,7 @@ describe("EntityReviewWizard — near matches", () => {
 
     const add = screen.getByRole("button", { name: "Add as New Player" });
     expect(add.textContent).toBe("Add as New Player");
-    expect((add as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
     expect(screen.queryByText("Possible matches")).toBeNull();
   });
 
@@ -2657,11 +2657,11 @@ describe("EntityReviewWizard — near matches", () => {
     // The accessible name is an E2E contract and survives the demotion.
     const add = screen.getByRole("button", { name: "Add as New Player" });
     expect(add.textContent).toBe("Add as New Player");
-    expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
-    expect((add as HTMLElement).style.backgroundColor).not.toBe(GREEN);
-    // The call site pins the ink on the cyan fill to the on-neon role (black
-    // in both modes, 10.2:1); assert the override is actually applied.
-    expect((add as HTMLElement).style.color).toBe("var(--on-neon-blue)");
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(BLUE);
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).not.toBe(GREEN);
+    // The ink on the cyan fill is the on-neon role (black in both modes,
+    // 10.2:1).
+    expect((add as HTMLElement).style.getPropertyValue("--nb-ink")).toBe("var(--on-neon-blue)");
   });
 
   it("EXACT: the green button becomes 'Link to {name}' and create demotes to a text link", () => {
@@ -2678,14 +2678,14 @@ describe("EntityReviewWizard — near matches", () => {
     // reading the list and to a Maestro `tapOn` matching by it.
     const linkButtons = screen.getAllByLabelText("Link to Mike Trout");
     expect(linkButtons).toHaveLength(1);
-    expect((linkButtons[0] as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect((linkButtons[0] as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
 
     // Create is still reachable, as a text link whose accessible name IS its
     // visible text — no aria-label sitting over words the operator can read.
     const add = screen.getByRole("button", { name: "Add as New Player anyway" });
     expect(add.textContent).toBe("Add as New Player anyway");
     expect(add.getAttribute("aria-label")).toBeNull();
-    expect((add as HTMLElement).style.backgroundColor).toBe("");
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe("");
     // And the old mismatched name is gone.
     expect(screen.queryByLabelText("Add as New Player")).toBeNull();
   });
@@ -2723,7 +2723,7 @@ describe("EntityReviewWizard — near matches", () => {
     renderWizard();
 
     const green = screen.getByLabelText("Link to Mike Trout");
-    expect((green as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect((green as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
     fireEvent.click(green);
 
     await waitFor(() => {
@@ -9460,7 +9460,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       expect(add.textContent).toBe("Add as New Player");
       expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
       // The same-name rows were just turned down, so they do not demote it.
-      expect((add as HTMLElement).style.backgroundColor).toBe(GREEN);
+      expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
     });
 
     it("is still demoted by a genuinely different close match", () => {
@@ -9474,7 +9474,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       clickCreateNew();
 
       const add = screen.getByRole("button", { name: "Add as New Player" });
-      expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
+      expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(BLUE);
     });
   });
 

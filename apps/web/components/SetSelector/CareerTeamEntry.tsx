@@ -13,6 +13,7 @@ import {
   nameHasQueryPrefix,
   nameMatchesQuery,
 } from "../../lib/entities/name-search";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-92 follow-up: manual career-team entry for a player row in the
@@ -532,15 +533,16 @@ export default function CareerTeamEntry({
           onKeyDown={handleYearKeyDown}
           className="w-28 p-1.5 text-sm"
         />
-        <button
+        <NeonButton
           type="button"
+          variant="primary"
+          outline
           onClick={commit}
           disabled={!canAdd}
           aria-label="Add career team"
-          className="px-2 py-1.5 text-sm rounded border border-neon-green-text text-neon-green-text hover:bg-neon-green/20 focus:bg-neon-green/20 focus-outline disabled:opacity-40 disabled:cursor-not-allowed"
         >
           + Add
-        </button>
+        </NeonButton>
       </div>
     </div>
   );

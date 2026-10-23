@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
 import { BrandMark } from "@/components/primitives/BrandMark";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-207 — public marketing page for the Print Shop's binder tools: spine
@@ -279,9 +280,9 @@ export default function PrintShopPage() {
               cards live somewhere else now. Free during beta.
             </p>
             <SignUpButton mode="modal">
-              <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
+              <NeonButton size="3">
                 Get Started
-              </button>
+              </NeonButton>
             </SignUpButton>
           </div>
         </div>

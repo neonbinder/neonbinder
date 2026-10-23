@@ -80,10 +80,10 @@
       "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 16px; border: none; border-radius: 6px; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; color: #000; cursor: pointer; transition: background-color 150ms; } .ds-btn-primary { background: #00D558; } .ds-btn-primary:hover { background: rgb(0 213 88 / 0.85); } .ds-btn:focus-visible { outline: 2px solid var(--focus, #00C2FF); outline-offset: 2px; } .ds-btn[disabled], .ds-btn[aria-disabled=true] { opacity: 0.45; cursor: not-allowed; }"
     },
     {
-      "name": "Cancel Button",
+      "name": "Negative Button",
       "kind": "button",
-      "refersTo": "button-cancel",
-      "description": "Cancel, destructive and sign-out only.",
+      "refersTo": "button-negative",
+      "description": "NeonButton variant=\"negative\": cancel, destructive and sign-out only.",
       "html": "<button class=\"ds-btn-cancel\">Sign out</button>",
       "css": ".ds-btn-cancel { display: inline-flex; align-items: center; padding: 8px 16px; border: none; border-radius: 6px; background: #FF2E9A; color: #000; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; cursor: pointer; transition: background-color 150ms; } .ds-btn-cancel:hover { background: rgb(255 46 154 / 0.9); } .ds-btn-cancel:focus-visible { outline: 2px solid #00C2FF; outline-offset: 2px; }"
     },
@@ -91,9 +91,17 @@
       "name": "Secondary Button",
       "kind": "button",
       "refersTo": "button-secondary",
-      "description": "A second, non-destructive action beside the primary.",
+      "description": "NeonButton variant=\"secondary\": a second, non-destructive action beside the primary. `outline` on any variant draws the hue as text and a 1px edge on a clear ground, filling with the neon under the pointer.",
       "html": "<button class=\"ds-btn-secondary\">Preview</button>",
       "css": ".ds-btn-secondary { display: inline-flex; align-items: center; padding: 8px 16px; border: none; border-radius: 6px; background: #00C2FF; color: #000; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; cursor: pointer; transition: background-color 150ms; } .ds-btn-secondary:hover { background: rgb(0 194 255 / 0.85); } .ds-btn-secondary:focus-visible { outline: 2px solid #FFFFFF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Tertiary Button",
+      "kind": "button",
+      "refersTo": "button-tertiary",
+      "description": "NeonButton variant=\"tertiary\": a third action, beside green and blue.",
+      "html": "<button class=\"ds-btn ds-btn-tertiary\">Shuffle</button>",
+      "css": ".ds-btn-tertiary { display: inline-flex; align-items: center; padding: 8px 16px; border: none; border-radius: 6px; background: #A44AFF; color: #000; font-family: Lexend, Arial, sans-serif; font-size: 0.875rem; line-height: 1.5rem; cursor: pointer; transition: background-color 150ms; } .ds-btn-tertiary:hover { background: rgb(164 74 255 / 0.85); } .ds-btn-tertiary:focus-visible { outline: 2px solid #00C2FF; outline-offset: 2px; }"
     },
     {
       "name": "Text Field",
@@ -157,6 +165,7 @@
       "**Do** keep each section in its tab's hue.",
       "**Do** give a selected or active state a line as well as any glow or tint.",
       "**Do** scale every glow by `--glow`.",
+      "**Do** build every action button with NeonButton (primary green, secondary blue, tertiary violet, negative pink, each with an `outline` form); the lint rule refuses a neon-filled raw <button>.",
       "**Do** honour `aria-disabled` on disabled buttons (dark dims the neon to 45%; light uses the neutral button fill).",
       "**Do** stop the glow pulse under `prefers-reduced-motion`.",
       "**Do** print on white: print documents pin black on white and never load the app stylesheet; on-screen previews of paper use `bg-paper`.",

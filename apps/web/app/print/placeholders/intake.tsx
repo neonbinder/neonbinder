@@ -403,7 +403,7 @@ export default function CardIntake() {
               <div className="flex flex-wrap gap-3 pt-1">
                 <NeonButton
                   type="button"
-                  secondary={stage !== "waiting"}
+                  variant={stage !== "waiting" ? "secondary" : "primary"}
                   onClick={() => setPendingAction("close")}
                 >
                   {stage === "waiting" ? "Finish the batch" : "Finish now"}
@@ -411,7 +411,7 @@ export default function CardIntake() {
                 <button
                   type="button"
                   onClick={() => setPendingAction("abort")}
-                  className="text-sm text-ink-3 underline hover:text-neon-red-text p-2 -m-2"
+                  className="text-sm text-ink-3 underline hover:text-neon-pink-text p-2 -m-2"
                 >
                   Discard this batch
                 </button>

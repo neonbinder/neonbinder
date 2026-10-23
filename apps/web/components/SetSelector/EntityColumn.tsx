@@ -1273,7 +1273,7 @@ export default function EntityColumn({
               Add
             </NeonButton>
             <NeonButton
-              cancel
+              variant="negative"
               className={fieldClass("btn-cancel")}
               aria-label={cancelLabel}
               onClick={closeCustomForm}
@@ -1326,7 +1326,7 @@ export default function EntityColumn({
               Create
             </NeonButton>
             <NeonButton
-              secondary
+              variant="secondary"
               className={fieldClass("btn-confirm-back")}
               aria-label={backToInputLabel}
               onClick={backToInput}
@@ -1378,7 +1378,7 @@ export default function EntityColumn({
             {/* Decision 5: kept, but secondary and explicit — duplicating a
                 name across parents is sometimes right, and never a default. */}
             <NeonButton
-              secondary
+              variant="secondary"
               className={fieldClass("btn-create-anyway")}
               aria-label={createAnywayLabel}
               onClick={() => void runCreate(customStage.value, true)}
@@ -1394,7 +1394,7 @@ export default function EntityColumn({
               Create here anyway
             </NeonButton>
             <NeonButton
-              cancel
+              variant="negative"
               className={fieldClass("btn-exists-back")}
               aria-label={backToInputLabel}
               onClick={backToInput}
@@ -1417,7 +1417,7 @@ export default function EntityColumn({
             {customStage.matches.map((match, i) => (
               <li key={match._id}>
                 <NeonButton
-                  secondary
+                  variant="secondary"
                   ref={i === 0 ? confirmPrimaryRef : undefined}
                   className={fieldClass(`btn-pick-shared-${i}`)}
                   aria-label={pickSharedLabel(match.label)}
@@ -1435,7 +1435,7 @@ export default function EntityColumn({
             )}
           </ul>
           <NeonButton
-            cancel
+            variant="negative"
             className={fieldClass("btn-shared-back")}
             aria-label={backToInputLabel}
             onClick={backToInput}
@@ -1530,7 +1530,7 @@ export default function EntityColumn({
         )}
         {level && !hideCustom && (
           <NeonButton
-            secondary
+            variant="secondary"
             className={fieldClass("btn-open-custom")}
             onClick={openCustomForm}
             onKeyDown={(e) => activateOnEnter(e, openCustomForm)}

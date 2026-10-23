@@ -437,7 +437,7 @@ export default function PipelineRunsPage() {
                   <span className="ml-auto">
                     {!isTerminal && (
                       <NeonButton
-                        destructive
+                        variant="negative"
                         size="1"
                         type="button"
                         // The visible word is "Abort" on every row, so the

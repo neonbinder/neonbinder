@@ -228,7 +228,7 @@ export function SetShapeDialog({
             {busy ? busyLabel : confirmLabel}
           </NeonButton>
           <NeonButton
-            secondary
+            variant="secondary"
             type="button"
             onClick={onCancel}
             onKeyDown={(event) => activateOnEnter(event, onCancel, busy)}

@@ -345,7 +345,7 @@ export default function MultiSourcePanel({
           </p>
         </div>
         <NeonButton
-          secondary
+          variant="secondary"
           size="2"
           onClick={() => setDialogOpen(true)}
           aria-label="Attach more source sets"
@@ -719,7 +719,7 @@ function Chip({
             // py-1: text-xs's 1rem line-height + 0.25rem top/bottom padding
             // clears WCAG 2.5.8's 24px target-size minimum; px-1 alone left
             // this ~16px tall.
-            className="text-xs font-semibold text-neon-red-text hover:underline focus-outline px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+            className="text-xs font-semibold text-neon-pink-text hover:underline focus-outline px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
           >
             {counting ? "Counting cards…" : busy ? "Detaching…" : "Confirm"}
           </button>
@@ -836,7 +836,7 @@ function Chip({
         aria-label={`Remove ${chip.label}`}
         // min-w-6/min-h-6 (24px): the bare "×" glyph plus px-1 alone rendered
         // an ~18x19px hit area, under WCAG 2.5.8's 24x24 target-size minimum.
-        className="inline-flex items-center justify-center min-w-6 min-h-6 text-ink-3 hover:text-neon-red-text focus:text-neon-red-text focus-outline"
+        className="inline-flex items-center justify-center min-w-6 min-h-6 text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
       >
         ×
       </button>

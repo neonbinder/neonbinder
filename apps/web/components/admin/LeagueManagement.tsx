@@ -799,13 +799,9 @@ function LeagueDetail({
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>
           {busy === "save" ? "Saving…" : "Save"}
         </NeonButton>
-        {/* Black label, like the "Add stint" button on the Players screen:
-            NeonButton's `secondary` paints white on #00C2FF, which is 2.07:1 —
-            under SC 1.4.3's 4.5:1 floor. Black on the same blue is 10.1:1. */}
         <NeonButton
           type="button"
-          secondary
-          style={{ color: "var(--on-neon-blue)" }}
+          variant="secondary"
           onClick={() => void reEnrich()}
           disabled={busy !== null}
         >

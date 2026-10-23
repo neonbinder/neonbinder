@@ -811,18 +811,13 @@ function DraggableItem({
 
 /**
  * NEO-300 — the per-row "Make its own set" button, and the column's
- * "Keep all". Same shape, two weights: Keep all is the batch action, so it
- * wears the Ready rail's green at rest; a row's button stays neutral until
- * hovered or focused, so a column of 141 rows is not 141 green blobs. Green,
- * either way, because pressing it sends the item up to Ready — whose rows
- * carry that same green rail.
+ * "Keep all". Both are NeonButton's green outline (NEO-356: one button, its
+ * colour decided in one place): green because pressing either sends items up
+ * to Ready, whose rows carry that same green rail.
  *
  * `min-h-[28px]`: WCAG 2.5.8 wants 24px; 28 keeps the row a single line.
  */
-const OWN_SET_BUTTON =
-  "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-outline";
-const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-control text-ink-2 hover:border-neon-green-text hover:text-neon-green-text hover:bg-neon-green/10 focus-visible:text-neon-green-text`;
-const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-neon-green-text/70 text-neon-green-text hover:bg-neon-green/10 hover:border-neon-green-text aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent`;
+const OWN_SET_BUTTON = "min-h-[28px] whitespace-nowrap";
 
 // ===== BASE CHECK (NEO-325) =====
 
@@ -992,7 +987,7 @@ function ReadySetRow({
       <button
         type="button"
         onClick={() => onDetach(side, item.platformValue)}
-        className="hit-area-24 text-neon-red-text px-0.5 rounded"
+        className="hit-area-24 text-neon-pink-text px-0.5 rounded"
         title="Remove this mapping"
         aria-label={`Remove ${itemLabel(item, side, dups[side])} from ${label}`}
       >
@@ -1072,7 +1067,7 @@ function ReadySetRow({
         )}
         <button
           onClick={onDisband}
-          className="hit-area-24 text-xs text-neon-red-text px-2 py-1 rounded hover:bg-neon-red/10 shrink-0"
+          className="hit-area-24 text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0"
           title="Remove this set (its mappings return to Pending)"
           aria-label={`Remove set ${label}`}
         >
@@ -1099,17 +1094,19 @@ function ReadySetRow({
       </div>
 
       {onAttachClick && (
-        <button
+        <NeonButton
           type="button"
+          variant="secondary"
+          size="1"
           onClick={onAttachClick}
-          className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-neon-blue text-on-neon-blue hover:bg-neon-blue-hover focus-outline"
+          className="mt-2"
           // WCAG 2.5.3: the name begins with the visible words, then names
           // the set — every Ready row offers this button at once, so "this
           // set" alone would be the same name a dozen times.
           aria-label={`Add ${attachHint} to this set, ${label}`}
         >
           Add “{attachHint}” to this set
-        </button>
+        </NeonButton>
       )}
 
       {showMetadata && expanded && onUpdateMetadata && (
@@ -2310,13 +2307,16 @@ function ReconciliationDialog({
           status={statusOf(item)}
           describedBy={reasonId}
           action={
-            <button
+            <NeonButton
               type="button"
+              variant="primary"
+              outline
+              size="1"
               data-own-set={side}
               onClick={() =>
                 handlePromoteSolo(side, item.platformValue, buttonIndex)
               }
-              className={OWN_SET_ROW_BUTTON}
+              className={OWN_SET_BUTTON}
               // WCAG 2.5.3: the name begins with the visible text, then
               // names the row — with its id when the name is shared, so
               // twins are distinct to a screen reader too.
@@ -2326,7 +2326,7 @@ function ReconciliationDialog({
               aria-label={`Make its own set: ${itemLabel(item, side, dups[side])}`}
             >
               Make its own set
-            </button>
+            </NeonButton>
           }
         />
       );
@@ -2376,19 +2376,22 @@ function ReconciliationDialog({
           {/* aria-disabled, never `disabled`: a Base verdict that sets aside
               the column's last keepable row must not take focus with it (a
               disabled button drops focus to <body>). `keepAll` guards. */}
-          <button
+          <NeonButton
             type="button"
+            variant="primary"
+            outline
+            size="1"
             onClick={keepAll}
             aria-disabled={keepable.length === 0 ? true : undefined}
             aria-label={keepAllName}
             aria-describedby={keepAllDescId}
             title={keepAllDescription}
-            className={KEEP_ALL_BUTTON}
+            className={OWN_SET_BUTTON}
           >
             {/* Filtered, the number says the button reaches only what is
                 listed — never the rows the search is hiding. */}
             {keepAllShown === null ? "Keep all" : `Keep all ${keepAllShown}`}
-          </button>
+          </NeonButton>
           <span id={keepAllDescId} className="sr-only">
             {keepAllDescription}
           </span>
@@ -2794,7 +2797,7 @@ function ReconciliationDialog({
               </p>
             ))}
           </div>
-          <NeonButton cancel onClick={requestClose} disabled={confirming}>
+          <NeonButton variant="negative" onClick={requestClose} disabled={confirming}>
             Cancel
           </NeonButton>
           <NeonButton

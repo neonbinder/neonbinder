@@ -519,7 +519,7 @@ function DraggableRow({
             e.stopPropagation();
             onReject();
           }}
-          className="text-xs text-neon-red-text px-3 rounded-r-lg hover:bg-neon-red/10"
+          className="text-xs text-neon-pink-text px-3 rounded-r-lg hover:bg-neon-pink/10"
           aria-label={`Remove ${info.value} from parallels`}
         >
           ✕
@@ -1207,7 +1207,7 @@ export default function ParallelGroupingModal({
           </div>
           {hasSuggestions && (
             <NeonButton
-              secondary
+              variant="secondary"
               onClick={() => dispatch({ type: "ACCEPT_ALL_SUGGESTIONS" })}
             >
               Accept all suggestions ({suggestionCount})
@@ -1397,7 +1397,7 @@ export default function ParallelGroupingModal({
           </div>
           </div>
           <div className="flex gap-3">
-            <NeonButton cancel onClick={requestClose} disabled={confirming}>
+            <NeonButton variant="negative" onClick={requestClose} disabled={confirming}>
               Cancel
             </NeonButton>
             <NeonButton

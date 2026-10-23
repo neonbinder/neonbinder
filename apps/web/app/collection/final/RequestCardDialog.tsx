@@ -1,9 +1,8 @@
 import { useId, useState, type FormEvent } from "react";
-import { Button } from "@/components/primitives/Button";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import Overlay from "../prototypes/p1/Overlay";
-import { OUTLINE_BUTTON } from "../prototypes/p1/ui";
 import { useCollectionMode } from "./mode";
 import type { CollectionStore } from "./store";
 
@@ -105,12 +104,12 @@ export default function RequestCardDialog({
             {sent ?? ""}
           </p>
           <div className="flex flex-wrap justify-end gap-3">
-            <button type="button" onClick={onClose} className={OUTLINE_BUTTON}>
+            <NeonButton type="button" variant="secondary" outline onClick={onClose}>
               Done
-            </button>
-            <Button type="submit" variant="primary" disabled={!filled}>
+            </NeonButton>
+            <NeonButton type="submit" variant="primary" disabled={!filled}>
               Send request
-            </Button>
+            </NeonButton>
           </div>
         </form>
 

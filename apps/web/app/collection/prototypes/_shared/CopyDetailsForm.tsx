@@ -1,5 +1,5 @@
 import { useId, type FormEvent, type KeyboardEvent } from "react";
-import { Button } from "@/components/primitives/Button";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import {
@@ -340,14 +340,14 @@ export default function CopyDetailsForm({
         >
           Cancel
         </button>
-        <Button
+        <NeonButton
           type="submit"
           variant="primary"
           disabled={!quantityValid}
           className="focus-outline"
         >
           {saveLabel}
-        </Button>
+        </NeonButton>
       </div>
     </form>
   );

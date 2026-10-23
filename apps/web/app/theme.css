@@ -70,9 +70,6 @@
   --neon-orange: #ff9e00;
   --neon-teal: #00e5c0;
   --neon-purple: #a44aff;
-  /* Tilt Red (NEO-356, Jason 2026-10-22): destructive actions only. A hot
-   * red in the family's spirit, as bright as the pink it takes the job from. */
-  --neon-red: #ff2d3d;
 
   --neon-green-text: #00d558;
   /* Pink as text is a touch lighter than the fill so it reaches 4.5:1 on a
@@ -83,9 +80,6 @@
   --neon-orange-text: #ff9e00;
   --neon-teal-text: #00e5c0;
   --neon-purple-text: #b56bff;
-  /* Lighter than the fill for the same reason as violet: #ff2d3d is 3.98:1 on
-   * a graphite card. */
-  --neon-red-text: #ff5560;
 
   --on-neon-green: #000000;
   --on-neon-pink: #000000;
@@ -94,7 +88,6 @@
   --on-neon-orange: #000000;
   --on-neon-teal: #000000;
   --on-neon-purple: #000000;
-  --on-neon-red: #000000;
 
   /* A neon fill under the pointer: 85% of the fill over what is behind it. */
   --neon-green-hover: color-mix(in oklab, #00d558 85%, transparent);
@@ -103,8 +96,10 @@
   --neon-yellow-hover: color-mix(in oklab, #ffe600 85%, transparent);
   --neon-orange-hover: color-mix(in oklab, #ff9e00 85%, transparent);
   --neon-teal-hover: color-mix(in oklab, #00e5c0 85%, transparent);
-  --neon-purple-hover: color-mix(in oklab, #a44aff 85%, transparent);
-  --neon-red-hover: color-mix(in oklab, #ff2d3d 85%, transparent);
+  /* Violet is the darkest fill, so fading it toward the black page drops its
+   * black ink under 4.5:1 (about 3.9:1). It is NeonButton's tertiary fill, so
+   * under the pointer it lightens instead, as every fill does in light. */
+  --neon-purple-hover: #b66eff;
 
   /* Notices: a tinted ground, readable ink, a rule. Dark is the family the
    * app's notices already used most (blue/amber/red/green 900 ground, 200-300
@@ -276,7 +271,6 @@
   --neon-orange-text: #9a4d00;
   --neon-teal-text: #007060;
   --neon-purple-text: #7a2bd9;
-  --neon-red-text: #c4001f;
 
   --neon-green-hover: #33e07c;
   --neon-pink-hover: #ff5cb0;
@@ -285,7 +279,6 @@
   --neon-orange-hover: #ffb133;
   --neon-teal-hover: #33eacd;
   --neon-purple-hover: #b66eff;
-  --neon-red-hover: #ff5764;
 
   --notice-info-bg: #eaf5fc;
   --notice-info-ink: #005f8f;
@@ -293,7 +286,8 @@
   --notice-warn-bg: #fff5d6;
   --notice-warn-ink: #6b4e00;
   --notice-warn-rule: #a36a00;
-  /* Danger keys off Tilt Red, as dark's red-900 family already does. */
+  /* Danger is a notice, not a button: red in both modes, as dark's red-900
+   * family already is. Buttons never borrow it (negative is pink). */
   --notice-danger-bg: #fdecee;
   --notice-danger-ink: #a3001a;
   --notice-danger-rule: #c4001f;
@@ -574,7 +568,6 @@
   --color-neon-orange: var(--neon-orange);
   --color-neon-teal: var(--neon-teal);
   --color-neon-purple: var(--neon-purple);
-  --color-neon-red: var(--neon-red);
 
   --color-neon-green-text: var(--neon-green-text);
   --color-neon-pink-text: var(--neon-pink-text);
@@ -583,7 +576,6 @@
   --color-neon-orange-text: var(--neon-orange-text);
   --color-neon-teal-text: var(--neon-teal-text);
   --color-neon-purple-text: var(--neon-purple-text);
-  --color-neon-red-text: var(--neon-red-text);
 
   --color-on-neon-green: var(--on-neon-green);
   --color-on-neon-pink: var(--on-neon-pink);
@@ -592,7 +584,6 @@
   --color-on-neon-orange: var(--on-neon-orange);
   --color-on-neon-teal: var(--on-neon-teal);
   --color-on-neon-purple: var(--on-neon-purple);
-  --color-on-neon-red: var(--on-neon-red);
 
   --color-neon-green-hover: var(--neon-green-hover);
   --color-neon-pink-hover: var(--neon-pink-hover);
@@ -601,7 +592,6 @@
   --color-neon-orange-hover: var(--neon-orange-hover);
   --color-neon-teal-hover: var(--neon-teal-hover);
   --color-neon-purple-hover: var(--neon-purple-hover);
-  --color-neon-red-hover: var(--neon-red-hover);
 
   --color-notice-info-bg: var(--notice-info-bg);
   --color-notice-info-ink: var(--notice-info-ink);

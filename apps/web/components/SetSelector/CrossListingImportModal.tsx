@@ -797,7 +797,7 @@ export default function CrossListingImportModal({
                   whole import, which is now up to three round-trips long. */}
               <NeonButton
                 type="button"
-                cancel
+                variant="negative"
                 onClick={() => {
                   if (submitting) return;
                   onClose();

@@ -299,7 +299,7 @@ export default function ReturnAddressEditor() {
           <button
             type="button"
             onClick={handleRevert}
-            className="text-sm text-ink-3 hover:text-neon-red-text underline p-2 -m-2"
+            className="text-sm text-ink-3 hover:text-neon-pink-text underline p-2 -m-2"
           >
             Discard changes
           </button>

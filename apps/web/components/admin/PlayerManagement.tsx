@@ -864,7 +864,7 @@ function AddPlayerForm({
             as before: cancelling then cannot stop a write that is already on
             its way. Live again while the screen LOADS the result, so a slow
             load always has a way out — see `cancelAdd` in the screen. */}
-        <NeonButton type="button" cancel onClick={onCancel} disabled={busy}>
+        <NeonButton type="button" variant="negative" onClick={onCancel} disabled={busy}>
           Cancel
         </NeonButton>
         {error && (
@@ -1121,7 +1121,7 @@ function PlayerSportsField({
               onClick={() => remove(id)}
               aria-disabled={busy || undefined}
               aria-label={`Remove sport ${nameOf(id)}`}
-              className="min-h-6 min-w-6 rounded-full text-ink-3 transition-colors hover:bg-neon-red/10 hover:text-neon-red-text focus-outline"
+              className="min-h-6 min-w-6 rounded-full text-ink-3 transition-colors hover:bg-neon-pink/10 hover:text-neon-pink-text focus-outline"
             >
               ×
             </button>
@@ -1976,7 +1976,7 @@ function PlayerDetail({
                   type="button"
                   onClick={() => removeStint(index)}
                   aria-label={`Remove ${teamName(stint.teamId)} ${stint.fromYear} stint`}
-                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-red-text transition-colors hover:bg-neon-red/10 focus-outline"
+                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-pink-text transition-colors hover:bg-neon-pink/10 focus-outline"
                 >
                   Remove stint
                 </button>
@@ -2044,15 +2044,9 @@ function PlayerDetail({
             />
           </label>
 
-          {/* NEO-212 (a11y): NeonButton's `secondary` paints white on #00C2FF
-              — 2.07:1, under SC 1.4.3's 4.5:1 floor. The primitive is shared by
-              the whole app so it is not repainted here; this call site
-              overrides only the foreground through the `style` passthrough
-              NeonButton already spreads last (black on #00C2FF is 10.2:1). */}
           <NeonButton
             type="button"
-            secondary
-            style={{ color: "var(--on-neon-blue)" }}
+            variant="secondary"
             onClick={addStint}
             className="justify-self-start"
           >
@@ -2071,13 +2065,9 @@ function PlayerDetail({
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>
           {busy === "save" ? "Saving…" : "Save"}
         </NeonButton>
-        {/* Black label, exactly as the "Add stint" button above: NeonButton's
-            `secondary` paints white on #00C2FF, which is 2.07:1 — under SC
-            1.4.3's 4.5:1 floor. Black on the same blue is 10.1:1. */}
         <NeonButton
           type="button"
-          secondary
-          style={{ color: "var(--on-neon-blue)" }}
+          variant="secondary"
           onClick={() => void reEnrich()}
           disabled={busy !== null}
         >

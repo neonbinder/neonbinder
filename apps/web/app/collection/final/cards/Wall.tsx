@@ -16,6 +16,7 @@ import { useMediaQuery, useRoving, useWidth } from "../../prototypes/p3/hooks";
 import { blocksOf, buildWall, printRunText, type WallSection } from "../../prototypes/p3/wallModel";
 import { useMyCards } from "./context";
 import QuickAdd from "./QuickAdd";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the wall: one lit tile per card you have, a dashed outline per
@@ -141,16 +142,20 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <button
+        <NeonButton
           type="button"
+          variant="secondary"
+          outline
           onClick={() => api.go("needs", setId)}
-          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-control px-3 text-sm text-ink-2 hover:border-neon-blue hover:text-ink focus-outline sm:min-h-9"
+          className="min-h-11 sm:min-h-9"
         >
           <ListBulletIcon aria-hidden="true" className="size-4" />
           Need list for this set
-        </button>
-        <button
+        </NeonButton>
+        <NeonButton
           type="button"
+          variant="negative"
+          outline
           onClick={() => {
             store.toggleBuilding(setId);
             api.notify(`Took ${setLabel(set)} off the board. Your cards stay put.`, () =>
@@ -158,10 +163,10 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
             );
             api.go("home");
           }}
-          className="inline-flex min-h-11 items-center rounded-md border border-control px-3 text-sm text-ink-2 hover:border-neon-pink hover:text-ink focus-outline sm:min-h-9"
+          className="min-h-11 sm:min-h-9"
         >
           Stop building this set
-        </button>
+        </NeonButton>
       </div>
 
       <QuickAdd setId={setId} onSpot={setSpot} />

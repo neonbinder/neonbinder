@@ -80,7 +80,7 @@ export default function YearForm({
               Retry
             </NeonButton>
           )}
-          <NeonButton cancel onClick={onDone}>
+          <NeonButton variant="negative" onClick={onDone}>
             {hasError ? "Cancel" : "Close"}
           </NeonButton>
         </div>

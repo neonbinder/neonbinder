@@ -3,6 +3,7 @@ import Modal from "../../prototypes/p2/Modal";
 import type { CollectionBinder } from "../store";
 import { binderTeamPicks, defaultLabel, labelOf, sameLabel, validLabel, type BinderLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * "Edit label", from an open binder's cover: restyle its spine. Saving a
@@ -74,19 +75,12 @@ export default function LabelEditorDialog({
           >
             Back to the default
           </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-10 rounded-md border border-control px-4 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink focus-outline"
-          >
+          <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
             Cancel
-          </button>
-          <button
-            type="submit"
-            className="min-h-10 rounded-md bg-neon-green px-4 text-sm font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline"
-          >
+          </NeonButton>
+          <NeonButton type="submit" className="min-h-10">
             Save label
-          </button>
+          </NeonButton>
         </div>
       </form>
     </Modal>

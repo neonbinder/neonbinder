@@ -11,6 +11,7 @@ import {
 import { cardCaption, cardNumberLine } from "../captions";
 import IdTooltip, { IdLines } from "./IdTooltip";
 import type { BinderPocket } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * One sleeve of a nine-pocket page (p2's Pocket, on the consolidated page).
@@ -222,13 +223,15 @@ export default function Pocket({
 
 function AddChip({ label, text, onClick }: { label: string; text: string; onClick: () => void }) {
   return (
-    <button
+    <NeonButton
       type="button"
+      size="1"
+      radius="full"
       aria-label={label}
       onClick={onClick}
-      className="absolute bottom-1 left-1/2 z-[3] flex min-h-6 -translate-x-1/2 items-center rounded-full bg-neon-green px-3 text-xs font-bold text-on-neon-green max-sm:min-h-11 max-sm:px-4 shadow-md hover:bg-neon-green-hover focus-outline"
+      className="absolute bottom-1 left-1/2 z-[3] -translate-x-1/2 shadow-md max-sm:min-h-11"
     >
       {text}
-    </button>
+    </NeonButton>
   );
 }

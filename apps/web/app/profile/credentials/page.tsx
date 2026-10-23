@@ -415,7 +415,7 @@ export default function CredentialsPanel() {
               </NeonButton>
               <NeonButton
                 type="button"
-                destructive
+                variant="negative"
                 onClick={handleClearCredentials}
                 disabled={credsBusy}
                 className="flex-1"
@@ -458,7 +458,7 @@ export default function CredentialsPanel() {
           </NeonButton>
           <NeonButton
             type="button"
-            destructive
+            variant="negative"
             onClick={handleClearCredentials}
             disabled={credsBusy}
             className="flex-1"
@@ -516,7 +516,7 @@ export default function CredentialsPanel() {
           </NeonButton>
           <NeonButton
             type="button"
-            destructive
+            variant="negative"
             onClick={handleClearCredentials}
             disabled={credsBusy}
             className="flex-1"
@@ -611,7 +611,7 @@ export default function CredentialsPanel() {
           {hasStoredCredentials && (
             <NeonButton
               type="button"
-              destructive
+              variant="negative"
               onClick={handleClearCredentials}
               disabled={credsBusy}
               className="flex-1"
@@ -658,7 +658,7 @@ export default function CredentialsPanel() {
           </p>
           <div className="flex gap-3">
             <NeonButton
-              destructive
+              variant="negative"
               type="button"
               onClick={handleConfirmClear}
               disabled={credsBusy}
@@ -671,7 +671,7 @@ export default function CredentialsPanel() {
             </NeonButton>
             <NeonButton
               ref={clearCancelButtonRef}
-              secondary
+              variant="secondary"
               type="button"
               onClick={() => setConfirmingClear(false)}
               disabled={credsBusy}

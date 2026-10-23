@@ -4,6 +4,7 @@ import {
   useReactiveField,
   type ReactiveFieldOptions,
 } from "../forms/useReactiveField";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-44 — the app's shared text input.
@@ -252,19 +253,17 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       variant === "withButton" ? (
         <div className="flex gap-2">
           {control}
-          <button
+          <NeonButton
             type="button"
             onClick={onButtonClick}
-            className={`shrink-0 px-4 py-2 rounded-md text-sm font-medium text-on-neon-green transition-colors focus-outline ${
-              state === "completed"
-                ? "bg-neon-green/70"
-                : state === "disabled"
-                  ? "bg-neon-green/40"
-                  : "bg-neon-green hover:bg-neon-green-hover"
-            }`}
+            aria-disabled={state === "disabled" || undefined}
+            className="shrink-0"
+            // Stretch to the field's height, as the hand-rolled button did;
+            // Radix otherwise fixes the button at its size's height.
+            style={{ height: "auto" }}
           >
             {buttonText}
-          </button>
+          </NeonButton>
         </div>
       ) : (
         control

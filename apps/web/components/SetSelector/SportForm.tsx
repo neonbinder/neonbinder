@@ -66,7 +66,7 @@ export function SportForm({ onDone }: { onDone?: () => void }) {
               Retry
             </NeonButton>
           )}
-          <NeonButton cancel onClick={onDone}>
+          <NeonButton variant="negative" onClick={onDone}>
             {hasError ? "Cancel" : "Close"}
           </NeonButton>
         </div>

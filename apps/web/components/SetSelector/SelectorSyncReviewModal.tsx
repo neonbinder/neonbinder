@@ -553,7 +553,7 @@ export default function SelectorSyncReviewModal({
             <div className="flex gap-2 flex-wrap">
               {foldEqualCount > 0 && (
                 <NeonButton
-                  secondary
+                  variant="secondary"
                   size="2"
                   disabled={saving}
                   onClick={() =>
@@ -565,7 +565,7 @@ export default function SelectorSyncReviewModal({
                 </NeonButton>
               )}
               <NeonButton
-                secondary
+                variant="secondary"
                 size="2"
                 disabled={saving || suggestions.length === 0}
                 onClick={() =>
@@ -587,7 +587,7 @@ export default function SelectorSyncReviewModal({
               </NeonButton>
               <NeonButton
                 ref={closeBtnRef}
-                cancel
+                variant="negative"
                 size="2"
                 disabled={saving}
                 onClick={onClose}

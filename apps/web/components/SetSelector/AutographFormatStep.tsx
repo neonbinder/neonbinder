@@ -342,7 +342,7 @@ export function AutographFormatPrompt({
         {AUTOGRAPH_FORMATS.map((format) => (
           <NeonButton
             key={format}
-            secondary
+            variant="secondary"
             aria-busy={busy === format || undefined}
             aria-disabled={busy !== null || undefined}
             aria-describedby={error ? errorId : undefined}

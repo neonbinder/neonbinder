@@ -1,5 +1,6 @@
 import React from "react";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-44 — the app's shared multi-line text field. The `<textarea>` counterpart
@@ -116,17 +117,14 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
         {labelled}
 
         {variant === "withButton" && (
-          <button
+          <NeonButton
             type="button"
             onClick={onButtonClick}
-            className={`w-full rounded-md px-4 py-2 text-sm font-medium text-on-neon-green transition-colors focus-outline ${
-              state === "disabled"
-                ? "bg-neon-green/40"
-                : "bg-neon-green hover:bg-neon-green-hover"
-            }`}
+            aria-disabled={state === "disabled" || undefined}
+            className="w-full"
           >
             {buttonText}
-          </button>
+          </NeonButton>
         )}
 
         {(helperText || error) && (

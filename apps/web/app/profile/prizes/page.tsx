@@ -690,16 +690,20 @@ export default function PrizesPanel() {
                     alt={`Sports preview ${index + 1}`}
                     className="h-24 w-24 object-cover rounded-md border border-rule-strong"
                   />
-                  <button
+                  <NeonButton
                     type="button"
+                    variant="negative"
+                    size="1"
+                    radius="full"
                     onClick={() =>
                       removeSportsImage(index, editingPrizeId !== null)
                     }
                     aria-label={`Remove sports image ${index + 1}`}
-                    className="absolute -top-2 -right-2 bg-neon-red hover:bg-neon-red-hover text-on-neon-red focus-outline rounded-full w-6 h-6 flex items-center justify-center text-sm"
+                    className="absolute -top-2 -right-2"
+                    style={{ width: 24, padding: 0 }}
                   >
                     <span aria-hidden="true">×</span>
-                  </button>
+                  </NeonButton>
                 </div>
               ))}
             </div>
@@ -716,6 +720,7 @@ export default function PrizesPanel() {
             {isLoading ? "Processing..." : "Update Prize"}
           </NeonButton>
           <NeonButton
+            variant="negative"
             onClick={cancelEditPrize}
             disabled={isLoading}
             className="flex-1"
@@ -843,7 +848,7 @@ export default function PrizesPanel() {
                   </NeonButton>
                   <NeonButton
                     onClick={() => handleDeletePrize(prize._id)}
-                    destructive
+                    variant="negative"
                     disabled={isLoading}
                     className="px-3 py-1 text-sm"
                   >

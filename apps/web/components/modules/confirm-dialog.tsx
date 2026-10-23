@@ -207,7 +207,7 @@ export function ConfirmDialog({
           </div>
         )}
         <div className="flex gap-3">
-          <NeonButton destructive type="button" onClick={onConfirm} disabled={busy}>
+          <NeonButton variant="negative" type="button" onClick={onConfirm} disabled={busy}>
             {/* Label keyed off the SAME condition as `disabled` (NEO-128): the
                 E2E driver cannot read `enabled` on web, so the label is the only
                 evidence that the control is inert. */}
@@ -215,7 +215,7 @@ export function ConfirmDialog({
           </NeonButton>
           <NeonButton
             ref={cancelRef}
-            secondary
+            variant="secondary"
             type="button"
             onClick={onCancel}
             disabled={busy}

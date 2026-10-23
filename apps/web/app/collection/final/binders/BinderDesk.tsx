@@ -3,6 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import Pocket, { type PocketHandlers, type PocketVariant } from "./Pocket";
 import type { PageModel, SlotRef } from "../../prototypes/p2/model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * The open binder (p2's BinderDesk, copied to use this folder's Pocket):
@@ -287,16 +288,18 @@ function TurnButton({
     );
   }
   return (
-    <button
+    <NeonButton
       type="button"
+      variant="secondary"
+      outline
       onClick={onClick}
       disabled={disabled}
       aria-keyshortcuts={back ? "PageUp" : "PageDown"}
-      className="inline-flex min-h-11 flex-1 items-center justify-center gap-1 rounded-xl border border-control bg-field px-3 text-sm font-medium text-ink hover:border-neon-blue hover:text-ink focus-outline disabled:cursor-not-allowed disabled:opacity-40"
+      className="min-h-11 flex-1"
     >
       {back && <Icon aria-hidden="true" className="h-5 w-5" />}
       {label}
       {!back && <Icon aria-hidden="true" className="h-5 w-5" />}
-    </button>
+    </NeonButton>
   );
 }

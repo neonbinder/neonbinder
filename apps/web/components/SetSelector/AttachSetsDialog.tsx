@@ -727,7 +727,7 @@ export default function AttachSetsDialog({
           </div>
           <div className="flex gap-2">
             <NeonButton
-              secondary
+              variant="secondary"
               onClick={onClose}
               aria-label="Cancel attach sets"
             >
@@ -979,14 +979,9 @@ function BreadcrumbButton({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={ariaLabel}
-      className="hit-area-24 text-xs px-2 py-0.5 rounded border border-rule-strong bg-raised text-neon-blue-text hover:border-neon-blue-text focus-outline"
-    >
+    <NeonButton variant="secondary" outline size="1" type="button" onClick={onClick} aria-label={ariaLabel}>
       ‹ {label}
-    </button>
+    </NeonButton>
   );
 }
 
@@ -1129,14 +1124,17 @@ function CandidateRow({
         </div>
       </label>
       {onBrowse && (
-        <button
+        <NeonButton
+          variant="secondary"
+          outline
+          size="1"
           type="button"
           onClick={() => onBrowse(candidate)}
           aria-label={`Browse BSC set ${label}`}
-          className="hit-area-24 shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-rule-strong text-neon-blue-text hover:border-neon-blue-text focus-outline"
+          className="shrink-0 self-start mt-1.5 mr-1"
         >
           Browse ›
-        </button>
+        </NeonButton>
       )}
     </li>
   );

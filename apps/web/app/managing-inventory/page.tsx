@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
 import { BrandMark } from "@/components/primitives/BrandMark";
+import NeonButton from "@/components/modules/NeonButton";
 
 export default function ManagingInventoryPage() {
   const navigate = useNavigate();
@@ -309,9 +310,9 @@ export default function ManagingInventoryPage() {
               Manage your entire inventory from one place and sell across all platforms simultaneously. One upload, total control, maximum reach.
             </p>
             <SignUpButton mode="modal">
-              <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
+              <NeonButton size="3">
                 Get Started
-              </button>
+              </NeonButton>
             </SignUpButton>
           </div>
         </div>

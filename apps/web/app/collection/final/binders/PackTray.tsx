@@ -11,6 +11,7 @@ import IdTooltip, { IdLines } from "./IdTooltip";
 import { lineNames } from "../lineItems";
 import type { CollectionBinder } from "../store";
 import { movableCopies, placesOf, placeWords, resolveTyped, type Place } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * The hunt tray (p2's PackTray, reworked for the consolidated page): a tray
@@ -220,13 +221,14 @@ export default function PackTray(props: PackTrayProps) {
               {notice?.message ?? ""}
             </p>
             {notice?.undo && (
-              <button
+              <NeonButton
                 type="button"
+                variant="secondary"
                 onClick={onUndo}
-                className="min-h-8 rounded-md bg-neon-blue px-3 text-sm font-bold text-on-neon-blue hover:bg-neon-blue-hover focus-outline max-sm:min-h-11"
+                className="max-sm:min-h-11"
               >
                 Undo
-              </button>
+              </NeonButton>
             )}
             {notice && (
               <button
@@ -245,13 +247,15 @@ export default function PackTray(props: PackTrayProps) {
               <p className="min-w-0 flex-1 basis-56 text-sm text-ink">
                 Filling {aimedAt}. Hunt for a card, then press Move here or Put here.
               </p>
-              <button
+              <NeonButton
                 type="button"
+                variant="secondary"
+                outline
                 onClick={onCancelAim}
-                className={`min-h-8 rounded-md border border-control px-3 text-sm text-ink hover:border-ink-2 max-sm:min-h-11 ${FOCUS}`}
+                className="max-sm:min-h-11"
               >
                 Stop filling
-              </button>
+              </NeonButton>
             </div>
           )}
 
@@ -451,8 +455,7 @@ function DragFace({ card, name, lifted }: { card: Card; name: string; lifted: bo
   );
 }
 
-const ACT =
-  "min-h-7 rounded-md px-2 text-xs font-bold max-sm:min-h-11 focus-outline";
+const ACT = "min-h-7 max-sm:min-h-11";
 
 /** An owned card: where every copy lives, and Move here / Add another. */
 function OwnedCard({
@@ -520,38 +523,43 @@ function OwnedCard({
         </ul>
         <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
           {wantMode ? (
-            <button
+            <NeonButton
               ref={buttonRef}
               type="button"
+              size="1"
               onClick={onAdd}
               disabled={wanted}
               aria-label={wanted ? `${label} is on your Want List` : `Want ${label}`}
-              className={`${ACT} bg-neon-green text-on-neon-green hover:bg-neon-green-hover disabled:cursor-default disabled:bg-button-neutral disabled:text-ink-2`}
+              className={ACT}
             >
               {wanted ? "Wanted" : "Want it"}
-            </button>
+            </NeonButton>
           ) : (
             <>
               {moveTo && canMove && (
-                <button
+                <NeonButton
                   ref={buttonRef}
                   type="button"
+                  variant="secondary"
+                  size="1"
                   onClick={onMove}
                   aria-label={`Move here: ${label}, to ${moveTo.name}`}
-                  className={`${ACT} bg-neon-blue text-on-neon-blue hover:bg-neon-blue-hover`}
+                  className={ACT}
                 >
                   Move here
-                </button>
+                </NeonButton>
               )}
-              <button
+              <NeonButton
                 ref={moveTo && canMove ? undefined : buttonRef}
                 type="button"
+                outline
+                size="1"
                 onClick={onAdd}
                 aria-label={`Add another ${label}`}
-                className={`${ACT} border border-neon-green-text text-neon-green-text hover:bg-neon-green hover:text-on-neon-green`}
+                className={ACT}
               >
                 Add another
-              </button>
+              </NeonButton>
             </>
           )}
         </div>
@@ -585,16 +593,17 @@ function TrayCard({
         {cardCaption(card)}
       </p>
       <p className="text-center text-[11px] leading-tight text-ink-2">Need</p>
-      <button
+      <NeonButton
         ref={buttonRef}
         type="button"
+        size="1"
         onClick={onAct}
         disabled={wanted}
         aria-label={wanted ? `${label} is on your Want List` : name}
-        className="min-h-7 w-full rounded-md bg-neon-green px-1 text-xs font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline disabled:cursor-default disabled:bg-button-neutral disabled:text-ink-2 max-sm:min-h-11"
+        className="min-h-7 w-full max-sm:min-h-11"
       >
         {wanted ? "Wanted" : verb}
-      </button>
+      </NeonButton>
     </li>
   );
 }

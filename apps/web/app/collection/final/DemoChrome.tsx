@@ -5,6 +5,7 @@ import { FOCUS } from "../prototypes/p1/ui";
 import DemoThemeToggle from "./DemoThemeToggle";
 import { PUBLIC_DESTINATIONS, useCollectionMode } from "./mode";
 import "./demo-chrome.css";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the demo chrome around the collection page, so whoever is
@@ -79,22 +80,22 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
         >
           Reset demo data
         </button>
+        {/* `lg:hidden` rides on a `contents` wrapper: Radix's button display
+            is unlayered CSS, so a Tailwind `hidden` on the button itself
+            would lose to it. */}
         {isPublic && (
-          <Link
-            to={PUBLIC_DESTINATIONS.signUp}
-            className="inline-flex min-h-10 items-center rounded-md bg-neon-green px-4 text-sm font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline lg:hidden"
-          >
-            {SIGN_UP}
-          </Link>
+          <span className="contents lg:hidden">
+            <NeonButton asChild className="min-h-10">
+              <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
+            </NeonButton>
+          </span>
         )}
         {isPublic && onExit && (
-          <button
-            type="button"
-            onClick={onExit}
-            className={`min-h-10 rounded-md border border-control px-3 text-sm text-ink hover:border-neon-blue lg:hidden ${FOCUS}`}
-          >
-            {EXIT}
-          </button>
+          <span className="contents lg:hidden">
+            <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10">
+              {EXIT}
+            </NeonButton>
+          </span>
         )}
       </div>
     </section>

@@ -645,7 +645,7 @@ export default function SpineLabelPage() {
                       automatically — that genuinely is a new subject. */}
                   <NeonButton
                     type="button"
-                    secondary
+                    variant="secondary"
                     onClick={() => {
                       setTeamQuery("");
                       setColorsTouched(false);
@@ -797,7 +797,7 @@ export default function SpineLabelPage() {
                   </span>
                   <NeonButton
                     type="button"
-                    destructive
+                    variant="negative"
                     onClick={() => removeLabel(label.id)}
                     aria-label={`Remove ${label.name}, ${label.widthIn} inch spine in ${label.font.label}, from the sheet`}
                   >

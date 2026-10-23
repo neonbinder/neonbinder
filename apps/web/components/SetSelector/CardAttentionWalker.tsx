@@ -558,7 +558,7 @@ export default function CardAttentionWalker({
                 </button>
               )}
             </div>
-            <NeonButton ref={closeBtnRef} cancel onClick={onClose}>
+            <NeonButton ref={closeBtnRef} variant="negative" onClick={onClose}>
               {remaining.length === 0 ? "Done (Esc)" : "Close (Esc)"}
             </NeonButton>
           </div>

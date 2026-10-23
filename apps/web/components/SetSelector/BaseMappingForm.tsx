@@ -433,7 +433,7 @@ export default function BaseMappingForm({
             {messageKind !== "nothing" && (
               <NeonButton onClick={doSync}>Retry</NeonButton>
             )}
-            <NeonButton cancel onClick={() => onClose("dismissed")}>
+            <NeonButton variant="negative" onClick={() => onClose("dismissed")}>
               Close
             </NeonButton>
           </div>

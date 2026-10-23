@@ -411,22 +411,24 @@ export function ReviewGrid({
                     />
                     Print
                   </label>
-                  <button
+                  <NeonButton
+                    variant="secondary"
+                    outline
                     type="button"
                     disabled={busy !== null}
                     onClick={() => void swapSides(pair)}
-                    className="rounded border border-rule-strong px-2 py-1 text-sm text-ink-2 hover:bg-hover disabled:opacity-50"
                   >
                     {busy === `swap-${key}` ? "Swapping…" : "Swap sides"}
-                  </button>
-                  <button
+                  </NeonButton>
+                  <NeonButton
+                    variant="secondary"
+                    outline
                     type="button"
                     disabled={busy !== null}
                     onClick={() => void split(pair)}
-                    className="rounded border border-rule-strong px-2 py-1 text-sm text-ink-2 hover:bg-hover disabled:opacity-50"
                   >
                     {busy === key ? "Splitting…" : "Split"}
-                  </button>
+                  </NeonButton>
                 </div>
               </div>
             </li>

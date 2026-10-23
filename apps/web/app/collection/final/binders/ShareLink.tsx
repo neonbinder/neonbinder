@@ -2,6 +2,7 @@ import { useId, useRef, useState } from "react";
 import { LinkIcon } from "@heroicons/react/24/outline";
 import { useCollectionMode } from "../mode";
 import { shareUrl, type ShareTarget } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * "Share": the open view's public link, readable by a human
@@ -45,9 +46,12 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
         }
       }}
     >
-      <button
+      {/* Pink outline at rest, lit pink while the panel is open. */}
+      <NeonButton
         ref={buttonRef}
         type="button"
+        variant="negative"
+        outline={!open}
         aria-expanded={open}
         aria-controls={panelId}
         aria-label={`Share ${what}`}
@@ -57,15 +61,11 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
           setCopied(null);
           if (next) void copy();
         }}
-        className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium focus-outline ${
-          open
-            ? "border-neon-pink bg-neon-pink text-on-neon-pink"
-            : "border-control text-ink hover:border-neon-pink"
-        }`}
+        className="min-h-10"
       >
         <LinkIcon aria-hidden="true" className="h-4 w-4" />
         Share
-      </button>
+      </NeonButton>
       <div
         id={panelId}
         hidden={!open}
@@ -88,13 +88,9 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
             : "Just an example: share links arrive when your real collection does."}
         </p>
         <div className="mt-2 flex gap-2">
-          <button
-            type="button"
-            onClick={() => void copy()}
-            className="min-h-9 rounded-md bg-neon-pink px-3 text-sm font-bold text-on-neon-pink hover:bg-neon-pink-hover focus-outline"
-          >
+          <NeonButton type="button" variant="negative" onClick={() => void copy()} className="min-h-9">
             Copy link
-          </button>
+          </NeonButton>
           <button
             type="button"
             onClick={close}

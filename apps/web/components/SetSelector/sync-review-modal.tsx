@@ -854,7 +854,7 @@ export default function SyncReviewModal({
                     </button>
                   </h3>
                   <NeonButton
-                    secondary
+                    variant="secondary"
                     size="1"
                     onClick={toggleAllFormatting}
                     aria-label={
@@ -1022,7 +1022,7 @@ export default function SyncReviewModal({
                           aria-describedby={
                             orphansOverCap ? "sync-delete-cap" : undefined
                           }
-                          className="h-4 w-4 shrink-0 accent-neon-red aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                          className="h-4 w-4 shrink-0 accent-neon-pink aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                           aria-label={`Delete #${r.cardNumber} ${r.cardName}`}
                         />
                         <label
@@ -1105,7 +1105,7 @@ export default function SyncReviewModal({
             <div className="flex gap-2">
               <NeonButton
                 ref={skipBtnRef}
-                secondary
+                variant="secondary"
                 size="2"
                 disabled={saving}
                 onClick={requestSkip}
@@ -1228,7 +1228,7 @@ export default function SyncReviewModal({
               <div className="flex justify-end gap-2 mt-4">
                 <NeonButton
                   ref={confirmCancelRef}
-                  secondary
+                  variant="secondary"
                   size="2"
                   onClick={() => {
                     setConfirmingDeletes(false);
@@ -1243,7 +1243,7 @@ export default function SyncReviewModal({
                   Cancel
                 </NeonButton>
                 <NeonButton
-                  destructive
+                  variant="negative"
                   size="2"
                   onClick={submit}
                   aria-label={`Confirm deleting ${selectedDeleteIds.length.toLocaleString()} cards`}

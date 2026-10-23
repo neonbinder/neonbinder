@@ -829,15 +829,17 @@ function ReviewRow({
       reason = (
         <span className="flex flex-wrap items-center gap-2 text-neon-pink-text">
           {slReviewCopy.syncFailed(setLabel)}
-          <button
+          <NeonButton
+            variant="primary"
+            outline
+            size="1"
             type="button"
             aria-label={slReviewCopy.retryLabel(setLabel)}
             onClick={() => onRetry(setId)}
             onKeyDown={(e) => activateOnEnter(e, () => onRetry(setId))}
-            className="min-h-6 rounded border border-control px-2 text-xs text-ink-2 hover:border-neon-green-text hover:text-neon-green-text focus-outline"
           >
             {slReviewCopy.retry}
-          </button>
+          </NeonButton>
         </span>
       );
     } else if (phase === "ready" && types.length === 0) {
@@ -1047,15 +1049,17 @@ function BulkBar({
   ) : failed ? (
     <span className="flex flex-wrap items-center gap-2 text-neon-pink-text">
       {slReviewCopy.syncFailed(setLabel)}
-      <button
+      <NeonButton
+        variant="primary"
+        outline
+        size="1"
         type="button"
         aria-label={slReviewCopy.retryLabel(setLabel)}
         onClick={() => onRetry(setId)}
         onKeyDown={(e) => activateOnEnter(e, () => onRetry(setId))}
-        className="min-h-6 rounded border border-control px-2 text-xs text-ink-2 hover:border-neon-green-text hover:text-neon-green-text focus-outline"
       >
         {slReviewCopy.retry}
-      </button>
+      </NeonButton>
     </span>
   ) : phase === "ready" && types.length === 0 ? (
     <span className="text-notice-warn-ink">{slReviewCopy.noTypes(setLabel)}</span>
@@ -1145,7 +1149,7 @@ function BulkBar({
         <NeonButton
           type="button"
           size="1"
-          secondary
+          variant="secondary"
           aria-disabled={selectedCount === 0 || undefined}
           aria-describedby={selectedCount === 0 ? ownReasonId : undefined}
           onClick={() => {
@@ -1925,7 +1929,7 @@ export default function SlSetReviewModal({
               )}
               <NeonButton
                 type="button"
-                secondary
+                variant="secondary"
                 disabled={busy}
                 onClick={onClose}
                 onKeyDown={(e) => activateOnEnter(e, onClose, busy)}

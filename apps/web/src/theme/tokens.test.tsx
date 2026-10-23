@@ -84,7 +84,6 @@ describe("light palette contrast (NEO-356 spec)", () => {
     "neon-orange-text",
     "neon-teal-text",
     "neon-purple-text",
-    "neon-red-text",
   ];
 
   it("text roles reach 4.5:1 on the page, a sheet and a hovered row", () => {
@@ -118,7 +117,7 @@ describe("light palette contrast (NEO-356 spec)", () => {
   });
 
   it("black ink reads on every neon fill", () => {
-    for (const fill of ["neon-green", "neon-pink", "neon-blue", "neon-yellow", "neon-orange", "neon-teal", "neon-purple", "neon-red"] as TokenRole[]) {
+    for (const fill of ["neon-green", "neon-pink", "neon-blue", "neon-yellow", "neon-orange", "neon-teal", "neon-purple"] as TokenRole[]) {
       expect({ fill, ok: contrastRatio("#000000", tokenHex(fill, "light")) >= 4.5 }).toEqual({ fill, ok: true });
     }
   });
@@ -150,6 +149,38 @@ describe("paper", () => {
   it("is white with black ink in both modes", () => {
     for (const mode of ["dark", "light"] as const) {
       expect([TOKENS[mode].paper, TOKENS[mode]["on-paper"]]).toEqual(["#ffffff", "#000000"]);
+    }
+  });
+});
+
+describe("NeonButton's fills (NEO-356)", () => {
+  // primary, secondary, tertiary and negative: green, blue, violet and pink.
+  const FILLS = ["neon-green", "neon-blue", "neon-purple", "neon-pink"] as const;
+
+  for (const [mode, css] of [
+    ["dark", dark],
+    ["light", light],
+  ] as const) {
+    it(`${mode}: black ink reads 4.5:1 on every button fill`, () => {
+      for (const fill of FILLS) {
+        const ratio = contrastRatio("#000000", tokenHex(fill, mode));
+        expect({ fill, ok: ratio >= 4.5 }).toEqual({ fill, ok: true });
+      }
+    });
+
+    it(`${mode}: black ink reads 4.5:1 on the violet fill under the pointer`, () => {
+      // Opaque in both modes: an 85% fade over the black page drops it to ~3.9:1.
+      const hover = cssColorToHex(css["neon-purple-hover"]);
+      expect(contrastRatio("#000000", hover)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  it("violet as text reads 4.5:1 on the page and a card in both modes (the tertiary outline)", () => {
+    for (const mode of ["dark", "light"] as const) {
+      for (const bg of ["surface", "raised"] as TokenRole[]) {
+        const ratio = contrastRatio(tokenHex("neon-purple-text", mode), tokenHex(bg, mode));
+        expect({ mode, bg, ok: ratio >= 4.5 }).toEqual({ mode, bg, ok: true });
+      }
     }
   });
 });

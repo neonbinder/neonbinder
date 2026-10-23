@@ -22,6 +22,7 @@ import {
 } from "../prototypes/p1/ui";
 import { lineNames, lineSummary } from "./lineItems";
 import type { CollectionStore } from "./store";
+import NeonButton from "@/components/modules/NeonButton";
 
 /** What a row's controls do; built once by the list that shows the rows. */
 export interface RowActions {
@@ -80,16 +81,19 @@ function HaveToggle({ pressed, label, onToggle }: { pressed: boolean; label: str
 
 function AddButton({ label, onAdd }: { label: string; onAdd: () => void }) {
   return (
-    <button
+    <NeonButton
       type="button"
+      variant="secondary"
+      outline
+      size="1"
       aria-label={label}
       title="Add another copy"
       onClick={stop(onAdd)}
-      className={`${SLOT_ADD} inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-neon-blue/60 px-2 py-1 text-xs font-semibold text-neon-blue-text hover:border-neon-blue hover:bg-neon-blue/10 ${FOCUS}`}
+      className={`${SLOT_ADD} min-h-8`}
     >
       <PlusIcon aria-hidden="true" className="h-3.5 w-3.5" />
       <span className="max-sm:hidden">Add</span>
-    </button>
+    </NeonButton>
   );
 }
 

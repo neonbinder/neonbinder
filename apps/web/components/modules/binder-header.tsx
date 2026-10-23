@@ -65,7 +65,7 @@ export default function BinderHeader({
               />
             </UserButton.MenuItems>
           </UserButton>
-          <NeonButton cancel onClick={handleSignOut} className="hidden sm:inline-flex">
+          <NeonButton variant="negative" onClick={handleSignOut} className="hidden sm:inline-flex">
             Sign out
           </NeonButton>
         </SignedIn>

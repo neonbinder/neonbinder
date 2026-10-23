@@ -22,6 +22,7 @@ import {
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import NeonButton from "@/components/modules/NeonButton";
 
 const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
   (f) => f.key === "autographed",
@@ -1428,15 +1429,17 @@ export default function CardDetailPanel({
                 <span className="text-sm flex-1 truncate">
                   #{parentCard.cardNumber} {parentCard.cardName}
                 </span>
-                <button
+                <NeonButton
                   ref={clearButtonRef}
                   type="button"
+                  variant="negative"
+                  outline
+                  size="1"
                   onClick={() => void applyVariationParent("")}
-                  className="text-xs px-2 py-1 rounded border border-control hover:bg-hover-raised"
                   aria-label="Clear variation parent"
                 >
                   Clear
-                </button>
+                </NeonButton>
               </div>
             ) : (
               <Input
@@ -1566,7 +1569,7 @@ export default function CardDetailPanel({
                       }}
                       aria-label={`Unlink card from ${link.setLabel}`}
                       title="Remove this card from that set — the card itself is not deleted"
-                      className="px-2 py-0.5 rounded text-neon-red-text hover:bg-neon-red/10 border border-transparent hover:border-neon-red-text/50 shrink-0"
+                      className="px-2 py-0.5 rounded text-neon-pink-text hover:bg-neon-pink/10 border border-transparent hover:border-neon-pink-text/50 shrink-0"
                     >
                       Unlink
                     </button>
@@ -1616,13 +1619,14 @@ export default function CardDetailPanel({
           <span className="text-[10px] text-ink-3">
             Changes save as you leave each field.
           </span>
-          <button
+          <NeonButton
+            type="button"
+            size="1"
             onClick={onClose}
             aria-label="Done editing card"
-            className="px-3 py-1.5 text-xs bg-neon-green text-on-neon-green rounded hover:bg-neon-green-hover font-semibold"
           >
             Done
-          </button>
+          </NeonButton>
         </div>
       </div>
     </div>

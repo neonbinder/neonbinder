@@ -1829,7 +1829,7 @@ describe("PlayerManagement — the detail panel", () => {
       name: "Re-enrich from Wikidata",
     }) as HTMLElement;
     // NEO-356: the role, black on every neon fill in both modes.
-    expect(button.style.color).toBe("var(--on-neon-blue)");
+    expect(button.style.getPropertyValue("--nb-ink")).toBe("var(--on-neon-blue)");
   });
 
   it("queues a re-enrichment and says it is coming", async () => {

@@ -272,7 +272,7 @@ export default function CardDetail({
                   </button>
                   <button
                     type="button"
-                    className={`${QUIET_BUTTON} hover:text-neon-red-text`}
+                    className={`${QUIET_BUTTON} hover:text-neon-pink-text`}
                     aria-label={`Remove ${name}, ${names[i]}`}
                     onClick={() => remove(copy)}
                   >

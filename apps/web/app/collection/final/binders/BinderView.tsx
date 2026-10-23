@@ -6,6 +6,7 @@ import type { OpenView } from "./openView";
 import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine } from "./parts";
 import type { PocketHandlers } from "./Pocket";
 import ShareLink from "./ShareLink";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the one open-binder view of My Binders: the header (back, title,
@@ -67,14 +68,10 @@ export default function BinderView({
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-control px-3 text-sm font-medium text-ink hover:border-neon-blue focus-outline"
-        >
+        <NeonButton type="button" variant="secondary" outline onClick={onBack} className="min-h-10">
           <ArrowLeftIcon aria-hidden="true" className="h-4 w-4" />
           Back to the shelf
-        </button>
+        </NeonButton>
         <div className="flex min-w-0 items-center gap-2">
           <h2
             ref={headingRef}

@@ -1370,7 +1370,7 @@ export function ParallelBuildButton({
       <NeonButton
         ref={triggerRef}
         className={`${fieldClass("build")} max-w-[18rem]`}
-        secondary={!primary}
+        variant={primary ? "primary" : "secondary"}
         onClick={activate}
         onKeyDown={(event) => activateOnEnter(event, activate, blocked)}
         aria-disabled={blocked || undefined}
@@ -1426,7 +1426,7 @@ export function ParallelBuildPlaceholder({
   return (
     <NeonButton
       className="max-w-[18rem]"
-      secondary={!primary}
+      variant={primary ? "primary" : "secondary"}
       aria-disabled
       aria-busy={reasonId ? undefined : true}
       aria-describedby={reasonId}

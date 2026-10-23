@@ -754,7 +754,7 @@ export default function VariantForm({
               {!loading && !showReconciliation && (
                 <div className="flex gap-2">
                   {isError && <NeonButton onClick={doSync}>Retry</NeonButton>}
-                  <NeonButton cancel onClick={onDone}>
+                  <NeonButton variant="negative" onClick={onDone}>
                     {isError ? "Cancel" : "Close"}
                   </NeonButton>
                 </div>

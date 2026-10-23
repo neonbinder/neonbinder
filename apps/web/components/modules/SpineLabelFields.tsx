@@ -66,7 +66,7 @@ export function SpineLabelColors({
           onChange={(e) => onTextChange(e.target.value)}
           className="w-32"
         />
-        <NeonButton type="button" secondary onClick={onInvert}>
+        <NeonButton type="button" variant="secondary" onClick={onInvert}>
           Invert
         </NeonButton>
       </div>

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/primitives/Button";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import {
   cardsInSet,
@@ -202,7 +202,7 @@ const Checklist = forwardRef<
                 spellCheck={false}
               />
             </div>
-            <Button
+            <NeonButton
               type="button"
               variant="primary"
               disabled={blocked || toAdd.length === 0}
@@ -210,7 +210,7 @@ const Checklist = forwardRef<
               className={FOCUS}
             >
               {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Mark ${toAdd.length} as Have` : "Mark as Have")}
-            </Button>
+            </NeonButton>
           </div>
           {range && (
             <div className="space-y-2 text-sm text-ink-2">

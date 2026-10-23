@@ -1,5 +1,4 @@
 // Export all primitive components
-export { Button } from "./Button";
 export { Link } from "./Link";
 export { PullingLogo } from "./PullingLogo";
 export { NeonHeader } from "./NeonHeader";

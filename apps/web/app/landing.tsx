@@ -2,6 +2,7 @@ import { SignInButton, SignUpButton } from "@clerk/clerk-react";
 import { useNavigate } from "react-router";
 import { BrandMark, NeonHeader, PullingLogo } from "../components/primitives";
 import { BindersIcon, NinePocketIcon } from "../components/icons";
+import NeonButton from "@/components/modules/NeonButton";
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -54,9 +55,9 @@ export default function LandingPage() {
             </p>
             <div className="flex gap-4 justify-center">
               <SignInButton mode="modal">
-                <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
+                <NeonButton size="3">
                   Get Started
-                </button>
+                </NeonButton>
               </SignInButton>
             </div>
             <p className="text-lg text-ink-2 mt-6 max-w-2xl mx-auto font-medium">
@@ -258,9 +259,9 @@ export default function LandingPage() {
             </p>
             <div className="flex gap-4 justify-center">
               <SignUpButton mode="modal">
-                <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green-hover text-on-neon-green text-lg font-semibold transition-colors focus-outline">
+                <NeonButton size="3">
                   Create Free Account
-                </button>
+                </NeonButton>
               </SignUpButton>
             </div>
           </div>

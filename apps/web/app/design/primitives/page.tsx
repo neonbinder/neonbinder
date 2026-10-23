@@ -1,6 +1,6 @@
 import React, { useState } from "react";
+import NeonButton from "../../../components/modules/NeonButton";
 import {
-  Button,
   Input,
   Checkbox,
   Switch,
@@ -75,25 +75,49 @@ export default function PrimitivesPage() {
             <h2 className="text-2xl font-semibold text-ink mb-8">
               Button
             </h2>
-            <div className="grid grid-cols-2 gap-8">
-              <div className="space-y-4">
-                <Button variant="default">Continue</Button>
-                <Button variant="primary">Continue</Button>
-                <Button variant="destructive">Destructive</Button>
-                <Button variant="outline">Cancel</Button>
-                <Button variant="subtle">Subtle</Button>
-                <Button variant="ghost">Ghost</Button>
-                <Button variant="link">Link</Button>
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-start gap-3">
+                <NeonButton variant="primary">Continue</NeonButton>
+                <NeonButton variant="secondary">Preview</NeonButton>
+                <NeonButton variant="tertiary">Shuffle</NeonButton>
+                <NeonButton variant="negative">Cancel</NeonButton>
               </div>
-              <div className="space-y-4">
-                <Button variant="withIcon" icon={<span>📧</span>}>
+              <div className="flex flex-wrap items-start gap-3">
+                <NeonButton variant="primary" outline>Continue outlined</NeonButton>
+                <NeonButton variant="secondary" outline>Preview outlined</NeonButton>
+                <NeonButton variant="tertiary" outline>Shuffle outlined</NeonButton>
+                <NeonButton variant="negative" outline>Cancel outlined</NeonButton>
+              </div>
+              <div className="flex flex-wrap items-start gap-3">
+                <NeonButton variant="primary" disabled>Continue disabled</NeonButton>
+                <NeonButton variant="secondary" outline disabled>Preview disabled</NeonButton>
+                <NeonButton variant="primary">
+                  <span aria-hidden="true">📧</span>
                   Login with Email
-                </Button>
-                <Button variant="justIcon">+</Button>
-                <Button variant="justIconCircle">+</Button>
-                <Button variant="loading" isLoading>
+                </NeonButton>
+                <NeonButton variant="primary" disabled>
+                  <span
+                    aria-hidden="true"
+                    className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+                  />
                   Loading
-                </Button>
+                </NeonButton>
+              </div>
+              {/* Not action buttons, so not NeonButton: a text link and an icon button. */}
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  className="rounded-md px-4 py-2 text-sm font-medium text-ink underline-offset-4 hover:underline focus-outline"
+                >
+                  Link
+                </button>
+                <button
+                  type="button"
+                  aria-label="Add"
+                  className="rounded-full p-2 text-ink hover:bg-hover focus-outline"
+                >
+                  +
+                </button>
               </div>
             </div>
           </section>
@@ -290,7 +314,7 @@ export default function PrimitivesPage() {
                   <div className="space-y-4">
                     <Input label="Name" value="Pietro Schirano" readOnly />
                     <Input label="Username" value="@skirano" readOnly />
-                    <Button variant="default">Save changes</Button>
+                    <NeonButton variant="primary">Save changes</NeonButton>
                   </div>
                 </TabsContent>
                 <TabsContent

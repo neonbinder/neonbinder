@@ -749,7 +749,7 @@ function TeamDetail({
               <li key={candidate.url}>
                 <NeonButton
                   type="button"
-                  secondary
+                  variant="secondary"
                   onClick={() => choose(index)}
                   disabled={busy !== null}
                 >
@@ -1104,7 +1104,7 @@ function TeamDetail({
         </NeonButton>
         <NeonButton
           type="button"
-          secondary
+          variant="secondary"
           onClick={discover}
           disabled={busy !== null}
         >

@@ -1490,7 +1490,7 @@ export default function SetSelector() {
                   // only under an Insert type (the server refuses it
                   // elsewhere), so the door is shown only there.
                   selectedVariantTypeId && isInsertTypeSelected ? (
-                    <NeonButton secondary onClick={() => setGroupingOpen(true)}>
+                    <NeonButton variant="secondary" onClick={() => setGroupingOpen(true)}>
                       Group Parallels
                     </NeonButton>
                   ) : undefined
@@ -1552,7 +1552,7 @@ export default function SetSelector() {
                   the quieter secondary. */}
               <NeonButton
                 ref={baseMappingButtonRef}
-                secondary={baseHasMapping}
+                variant={baseHasMapping ? "secondary" : "primary"}
                 onClick={() => setBaseMappingOpen(true)}
               >
                 {baseHasMapping ? "Re-map Base" : "Map Base Set"}
