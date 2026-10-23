@@ -79,10 +79,9 @@ export default function ManufacturerSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
-      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
-      // Same shape as the other columns' selections (YearSelector, ...).
-      selectedColor="bg-[color:light-dark(oklch(96.2%_0.044_156.743),oklch(39.3%_0.095_152.535))] border-green-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-green border-pick-green-rule"
       pinnedEntries={pinnedEntries}
       leadRow={isBrandUnknownRow}
     />

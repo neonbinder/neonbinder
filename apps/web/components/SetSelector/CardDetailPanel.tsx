@@ -1432,7 +1432,7 @@ export default function CardDetailPanel({
                   ref={clearButtonRef}
                   type="button"
                   onClick={() => void applyVariationParent("")}
-                  className="text-xs px-2 py-1 rounded border border-control hover:bg-ink/10"
+                  className="text-xs px-2 py-1 rounded border border-control hover:bg-hover-raised"
                   aria-label="Clear variation parent"
                 >
                   Clear

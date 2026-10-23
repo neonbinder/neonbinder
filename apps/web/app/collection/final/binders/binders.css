@@ -340,18 +340,15 @@
 
 /* The Neon-face lines on My Binders glow in the Collection accent (pink on
    the Want List's cover). A glow means "lit" on black; on paper it is a
-   smudge, so light mode drops it. */
+   smudge, so each is scaled by --glow (app/theme.css), 0 in light. */
 .nb-glow-title {
-  text-shadow: 0 0 18px rgba(0, 194, 255, 0.55), 0 0 2px #00c2ff;
+  text-shadow: 0 0 18px rgb(0 194 255 / calc(0.55 * var(--glow))), 0 0 2px rgb(0 194 255 / var(--glow));
 }
 .nb-glow-blue {
-  text-shadow: 0 0 14px rgba(0, 194, 255, 0.6);
+  text-shadow: 0 0 14px rgb(0 194 255 / calc(0.6 * var(--glow)));
 }
 .nb-glow-pink {
-  text-shadow: 0 0 14px rgba(255, 46, 154, 0.7);
-}
-[data-theme="light"] :is(.nb-glow-title, .nb-glow-blue, .nb-glow-pink) {
-  text-shadow: none;
+  text-shadow: 0 0 14px rgb(255 46 154 / calc(0.7 * var(--glow)));
 }
 
 /* ------------------------------------------------------------ light mode */

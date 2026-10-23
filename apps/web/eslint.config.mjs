@@ -267,10 +267,10 @@ const playwrightFixturesFile = {
 /**
  * NEO-356 — colours are roles (app/theme.css), so light and dark both work.
  * `theme/no-raw-palette` bans palette steps, white/black paint, raw hex and
- * `dark:` in the app's own source; the replacement for each is in
- * src/theme/MIGRATION.md. Its allowlists (PERMANENT: print, physical objects,
- * the forced-dark prototypes; PENDING: not migrated yet) live in
- * scripts/eslint/theme-allowlist.mjs, which the rule reads itself. `.ts` files
+ * `dark:` in the app's own source; DESIGN.md (Colors) names the role to use
+ * instead. Its allowlist (PERMANENT: print, physical objects, the
+ * forced-dark prototypes) lives in scripts/eslint/theme-allowlist.mjs, which
+ * the rule reads itself. `.ts` files
  * are in scope because class constants live in them too, so this block gives
  * them the TypeScript parser.
  */

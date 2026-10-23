@@ -45,7 +45,8 @@ export default function ComingSoon() {
             className="text-3xl font-bold text-neon-blue-text"
             style={{
               fontFamily: "'Lexend', sans-serif",
-              textShadow: "0 0 10px rgba(0, 194, 255, 0.6)",
+              // Scaled by --glow (app/theme.css): lit in dark, none in light.
+              textShadow: "0 0 10px rgb(0 194 255 / calc(0.6 * var(--glow)))",
             }}
           >
             Your Collection Management Hub

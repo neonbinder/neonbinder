@@ -311,7 +311,7 @@ function RailItem({
         onClick={onClick}
         className={`flex min-h-11 w-48 flex-col items-start rounded-lg border px-3 py-2 text-left lg:w-full ${FOCUS} ${
           active
-            ? "border-selection bg-neon-blue/10 text-ink shadow-[0_0_12px_2px_rgba(0,194,255,0.25)]"
+            ? "border-selection bg-neon-blue/10 text-ink shadow-[0_0_12px_2px_rgb(0_194_255/calc(0.25*var(--glow)))]"
             : "border-rule text-ink-2 hover:border-control"
         }`}
       >

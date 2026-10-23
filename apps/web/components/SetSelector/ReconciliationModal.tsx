@@ -614,7 +614,7 @@ function FilterInput({
           type="button"
           onClick={clear}
           aria-label={`Clear ${ariaLabel.toLowerCase()}`}
-          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-ink-3 hover:text-ink hover:bg-rule-strong focus-outline"
+          className="absolute right-0.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-ink-3 hover:text-ink hover:bg-hover-raised focus-outline"
         >
           <span aria-hidden="true">×</span>
         </button>

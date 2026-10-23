@@ -459,7 +459,9 @@ html:root,
  * text keeps it above 4.5:1 at the peak. Still under reduced motion. */
 @keyframes neon-glow-pulse {
   0%, 100% { text-shadow: 0 0 12px transparent; }
-  50%      { text-shadow: 0 0 12px currentColor; }
+  /* Scaled by --glow (app/theme.css): a full halo in dark, none in light,
+   * where a glow on paper is a smudge. */
+  50%      { text-shadow: 0 0 12px color-mix(in srgb, currentColor calc(100% * var(--glow)), transparent); }
 }
 
 .animate-neon-glow {

@@ -17,7 +17,7 @@ export default function ManagingInventoryPage() {
         </button>
         <div className="flex items-center gap-2">
           <BrandMark />
-          <span className="neon-header text-wordmark">Neon Binder</span>
+          <span className="neon-header text-wordmark whitespace-nowrap max-sm:!text-xl">Neon Binder</span>
         </div>
         <div className="w-20" />
       </header>

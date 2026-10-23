@@ -682,7 +682,7 @@ export default function FranchiseManagement() {
                       className={`flex w-full flex-col gap-y-0.5 border-l-2 px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
-                          : "border-transparent text-ink-2 hover:bg-field"
+                          : "border-transparent text-ink-2 hover:bg-list-hover"
                       }`}
                     >
                       <span className="w-full truncate" title={row.name}>

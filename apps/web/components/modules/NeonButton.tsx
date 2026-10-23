@@ -1,5 +1,6 @@
 import { Button, ButtonProps } from "@radix-ui/themes";
 import React, { forwardRef } from "react";
+import { useTheme } from "@/src/theme/ThemeProvider";
 
 interface NeonButtonProps extends ButtonProps {
   cancel?: boolean;
@@ -12,6 +13,7 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
     { cancel = false, secondary = false, children, ...props },
     ref,
   ) {
+    const { mode } = useTheme();
     let colorClass: ButtonProps["color"] = "green";
     if (cancel) {
       colorClass = "pink";
@@ -53,8 +55,19 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
           // button from the tab order entirely, which would make the reason
           // for the disablement unreachable by keyboard. That button still
           // needs the same "this isn't live" visual treatment.
+          //
+          // NEO-356: dark dims the neon (a lit tube switched off); light
+          // swaps it for the neutral button fill and quiet ink, because a
+          // neon fill at 45% on white reads as a pale, still-pressable
+          // button rather than an off one.
           ...(props.disabled || props["aria-disabled"]
-            ? { opacity: 0.45, cursor: "not-allowed" }
+            ? mode === "light"
+              ? {
+                  backgroundColor: "var(--button-neutral)",
+                  color: "var(--ink-3)",
+                  cursor: "not-allowed",
+                }
+              : { opacity: 0.45, cursor: "not-allowed" }
             : null),
           ...props.style,
         }}

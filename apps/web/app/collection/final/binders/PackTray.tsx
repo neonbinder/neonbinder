@@ -526,7 +526,7 @@ function OwnedCard({
               onClick={onAdd}
               disabled={wanted}
               aria-label={wanted ? `${label} is on your Want List` : `Want ${label}`}
-              className={`${ACT} bg-neon-green text-on-neon-green hover:bg-neon-green-hover disabled:cursor-default disabled:bg-rule-strong disabled:text-ink-2`}
+              className={`${ACT} bg-neon-green text-on-neon-green hover:bg-neon-green-hover disabled:cursor-default disabled:bg-button-neutral disabled:text-ink-2`}
             >
               {wanted ? "Wanted" : "Want it"}
             </button>
@@ -591,7 +591,7 @@ function TrayCard({
         onClick={onAct}
         disabled={wanted}
         aria-label={wanted ? `${label} is on your Want List` : name}
-        className="min-h-7 w-full rounded-md bg-neon-green px-1 text-xs font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline disabled:cursor-default disabled:bg-rule-strong disabled:text-ink-2 max-sm:min-h-11"
+        className="min-h-7 w-full rounded-md bg-neon-green px-1 text-xs font-bold text-on-neon-green hover:bg-neon-green-hover focus-outline disabled:cursor-default disabled:bg-button-neutral disabled:text-ink-2 max-sm:min-h-11"
       >
         {wanted ? "Wanted" : verb}
       </button>

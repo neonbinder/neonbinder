@@ -16,7 +16,7 @@ export default function InventoryPage() {
       </p>
       <p
         className="text-neon-yellow-text font-semibold mt-6"
-        style={{ textShadow: "0 0 10px rgba(255, 230, 0, 0.4)" }}
+        style={{ textShadow: "0 0 10px rgb(255 230 0 / calc(0.4 * var(--glow)))" }}
       >
         Stay tuned!
       </p>

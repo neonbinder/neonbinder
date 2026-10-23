@@ -1,7 +1,7 @@
 /**
  * NEO-356 — the theme lint's allowlists stay honest:
- * - PENDING only names files that exist and still need it, so the list can
- *   only shrink, and a migrated file cannot stay excused by accident;
+ * - nothing outside PERMANENT carries a palette class (the same check the
+ *   lint rule makes, run over every file at once);
  * - SHARED_PROTOTYPE_FILES is exactly the set of prototype modules the shipped
  *   demo imports, so a new import cannot hide a light-mode screen behind the
  *   forced-dark prototypes' PERMANENT entry.
@@ -11,20 +11,17 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { WEB_ROOT } from "./no-raw-palette.mjs";
 import { lintedFiles, scanFile, sharedPrototypeFiles } from "./scan-theme.mjs";
-import { isPermanent, PENDING, PERMANENT, SHARED_PROTOTYPE_FILES } from "./theme-allowlist.mjs";
+import { isPermanent, PERMANENT, SHARED_PROTOTYPE_FILES } from "./theme-allowlist.mjs";
 
 describe("theme allowlists", () => {
-  it("PENDING has no duplicates and no permanent file", () => {
-    expect(new Set(PENDING).size).toBe(PENDING.length);
-    expect(PENDING.filter(isPermanent)).toEqual([]);
+  it("no file outside PERMANENT carries a palette class", () => {
+    expect(lintedFiles().filter((rel) => !isPermanent(rel) && scanFile(rel).length > 0)).toEqual([]);
   });
 
-  it("every PENDING file exists", () => {
-    expect(PENDING.filter((rel) => !fs.existsSync(path.join(WEB_ROOT, rel)))).toEqual([]);
-  });
-
-  it("every PENDING file still has palette classes (delete the line once migrated)", () => {
-    expect(PENDING.filter((rel) => scanFile(rel).length === 0)).toEqual([]);
+  it("every PERMANENT entry names something on disk", () => {
+    expect(
+      PERMANENT.filter((pattern) => !fs.existsSync(path.join(WEB_ROOT, pattern.replace(/\/\*\*$/, "")))),
+    ).toEqual([]);
   });
 
   it("every PERMANENT entry still matches something", () => {

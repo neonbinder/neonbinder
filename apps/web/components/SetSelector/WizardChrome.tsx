@@ -132,7 +132,7 @@ export default function WizardChrome({
           data-rail-fill=""
           data-rail-forward={forward ? "true" : "false"}
           className={[
-            "absolute inset-y-0 left-0 bg-neon-green shadow-[0_0_10px_rgba(0,213,88,0.65)]",
+            "absolute inset-y-0 left-0 bg-neon-green shadow-[0_0_10px_rgb(0_213_88/calc(0.65*var(--glow)))]",
             forward
               ? "transition-[width] duration-300 ease-out motion-reduce:transition-none"
               : "transition-none",

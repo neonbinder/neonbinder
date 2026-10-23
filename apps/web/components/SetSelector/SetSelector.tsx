@@ -79,9 +79,9 @@ export default function SetSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={view ? describeByBrand : noDescription}
-      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
-      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
-      selectedColor="bg-[color:light-dark(oklch(94.6%_0.033_307.174),oklch(38.1%_0.176_304.987))] border-purple-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-purple border-pick-purple-rule"
     />
   );
 }

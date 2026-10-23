@@ -395,8 +395,8 @@ cd services/browser && npm start  # Runs on port 8080 (reads .env for GCP creden
 
 ## UI & Styling
 
-- **Theme:** Dark UI with neon accents (90s hobby-shop aesthetic)
-- **Colors:** Primary=Neon Green (#00D558), Cancel=Neon Pink (#FF2E9A), Accent=Blue (#00C2FF) — `apps/web/tailwind.config.js` is the source of truth
+- **Theme:** Two modes, dark (neon on black, the original look) and light ("Trapper Keeper Glo"), picked per user under Profile → Settings (Light / Dark / System). `<html data-theme>` is always `light` or `dark`.
+- **Colors:** Primary=Neon Green (#00D558), Cancel=Neon Pink (#FF2E9A), Accent=Blue (#00C2FF). Components paint with colour **roles** (`bg-raised`, `text-ink-2`, `border-rule`, `text-neon-pink-text`, `bg-pick-blue`, `hover:bg-hover-raised`, …), never palette steps. The source of truth is `apps/web/app/theme.css` (each role set once per mode, mapped to Tailwind colours by its `@theme` block), mirrored as data in `apps/web/src/theme/tokens.ts`; `tailwind.config.js` holds no colours. `DESIGN.md` → Colors lists every role and what it is for. The `theme/no-raw-palette` lint rule refuses grey steps, `text-white`/`bg-black`, raw hex classes and `dark:`; a missing role is added to theme.css, `@theme` and tokens.ts together, never worked around with a `[data-theme=light]` variant.
 - **Font:** Lexend
 - **Components:** Radix UI Themes, Tailwind CSS 4.x
 - **Structure:** `apps/web/components/primitives/` (base), `apps/web/components/modules/` (composed)

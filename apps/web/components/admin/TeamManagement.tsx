@@ -1825,7 +1825,7 @@ export default function TeamManagement() {
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
-                          : "border-transparent text-ink-2 hover:bg-field"
+                          : "border-transparent text-ink-2 hover:bg-list-hover"
                       }`}
                     >
                       <ColorSwatch hex={team.colors?.primary} label="Primary" />

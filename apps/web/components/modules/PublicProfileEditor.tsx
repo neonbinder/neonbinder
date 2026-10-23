@@ -447,7 +447,7 @@ export default function PublicProfileEditor() {
             />
             <label
               htmlFor="pub-photo-input"
-              className="inline-block cursor-pointer px-4 py-2 rounded-md bg-raised border border-rule-strong text-sm text-ink-2 hover:bg-rule-strong transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus"
+              className="inline-block cursor-pointer px-4 py-2 rounded-md bg-raised border border-rule-strong text-sm text-ink-2 hover:bg-hover-raised transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus"
             >
               Choose photo
             </label>
@@ -818,7 +818,7 @@ function MarketplaceUrlHelpDialog({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            className="flex-1 px-4 py-2 rounded-md bg-rule-strong text-ink-2 font-medium hover:bg-rule-strong/80 transition-colors focus-outline"
+            className="flex-1 px-4 py-2 rounded-md bg-button-neutral text-ink-2 font-medium hover:bg-button-neutral-hover transition-colors focus-outline"
           >
             Close
           </button>

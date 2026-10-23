@@ -199,7 +199,7 @@ export default function StaticColumn({
       <button
         ref={collapsedCardRef}
         type="button"
-        className={`w-full text-left ${COLUMN_CARD} flex items-center justify-between gap-3 cursor-pointer text-ink cx-card-hover focus-outline`}
+        className={`w-full text-left ${COLUMN_CARD} flex items-center justify-between gap-3 cursor-pointer text-ink hover:bg-hover-raised focus-outline`}
         aria-label={`${title}: ${selected.name}, change`}
         aria-expanded={false}
         onClick={() => setExpanded(true)}

@@ -5,7 +5,7 @@
  * modules the shipped collection demo imports.
  *
  * Used by theme-allowlist.test.mjs to keep the allowlists honest, and runnable
- * to regenerate the pending list:
+ * to list offenders without ESLint:
  *
  *   node scripts/eslint/scan-theme.mjs           # files the rule would flag
  *   node scripts/eslint/scan-theme.mjs --shared  # prototype files the demo ships

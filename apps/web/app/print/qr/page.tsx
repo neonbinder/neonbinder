@@ -202,10 +202,11 @@ export default function QrCodePage() {
       {generatedUrl && generatedAmount && (
         <div className="flex flex-col items-center gap-6">
           <div
-            className="rounded-2xl p-4 border border-neon-green/30"
-            // White in both modes, never a theme surface: a QR code scans
-            // only as dark modules on a light ground (NEO-356).
-            style={{ background: "#ffffff", boxShadow: "0 0 20px rgba(0, 213, 88, 0.15)" }}
+            // `bg-paper`, white in both modes, never a theme surface: a QR
+            // code scans only as dark modules on a light ground (NEO-356).
+            // The halo is scaled by --glow, so light drops it.
+            className="rounded-2xl p-4 border border-neon-green/30 bg-paper"
+            style={{ boxShadow: "0 0 20px rgb(0 213 88 / calc(0.15 * var(--glow)))" }}
           >
             <QrCodeSvg
               ref={svgRef}

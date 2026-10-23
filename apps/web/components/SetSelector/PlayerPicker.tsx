@@ -110,7 +110,7 @@ const HIGHLIGHT_ALPHA = 0.2;
 
 /**
  * Every surface a result row can sit on in a mode. The popover is `bg-raised`,
- * a row under the pointer is `hover:bg-rule-strong`, and the ArrowDown row adds
+ * a row under the pointer is `hover:bg-hover-raised`, and the ArrowDown row adds
  * the green highlight over the popover. Read from the theme's own values
  * (src/theme/tokens.ts), so a change to a role cannot leave this stale.
  */
@@ -118,7 +118,7 @@ function rowSurfaces(mode: ThemeMode): string[] {
   const raised = tokenHex("raised", mode);
   return [
     raised,
-    tokenHex("rule-strong", mode),
+    tokenHex("hover-raised", mode),
     composite(raised, HIGHLIGHT_TINT, HIGHLIGHT_ALPHA),
   ];
 }
@@ -589,7 +589,7 @@ export default function PlayerPicker({
       {value.map((id) => (
         <span
           key={id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rule-strong text-xs"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-chip text-xs"
         >
           <span
             className="truncate max-w-[140px]"
@@ -745,7 +745,7 @@ export default function PlayerPicker({
                   className={`w-full text-left px-2 py-1 text-sm rounded ${
                     idx === highlightIdx
                       ? "bg-neon-green/20 text-neon-green-text"
-                      : "hover:bg-rule-strong"
+                      : "hover:bg-hover-raised"
                   }`}
                 >
                   {m.name}
@@ -815,7 +815,7 @@ export default function PlayerPicker({
                   className={`w-full text-left px-2 py-1 text-sm rounded border-t border-rule-strong ${
                     highlightIdx === matches.length
                       ? "bg-neon-green/20 text-neon-green-text"
-                      : "hover:bg-rule-strong"
+                      : "hover:bg-hover-raised"
                   }`}
                 >
                   {creating ? "Creating…" : `+ Create "${query.trim()}"`}

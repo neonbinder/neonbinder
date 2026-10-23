@@ -20,7 +20,6 @@ import {
   type CardFeature,
   type Copy,
 } from "../_shared/data";
-import "./ui.css";
 import { useTheme } from "@/src/theme/ThemeProvider";
 import { surfaceHex, type SurfaceRole } from "@/src/theme/tokens";
 
@@ -37,30 +36,31 @@ export const COLUMN_CARD = "bg-raised p-6 rounded-lg shadow shadow-offset";
 export const COLUMN_WIDTH =
   "min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0";
 
-export const ROW_IDLE = "cx-row";
+/** An idle row: a tile on the column card (`row` roles, app/theme.css). */
+export const ROW_IDLE = "bg-row border-row-rule hover:bg-row-hover";
 export const HIGHLIGHT_STROKE =
-  "ring-2 ring-inset ring-neon-green-text shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] outline-2 -outline-offset-2 outline-transparent";
+  "ring-2 ring-inset ring-neon-green-text shadow-[inset_0_0_14px_rgb(0_213_88/calc(0.28*var(--glow)))] outline-2 -outline-offset-2 outline-transparent";
 export const HIGHLIGHT_TINT = "bg-neon-green/20 border-neon-green-text";
 export const DESCRIPTION_TONE = "text-sm text-ink-2";
 
-/** Each column's selected fill, as in the admin cascade (./ui.css draws both
- * modes: the dark `*-900` fill, or a pale tint of the hue in light). */
+/** Each column's selected row, as in the admin cascade: the column's hued
+ * fill and edge (`pick-*` roles) and, in light, the selection edge. */
 export const SELECTED = {
-  sport: "cx-pick cx-hue-pink",
-  year: "cx-pick cx-hue-blue",
-  brand: "cx-pick cx-hue-green",
-  set: "cx-pick cx-hue-purple",
-  variantType: "cx-pick cx-hue-orange",
-  variant: "cx-pick cx-hue-teal",
+  sport: "bg-pick-pink border-pick-pink-rule selection-edge",
+  year: "bg-pick-blue border-pick-blue-rule selection-edge",
+  brand: "bg-pick-green border-pick-green-rule selection-edge",
+  set: "bg-pick-purple border-pick-purple-rule selection-edge",
+  variantType: "bg-pick-orange border-pick-orange-rule selection-edge",
+  variant: "bg-pick-teal border-pick-teal-rule selection-edge",
 } as const;
 
-/** CardChecklistItem's attribute badges (./ui.css draws both modes). */
+/** CardChecklistItem's attribute badges: fill, edge and ink of one hue. */
 export const FEATURE_BADGE: Record<CardFeature | "NUM", { label: string; cls: string }> = {
-  RC: { label: "RC", cls: "cx-badge cx-hue-amber" },
-  AU: { label: "AU", cls: "cx-badge cx-hue-purple" },
-  Relic: { label: "RELIC", cls: "cx-badge cx-hue-pink" },
-  SP: { label: "SP", cls: "cx-badge cx-hue-red" },
-  NUM: { label: "#'d", cls: "cx-badge cx-hue-emerald" },
+  RC: { label: "RC", cls: "bg-pick-amber border-pick-amber-rule text-pick-amber-ink" },
+  AU: { label: "AU", cls: "bg-pick-purple border-pick-purple-rule text-pick-purple-ink" },
+  Relic: { label: "RELIC", cls: "bg-pick-pink border-pick-pink-rule text-pick-pink-ink" },
+  SP: { label: "SP", cls: "bg-pick-red border-pick-red-rule text-pick-red-ink" },
+  NUM: { label: "#'d", cls: "bg-pick-emerald border-pick-emerald-rule text-pick-emerald-ink" },
 };
 
 /** PlayerManagement's select. */

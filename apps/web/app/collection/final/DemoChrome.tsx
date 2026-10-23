@@ -48,7 +48,7 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
       className="flex flex-col gap-3 rounded-xl border border-neon-yellow/50 bg-neon-yellow/[0.06] px-4 py-3 focus:outline-none sm:flex-row sm:items-center sm:justify-between"
     >
       <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:gap-3">
-        <span className="mt-0.5 inline-flex shrink-0 -rotate-2 items-center gap-1.5 rounded-sm bg-neon-yellow px-2 py-0.5 text-sm font-bold text-on-neon-yellow shadow-[0_0_10px_rgba(255,230,0,0.35)]">
+        <span className="mt-0.5 inline-flex shrink-0 -rotate-2 items-center gap-1.5 rounded-sm bg-neon-yellow px-2 py-0.5 text-sm font-bold text-on-neon-yellow shadow-[0_0_10px_rgb(255_230_0/calc(0.35*var(--glow)))]">
           <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-on-neon-yellow/70" />
           Demo binder
         </span>

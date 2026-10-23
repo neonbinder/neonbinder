@@ -99,8 +99,8 @@ tester.run("theme/no-raw-palette", themePlugin.rules["no-raw-palette"], {
       errors: [{ messageId: "banned" }, { messageId: "banned" }],
     },
     {
-      // A prototype module the shipped demo imports is never PERMANENT: once
-      // it is off PENDING (types.ts never needed to be on it), it is checked.
+      // A prototype module the shipped demo imports is never PERMANENT, so
+      // it is checked.
       filename: path.join(WEB_ROOT, "app/collection/prototypes/_shared/types.ts"),
       code: `const x = "text-white";`,
       errors: [{ messageId: "banned" }],

@@ -31,11 +31,11 @@ export default function LandingPage() {
       <header className="sticky top-0 z-10 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center">
         <div className="flex items-center gap-2">
           <BrandMark />
-          <span className="neon-header text-wordmark">Neon Binder</span>
+          <span className="neon-header text-wordmark whitespace-nowrap max-sm:!text-xl">Neon Binder</span>
         </div>
         <div className="flex items-center gap-3">
           <SignInButton mode="modal">
-            <button className="px-4 py-2 rounded-md bg-raised border border-control text-ink hover:bg-hover focus-outline transition-colors">
+            <button className="px-4 py-2 rounded-md bg-button-neutral text-ink hover:bg-button-neutral-hover focus-outline transition-colors">
               Sign In
             </button>
           </SignInButton>

@@ -102,28 +102,30 @@ type CardChecklistItemProps = {
 };
 
 /**
- * Map raw attribute tokens to display-friendly badge content.
+ * Map raw attribute tokens to display-friendly badge content. Each attribute
+ * wears one hue's fill, edge and ink (`pick-*` roles, app/theme.css), the same
+ * family the collection demo's badges use.
  * "unmatched-bsc" / "unmatched-sl" indicate cards that only appeared on
  * one side during reconciliation — surfaced to the user as a review tag.
  */
 function badgeLabel(token: string): { label: string; cls: string } {
   switch (token) {
     case "RC":
-      return { label: "RC", cls: "bg-notice-warn-bg text-notice-warn-ink border-notice-warn-rule" };
+      return { label: "RC", cls: "bg-pick-amber text-pick-amber-ink border-pick-amber-rule" };
     case "AU":
-      return { label: "AU", cls: "bg-neon-purple/15 text-neon-purple-text border-neon-purple-text/50" };
+      return { label: "AU", cls: "bg-pick-purple text-pick-purple-ink border-pick-purple-rule" };
     case "RELIC":
-      return { label: "RELIC", cls: "bg-neon-pink/15 text-neon-pink-text border-neon-pink-text/50" };
+      return { label: "RELIC", cls: "bg-pick-pink text-pick-pink-ink border-pick-pink-rule" };
     case "SP":
     case "SSP":
-      return { label: token, cls: "bg-notice-danger-bg text-notice-danger-ink border-notice-danger-rule" };
+      return { label: token, cls: "bg-pick-red text-pick-red-ink border-pick-red-rule" };
     case "NUM":
-      return { label: "#'d", cls: "bg-notice-success-bg text-notice-success-ink border-notice-success-rule" };
+      return { label: "#'d", cls: "bg-pick-emerald text-pick-emerald-ink border-pick-emerald-rule" };
     case "unmatched-bsc":
     case "unmatched-sl":
-      return { label: token === "unmatched-bsc" ? "SL only" : "BSC only", cls: "bg-neon-orange/15 text-neon-orange-text border-neon-orange-text/50" };
+      return { label: token === "unmatched-bsc" ? "SL only" : "BSC only", cls: "bg-pick-orange/40 text-pick-orange-ink border-pick-orange-rule" };
     default:
-      return { label: token, cls: "bg-ink/10 text-ink-2 border-control" };
+      return { label: token, cls: "bg-chip text-ink-2 border-control" };
   }
 }
 
@@ -279,7 +281,7 @@ export default function CardChecklistItem({
   return (
     <div
       onClick={() => onEdit(card._id)}
-      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md hover:bg-ink/5 group cursor-pointer ${
+      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md hover:bg-list-hover-raised group cursor-pointer ${
         isVariation ? "ml-8 border-l-2 border-l-control" : ""
       } ${
         isSelected
@@ -386,7 +388,7 @@ export default function CardChecklistItem({
       <div className="flex gap-1 shrink-0 items-center flex-wrap justify-end">
         {card.platformData.sportlots && (
           <span
-            className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2"
+            className="text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2"
             title={
               sourceLabelMaps?.sportlots[card.platformData.sportlots.src ?? ""]
                 ? `SL source: ${sourceLabelMaps.sportlots[card.platformData.sportlots.src!]}`
@@ -398,7 +400,7 @@ export default function CardChecklistItem({
         )}
         {card.platformData.bsc && (
           <span
-            className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2"
+            className="text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2"
             title={
               sourceLabelMaps?.bsc[card.platformData.bsc.src ?? ""]
                 ? `BSC source: ${sourceLabelMaps.bsc[card.platformData.bsc.src!]}`

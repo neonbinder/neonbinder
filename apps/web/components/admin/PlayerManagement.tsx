@@ -238,19 +238,20 @@ function primaryTeamId(
  * collector recognises it before they have finished reading the word.
  *
  * These are the two backgrounds a row is ever painted on, per mode (NEO-356).
- * The idle row is measured against its WORST background: in dark that is the
- * hover fill (`hover:bg-field`, slate-900), the lightest an unselected row ever
- * gets, so a light colour that clears 4.5:1 there clears it everywhere else on
- * the row; in light it is the page surface under the list, darker than the
- * white hover fill. The selected row is `bg-neon-blue/10` (#00C2FF at 10%)
+ * The idle row is measured against its WORST background, the hover fill
+ * (`hover:bg-list-hover`): in dark (slate-900) it is the lightest an unselected
+ * row ever gets, so a light colour that clears 4.5:1 there clears it
+ * everywhere else on the row; in light (#f0f2f9) it is darker than the page
+ * under the list. The selected row is `bg-neon-blue/10` (#00C2FF at 10%)
  * composited over the page, worked out once here rather than guessed at,
  * because the selected row is measurably different and a colour can pass on
  * one row and fail on the other.
  */
 function rowBackgrounds(mode: ThemeMode): { idle: string; selected: string } {
-  return mode === "dark"
-    ? { idle: surfaceHex("field", mode), selected: "#02192e" }
-    : { idle: surfaceHex("surface", mode), selected: "#def3fc" };
+  return {
+    idle: surfaceHex("list-hover", mode),
+    selected: mode === "dark" ? "#02192e" : "#def3fc",
+  };
 }
 
 /** WCAG 2.2 SC 1.4.3 for text this size. Not a readout, a gate — this is UI. */
@@ -2667,7 +2668,7 @@ export default function PlayerManagement() {
                       className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
                           ? "border-selection bg-neon-blue/10 text-neon-blue-text"
-                          : "border-transparent text-ink-2 hover:bg-field"
+                          : "border-transparent text-ink-2 hover:bg-list-hover"
                       }`}
                     >
                       {/* NEO-235 — the row answers "which of the people with

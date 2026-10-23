@@ -188,13 +188,14 @@ function focusAdjacentColumn(
  *   -900 fill and the idle row; deepened in light, where `#00D558` is under
  *   2:1 on white (WCAG 1.4.11).
  * - Dark only, a faint inner glow, so the row reads as a lit tube rather than
- *   a boxed one (light drops it: on paper a glow is a smudge). Static,
- *   never animated (NEO-85: nothing moves under a coordinate-tap driver).
+ *   a boxed one (scaled by `--glow`, which is 0 in light: on paper a glow is
+ *   a smudge). Static, never animated (NEO-85: nothing moves under a
+ *   coordinate-tap driver).
  * - A transparent outline, which Windows High Contrast paints in a system
  *   colour where it drops box-shadows (and so the ring) entirely.
  */
 const HIGHLIGHT_STROKE =
-  "ring-2 ring-inset ring-neon-green-text shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] [[data-theme=light]_&]:shadow-none outline-2 -outline-offset-2 outline-transparent";
+  "ring-2 ring-inset ring-neon-green-text shadow-[inset_0_0_14px_rgb(0_213_88/calc(0.28*var(--glow)))] outline-2 -outline-offset-2 outline-transparent";
 const HIGHLIGHT_TINT =
   "bg-neon-green/20 border-neon-green-text";
 /**
@@ -211,19 +212,19 @@ const TWIN_SUFFIX = "text-xs font-normal tabular-nums opacity-75";
  * fills or the idle gray-700 row (~4:1). gray-300 clears 6.5:1 on all of them.
  */
 const DESCRIPTION_TONE = "text-sm text-ink-2";
-const ROW_IDLE =
-  "bg-ink/10 border-control hover:bg-ink/15";
+/** An idle row: a tile on the column card (`row` roles, app/theme.css). */
+const ROW_IDLE = "bg-row border-row-rule hover:bg-row-hover";
 /**
- * NEO-356 — the committed selection's line, light mode only. Dark draws the
- * selection as the column's own neon-tinted fill (unchanged); on paper a
- * tint alone is a colour-only mark (WCAG 1.4.1), so light adds a 2px inset
- * line in the selection colour. Inset for the same reason as the highlight
- * stroke (the listbox clips an outer ring). The highlight stroke replaces it
- * while the highlight sits on the selected row, so the two never fight over
- * the ring colour.
+ * NEO-356 — the committed selection's line. Dark draws the selection as the
+ * column's own hued fill (unchanged) and the line is transparent; on paper a
+ * tint alone is a colour-only mark (WCAG 1.4.1), so light draws a 4px edge
+ * down the row's left in the selection colour (`selection-edge`,
+ * app/theme.css). It is a different SHAPE from the highlight's full ring, so
+ * "selected" and "where Enter lands" read apart by more than colour, and the
+ * two compose when the highlight sits on the selected row. Inset, like the
+ * stroke: the listbox clips anything outside a row.
  */
-const SELECTED_LINE =
-  "[[data-theme=light]_&]:ring-2 [[data-theme=light]_&]:ring-inset [[data-theme=light]_&]:ring-selection";
+const SELECTED_LINE = "selection-edge";
 
 /**
  * NEO-224 — what each column's polite region says about its filter. The
@@ -776,7 +777,7 @@ function EntitySelector({
         // own page region. With the role gone, an `aria-label` on this plain
         // div would be a prohibited attribute, so it went too.
         <div className="space-y-2" aria-hidden="true">
-          <div className="h-[50px] rounded-md border border-control bg-ink/10" />
+          <div className="h-[50px] rounded-md border border-row-rule bg-row" />
         </div>
       ) : (
         // NEO-341: no wrapper any more. The listbox carries `popupId` itself
@@ -846,12 +847,8 @@ function EntitySelector({
                         : isHighlighted
                           ? HIGHLIGHT_TINT
                           : ROW_IDLE
-                    }${
-                      isHighlighted
-                        ? ` ${HIGHLIGHT_STROKE}`
-                        : isSelected
-                          ? ` ${SELECTED_LINE}`
-                          : ""
+                    }${isSelected ? ` ${SELECTED_LINE}` : ""}${
+                      isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""
                     }${
                       // A pinned view is a lens on the column, not one of its
                       // rows: the same row geometry with a rail in the accent
@@ -873,12 +870,12 @@ function EntitySelector({
                         </>
                       )}
                       {showPills && pd?.sportlots && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2">
+                        <span className="text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2">
                           SL
                         </span>
                       )}
                       {showPills && pd?.bsc && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-ink/15 text-ink-2">
+                        <span className="text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2">
                           BSC
                         </span>
                       )}

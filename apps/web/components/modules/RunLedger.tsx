@@ -93,16 +93,21 @@ export function RunGlyph({
  * so the whole strip is `aria-hidden`; a slot's `title` repeats its line for
  * a pointer. The Base-parallels section's pre-run strip (NEO-321) draws the
  * same sleeves the run then fills.
+ *
+ * Every tone is a role, and every edge clears 3:1 on the build banner
+ * (`notice-info-bg`) in both modes: an empty sleeve is the line alone, so a
+ * pale line is an invisible sleeve. Waiting is an empty sleeve in the accent
+ * blue; blocked and unfinished share the warning ink, filled and empty.
  */
 export const SLEEVE_TONE: Record<RunLineKind, string> = {
-  waiting: "border-blue-500 bg-transparent",
+  waiting: "border-neon-blue-text bg-transparent",
   building: "border-neon-blue bg-neon-blue/40 motion-safe:animate-pulse",
   built: "border-neon-green-text bg-neon-green",
   skipped: "border-notice-info-rule bg-notice-info-rule/40",
-  blocked: "border-notice-warn-rule bg-amber-400",
+  blocked: "border-notice-warn-ink bg-notice-warn-ink",
   stopped: "border-notice-info-rule bg-notice-info-rule/40",
   failed: "border-neon-pink-text bg-neon-pink",
-  unfinished: "border-notice-warn-rule bg-transparent",
+  unfinished: "border-notice-warn-ink bg-transparent",
 };
 
 export type SleeveItem = { key: string; kind: RunLineKind; title: string };

@@ -304,7 +304,7 @@ function CardDiffRow({
                     </span>
                   )}
                   {f.foldEqual && (
-                    <span className="rounded px-1.5 py-0.5 bg-rule-strong text-ink-2">
+                    <span className="rounded px-1.5 py-0.5 bg-chip text-ink-2">
                       formatting
                     </span>
                   )}
@@ -769,7 +769,7 @@ export default function SyncReviewModal({
                               className={`text-xs rounded px-2 py-1.5 ${
                                 chosen === o.value
                                   ? "bg-notice-info-bg text-ink ring-2 ring-selection"
-                                  : "bg-rule-strong/60 text-ink-2"
+                                  : "bg-chip/60 text-ink-2"
                               }`}
                             >
                               {/* A non-colour cue for the state the ring/hue

@@ -49,10 +49,60 @@ export type TokenRole =
   | "notice-success-ink"
   | "pip-owned"
   | "pip-want"
-  | "spot";
+  | "spot"
+  | "row"
+  | "row-rule"
+  | "row-hover"
+  | "hover-raised"
+  | "list-hover"
+  | "chip"
+  | "chip-strong"
+  | "button-neutral"
+  | "button-neutral-hover"
+  | "selection-line"
+  | "paper"
+  | "on-paper"
+  | "pick-pink"
+  | "pick-pink-rule"
+  | "pick-pink-ink"
+  | "pick-blue"
+  | "pick-blue-rule"
+  | "pick-blue-ink"
+  | "pick-green"
+  | "pick-green-rule"
+  | "pick-green-ink"
+  | "pick-purple"
+  | "pick-purple-rule"
+  | "pick-purple-ink"
+  | "pick-orange"
+  | "pick-orange-rule"
+  | "pick-orange-ink"
+  | "pick-teal"
+  | "pick-teal-rule"
+  | "pick-teal-ink"
+  | "pick-amber"
+  | "pick-amber-rule"
+  | "pick-amber-ink"
+  | "pick-red"
+  | "pick-red-rule"
+  | "pick-red-ink"
+  | "pick-emerald"
+  | "pick-emerald-rule"
+  | "pick-emerald-ink";
 
 /** The surfaces a piece of text can sit on. */
-export type SurfaceRole = "surface" | "raised" | "raised-deep" | "sheet" | "field" | "hover";
+export type SurfaceRole =
+  | "surface"
+  | "raised"
+  | "raised-deep"
+  | "sheet"
+  | "field"
+  | "hover"
+  | "row"
+  | "row-hover"
+  | "hover-raised"
+  | "list-hover"
+  | "chip";
 
 const NEON_FILLS = {
   "neon-green": "#00d558",
@@ -98,6 +148,45 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "pip-owned": "#00c2ff",
     "pip-want": "#ffe600",
     spot: "#ffe600",
+    "row": "oklch(37.3% 0.034 259.733)",
+    "row-rule": "oklch(44.6% 0.03 256.802)",
+    "row-hover": "oklch(44.6% 0.03 256.802)",
+    "hover-raised": "oklch(37.3% 0.034 259.733)",
+    "list-hover": "oklch(20.8% 0.042 265.755)",
+    "chip": "oklch(37.3% 0.034 259.733)",
+    "chip-strong": "oklch(44.6% 0.03 256.802)",
+    "button-neutral": "oklch(37.2% 0.044 257.287)",
+    "button-neutral-hover": "oklch(44.6% 0.043 257.281)",
+    "selection-line": "transparent",
+    "paper": "#ffffff",
+    "on-paper": "#000000",
+    "pick-pink": "oklch(40.8% 0.153 2.432)",
+    "pick-pink-rule": "oklch(52.5% 0.223 3.958)",
+    "pick-pink-ink": "oklch(82.3% 0.12 346.018)",
+    "pick-blue": "oklch(37.9% 0.146 265.522)",
+    "pick-blue-rule": "oklch(48.8% 0.243 264.376)",
+    "pick-blue-ink": "oklch(80.9% 0.105 251.813)",
+    "pick-green": "oklch(39.3% 0.095 152.535)",
+    "pick-green-rule": "oklch(52.7% 0.154 150.069)",
+    "pick-green-ink": "oklch(87.1% 0.15 154.449)",
+    "pick-purple": "oklch(38.1% 0.176 304.987)",
+    "pick-purple-rule": "oklch(49.6% 0.265 301.924)",
+    "pick-purple-ink": "oklch(82.7% 0.119 306.383)",
+    "pick-orange": "oklch(40.8% 0.123 38.172)",
+    "pick-orange-rule": "oklch(55.3% 0.195 38.402)",
+    "pick-orange-ink": "oklch(83.7% 0.128 66.29)",
+    "pick-teal": "oklch(38.6% 0.063 188.416)",
+    "pick-teal-rule": "oklch(51.1% 0.096 186.391)",
+    "pick-teal-ink": "oklch(85.5% 0.138 181.071)",
+    "pick-amber": "oklch(41.4% 0.112 45.904)",
+    "pick-amber-rule": "oklch(55.5% 0.163 48.998)",
+    "pick-amber-ink": "oklch(87.9% 0.169 91.605)",
+    "pick-red": "oklch(39.6% 0.141 25.723)",
+    "pick-red-rule": "oklch(50.5% 0.213 27.518)",
+    "pick-red-ink": "oklch(80.8% 0.114 19.571)",
+    "pick-emerald": "oklch(37.8% 0.077 168.94)",
+    "pick-emerald-rule": "oklch(50.8% 0.118 165.612)",
+    "pick-emerald-ink": "oklch(84.5% 0.143 164.978)",
   },
   light: {
     surface: "#f7f8fc",
@@ -131,6 +220,45 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "pip-owned": "#006da6",
     "pip-want": "#a36a00",
     spot: "#b86a00",
+    "row": "#ffffff",
+    "row-rule": "#bcb9cf",
+    "row-hover": "#f0f2f9",
+    "hover-raised": "#f0f2f9",
+    "list-hover": "#f0f2f9",
+    "chip": "#e8eaf2",
+    "chip-strong": "#dde0ea",
+    "button-neutral": "#e8eaf2",
+    "button-neutral-hover": "#dde0ea",
+    "selection-line": "#006da6",
+    "paper": "#ffffff",
+    "on-paper": "#000000",
+    "pick-pink": "oklch(94.8% 0.028 342.258)",
+    "pick-pink-rule": "oklch(52.5% 0.223 3.958)",
+    "pick-pink-ink": "oklch(45.9% 0.187 3.815)",
+    "pick-blue": "oklch(93.2% 0.032 255.585)",
+    "pick-blue-rule": "oklch(48.8% 0.243 264.376)",
+    "pick-blue-ink": "oklch(42.4% 0.199 265.638)",
+    "pick-green": "oklch(96.2% 0.044 156.743)",
+    "pick-green-rule": "oklch(52.7% 0.154 150.069)",
+    "pick-green-ink": "oklch(44.8% 0.119 151.328)",
+    "pick-purple": "oklch(94.6% 0.033 307.174)",
+    "pick-purple-rule": "oklch(49.6% 0.265 301.924)",
+    "pick-purple-ink": "oklch(43.8% 0.218 303.724)",
+    "pick-orange": "oklch(95.4% 0.038 75.164)",
+    "pick-orange-rule": "oklch(55.3% 0.195 38.402)",
+    "pick-orange-ink": "oklch(47% 0.157 37.304)",
+    "pick-teal": "oklch(95.3% 0.051 180.801)",
+    "pick-teal-rule": "oklch(51.1% 0.096 186.391)",
+    "pick-teal-ink": "oklch(43.7% 0.078 188.216)",
+    "pick-amber": "oklch(96.2% 0.059 95.617)",
+    "pick-amber-rule": "oklch(55.5% 0.163 48.998)",
+    "pick-amber-ink": "oklch(47.3% 0.137 46.201)",
+    "pick-red": "oklch(93.6% 0.032 17.717)",
+    "pick-red-rule": "oklch(50.5% 0.213 27.518)",
+    "pick-red-ink": "oklch(44.4% 0.177 26.899)",
+    "pick-emerald": "oklch(95% 0.052 163.051)",
+    "pick-emerald-rule": "oklch(50.8% 0.118 165.612)",
+    "pick-emerald-ink": "oklch(43.2% 0.095 166.913)",
   },
 };
 

@@ -507,7 +507,7 @@ function DraggableRow({
           </span>
         )}
         {!isMovable && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rule-strong text-ink-2 border border-control">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-chip text-ink-2 border border-control">
             has parallels
           </span>
         )}

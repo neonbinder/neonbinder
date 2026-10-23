@@ -5,7 +5,7 @@
  * A palette class (`bg-gray-900`, `text-white`, `ring-[#00C2FF]`) is one fixed
  * colour, so it cannot follow the light/dark mode; `dark:` is how the old
  * bi-themed pairs were written, and their light halves were never maintained.
- * The replacement for each is in src/theme/MIGRATION.md.
+ * DESIGN.md (Colors) names the role to use instead.
  *
  * Checked: every string literal and template-literal chunk in app/,
  * components/, src/ and lib/ (.ts and .tsx, tests excluded), split into
@@ -24,14 +24,12 @@
  * rule's options per matching config block, so a second `no-restricted-syntax`
  * block for the same files would silently drop NEO-44's raw-input selectors.
  *
- * Allowlists (scripts/eslint/theme-allowlist.mjs): PERMANENT (physical
- * objects and print, plus the forced-dark NEO-350 prototypes) and PENDING
- * (every file not yet migrated; each batch's done criterion is deleting its
- * lines there).
+ * Allowlist (scripts/eslint/theme-allowlist.mjs): PERMANENT, physical
+ * objects and print, plus the forced-dark NEO-350 prototypes.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isAllowlisted } from "./theme-allowlist.mjs";
+import { isPermanent } from "./theme-allowlist.mjs";
 
 /** apps/web, the root every allowlist path is relative to. */
 export const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -106,12 +104,12 @@ const rule = {
     schema: [],
     messages: {
       banned:
-        "`{{token}}` is {{reason}}, which cannot follow light/dark mode. Use a colour role (bg-surface, bg-raised, text-ink-2, border-rule, text-neon-pink-text, ...); the mapping is in src/theme/MIGRATION.md.",
+        "`{{token}}` is {{reason}}, which cannot follow light/dark mode. Use a colour role (bg-surface, bg-raised, text-ink-2, border-rule, text-neon-pink-text, ...); DESIGN.md lists them.",
     },
   },
   create(context) {
     const rel = relativePath(context.filename ?? context.getFilename());
-    if (isAllowlisted(rel)) return {};
+    if (isPermanent(rel)) return {};
     const check = (node, text) => {
       for (const { token, reason } of findPaletteViolations(text)) {
         context.report({ node, messageId: "banned", data: { token, reason } });

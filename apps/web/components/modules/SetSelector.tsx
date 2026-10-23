@@ -1315,7 +1315,7 @@ export default function SetSelector() {
           >
             <div
               aria-hidden="true"
-              className="h-[50px] rounded-md border border-control bg-rule-strong"
+              className="h-[50px] rounded-md border border-row-rule bg-row"
             />
           </div>
         ) : (

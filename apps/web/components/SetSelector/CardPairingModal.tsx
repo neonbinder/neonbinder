@@ -1764,7 +1764,7 @@ function ConflictRadioGroup({
             className={`text-xs rounded px-2 py-1.5 ${
               chosen === option.side
                 ? "bg-selection/20 text-ink ring-2 ring-selection"
-                : "bg-ink/10 text-ink-2"
+                : "bg-chip/60 text-ink-2"
             }`}
           >
             {/* 1.4.1 Use of Color — the cyan/gray fill pair differs by hue

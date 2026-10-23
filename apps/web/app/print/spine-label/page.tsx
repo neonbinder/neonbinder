@@ -816,11 +816,10 @@ export default function SpineLabelPage() {
               </p>
             ) : (
               <div
-                className="overflow-hidden rounded-md border border-rule"
+                // Printed paper: `bg-paper`, white in both modes, never a theme
+                // surface (NEO-356). The labels on it carry their own colours.
+                className="overflow-hidden rounded-md border border-rule bg-paper"
                 style={{
-                  // Printed paper: white in both modes, never a theme surface
-                  // (NEO-356). The labels on it carry their own team colours.
-                  background: "#ffffff",
                   width: PREVIEW_WIDTH_PX,
                   // Scale the real 8.5in sheet down to the preview width. The
                   // container height has to follow the scaled content or the

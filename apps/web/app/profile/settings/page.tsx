@@ -93,10 +93,14 @@ export default function SettingsPanel() {
         )}
       </div>
 
+      {/* Always mounted (a live region must exist before it speaks), but an
+          empty one takes no room: `empty:-mt-6` cancels the section's 24px
+          gap, so the card ends at the last line of copy until there is
+          something to say. */}
       <p
         role="status"
         className={
-          "text-sm min-h-5 " +
+          "text-sm empty:-mt-6 " +
           (saveState === "failed" ? "text-neon-pink-text" : "text-ink-3")
         }
       >

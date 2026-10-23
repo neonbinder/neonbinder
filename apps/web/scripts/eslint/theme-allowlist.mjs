@@ -1,5 +1,7 @@
 /**
- * NEO-356 — who may still use palette classes (theme/no-raw-palette).
+ * NEO-356 — who may still use palette classes (theme/no-raw-palette): only
+ * PERMANENT, the things whose colours are fixed by design. Everything else
+ * paints with colour roles (app/theme.css, DESIGN.md).
  * Paths are apps/web-relative. Only .ts/.tsx files are linted; stylesheets
  * (app/collection/final/binders/*.css, prototypes/_shared/card-face.css) are
  * outside the rule and keep their fixed colours by design.
@@ -27,7 +29,7 @@ export const PERMANENT = [
 /**
  * Prototype modules the shipped collection demo (/collection,
  * /binder-tracking) imports. They render in both modes, so PERMANENT's
- * prototypes entry does not cover them; until migrated they sit in PENDING.
+ * prototypes entry does not cover them: the rule checks them like any file.
  * theme-allowlist.test.mjs recomputes this from the imports and fails on drift.
  */
 export const SHARED_PROTOTYPE_FILES = [
@@ -58,15 +60,6 @@ export const SHARED_PROTOTYPE_FILES = [
   "app/collection/prototypes/p3/wallModel.ts",
 ];
 
-/**
- * PENDING: not yet migrated. Each batch's done criterion is deleting its
- * lines here, after which the rule holds the file. theme-allowlist.test.mjs
- * fails on an entry that no longer exists or no longer needs to be here.
- * Regenerate (never hand-add): node scripts/eslint/scan-theme.mjs
- */
-export const PENDING = [];
-
-const PENDING_SET = new Set(PENDING);
 const SHARED_SET = new Set(SHARED_PROTOTYPE_FILES);
 
 function matches(pattern, rel) {
@@ -77,8 +70,4 @@ function matches(pattern, rel) {
 export function isPermanent(rel) {
   if (SHARED_SET.has(rel)) return false;
   return PERMANENT.some((pattern) => matches(pattern, rel));
-}
-
-export function isAllowlisted(rel) {
-  return isPermanent(rel) || PENDING_SET.has(rel);
 }

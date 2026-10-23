@@ -558,7 +558,7 @@ export default function TeamPicker({
       {value.map((id) => (
         <span
           key={id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rule-strong text-xs"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-chip text-xs"
         >
           <span className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
             {labelById.get(id as unknown as string) ?? "Loading…"}
@@ -767,7 +767,7 @@ export default function TeamPicker({
                     className={`w-full text-left px-2 py-1 text-sm rounded ${
                       idx === highlightIdx
                         ? "bg-neon-green/20 text-neon-green-text"
-                        : "hover:bg-rule-strong"
+                        : "hover:bg-hover-raised"
                     }`}
                   >
                     {fullName}
@@ -833,7 +833,7 @@ export default function TeamPicker({
                 className={`w-full text-left px-2 py-1 text-sm rounded border-t border-rule-strong mt-1 pt-2 ${
                   highlightIdx === matches.length
                     ? "bg-neon-green/20 text-neon-green-text"
-                    : "hover:bg-rule-strong"
+                    : "hover:bg-hover-raised"
                 }`}
               >
                 + New team “{query.trim()}”…

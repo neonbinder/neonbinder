@@ -240,7 +240,7 @@ export default function CardRowGroup({
   );
 
   const rowCls =
-    "flex cursor-pointer items-center gap-x-2 gap-y-1 p-2.5 cx-row-hover max-sm:flex-wrap max-sm:justify-end sm:gap-3";
+    "flex cursor-pointer items-center gap-x-2 gap-y-1 p-2.5 hover:bg-list-hover-raised max-sm:flex-wrap max-sm:justify-end sm:gap-3";
 
   return (
     <li

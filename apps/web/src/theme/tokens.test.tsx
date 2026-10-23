@@ -78,7 +78,7 @@ describe("light palette contrast (NEO-356 spec)", () => {
 
   it("text roles reach 4.5:1 on the page, a sheet and a hovered row", () => {
     for (const fg of textRoles) {
-      for (const bg of ["surface", "raised", "hover"] as TokenRole[]) {
+      for (const bg of ["surface", "raised", "hover", "row", "row-hover", "hover-raised", "list-hover"] as TokenRole[]) {
         expect({ fg, bg, ok: on(fg, bg) >= 4.5 }).toEqual({ fg, bg, ok: true });
       }
     }
@@ -92,9 +92,53 @@ describe("light palette contrast (NEO-356 spec)", () => {
     }
   });
 
+  it("ink reads on a neutral chip and a neutral button", () => {
+    for (const fg of ["ink", "ink-2", "ink-3"] as TokenRole[]) {
+      for (const bg of ["chip", "chip-strong", "button-neutral", "button-neutral-hover"] as TokenRole[]) {
+        expect({ fg, bg, ok: on(fg, bg) >= 4.5 }).toEqual({ fg, bg, ok: true });
+      }
+    }
+  });
+
+  it("the selection line reaches 3:1 on every pick fill and on a row", () => {
+    for (const bg of ["row", ...PICK_HUES.map((h) => `pick-${h}` as TokenRole)]) {
+      expect({ bg, ok: on("selection-line", bg as TokenRole) >= 3 }).toEqual({ bg, ok: true });
+    }
+  });
+
   it("black ink reads on every neon fill", () => {
     for (const fill of ["neon-green", "neon-pink", "neon-blue", "neon-yellow", "neon-orange", "neon-teal", "neon-purple"] as TokenRole[]) {
       expect({ fill, ok: contrastRatio("#000000", tokenHex(fill, "light")) >= 4.5 }).toEqual({ fill, ok: true });
+    }
+  });
+});
+
+const PICK_HUES = ["pink", "blue", "green", "purple", "orange", "teal", "amber", "red", "emerald"] as const;
+
+describe("hued picks and badges, both modes", () => {
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: each hue's ink reads 4.5:1 on its fill`, () => {
+      for (const hue of PICK_HUES) {
+        const ratio = contrastRatio(tokenHex(`pick-${hue}-ink`, mode), tokenHex(`pick-${hue}`, mode));
+        expect({ hue, ok: ratio >= 4.5 }).toEqual({ hue, ok: true });
+      }
+    });
+  }
+
+  it("light: each hue's edge reaches 3:1 on its fill and on a sheet", () => {
+    for (const hue of PICK_HUES) {
+      for (const bg of [`pick-${hue}`, "raised"] as TokenRole[]) {
+        const ratio = contrastRatio(tokenHex(`pick-${hue}-rule`, "light"), tokenHex(bg, "light"));
+        expect({ hue, bg, ok: ratio >= 3 }).toEqual({ hue, bg, ok: true });
+      }
+    }
+  });
+});
+
+describe("paper", () => {
+  it("is white with black ink in both modes", () => {
+    for (const mode of ["dark", "light"] as const) {
+      expect([TOKENS[mode].paper, TOKENS[mode]["on-paper"]]).toEqual(["#ffffff", "#000000"]);
     }
   });
 });

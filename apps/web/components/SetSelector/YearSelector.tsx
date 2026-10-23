@@ -28,9 +28,9 @@ export default function YearSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      // NEO-356: the column's hue, per mode — the -100 tint in light, the -900
-      // fill in dark (unchanged) — with its -700 edge, which clears 3:1 on both.
-      selectedColor="bg-[color:light-dark(oklch(93.2%_0.032_255.585),oklch(37.9%_0.146_265.522))] border-blue-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-blue border-pick-blue-rule"
     />
   );
 }

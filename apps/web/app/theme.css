@@ -15,7 +15,7 @@
  * follows the mode with no `dark:` variant. Opacity modifiers work too
  * (`bg-raised/80` is a color-mix over the variable).
  *
- * Mapping from the old palette classes: src/theme/MIGRATION.md. The TS mirror
+ * Which role to reach for, and the rules around them: DESIGN.md (Colors). The TS mirror
  * of these values, for code that needs a colour as data (team livery contrast):
  * src/theme/tokens.ts, kept in step by src/theme/tokens.test.tsx.
  *
@@ -112,6 +112,79 @@
   --notice-success-ink: oklch(87.1% 0.15 154.449);
   --notice-success-rule: oklch(52.7% 0.154 150.069);
 
+  /* Rows. A list row that is a TILE (the set picker's columns, the
+   * collection's cascade): its fill, its edge, and the fill under the
+   * pointer. Dark is the cascade as it always was (gray-700 / gray-600). */
+  --row: oklch(37.3% 0.034 259.733);
+  --row-rule: oklch(44.6% 0.03 256.802);
+  --row-hover: oklch(44.6% 0.03 256.802);
+  /* A hover that sits ON a raised surface: a popover's option, an icon
+   * button on a card, a collapsed column card (gray-700 in dark, where
+   * `--hover` would equal the card itself). */
+  --hover-raised: oklch(37.3% 0.034 259.733);
+  /* A flat list row (no fill at rest) under the pointer, on the page: the
+   * admin master lists (slate-900 in dark). */
+  --list-hover: oklch(20.8% 0.042 265.755);
+  /* A checklist row under the pointer, on a raised card (gray-700 at half
+   * strength in dark). */
+  --list-hover-raised: color-mix(in oklab, oklch(37.3% 0.034 259.733) 50%, transparent);
+
+  /* Neutral chips (a tag, a source pill, a filter chip at rest) and the
+   * step up from them (a chip on a row tile, a chip under the pointer). */
+  --chip: oklch(37.3% 0.034 259.733);
+  --chip-strong: oklch(44.6% 0.03 256.802);
+  /* A neutral filled button: secondary actions beside a neon one. */
+  --button-neutral: oklch(37.2% 0.044 257.287);
+  --button-neutral-hover: oklch(44.6% 0.043 257.281);
+
+  /* The committed selection's line where the selection is otherwise a fill:
+   * nothing in dark (the hued fill carries it), a line in light, where a
+   * tint alone is a colour-only mark (WCAG 1.4.1). */
+  --selection-line: transparent;
+
+  /* Glow strength: 1 where neon is lit (dark), 0 on paper (light). Every
+   * glow multiplies its alpha by it, `rgb(0 194 255 / calc(0.6 * var(--glow)))`,
+   * and so does the black ground lit neon art sits on. */
+  --glow: 1;
+
+  /* Paper: printed things and their previews (a spine sheet, a QR tile) are
+   * white in both modes. */
+  --paper: #ffffff;
+  --on-paper: #000000;
+
+  /* Hued picks, badges and categories: a fill, its edge and ink on it, per
+   * hue. The set picker's columns each pick in their own hue (pink sports,
+   * blue years, green brands, purple sets, orange variant types, teal
+   * variants, amber parallels); the checklist's attribute badges use the
+   * same family. Dark is Tailwind's -900 fill, -700 edge, -300 ink. */
+  --pick-pink: oklch(40.8% 0.153 2.432);
+  --pick-pink-rule: oklch(52.5% 0.223 3.958);
+  --pick-pink-ink: oklch(82.3% 0.12 346.018);
+  --pick-blue: oklch(37.9% 0.146 265.522);
+  --pick-blue-rule: oklch(48.8% 0.243 264.376);
+  --pick-blue-ink: oklch(80.9% 0.105 251.813);
+  --pick-green: oklch(39.3% 0.095 152.535);
+  --pick-green-rule: oklch(52.7% 0.154 150.069);
+  --pick-green-ink: oklch(87.1% 0.15 154.449);
+  --pick-purple: oklch(38.1% 0.176 304.987);
+  --pick-purple-rule: oklch(49.6% 0.265 301.924);
+  --pick-purple-ink: oklch(82.7% 0.119 306.383);
+  --pick-orange: oklch(40.8% 0.123 38.172);
+  --pick-orange-rule: oklch(55.3% 0.195 38.402);
+  --pick-orange-ink: oklch(83.7% 0.128 66.29);
+  --pick-teal: oklch(38.6% 0.063 188.416);
+  --pick-teal-rule: oklch(51.1% 0.096 186.391);
+  --pick-teal-ink: oklch(85.5% 0.138 181.071);
+  --pick-amber: oklch(41.4% 0.112 45.904);
+  --pick-amber-rule: oklch(55.5% 0.163 48.998);
+  --pick-amber-ink: oklch(87.9% 0.169 91.605);
+  --pick-red: oklch(39.6% 0.141 25.723);
+  --pick-red-rule: oklch(50.5% 0.213 27.518);
+  --pick-red-ink: oklch(80.8% 0.114 19.571);
+  --pick-emerald: oklch(37.8% 0.077 168.94);
+  --pick-emerald-rule: oklch(50.8% 0.118 165.612);
+  --pick-emerald-ink: oklch(84.5% 0.143 164.978);
+
   /* The collection scoreboard's pips and the "found it" ring. */
   --pip-owned: #00c2ff;
   --pip-owned-glow: 0 0 4px rgba(0, 194, 255, 0.8);
@@ -192,6 +265,43 @@
   --notice-success-ink: #006632;
   --notice-success-rule: #007a3b;
 
+  /* Rows: white tiles with a visible edge, a cool tint under the pointer. */
+  --row: #ffffff;
+  --row-rule: #bcb9cf;
+  --row-hover: #f0f2f9;
+  --hover-raised: #f0f2f9;
+  --list-hover: #f0f2f9;
+  --list-hover-raised: #f0f2f9;
+
+  --chip: #e8eaf2;
+  --chip-strong: #dde0ea;
+  --button-neutral: #e8eaf2;
+  --button-neutral-hover: #dde0ea;
+
+  --selection-line: #006da6;
+  --glow: 0;
+
+  /* Hued picks: a pale tint of the hue, the same -700 edge (3:1 on white
+   * and on the tint), and -800 ink (4.5:1 on the tint). */
+  --pick-pink: oklch(94.8% 0.028 342.258);
+  --pick-pink-ink: oklch(45.9% 0.187 3.815);
+  --pick-blue: oklch(93.2% 0.032 255.585);
+  --pick-blue-ink: oklch(42.4% 0.199 265.638);
+  --pick-green: oklch(96.2% 0.044 156.743);
+  --pick-green-ink: oklch(44.8% 0.119 151.328);
+  --pick-purple: oklch(94.6% 0.033 307.174);
+  --pick-purple-ink: oklch(43.8% 0.218 303.724);
+  --pick-orange: oklch(95.4% 0.038 75.164);
+  --pick-orange-ink: oklch(47% 0.157 37.304);
+  --pick-teal: oklch(95.3% 0.051 180.801);
+  --pick-teal-ink: oklch(43.7% 0.078 188.216);
+  --pick-amber: oklch(96.2% 0.059 95.617);
+  --pick-amber-ink: oklch(47.3% 0.137 46.201);
+  --pick-red: oklch(93.6% 0.032 17.717);
+  --pick-red-ink: oklch(44.4% 0.177 26.899);
+  --pick-emerald: oklch(95% 0.052 163.051);
+  --pick-emerald-ink: oklch(43.2% 0.095 166.913);
+
   /* Pips differ by shape as well as colour: a solid dot, a thick amber ring,
    * a thin control-colour ring. */
   --pip-owned: #006da6;
@@ -247,6 +357,20 @@
     outline: 2px solid var(--focus);
     outline-offset: 2px;
   }
+}
+
+/* The committed selection on a hued pick (the set picker's rows): a 4px edge
+ * down the left in `--selection-line`, the binder tab's own mark. Nothing in
+ * dark (the line is transparent there; the hued fill carries the selection).
+ * A different SHAPE from the keyboard highlight's full 2px ring, so the two
+ * read apart by more than colour, and both can sit on one row: it sets the
+ * inset-shadow slot, which the ring and shadow utilities compose with. */
+@utility selection-edge {
+  --tw-inset-shadow: inset 4px 0 0 var(--selection-line);
+  box-shadow:
+    var(--tw-inset-shadow), var(--tw-inset-ring-shadow, 0 0 #0000),
+    var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000),
+    var(--tw-shadow, 0 0 #0000);
 }
 
 /* Radix draws its own focus rings (2px outlines) in each control's accent:
@@ -422,6 +546,47 @@
   --color-notice-success-bg: var(--notice-success-bg);
   --color-notice-success-ink: var(--notice-success-ink);
   --color-notice-success-rule: var(--notice-success-rule);
+
+  --color-row: var(--row);
+  --color-row-rule: var(--row-rule);
+  --color-row-hover: var(--row-hover);
+  --color-hover-raised: var(--hover-raised);
+  --color-list-hover: var(--list-hover);
+  --color-list-hover-raised: var(--list-hover-raised);
+  --color-chip: var(--chip);
+  --color-chip-strong: var(--chip-strong);
+  --color-button-neutral: var(--button-neutral);
+  --color-button-neutral-hover: var(--button-neutral-hover);
+  --color-selection-line: var(--selection-line);
+  --color-paper: var(--paper);
+  --color-on-paper: var(--on-paper);
+  --color-pick-pink: var(--pick-pink);
+  --color-pick-pink-rule: var(--pick-pink-rule);
+  --color-pick-pink-ink: var(--pick-pink-ink);
+  --color-pick-blue: var(--pick-blue);
+  --color-pick-blue-rule: var(--pick-blue-rule);
+  --color-pick-blue-ink: var(--pick-blue-ink);
+  --color-pick-green: var(--pick-green);
+  --color-pick-green-rule: var(--pick-green-rule);
+  --color-pick-green-ink: var(--pick-green-ink);
+  --color-pick-purple: var(--pick-purple);
+  --color-pick-purple-rule: var(--pick-purple-rule);
+  --color-pick-purple-ink: var(--pick-purple-ink);
+  --color-pick-orange: var(--pick-orange);
+  --color-pick-orange-rule: var(--pick-orange-rule);
+  --color-pick-orange-ink: var(--pick-orange-ink);
+  --color-pick-teal: var(--pick-teal);
+  --color-pick-teal-rule: var(--pick-teal-rule);
+  --color-pick-teal-ink: var(--pick-teal-ink);
+  --color-pick-amber: var(--pick-amber);
+  --color-pick-amber-rule: var(--pick-amber-rule);
+  --color-pick-amber-ink: var(--pick-amber-ink);
+  --color-pick-red: var(--pick-red);
+  --color-pick-red-rule: var(--pick-red-rule);
+  --color-pick-red-ink: var(--pick-red-ink);
+  --color-pick-emerald: var(--pick-emerald);
+  --color-pick-emerald-rule: var(--pick-emerald-rule);
+  --color-pick-emerald-ink: var(--pick-emerald-ink);
 
   --color-pip-owned: var(--pip-owned);
   --color-pip-want: var(--pip-want);
