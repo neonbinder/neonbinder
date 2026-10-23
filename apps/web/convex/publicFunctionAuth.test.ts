@@ -931,6 +931,15 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetTeamAliasesBatch",
     "resetFranchisesBatch",
     "resetLeaguesBatch",
+    // NEO-306 / NEO-358 — in the loop, and pinned here so none can turn public
+    // unnoticed: the pending SL set reviews, the sync notices, the derived
+    // team index, and every collector's copies, binders and building sets.
+    "resetSlSetReviewsBatch",
+    "resetSelectorSyncStatusBatch",
+    "resetCardTeamLinksBatch",
+    "resetCollectionCopiesBatch",
+    "resetCollectionContainersBatch",
+    "resetCollectionBuildingSetsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —
     // a CLI run has no identity, so one would refuse every legitimate call
@@ -2153,6 +2162,10 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["collectionCatalog.cardsByPlayer", (t) => t.query(api.collectionCatalog.cardsByPlayer, { playerId: NOT_AN_ID })],
     ["collectionCatalog.cardsByTeam", (t) => t.query(api.collectionCatalog.cardsByTeam, { teamId: NOT_AN_ID })],
     ["collection.summary", (t) => t.query(api.collection.summary, {})],
+    [
+      "collection.ownedCards",
+      (t) => t.query(api.collection.ownedCards, { paginationOpts: { numItems: 10, cursor: null } }),
+    ],
     ["collection.copiesOf", (t) => t.query(api.collection.copiesOf, { cardId: NOT_AN_ID })],
     ["collection.copiesInVariant", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID })],
     ["collection.variantCompletion", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID })],

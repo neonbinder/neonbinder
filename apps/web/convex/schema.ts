@@ -605,6 +605,16 @@ export const collectionCopyGradingValidator = v.object({
   grade: v.string(),
   cert: v.optional(v.string()),
 });
+/**
+ * NEO-358 — one collector's whole collection in three numbers, kept on their
+ * Main binder (see `collectionContainers.tally`): physical copies (quantities
+ * summed), line items, and distinct cards.
+ */
+export const collectionTallyValidator = v.object({
+  copies: v.number(),
+  lines: v.number(),
+  cards: v.number(),
+});
 
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
@@ -3286,12 +3296,23 @@ export default defineSchema({
    * widens later (a `"want"` list is planned, and the add path already refuses
    * any system container other than `"main"` as a home). No `rule` field yet
    * (NEO-362).
+   *
+   * `tally` is on the Main row only, and it is the OWNER's tally, not Main's:
+   * every copy, line and distinct card they hold, in any home (Jason,
+   * 2026-10-23: no per-account cap, dealers hold tens of thousands of cards,
+   * so "how many do I own" can never be a walk). Every write in
+   * convex/collection.ts moves it in the same transaction (`moveTally`).
+   * Absent means "not counted yet": the next write counts by hand, and the
+   * summary reads a bounded count marked inexact until then. Main is the one
+   * row every collector already has, and both resets delete it with the
+   * copies, so the tally can never outlive what it counts.
    */
   collectionContainers: defineTable({
     ownerId: v.string(),
     kind: collectionContainerKindValidator,
     system: v.optional(v.literal("main")),
     name: v.string(),
+    tally: v.optional(collectionTallyValidator),
     lastUpdated: v.number(),
   }).index("by_owner_and_system", ["ownerId", "system"]),
 
@@ -3342,6 +3363,9 @@ export default defineSchema({
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
+    // "Everything I own", most recently touched first, paged
+    // (`collection.ownedCards`). Every write to a row stamps `lastUpdated`.
+    .index("by_owner_and_lastUpdated", ["ownerId", "lastUpdated"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])

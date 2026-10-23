@@ -87,12 +87,14 @@ export class RefusedError extends Error {}
  * mean the reset did not run, and an import-mode load refuses.
  *
  * SELECTOR_DEPENDANT_UNDRAINED_TABLES also hold selectorOptions ids but no
- * reset drains them (transient sync notices and per-set "not a person"
- * skips). Their rows outlive every reset already, so they are reported, not
+ * reset drains them (per-set "not a person" skips). Their rows outlive every reset already, so they are reported, not
  * refused; refusing would fail every CI run.
  */
 export const SELECTOR_DEPENDANT_TABLES = [
   "slSetReviews",
+  // NEO-358 — transient per-column sync notices (parentId); drained by the
+  // reset since a stale "could not be reached" notice outlived one on dev.
+  "selectorSyncStatus",
   // NEO-358 — a collector's copies (variantId, setId) and "Sets I'm building"
   // (setId). Both drained by the reset, before the selector rows.
   "collectionCopies",
@@ -103,7 +105,7 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "entityReviewQueue",
   "checklistCandidates",
 ];
-export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["selectorSyncStatus", "entityReviewSkips"];
+export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["entityReviewSkips"];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
 
 // ── Args ────────────────────────────────────────────────────────────────────

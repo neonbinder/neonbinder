@@ -237,6 +237,24 @@ async function seedEveryDrainedTable(
       });
     }
 
+    // selectorSyncStatus: 3 (NEO-358) — transient per-column sync notices: a
+    // root (sport) column's failure, which is exactly the one that survived a
+    // dev reset before this table was drained, and two under the sport.
+    await ctx.db.insert("selectorSyncStatus", {
+      level: "sport",
+      status: "error",
+      message: "SportLots could not be reached",
+      updatedAt: NOW,
+    });
+    for (const level of ["year", "manufacturer"] as const) {
+      await ctx.db.insert("selectorSyncStatus", {
+        level,
+        parentId: sportId,
+        status: "done",
+        updatedAt: NOW,
+      });
+    }
+
     // slSetReviews: 2 (NEO-306) — pending SportLots set reviews. The ids
     // only need to be selectorOptions ids for the delete loop.
     for (const label of ["Gold", "Blue"]) {
@@ -261,6 +279,8 @@ const runReset = (t: ReturnType<typeof convexTest>) =>
 async function tableCounts(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ({
     slSetReviews: (await ctx.db.query("slSetReviews").collect()).length,
+    selectorSyncStatus: (await ctx.db.query("selectorSyncStatus").collect())
+      .length,
     collectionCopies: (await ctx.db.query("collectionCopies").collect()).length,
     collectionContainers: (await ctx.db.query("collectionContainers").collect())
       .length,
@@ -299,6 +319,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     // guard at all, so assert the data is still there rather than just the throw.
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
+      selectorSyncStatus: 3,
       collectionCopies: 10,
       collectionContainers: 1,
       collectionBuildingSets: 11,
@@ -327,6 +348,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
+      selectorSyncStatus: 3,
       collectionCopies: 10,
       collectionContainers: 1,
       collectionBuildingSets: 11,
@@ -352,6 +374,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(result).toEqual({
       slSetReviewsDeleted: 2,
+      selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
@@ -374,6 +397,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 0,
+      selectorSyncStatus: 0,
       collectionCopies: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
@@ -399,6 +423,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
    */
   test.each([
     ["resetSlSetReviewsBatch", "slSetReviews"],
+    ["resetSelectorSyncStatusBatch", "selectorSyncStatus"],
     ["resetCollectionCopiesBatch", "collectionCopies"],
     ["resetCollectionContainersBatch", "collectionContainers"],
     ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
@@ -429,6 +454,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
       expect(await tableCounts(t)).toEqual({
         slSetReviews: 2,
+        selectorSyncStatus: 3,
         collectionCopies: 10,
         collectionContainers: 1,
         collectionBuildingSets: 11,
@@ -454,6 +480,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await runReset(t)).toEqual({
       slSetReviewsDeleted: 0,
+      selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
@@ -521,6 +548,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     let complete = false;
     const totals = {
       slSetReviewsDeleted: 0,
+      selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
       collectionContainersDeleted: 0,
       collectionBuildingSetsDeleted: 0,
@@ -555,6 +583,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // double-counts or skips a table.
     expect(totals).toEqual({
       slSetReviewsDeleted: 2,
+      selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,
@@ -575,6 +604,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     });
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 0,
+      selectorSyncStatus: 0,
       collectionCopies: 0,
       collectionContainers: 0,
       collectionBuildingSets: 0,
@@ -603,6 +633,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
+      selectorSyncStatus: 3,
       collectionCopies: 10,
       collectionContainers: 1,
       collectionBuildingSets: 11,
@@ -975,6 +1006,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
   ] as const;
   const DEPENDANTS = [
     "slSetReviews",
+    // NEO-358 — sync notices name a selector row (parentId).
+    "selectorSyncStatus",
     // NEO-358 — a collector's copies and building sets hold selectorOptions ids.
     "collectionCopies",
     "collectionBuildingSets",
@@ -1065,6 +1098,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
       slSetReviewsDeleted: 2,
+      selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
       collectionContainersDeleted: 1,
       collectionBuildingSetsDeleted: 11,

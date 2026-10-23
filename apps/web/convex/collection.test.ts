@@ -11,7 +11,13 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
-import { foldsInto, isIsoDate } from "./collection";
+import {
+  MAX_LINES_PER_CARD,
+  MAX_OWNED_PAGE_LINES,
+  MAX_TALLY_RECOUNT_LINES,
+  foldsInto,
+  isIsoDate,
+} from "./collection";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
 
@@ -333,8 +339,9 @@ describe("reads", () => {
     expect(await me.query(api.collection.copiesInVariant, { variantId: "nope" })).toEqual([]);
 
     const summary = await me.query(api.collection.summary, {});
-    expect(summary).toMatchObject({ copies: 4, lines: 3, distinctCards: 3, buildingSets: 0, truncated: false });
-    expect(summary.cards.map((c) => c.cardId).sort()).toEqual([fx.gooden1, fx.strawberry2, fx.gold1].sort());
+    expect(summary).toEqual({ copies: 4, lines: 3, distinctCards: 3, buildingSets: 0, exact: true });
+    const owned = await me.query(api.collection.ownedCards, { paginationOpts: { numItems: 10, cursor: null } });
+    expect(owned.page.map((c) => c.cardId).sort()).toEqual([fx.gooden1, fx.strawberry2, fx.gold1].sort());
   });
 
   test("results carry NB data only", async () => {
@@ -344,6 +351,7 @@ describe("reads", () => {
     const text = JSON.stringify([
       await me.query(api.collection.copiesOf, { cardId: fx.gooden1 }),
       await me.query(api.collection.summary, {}),
+      await me.query(api.collection.ownedCards, { paginationOpts: { numItems: 10, cursor: null } }),
       await me.query(api.collection.buildingSets, {}),
     ]);
     expect(text).not.toMatch(/platform|isCustom|"sku"|bsc|ownerId/i);
@@ -437,3 +445,247 @@ describe("building sets", () => {
     expect(await me.query(api.collection.buildingSets, {})).toEqual([]);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// No cap on a collection (Jason, 2026-10-23): a tally, and paged ownership
+// ───────────────────────────────────────────────────────────────────────────
+
+type T = ReturnType<typeof convexTest>;
+
+/** The caller's collection counted by hand, the way the tally must read. */
+async function truth(t: T, ownerId: string) {
+  const rows = await copiesOwnedBy(t, ownerId);
+  return {
+    copies: rows.reduce((n, r) => n + r.quantity, 0),
+    lines: rows.length,
+    cards: new Set(rows.map((r) => r.cardId)).size,
+  };
+}
+
+/** The tally stored on the caller's Main binder (null = not counted). */
+async function storedTally(t: T, ownerId: string) {
+  return t.run(async (ctx) => {
+    const main = (await ctx.db.query("collectionContainers").collect()).find(
+      (c) => c.ownerId === ownerId && c.system === "main",
+    );
+    return main?.tally ?? null;
+  });
+}
+
+/** Every card `ownedCards` lists, walking the pages `numItems` lines at a time. */
+async function walkOwned(me: ReturnType<T["withIdentity"]>, numItems: number) {
+  const out: Array<{ cardId: string; quantity: number; lines: number; lastUpdated: number }> = [];
+  let cursor: string | null = null;
+  let pages = 0;
+  for (;;) {
+    const result: { page: typeof out; isDone: boolean; continueCursor: string } = await me.query(
+      api.collection.ownedCards,
+      { paginationOpts: { numItems, cursor } },
+    );
+    out.push(...result.page);
+    pages += 1;
+    if (result.isDone) return { cards: out, pages };
+    cursor = result.continueCursor;
+  }
+}
+
+describe("the tally: every write moves it in the same transaction", () => {
+  test("adds, folds, edits, removes and restores all keep the tally equal to a hand count", async () => {
+    const { t, fx, me, them } = await setup();
+    const check = async () => {
+      const want = await truth(t, ME.subject);
+      expect(await storedTally(t, ME.subject)).toEqual(want);
+      expect(await me.query(api.collection.summary, {})).toMatchObject({
+        copies: want.copies,
+        lines: want.lines,
+        distinctCards: want.cards,
+        exact: true,
+      });
+    };
+
+    const first = await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    await check();
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1 }); // folds
+    await check();
+    const graded = await me.mutation(api.collection.addLineItem, {
+      cardId: fx.gooden1,
+      details: { quantity: 1, grading: { grader: "PSA", grade: "10", cert: "123" } },
+    }); // a second line, same card
+    await check();
+    await me.mutation(api.collection.addHaves, { cardIds: [fx.strawberry2, fx.gold1, fx.strawberry2] });
+    await check();
+    await me.mutation(api.collection.updateCopy, { copyId: first.copyId, details: { quantity: 5 } });
+    await check();
+    const removed = await me.mutation(api.collection.removeCopy, { copyId: graded.copyId });
+    await check(); // the card still has its raw stack
+    await me.mutation(api.collection.restoreCopy, removed.removed);
+    await check();
+    const goldLine = (await copiesOwnedBy(t, ME.subject)).find((r) => r.cardId === fx.gold1)!;
+    await me.mutation(api.collection.removeCopy, { copyId: goldLine._id });
+    await check(); // the card is gone from the collection
+    const left = await copiesOwnedBy(t, ME.subject);
+    await me.mutation(api.collection.removeCopies, { copyIds: left.map((r) => r._id) });
+    await check();
+    expect(await storedTally(t, ME.subject)).toEqual({ copies: 0, lines: 0, cards: 0 });
+
+    // Another collector's writes never touch mine.
+    await them.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    await check();
+  });
+
+  test("a refused write moves nothing", async () => {
+    const { t, fx, me } = await setup();
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    const before = await storedTally(t, ME.subject);
+    await expect(
+      me.mutation(api.collection.addHaves, { cardIds: [fx.strawberry2, "nope" as never] }),
+    ).rejects.toThrow();
+    expect(await storedTally(t, ME.subject)).toEqual(before);
+  });
+
+  test("a collector with no tally yet is counted by hand, and their next write keeps one", async () => {
+    const { t, fx, me } = await setup();
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    await me.mutation(api.collection.addHave, { cardId: fx.strawberry2 });
+    await t.run(async (ctx) => {
+      const main = (await ctx.db.query("collectionContainers").collect())[0];
+      await ctx.db.patch(main._id, { tally: undefined });
+    });
+    expect(await me.query(api.collection.summary, {})).toMatchObject({ copies: 2, distinctCards: 2, exact: true });
+    await me.mutation(api.collection.addHave, { cardId: fx.gold1 });
+    expect(await storedTally(t, ME.subject)).toEqual({ copies: 3, lines: 3, cards: 3 });
+  });
+
+  test("a tally that drifted below zero is counted again by hand", async () => {
+    const { t, fx, me } = await setup();
+    const added = await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    await me.mutation(api.collection.addHave, { cardId: fx.strawberry2 });
+    await t.run(async (ctx) => {
+      const main = (await ctx.db.query("collectionContainers").collect())[0];
+      await ctx.db.patch(main._id, { tally: { copies: 0, lines: 0, cards: 0 } });
+    });
+    await me.mutation(api.collection.removeCopy, { copyId: added.copyId });
+    expect(await storedTally(t, ME.subject)).toEqual({ copies: 1, lines: 1, cards: 1 });
+  });
+});
+
+describe("everything I own, paged", () => {
+  test("newest first, each card once at its newest line, with the whole card's counts on any page", async () => {
+    const { t, fx, me } = await setup();
+    await me.mutation(api.collection.addLineItem, { cardId: fx.gooden1, details: { quantity: 2 } });
+    await me.mutation(api.collection.addHave, { cardId: fx.strawberry2 });
+    await me.mutation(api.collection.addLineItem, {
+      cardId: fx.gooden1,
+      details: { quantity: 1, serialNumber: "07/25" },
+    });
+    await me.mutation(api.collection.addHave, { cardId: fx.gold1 });
+    // One line per page: Gooden's older line lands on a page of its own and
+    // must not list him a second time.
+    const { cards, pages } = await walkOwned(me, 1);
+    expect(pages).toBeGreaterThanOrEqual(4);
+    expect(cards.map((c) => c.cardId)).toEqual([fx.gold1, fx.gooden1, fx.strawberry2]);
+    expect(cards.find((c) => c.cardId === fx.gooden1)).toMatchObject({ quantity: 3, lines: 2 });
+
+    // A Have stamps the line, so that card moves to the top.
+    await me.mutation(api.collection.addHave, { cardId: fx.strawberry2 });
+    expect((await walkOwned(me, 2)).cards.map((c) => c.cardId)).toEqual([fx.strawberry2, fx.gold1, fx.gooden1]);
+    void t;
+  });
+
+  test("a page reads at most MAX_OWNED_PAGE_LINES lines, whatever it is asked", async () => {
+    const { t, fx, me } = await setup();
+    await insertManyOwned(t, fx, ME.subject, { cards: MAX_OWNED_PAGE_LINES + 10, linesPerCard: 1, keepTally: true });
+    const page = await me.query(api.collection.ownedCards, { paginationOpts: { numItems: 10_000, cursor: null } });
+    expect(page.page).toHaveLength(MAX_OWNED_PAGE_LINES);
+    expect(page.isDone).toBe(false);
+  });
+
+  test("pages past the old 5,000-line read to the very last line: every card listed once, the tally exact", async () => {
+    const { t, fx, me } = await setup();
+    // 26 cards x 200 lines = 5,200 lines, past the 5,000 the old summary read.
+    // Each card's lines run across several pages; it is listed once, on the
+    // page holding its newest line, with all 200 lines counted.
+    const cardsHeld = 26;
+    const lines = MAX_LINES_PER_CARD;
+    expect(cardsHeld * lines).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES);
+    const ids = await insertManyOwned(t, fx, ME.subject, { cards: cardsHeld, linesPerCard: lines, keepTally: true });
+    const { cards, pages } = await walkOwned(me, MAX_OWNED_PAGE_LINES);
+    expect(pages).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES / MAX_OWNED_PAGE_LINES);
+    // Newest first: the last card inserted was touched last.
+    expect(cards.map((c) => c.cardId)).toEqual([...ids].reverse());
+    for (const card of cards) expect(card).toMatchObject({ quantity: lines, lines });
+    expect(await me.query(api.collection.summary, {})).toMatchObject({
+      distinctCards: cardsHeld,
+      lines: cardsHeld * lines,
+      copies: cardsHeld * lines,
+      exact: true,
+    });
+  }, 60_000);
+
+  test("an uncounted collection past the hand-count read says it is a floor, never the answer", async () => {
+    const { t, fx, me } = await setup();
+    const count = MAX_TALLY_RECOUNT_LINES + 50;
+    await insertManyOwned(t, fx, ME.subject, { cards: count, linesPerCard: 1, keepTally: false });
+    expect(await me.query(api.collection.summary, {})).toMatchObject({
+      distinctCards: MAX_TALLY_RECOUNT_LINES,
+      exact: false,
+    });
+    // A write cannot finish the count either, so it leaves the tally unset
+    // rather than storing a floor as if it were the answer.
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    expect(await storedTally(t, ME.subject)).toBeNull();
+    expect((await me.query(api.collection.summary, {})).exact).toBe(false);
+  }, 60_000);
+});
+
+/**
+ * `cards` distinct cards on the fixture's Base, each with `linesPerCard` raw
+ * one-copy lines, owned by `ownerId`; every line is touched one millisecond
+ * after the one before, a card's lines together. `keepTally` stores the tally
+ * a collector who added them one by one would have. Returns the card ids in
+ * insertion order.
+ */
+async function insertManyOwned(
+  t: T,
+  fx: Awaited<ReturnType<typeof seedCollectionCatalog>>,
+  ownerId: string,
+  { cards, linesPerCard, keepTally }: { cards: number; linesPerCard: number; keepTally: boolean },
+) {
+  return t.run(async (ctx) => {
+    const lines = cards * linesPerCard;
+    const homeId = await ctx.db.insert("collectionContainers", {
+      ownerId,
+      kind: "binder",
+      system: "main",
+      name: "Main",
+      ...(keepTally ? { tally: { copies: lines, lines, cards } } : {}),
+      lastUpdated: 1,
+    });
+    const ids: Array<Id<"cardChecklist">> = [];
+    let stamp = 1_000_000;
+    for (let i = 0; i < cards; i++) {
+      const cardId = await ctx.db.insert("cardChecklist", {
+        selectorOptionId: fx.baseId,
+        cardNumber: `M${i}`,
+        cardName: "",
+        platformData: {},
+        sortOrder: 1000 + i,
+        lastUpdated: 1,
+      });
+      ids.push(cardId);
+      for (let j = 0; j < linesPerCard; j++) {
+        await ctx.db.insert("collectionCopies", {
+          ownerId,
+          cardId,
+          variantId: fx.baseId,
+          setId: fx.setId,
+          homeId,
+          quantity: 1,
+          notes: `line ${j}`,
+          lastUpdated: stamp++,
+        });
+      }
+    }
+    return ids;
+  });
+}

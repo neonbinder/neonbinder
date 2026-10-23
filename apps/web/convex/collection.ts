@@ -23,9 +23,18 @@
  * `removeCopy`); `updateCopy` returns `previous`; `removeCopy` returns the
  * removed row's card and details (undo = `restoreCopy`). Copies are hard
  * deleted.
+ *
+ * ## No cap on a collection, so nothing walks it
+ *
+ * Jason, 2026-10-23: there is no per-account copy cap; dealers will hold tens
+ * of thousands of cards. So "how many do I own" is a TALLY kept on the
+ * collector's Main binder and moved by every write here in the same
+ * transaction (`moveTally`), and "everything I own" is PAGED
+ * (`ownedCards`, most recently touched first). Neither reads the whole pile.
  */
 
 import { ConvexError, v } from "convex/values";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
@@ -36,6 +45,7 @@ import {
   collectionCopyConditionValidator,
   collectionCopyGradingValidator,
 } from "./schema";
+import type { collectionTallyValidator } from "./schema";
 
 type CopyRow = Doc<"collectionCopies">;
 
@@ -47,8 +57,20 @@ export const MAX_LINES_PER_CARD = 200;
 export const MAX_BATCH = 200;
 /** Lines one variant's copy list reads. */
 export const MAX_VARIANT_COPIES = 2000;
-/** Lines `summary` and `setCompletion` read. */
+/** Lines `setCompletion` reads for one set. */
 export const MAX_SUMMARY_LINES = 5000;
+/**
+ * Lines a hand count of a collector's tally reads (`recountTally`): only for
+ * a collector whose tally was never kept, or drifted. Past it the count is
+ * not exact, and the summary says so.
+ */
+export const MAX_TALLY_RECOUNT_LINES = 5000;
+/**
+ * Line items one `ownedCards` page reads. Each listed card also reads its own
+ * lines (at most `MAX_LINES_PER_CARD`), so a page reads at most
+ * 64 + 64 x 200 documents.
+ */
+export const MAX_OWNED_PAGE_LINES = 64;
 /** Sets one collector may mark as building. */
 export const MAX_BUILDING_SETS = 200;
 /** Cards a completion query may count by hand for an uncounted row. */
@@ -288,6 +310,73 @@ async function getOrCreateMain(
   });
 }
 
+type Tally = typeof collectionTallyValidator.type;
+
+const NO_CHANGE: Tally = { copies: 0, lines: 0, cards: 0 };
+
+function addTallies(a: Tally, b: Tally): Tally {
+  return { copies: a.copies + b.copies, lines: a.lines + b.lines, cards: a.cards + b.cards };
+}
+
+/**
+ * The caller's tally counted by hand, from at most `MAX_TALLY_RECOUNT_LINES`
+ * line items. `exact` is false when there were more: the numbers are then a
+ * floor, never the answer.
+ */
+async function recountTally(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+): Promise<{ tally: Tally; exact: boolean }> {
+  const rows = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId))
+    .take(MAX_TALLY_RECOUNT_LINES + 1);
+  const exact = rows.length <= MAX_TALLY_RECOUNT_LINES;
+  const counted = exact ? rows : rows.slice(0, MAX_TALLY_RECOUNT_LINES);
+  let copies = 0;
+  for (const row of counted) copies += row.quantity;
+  return {
+    tally: { copies, lines: counted.length, cards: distinctCards(counted).size },
+    exact,
+  };
+}
+
+/**
+ * Move the caller's tally by `delta`, AFTER the write it describes, in the
+ * same transaction. The tally lives on Main (see the schema); a collector
+ * without one yet, or one whose tally would go below zero (drift), is counted
+ * by hand instead, and left uncounted when even that is too big to finish.
+ */
+async function moveTally(ctx: MutationCtx, ownerId: string, delta: Tally): Promise<void> {
+  if (delta.copies === 0 && delta.lines === 0 && delta.cards === 0) return;
+  const mainId = await getOrCreateMain(ctx, ownerId);
+  const main = await ctx.db.get(mainId);
+  const stored = main?.tally;
+  if (stored) {
+    const next = addTallies(stored, delta);
+    if (next.copies >= 0 && next.lines >= 0 && next.cards >= 0) {
+      await ctx.db.patch(mainId, { tally: next });
+      return;
+    }
+    console.warn(JSON.stringify({ event: "collection_tally_drift", stored, delta }));
+  }
+  const counted = await recountTally(ctx, ownerId);
+  await ctx.db.patch(mainId, { tally: counted.exact ? counted.tally : undefined });
+}
+
+/** Is any line of this card still the caller's? (After a delete: did a distinct card go?) */
+async function stillHolds(
+  ctx: MutationCtx,
+  ownerId: string,
+  cardId: Id<"cardChecklist">,
+): Promise<boolean> {
+  const line = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
+    .first();
+  return line !== null;
+}
+
 /**
  * The home a write names, checked: the caller's own container, and not a
  * system container other than Main (a future want list is never a home).
@@ -338,13 +427,16 @@ async function ownCopy(
   return row;
 }
 
-/** Add one line item, folding when the rule allows. */
+/**
+ * Add one line item, folding when the rule allows. Returns how the caller's
+ * tally moves; the caller applies it (`moveTally`) once, after all its adds.
+ */
 async function addOne(
   ctx: MutationCtx,
   ownerId: string,
   cardId: Id<"cardChecklist">,
   raw: DetailsArg,
-): Promise<typeof addResultValidator.type> {
+): Promise<{ result: typeof addResultValidator.type; delta: Tally }> {
   const cleaned = cleanDetails(raw);
   const homeId = await resolveHome(ctx, ownerId, raw.homeId);
   const next: StoredDetails = { ...cleaned, homeId };
@@ -362,7 +454,10 @@ async function addOne(
     }
     const previous = detailsOf(into);
     await ctx.db.patch(into._id, { quantity, lastUpdated: now });
-    return { copyId: into._id, merged: true, previous };
+    return {
+      result: { copyId: into._id, merged: true, previous },
+      delta: { copies: next.quantity, lines: 0, cards: 0 },
+    };
   }
   if (lines.length >= MAX_LINES_PER_CARD) {
     refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
@@ -375,7 +470,10 @@ async function addOne(
     ...next,
     lastUpdated: now,
   });
-  return { copyId, merged: false };
+  return {
+    result: { copyId, merged: false },
+    delta: { copies: next.quantity, lines: 1, cards: lines.length === 0 ? 1 : 0 },
+  };
 }
 
 /** A fresh copy of a card: one raw card in Main. */
@@ -418,9 +516,11 @@ async function ownedOnVariant(
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The caller's whole collection at a glance: totals, and one entry per card
- * they hold (most recently touched first). `truncated` when the collection is
- * larger than one read.
+ * The caller's whole collection at a glance, read off the tally on their Main
+ * binder: one read whatever the collection's size. `exact` is false only for
+ * a collector whose tally was never kept and who holds more than
+ * `MAX_TALLY_RECOUNT_LINES` line items: the numbers are then a floor
+ * ("5,000+"), until their next write counts them.
  */
 export const summary = query({
   args: {},
@@ -429,56 +529,101 @@ export const summary = query({
     lines: v.number(),
     distinctCards: v.number(),
     buildingSets: v.number(),
-    cards: v.array(
-      v.object({
-        cardId: v.id("cardChecklist"),
-        quantity: v.number(),
-        lines: v.number(),
-        lastUpdated: v.number(),
-      }),
-    ),
-    truncated: v.boolean(),
+    exact: v.boolean(),
   }),
   handler: async (ctx) => {
     const ownerId = await requireSignedIn(ctx);
-    const rows = await ctx.db
-      .query("collectionCopies")
-      .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId))
-      .take(MAX_SUMMARY_LINES + 1);
-    const truncated = rows.length > MAX_SUMMARY_LINES;
-    const byCard = new Map<string, { cardId: Id<"cardChecklist">; quantity: number; lines: number; lastUpdated: number }>();
-    let copies = 0;
-    for (const row of rows.slice(0, MAX_SUMMARY_LINES)) {
-      copies += row.quantity;
-      const entry = byCard.get(row.cardId as string);
-      if (entry) {
-        entry.quantity += row.quantity;
-        entry.lines += 1;
-        entry.lastUpdated = Math.max(entry.lastUpdated, row.lastUpdated);
-      } else {
-        byCard.set(row.cardId as string, {
-          cardId: row.cardId,
-          quantity: row.quantity,
-          lines: 1,
-          lastUpdated: row.lastUpdated,
-        });
-      }
-    }
+    const main = await ctx.db
+      .query("collectionContainers")
+      .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", "main"))
+      .first();
+    const counted = main?.tally
+      ? { tally: main.tally, exact: true }
+      : await recountTally(ctx, ownerId);
     const building = await ctx.db
       .query("collectionBuildingSets")
       .withIndex("by_owner_and_set", (q) => q.eq("ownerId", ownerId))
       .take(MAX_BUILDING_SETS + 1);
-    const cards = [...byCard.values()].sort((a, b) => b.lastUpdated - a.lastUpdated);
     return {
-      copies,
-      lines: Math.min(rows.length, MAX_SUMMARY_LINES),
-      distinctCards: cards.length,
+      copies: counted.tally.copies,
+      lines: counted.tally.lines,
+      distinctCards: counted.tally.cards,
       buildingSets: building.length,
-      cards,
-      truncated,
+      exact: counted.exact,
     };
   },
 });
+
+/** One card the caller holds, as "Everything I own" lists it. */
+export const ownedCardValidator = v.object({
+  cardId: v.id("cardChecklist"),
+  /** Physical copies, over every line of the card. */
+  quantity: v.number(),
+  /** Line items of the card. */
+  lines: v.number(),
+  /** When the card's newest line was last touched. */
+  lastUpdated: v.number(),
+});
+
+/**
+ * "Everything I own", one page at a time (`usePaginatedQuery`): every card
+ * the caller holds, most recently touched first, however many there are.
+ *
+ * The pages walk LINE ITEMS (`by_owner_and_lastUpdated`, newest first), and a
+ * card is listed exactly once, at its newest line: a line whose card has a
+ * newer line is skipped, because that card was listed on this page or an
+ * earlier one. Each listed card reads its own lines, so its counts are the
+ * whole card's, whichever page its other lines fall on. A Have, an edit or a
+ * fold stamps the line, so the card moves to the top and leaves the page it
+ * was on. A page can list fewer cards than it read lines (or none); the
+ * caller asks for more until it has enough.
+ *
+ * A page reads at most `MAX_OWNED_PAGE_LINES` lines whatever it is asked.
+ */
+export const ownedCards = query({
+  args: { paginationOpts: paginationOptsValidator },
+  returns: paginationResultValidator(ownedCardValidator),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const asked = Math.floor(args.paginationOpts.numItems);
+    const numItems = Math.max(1, Math.min(Number.isFinite(asked) ? asked : 1, MAX_OWNED_PAGE_LINES));
+    const result = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_and_lastUpdated", (q) => q.eq("ownerId", ownerId))
+      .order("desc")
+      .paginate({ ...args.paginationOpts, numItems });
+    const page: Array<typeof ownedCardValidator.type> = [];
+    const seen = new Set<string>();
+    for (const line of result.page) {
+      if (seen.has(line.cardId)) continue;
+      seen.add(line.cardId);
+      const lines = await ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", line.cardId))
+        .take(MAX_LINES_PER_CARD);
+      if (lines.some((other) => newerLine(other, line))) continue;
+      let quantity = 0;
+      for (const other of lines) quantity += other.quantity;
+      page.push({
+        cardId: line.cardId,
+        quantity,
+        lines: lines.length,
+        lastUpdated: line.lastUpdated,
+      });
+    }
+    return { ...result, page };
+  },
+});
+
+/**
+ * Does `a` come before `b` in `ownedCards`' order? The index's: `lastUpdated`
+ * descending, then `_creationTime` (every index ends in it) descending.
+ */
+function newerLine(a: CopyRow, b: CopyRow): boolean {
+  if (a._id === b._id) return false;
+  if (a.lastUpdated !== b.lastUpdated) return a.lastUpdated > b.lastUpdated;
+  return a._creationTime > b._creationTime;
+}
 
 /** The caller's line items of one card, oldest first. Empty for a bad id. */
 export const copiesOf = query({
@@ -658,7 +803,9 @@ export const addHave = mutation({
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    return await addOne(ctx, ownerId, args.cardId, haveDetails(args.acquiredOn));
+    const { result, delta } = await addOne(ctx, ownerId, args.cardId, haveDetails(args.acquiredOn));
+    await moveTally(ctx, ownerId, delta);
+    return result;
   },
 });
 
@@ -672,9 +819,13 @@ export const addHaves = mutation({
       refuse(COLLECTION_ERRORS.limit, `That's more than ${MAX_BATCH} cards at once. Add them in smaller bites.`);
     }
     const out = [];
+    let delta = NO_CHANGE;
     for (const cardId of args.cardIds) {
-      out.push({ cardId, ...(await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn))) });
+      const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn));
+      out.push({ cardId, ...added.result });
+      delta = addTallies(delta, added.delta);
     }
+    await moveTally(ctx, ownerId, delta);
     return out;
   },
 });
@@ -685,7 +836,9 @@ export const addLineItem = mutation({
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    return await addOne(ctx, ownerId, args.cardId, args.details);
+    const { result, delta } = await addOne(ctx, ownerId, args.cardId, args.details);
+    await moveTally(ctx, ownerId, delta);
+    return result;
   },
 });
 
@@ -715,6 +868,7 @@ export const updateCopy = mutation({
       homeId,
       lastUpdated: Date.now(),
     });
+    await moveTally(ctx, ownerId, { copies: cleaned.quantity - row.quantity, lines: 0, cards: 0 });
     return { previous };
   },
 });
@@ -727,6 +881,11 @@ export const removeCopy = mutation({
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
     await ctx.db.delete(row._id);
+    await moveTally(ctx, ownerId, {
+      copies: -row.quantity,
+      lines: -1,
+      cards: (await stillHolds(ctx, ownerId, row.cardId)) ? 0 : -1,
+    });
     return { removed: { cardId: row.cardId, details: detailsOf(row) } };
   },
 });
@@ -743,7 +902,16 @@ export const removeCopies = mutation({
     const unique = [...new Set(args.copyIds)];
     const rows = [];
     for (const id of unique) rows.push(await ownCopy(ctx, ownerId, id));
-    for (const row of rows) await ctx.db.delete(row._id);
+    let copies = 0;
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+      copies += row.quantity;
+    }
+    let cards = 0;
+    for (const cardId of distinctCards(rows)) {
+      if (!(await stillHolds(ctx, ownerId, cardId as Id<"cardChecklist">))) cards += 1;
+    }
+    await moveTally(ctx, ownerId, { copies: -copies, lines: -rows.length, cards: -cards });
     return { removed: rows.map((row) => ({ cardId: row.cardId, details: detailsOf(row) })) };
   },
 });
@@ -777,6 +945,11 @@ export const restoreCopy = mutation({
       ...cleaned,
       homeId,
       lastUpdated: Date.now(),
+    });
+    await moveTally(ctx, ownerId, {
+      copies: cleaned.quantity,
+      lines: 1,
+      cards: lines.length === 0 ? 1 : 0,
     });
     return { copyId };
   },

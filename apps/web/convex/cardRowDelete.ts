@@ -21,7 +21,8 @@
  * mid-page rolls the page back rather than telling the operator which card.
  *
  * The callers, and what each does with a collected card:
- *   - `selectorOptions.deleteCard`: refuses (`COLLECTED_CARD_REFUSAL`);
+ *   - `selectorOptions.deleteCard`: refuses (`collectedCardRefusal`, with how
+ *     many collectors hold the card);
  *   - `selectorOptions.commitCardChecklistFinalize`: skips it, counted;
  *   - `parallelChecklistBuild.deleteParallelCardsPage`: blocks the rebuild;
  *   - `wipeVariantTypeSubtree.wipeCardsPage`: refuses, and the dry run lists it.
@@ -36,13 +37,14 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 import { deleteCardTeamLinks } from "./cardTeamLinks";
 import type { CardCountLedger } from "./cardCounts";
+import { collectedCardRefusal, type CollectorCount } from "../lib/collection/collectors";
 
 /**
- * What the operator reads when a delete is refused because a collector owns a
- * copy. Plain about the reason, in NB's voice.
+ * Copy lines `countCollectors` reads before it settles for a floor ("20+").
+ * A refusal names how many collectors are in the way; it never walks every
+ * copy of a card to say so.
  */
-export const COLLECTED_CARD_REFUSAL =
-  "Hold up! A collector has this card in their collection, so it stays in the catalog.";
+export const COLLECTOR_COUNT_LINES = 100;
 
 /**
  * NEO-21: every card delete drops its `cardCrossListings` junction rows first,
@@ -120,6 +122,39 @@ export async function collectedCardIds(
   return out;
 }
 
+/**
+ * How many collectors own copies of `cardIds`, for a refusal to name: distinct
+ * owners over at most `budget` copy lines across all the cards (one indexed
+ * read per card). `atLeast` when the read stopped before seeing every copy,
+ * so the count is a floor. Pass only cards known to be collected.
+ */
+export async function countCollectors(
+  ctx: { db: QueryCtx["db"] },
+  cardIds: ReadonlyArray<Id<"cardChecklist">>,
+  budget: number = COLLECTOR_COUNT_LINES,
+): Promise<CollectorCount> {
+  const owners = new Set<string>();
+  let left = budget;
+  let atLeast = false;
+  for (const cardId of cardIds) {
+    if (left <= 0) {
+      atLeast = true;
+      break;
+    }
+    const rows = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_card", (q) => q.eq("cardId", cardId))
+      .take(left + 1);
+    if (rows.length > left) {
+      atLeast = true;
+      rows.length = left;
+    }
+    left -= rows.length;
+    for (const row of rows) owners.add(row.ownerId);
+  }
+  return { collectors: owners.size, atLeast };
+}
+
 /** The ids of everything `removeCardRow` deleted with the card, for logging. */
 export type RemovedCardRow = {
   crossListingIds: Array<Id<"cardCrossListings">>;
@@ -129,8 +164,8 @@ export type RemovedCardRow = {
 
 /**
  * Delete one card and everything derived from it. See the header for the
- * order. Throws `COLLECTED_CARD_REFUSAL` (writing nothing) for a card a
- * collector owns a copy of.
+ * order. Throws `collectedCardRefusal` (writing nothing, and saying how many
+ * collectors hold it) for a card a collector owns a copy of.
  *
  * `ledger` is REQUIRED: a card delete that does not move its row's count is
  * the drift the count exists to avoid. The caller flushes it once, last.
@@ -142,7 +177,7 @@ export async function removeCardRow(
 ): Promise<RemovedCardRow> {
   // 1. the collector guard
   if (await cardIsCollected(ctx, card._id)) {
-    throw new ConvexError(COLLECTED_CARD_REFUSAL);
+    throw new ConvexError(collectedCardRefusal(await countCollectors(ctx, [card._id])));
   }
   // 2. cross-listings
   const crossListingIds = await deleteCardCrossListingsFor(ctx, card._id);

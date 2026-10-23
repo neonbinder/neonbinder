@@ -194,13 +194,14 @@ function makeStore({ loading = false }: { loading?: boolean } = {}) {
     useBuildingSets: () => L([SET]),
     useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id))),
     useCopiesInVariant: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.variantId === id))),
-    useSummary: () => L({ copies: 2, cards: 2 }),
+    useSummary: () => L({ copies: 2, cards: 2, exact: true }),
     // Newest first: the Gold Refractor was the last Have.
     useOwnedCards: () =>
       L({
         cards: [OHTANI_GOLD, CARDS.find((c) => c.id === COPY_OHTANI.cardId)!],
         copiesByCard: { [OHTANI_GOLD.id]: { quantity: 1, lines: 1 }, [COPY_OHTANI.cardId]: { quantity: 1, lines: 1 } },
         total: 2,
+        totalExact: true,
         goneCardIds: [],
         truncated: false,
       }),
@@ -277,6 +278,56 @@ describe("My Cards on the real collection", () => {
     ]);
     fireEvent.click(cards[0]);
     expect(within(screen.getByRole("dialog")).getByRole("img", { name: new RegExp(`^${escapeRe(cardLabel(OHTANI_GOLD))}`) })).toBeTruthy();
+  });
+
+  it("pages a big collection: Show more counts the whole tally and hands the keyboard to the first card it adds", async () => {
+    // 130 cards, far past one page; the store answers up to the limit asked.
+    const many = Array.from({ length: 130 }, (_, i) => ({ ...OHTANI, id: `c-many-${i}`, cardNumber: String(i + 1) }));
+    const store = makeStore();
+    const limits: number[] = [];
+    store.value.data.useSummary = () => ({ copies: 12_345, cards: 130, exact: true });
+    store.value.data.useOwnedCards = (options) => {
+      const limit = options?.limit ?? 200;
+      limits.push(limit);
+      const cards = many.slice(0, limit);
+      return {
+        cards,
+        copiesByCard: Object.fromEntries(cards.map((c) => [c.id, { quantity: 1, lines: 1 }])),
+        total: 130,
+        totalExact: true,
+        goneCardIds: [],
+        truncated: limit < 130,
+      };
+    };
+    renderAt("/collection", store);
+    expect(screen.getByText("12,345")).toBeTruthy();
+    const list = screen.getByRole("list", { name: "Everything I own, 130 cards" });
+    expect(within(list).getAllByRole("button")).toHaveLength(60);
+    fireEvent.click(screen.getByRole("button", { name: "Show 60 more of 130" }));
+    await waitFor(() => expect(document.activeElement).toBe(within(list).getAllByRole("button")[60]));
+    expect(within(list).getAllByRole("button")).toHaveLength(120);
+    fireEvent.click(screen.getByRole("button", { name: "Show 10 more of 130" }));
+    await waitFor(() => expect(document.activeElement).toBe(within(list).getAllByRole("button")[120]));
+    expect(screen.queryByRole("button", { name: /^Show \d+ more of/ })).toBeNull();
+    expect(Math.max(...limits)).toBe(180);
+  });
+
+  it("reads a count the store could only take part of as a floor, never as the answer", () => {
+    const store = makeStore();
+    store.value.data.useSummary = () => ({ copies: 9_000, cards: 5_000, exact: false });
+    store.value.data.useOwnedCards = () => ({
+      cards: [OHTANI],
+      copiesByCard: { [OHTANI.id]: { quantity: 1, lines: 1 } },
+      total: 5_000,
+      totalExact: false,
+      goneCardIds: [],
+      truncated: true,
+    });
+    renderAt("/collection", store);
+    expect(screen.getByText("5,000+ cards")).toBeTruthy();
+    expect(screen.getByText("9,000+")).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Everything I own, 5,000+ cards" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show 60 more of 5,000+" })).toBeTruthy();
   });
 
   it("shows skeletons, never an empty board, while the reads are in flight", () => {

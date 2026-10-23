@@ -118,7 +118,13 @@ import {
 } from "./lib/parallelCardLink";
 import { teamFullName } from "../lib/teams/team-name";
 // NEO-358 — the one card delete (with its collector guard) and the counts.
-import { cardIsCollected, collectedCardIds, removeCardRow } from "./cardRowDelete";
+import {
+  cardIsCollected,
+  collectedCardIds,
+  countCollectors,
+  removeCardRow,
+} from "./cardRowDelete";
+import { blockedCollectedReason } from "../lib/collection/collectors";
 import { createCardCountLedger } from "./cardCounts";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
@@ -225,10 +231,21 @@ export const BLOCKED_CROSS_LISTED =
   "some of its cards also show under another set — take them off there first";
 /**
  * NEO-358 — a rebuild deletes the parallel's cards, and a card a collector
- * owns a copy of is never deleted (Jason: blocked, not re-pointed).
+ * owns a copy of is never deleted (Jason: blocked, not re-pointed). The
+ * reason says how many collectors are in the way: counted over the collected
+ * cards the check actually read (`countCollectors`, bounded by `budget`
+ * lines), and a floor ("4+") whenever cards it did not read may add more.
  */
-export const BLOCKED_COLLECTED =
-  "collectors own copies of some of its cards, and a rebuild would pull those cards out from under them";
+export async function blockedCollected(
+  ctx: { db: QueryCtx["db"] },
+  cardIds: ReadonlyArray<Id<"cardChecklist">>,
+  { sawEveryCard, budget }: { sawEveryCard: boolean; budget?: number },
+): Promise<string> {
+  const count = await countCollectors(ctx, cardIds, budget);
+  return blockedCollectedReason({ ...count, atLeast: count.atLeast || !sawEveryCard });
+}
+/** Copy lines the list view's block preview reads per blocked parallel. */
+const LIST_BLOCK_COLLECTOR_LINES = 20;
 /**
  * Only for a review someone is working in RIGHT NOW (activity within
  * `REVIEW_ACTIVE_WINDOW_MS`). A parallel has no way to start or reach a review
@@ -916,7 +933,11 @@ export const getParallelsForBuild = query({
           }
           // NEO-358 — same budget: one more indexed read per card looked at.
           if (await cardIsCollected(ctx, card._id)) {
-            blocked = BLOCKED_COLLECTED;
+            // One card read for its collectors; the rest were not checked.
+            blocked = await blockedCollected(ctx, [card._id], {
+              sawEveryCard: false,
+              budget: LIST_BLOCK_COLLECTOR_LINES,
+            });
             break;
           }
         }
@@ -1091,6 +1112,7 @@ export const checkParallelBuildBlocksPage = internalQuery({
       });
     const linked = { bsc: 0, sportlots: 0 };
     let blockedReason: string | undefined;
+    let collectedCard: Id<"cardChecklist"> | undefined;
     for (const card of page.page) {
       if (card.platformData?.bsc?.ref) linked.bsc++;
       if (card.platformData?.sportlots?.ref) linked.sportlots++;
@@ -1100,8 +1122,13 @@ export const checkParallelBuildBlocksPage = internalQuery({
         blockedReason = BLOCKED_CROSS_LISTED;
       } else if (await cardIsCollected(ctx, card._id)) {
         // NEO-358 — beside the scans: a collector's card is never deleted.
-        blockedReason = BLOCKED_COLLECTED;
+        // Its collectors are counted below, once the page's links are.
+        collectedCard = card._id;
+        blockedReason = "collected";
       }
+    }
+    if (collectedCard) {
+      blockedReason = await blockedCollected(ctx, [collectedCard], { sawEveryCard: false });
     }
     return {
       ...(blockedReason ? { blockedReason } : {}),
@@ -1384,7 +1411,12 @@ export const deleteParallelCardsPage = internalMutation({
         return { deleted: 0, done: true, blockedReason: BLOCKED_SCANS, refs: empty };
       }
       if (collected.has(card._id)) {
-        return { deleted: 0, done: true, blockedReason: BLOCKED_COLLECTED, refs: empty };
+        return {
+          deleted: 0,
+          done: true,
+          blockedReason: await blockedCollected(ctx, [...collected], { sawEveryCard: read.isDone }),
+          refs: empty,
+        };
       }
       if (await isCrossListingHome(ctx, card._id)) {
         return {

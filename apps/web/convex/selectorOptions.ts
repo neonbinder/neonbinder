@@ -238,7 +238,8 @@ import { syncCardPlayerLinks } from "./cardPlayerLinks";
 // the one card delete (`removeCardRow`, with its collector guard), the
 // per-mutation card counts, and the stored-card title the backfill shares.
 import { syncCardTeamLinks } from "./cardTeamLinks";
-import { collectedCardIds, removeCardRow } from "./cardRowDelete";
+import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
+import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
 import { createCardCountLedger } from "./cardCounts";
 import { titleForStoredCard } from "./storedCardTitle";
 import {
@@ -6252,7 +6253,7 @@ export const deleteCard = mutation({
     // A missing id threw before (from the bare `ctx.db.delete`); it still does.
     if (!card) throw new Error(`deleteCard: no such card ${args.id}`);
     // NEO-358 — through the one card delete. A card a collector owns a copy
-    // of is REFUSED (`COLLECTED_CARD_REFUSAL`, thrown before any write), and
+    // of is REFUSED (`collectedCardRefusal`, thrown before any write, naming how many collectors hold it), and
     // the row's counts move in this transaction.
     const ledger = createCardCountLedger();
     await removeCardRow(ctx, card, ledger);
@@ -8180,6 +8181,8 @@ function resetTimeBudgetMs(): number {
 type SetBuilderResetResult = {
   /** NEO-306 — pending SportLots set reviews, one per (year, brand). */
   slSetReviewsDeleted: number;
+  /** NEO-358 — the transient per-column sync notices, drained before the rows they name. */
+  selectorSyncStatusDeleted: number;
   /** NEO-358 — collectors' copies, drained before the cards they name. */
   collectionCopiesDeleted: number;
   /** NEO-358 — collectors' binders and boxes, drained after the copies in them. */
@@ -8285,6 +8288,7 @@ async function runSetBuilderReset(
 
   const counts = {
     slSetReviewsDeleted: 0,
+    selectorSyncStatusDeleted: 0,
     collectionCopiesDeleted: 0,
     collectionContainersDeleted: 0,
     collectionBuildingSetsDeleted: 0,
@@ -8309,13 +8313,22 @@ async function runSetBuilderReset(
   // `"exceptReferenceSeed"` scope drops entries from this list but never
   // reorders the rest, so every ordering note below still holds for the
   // tables it does drain — and every table that points INTO the skipped
-  // eight (slSetReviews, collectionCopies, collectionBuildingSets,
+  // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionBuildingSets,
   // cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
     // NEO-306 — FIRST: a review doc points at a year and a brand row, so it
     // drains before the table it references. A handful of docs at most.
     ["slSetReviewsDeleted", internal.selectorOptions.resetSlSetReviewsBatch],
+    // NEO-358 — the per-column sync notices ("SportLots could not be
+    // reached…"). A row names its column's parent selector row, so it drains
+    // before the selector rows. Transient, never catalogue data, and not a
+    // reference-seed table: every scope drains it, or a reused deployment
+    // greets the next run with the last run's failure.
+    [
+      "selectorSyncStatusDeleted",
+      internal.selectorOptions.resetSelectorSyncStatusBatch,
+    ],
     // NEO-358 — collectors' copies point at a card, its variant and its set;
     // "Sets I'm building" at a set. Both go BEFORE the selector rows and the
     // cards, so an interrupted reset never leaves a collector's row pointing
@@ -8598,6 +8611,8 @@ export const resetSetBuilderDataFromCli = internalAction({
   returns: v.object({
     // NEO-306 — pending SportLots set reviews, drained first.
     slSetReviewsDeleted: v.number(),
+    // NEO-358 — the transient per-column sync notices.
+    selectorSyncStatusDeleted: v.number(),
     // NEO-358 — collectors' copies, their binders and boxes, and "Sets I'm
     // building".
     collectionCopiesDeleted: v.number(),
@@ -9016,6 +9031,32 @@ export const resetCollectionCopiesBatch = internalMutation({
   handler: async (ctx) => {
     assertResetArmed();
     const rows = await ctx.db.query("collectionCopies").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `selectorSyncStatus`, looped by `runSetBuilderReset` before
+ * the selector rows its `parentId` names. NEO-358. Every row is a transient
+ * notice about one column's last marketplace sync; a reset that kept them
+ * left a reused deployment showing the previous run's failures (a sport-level
+ * "SportLots could not be reached…" survived a dev reset and failed the E2E
+ * setup spec's `expectNoSyncFailure`).
+ */
+export const resetSelectorSyncStatusBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("selectorSyncStatus")
+      .take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -18366,6 +18407,12 @@ export type FinalizePageResult = {
    * copy. Present only when non-zero, so every other page is unchanged.
    */
   collectedSkipped?: number;
+  /**
+   * NEO-358 — how many collectors own the cards this page kept (bounded:
+   * `collectedCollectorsAtLeast` marks a floor). Present with `collectedSkipped`.
+   */
+  collectedCollectors?: number;
+  collectedCollectorsAtLeast?: boolean;
   /** Rows THIS PAGE found that no incoming card matched. */
   unmatchedExistingIds: Array<Id<"cardChecklist">>;
   /** More phases or more pages remain; call again with `resume`. */
@@ -18548,6 +18595,10 @@ export const commitCardChecklistFinalize = internalMutation({
     // NEO-358 — of `deleteSkipped`, kept because a collector owns a copy.
     // Present only when non-zero.
     collectedSkipped: v.optional(v.number()),
+    // NEO-358 — the collectors who own those kept cards (a floor when
+    // `collectedCollectorsAtLeast`). Present with `collectedSkipped`.
+    collectedCollectors: v.optional(v.number()),
+    collectedCollectorsAtLeast: v.optional(v.boolean()),
     unmatchedExistingIds: v.array(v.id("cardChecklist")),
     hasMore: v.boolean(),
     resume: v.union(
@@ -18594,6 +18645,7 @@ export const commitCardChecklistFinalize = internalMutation({
     // NEO-358 — of `deleteSkipped`, the cards kept because a collector owns a
     // copy. Counted apart so the operator is told why.
     let collectedSkipped = 0;
+    const keptForCollectors: Array<Id<"cardChecklist">> = [];
     const deletedIds: Array<Id<"cardChecklist">> = [];
     // NEO-358 — card deletes and variation links move this checklist's
     // counts; every phase flushes before it returns.
@@ -18650,6 +18702,7 @@ export const commitCardChecklistFinalize = internalMutation({
         if (collected.has(row._id)) {
           deleteSkipped++;
           collectedSkipped++;
+          keptForCollectors.push(row._id);
           continue;
         }
         // NEO-21 / NEO-189 / NEO-313 / NEO-358 — the one card delete: its
@@ -18666,6 +18719,9 @@ export const commitCardChecklistFinalize = internalMutation({
         operatorDeleted++;
       }
       await countLedger.flush(ctx);
+      // NEO-358 — who is in the way, for the banner: one bounded read.
+      const collectors =
+        keptForCollectors.length > 0 ? await countCollectors(ctx, keptForCollectors) : null;
       const offset = resume.offset + slice.length;
       const done = offset >= requestedDeletes.length;
       // One audit line per PAGE that touched deletions. Ids and counts only.
@@ -18689,6 +18745,12 @@ export const commitCardChecklistFinalize = internalMutation({
         operatorDeleted,
         deleteSkipped,
         ...(collectedSkipped > 0 ? { collectedSkipped } : {}),
+        ...(collectors
+          ? {
+              collectedCollectors: collectors.collectors,
+              ...(collectors.atLeast ? { collectedCollectorsAtLeast: true } : {}),
+            }
+          : {}),
         unmatchedExistingIds,
         hasMore: true,
         resume: done
@@ -20528,6 +20590,11 @@ export const commitCardChecklist = action({
     // NEO-358 — operator-named deletes KEPT because a collector owns a copy of
     // the card. Present only when non-zero; the checklist says so.
     collectedDeleteSkipped: v.optional(v.number()),
+    // NEO-358 — how many collectors own those kept cards, so the banner can
+    // say who is in the way. A floor when `collectedDeleteCollectorsAtLeast`
+    // (bounded reads, and pages counted apart may share a collector).
+    collectedDeleteCollectors: v.optional(v.number()),
+    collectedDeleteCollectorsAtLeast: v.optional(v.boolean()),
     // ── NEO-221: names this commit wrote with no review decision ───────────
     // Distinct names (players and teams together), so the banner can say how
     // many links were NOT made rather than leaving the operator to discover it
@@ -20561,6 +20628,8 @@ export const commitCardChecklist = action({
     staleDecisions: number;
     operatorDeleted: number;
     collectedDeleteSkipped?: number;
+    collectedDeleteCollectors?: number;
+    collectedDeleteCollectorsAtLeast?: boolean;
     unreviewedNameCount: number;
     droppedPendingNameCount: number;
   }> => {
@@ -21319,6 +21388,8 @@ export const commitCardChecklist = action({
     let variationsLinked = 0;
     let operatorDeleted = 0;
     let collectedDeleteSkipped = 0;
+    // NEO-358 — pages count their collectors apart; merged as a floor.
+    let collectedDeleteCollectors: CollectorCount | null = null;
     const unmatchedExistingIds: Array<Id<"cardChecklist">> = [];
     const finalizeArgs = {
       selectorOptionId: args.selectorOptionId,
@@ -21362,6 +21433,12 @@ export const commitCardChecklist = action({
       variationsLinked += page.variationsLinked;
       operatorDeleted += page.operatorDeleted;
       collectedDeleteSkipped += page.collectedSkipped ?? 0;
+      if (page.collectedCollectors !== undefined) {
+        collectedDeleteCollectors = mergeCollectorCounts(collectedDeleteCollectors, {
+          collectors: page.collectedCollectors,
+          atLeast: page.collectedCollectorsAtLeast === true,
+        });
+      }
       unmatchedExistingIds.push(...page.unmatchedExistingIds);
       if (!page.hasMore || page.resume === null) break;
       resume = page.resume;
@@ -21463,6 +21540,12 @@ export const commitCardChecklist = action({
       staleDecisions: staleDecisionIds.length,
       operatorDeleted,
       ...(collectedDeleteSkipped > 0 ? { collectedDeleteSkipped } : {}),
+      ...(collectedDeleteCollectors
+        ? {
+            collectedDeleteCollectors: collectedDeleteCollectors.collectors,
+            ...(collectedDeleteCollectors.atLeast ? { collectedDeleteCollectorsAtLeast: true } : {}),
+          }
+        : {}),
       // NEO-221: players and teams together and deduped — the operator is
       // being told "these names got no link", and which table a name would
       // have landed in is not the part they need.

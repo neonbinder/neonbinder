@@ -16,8 +16,8 @@
  * REPLACES a copy's details, so a patch here is merged onto the copy first.
  */
 
-import { createElement, useMemo, useRef, type ReactNode } from "react";
-import { useMutation, useQueries, useQuery } from "convex/react";
+import { createElement, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useMutation, usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import type { OptimisticLocalStore } from "convex/browser";
 import type { FunctionReturnType } from "convex/server";
 import type { Infer } from "convex/values";
@@ -72,6 +72,8 @@ const SEARCH_LIMIT = 50;
 const ENTITY_LIMIT = 100;
 /** Card ids per `cards` call (the server's cap). */
 const CARDS_PER_CALL = 200;
+/** Line items one `collection.ownedCards` page asks for (the server reads at most 64). */
+const OWNED_LINES_PER_PAGE = 60;
 /** Copies `removeCopies` takes per call (the server's cap). */
 const REMOVE_BATCH = 200;
 
@@ -443,14 +445,18 @@ export const CONVEX_DATA: CollectionData = {
 
   useSummary() {
     const raw = useQuery(api.collection.summary, {});
-    return useMemo(() => (raw ? { copies: raw.copies, cards: raw.distinctCards } : undefined), [raw]);
+    return useMemo(
+      () => (raw ? { copies: raw.copies, cards: raw.distinctCards, exact: raw.exact } : undefined),
+      [raw],
+    );
   },
 
   /**
-   * The summary's per-card list (most recently touched first; the same
-   * subscription `useSummary` holds), hydrated through `cards` in pages of
-   * `CARDS_PER_CALL`. The summary reads at most `MAX_SUMMARY_LINES` line items
-   * in one go and has no cursor: past that, `truncated` and the newest cards.
+   * "Everything I own", paged from the server (`collection.ownedCards`, most
+   * recently touched first, each card once) for as many pages as `limit`
+   * needs, and hydrated through `cards` in chunks of `CARDS_PER_CALL`. The
+   * total is the collector's tally (`collection.summary`), so "of M" is the
+   * whole collection's, not what has been paged in.
    *
    * A Have reorders the list and so re-asks for the cards. While that answer
    * is in flight the cards already hydrated stand in (a card is NB data and
@@ -459,12 +465,24 @@ export const CONVEX_DATA: CollectionData = {
    */
   useOwnedCards(options) {
     const limit = Math.max(1, Math.floor(options?.limit ?? OWNED_CARDS_DEFAULT_LIMIT));
-    const raw = useQuery(api.collection.summary, {});
-    const ids = useMemo(() => (raw ? raw.cards.slice(0, limit).map((c) => c.cardId as string) : null), [raw, limit]);
+    const tally = useQuery(api.collection.summary, {});
+    const pages = usePaginatedQuery(api.collection.ownedCards, {}, { initialNumItems: OWNED_LINES_PER_PAGE });
+    const held = useMemo(() => uniqueOwned(pages.results), [pages.results]);
+    const canLoadMore = pages.status === "CanLoadMore";
+    const { loadMore } = pages;
+    useEffect(() => {
+      if (canLoadMore && held.length < limit) loadMore(OWNED_LINES_PER_PAGE);
+    }, [canLoadMore, held.length, limit, loadMore]);
+    const firstPage = pages.status !== "LoadingFirstPage";
+    const ids = useMemo(
+      () => (firstPage ? held.slice(0, limit).map((c) => c.cardId as string) : null),
+      [firstPage, held, limit],
+    );
     const hydrated = CONVEX_DATA.useCards(ids);
     const seen = useRef(new Map<string, Card | null>());
+    const exhausted = pages.status === "Exhausted";
     return useMemo((): OwnedCards | undefined => {
-      if (!raw || ids === null) return undefined;
+      if (!tally || ids === null) return undefined;
       if (hydrated) ids.forEach((id, i) => seen.current.set(id, hydrated[i] ?? null));
       else if (ids.some((id) => !seen.current.has(id)) && seen.current.size === 0) return undefined;
       const cards: Card[] = [];
@@ -478,18 +496,37 @@ export const CONVEX_DATA: CollectionData = {
           return;
         }
         cards.push(card);
-        copiesByCard[id] = { quantity: raw.cards[i].quantity, lines: raw.cards[i].lines };
+        copiesByCard[id] = { quantity: held[i].quantity, lines: held[i].lines };
       });
       return {
         cards,
         copiesByCard,
-        total: raw.distinctCards,
+        total: tally.distinctCards,
+        totalExact: tally.exact,
         goneCardIds,
-        truncated: raw.truncated || raw.cards.length > limit,
+        truncated: held.length > limit || !exhausted,
       };
-    }, [raw, ids, hydrated]);
+    }, [tally, ids, hydrated, held, limit, exhausted]);
   },
 };
+
+type RawOwned = FunctionReturnType<typeof api.collection.ownedCards>["page"][number];
+
+/**
+ * The pages' cards, each once, in order. The server already lists a card only
+ * at its newest line; this holds the list steady while a Have moves a card
+ * between pages that have not both re-answered yet.
+ */
+function uniqueOwned(results: readonly RawOwned[]): RawOwned[] {
+  const seen = new Set<string>();
+  const out: RawOwned[] = [];
+  for (const row of results) {
+    if (seen.has(row.cardId)) continue;
+    seen.add(row.cardId);
+    out.push(row);
+  }
+  return out;
+}
 
 function suggestionsFrom(raw: RawSuggest): Suggestion[] {
   return [

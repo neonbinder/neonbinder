@@ -322,6 +322,11 @@ export interface CollectionSummary {
   copies: number;
   /** Distinct checklist cards owned. */
   cards: number;
+  /**
+   * False when the store could only count part of the collection: both
+   * numbers are then a floor, and read as "5,000+", never as the answer.
+   */
+  exact: boolean;
 }
 
 /** One card the collector holds, as the owned-cards list counts it. */
@@ -338,14 +343,13 @@ export interface OwnedCards {
   cards: Card[];
   /** How many of each listed card the collector holds, by card id. */
   copiesByCard: Record<CardId, HeldCount>;
-  /** Distinct cards held, as far as the store could read (see `truncated`). */
+  /** Distinct cards held, the whole collection's (see `totalExact`). */
   total: number;
+  /** False when `total` is only a floor (read it as "5,000+"). */
+  totalExact: boolean;
   /** Held cards that are no longer in the catalog, within the limit: say so, never crash. */
   goneCardIds: CardId[];
-  /**
-   * True when there is more than `cards` shows: past the limit asked for, or
-   * past what the store reads in one go.
-   */
+  /** True when the collection holds more cards than `cards` and `goneCardIds` list. */
   truncated: boolean;
 }
 

@@ -125,7 +125,11 @@ export interface CollectionData {
   useCopiesInVariant(variantId: VariantId | null): Copy[] | undefined;
   /** The whole collection at a glance. */
   useSummary(): CollectionSummary | undefined;
-  /** Every card the collector holds, most recently touched first, up to `limit`. */
+  /**
+   * Every card the collector holds, most recently touched first, up to
+   * `limit`: raise the limit to page further. The Convex store pages the
+   * server for as many as it needs, so there is no ceiling but the limit.
+   */
   useOwnedCards(options?: OwnedCardsOptions): OwnedCards | undefined;
 }
 
@@ -134,7 +138,7 @@ export interface OwnedCardsOptions {
   limit?: number;
 }
 
-/** One page of the owned-cards list (one catalog read in the Convex store). */
+/** The owned-cards list's limit when none is asked for. */
 export const OWNED_CARDS_DEFAULT_LIMIT = 200;
 
 /** The writes. Each resolves with its undo; see the module comment. */

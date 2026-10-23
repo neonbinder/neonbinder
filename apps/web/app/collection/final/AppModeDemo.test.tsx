@@ -23,6 +23,7 @@ vi.mock("convex/react", () => {
   return {
     useQuery: () => undefined,
     useQueries: () => ({}),
+    usePaginatedQuery: () => ({ results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} }),
     useMutation: () => mutation(),
   };
 });

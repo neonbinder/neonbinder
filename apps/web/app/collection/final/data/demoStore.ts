@@ -530,14 +530,25 @@ export const DEMO_DATA: CollectionData = {
         cards.push(card);
         copiesByCard[id] = held.get(id)!;
       }
-      return { cards, copiesByCard, total: order.length, goneCardIds, truncated: order.length > limit };
+      return {
+        cards,
+        copiesByCard,
+        total: order.length,
+        totalExact: true,
+        goneCardIds,
+        truncated: order.length > limit,
+      };
     }, [copies, limit]);
   },
 
   useSummary() {
     const copies = useDemoState().state.copies;
     return useMemo(
-      () => ({ copies: copies.reduce((n, c) => n + c.quantity, 0), cards: new Set(copies.map((c) => c.cardId)).size }),
+      () => ({
+        copies: copies.reduce((n, c) => n + c.quantity, 0),
+        cards: new Set(copies.map((c) => c.cardId)).size,
+        exact: true,
+      }),
       [copies],
     );
   },

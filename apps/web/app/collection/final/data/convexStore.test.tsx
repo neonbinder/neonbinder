@@ -23,10 +23,34 @@ const calls = vi.hoisted(() => ({ list: [] as { name: string; args: unknown }[],
 const queried = vi.hoisted(() => [] as { name: string; args: unknown }[]);
 /** What a query answers once loaded, by function name: a value, or a function of the args. */
 const loaded = vi.hoisted(() => new Map<string, unknown>());
+/**
+ * The paginated reads, by function name: the server's pages in order (absent
+ * = the first page is still loading). The mock shows one page more per
+ * `loadMore`, and records what each `loadMore` asked for.
+ */
+const paged = vi.hoisted(() => ({ pages: new Map<string, unknown[][]>(), loadMore: [] as number[] }));
 
 vi.mock("convex/react", async () => {
   const { getFunctionName: nameOf } = await import("convex/server");
+  const { useState } = await import("react");
   return {
+    usePaginatedQuery: (ref: Parameters<typeof nameOf>[0], args: unknown) => {
+      const name = nameOf(ref);
+      queried.push({ name, args });
+      const [shown, setShown] = useState(1);
+      const pages = paged.pages.get(name);
+      const loadMore = (n: number) => {
+        paged.loadMore.push(n);
+        setShown((k) => k + 1);
+      };
+      if (!pages) return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore };
+      return {
+        results: pages.slice(0, shown).flat(),
+        status: shown < pages.length ? "CanLoadMore" : "Exhausted",
+        isLoading: false,
+        loadMore,
+      };
+    },
     useQuery: (ref: Parameters<typeof nameOf>[0], args: unknown) => {
       const name = nameOf(ref);
       queried.push({ name, args });
@@ -94,6 +118,8 @@ beforeEach(() => {
   calls.answers.clear();
   queried.length = 0;
   loaded.clear();
+  paged.pages.clear();
+  paged.loadMore.length = 0;
 });
 afterEach(cleanup);
 
@@ -240,31 +266,62 @@ describe("everything I own", () => {
     set: SET,
     variant: VARIANT,
   });
-  const summary = (ids: string[], truncated = false) => ({
-    copies: ids.length * 2,
-    lines: ids.length,
-    distinctCards: ids.length,
+  const tally = (distinctCards: number, exact = true) => ({
+    copies: distinctCards * 2,
+    lines: distinctCards,
+    distinctCards,
     buildingSets: 0,
-    cards: ids.map((cardId, i) => ({ cardId, quantity: 2, lines: 1, lastUpdated: 100 - i })),
-    truncated,
+    exact,
   });
-
-  it("hydrates the summary's cards, newest first, with how many of each", () => {
-    loaded.set("collection:summary", summary(["k3", "k1"]));
-    loaded.set("collectionCatalog:cards", ({ cardIds }: { cardIds: string[] }) =>
-      cardIds.map((id) => catalogCard(id, id.slice(1))),
-    );
-    const { result } = renderHook(() => useOwnedCards(), { wrapper });
-    expect(result.current!.cards.map((c) => c.id)).toEqual(["k3", "k1"]);
-    expect(result.current!.copiesByCard).toEqual({ k3: { quantity: 2, lines: 1 }, k1: { quantity: 2, lines: 1 } });
-    expect(result.current).toMatchObject({ total: 2, goneCardIds: [], truncated: false });
-  });
-
-  it("lists a held card that left the catalog apart, and stops at the limit", () => {
-    loaded.set("collection:summary", summary(["k1", "gone", "k2"]));
+  /** One server page: each card once, newest first, two copies on one line. */
+  const page = (ids: string[]) => ids.map((cardId, i) => ({ cardId, quantity: 2, lines: 1, lastUpdated: 100 - i }));
+  const catalogAnswers = () =>
     loaded.set("collectionCatalog:cards", ({ cardIds }: { cardIds: string[] }) =>
       cardIds.map((id) => (id === "gone" ? null : catalogCard(id, id.slice(1)))),
     );
+
+  it("hydrates the first page's cards, newest first, with how many of each, and the tally's total", () => {
+    loaded.set("collection:summary", tally(2));
+    paged.pages.set("collection:ownedCards", [page(["k3", "k1"])]);
+    catalogAnswers();
+    const { result } = renderHook(() => useOwnedCards(), { wrapper });
+    expect(result.current!.cards.map((c) => c.id)).toEqual(["k3", "k1"]);
+    expect(result.current!.copiesByCard).toEqual({ k3: { quantity: 2, lines: 1 }, k1: { quantity: 2, lines: 1 } });
+    expect(result.current).toMatchObject({ total: 2, totalExact: true, goneCardIds: [], truncated: false });
+    expect(paged.loadMore).toEqual([]);
+  });
+
+  it("pages the server until it has the cards the limit asks for, and no further", () => {
+    loaded.set("collection:summary", tally(6));
+    paged.pages.set("collection:ownedCards", [page(["k1", "k2"]), page(["k3", "k4"]), page(["k5", "k6"])]);
+    catalogAnswers();
+    const { result, rerender } = renderHook(({ limit }) => useOwnedCards({ limit }), {
+      wrapper,
+      initialProps: { limit: 3 },
+    });
+    expect(result.current!.cards.map((c) => c.id)).toEqual(["k1", "k2", "k3"]);
+    expect(paged.loadMore).toEqual([60]);
+    expect(result.current).toMatchObject({ total: 6, truncated: true });
+
+    // "Show more": a higher limit pages on to the end, and says so.
+    rerender({ limit: 6 });
+    expect(result.current!.cards.map((c) => c.id)).toEqual(["k1", "k2", "k3", "k4", "k5", "k6"]);
+    expect(paged.loadMore).toEqual([60, 60]);
+    expect(result.current!.truncated).toBe(false);
+  });
+
+  it("lists a card once even when two pages both carry it (a Have between their answers)", () => {
+    loaded.set("collection:summary", tally(3));
+    paged.pages.set("collection:ownedCards", [page(["k2", "k1"]), page(["k1", "k3"])]);
+    catalogAnswers();
+    const { result } = renderHook(() => useOwnedCards({ limit: 10 }), { wrapper });
+    expect(result.current!.cards.map((c) => c.id)).toEqual(["k2", "k1", "k3"]);
+  });
+
+  it("lists a held card that left the catalog apart, and stops at the limit", () => {
+    loaded.set("collection:summary", tally(3));
+    paged.pages.set("collection:ownedCards", [page(["k1", "gone", "k2"])]);
+    catalogAnswers();
     const { result } = renderHook(() => useOwnedCards({ limit: 2 }), { wrapper });
     expect(result.current!.cards.map((c) => c.id)).toEqual(["k1"]);
     expect(result.current).toMatchObject({ goneCardIds: ["gone"], truncated: true, total: 3 });
@@ -272,7 +329,8 @@ describe("everything I own", () => {
 
   it("asks the catalog in pages the server accepts", () => {
     const ids = Array.from({ length: 450 }, (_, i) => `k${i}`);
-    loaded.set("collection:summary", summary(ids));
+    loaded.set("collection:summary", tally(450));
+    paged.pages.set("collection:ownedCards", [page(ids)]);
     const asked: number[] = [];
     loaded.set("collectionCatalog:cards", ({ cardIds }: { cardIds: string[] }) => {
       asked.push(cardIds.length);
@@ -283,16 +341,23 @@ describe("everything I own", () => {
     expect(result.current!.cards).toHaveLength(450);
   });
 
-  it("says when the summary itself stopped short", () => {
-    loaded.set("collection:summary", summary(["k1"], true));
-    loaded.set("collectionCatalog:cards", ({ cardIds }: { cardIds: string[] }) => cardIds.map((id) => catalogCard(id, "1")));
-    const { result } = renderHook(() => useOwnedCards(), { wrapper });
-    expect(result.current!.truncated).toBe(true);
+  it("passes on a tally the server could only count part of", () => {
+    loaded.set("collection:summary", tally(5000, false));
+    paged.pages.set("collection:ownedCards", [page(["k1"]), page(["k2"])]);
+    catalogAnswers();
+    const { result } = renderHook(() => useOwnedCards({ limit: 1 }), { wrapper });
+    expect(result.current).toMatchObject({ total: 5000, totalExact: false, truncated: true });
   });
 
-  it("waits while the summary loads", () => {
+  it("waits while the first page or the tally loads", () => {
+    loaded.set("collection:summary", tally(1));
     const { result } = renderHook(() => useOwnedCards(), { wrapper });
     expect(result.current).toBeUndefined();
+    cleanup();
+    loaded.delete("collection:summary");
+    paged.pages.set("collection:ownedCards", [page(["k1"])]);
+    catalogAnswers();
+    expect(renderHook(() => useOwnedCards(), { wrapper }).result.current).toBeUndefined();
   });
 });
 

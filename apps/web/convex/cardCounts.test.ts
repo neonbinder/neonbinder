@@ -21,9 +21,13 @@ import {
   recountCards,
 } from "./cardCounts";
 import { insertCardRow } from "./cardRowCreate";
-import { COLLECTED_CARD_REFUSAL, removeCardRow } from "./cardRowDelete";
+import { COLLECTOR_COUNT_LINES, countCollectors, removeCardRow } from "./cardRowDelete";
 import { moveBuildingSets, moveCards } from "./setShapeMove";
-import { BLOCKED_COLLECTED } from "./parallelChecklistBuild";
+import {
+  blockedCollectedReason,
+  collectedCardRefusal,
+  keptCollectedNote,
+} from "../lib/collection/collectors";
 import {
   confirmPhraseFor,
   ENV_FLAG as WIPE_ENV_FLAG,
@@ -105,11 +109,11 @@ async function addCard(
   );
 }
 
-async function addCopy(t: T, s: Seeded, cardId: Id<"cardChecklist">) {
+async function addCopy(t: T, s: Seeded, cardId: Id<"cardChecklist">, ownerId = "collector_1") {
   return t.run(async (ctx) => {
     const card = (await ctx.db.get(cardId))!;
     return ctx.db.insert("collectionCopies", {
-      ownerId: "collector_1",
+      ownerId,
       cardId,
       variantId: card.selectorOptionId,
       setId: s.set,
@@ -452,7 +456,7 @@ describe("the collector guard on every card delete", () => {
     await primeCounts(t, s.base);
     await expect(
       t.withIdentity(ADMIN).mutation(api.selectorOptions.deleteCard, { id: card }),
-    ).rejects.toThrow(COLLECTED_CARD_REFUSAL);
+    ).rejects.toThrow("Hold up! A collector has this card, so it stays in the catalog.");
     expect(await t.run((ctx) => ctx.db.get(card))).not.toBeNull();
     expect(await stored(t, s.base)).toEqual({ cardCount: 1, nonVariationCardCount: 1 });
   });
@@ -466,7 +470,7 @@ describe("the collector guard on every card delete", () => {
       t.run(async (ctx) => {
         await removeCardRow(ctx, (await ctx.db.get(card))!, createCardCountLedger());
       }),
-    ).rejects.toThrow(COLLECTED_CARD_REFUSAL);
+    ).rejects.toThrow(collectedCardRefusal({ collectors: 1, atLeast: false }));
     expect(await t.run((ctx) => ctx.db.get(card))).not.toBeNull();
   });
 
@@ -495,6 +499,8 @@ describe("the collector guard on every card delete", () => {
     expect(page.operatorDeleted).toBe(1);
     expect(page.deleteSkipped).toBe(1);
     expect(page.collectedSkipped).toBe(1);
+    expect(page.collectedCollectors).toBe(1);
+    expect(page).not.toHaveProperty("collectedCollectorsAtLeast");
     expect(await t.run((ctx) => ctx.db.get(owned))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.get(free))).toBeNull();
   });
@@ -520,6 +526,7 @@ describe("the collector guard on every card delete", () => {
       cardCount: 0,
     });
     expect(page).not.toHaveProperty("collectedSkipped");
+    expect(page).not.toHaveProperty("collectedCollectors");
   });
 
   test("the parallel rebuild is BLOCKED by a collected card, and the page deletes nothing", async () => {
@@ -531,7 +538,11 @@ describe("the collector guard on every card delete", () => {
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
     });
-    expect(result).toMatchObject({ deleted: 0, done: true, blockedReason: BLOCKED_COLLECTED });
+    expect(result).toMatchObject({
+      deleted: 0,
+      done: true,
+      blockedReason: blockedCollectedReason({ collectors: 1, atLeast: false }),
+    });
     const left = await t.run((ctx) =>
       ctx.db
         .query("cardChecklist")
@@ -550,7 +561,8 @@ describe("the collector guard on every card delete", () => {
       parallelId: s.parallel,
       cursor: null,
     });
-    expect(check.blockedReason).toBe(BLOCKED_COLLECTED);
+    // One collected card read; the page's others were not checked for theirs.
+    expect(check.blockedReason).toBe(blockedCollectedReason({ collectors: 1, atLeast: true }));
   });
 
   test("the subtree wipe refuses a collected card, and its dry run counts it", async () => {
@@ -702,5 +714,109 @@ describe("backfillVariantCardCounts", () => {
       cursor: "abc:def",
     });
     expect(() => parseResumeCursor("setName:0:")).toThrow(/not one this backfill returned/);
+  });
+});
+
+describe("a refusal says how many collectors are in the way", () => {
+  test("deleteCard names the collectors, each once however many copies they hold", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const card = await addCard(t, s.base, "1");
+    for (const owner of ["collector_a", "collector_b", "collector_c", "collector_a"]) {
+      await addCopy(t, s, card, owner);
+    }
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.deleteCard, { id: card }),
+    ).rejects.toThrow("Hold up! 3 collectors have this card, so it stays in the catalog.");
+  });
+
+  test("past the bounded read the count is a floor, never a guess", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const card = await addCard(t, s.base, "1");
+    await t.run(async (ctx) => {
+      const c = (await ctx.db.get(card))!;
+      for (let i = 0; i <= COLLECTOR_COUNT_LINES; i += 1) {
+        await ctx.db.insert("collectionCopies", {
+          ownerId: `collector_${i}`,
+          cardId: card,
+          variantId: c.selectorOptionId,
+          setId: s.set,
+          homeId: s.home,
+          quantity: 1,
+          lastUpdated: NOW,
+        });
+      }
+    });
+    expect(await t.run((ctx) => countCollectors(ctx, [card]))).toEqual({
+      collectors: COLLECTOR_COUNT_LINES,
+      atLeast: true,
+    });
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.deleteCard, { id: card }),
+    ).rejects.toThrow(`Hold up! ${COLLECTOR_COUNT_LINES}+ collectors have this card`);
+  });
+
+  test("the parallel rebuild's block counts the collectors across the collected cards it read", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const one = await addCard(t, s.parallel, "1");
+    const two = await addCard(t, s.parallel, "2");
+    await addCopy(t, s, one, "collector_a");
+    await addCopy(t, s, two, "collector_b");
+    await addCopy(t, s, two, "collector_a");
+    const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
+      parallelId: s.parallel,
+    });
+    expect(result.blockedReason).toBe(
+      "2 collectors own copies of its cards, and a rebuild would pull those cards out from under them",
+    );
+  });
+
+  test("the subtree wipe's refusal names the collectors", async () => {
+    vi.stubEnv(WIPE_ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const owned = await addCard(t, s.insert, "1");
+    await addCopy(t, s, owned, "collector_a");
+    await addCopy(t, s, owned, "collector_b");
+    const confirm = confirmPhraseFor("Insert", ["Baseball", "2024", "Topps", "Chrome"], s.insertType);
+    await expect(
+      t.mutation(internal.wipeVariantTypeSubtree.wipeCardsPage, {
+        variantTypeId: s.insertType,
+        confirm,
+        nodeId: s.insert,
+      }),
+    ).rejects.toThrow(/is in 2 collectors' collections/);
+  });
+
+  test("the checklist commit reports the collectors behind the cards it kept", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const one = await addCard(t, s.base, "1");
+    const two = await addCard(t, s.base, "2");
+    await addCopy(t, s, one, "collector_a");
+    await addCopy(t, s, two, "collector_b");
+    await addCopy(t, s, two, "collector_c");
+    const page = await t.mutation(internal.selectorOptions.commitCardChecklistFinalize, {
+      selectorOptionId: s.base,
+      committedIds: [],
+      committedNumbers: [],
+      operatorDeleteIds: [one, two],
+      variationLinks: [],
+      variationClearIds: [],
+      customSortOrders: [],
+      resolvedPlayerNames: [],
+      resolvedTeamNames: [],
+      skippedPlayerNames: [],
+      skippedTeamNames: [],
+      reviewRowIds: [],
+      bscTeamEnrichmentIds: [],
+      cardCount: 0,
+    });
+    expect(page).toMatchObject({ collectedSkipped: 2, collectedCollectors: 3 });
+    expect(keptCollectedNote(2, { collectors: page.collectedCollectors!, atLeast: false })).toBe(
+      "Kept 2 cards: 3 collectors have them, so they stay in the catalog.",
+    );
   });
 });

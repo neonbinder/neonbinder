@@ -7,6 +7,7 @@ import type { GenericId } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardChecklistItem from "./CardChecklistItem";
 import { compareCardNumbers } from "@/lib/cards/card-number";
+import { keptCollectedNote } from "@/lib/collection/collectors";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
@@ -2122,11 +2123,14 @@ export default function CardChecklist({
         notes.push(`Deleted ${result.operatorDeleted}.`);
       }
       // NEO-358 — a delete the server refused because a collector owns a copy.
+      // It says how many collectors are in the way (a floor, "5+", when the
+      // server's bounded count could not see them all).
       if (result.collectedDeleteSkipped) {
         notes.push(
-          result.collectedDeleteSkipped === 1
-            ? "Kept 1 card a collector owns — it stays in the catalog."
-            : `Kept ${result.collectedDeleteSkipped} cards collectors own — they stay in the catalog.`,
+          keptCollectedNote(result.collectedDeleteSkipped, {
+            collectors: result.collectedDeleteCollectors ?? 1,
+            atLeast: result.collectedDeleteCollectorsAtLeast === true,
+          }),
         );
       }
       if (result.staleDecisions) {

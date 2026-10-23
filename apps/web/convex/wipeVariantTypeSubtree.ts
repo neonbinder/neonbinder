@@ -122,7 +122,12 @@ import { variantTypeKind } from "./variantRole";
 // NEO-313 / NEO-358 — each wiped card goes through the one card delete,
 // `removeCardRow`: its cross-listings, its player and team index rows, the
 // card and its row's counts, behind the collector guard.
-import { cardIsCollected, collectedCardIds, removeCardRow } from "./cardRowDelete";
+import {
+  cardIsCollected,
+  collectedCardIds,
+  countCollectors,
+  removeCardRow,
+} from "./cardRowDelete";
 import { createCardCountLedger } from "./cardCounts";
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1114,15 +1119,20 @@ export const wipeCardsPage = internalMutation({
       cards.map((card) => card._id),
     );
     ops += cards.length;
-    const refuseCollected = (cardId: Id<"cardChecklist">): never => {
+    const refuseCollected = async (cardId: Id<"cardChecklist">): Promise<never> => {
+      const count = await countCollectors(ctx, [cardId]);
+      const held =
+        count.collectors <= 1
+          ? "a collector's collection"
+          : `${count.collectors}${count.atLeast ? "+" : ""} collectors' collections`;
       throw new ConvexError(
-        `Refused: card ${cardId} is in a collector's collection, and this ` +
+        `Refused: card ${cardId} is in ${held}, and this ` +
           `wipe never deletes a card someone owns a copy of. The dry run ` +
           `counts these as cardsCollected. This page wrote nothing.`,
       );
     };
     for (const card of cards) {
-      if (collected.has(card._id)) refuseCollected(card._id);
+      if (collected.has(card._id)) await refuseCollected(card._id);
     }
 
     const countLedger = createCardCountLedger();
@@ -1193,7 +1203,7 @@ export const wipeCardsPage = internalMutation({
         }
         // NEO-358 — a child off this page was not in the pre-check.
         if (!collected.has(child._id) && (await cardIsCollected(ctx, child._id))) {
-          refuseCollected(child._id);
+          await refuseCollected(child._id);
         }
         ops += 1;
         await dropCard(child);

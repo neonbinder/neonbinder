@@ -112,6 +112,7 @@ On success it prints the per-table counts:
   "playerSportsDeleted": 4,
   "playersDeleted": 288,
   "selectorOptionsDeleted": 9134,
+  "selectorSyncStatusDeleted": 14,
   "slSetReviewsDeleted": 2,
   "teamAliasesDeleted": 9,
   "teamsDeleted": 76,
@@ -129,6 +130,9 @@ cards, in both scopes. A collector's Main binder is re-created on their next
 add.
 `cardTeamLinksDeleted` is the derived team → cards index, drained before the
 cards like `cardPlayerLinksDeleted`.
+`selectorSyncStatusDeleted` is the per-column sync notices ("SportLots could
+not be reached…"), drained in both scopes before the selector rows they name,
+so a reused deployment does not show the last run's sync failures.
 
 `"complete": false` means the time budget ran out first — the counts are real,
 but rows remain; run it again until it reports `true`.

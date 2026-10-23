@@ -6,7 +6,6 @@ import { FOCUS, LABEL, QUIET_BUTTON, SELECT } from "../../prototypes/p3/classes"
 import { useRoving } from "../../prototypes/p3/hooks";
 import { openView } from "../binders/openView";
 import { cardCaption } from "../captions";
-import { cardsCount } from "../catalog/format";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
 import { demoCard } from "../data/demoStore";
 import { cardLabel, compareCards } from "../data/labels";
@@ -422,11 +421,26 @@ function ShelfCard({ item, tabIndex, onOpen }: { item: Item; tabIndex: number; o
 /** Cards the real collection's list hydrates per step (a "Show more" asks for this many more). */
 const OWNED_PAGE = 60;
 
+/** "12,345", or "5,000+" when the store could only count that far. */
+function countText(n: number, exact: boolean): string {
+  return `${n.toLocaleString("en-US")}${exact ? "" : "+"}`;
+}
+
+/** "1 card", "12,345 cards", "5,000+ cards". */
+function ownedCardsText(n: number, exact: boolean): string {
+  return exact && n === 1 ? "1 card" : `${countText(n, exact)} cards`;
+}
+
 /**
  * NEO-358 — "Everything I own" in the real collection, until binders ship:
  * the tally line, then every card the collector holds, most recently touched
  * first, as the same image grid the demo's shelf uses. Each card opens the
  * drawer, stepping through the cards on screen.
+ *
+ * There is no cap on a collection (dealers hold tens of thousands), so the
+ * list pages: "Show 60 more of 12,345" asks the store for 60 more, and the
+ * total is the collector's tally, not what has loaded. A count the store
+ * could only take part of reads as a floor ("5,000+").
  */
 export function CollectionTally() {
   const summary = useSummary();
@@ -437,7 +451,9 @@ export function CollectionTally() {
   const ids = useMemo(() => owned?.cards.map((c) => c.id) ?? [], [owned]);
   const roving = useRoving(grid, ids);
   const focusFirstNew = useFocusFirstNew(ids, roving.focusKey);
-  const more = owned ? owned.total - owned.cards.length - owned.goneCardIds.length : 0;
+  const listed = owned ? owned.cards.length + owned.goneCardIds.length : 0;
+  // Past a floor ("5,000+") the true remainder is unknown: offer a full page.
+  const more = owned ? (owned.totalExact ? owned.total - listed : Math.max(owned.total - listed, OWNED_PAGE)) : 0;
 
   return (
     <section aria-labelledby="mc-tally-heading" className="mt-10">
@@ -455,8 +471,9 @@ export function CollectionTally() {
         </p>
       ) : (
         <p className="mt-1 text-sm text-ink-2">
-          <strong className="text-ink">{cardsCount(summary.cards)}</strong> in the collection,{" "}
-          <strong className="text-ink">{summary.copies}</strong> in hand counting the extras. Newest first.
+          <strong className="text-ink">{ownedCardsText(summary.cards, summary.exact)}</strong> in the collection,{" "}
+          <strong className="text-ink">{countText(summary.copies, summary.exact)}</strong> in hand counting the
+          extras. Newest first.
         </p>
       )}
 
@@ -471,7 +488,7 @@ export function CollectionTally() {
       {owned && owned.cards.length > 0 && (
         <ul
           ref={grid}
-          aria-label={`Everything I own, ${cardsCount(owned.total)}`}
+          aria-label={`Everything I own, ${ownedCardsText(owned.total, owned.totalExact)}`}
           onKeyDown={roving.onKeyDown}
           onFocus={roving.onFocus}
           className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-x-3 gap-y-4"
@@ -502,7 +519,7 @@ export function CollectionTally() {
           }}
           className={`${QUIET_BUTTON} mt-4`}
         >
-          Show {Math.min(OWNED_PAGE, more)} more of {owned.total}
+          Show {Math.min(OWNED_PAGE, more)} more of {countText(owned.total, owned.totalExact)}
         </button>
       )}
     </section>
