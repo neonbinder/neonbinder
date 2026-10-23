@@ -243,6 +243,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
+- `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs only, see "Accessibility checks").
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
   `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
@@ -459,10 +460,17 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   NeonBinder's and that NeonBinder cannot change, each entry with its reason.
   Never add NeonBinder's own UI to it, and never exclude something to make a
   spec pass.
-- The browser runs in Playwright's default light colour scheme. The app
-  renders dark whatever the OS setting (`dark:` keys off `<html
-  class="dark">`, NEO-341), so this is what every user sees; never force a
-  colour scheme in a spec.
+- The suite runs as a dark-OS user: `playwright.config.ts` pins
+  `use.colorScheme: "dark"`, and the app follows the OS while a collector is on
+  System (the default), so every spec and every axe check sees the dark theme.
+  Only the theme specs (`profile/theme-setting`, `home/collection-demo-theme`,
+  `home/binder-tracking-demo-theme`) call `page.emulateMedia` or change the
+  saved theme, and each restores what it changed: System saved and the OS
+  dark again, in a `finally` block (R7), so a later spec on the same worker
+  never runs light. No other spec forces a colour scheme or picks a theme.
+  Prove a mode by what is painted (`support/theme.ts`: the page colour and a
+  heading's colour, via `toHaveCSS`) plus the control that reads as chosen,
+  never by the `<html data-theme>` attribute.
 - `incomplete` results in the attachment (axe could not decide, e.g. text
   over an image or gradient) never fail a test; read them when changing a
   screen's colours.
