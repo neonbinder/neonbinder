@@ -196,6 +196,16 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 
 `bg-hover` equals `bg-raised` in dark, so never use it for a hover that sits on a raised surface; that is what `hover-raised` is for.
 
+In dark these tiles are light greys, and `ink-3` and the pink and violet `-text` hues miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a pink fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
+
+### Panels and washes
+
+| Role | Use | Dark | Light |
+|---|---|---|---|
+| `panel`, `panel-hover`, `panel-rule` | a quiet tile on the page (the Print Shop's tool cards and summaries): fill, under the pointer, edge. Pair with `shadow-offset` | `field` at 40%, `field`, `rule` | #FFFFFF, #F0F2F9, #BCB9CF |
+| `wash-green`, `wash-blue`, `wash-pink` | gradient stops for a promo panel on the public landing page | the neon at 10% | #FFFFFF (a sheet) |
+| `wash-rule-green`, `wash-rule-pink` | that panel's edge | the neon at 30% / 40% | #BCB9CF |
+
 ### Hued picks and badges
 
 `pick-X`, `pick-X-rule` and `pick-X-ink` for X in pink, blue, green, purple, orange, teal, amber, red and emerald: a fill, its edge, and ink on the fill. Dark is Tailwind's -900 fill, -700 edge and -300 ink; light is a pale tint of the hue, the same -700 edge (3:1 on white and on the tint) and -800 ink (4.5:1 on the tint). The set picker's columns each select in their own hue (pink sports, blue years, green brands, purple sets, orange variant types, teal variants, amber parallels), and the checklist's attribute badges (RC amber, AU purple, Relic pink, SP red, #'d emerald) use the same family: `bg-pick-amber border-pick-amber-rule text-pick-amber-ink`.
@@ -253,7 +263,7 @@ Depth is mostly tonal: `surface` → `raised` → `field`, separated by `rule` b
 
 - **Floating layer** (Tailwind `shadow-lg` / `shadow-xl`): dialogs, dropdowns, popovers, in both modes.
 - **Neon glow** (dark only): marks "lit", meaning the active binder tab and a few live highlights. Scaled by `--glow`, so it is absent in light.
-- **Hard offset** (light only, `shadow-offset`): a 5px 5px 0 cyan shadow, bottom and right, no blur, under scoreboards, the set picker's columns, sheets, popovers and notices. Green when the element or a child carries `data-complete="true"`. Dark keeps whatever shadow the element had.
+- **Hard offset** (light only, `shadow-offset`): a 5px 5px 0 cyan shadow, bottom and right, no blur, under scoreboards, the set picker's columns, sheets, popovers and notices. Green when the element or a child carries `data-complete="true"`. It holds under the pointer too: a `hover:shadow-lg` glow on the same element shows in dark only. Dark keeps whatever shadow the element had.
 
 ### Shadow Vocabulary
 - **Tab glow** (`0 0 12px 2px <hue>/0.4, inset 0 0 8px <hue>/0.1`): the active binder tab in dark, in its section's hue. Light draws a 4px inset edge in the hue on every tab, 6px on the lit one.

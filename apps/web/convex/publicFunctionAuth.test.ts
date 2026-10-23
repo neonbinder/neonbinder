@@ -2096,7 +2096,7 @@ describe("NEO-345: the autograph format door is admin-gated", () => {
  * visitors keep their choice in localStorage and never reach this. Its own
  * file covers the merge semantics; this pins the gate beside the others.
  */
-describe("NEO-356: the theme preference write requires a signed-in caller", () => {
+describe("NEO-356: the theme preference write requires a signed-in caller, and the read answers only the caller", () => {
   test("userProfile.setThemePreference refuses a signed-out caller and lands for a signed-in one", async () => {
     const t = convexTest(schema, modules);
     await expect(
@@ -2109,5 +2109,21 @@ describe("NEO-356: the theme preference write requires a signed-in caller", () =
     expect(rows.map((r) => [r.userId, r.preferences])).toEqual([
       [SIGNED_IN.subject, { theme: "light" }],
     ]);
+  });
+
+  // The narrow read ProfileThemeSync subscribes to app-wide. Signed out it
+  // answers null (there is no anonymous row), and signed in it answers the
+  // caller's OWN theme only, never another collector's.
+  test("userProfile.getThemePreference answers null signed out and only the caller's own theme signed in", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", { userId: "someone-else", preferences: { theme: "dark" } });
+    });
+    expect(await t.query(api.userProfile.getThemePreference, {})).toBeNull();
+    expect(await t.withIdentity(SIGNED_IN).query(api.userProfile.getThemePreference, {})).toBeNull();
+
+    await t.withIdentity(SIGNED_IN).mutation(api.userProfile.setThemePreference, { theme: "light" });
+    expect(await t.withIdentity(SIGNED_IN).query(api.userProfile.getThemePreference, {})).toBe("light");
+    expect(await t.query(api.userProfile.getThemePreference, {})).toBeNull();
   });
 });

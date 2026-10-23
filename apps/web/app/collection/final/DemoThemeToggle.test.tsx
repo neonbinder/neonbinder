@@ -79,8 +79,26 @@ describe("who sees the demo theme switch", () => {
     expect(showDemoThemeToggle(false, "dark")).toBe(true);
   });
 
-  it("shows while Clerk is still loading, so a visitor never waits for it", () => {
-    expect(showDemoThemeToggle(undefined, "dark")).toBe(true);
+  it("while Clerk is still loading, follows the device's stored choice, so it never shows and then vanishes", () => {
+    expect(showDemoThemeToggle(undefined, "system")).toBe(true);
+    expect(showDemoThemeToggle(undefined, "dark")).toBe(false);
+    expect(showDemoThemeToggle(undefined, "light")).toBe(false);
+  });
+
+  it("a keyboard user's focus is never pulled: a signed-in collector with a mirrored saved mode never sees it mount", () => {
+    auth.isLoaded = false;
+    auth.isSignedIn = undefined;
+    localStorage.setItem(THEME_STORAGE_KEY, "light");
+    const { rerender } = renderDemo();
+    expect(group()).toBeNull();
+    auth.isLoaded = true;
+    auth.isSignedIn = true;
+    rerender(
+      <ThemeProvider>
+        <Harness />
+      </ThemeProvider>,
+    );
+    expect(group()).toBeNull();
   });
 
   it("shows to a signed-in collector on System", () => {
@@ -148,20 +166,13 @@ describe("flipping the demo", () => {
     expect(theme()).toBe("light");
   });
 
-  it("releases its override if the switch hides after a pick (Clerk finished: saved mode)", () => {
-    auth.isLoaded = false;
-    auth.isSignedIn = undefined;
-    localStorage.setItem(THEME_STORAGE_KEY, "dark");
-    const { rerender } = renderDemo();
+  it("releases its override if the switch hides after a pick (the collector's saved mode arrived)", () => {
+    auth.isSignedIn = true;
+    renderDemo();
     fireEvent.click(screen.getByRole("radio", { name: "Light" }));
     expect(theme()).toBe("light");
-    auth.isLoaded = true;
-    auth.isSignedIn = true;
-    rerender(
-      <ThemeProvider>
-        <Harness />
-      </ThemeProvider>,
-    );
+    // ProfileThemeSync pushing a saved Dark from another device.
+    act(() => latest.current?.setProfilePreference("dark"));
     expect(group()).toBeNull();
     expect(theme()).toBe("dark");
   });

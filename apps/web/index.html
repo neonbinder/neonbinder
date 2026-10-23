@@ -8,7 +8,12 @@
          src/theme/theme-mode.ts (THEME_STORAGE_KEY "nb-theme"); keep the two
          in step, src/theme/theme-mode.test.tsx checks the key and the query.
          Runs before any stylesheet; ThemeProvider takes over once React
-         mounts. Without storage (private mode) it follows the system. -->
+         mounts. Without storage (private mode) it follows the system.
+         CSP: an inline script. A future Content-Security-Policy must allow
+         it by hash, script-src 'sha256-uz1N3ItMqOR2EKeDdm3IhPXA2JT72B4MHggDhG28MCg='
+         (never 'unsafe-inline'). Any edit to the script, whitespace
+         included, changes the hash: theme-mode.test.tsx recomputes it and
+         fails until this line is updated. -->
     <script>
       (function () {
         var pref = null;

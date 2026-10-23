@@ -4,6 +4,7 @@
  * module loads), so these cases run its actual text against the same inputs
  * and hold the two to the same answers.
  */
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import indexHtml from "@/index.html?raw";
 import {
@@ -115,6 +116,13 @@ describe("index.html pre-paint script", () => {
   it("follows the system when storage is blocked", () => {
     expect(run("throws", true)).toBe("dark");
     expect(run("throws", false)).toBe("light");
+  });
+
+  it("the CSP hash recorded beside it is the script's own", () => {
+    // A future Content-Security-Policy allows this script by hash; the hash
+    // in index.html's comment must be the one a browser computes.
+    const hash = createHash("sha256").update(script, "utf8").digest("base64");
+    expect(indexHtml).toContain(`'sha256-${hash}'`);
   });
 
   it("no longer puts the retired `dark` class on <html>", () => {

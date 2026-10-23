@@ -62,7 +62,11 @@ export { expect };
 
 /**
  * Fails the test if axe finds any WCAG 2.0/2.1/2.2 A or AA violation on the
- * page (or only `within` a region), listing each violated rule. Call it once
+ * page (or only `within` a region), listing each violated rule with the mode
+ * (light or dark) it came from. It checks BOTH modes by flipping the OS
+ * colour scheme, and ends with the OS dark; a page that cannot flip is
+ * checked in the mode it is in and says so. A spec that saved an explicit
+ * theme restores System before calling. Call it once
  * the screen or state is on show, i.e. right after the assertion that proves
  * it, at every new screen or state a spec reaches; it runs on both projects.
  * See ./a11y.ts and playwright/GUIDE.md, "Accessibility checks".

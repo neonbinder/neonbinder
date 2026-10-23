@@ -74,6 +74,33 @@ export const getUserProfile = query({
 });
 
 /**
+ * NEO-356 — the signed-in collector's saved theme, and nothing else.
+ *
+ * ProfileThemeSync subscribes to this on every signed-in page, app-wide. It
+ * is its own query rather than `getUserProfile` so that subscription does not
+ * also ship the BSC seller id and the credential lock state to every screen,
+ * and does not re-render the app whenever a credential lock moves.
+ *
+ * `null` when signed out, when the collector has no profile row yet, and when
+ * the row predates the setting; ProfileThemeSync reads all three as System.
+ */
+export const getThemePreference = query({
+  args: {},
+  returns: v.union(themePreferenceValidator, v.null()),
+  handler: async (ctx) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      return null;
+    }
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    return profile?.preferences?.theme ?? null;
+  },
+});
+
+/**
  * Internal mutation to upsert a marketplace-specific account identifier
  * (e.g. BSC sellerId) onto the user's profile. Called from the BSC login
  * action after the browser service returns the sellerId; never invoked

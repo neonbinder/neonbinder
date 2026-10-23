@@ -60,6 +60,14 @@ export type TokenRole =
   | "button-neutral"
   | "button-neutral-hover"
   | "selection-line"
+  | "panel"
+  | "panel-hover"
+  | "panel-rule"
+  | "wash-green"
+  | "wash-blue"
+  | "wash-pink"
+  | "wash-rule-green"
+  | "wash-rule-pink"
   | "paper"
   | "on-paper"
   | "pick-pink"
@@ -102,7 +110,90 @@ export type SurfaceRole =
   | "row-hover"
   | "hover-raised"
   | "list-hover"
-  | "chip";
+  | "chip"
+  | "chip-strong"
+  | "button-neutral"
+  | "button-neutral-hover";
+
+/** Every surface a piece of text can sit on, for the contrast checks. */
+export const SURFACE_ROLES: readonly SurfaceRole[] = [
+  "surface",
+  "raised",
+  "raised-deep",
+  "sheet",
+  "field",
+  "hover",
+  "row",
+  "row-hover",
+  "hover-raised",
+  "list-hover",
+  "chip",
+  "chip-strong",
+  "button-neutral",
+  "button-neutral-hover",
+];
+
+/** The roles that paint text. */
+export type TextRole =
+  | "ink"
+  | "ink-2"
+  | "ink-3"
+  | "neon-green-text"
+  | "neon-pink-text"
+  | "neon-blue-text"
+  | "neon-yellow-text"
+  | "neon-orange-text"
+  | "neon-teal-text"
+  | "neon-purple-text"
+  | "notice-info-ink"
+  | "notice-warn-ink"
+  | "notice-danger-ink"
+  | "notice-success-ink";
+
+/**
+ * Text that does NOT reach 4.5:1 on a surface, per mode, so the two are never
+ * put together. tokens.test.tsx holds this table to the palette exactly (every
+ * failing pair is listed, nothing else is) and scans the class strings for any
+ * element that paints one of these text roles on one of these surfaces.
+ *
+ * Dark is the pre-NEO-356 look, value for value, and its neutral steps are
+ * close together: the gray-700/-600 tiles (rows, chips, a hover on a card,
+ * neutral buttons) are too light for the dimmer inks. On them, quiet text is
+ * `ink-2` and a destructive hover is a pink FILL with black ink, never pink
+ * text. Light's -text hues are cut for white and the page; the one-step-up
+ * grey (chip-strong, button-neutral-hover) is the only place they miss.
+ *
+ * `neon-pink-text` on `raised`/`hover` in dark (4.27:1) is origin/main's own
+ * pairing (pink copy on a graphite card) and is listed so the table is
+ * honest, not because it is fine: lifting it means a new dark pink, which is
+ * a design decision, not a token fix.
+ */
+export const TEXT_NEVER_ON: Record<ThemeMode, Partial<Record<TextRole, readonly SurfaceRole[]>>> = {
+  dark: {
+    "ink-3": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
+    "neon-green-text": ["row-hover", "chip-strong", "button-neutral-hover"],
+    "neon-pink-text": [
+      "raised",
+      "hover",
+      "row",
+      "row-hover",
+      "hover-raised",
+      "chip",
+      "chip-strong",
+      "button-neutral",
+      "button-neutral-hover",
+    ],
+    "neon-blue-text": ["row-hover", "chip-strong", "button-neutral-hover"],
+    "neon-orange-text": ["row-hover", "chip-strong", "button-neutral-hover"],
+    "neon-purple-text": ["row", "row-hover", "hover-raised", "chip", "chip-strong", "button-neutral", "button-neutral-hover"],
+  },
+  light: {
+    "neon-green-text": ["chip-strong", "button-neutral-hover"],
+    "neon-pink-text": ["chip-strong", "button-neutral-hover"],
+    "neon-blue-text": ["chip-strong", "button-neutral-hover"],
+    "neon-yellow-text": ["chip-strong", "button-neutral-hover"],
+  },
+};
 
 const NEON_FILLS = {
   "neon-green": "#00d558",
@@ -158,6 +249,14 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "button-neutral": "oklch(37.2% 0.044 257.287)",
     "button-neutral-hover": "oklch(44.6% 0.043 257.281)",
     "selection-line": "transparent",
+    panel: "color-mix(in oklab, oklch(20.8% 0.042 265.755) 40%, transparent)",
+    "panel-hover": "oklch(20.8% 0.042 265.755)",
+    "panel-rule": "oklch(27.9% 0.041 260.031)",
+    "wash-green": "color-mix(in oklab, #00d558 10%, transparent)",
+    "wash-blue": "color-mix(in oklab, #00c2ff 10%, transparent)",
+    "wash-pink": "color-mix(in oklab, #ff2e9a 10%, transparent)",
+    "wash-rule-green": "color-mix(in oklab, #00d558 30%, transparent)",
+    "wash-rule-pink": "color-mix(in oklab, #ff2e9a 40%, transparent)",
     "paper": "#ffffff",
     "on-paper": "#000000",
     "pick-pink": "oklch(40.8% 0.153 2.432)",
@@ -230,6 +329,14 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "button-neutral": "#e8eaf2",
     "button-neutral-hover": "#dde0ea",
     "selection-line": "#006da6",
+    panel: "#ffffff",
+    "panel-hover": "#f0f2f9",
+    "panel-rule": "#bcb9cf",
+    "wash-green": "#ffffff",
+    "wash-blue": "#ffffff",
+    "wash-pink": "#ffffff",
+    "wash-rule-green": "#bcb9cf",
+    "wash-rule-pink": "#bcb9cf",
     "paper": "#ffffff",
     "on-paper": "#000000",
     "pick-pink": "oklch(94.8% 0.028 342.258)",
@@ -279,8 +386,10 @@ export function surfaceHex(surface: SurfaceRole, mode: ThemeMode): string {
 
 /**
  * `#rgb`, `#rrggbb` or `oklch(L% C H)` to `#rrggbb` (sRGB, clipped). Covers
- * exactly the notations theme.css uses; anything else throws, so a new
- * notation cannot slip into the mirror unconverted.
+ * the opaque notations theme.css uses; anything else throws (a translucent
+ * `color-mix(...)` role such as `panel` or `wash-*` has no colour of its own
+ * until it sits on something), so a new notation cannot slip into the
+ * mirror unconverted.
  */
 export function cssColorToHex(value: string): string {
   const v = value.trim().toLowerCase();

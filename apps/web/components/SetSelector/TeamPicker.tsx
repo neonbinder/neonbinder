@@ -573,10 +573,12 @@ export default function TeamPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove team ${labelById.get(id as unknown as string) ?? id}`}
-            // a11y (SC 1.4.3): gray-500 is ~3.0:1 on the chip's own gray-700
-            // ground, under the 4.5:1 floor. gray-300 clears it in both themes,
-            // and the pink hover/focus is unchanged.
-            className="hit-area-24 text-ink-2 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
+            // NEO-356: on the chip's grey, pink TEXT is 3:1 in dark and ink-3 is
+            // 3.9:1 (tokens.ts TEXT_NEVER_ON). Quiet ink-2 at rest; under the
+            // pointer or focus the × takes a pink FILL with black ink (6:1 in
+            // both modes), so "remove" still reads pink. The negative margin
+            // keeps the padded pill from moving the chip's layout.
+            className="hit-area-24 -mx-1 rounded-full px-1 text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink focus:bg-neon-pink focus:text-on-neon-pink focus-outline"
           >
             ×
           </button>

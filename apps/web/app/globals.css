@@ -268,8 +268,14 @@ body {
   }
 }
 
-[data-theme="dark"] {
-  --color-background: #0a0a0a;
+/* The dark page ground, on <html> AND on the Radix root. Radix's own `.dark`
+ * rule sets `--color-background` to its sage gray-1 (#111211) on the Theme
+ * element, which would paint the whole app a shade off the header and the
+ * logo's black plate (the "seam" and the visible logo box). (0,2,0) outranks
+ * that single-class rule. The light rule further down is the mirror. */
+[data-theme="dark"],
+[data-theme="dark"] .radix-themes {
+  --color-background: var(--surface);
 }
 
 [data-theme="light"] {
@@ -412,8 +418,8 @@ body {
   }
 }
 
-/* The light page under the Radix root: Radix would paint it white. Dark
- * keeps Radix's own dark ground (its `.dark` rule on the Theme element). */
+/* The light page under the Radix root: Radix would paint it white. The dark
+ * rule above does the same for the dark ground. */
 [data-theme="light"] .radix-themes {
   --color-background: var(--surface);
 }

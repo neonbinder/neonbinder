@@ -52,7 +52,7 @@ describe("ProfileThemeSync + ThemeProvider", () => {
     const { rerender } = render(<App />);
     expect(readout()).toBe("dark/dark");
 
-    profile = { userId: "u", preferences: { theme: "light" } };
+    profile = "light";
     rerender(<App />);
     expect(readout()).toBe("light/light");
     expect(document.documentElement.dataset.theme).toBe("light");
@@ -61,7 +61,7 @@ describe("ProfileThemeSync + ThemeProvider", () => {
 
   it("stays in the saved mode after sign-out", () => {
     localStorage.setItem(THEME_STORAGE_KEY, "dark");
-    profile = { userId: "u", preferences: { theme: "light" } };
+    profile = "light";
     const { rerender } = render(<App />);
     expect(readout()).toBe("light/light");
 

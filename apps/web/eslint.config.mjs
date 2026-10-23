@@ -204,6 +204,32 @@ const playwrightRecommended = {
   files: PLAYWRIGHT_FILES,
 };
 
+/**
+ * Imports no spec may make. `test` comes from support/fixtures.ts, and
+ * support/theme-no-flash.ts is the NEO-356 no-flash exception to hard rule 2
+ * (GUIDE rule 8, approved by Jason 2026-10-22): it reads the root
+ * `data-theme` attribute and runs `evaluate`, which is licensed for that one
+ * check and nothing else. The block after this one lifts the second
+ * restriction for the two specs the rule names.
+ */
+const PLAYWRIGHT_TEST_IMPORT = {
+  name: "@playwright/test",
+  importNames: ["test"],
+  message:
+    "Import `test` from playwright/support/fixtures.ts (it carries the worker env and signIn).",
+};
+
+const PLAYWRIGHT_RESTRICTED_IMPORTS = {
+  paths: [PLAYWRIGHT_TEST_IMPORT],
+  patterns: [
+    {
+      group: ["**/theme-no-flash", "**/theme-no-flash.*"],
+      message:
+        "support/theme-no-flash.ts reads under-the-covers state and is licensed (GUIDE rule 8) for home/theme-prepaint-script and profile/theme-saved-no-flash only. Prove a theme by what is painted (support/theme.ts).",
+    },
+  ],
+};
+
 const playwrightHouseRules = {
   files: PLAYWRIGHT_FILES,
   languageOptions: {
@@ -225,19 +251,7 @@ const playwrightHouseRules = {
           "No data-testid: locate by role, label or text. playwright/GUIDE.md hard rule 2.",
       },
     ],
-    "no-restricted-imports": [
-      "error",
-      {
-        paths: [
-          {
-            name: "@playwright/test",
-            importNames: ["test"],
-            message:
-              "Import `test` from playwright/support/fixtures.ts (it carries the worker env and signIn).",
-          },
-        ],
-      },
-    ],
+    "no-restricted-imports": ["error", PLAYWRIGHT_RESTRICTED_IMPORTS],
     "playwright/no-wait-for-timeout": "error",
     "playwright/no-networkidle": "error",
     "playwright/no-element-handle": "error",
@@ -253,6 +267,17 @@ const playwrightHouseRules = {
     // branch. R2 review is where that judgement lives.
     "playwright/no-conditional-in-test": "off",
     "playwright/no-conditional-expect": "off",
+  },
+};
+
+/** The two specs GUIDE rule 8 licenses to import support/theme-no-flash.ts. */
+const playwrightNoFlashSpecs = {
+  files: [
+    "playwright/tests/home/theme-prepaint-script.spec.ts",
+    "playwright/tests/profile/theme-saved-no-flash.spec.ts",
+  ],
+  rules: {
+    "no-restricted-imports": ["error", { paths: [PLAYWRIGHT_TEST_IMPORT] }],
   },
 };
 
@@ -306,6 +331,7 @@ const eslintConfig = [
   ...reactHooksLegacyScope,
   playwrightRecommended,
   playwrightHouseRules,
+  playwrightNoFlashSpecs,
   playwrightFixturesFile,
   jsxA11yRecommended,
   jsxA11yHouseRules,

@@ -371,7 +371,7 @@ export default function CardIntake() {
 
           {/* ONE sentence saying what is happening, and one saying what to do.
               This is the whole answer to "how would a new user know to wait?" */}
-          <div className="rounded-lg border border-rule bg-field/40 p-4 space-y-2">
+          <div className="rounded-lg border border-panel-rule bg-panel p-4 space-y-2 shadow-offset">
             <p role="status" aria-live="polite" className="text-ink-2">
               {stage === "uploading" && "Sending your photos…"}
               {stage === "working" &&

@@ -332,7 +332,7 @@ export default function LabelHistoryPage() {
       )}
 
       {purchases !== undefined && purchases.length === 0 && (
-        <div className="rounded-lg border border-rule bg-field/40 p-6 text-center space-y-2">
+        <div className="rounded-lg border border-panel-rule bg-panel p-6 text-center space-y-2 shadow-offset">
           <p className="text-ink-2">No labels yet — nothing to reprint.</p>
           <p className="text-sm text-ink-3">
             Buy postage over on{" "}
@@ -407,7 +407,7 @@ export default function LabelHistoryPage() {
             return (
               <li
                 key={row._id}
-                className="rounded-lg border border-rule bg-field/40 p-4"
+                className="rounded-lg border border-panel-rule bg-panel p-4 shadow-offset"
               >
                 <div className="flex flex-wrap items-center gap-3 mb-3">
                   <h3

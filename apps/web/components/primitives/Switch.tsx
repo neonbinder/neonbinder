@@ -19,12 +19,14 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
           <input
             ref={ref}
             type="checkbox"
-            className="sr-only"
+            className="peer sr-only"
             onChange={handleChange}
             {...props}
           />
+          {/* The input is visually hidden, so the track draws its focus:
+              the same outline as `focus-outline`, keyed off the input. */}
           <div
-            className={`w-11 h-6 rounded-full transition-colors ${
+            className={`w-11 h-6 rounded-full transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus ${
               props.checked ? "bg-selection" : "bg-control"
             }`}
           >

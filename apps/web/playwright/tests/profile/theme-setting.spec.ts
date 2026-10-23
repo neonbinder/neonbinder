@@ -1,6 +1,7 @@
 // NEO-356 (R1): a signed-in collector picks Light, Dark or System in Profile
-// -> Settings and the whole app is painted that way, the choice follows them
-// to another device, and System follows the OS in both directions.
+// -> Settings and the whole app is painted that way, each choice survives a
+// reload and follows them to another device, and System follows the OS in both
+// directions.
 //
 // Modes are proven by what the user sees: the page colour and a heading's
 // colour (support/theme.ts), plus the radio that reads as chosen. The suite
@@ -8,8 +9,22 @@
 // specs that changes the saved theme or calls emulateMedia, and it ends with
 // System saved again (R7), in a finally block, so no later spec on this
 // worker's account runs light.
+//
+// Dark is told apart from System by running it under a LIGHT OS (a Dark pick
+// ignores the OS; System does not), and System is told apart from both on a
+// second device whose OS is light (it can only open light if System, not the
+// previous pick, was saved to the profile).
+//
+// Accessibility (GUIDE "Accessibility checks"): expectAccessible checks the
+// screen in both modes itself, which only works while the account is on
+// System, so it is called once, on System, never under a saved Light or Dark.
+//
+// Not covered here: a failed save. There is no way to make the mutation fail
+// from the UI, so the rollback (the old theme returns, focus moves to it, an
+// alert says so) is proven by the unit tests app/profile/settings/page.test.tsx
+// and page.rapidSaves.test.tsx.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { expectLook } from "../../support/theme";
+import { expectLook, type Look } from "../../support/theme";
 
 test(
   "Settings theme: Light, Dark and System repaint the app, persist, and System follows the OS",
@@ -33,22 +48,9 @@ test(
     const system = theme.getByRole("radio", { name: "System", exact: true });
     const saved = page.getByRole("main").getByRole("status").filter({ hasText: "Saved." });
 
-    try {
-      // Light.
-      await light.click();
-      await expect(light).toBeChecked();
-      await expect(saved).toBeVisible();
-      await expectLook(page, "light", appearance);
-      await expectAccessible(page, { label: "Settings, Light" });
-
-      // It survives a reload.
-      await page.reload();
-      await expect(appearance).toBeVisible({ timeout: LAUNCH_GATE });
-      await expect(light).toBeChecked();
-      await expectLook(page, "light", appearance);
-
-      // And it is saved to the profile, not only to this browser: another
-      // device (same session, no stored copy of the choice) opens light.
+    // The same session on another device (no stored copy of the choice) and
+    // its own OS setting: what it opens is what the PROFILE holds.
+    const openOnAnotherDevice = async (os: Look, pick: "Light" | "Dark" | "System", look: Look) => {
       const { cookies } = await page.context().storageState();
       const device = await browser.newContext({
         baseURL,
@@ -57,7 +59,7 @@ test(
         hasTouch,
         isMobile,
         deviceScaleFactor,
-        colorScheme: "dark",
+        colorScheme: os,
         storageState: { cookies, origins: [] },
       });
       try {
@@ -65,23 +67,57 @@ test(
         await other.goto("/profile/settings");
         const otherAppearance = other.getByRole("heading", { level: 2, name: "Appearance" });
         await expect(otherAppearance).toBeVisible({ timeout: LAUNCH_GATE });
-        await expect(other.getByRole("radio", { name: "Light", exact: true })).toBeChecked();
-        await expectLook(other, "light", otherAppearance);
+        await expect(other.getByRole("radio", { name: pick, exact: true })).toBeChecked();
+        await expectLook(other, look, otherAppearance);
       } finally {
         await device.close();
       }
+    };
 
-      // Dark.
-      await dark.click();
-      await expect(dark).toBeChecked();
+    // A pick, proven fresh: nothing says "Saved." beforehand (the page was just
+    // loaded), so the "Saved." that appears is this pick's save, never the last one's.
+    const pick = async (radio: typeof light) => {
+      await expect(saved).toHaveCount(0);
+      await radio.click();
+      await expect(radio).toBeChecked();
       await expect(saved).toBeVisible();
+    };
+
+    // After the save, a reload comes back the same: nothing leaned on the stale page state.
+    const reload = async () => {
+      await page.reload();
+      await expect(appearance).toBeVisible({ timeout: LAUNCH_GATE });
+    };
+
+    try {
+      // Light (the OS is dark).
+      await pick(light);
+      await expectLook(page, "light", appearance);
+      await reload();
+      await expect(light).toBeChecked();
+      await expectLook(page, "light", appearance);
+      await openOnAnotherDevice("dark", "Light", "light");
+
+      // Dark, under a LIGHT OS: a Dark pick ignores the OS.
+      await page.emulateMedia({ colorScheme: "light" });
+      await pick(dark);
       await expectLook(page, "dark", appearance);
-      await expectAccessible(page, { label: "Settings, Dark" });
+      await reload();
+      await expect(dark).toBeChecked();
+      await expectLook(page, "dark", appearance);
+      await openOnAnotherDevice("light", "Dark", "dark");
 
-      // System follows the OS, in both directions.
-      await system.click();
+      // System, still under the light OS: it follows the OS, so the page goes light.
+      await pick(system);
+      await expect(page.getByText("Your device is on light right now.")).toBeVisible();
+      await expectLook(page, "light", appearance);
+      await reload();
       await expect(system).toBeChecked();
-      await expect(saved).toBeVisible();
+      await expectLook(page, "light", appearance);
+      await openOnAnotherDevice("light", "System", "light");
+
+      // System follows the OS in both directions.
+      await page.emulateMedia({ colorScheme: "dark" });
       await expect(page.getByText("Your device is on dark right now.")).toBeVisible();
       await expectLook(page, "dark", appearance);
 
@@ -92,6 +128,9 @@ test(
       await page.emulateMedia({ colorScheme: "dark" });
       await expect(page.getByText("Your device is on dark right now.")).toBeVisible();
       await expectLook(page, "dark", appearance);
+
+      // The account is on System again, so axe can check this screen in both modes.
+      await expectAccessible(page, { label: "Settings, System" });
 
       // Back steps out of Settings to the previous tab.
       await page.goBack();

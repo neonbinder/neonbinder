@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { Component, useEffect, type ReactNode } from "react";
+import * as Sentry from "@sentry/react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useTheme } from "./ThemeProvider";
@@ -10,9 +11,11 @@ import type { ThemePreference } from "./theme-mode";
  * The provider sits OUTSIDE Clerk and Convex (it has to: Radix `<Theme>` and
  * `<ClerkProvider appearance>` both read its mode), so it cannot run a Convex
  * query itself. This renders nothing; it lives inside the Convex provider and
- * hands `getUserProfile().preferences.theme` to `setProfilePreference`, which
- * outranks localStorage in the provider's precedence (override > profile >
- * localStorage > system).
+ * hands `getThemePreference()` to `setProfilePreference`, which outranks
+ * localStorage in the provider's precedence (override > profile >
+ * localStorage > system). That query returns the theme alone: this
+ * subscription runs on every signed-in page, so it must not carry the rest of
+ * the profile (seller id, credential lock state) to all of them.
  *
  * - Signed in, profile loaded: the saved value, or "system" when there is none
  *   (no row, or a row that predates the setting). It is mirrored to the
@@ -28,18 +31,16 @@ import type { ThemePreference } from "./theme-mode";
  * immediately and then saves it; while that save is in flight this component
  * still sees the old value but does not re-run, so it never stomps the pick.
  */
-export function ProfileThemeSync(): null {
+function SyncSavedTheme(): null {
   const { isAuthenticated, isLoading } = useConvexAuth();
-  const profile = useQuery(
-    api.userProfile.getUserProfile,
+  const savedTheme = useQuery(
+    api.userProfile.getThemePreference,
     isAuthenticated ? {} : "skip",
   );
   const { setPreference, setProfilePreference } = useTheme();
 
   const saved: ThemePreference | undefined =
-    !isAuthenticated || profile === undefined
-      ? undefined
-      : (profile?.preferences?.theme ?? "system");
+    !isAuthenticated || savedTheme === undefined ? undefined : (savedTheme ?? "system");
 
   useEffect(() => {
     if (isLoading) return;
@@ -59,6 +60,39 @@ export function ProfileThemeSync(): null {
   }, [isLoading, isAuthenticated, saved, setPreference, setProfilePreference]);
 
   return null;
+}
+
+/**
+ * Theme sync is a nicety; it must never take the app down. A Convex query
+ * that fails THROWS during render (a deployment without the function, a
+ * server error), and with no boundary of its own that throw unmounts every
+ * signed-in page to a blank screen. This boundary catches it, reports it to
+ * Sentry once, and renders nothing from then on: the page stays in whatever
+ * mode it already has (the device's choice or the system's, or a saved one
+ * pushed before the failure).
+ */
+class ThemeSyncBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    Sentry.captureException(error, { tags: { feature: "theme-sync" }, level: "warning" });
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+export function ProfileThemeSync(): ReactNode {
+  return (
+    <ThemeSyncBoundary>
+      <SyncSavedTheme />
+    </ThemeSyncBoundary>
+  );
 }
 
 export default ProfileThemeSync;

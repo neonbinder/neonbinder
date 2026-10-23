@@ -3,10 +3,20 @@
  * and fail on any drift, then hold the light palette to the contrast the
  * ticket promises (text 4.5:1, field and control edges 3:1).
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { contrastRatio, cssColorToHex, tokenHex, TOKENS, type TokenRole } from "./tokens";
+import {
+  contrastRatio,
+  cssColorToHex,
+  SURFACE_ROLES,
+  TEXT_NEVER_ON,
+  tokenHex,
+  TOKENS,
+  type SurfaceRole,
+  type TextRole,
+  type TokenRole,
+} from "./tokens";
 
 // Read from disk: vitest stubs CSS imports (even `?raw`) to an empty string.
 const themeCss = readFileSync(join(__dirname, "../../app/theme.css"), "utf8");
@@ -140,5 +150,115 @@ describe("paper", () => {
     for (const mode of ["dark", "light"] as const) {
       expect([TOKENS[mode].paper, TOKENS[mode]["on-paper"]]).toEqual(["#ffffff", "#000000"]);
     }
+  });
+});
+
+describe("adversarial: every text and ink role, both modes", () => {
+  const roles = (re: RegExp) => (Object.keys(TOKENS.dark) as TokenRole[]).filter((r) => re.test(r));
+  const TEXT = roles(/(-text|^ink(-[23])?|^notice-.*-ink)$/) as TextRole[];
+
+  for (const mode of ["dark", "light"] as const) {
+    // Every surface in both modes. A pair under 4.5:1 must be in TEXT_NEVER_ON
+    // (and so is never painted, see the scan below); a listed pair that now
+    // passes must come off the list. The table can neither hide a new miss
+    // nor go stale.
+    it(`${mode}: every *-text and ink role reads 4.5:1 on every surface it may sit on`, () => {
+      const misses: string[] = [];
+      const stale: string[] = [];
+      for (const fg of TEXT) {
+        const never = TEXT_NEVER_ON[mode][fg] ?? [];
+        for (const bg of SURFACE_ROLES) {
+          const ratio = contrastRatio(tokenHex(fg, mode), tokenHex(bg, mode));
+          if (ratio < 4.5 && !never.includes(bg)) misses.push(`${fg} on ${bg}: ${ratio.toFixed(2)}`);
+          if (ratio >= 4.5 && never.includes(bg)) stale.push(`${fg} on ${bg}: ${ratio.toFixed(2)}`);
+        }
+      }
+      expect({ misses, stale }).toEqual({ misses: [], stale: [] });
+    });
+
+    it(`${mode}: every pick-*-ink role reads 4.5:1 on its own fill`, () => {
+      const misses: string[] = [];
+      for (const ink of roles(/^pick-.*-ink$/)) {
+        const fill = ink.replace(/-ink$/, "") as TokenRole;
+        const ratio = contrastRatio(tokenHex(ink, mode), tokenHex(fill, mode));
+        if (ratio < 4.5) misses.push(`${ink} on ${fill}: ${ratio.toFixed(2)}`);
+      }
+      expect(misses).toEqual([]);
+    });
+  }
+
+  it("both modes define exactly the same roles", () => {
+    expect(Object.keys(TOKENS.light).sort()).toEqual(Object.keys(TOKENS.dark).sort());
+  });
+});
+
+/**
+ * The other half of TEXT_NEVER_ON: no element paints a listed text role on a
+ * listed surface. Reads every class string in app/, components/, src/ and
+ * lib/ and works out, per state (at rest, and under each variant such as
+ * `hover:` or `disabled:`), which text and which surface that element ends up
+ * with. It sees one element's own classes; text inherited from an ancestor
+ * is out of its reach, so the table's comment is the rule for that case.
+ */
+describe("no class string paints text on a surface it fails on", () => {
+  const webRoot = join(__dirname, "../..");
+  const STATE_VARIANTS = new Set(["hover", "focus", "focus-visible", "focus-within", "active", "disabled", "group-hover", "aria-disabled", "aria-selected", "aria-checked", "aria-pressed"]);
+  const RESPONSIVE = new Set(["sm", "md", "lg", "xl", "2xl", "max-sm", "max-md", "max-lg"]);
+  // Every text role, not just the listed ones: `text-ink-3 hover:text-ink`
+  // must read as ink under the pointer.
+  const textRoles = new Set<string>((Object.keys(TOKENS.dark) as TokenRole[]).filter((r) => /(-text|^ink(-[23])?|^notice-.*-ink)$/.test(r)));
+  const surfaces = new Set<string>(SURFACE_ROLES);
+
+  function sourceFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(join(webRoot, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) out.push(...sourceFiles(rel));
+      else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\./.test(entry.name)) out.push(rel);
+    }
+    return out;
+  }
+
+  /** `[state, kind, role]` for each text/bg role token in one class string. */
+  function parse(chunk: string) {
+    const found: Array<{ state: string; kind: "text" | "bg"; role: string }> = [];
+    for (const token of chunk.split(/[\s"'`{}]+/)) {
+      const parts = token.split(":");
+      const utility = parts.pop()!.replace(/^!/, "").replace(/\/[\w.]+$/, "");
+      const variants = parts.filter((v) => !RESPONSIVE.has(v));
+      if (variants.length > 1 || (variants.length === 1 && !STATE_VARIANTS.has(variants[0]))) continue;
+      const state = variants[0] ?? "";
+      const text = /^text-(.+)$/.exec(utility);
+      const bg = /^bg-(.+)$/.exec(utility);
+      if (text && textRoles.has(text[1])) found.push({ state, kind: "text", role: text[1] });
+      if (bg && surfaces.has(bg[1])) found.push({ state, kind: "bg", role: bg[1] });
+    }
+    return found;
+  }
+
+  it("finds none", () => {
+    const hits: string[] = [];
+    for (const file of ["app", "components", "src", "lib"].flatMap(sourceFiles)) {
+      const src = readFileSync(join(webRoot, file), "utf8");
+      for (const m of src.matchAll(/"([^"\n]*)"|`([^`]*)`/g)) {
+        const tokens = parse(m[1] ?? m[2] ?? "");
+        if (!tokens.some((t) => t.kind === "bg") || !tokens.some((t) => t.kind === "text")) continue;
+        const states = new Set(["", ...tokens.map((t) => t.state)]);
+        for (const state of states) {
+          const pick = (kind: "text" | "bg") =>
+            tokens.find((t) => t.kind === kind && t.state === state)?.role ??
+            tokens.find((t) => t.kind === kind && t.state === "")?.role;
+          const fg = pick("text") as TextRole | undefined;
+          const bg = pick("bg") as SurfaceRole | undefined;
+          if (!fg || !bg) continue;
+          for (const mode of ["dark", "light"] as const) {
+            if (TEXT_NEVER_ON[mode][fg]?.includes(bg)) {
+              hits.push(`${file}: ${state || "rest"} text-${fg} on bg-${bg} (${mode})`);
+            }
+          }
+        }
+      }
+    }
+    expect(hits).toEqual([]);
   });
 });

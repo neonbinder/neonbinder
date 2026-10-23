@@ -26,12 +26,15 @@ test(
     const dark = demoTheme.getByRole("radio", { name: "Dark", exact: true });
     await expect(dark).toBeChecked();
     await expectLook(page, "dark", title);
+    // Before the switch is touched the page follows the OS, so axe can check
+    // it in both modes. Once Light is chosen the demo pins the page light (an
+    // override), where only one mode could be checked.
+    await expectAccessible(page, { label: "Collection demo, before the switch" });
 
     // Light repaints the whole page, header included.
     await light.click();
     await expect(light).toBeChecked();
     await expectLook(page, "light", title);
-    await expectAccessible(page, { label: "Collection demo, Light" });
 
     // It holds across the demo's tabs and Back.
     const tabs = page.getByRole("navigation", { name: "Collection sections" });

@@ -87,7 +87,37 @@ describe("Settings → Appearance", () => {
     });
     expect(theme.setPreference.mock.calls.map((c) => c[0])).toEqual(["light", "dark"]);
     expect(theme.setProfilePreference.mock.calls.map((c) => c[0])).toEqual(["light", "dark"]);
-    expect(screen.getByRole("status").textContent).toMatch(/didn't save/);
+    // An alert, not a polite status: a failed save is news the collector must hear.
+    expect(screen.getByRole("alert").textContent).toMatch(/didn't save/);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("moves focus back to the restored option when the save fails", async () => {
+    theme.preference = "dark";
+    saveTheme.mockImplementation(async () => {
+      throw new Error("offline");
+    });
+    render(<SettingsPanel />);
+    await act(async () => {
+      fireEvent.click(radio("Light"));
+    });
+    expect(document.activeElement).toBe(radio("Dark"));
+  });
+
+  it("leaves focus alone on a failed save once the collector has moved on", async () => {
+    theme.preference = "dark";
+    let fail: () => void = () => {};
+    saveTheme.mockImplementation(
+      () => new Promise((_, reject) => (fail = () => reject(new Error("offline")))),
+    );
+    render(<SettingsPanel />);
+    fireEvent.click(radio("Light"));
+    const elsewhere = document.createElement("button");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    await act(async () => fail());
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
   });
 
   it("does nothing when the current pick is chosen again", async () => {

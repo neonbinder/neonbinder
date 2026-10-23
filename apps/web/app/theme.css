@@ -130,12 +130,35 @@
   --list-hover-raised: color-mix(in oklab, oklch(37.3% 0.034 259.733) 50%, transparent);
 
   /* Neutral chips (a tag, a source pill, a filter chip at rest) and the
-   * step up from them (a chip on a row tile, a chip under the pointer). */
+   * step up from them (a chip on a row tile, a chip under the pointer).
+   * These, the row tiles above and the neutral buttons below are the dark
+   * mode's light greys: ink-3 and the pink and violet -text hues miss 4.5:1
+   * on all of them, and green, cyan and amber miss on the -600 step. Quiet
+   * text there is ink-2; a destructive hover is a pink fill. The full list is
+   * TEXT_NEVER_ON in src/theme/tokens.ts. */
   --chip: oklch(37.3% 0.034 259.733);
   --chip-strong: oklch(44.6% 0.03 256.802);
   /* A neutral filled button: secondary actions beside a neon one. */
   --button-neutral: oklch(37.2% 0.044 257.287);
   --button-neutral-hover: oklch(44.6% 0.043 257.281);
+
+  /* A quiet tile on the page: a Print Shop tool card, a drop-zone summary.
+   * Dark is the well at 40% on the black page (was bg-slate-900/40), its
+   * hover the full well, its edge the divider. Light makes it a white sheet
+   * with a visible edge: a 40% white well on the light page is invisible. */
+  --panel: color-mix(in oklab, oklch(20.8% 0.042 265.755) 40%, transparent);
+  --panel-hover: oklch(20.8% 0.042 265.755);
+  --panel-rule: oklch(27.9% 0.041 260.031);
+
+  /* A promo panel's neon wash (the public landing page): the hue at 10% on
+   * the black page, with an edge in the hue. Light makes it a white sheet
+   * with a neutral edge; a 10% wash on paper is a pastel smudge. Use as
+   * gradient stops (`from-wash-green to-wash-blue`). */
+  --wash-green: color-mix(in oklab, #00d558 10%, transparent);
+  --wash-blue: color-mix(in oklab, #00c2ff 10%, transparent);
+  --wash-pink: color-mix(in oklab, #ff2e9a 10%, transparent);
+  --wash-rule-green: color-mix(in oklab, #00d558 30%, transparent);
+  --wash-rule-pink: color-mix(in oklab, #ff2e9a 40%, transparent);
 
   /* The committed selection's line where the selection is otherwise a fill:
    * nothing in dark (the hued fill carries it), a line in light, where a
@@ -273,6 +296,11 @@
   --list-hover: #f0f2f9;
   --list-hover-raised: #f0f2f9;
 
+  /* chip-strong and button-neutral-hover are one step up the grey: ink reads
+   * on them, but the green, pink, cyan and yellow -text hues do not (4.1 to
+   * 4.49:1), so neon text never sits on them. src/theme/tokens.ts
+   * TEXT_NEVER_ON lists the pairs; tokens.test.tsx holds the table to the
+   * palette and scans the class strings for any element that breaks it. */
   --chip: #e8eaf2;
   --chip-strong: #dde0ea;
   --button-neutral: #e8eaf2;
@@ -280,6 +308,16 @@
 
   --selection-line: #006da6;
   --glow: 0;
+
+  --panel: #ffffff;
+  --panel-hover: #f0f2f9;
+  --panel-rule: #bcb9cf;
+
+  --wash-green: #ffffff;
+  --wash-blue: #ffffff;
+  --wash-pink: #ffffff;
+  --wash-rule-green: #bcb9cf;
+  --wash-rule-pink: #bcb9cf;
 
   /* Hued picks: a pale tint of the hue, the same -700 edge (3:1 on white
    * and on the tint), and -800 ink (4.5:1 on the tint). */
@@ -334,7 +372,10 @@
  * ring still draws. Focus on an offset sheet sits 4px out, clear of the
  * shadow. */
 @utility shadow-offset {
-  [data-theme="light"] & {
+  /* `:hover` too, at (0,3,0): a `hover:shadow-lg` glow on the same element
+   * (the dark mode's lit hover) must not swap the offset out in light. */
+  [data-theme="light"] &,
+  [data-theme="light"] &:hover {
     --tw-shadow: 5px 5px 0 var(--offset-shadow);
     box-shadow:
       var(--tw-inset-shadow, 0 0 #0000), var(--tw-inset-ring-shadow, 0 0 #0000),
@@ -558,6 +599,14 @@
   --color-button-neutral: var(--button-neutral);
   --color-button-neutral-hover: var(--button-neutral-hover);
   --color-selection-line: var(--selection-line);
+  --color-panel: var(--panel);
+  --color-panel-hover: var(--panel-hover);
+  --color-panel-rule: var(--panel-rule);
+  --color-wash-green: var(--wash-green);
+  --color-wash-blue: var(--wash-blue);
+  --color-wash-pink: var(--wash-pink);
+  --color-wash-rule-green: var(--wash-rule-green);
+  --color-wash-rule-pink: var(--wash-rule-pink);
   --color-paper: var(--paper);
   --color-on-paper: var(--on-paper);
   --color-pick-pink: var(--pick-pink);

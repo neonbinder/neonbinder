@@ -1,5 +1,6 @@
+import { useLayoutEffect, useRef } from "react";
 import { useQuery } from "convex/react";
-import { NavLink, Outlet } from "react-router";
+import { NavLink, Outlet, useLocation } from "react-router";
 import { api } from "@/convex/_generated/api";
 
 /**
@@ -70,8 +71,42 @@ function useWarmProfileQueries() {
   useQuery(api.shipping.getMyReturnAddress); // shipping
 }
 
+/**
+ * Keeps the lit section in view in the one-row strip: on a phone the strip
+ * scrolls sideways, and a deep link to /profile/settings must not land with
+ * its own tab off the right edge. Moves the strip only (scrollLeft), never
+ * the page, and only when the tab is not already wholly visible.
+ */
+function useActiveTabInView() {
+  const listRef = useRef<HTMLUListElement>(null);
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    const fit = () => {
+      const list = listRef.current;
+      const active = list?.querySelector<HTMLElement>('[aria-current="page"]');
+      if (!list || !active) return;
+      // The list is `relative`, so it is the tab's offsetParent.
+      const left = active.offsetLeft;
+      const right = left + active.offsetWidth;
+      if (left < list.scrollLeft) list.scrollLeft = left;
+      else if (right > list.scrollLeft + list.clientWidth) list.scrollLeft = right - list.clientWidth;
+    };
+    fit();
+    // Lexend arriving widens every label; fit again once it has.
+    let live = true;
+    document.fonts?.ready.then(() => {
+      if (live) fit();
+    });
+    return () => {
+      live = false;
+    };
+  }, [pathname]);
+  return listRef;
+}
+
 export default function ProfileLayout() {
   useWarmProfileQueries();
+  const listRef = useActiveTabInView();
 
   return (
     <div className="space-y-8">
@@ -82,17 +117,29 @@ export default function ProfileLayout() {
         </p>
       </div>
 
-      <nav aria-label="Profile sections" className="border-b border-rule">
-        {/* Wraps rather than scrolls horizontally: the items fit two rows at
-            375px, and a scrolling strip would hide sections off-screen — the
-            same "you cannot see what is there" problem at a smaller scale. */}
-        <ul className="flex flex-wrap gap-x-6 gap-y-2">
+      <nav aria-label="Profile sections">
+        {/* One row. On a phone it scrolls sideways (settling on a tab's
+            start, or the last tab's end, so the lit tab can sit wholly in
+            view at either end; mandatory snapping would pull a scroll to the
+            last tab back to a start and cut it off), and the lit tab is kept
+            in view; wrapping took three rows at 390px. The rule
+            under the strip is an inset shadow on the list itself, under the
+            tabs' 2px underline: a border on the nav would sit outside the
+            scroller, and a -1px margin into it would make the list scroll
+            vertically by a pixel. `relative` keeps any absolutely placed
+            child inside the scroller instead of widening the page. A
+            scroller clips what spills out of it, so each tab draws its focus
+            outline inset (px-2 + gap-4 keeps the old 32px between labels). */}
+        <ul
+          ref={listRef}
+          className="relative flex flex-nowrap gap-x-4 overflow-x-auto overscroll-x-contain snap-x snap-proximity [scrollbar-width:none] shadow-[inset_0_-1px_0_var(--rule)]"
+        >
           {SECTIONS.map((section) => (
-            <li key={section.path}>
+            <li key={section.path} className="shrink-0 snap-start last:snap-end">
               <NavLink
                 to={section.path}
                 className={({ isActive }) =>
-                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus-outline rounded-sm " +
+                  "block whitespace-nowrap px-2 py-3 border-b-2 text-sm font-medium transition-colors focus-outline focus-visible:-outline-offset-4! rounded-sm " +
                   (isActive
                     ? "border-neon-purple text-neon-purple-text"
                     : "border-transparent text-ink-3 hover:text-ink hover:border-control")

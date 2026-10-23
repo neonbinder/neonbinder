@@ -1,7 +1,7 @@
 /**
  * NEO-356 — ProfileThemeSync hands the saved theme to the ThemeProvider.
  *
- * Pinned: a missing value means "system"; loading pushes nothing (so the
+ * Pinned: a missing value (the query's null) means "system"; loading pushes nothing (so the
  * localStorage mirror keeps the first paint stable); the saved value is
  * mirrored to localStorage; signing out clears the profile slot.
  */
@@ -44,7 +44,7 @@ beforeEach(() => {
 
 describe("ProfileThemeSync", () => {
   it("pushes the saved theme and mirrors it to localStorage", () => {
-    profile = { userId: "u", preferences: { defaultYear: 1996, theme: "light" } };
+    profile = "light";
     render(<ProfileThemeSync />);
     expect(setProfilePreference).toHaveBeenLastCalledWith("light");
     // Through the provider, so its fallback for after sign-out moves too.
@@ -52,12 +52,10 @@ describe("ProfileThemeSync", () => {
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
   });
 
-  it.each([
-    ["no profile row", null],
-    ["a row with no preferences", { userId: "u" }],
-    ["preferences with no theme", { userId: "u", preferences: { defaultYear: 2024 } }],
-  ])("treats %s as system", (_name, row) => {
-    profile = row;
+  // getThemePreference answers null for no row, a row with no preferences
+  // and preferences with no theme alike.
+  it("treats a null saved theme as system", () => {
+    profile = null;
     render(<ProfileThemeSync />);
     expect(setProfilePreference).toHaveBeenLastCalledWith("system");
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("system");
@@ -88,17 +86,15 @@ describe("ProfileThemeSync", () => {
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
   });
 
-  it("re-pushes when the saved value changes, and not on an unrelated profile change", () => {
-    profile = { userId: "u", preferences: { theme: "dark" } };
+  it("re-pushes when the saved value changes, and not on a re-render with the same value", () => {
+    profile = "dark";
     const { rerender } = render(<ProfileThemeSync />);
     expect(setProfilePreference).toHaveBeenCalledTimes(1);
 
-    // A credentials write changes the profile object but not the theme.
-    profile = { userId: "u", siteCredentials: [], preferences: { theme: "dark" } };
     rerender(<ProfileThemeSync />);
     expect(setProfilePreference).toHaveBeenCalledTimes(1);
 
-    profile = { userId: "u", preferences: { theme: "light" } };
+    profile = "light";
     rerender(<ProfileThemeSync />);
     expect(setProfilePreference).toHaveBeenLastCalledWith("light");
     expect(setProfilePreference).toHaveBeenCalledTimes(2);

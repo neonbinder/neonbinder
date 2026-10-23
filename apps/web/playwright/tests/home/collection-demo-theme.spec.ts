@@ -32,12 +32,15 @@ test(
     const light = demoTheme.getByRole("radio", { name: "Light", exact: true });
     await expect(demoTheme).toBeVisible();
     await expectLook(page, "dark", title);
+    // Before the switch is touched the page follows the OS, so axe can check
+    // it in both modes. The Light preview is an override that pins the page
+    // light, where only one mode could be checked.
+    await expectAccessible(page, { label: "Collection demo, signed in, before the switch" });
 
     // Light previews on the whole page.
     await light.click();
     await expect(light).toBeChecked();
     await expectLook(page, "light", title);
-    await expectAccessible(page, { label: "Collection demo, signed in, Light preview" });
 
     // Leaving the demo for another tab of the app restores the saved (System, here dark) look.
     await goTo("Dashboard");

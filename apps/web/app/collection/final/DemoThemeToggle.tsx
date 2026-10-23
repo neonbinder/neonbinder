@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect } from "react";
 import { useAuth } from "@clerk/clerk-react";
 import { ModeRadioGroup } from "@/components/primitives/ModeRadioGroup";
-import { useTheme } from "@/src/theme/ThemeProvider";
+import { useTheme, useThemeOverride } from "@/src/theme/ThemeProvider";
 import type { ThemeMode, ThemePreference } from "@/src/theme/theme-mode";
 
 /**
@@ -9,7 +9,8 @@ import type { ThemeMode, ThemePreference } from "@/src/theme/theme-mode";
  * the binder both ways without touching a setting.
  *
  * - It starts at the mode the page is already in and flips the WHOLE page
- *   (header, portals and all) through the ThemeProvider's override slot.
+ *   (header, portals and all) through its own entry in the ThemeProvider's
+ *   overrides. Releasing that entry never touches another forcer's.
  * - It never saves anything: the collector's own choice (`preference`) is
  *   left alone, and leaving the demo by any route restores it.
  * - It shows only to someone who has not picked a mode: a signed-out visitor,
@@ -24,45 +25,34 @@ const OPTIONS: ReadonlyArray<{ value: ThemeMode; label: string }> = [
 
 /**
  * Who sees the switch. `signedIn` is `undefined` while Clerk is still
- * loading; that counts as signed out, so a visitor never waits for it (a
- * signed-in page has already waited for Clerk behind ProtectedLayout).
+ * loading. Then the device's stored choice decides, the same value the
+ * pre-paint script used (for a collector who signed in here it mirrors the
+ * saved one), so the switch is drawn only where it will stay once Clerk
+ * answers. Showing it first and then removing it would pull it out from under
+ * a keyboard user's focus; a visitor whose device holds a choice sees it
+ * appear a moment later instead, which costs nothing.
  */
 export function showDemoThemeToggle(signedIn: boolean | undefined, preference: ThemePreference): boolean {
-  if (!signedIn) return true;
+  if (signedIn === false) return true;
   return preference === "system";
 }
 
 export default function DemoThemeToggle({ className = "" }: { className?: string }) {
-  const { mode, preference, setOverride } = useTheme();
+  const { mode, preference } = useTheme();
+  const force = useThemeOverride();
   const { isLoaded, isSignedIn } = useAuth();
   const visible = showDemoThemeToggle(isLoaded ? isSignedIn : undefined, preference);
 
-  // Only release an override this switch set: nothing else on the demo forces
-  // a mode, but a page that does (ForceDark) must never be clobbered by it.
-  const flipped = useRef(false);
-  const choose = (next: ThemeMode) => {
-    flipped.current = true;
-    setOverride(next);
-  };
-
-  // Hidden after all (Clerk finished loading: signed in with a saved mode):
-  // the collector's own mode wins.
+  // Hidden after all (the collector's saved mode arrived): their mode wins.
+  // Releasing is a no-op when this switch never flipped.
   useLayoutEffect(() => {
-    if (!visible && flipped.current) {
-      flipped.current = false;
-      setOverride(null);
-    }
-  }, [visible, setOverride]);
+    if (!visible) force(null);
+  }, [visible, force]);
 
-  // A layout effect, so the release runs as the demo unmounts, before the
-  // next page's own layout effects (a ForceDark page sets its override there).
-  useLayoutEffect(
-    () => () => {
-      if (flipped.current) setOverride(null);
-    },
-    [setOverride],
-  );
+  // Leaving the demo by any route releases this switch's entry, and only
+  // that: a ForceDark page mounted beside it or after it keeps its own.
+  useLayoutEffect(() => () => force(null), [force]);
 
   if (!visible) return null;
-  return <ModeRadioGroup label="Demo theme" value={mode} options={OPTIONS} onChange={choose} className={className} />;
+  return <ModeRadioGroup label="Demo theme" value={mode} options={OPTIONS} onChange={force} className={className} />;
 }

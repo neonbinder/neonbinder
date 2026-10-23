@@ -65,7 +65,7 @@ export default function LandingPage() {
           </div>
 
           {/* Free Tier Positioning */}
-          <div className="text-center mb-16 p-8 rounded-lg bg-gradient-to-r from-neon-green/10 to-neon-blue/10 border border-neon-green/30">
+          <div className="text-center mb-16 p-8 rounded-lg bg-gradient-to-r from-wash-green to-wash-blue border border-wash-rule-green shadow-offset">
             <p className="text-2xl font-bold text-neon-green-text">
               Free Tier: Track your collection for Free Forever
             </p>
@@ -74,10 +74,12 @@ export default function LandingPage() {
             </p>
           </div>
 
-          {/* Card Show Sales — Available Today */}
+          {/* Card Show Sales — Available Today. `mb-16`, not `my-16`: a
+              <button> is inline-block, so a top margin here stacks on the
+              panel's mb-16 above instead of collapsing into it. */}
           <button
             onClick={handleManagingInventoryClick}
-            className="w-full my-16 p-8 rounded-lg bg-gradient-to-r from-neon-pink/10 to-neon-green/10 border border-neon-pink/40 hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 focus-outline transition-all cursor-pointer text-left"
+            className="w-full mb-16 p-8 rounded-lg bg-gradient-to-r from-wash-pink to-wash-green border border-wash-rule-pink shadow-offset hover:border-neon-green-text hover:shadow-lg hover:shadow-neon-green-text/20 focus-outline transition-all cursor-pointer text-left"
           >
             <div className="flex items-center gap-3 mb-4">
               <span className="text-3xl" aria-hidden="true">📱</span>
@@ -93,11 +95,14 @@ export default function LandingPage() {
 
           {/* Features Section — 6 cards: three rows of two on tablet, two rows
               of three on desktop (NEO-207 added the two Print Shop cards).
-              Both column counts divide 6, so no card is ever orphaned. */}
+              Both column counts divide 6, so no card is ever orphaned.
+              Hover: an edge in the card's own hue (its -text role, 3:1 on a
+              white sheet) and, in dark, a glow in it. Light keeps the offset
+              under the pointer (shadow-offset outranks the hover glow). */}
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8 mb-16">
             <button
               onClick={handleBindersClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-green-text hover:shadow-lg hover:shadow-neon-green-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               {/* Two alignment guards on these cards: every icon box is pinned
                   to the same 60px height (emoji glyphs and SVGs render at
@@ -117,7 +122,7 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handleAiIdentificationClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-purple-500 hover:shadow-lg hover:shadow-purple-500/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-purple-text hover:shadow-lg hover:shadow-neon-purple-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🤖</div>
               <h2 className="text-xl font-semibold mb-2">AI-Based Card Identification</h2>
@@ -127,7 +132,7 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handleManagingInventoryClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-blue-text hover:shadow-lg hover:shadow-neon-blue-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🌐</div>
               <h2 className="text-xl font-semibold mb-2">Manage Multiple Inventory Sites</h2>
@@ -137,7 +142,7 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handleShippingLabelsClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-teal-400 hover:shadow-lg hover:shadow-teal-400/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-teal-text hover:shadow-lg hover:shadow-neon-teal-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">📦</div>
               <h2 className="text-xl font-semibold mb-2">Shipping Labels & PWE Postage</h2>
@@ -147,7 +152,7 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handlePrintShopClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-pink-500 hover:shadow-lg hover:shadow-pink-500/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-pink-text hover:shadow-lg hover:shadow-neon-pink-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               <div className="text-4xl mb-4 h-[60px] flex items-center" aria-hidden="true">🏷️</div>
               <h2 className="text-xl font-semibold mb-2">Spine Labels in Team Colors</h2>
@@ -157,7 +162,7 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handlePrintShopClick}
-              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 focus-outline transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-raised-deep border border-rule shadow-offset hover:border-neon-green-text hover:shadow-lg hover:shadow-neon-green-text/20 focus-outline transition-all cursor-pointer text-left"
             >
               <div className="mb-4 h-[60px] flex items-center">
                 <NinePocketIcon size={54} />
@@ -170,7 +175,7 @@ export default function LandingPage() {
           </div>
 
           {/* How It Works Section */}
-          <div className="my-16 p-8 rounded-lg bg-gradient-to-br from-neon-green/10 to-neon-blue/10 border border-neon-green/30">
+          <div className="my-16 p-8 rounded-lg bg-gradient-to-br from-wash-green to-wash-blue border border-wash-rule-green shadow-offset">
             <h2 className="text-3xl font-bold mb-8 text-center">
               How It Works
             </h2>

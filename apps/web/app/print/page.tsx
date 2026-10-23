@@ -79,7 +79,7 @@ export default function PrintHubPage() {
           <li key={section.path}>
             <Link
               to={section.path}
-              className={`group flex h-full gap-4 rounded-lg border border-rule bg-field/40 p-5 transition-colors hover:bg-field focus-outline ${detail.accent}`}
+              className={`group flex h-full gap-4 rounded-lg border border-panel-rule bg-panel p-5 shadow-offset transition-colors hover:bg-panel-hover focus-outline ${detail.accent}`}
             >
               <Icon className="w-8 h-8 shrink-0" aria-hidden="true" />
               <div>
