@@ -2026,6 +2026,7 @@ would put the wrong question on screen.
 | `cap-` | `tests/set-selector/card-autopopulates-features.spec.ts` |
 | `ccrud-` | `tests/set-selector/custom-card-crud.spec.ts` |
 | `cd-` | `tests/set-selector/card-detail-panel.spec.ts` |
+| `cdr-` | `tests/collection/card-collectors-own-cannot-be-deleted.spec.ts` (NEO-358, per-attempt: `cdr-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, ONE hand-added card `361-<attempt>` (card name `Held<token>`, no player, no marketplace id anywhere beneath it). The worker's own account marks it Have through `/collection`, the set builder's Del → Confirm is REFUSED (the collector guard), then the copy is removed and the same delete goes through: the card is DELETED at the end, the set and its rows stand. **Never aim a collector's copy at a card of a shared set** with this check: were the guard to break, the delete would take the card. Per-attempt so the card and its copy are this run's alone. |
 | `cft-` | `tests/set-selector/card-features-editor-toggle.spec.ts` |
 | `cna-` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `cnw-` | `tests/set-selector/checklist-attention-walker-missing-team.spec.ts` (also `-${ATTEMPT_ID}`) |
