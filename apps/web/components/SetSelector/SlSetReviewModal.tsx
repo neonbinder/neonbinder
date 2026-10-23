@@ -866,7 +866,7 @@ function ReviewRow({
             <>
               {" "}
               {/* The SL side's id hue (ReconciliationModal's), a size down. */}
-              <span className="text-[11px] font-normal tabular-nums text-neon-purple-text/80">
+              <span className="text-[11px] font-normal tabular-nums text-neon-purple-text">
                 {display.suffix}
               </span>
             </>

@@ -130,6 +130,9 @@ export function clerkAppearance(mode: ThemeMode) {
       formFieldAction: { color: c.link },
       formResendCodeLink: { color: c.link },
       identityPreviewEditButton: { color: c.link },
+      // The ghost Cancel beside a form's submit (<APIKeys/>'s "Add new API
+      // key" form) also paints its text in colorPrimary: 1.9:1 on white.
+      formButtonReset: { color: c.link },
       // Clerk draws a field's edge as a 1px box-shadow in colorBorder at 11%
       // alpha, which on white is far under 3:1 (WCAG 1.4.11). Light draws it
       // in `control` at full strength instead. Not while focused, so Clerk's

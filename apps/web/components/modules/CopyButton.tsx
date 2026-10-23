@@ -156,8 +156,8 @@ export default function CopyButton({
     const glyph = size === "md" ? "h-5 w-5" : "h-4 w-4";
     const tone =
       copyState === "failed"
-        ? "text-neon-pink-text hover:text-neon-pink-text/80"
-        : "text-neon-teal-text hover:text-neon-teal-text/80";
+        ? "text-neon-pink-text hover:underline"
+        : "text-neon-teal-text hover:underline";
     const Icon =
       copyState === "copied"
         ? ClipboardDocumentCheckIcon
@@ -204,7 +204,7 @@ export default function CopyButton({
         aria-label={copyLabel}
         // `p-2 -m-2`: grows the hit area to WCAG 2.5.8's 24px minimum without
         // shifting the layout around it.
-        className="text-sm text-neon-teal-text hover:text-neon-teal-text/80 underline p-2 -m-2 focus-outline rounded-sm"
+        className="text-sm text-neon-teal-text hover:decoration-2 underline p-2 -m-2 focus-outline rounded-sm"
       >
         {children}
       </button>

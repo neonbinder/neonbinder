@@ -26,7 +26,7 @@ function useDebounce<T>(value: T, delay: number): T {
  * Closure values they used to capture are now explicit props.
  */
 const LINK_BUTTON_CLASS =
-  "text-xs text-neon-blue-text hover:text-neon-blue-text/80 transition-colors";
+  "text-xs text-neon-blue-text hover:underline transition-colors";
 
 function FillButton({
   onClick,

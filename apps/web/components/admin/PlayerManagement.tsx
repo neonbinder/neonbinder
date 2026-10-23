@@ -1967,7 +1967,7 @@ function PlayerDetail({
                   <Link
                     to={`/admin/teams?team=${stint.teamId}`}
                     title={`Open ${teamName(stint.teamId)} in Team Management`}
-                    className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:text-neon-blue-text/80 focus-outline"
+                    className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline"
                   >
                     {teamName(stint.teamId)} · {stintRange(stint)}
                   </Link>

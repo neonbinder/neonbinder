@@ -481,7 +481,7 @@ export default function ShippingLabelsPage() {
               type="button"
               onClick={() => applyPaste(pasteText)}
               disabled={pasteText.trim() === ""}
-              className="text-sm text-neon-teal-text hover:text-neon-teal-text/80 underline disabled:opacity-40 disabled:no-underline p-2 -m-2"
+              className="text-sm text-neon-teal-text hover:decoration-2 underline disabled:opacity-40 disabled:no-underline p-2 -m-2"
             >
               Fill fields
             </button>
@@ -741,7 +741,7 @@ export default function ShippingLabelsPage() {
             Want to buy the postage too?{" "}
             <Link
               to="/profile/postage"
-              className="text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
+              className="text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
             >
               Add your EasyPost key
             </Link>{" "}
@@ -789,7 +789,7 @@ export default function ShippingLabelsPage() {
           <p className="text-sm text-center">
             <Link
               to="/print/labels"
-              className="text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
+              className="text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
             >
               Go to Label History
             </Link>

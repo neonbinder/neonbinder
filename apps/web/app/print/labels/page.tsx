@@ -165,7 +165,7 @@ function ScanUpdatesChip() {
             /print/shipping is a different page with a similar name. */}
         <Link
           to="/profile/postage"
-          className="text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
+          className="text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
         >
           your profile
         </Link>
@@ -338,7 +338,7 @@ export default function LabelHistoryPage() {
             Buy postage over on{" "}
             <Link
               to="/print/shipping"
-              className="text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
+              className="text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
             >
               Shipping
             </Link>{" "}
@@ -546,7 +546,7 @@ export default function LabelHistoryPage() {
                             // inline box measured only the 16px glyphs, within
                             // 12px of the copy button above). Not flex: that
                             // would drop the space before the arrow.
-                            className="inline-block py-0.5 text-sm text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
+                            className="inline-block py-0.5 text-sm text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
                           >
                             Public scan page
                             {/* Visible arrow for sighted users, spelled out for
@@ -649,7 +649,7 @@ export default function LabelHistoryPage() {
                       // padding-cancelled-by-negative-margin trick TrackingCode's
                       // Copy button already uses — grows the hit area without
                       // shifting layout.
-                      className="p-2 -m-2 text-sm text-neon-teal-text hover:text-neon-teal-text/80 underline focus-outline rounded-sm"
+                      className="p-2 -m-2 text-sm text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
                     >
                       {scansOpen ? "Hide" : "Show"} all scans ({scans.length})
                     </button>

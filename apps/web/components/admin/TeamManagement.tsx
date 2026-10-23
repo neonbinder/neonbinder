@@ -960,7 +960,7 @@ function TeamDetail({
             // line box, which leaves this link's pointer target 8px short of
             // WCAG 2.2 SC 2.5.8's 24px floor. 16 + 2x4 = 24 exactly, and the
             // padding grows the hit area without moving the text.
-            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-blue-text underline underline-offset-2 transition-colors hover:text-neon-blue-text/80 focus-outline"
+            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-blue-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline"
           >
             Manage leagues
           </Link>

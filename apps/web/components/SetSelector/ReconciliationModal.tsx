@@ -675,8 +675,8 @@ const DRAG_INSTRUCTIONS =
  * beside it without competing with the name. Unique names get no suffix.
  */
 const ID_SUFFIX: Record<Side, string> = {
-  bsc: "text-[11px] font-normal tabular-nums text-notice-info-ink/80",
-  sl: "text-[11px] font-normal tabular-nums text-neon-purple-text/80",
+  bsc: "text-[11px] font-normal tabular-nums text-notice-info-ink",
+  sl: "text-[11px] font-normal tabular-nums text-neon-purple-text",
 };
 
 /**

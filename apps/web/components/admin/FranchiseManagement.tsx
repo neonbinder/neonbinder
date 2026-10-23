@@ -120,7 +120,7 @@ function RemoveTeamButton({
         void onRemove(teamId, label);
       }}
       aria-disabled={unavailable}
-      className={`ml-auto rounded-sm px-1 py-1 text-xs text-neon-red-text underline underline-offset-2 transition-colors hover:text-neon-red-text/80 focus-outline ${
+      className={`ml-auto rounded-sm px-1 py-1 text-xs text-neon-red-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline ${
         unavailable ? "cursor-not-allowed opacity-50" : ""
       }`}
     >
