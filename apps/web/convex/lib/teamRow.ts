@@ -187,6 +187,38 @@ export async function findTeamsByAlias(
 }
 
 /**
+ * NEO-358 — the teams whose alias key STARTS WITH the typed text's key (exact
+ * matches included), across every sport, for the collector's team
+ * suggestions. A read beside `findTeamsByAlias`, the one other module allowed
+ * to query `teamAliases` (`teams.aliasIndexPin.test.ts`). `limit` bounds the
+ * `db.get`s; side rows are deduped before the get.
+ */
+export async function findTeamsByAliasPrefix(
+  ctx: Pick<QueryCtx, "db">,
+  text: string,
+  limit: number,
+): Promise<Doc<"teams">[]> {
+  const keyPrefix = normalizeEntityName(text);
+  if (keyPrefix.length === 0) return [];
+  const aliasRows = await ctx.db
+    .query("teamAliases")
+    .withIndex("by_alias_normalized_and_sport_id", (q) =>
+      q.gte("aliasNormalized", keyPrefix).lt("aliasNormalized", `${keyPrefix}\uffff`),
+    )
+    .take(limit * 2);
+  const out: Doc<"teams">[] = [];
+  const seen = new Set<string>();
+  for (const row of aliasRows) {
+    if (out.length >= limit) break;
+    if (seen.has(row.teamId)) continue;
+    seen.add(row.teamId);
+    const team = await ctx.db.get(row.teamId);
+    if (team) out.push(team);
+  }
+  return out;
+}
+
+/**
  * Every row this sport holds under `fullName` — the identity lookup all paths
  * share.
  *

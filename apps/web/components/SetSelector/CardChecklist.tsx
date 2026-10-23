@@ -2121,6 +2121,14 @@ export default function CardChecklist({
       if (result.operatorDeleted) {
         notes.push(`Deleted ${result.operatorDeleted}.`);
       }
+      // NEO-358 — a delete the server refused because a collector owns a copy.
+      if (result.collectedDeleteSkipped) {
+        notes.push(
+          result.collectedDeleteSkipped === 1
+            ? "Kept 1 a collector owns — it stays in the catalog."
+            : `Kept ${result.collectedDeleteSkipped} collectors own — they stay in the catalog.`,
+        );
+      }
       if (result.staleDecisions) {
         notes.push(
           `${result.staleDecisions} changed under review — not applied; re-sync to see them again.`,

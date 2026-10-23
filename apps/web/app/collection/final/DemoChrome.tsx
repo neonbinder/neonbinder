@@ -18,8 +18,9 @@ import NeonButton from "@/components/modules/NeonButton";
  *   two exits are index tabs on the right edge (`DemoRail`), where the
  *   signed-in shell keeps its own tabs (the pack tray already leaves that
  *   edge free). Only one copy of each exit is ever shown.
- * - Signed in (`/collection`), the collector already has an account and the
- *   shell's own nav, so the bar is just the marker and Reset.
+ * - In app mode (a unit test mounting the demo store; production's
+ *   `/collection` is the real collection and shows no demo chrome, NEO-358)
+ *   the bar is just the marker and Reset.
  * - Both modes (NEO-356): a Light / Dark switch for the demo alone, hidden
  *   for a collector who saved a mode in Settings (see DemoThemeToggle).
  */

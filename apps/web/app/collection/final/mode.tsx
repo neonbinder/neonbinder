@@ -12,11 +12,10 @@ import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from 
 import type { BinderSelection, CollectionBinder } from "./store";
 
 /**
- * NEO-350 — where the collection demo is running, and what that changes.
- *
- * The same page ships twice, and it is a demo both times: the cards are
- * fake, share links use a neutral `@you` handle (`DEMO_HANDLE`) and say they
- * are examples, a card request stays on the page, and a demo bar says so.
+ * NEO-350 / NEO-358 — where the collection page is running, and what that
+ * changes. Which STORE it runs on is a separate question (`./data/store`):
+ * signed-in `/collection` is the real collection on the Convex store, the
+ * public demo is fixture data on the demo store.
  *
  * - `"app"`: `/collection`, inside the signed-in binder shell. Links go to
  *   the real tools; "Print label" opens the Print Shop in a new tab, so the
@@ -56,7 +55,7 @@ import type { BinderSelection, CollectionBinder } from "./store";
  * unknown or deleted binder id reads as All, and an unknown id anywhere else
  * falls back the same quiet way: to the deepest level that still makes sense.
  *
- * Both modes are hard-coded data and never reach Convex or Clerk.
+ * Public mode is always the demo store and never reaches Convex or Clerk.
  */
 
 export type CollectionMode = "app" | "public";

@@ -93,6 +93,10 @@ export class RefusedError extends Error {}
  */
 export const SELECTOR_DEPENDANT_TABLES = [
   "slSetReviews",
+  // NEO-358 — a collector's copies (variantId, setId) and "Sets I'm building"
+  // (setId). Both drained by the reset, before the selector rows.
+  "collectionCopies",
+  "collectionBuildingSets",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",

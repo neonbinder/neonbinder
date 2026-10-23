@@ -22,7 +22,8 @@
  *
  * It writes no `imageUrls` (a scan belongs to the physical card an operator
  * photographed, not to a checklist entry) and queues no enrichment. Its only
- * read is the caller's lazy `sport()` for the NEO-313 player index. `autographType` is folded into
+ * read is the caller's lazy `sport()`, for the NEO-313 player index and the
+ * NEO-358 `sportId` stamp. `autographType` is folded into
  * `features.autographed` and is not stored (NEO-217).
  */
 
@@ -41,6 +42,8 @@ import {
 } from "./features/listingInputs";
 import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
+import { syncCardTeamLinks } from "./cardTeamLinks";
+import type { CardCountLedger } from "./cardCounts";
 
 /**
  * Set-level values resolved once per commit (or per build page). The title
@@ -286,9 +289,9 @@ export function buildCardRowForInsert(
 
 /**
  * How a new card's player index is kept (NEO-313). `sport` is the CARD's
- * sport, the root of its selector chain, and is asked for lazily: only a card
- * that carries players needs it, and a caller can cache it across a whole
- * page (the commit chunk's `cardSport`).
+ * sport, the root of its selector chain; a caller can cache it across a whole
+ * page (the commit chunk's `cardSport`). NEO-358 asks it for every card, to
+ * stamp `cardChecklist.sportId`.
  */
 export type CardRowIndexing = {
   sport: () => Promise<Id<"selectorOptions"> | undefined>;
@@ -309,25 +312,38 @@ export type CardRowIndexing = {
  * rather than at each call site is what keeps a second caller (the parallel
  * build) from ever minting an unindexed card; `cardPlayerLinks.pin.test.ts`
  * pins it.
+ *
+ * NEO-358: and, in the same place for the same reason, the card's `sportId`
+ * (set here, once, never changed), its `cardTeamLinks` rows (`fresh: true`,
+ * only when it carries teams), and +1 on its row's counts in the caller's
+ * `ledger`. The ledger is REQUIRED: the caller flushes it once, last.
  */
 export async function insertCardRow(
   ctx: MutationCtx,
   card: NewCardRow,
   set: CardRowSetContext,
   indexing: CardRowIndexing,
+  ledger: CardCountLedger,
 ): Promise<Id<"cardChecklist">> {
   const built = buildCardRowForInsert(card, set, Date.now());
-  // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
-  // so a label or a listing that already names it still does.
-  const id: Id<"cardChecklist"> = await ctx.db.insert(
-    "cardChecklist",
-    card.keepSku ? { ...built.row, sku: card.keepSku } : built.row,
-  );
+  const sportId = await indexing.sport();
+  const row = {
+    ...built.row,
+    ...(sportId ? { sportId } : {}),
+    // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
+    // so a label or a listing that already names it still does.
+    ...(card.keepSku ? { sku: card.keepSku } : {}),
+  };
+  const id: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", row);
   if ((card.playerIds ?? []).length > 0) {
-    await syncCardPlayerLinks(ctx, id, card.playerIds, await indexing.sport(), {
+    await syncCardPlayerLinks(ctx, id, card.playerIds, sportId, {
       fresh: true,
     });
   }
+  if ((card.teamOnCardIds ?? []).length > 0) {
+    await syncCardTeamLinks(ctx, id, card.teamOnCardIds, { fresh: true });
+  }
+  ledger.addCard(row);
   if (!card.keepSku) {
     await ctx.db.patch(id, {
       sku: generateSku({ ...built.sku, uniqueSuffix: crypto.randomUUID() }),

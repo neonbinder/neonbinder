@@ -526,3 +526,43 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     expect(mockUpdateCard.mock.calls[0][0].cardVariation).toBe("z".repeat(70));
   });
 });
+
+describe("CardDetailPanel — a cleared title is refused (NEO-358)", () => {
+  it("does not save, puts the stored title back, and says why", async () => {
+    renderPanel(makeCard({ listingTitle: "2024 Topps Chrome Julio Rodriguez #300b" }));
+
+    await editAndCommit(titleInput(), "   ");
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b");
+    expect(
+      await screen.findByText(
+        "A card needs a title. Type one in, or hit Regenerate for a fresh one.",
+      ),
+    ).toBeTruthy();
+    // The counter follows the restored title, not the cleared field.
+    expect(screen.getByText("39/80")).toBeTruthy();
+  });
+
+  it("the next real title saves and the refusal goes", async () => {
+    renderPanel(makeCard({ listingTitle: "Old title" }));
+
+    await editAndCommit(titleInput(), "");
+    expect(
+      await screen.findByText(
+        "A card needs a title. Type one in, or hit Regenerate for a fresh one.",
+      ),
+    ).toBeTruthy();
+
+    await editAndCommit(titleInput(), "New title");
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard.mock.calls[0][0].listingTitle).toBe("New title");
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "A card needs a title. Type one in, or hit Regenerate for a fresh one.",
+        ),
+      ).toBeNull(),
+    );
+  });
+});

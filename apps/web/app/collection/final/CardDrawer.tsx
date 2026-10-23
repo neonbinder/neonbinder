@@ -1,10 +1,14 @@
 import { useId } from "react";
-import { cardLabel, type BinderId, type Card, type CopyId } from "../prototypes/_shared/data";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import Overlay from "../prototypes/p1/Overlay";
-import { FOCUS, setAndVariant, shortCardName } from "../prototypes/p1/ui";
-import CardDetail from "./CardDetail";
-import type { CollectionStore, Notify } from "./store";
+import { FOCUS } from "../prototypes/p1/ui";
+import CardDetail, { CopyList } from "./CardDetail";
+import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
+import { cardLabel, setAndVariant, shortCardName } from "./data/labels";
+import { useCard, useCollectionActions, useCopiesOf, useDemoExtension } from "./data/store";
+import type { Card, CardId, CopyId } from "./data/types";
+import { lineNames, lineSummary } from "./lineItems";
+import { usePageApi } from "./pageApi";
 
 /**
  * The one right-side card drawer every tab opens through `openCard`: the
@@ -12,15 +16,18 @@ import type { CollectionStore, Notify } from "./store";
  * the collector's card detail. ↑ and ↓ step through the list it was opened
  * from. While it is open the page behind is inert, so it carries its own
  * copy of the status line.
+ *
+ * It reads the card live (`useCard`), drawing the opener's copy (`seed`) in
+ * the meantime. A card the catalog no longer holds still opens: it says so,
+ * and lists the collector's copies of it so they can be taken out.
  */
 export default function CardDrawer({
-  card,
-  store,
+  cardId,
+  seed,
   mode,
   focusCopyId,
   addBinderId,
   openKey,
-  notify,
   notice,
   onUndo,
   onDismissNotice,
@@ -28,15 +35,15 @@ export default function CardDrawer({
   onPrev,
   onNext,
 }: {
-  card: Card;
-  store: CollectionStore;
+  cardId: CardId;
+  /** The card as the opener had it. */
+  seed?: Card;
   mode: "view" | "add";
   focusCopyId?: CopyId;
-  /** The binder the add form ticks instead of the page's target. */
-  addBinderId?: BinderId;
+  /** Demo: the binder the add form ticks instead of the page's target. */
+  addBinderId?: string;
   /** Bumps on every openCard, so the detail remounts and re-runs its focus. */
   openKey: number;
-  notify: Notify;
   notice: Notice | null;
   onUndo: () => void;
   onDismissNotice: () => void;
@@ -45,6 +52,8 @@ export default function CardDrawer({
   onNext: (() => void) | null;
 }) {
   const headingId = useId();
+  const live = useCard(cardId);
+  const card = live === null ? null : (live ?? (seed?.id === cardId ? seed : undefined));
   const nav =
     "flex h-8 w-8 items-center justify-center rounded text-ink-2 hover:text-neon-blue-text disabled:opacity-30 disabled:cursor-not-allowed " +
     FOCUS;
@@ -55,31 +64,17 @@ export default function CardDrawer({
           <h2
             id={headingId}
             tabIndex={-1}
-            aria-label={cardLabel(card)}
+            aria-label={card ? cardLabel(card) : undefined}
             className="truncate text-sm font-semibold text-ink focus:outline-none"
           >
-            {shortCardName(card)}
+            {card ? shortCardName(card) : card === null ? "No longer in the catalog" : "Loading the card…"}
           </h2>
-          <p className="truncate text-xs text-ink-3">{setAndVariant(card)}</p>
+          <p className="truncate text-xs text-ink-3">{card ? setAndVariant(card) : " "}</p>
         </div>
-        <button
-          type="button"
-          onClick={onPrev ?? undefined}
-          disabled={!onPrev}
-          aria-label="Previous card"
-          title="Previous card"
-          className={nav}
-        >
+        <button type="button" onClick={onPrev ?? undefined} disabled={!onPrev} aria-label="Previous card" title="Previous card" className={nav}>
           ↑
         </button>
-        <button
-          type="button"
-          onClick={onNext ?? undefined}
-          disabled={!onNext}
-          aria-label="Next card"
-          title="Next card"
-          className={nav}
-        >
+        <button type="button" onClick={onNext ?? undefined} disabled={!onNext} aria-label="Next card" title="Next card" className={nav}>
           ↓
         </button>
         <button
@@ -96,17 +91,53 @@ export default function CardDrawer({
         <NoticeLine notice={notice} onUndo={onUndo} onDismiss={onDismissNotice} />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <CardDetail
-          key={`${card.id}|${openKey}`}
-          card={card}
-          store={store}
-          notify={notify}
-          mode={mode}
-          focusCopyId={focusCopyId}
-          addBinderId={addBinderId}
-          onCancelAdd={onClose}
-        />
+        {card ? (
+          <CardDetail
+            key={`${card.id}|${openKey}`}
+            card={card}
+            mode={mode}
+            focusCopyId={focusCopyId}
+            addBinderId={addBinderId}
+            onCancelAdd={onClose}
+          />
+        ) : card === null ? (
+          <GoneCard cardId={cardId} focusCopyId={focusCopyId} />
+        ) : (
+          <div aria-busy="true">
+            <SkeletonBars rows={6} />
+            <LoadingNote>Loading the card…</LoadingNote>
+          </div>
+        )}
       </div>
     </Overlay>
+  );
+}
+
+/** A card the catalog dropped: the collector's copies stay theirs to see and take out. */
+function GoneCard({ cardId, focusCopyId }: { cardId: CardId; focusCopyId?: CopyId }) {
+  const api = usePageApi();
+  const writes = useCollectionActions();
+  const binders = useDemoExtension()?.state.state.binders;
+  const copies = useCopiesOf(cardId);
+  const names = lineNames(copies ?? [], binders);
+  return (
+    <div className="space-y-4">
+      <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-2">
+        This card is no longer in the catalog. Your copies are still yours: keep them, or take them out.
+      </p>
+      <CopyList
+        name="this card"
+        copies={copies}
+        names={names}
+        binders={binders}
+        focusCopyId={focusCopyId}
+        onRemove={(copy) =>
+          void api.run(
+            () => writes.removeCopy(copy),
+            (r) => `Removed ${lineSummary(r.removed, binders)}`,
+          )
+        }
+      />
+    </div>
   );
 }

@@ -112,6 +112,7 @@ import {
   lossFieldNames,
   lossOnto,
   lossValidator,
+  moveBuildingSets,
   moveCards,
   moveGuestCrossListings,
   nameAfterPrefixes,
@@ -785,6 +786,9 @@ export const convertSetToParallel = mutation({
       now,
     );
     await moveGuestCrossListings(ctx, guestLinks, dest._id, now);
+    // NEO-358 — a collector building the set that ends here is building the
+    // target set now; moved before the trash icon's helper would sweep them.
+    await moveBuildingSets(ctx, set._id, targetSet._id, now);
 
     // ── end the emptied rows through the trash icon's own helper ──────
     await deleteEmptySelectorOptionRow(ctx, (await ctx.db.get(base._id))!, adminUserId);

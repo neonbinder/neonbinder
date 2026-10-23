@@ -546,8 +546,65 @@ export const selectorOptionFields = {
    * CLEAR never sets it: a clear schedules nothing.
    */
   teamCascadeStartedAt: v.optional(v.number()),
+  /**
+   * NEO-358 — how many `cardChecklist` rows point at THIS row
+   * (`by_selector_option`), stored so a collector's "1 of N" never reads a
+   * whole checklist. Meaningful on the card-bearing levels (`variantType`,
+   * `insert`, `parallel`); absent elsewhere. Counts home rows only, variations
+   * included; cross-listed guests are not counted.
+   *
+   * Kept by the per-mutation `CardCountLedger` (convex/cardCounts.ts): every
+   * card insert, delete and move adds a delta and flushes once at the end of
+   * the transaction. ABSENT means "never counted" — the ledger recounts in
+   * place on its first write, and the armed backfill
+   * (`backfillVariantCardCounts`) fills the rest. A set's total is the sum
+   * over its card-bearing rows, never cached on the set row.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  cardCount: v.optional(v.number()),
+  /**
+   * NEO-358 (Jason) — the same count WITHOUT variations: the `cardChecklist`
+   * rows on this row that carry no `variationOfCardId`. A collector's default
+   * "N of M" is over these (a set's base checklist is its regular cards; a
+   * photo variation is an extra chase, not a hole in the set). `cardCount`
+   * above stays the all-rows count for "N of M with variations".
+   *
+   * Kept by the same `CardCountLedger` as `cardCount`, in the same flush, and
+   * absent under the same rule (never counted; the ledger recounts in place).
+   */
+  nonVariationCardCount: v.optional(v.number()),
   lastUpdated: v.number(),
 };
+
+/**
+ * NEO-358 — the collection's closed vocabularies, exported so
+ * convex/collection.ts's `args`/`returns` validators and the table below
+ * cannot drift apart.
+ */
+export const collectionContainerKindValidator = v.union(
+  v.literal("binder"),
+  v.literal("box"),
+);
+export const collectionCopyConditionValidator = v.union(
+  v.literal("Mint"),
+  v.literal("Near Mint"),
+  v.literal("Excellent"),
+  v.literal("Very Good"),
+  v.literal("Good"),
+  v.literal("Poor"),
+);
+export const collectionCopyGradingValidator = v.object({
+  grader: v.union(
+    v.literal("PSA"),
+    v.literal("BGS"),
+    v.literal("SGC"),
+    v.literal("CGC"),
+    v.literal("TAG"),
+  ),
+  grade: v.string(),
+  cert: v.optional(v.string()),
+});
 
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
@@ -750,7 +807,14 @@ export default defineSchema({
     .index("by_level", ["level"])
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
-    .index("by_level_and_parent", ["level", "parentId"]),
+    .index("by_level_and_parent", ["level", "parentId"])
+    // NEO-358: the collector's set suggestions ("Topps Chrome" → the set, so
+    // picking it opens its checklist). Filtered to `level: "setName"` by the
+    // reader (`collectionCatalog.suggest`), which re-checks every word.
+    .searchIndex("search_value", {
+      searchField: "value",
+      filterFields: ["level"],
+    }),
 
   // Transient per-(level, parentId) marketplace-sync status for SetSelector
   // columns (NEO-47 sync redesign). A row exists only while a sync is in flight
@@ -1211,6 +1275,19 @@ export default defineSchema({
     // existing rows predate this field — no backfill planned, this data
     // gets deleted and resynced fresh.
     sku: v.optional(v.string()),
+    /**
+     * NEO-358 — the SPORT this card belongs to: the root of its
+     * `selectorOptionId` ancestor chain (`findSportForSelectorOption`),
+     * denormalised so the collector's title search can filter by sport
+     * (`search_listing_title`). Set once at insert and never changed: a card
+     * only ever moves between rows under one brand, so its sport is fixed.
+     *
+     * Writers: `insertCardRow` (convex/cardRowCreate.ts) and `addCustomCard`.
+     * Rows written before this field are filled by the armed
+     * `backfillCardSearchFields`. Optional permanently — a reader that needs
+     * the sport and finds it absent walks the ancestry instead.
+     */
+    sportId: v.optional(v.id("selectorOptions")),
     sortOrder: v.number(),
     lastUpdated: v.number(),
   })
@@ -1219,7 +1296,16 @@ export default defineSchema({
     // NEO-189: "give me this card's variations" as one indexed read rather than
     // a scan of the set. Also what `deleteCard` uses to find the children whose
     // pointer it must clear.
-    .index("by_variation_parent", ["variationOfCardId"]),
+    .index("by_variation_parent", ["variationOfCardId"])
+    // NEO-358: the collector's free-text card search. Full-text search is OR
+    // over the query's words, so the reader (`collectionCatalog.search`)
+    // re-checks every hit: every unquoted word must appear and every quoted
+    // phrase must appear verbatim (case-insensitive). Convex caps a search at
+    // 1024 results, which is why set and entity suggestions exist beside it.
+    .searchIndex("search_listing_title", {
+      searchField: "listingTitle",
+      filterFields: ["sportId", "selectorOptionId"],
+    }),
 
   // NEO-21: cross-release guest appearances. Some cards complete one set's
   // checklist but were physically printed inside a different product (2021
@@ -1262,10 +1348,11 @@ export default defineSchema({
    * player's home sport — a football player guest-linked onto a baseball card
    * gets a row with baseball here. That is the column the sport-removal guard
    * asks about, as one point read on `by_player_and_sport`. It is also stable:
-   * a card can MOVE between set rows (`setShapeMove` re-points
-   * `selectorOptionId`), but only within its set, so never across sports, and
-   * denormalising `selectorOptionId` instead would have made every card move a
-   * second writer here. A reader that wants the card's set reads the card,
+   * a card can MOVE between rows (`setShapeMove.moveCards` re-points
+   * `selectorOptionId`, including from one set into another when a set is
+   * converted into an insert or parallel), but only between sets under the
+   * same brand, so never across sports, and denormalising `selectorOptionId`
+   * instead would have made every card move a second writer here. A reader that wants the card's set reads the card,
    * which it has to do anyway for its number and name.
    *
    * ## The cost, and how it is contained
@@ -1301,6 +1388,32 @@ export default defineSchema({
     .index("by_player_and_sport", ["playerId", "sportId"])
     // Every row for one card, for the diff `syncCardPlayerLinks` performs and
     // for the delete that must follow a card's.
+    .index("by_card", ["cardChecklistId"]),
+
+  /**
+   * ── NEO-358: the team → cards index `cardChecklist.teamOnCardIds` cannot be ──
+   *
+   * The twin of `cardPlayerLinks` above, for the team PRINTED on the card
+   * (`teamOnCardIds`), which a collector searches by ("every Padres card I
+   * could own"). Convex cannot index array members, so the links are stored
+   * flat, one row per (card, team). DERIVED, never authored: rebuilt from
+   * `teamOnCardIds` alone, and if the two ever disagree the card wins.
+   *
+   * Every write goes through `syncCardTeamLinks` in convex/cardTeamLinks.ts,
+   * called by every `teamOnCardIds` writer, and every card delete goes through
+   * `removeCardRow` (convex/cardRowDelete.ts), which deletes a card's links
+   * with it. `cardTeamLinks.pin.test.ts` greps for anything else. A card that
+   * lists the same team twice gets ONE row.
+   *
+   * No `sportId`: a team belongs to one league and so to one sport, so "this
+   * team's cards" needs no sport filter. Franchise-wide reads fan out over the
+   * franchise's teams (`teams.franchiseId`) on `by_team`.
+   */
+  cardTeamLinks: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    teamId: v.id("teams"),
+  })
+    .index("by_team", ["teamId"])
     .index("by_card", ["cardChecklistId"]),
 
   // Players — first-class entity. Created from BSC `players[]` / SL desc
@@ -3157,4 +3270,97 @@ export default defineSchema({
     key: v.string(),
     heavyWarmEnqueuedAt: v.number(),
   }).index("by_key", ["key"]),
+
+  /**
+   * ── NEO-358: a collector's places to keep cards ───────────────────────────
+   *
+   * A HOME for copies: a binder, or a box (for-sale cards live in boxes). Every
+   * `collectionCopies` row has exactly one. Per user (`ownerId` is the Clerk
+   * subject, the house identity — `getCurrentUserId`).
+   *
+   * `system` marks a container NB made rather than the collector: `"main"` is
+   * the default binder every add lands in until containers are user-facing.
+   * It is get-or-created lazily on the first add (`.unique()` on
+   * `by_owner_and_system`; two racing first adds are serialised by OCC on that
+   * index range). Absent means a container the collector named. The union
+   * widens later (a `"want"` list is planned, and the add path already refuses
+   * any system container other than `"main"` as a home). No `rule` field yet
+   * (NEO-362).
+   */
+  collectionContainers: defineTable({
+    ownerId: v.string(),
+    kind: collectionContainerKindValidator,
+    system: v.optional(v.literal("main")),
+    name: v.string(),
+    lastUpdated: v.number(),
+  }).index("by_owner_and_system", ["ownerId", "system"]),
+
+  /**
+   * ── NEO-358: one pile of a card the collector owns ────────────────────────
+   *
+   * A row is ONE physical copy, or a stack of copies identical in EVERY field
+   * (condition, grading, cost, acquired date, location, notes, home). Adding a
+   * copy that matches an existing row on all of them folds into it
+   * (`quantity + n`); a copy carrying a grading cert or a serial number is
+   * unique by definition and never folds. Splitting a stack makes two rows.
+   * The fold rule lives in one place, `addLineItem` (convex/collection.ts).
+   *
+   * `variantId` and `setId` are DENORMALISED from the card (its
+   * `selectorOptionId`, and that row's `setName` ancestor) so a variant's
+   * "1 of N" and a set's completion are one indexed range, never a walk. They
+   * change only when the card itself moves (`setShapeMove.moveCards`, the
+   * single re-pointer), which patches every copy on `by_card`.
+   *
+   * NB data only: no marketplace field. A future listing lives in its own
+   * table (`{ownerId, copyId, platform, listingRef, listedQuantity}`), never
+   * on the copy.
+   *
+   * A card with copies cannot be deleted from the catalog: every card delete
+   * goes through `removeCardRow`, whose first step asks `by_card`.
+   */
+  collectionCopies: defineTable({
+    ownerId: v.string(),
+    cardId: v.id("cardChecklist"),
+    variantId: v.id("selectorOptions"),
+    setId: v.id("selectorOptions"),
+    homeId: v.id("collectionContainers"),
+    // An integer >= 1, capped in the handler (`MAX_COPY_QUANTITY`).
+    quantity: v.number(),
+    condition: v.optional(collectionCopyConditionValidator),
+    grading: v.optional(collectionCopyGradingValidator),
+    serialNumber: v.optional(v.string()),
+    // Integer cents, PER COPY.
+    costCents: v.optional(v.number()),
+    // `YYYY-MM-DD`, checked by the handler.
+    acquiredOn: v.optional(v.string()),
+    location: v.optional(v.string()),
+    // Blank is stored as absent, so a blank note never blocks a fold.
+    notes: v.optional(v.string()),
+    lastUpdated: v.number(),
+  })
+    // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
+    .index("by_owner_and_card", ["ownerId", "cardId"])
+    // copiesInVariant and variantCompletion (all three), set completion
+    // (prefix: ownerId + setId).
+    .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])
+    // The catalog delete guard and the moveCards fan-out.
+    .index("by_card", ["cardId"]),
+
+  /**
+   * ── NEO-358: the sets a collector has said they are building ──────────────
+   *
+   * Explicit only — a set appears here because the collector picked it (the
+   * SetPicker, the Wall toggle), never because they happen to own a card from
+   * it. `setId` is a `setName` row. One row per (owner, set).
+   *
+   * `by_set` is for the catalog side: deleting an empty set row sweeps its
+   * entries, and a set conversion re-points them to the target set.
+   */
+  collectionBuildingSets: defineTable({
+    ownerId: v.string(),
+    setId: v.id("selectorOptions"),
+    lastUpdated: v.number(),
+  })
+    .index("by_owner_and_set", ["ownerId", "setId"])
+    .index("by_set", ["setId"]),
 });

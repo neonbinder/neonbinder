@@ -1,28 +1,34 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronLeftIcon, EllipsisHorizontalIcon, ListBulletIcon } from "@heroicons/react/24/outline";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { ChevronDownIcon, ChevronLeftIcon, ChevronUpIcon, EllipsisHorizontalIcon, ListBulletIcon } from "@heroicons/react/24/outline";
 import { StarIcon } from "@heroicons/react/20/solid";
-import {
-  getBrand,
-  getSet,
-  getSport,
-  playerNames,
-  setLabel,
-  type Card,
-  type CardId,
-  type SetId,
-} from "../../prototypes/_shared/data";
+import NeonButton from "@/components/modules/NeonButton";
 import Chip from "../../prototypes/p3/Chip";
-import { useMediaQuery, useRoving, useWidth } from "../../prototypes/p3/hooks";
-import { blocksOf, buildWall, printRunText, type WallSection } from "../../prototypes/p3/wallModel";
+import { useRoving } from "../../prototypes/p3/hooks";
+import { haveShort, isComplete, totalKnown } from "../catalog/format";
+import { copiesByCard } from "../catalog/home";
+import { LoadingNote, SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
+import { playerNames, setLabel, variantLabel } from "../data/labels";
+import {
+  useBuildingSets,
+  useCapabilities,
+  useCollectionActions,
+  useCollectionStore,
+  useCopiesInVariant,
+  useSetSummary,
+  useVariantCards,
+  useVariantCompletion,
+} from "../data/store";
+import type { Card, CardId, Copy, SetRef, Variant } from "../data/types";
 import { useMyCards } from "./context";
 import QuickAdd from "./QuickAdd";
-import NeonButton from "@/components/modules/NeonButton";
+import { baseOf } from "./Scoreboard";
 
 /**
- * NEO-350 — the wall: one lit tile per card you have, a dashed outline per
- * card you need, a yellow outline and star for a need on your Want List.
- * Parallels stack under the base row so a card's whole rainbow reads down
- * one column; inserts get their own strips below.
+ * NEO-350 / NEO-358 — the wall: one lit tile per card you have, a dashed
+ * outline per card you need (and, in the demo, a yellow outline and star for
+ * a need on your Want List). One strip per checklist of the set: Base open,
+ * every insert and parallel folded until opened, so the wall reads one
+ * checklist at a time and never a whole set's cards at once.
  *
  * One Tab stop for the whole wall (roving tabindex). Arrows move, Space marks
  * have / need, Enter opens the card drawer, whose ↑ ↓ walk the wall.
@@ -31,58 +37,44 @@ import NeonButton from "@/components/modules/NeonButton";
 type Filter = "all" | "needs" | "haves" | "dupes" | "wanted";
 type TapDoes = "toggle" | "details";
 
-export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMount: boolean }) {
+export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMount: boolean }) {
   const api = useMyCards();
-  const { store, scopedName } = api;
-  const set = getSet(setId);
-  const wall = useMemo(() => buildWall(setId), [setId]);
+  const capabilities = useCapabilities();
+  const writes = useCollectionActions();
+  const summary = useSetSummary(setId);
+  const building = useBuildingSets();
   const heading = useRef<HTMLHeadingElement>(null);
   const container = useRef<HTMLDivElement>(null);
-  const width = useWidth(container);
-  const wide = useMediaQuery("(min-width: 640px)");
   const [filter, setFilter] = useState<Filter>("all");
   const [tapDoes, setTapDoes] = useState<TapDoes>("toggle");
   const [spot, setSpot] = useState<string[]>([]);
-  const [showParallels, setShowParallels] = useState(true);
-  const hasParallels = wall.aligned.rows.length > 1;
-  const aligned = showParallels ? wall.aligned : { ...wall.aligned, rows: wall.aligned.rows.slice(0, 1) };
+  const [tiles, setTiles] = useState<Record<string, string[]>>({});
+
+  const variants = useMemo(() => summary?.variants ?? [], [summary]);
+  const base = baseOf(variants);
+  const completion = useVariantCompletion(base?.id ?? null);
+  const set = summary?.set ?? null;
+  const isBuilding = building?.some((s) => s.id === setId) ?? false;
 
   useEffect(() => {
-    if (focusOnMount) heading.current?.focus();
-  }, [focusOnMount, setId]);
+    if (focusOnMount && summary !== undefined) heading.current?.focus();
+  }, [focusOnMount, setId, summary]);
 
-  const tile = wide ? 40 : 44;
-  const gap = wide ? 6 : 4;
-  const labelW = wide ? 128 : 72;
-  const fit = width ? Math.floor((width - labelW - gap) / (tile + gap)) : 10;
-  const perBlock = fit >= 5 ? Math.floor(fit / 5) * 5 : Math.max(1, fit);
-
-  const base = store.completionInScope(setId, { type: "Base" });
-  const whole = store.completionInScope(setId);
-  const allCards = [
-    ...aligned.rows.flatMap((r) => r.cells),
-    ...wall.inserts.flatMap((s) => s.rows[0].cells),
-  ].filter((c): c is Card => c !== null);
-  const counts = {
-    needs: allCards.filter((c) => store.ownedInScope(c.id) === 0).length,
-    haves: allCards.filter((c) => store.ownedInScope(c.id) > 0).length,
-    dupes: allCards.filter((c) => store.ownedInScope(c.id) > 1).length,
-    wanted: allCards.filter((c) => store.isWanted(c.id)).length,
-  };
-  const passes = (c: Card) => {
-    const n = store.ownedInScope(c.id);
-    if (filter === "needs") return n === 0;
-    if (filter === "haves") return n > 0;
-    if (filter === "dupes") return n > 1;
-    if (filter === "wanted") return store.isWanted(c.id);
-    return true;
-  };
-  const keys = allCards.filter(passes).map((c) => c.id);
+  const report = useCallback((variantId: string, ids: string[]) => {
+    setTiles((prev) => {
+      const before = prev[variantId];
+      if (before && before.length === ids.length && before.every((id, i) => id === ids[i])) return prev;
+      return { ...prev, [variantId]: ids };
+    });
+  }, []);
+  const keys = variants.flatMap((v) => tiles[v.id] ?? []);
   const roving = useRoving(container, keys);
 
   /** The tiles in reading order, for the drawer's ↑ ↓. */
-  const wallList = (): CardId[] =>
-    [...(container.current?.querySelectorAll<HTMLElement>("[data-rove]") ?? [])].map((el) => el.dataset.rove!);
+  const wallList = useCallback(
+    (): CardId[] => [...(container.current?.querySelectorAll<HTMLElement>("[data-rove]") ?? [])].map((el) => el.dataset.rove!),
+    [],
+  );
 
   // Scroll the number box's first match into view.
   useEffect(() => {
@@ -91,98 +83,119 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
     el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [spot]);
 
-  const complete = base.total > 0 && base.owned === base.total;
+  if (summary === undefined) {
+    return (
+      <section aria-busy="true" className="mc-led shadow-offset rounded-2xl border border-rule p-5">
+        <SkeletonBars rows={3} />
+        <SkeletonPips size="tile" count={24} />
+        <LoadingNote>Racking up the wall…</LoadingNote>
+      </section>
+    );
+  }
+  if (summary === null || !set) {
+    return (
+      <section aria-labelledby="mc-wall-heading" className="space-y-3">
+        <BackToSets />
+        <h2 id="mc-wall-heading" ref={heading} tabIndex={-1} className="text-2xl font-bold text-ink focus:outline-none">
+          That set isn&apos;t in the catalog
+        </h2>
+        <p className="text-sm text-ink-2">It may have been taken down. Your cards stay put.</p>
+      </section>
+    );
+  }
+
+  const label = setLabel(set);
+  const complete = completion ? isComplete(completion) : false;
   const chips: [Filter, string][] = [
     ["all", "Everything"],
-    ["needs", `Needs ${counts.needs}`],
-    ["haves", `Haves ${counts.haves}`],
-    ["dupes", `Dupes ${counts.dupes}`],
+    ["needs", "Needs"],
+    ["haves", "Haves"],
+    ["dupes", "Dupes"],
   ];
-  if (counts.wanted > 0) chips.push(["wanted", `Wanted ${counts.wanted}`]);
+  if (capabilities.wants) chips.push(["wanted", "Wanted"]);
+
+  const stopBuilding = (s: SetRef) => {
+    void api.run(
+      () => writes.setBuilding(s, false),
+      () => `Took ${setLabel(s)} off the board. Your cards stay put.`,
+    );
+    api.go("home");
+  };
+  const startBuilding = (s: SetRef) => {
+    void api.run(
+      () => writes.setBuilding(s, true),
+      () => `${setLabel(s)} is on the board. Go get 'em.`,
+    );
+  };
 
   return (
     <section aria-labelledby="mc-wall-heading">
-      <button
-        type="button"
-        onClick={() => api.go("home")}
-        className="mb-3 inline-flex min-h-11 items-center gap-1 rounded-md pr-2 text-sm text-ink-2 hover:text-ink focus-outline sm:min-h-8"
-      >
-        <ChevronLeftIcon aria-hidden="true" className="size-4" />
-        All my sets
-      </button>
+      <BackToSets />
 
       <div className="mc-led shadow-offset flex flex-col gap-4 rounded-2xl border border-rule p-4 sm:flex-row sm:items-end sm:p-5">
         <div className="min-w-0 flex-1">
           <p className="text-sm text-ink-3">
-            {getSport(set.sportId).name}, {getBrand(set.brandId).name}
+            {set.sport.name}, {set.brand.name}
           </p>
-          <h2
-            id="mc-wall-heading"
-            ref={heading}
-            tabIndex={-1}
-            className="text-2xl font-bold text-ink focus:outline-none sm:text-3xl"
-          >
-            {setLabel(set)}
+          <h2 id="mc-wall-heading" ref={heading} tabIndex={-1} className="text-2xl font-bold text-ink focus:outline-none sm:text-3xl">
+            {label}
           </h2>
           <p className="mt-2 text-sm text-ink-2">
-            {scopedName && <span className="text-neon-blue-text">In {scopedName}. </span>}
-            Base: <strong className="text-ink">{base.owned}</strong> of {base.total}. Whole set with inserts and
-            parallels: <strong className="text-ink">{whole.owned}</strong> of {whole.total}.
+            {api.scopedName && <span className="text-neon-blue-text">In {api.scopedName}. </span>}
+            {completion ? (
+              totalKnown(completion) ? (
+                <>
+                  Base: <strong className="text-ink">{completion.owned}</strong> of {completion.total}.{" "}
+                </>
+              ) : (
+                <>Base: {haveShort(completion)}. </>
+              )
+            ) : null}
+            The whole set runs {summary.totalCards} cards across {variants.length}{" "}
+            {variants.length === 1 ? "checklist" : "checklists"}.
           </p>
         </div>
-        <p className="text-right">
-          <span
-            className={`mc-percent block text-6xl sm:text-7xl ${complete ? "text-neon-green-text" : "text-neon-blue-text"}`}
-            data-complete={complete}
-          >
-            {base.percent}%
-          </span>
-          <span className="text-xs text-ink-2">{complete ? "Base set complete!" : "of the base set"}</span>
-        </p>
+        {completion && (
+          <p className="text-right">
+            <span
+              className={`mc-percent block text-6xl sm:text-7xl ${complete ? "text-neon-green-text" : "text-neon-blue-text"}`}
+              data-complete={complete}
+            >
+              {totalKnown(completion) ? `${completion.percent}%` : completion.owned}
+            </span>
+            <span className="text-xs text-ink-2">
+              {complete ? "Base set complete!" : totalKnown(completion) ? "of the base set" : "base cards owned"}
+            </span>
+          </p>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <NeonButton
-          type="button"
-          variant="secondary"
-          outline
-          onClick={() => api.go("needs", setId)}
-          className="min-h-11 sm:min-h-9"
-        >
+        <NeonButton type="button" variant="secondary" outline onClick={() => api.go("needs", setId)} className="min-h-11 sm:min-h-9">
           <ListBulletIcon aria-hidden="true" className="size-4" />
           Need list for this set
         </NeonButton>
-        <NeonButton
-          type="button"
-          variant="negative"
-          outline
-          onClick={() => {
-            store.toggleBuilding(setId);
-            api.notify(`Took ${setLabel(set)} off the board. Your cards stay put.`, () =>
-              store.toggleBuilding(setId),
-            );
-            api.go("home");
-          }}
-          className="min-h-11 sm:min-h-9"
-        >
-          Stop building this set
-        </NeonButton>
+        {building !== undefined &&
+          (isBuilding ? (
+            <NeonButton type="button" variant="negative" outline onClick={() => stopBuilding(set)} className="min-h-11 sm:min-h-9">
+              Stop building this set
+            </NeonButton>
+          ) : (
+            <NeonButton type="button" variant="primary" outline onClick={() => startBuilding(set)} className="min-h-11 sm:min-h-9">
+              Build this set
+            </NeonButton>
+          ))}
       </div>
 
-      <QuickAdd setId={setId} onSpot={setSpot} />
+      <QuickAdd variants={variants} onSpot={setSpot} />
 
       <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div role="group" aria-label="Show on the wall" className="flex flex-wrap gap-1.5">
-          {chips.map(([value, label]) => (
+          {chips.map(([value, text]) => (
             <Chip key={value} pressed={filter === value} onClick={() => setFilter(value)}>
-              {label}
+              {text}
             </Chip>
           ))}
-          {hasParallels && (
-            <Chip pressed={showParallels} onClick={() => setShowParallels(!showParallels)}>
-              Parallel rows
-            </Chip>
-          )}
         </div>
         <div role="group" aria-label="Clicking a tile" className="flex items-center gap-1.5">
           <span aria-hidden="true" className="text-sm text-ink-3">
@@ -197,7 +210,7 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
         </div>
       </div>
 
-      <Legend />
+      <Legend wants={capabilities.wants} />
 
       <p id="mc-wall-help" className="sr-only">
         Arrow keys move between cards. Space marks a card have or need. Enter opens its details.
@@ -205,131 +218,140 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
       <div
         ref={container}
         role="group"
-        aria-label={`${setLabel(set)} checklist wall`}
+        aria-label={`${label} checklist wall`}
         aria-describedby="mc-wall-help"
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}
-        className="mt-4"
+        className="mt-4 flex flex-col gap-5"
       >
-        <SectionBlocks
-          section={aligned}
-          perBlock={perBlock}
-          tile={tile}
-          gap={gap}
-          labelW={labelW}
-          passes={passes}
-          spot={spot}
-          tapDoes={tapDoes}
-          tabIndexFor={roving.tabIndexFor}
-          wallList={wallList}
-        />
-        {wall.inserts.length > 0 && (
-          <>
-            <h3 className="mb-2 mt-6 text-sm font-bold text-ink-2">
-              Inserts <span className="font-normal text-ink-3">(their own numbering)</span>
-            </h3>
-            {wall.inserts.map((section) => (
-              <SectionBlocks
-                key={section.key}
-                section={section}
-                perBlock={perBlock}
-                tile={tile}
-                gap={gap}
-                labelW={labelW}
-                passes={passes}
-                spot={spot}
-                tapDoes={tapDoes}
-                tabIndexFor={roving.tabIndexFor}
-                wallList={wallList}
-              />
-            ))}
-          </>
-        )}
+        {variants.map((v) => (
+          <WallStrip
+            key={v.id}
+            variant={v}
+            startOpen={v.id === base?.id}
+            filter={filter}
+            tapDoes={tapDoes}
+            spot={spot}
+            tabIndexFor={roving.tabIndexFor}
+            wallList={wallList}
+            report={report}
+          />
+        ))}
       </div>
     </section>
   );
 }
 
-function SectionBlocks({
-  section,
-  perBlock,
-  tile,
-  gap,
-  labelW,
-  passes,
-  spot,
+function BackToSets() {
+  const api = useMyCards();
+  return (
+    <button
+      type="button"
+      onClick={() => api.go("home")}
+      className="mb-3 inline-flex min-h-11 items-center gap-1 rounded-md pr-2 text-sm text-ink-2 hover:text-ink focus-outline sm:min-h-8"
+    >
+      <ChevronLeftIcon aria-hidden="true" className="size-4" />
+      All my sets
+    </button>
+  );
+}
+
+function finishSwatch(v: Variant): string {
+  const tint = v.finish.tint;
+  if (v.finish.kind === "gold" || v.finish.kind === "superfractor") return "linear-gradient(135deg,#8a6a1c,#f5d77a,#9c7a23)";
+  if (v.finish.kind === "refractor" && !tint) return "conic-gradient(#ff2e9a,#ffe600,#00d558,#00c2ff,#a44aff,#ff2e9a)";
+  return tint ?? "transparent";
+}
+
+/** One checklist on the wall: its header and, once open, its tiles. */
+function WallStrip({
+  variant,
+  startOpen,
+  filter,
   tapDoes,
+  spot,
   tabIndexFor,
   wallList,
+  report,
 }: {
-  section: WallSection;
-  perBlock: number;
-  tile: number;
-  gap: number;
-  labelW: number;
-  passes: (c: Card) => boolean;
-  spot: string[];
+  variant: Variant;
+  startOpen: boolean;
+  filter: Filter;
   tapDoes: TapDoes;
+  spot: string[];
   tabIndexFor: (key: string) => number;
   wallList: () => CardId[];
+  report: (variantId: string, ids: string[]) => void;
 }) {
-  const blocks = blocksOf(section, perBlock);
+  const { kind } = useCollectionStore();
+  const api = useMyCards();
+  const [open, setOpen] = useState(startOpen || kind === "demo");
+  const completion = useVariantCompletion(variant.id);
+  const cards = useVariantCards(open ? variant.id : null);
+  const copies = useCopiesInVariant(open ? variant.id : null);
+  const byCard = useMemo(() => copiesByCard(copies), [copies]);
+  const name = variantLabel(variant);
+  const run = variant.printRun === null ? null : variant.printRun === 1 ? "1/1" : `/${variant.printRun}`;
+
+  const countOf = (id: string) => (byCard.get(id) ?? []).reduce((n, c) => n + c.quantity, 0);
+  const passes = (c: Card) => {
+    const n = countOf(c.id);
+    if (filter === "needs") return n === 0;
+    if (filter === "haves") return n > 0;
+    if (filter === "dupes") return n > 1;
+    if (filter === "wanted") return api.isWanted(c.id);
+    return true;
+  };
+  const visibleIds = open && cards && copies ? cards.filter(passes).map((c) => c.id) : [];
+  const idsKey = visibleIds.join("|");
+  useEffect(() => {
+    report(variant.id, idsKey ? idsKey.split("|") : []);
+  }, [report, variant.id, idsKey]);
+
   return (
-    <div className="flex flex-col gap-3">
-      {blocks.map((block) => (
-        <div
-          key={block.start}
-          className="grid items-center"
-          style={{
-            gridTemplateColumns: `${labelW}px repeat(${perBlock}, ${tile}px)`,
-            gap: `${gap}px`,
-          }}
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span aria-hidden="true" className="size-2.5 shrink-0 rounded-full border border-control" style={{ background: finishSwatch(variant) }} />
+        <h3 className="text-sm font-bold text-ink-2">
+          {name}
+          {run && <span className="font-normal text-ink-3"> {run}</span>}
+        </h3>
+        <span className="text-xs tabular-nums text-ink-3">{completion ? haveShort(completion) : "…"}</span>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? `Fold up ${name}` : `Show the ${name} tiles`}
+          onClick={() => setOpen(!open)}
+          className="inline-flex min-h-11 items-center gap-1 rounded-md px-1.5 text-xs text-ink-3 hover:text-neon-blue-text focus-outline sm:min-h-8"
         >
-          {block.rows.map(({ row, cells }) => {
-            const run = printRunText(row.variant);
-            const tint = row.variant.finish.tint;
-            return (
-              <div key={row.key} className="contents">
-                <div className="flex min-w-0 items-center gap-1.5 pr-1">
-                  <span
-                    aria-hidden="true"
-                    className="size-2.5 shrink-0 rounded-full border border-control"
-                    style={{
-                      background:
-                        row.variant.finish.kind === "gold" || row.variant.finish.kind === "superfractor"
-                          ? "linear-gradient(135deg,#8a6a1c,#f5d77a,#9c7a23)"
-                          : row.variant.finish.kind === "refractor" && !tint
-                            ? "conic-gradient(#ff2e9a,#ffe600,#00d558,#00c2ff,#a44aff,#ff2e9a)"
-                            : (tint ?? "transparent"),
-                    }}
-                  />
-                  <span className="truncate text-xs text-ink-2 sm:text-sm" title={row.label}>
-                    {row.label}
-                    {run && <span className="text-ink-3"> {run}</span>}
-                  </span>
-                </div>
-                {cells.map((card, i) =>
-                  card ? (
-                    <Tile
-                      key={card.id}
-                      card={card}
-                      rowLabel={row.label}
-                      size={tile}
-                      visible={passes(card)}
-                      spot={spot.includes(card.id)}
-                      tapDoes={tapDoes}
-                      tabIndex={tabIndexFor(card.id)}
-                      wallList={wallList}
-                    />
-                  ) : (
-                    <span key={`gap-${i}`} aria-hidden="true" />
-                  ),
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ))}
+          {open ? <ChevronUpIcon aria-hidden="true" className="size-3.5" /> : <ChevronDownIcon aria-hidden="true" className="size-3.5" />}
+          {open ? "Fold up" : "Show the tiles"}
+        </button>
+      </div>
+      {open &&
+        (cards && copies ? (
+          cards.length === 0 ? (
+            <p className="text-sm text-ink-3">No cards on this checklist yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1 sm:gap-1.5">
+              {cards.map((card) => (
+                <Tile
+                  key={card.id}
+                  card={card}
+                  rowLabel={name}
+                  copies={byCard.get(card.id) ?? []}
+                  visible={passes(card)}
+                  spot={spot.includes(card.id)}
+                  tapDoes={tapDoes}
+                  tabIndex={tabIndexFor(card.id)}
+                  wallList={wallList}
+                />
+              ))}
+            </div>
+          )
+        ) : (
+          <SkeletonPips size="tile" count={Math.min(variant.baseCardCount || 20, 40)} />
+        ))}
     </div>
   );
 }
@@ -337,7 +359,7 @@ function SectionBlocks({
 function Tile({
   card,
   rowLabel,
-  size,
+  copies,
   visible,
   spot,
   tapDoes,
@@ -346,7 +368,7 @@ function Tile({
 }: {
   card: Card;
   rowLabel: string;
-  size: number;
+  copies: Copy[];
   visible: boolean;
   spot: boolean;
   tapDoes: TapDoes;
@@ -354,28 +376,26 @@ function Tile({
   wallList: () => CardId[];
 }) {
   const api = useMyCards();
-  const count = api.store.ownedInScope(card.id);
+  const count = copies.reduce((n, c) => n + c.quantity, 0);
   const have = count > 0;
-  const wanted = api.store.isWanted(card.id);
+  const wanted = api.isWanted(card.id);
   const small = card.cardNumber.length > 3;
+  const size = "size-11 sm:size-10";
 
   if (!visible) {
     return (
-      <span
-        aria-hidden="true"
-        className="grid place-items-center rounded-md border border-rule text-[10px] text-rule-strong"
-        style={{ width: size, height: size }}
-      >
+      <span aria-hidden="true" className={`grid ${size} place-items-center rounded-md border border-rule text-[10px] text-rule-strong`}>
         {card.cardNumber}
       </span>
     );
   }
 
-  const name = `${rowLabel} #${card.cardNumber}${card.variation ? `, ${card.variation} variation` : ""} ${playerNames(card)}, ${
-    have ? (count > 1 ? `have ${count}` : "have") : "need"
-  }${wanted ? ", on your Want List" : ""}`;
+  const players = playerNames(card);
+  const name = `${rowLabel} #${card.cardNumber}${card.cardVariation ? `, ${card.cardVariation} variation` : ""}${
+    players ? ` ${players}` : ""
+  }, ${have ? (count > 1 ? `have ${count}` : "have") : "need"}${wanted ? ", on your Want List" : ""}`;
 
-  const open = () => api.openCard(card.id, { list: wallList() });
+  const open = () => api.openCard(card.id, { list: wallList(), seed: card });
 
   function onKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
     if (e.key === "Enter") {
@@ -383,14 +403,14 @@ function Tile({
       open();
     } else if (e.key === " ") {
       e.preventDefault();
-      if (!e.repeat) api.toggleHave(card, wallList());
+      if (!e.repeat) api.toggleHave(card, copies, wallList());
     }
   }
   function onClick(e: MouseEvent<HTMLButtonElement>) {
     // Keyboard presses were handled on keydown; a click with detail 0 is one.
     if (e.detail === 0) return;
     if (tapDoes === "details") open();
-    else api.toggleHave(card, wallList());
+    else api.toggleHave(card, copies, wallList());
   }
 
   const look = have
@@ -400,14 +420,14 @@ function Tile({
       : "border-[1.5px] border-dashed border-control text-ink-2 hover:border-neon-blue hover:text-ink";
 
   return (
-    <div className="group relative" style={{ width: size, height: size }}>
+    <div className={`group relative ${size}`}>
       <button
         type="button"
         data-rove={card.id}
         tabIndex={tabIndex}
         aria-pressed={have}
         aria-label={name}
-        title={`${rowLabel} #${card.cardNumber} ${playerNames(card)}${wanted ? " (wanted)" : ""}`}
+        title={`${rowLabel} #${card.cardNumber} ${players}${wanted ? " (wanted)" : ""}`}
         onKeyDown={onKeyDown}
         onKeyUp={(e) => e.key === " " && e.preventDefault()}
         onClick={onClick}
@@ -416,17 +436,14 @@ function Tile({
         } ${look} ${spot ? "mc-spot" : ""}`}
       >
         {card.cardNumber}
-        {card.variation && (
+        {card.cardVariation && (
           <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[9px] font-bold leading-none">
             v
           </span>
         )}
       </button>
       {wanted && (
-        <StarIcon
-          aria-hidden="true"
-          className="pointer-events-none absolute -left-1.5 -top-1.5 size-3.5 text-neon-yellow-text mc-star"
-        />
+        <StarIcon aria-hidden="true" className="pointer-events-none absolute -left-1.5 -top-1.5 size-3.5 text-neon-yellow-text mc-star" />
       )}
       {count > 1 && (
         <span
@@ -450,17 +467,11 @@ function Tile({
   );
 }
 
-function Legend() {
+function Legend({ wants }: { wants: boolean }) {
   return (
-    <ul
-      aria-label="How to read the wall"
-      className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-2"
-    >
+    <ul aria-label="How to read the wall" className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-2">
       <li className="flex items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="mc-lit grid size-5 place-items-center rounded bg-neon-blue text-[10px] font-bold text-on-neon-blue"
-        >
+        <span aria-hidden="true" className="mc-lit grid size-5 place-items-center rounded bg-neon-blue text-[10px] font-bold text-on-neon-blue">
           7
         </span>
         Lit up: you have it
@@ -474,15 +485,17 @@ function Legend() {
         </span>
         Dashed: you need it
       </li>
-      <li className="flex items-center gap-1.5">
-        <span aria-hidden="true" className="relative">
-          <span className="grid size-5 place-items-center rounded border-[1.5px] border-dashed border-neon-yellow-text text-[10px] font-bold text-neon-yellow-text">
-            7
+      {wants && (
+        <li className="flex items-center gap-1.5">
+          <span aria-hidden="true" className="relative">
+            <span className="grid size-5 place-items-center rounded border-[1.5px] border-dashed border-neon-yellow-text text-[10px] font-bold text-neon-yellow-text">
+              7
+            </span>
+            <StarIcon className="absolute -left-1 -top-1 size-2.5 text-neon-yellow-text" />
           </span>
-          <StarIcon className="absolute -left-1 -top-1 size-2.5 text-neon-yellow-text" />
-        </span>
-        Starred: on your Want List
-      </li>
+          Starred: on your Want List
+        </li>
+      )}
       <li className="flex items-center gap-1.5">
         <span aria-hidden="true" className="rounded bg-neon-yellow px-1 text-[10px] font-bold leading-4 text-on-neon-yellow">
           ×2

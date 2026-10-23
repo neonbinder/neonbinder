@@ -98,12 +98,17 @@ On success it prints the per-table counts:
 ```json
 {
   "cardChecklistDeleted": 412,
+  "cardPlayerLinksDeleted": 530,
+  "cardTeamLinksDeleted": 398,
   "checklistCandidatesDeleted": 0,
+  "collectionBuildingSetsDeleted": 3,
+  "collectionCopiesDeleted": 27,
   "crossListingsDeleted": 5,
   "entityReviewQueueDeleted": 0,
   "franchisesDeleted": 12,
   "leaguesDeleted": 3,
   "playerAliasesDeleted": 41,
+  "playerSportsDeleted": 4,
   "playersDeleted": 288,
   "selectorOptionsDeleted": 9134,
   "slSetReviewsDeleted": 2,
@@ -112,6 +117,15 @@ On success it prints the per-table counts:
   "complete": true
 }
 ```
+
+NEO-358: `collectionCopiesDeleted` and `collectionBuildingSetsDeleted` are
+collectors' copies and "Sets I'm building" entries **across every account**:
+this is a whole-deployment wipe, and a collector's row that pointed at a
+deleted card or set would be stranded. They drain before the selector rows and
+the cards, in both scopes. Collectors' binders and boxes
+(`collectionContainers`) hold no catalog id and are left alone.
+`cardTeamLinksDeleted` is the derived team → cards index, drained before the
+cards like `cardPlayerLinksDeleted`.
 
 `"complete": false` means the time budget ran out first — the counts are real,
 but rows remain; run it again until it reports `true`.

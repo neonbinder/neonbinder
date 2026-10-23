@@ -103,7 +103,7 @@ import {
 import { pausedSides } from "./marketplacePause";
 import { slotIds, type PlatformSide } from "./platformSlots";
 import { platformSideValidator } from "./selectorSyncStore";
-import { orphanVariationsOf, resolveCardSlots } from "./selectorOptions";
+import { resolveCardSlots } from "./selectorOptions";
 import {
   copyFeaturesForParallel,
   insertCardRow,
@@ -117,7 +117,9 @@ import {
   type LinkableNbCard,
 } from "./lib/parallelCardLink";
 import { teamFullName } from "../lib/teams/team-name";
-import { deleteCardPlayerLinks } from "./cardPlayerLinks";
+// NEO-358 — the one card delete (with its collector guard) and the counts.
+import { cardIsCollected, collectedCardIds, removeCardRow } from "./cardRowDelete";
+import { createCardCountLedger } from "./cardCounts";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 import { derivedVariantFlags, variantTypeKind } from "./variantRole";
@@ -221,6 +223,12 @@ export const BLOCKED_SCANS =
   "some of its cards have scans, and a rebuild would lose them";
 export const BLOCKED_CROSS_LISTED =
   "some of its cards also show under another set — take them off there first";
+/**
+ * NEO-358 — a rebuild deletes the parallel's cards, and a card a collector
+ * owns a copy of is never deleted (Jason: blocked, not re-pointed).
+ */
+export const BLOCKED_COLLECTED =
+  "collectors own copies of some of its cards, and a rebuild would pull those cards out from under them";
 /**
  * Only for a review someone is working in RIGHT NOW (activity within
  * `REVIEW_ACTIVE_WINDOW_MS`). A parallel has no way to start or reach a review
@@ -906,6 +914,11 @@ export const getParallelsForBuild = query({
             blocked = BLOCKED_CROSS_LISTED;
             break;
           }
+          // NEO-358 — same budget: one more indexed read per card looked at.
+          if (await cardIsCollected(ctx, card._id)) {
+            blocked = BLOCKED_COLLECTED;
+            break;
+          }
         }
       }
 
@@ -1085,6 +1098,9 @@ export const checkParallelBuildBlocksPage = internalQuery({
       if (hasScans(card)) blockedReason = BLOCKED_SCANS;
       else if (await isCrossListingHome(ctx, card._id)) {
         blockedReason = BLOCKED_CROSS_LISTED;
+      } else if (await cardIsCollected(ctx, card._id)) {
+        // NEO-358 — beside the scans: a collector's card is never deleted.
+        blockedReason = BLOCKED_COLLECTED;
       }
     }
     return {
@@ -1323,9 +1339,10 @@ export const clearParallelReviewPage = internalMutation({
  * Delete one page of the parallel's current cards.
  *
  * Every card in the page is checked BEFORE any is deleted: a scan, a
- * cross-listing home or a staged review found here refuses the whole page, so
- * a block that appeared since the action's own check still loses nothing on
- * this page. Variation children are promoted exactly as `deleteCard` does.
+ * cross-listing home, a collector's copy (NEO-358) or a staged review found
+ * here refuses the whole page, so a block that appeared since the action's own
+ * check still loses nothing on this page. Each card then goes through the one
+ * card delete, `removeCardRow`, exactly as `deleteCard` does it.
  */
 export const deleteParallelCardsPage = internalMutation({
   args: { parallelId: v.id("selectorOptions") },
@@ -1357,9 +1374,17 @@ export const deleteParallelCardsPage = internalMutation({
         maximumBytesRead: DELETE_PAGE_BYTES,
       });
     const page = read.page;
+    // NEO-358 — the collector guard, over the whole page before any delete.
+    const collected = await collectedCardIds(
+      ctx,
+      page.map((card) => card._id),
+    );
     for (const card of page) {
       if (hasScans(card)) {
         return { deleted: 0, done: true, blockedReason: BLOCKED_SCANS, refs: empty };
+      }
+      if (collected.has(card._id)) {
+        return { deleted: 0, done: true, blockedReason: BLOCKED_COLLECTED, refs: empty };
       }
       if (await isCrossListingHome(ctx, card._id)) {
         return {
@@ -1371,17 +1396,19 @@ export const deleteParallelCardsPage = internalMutation({
       }
     }
     const refs = { bsc: [] as string[], sportlots: [] as string[] };
+    const countLedger = createCardCountLedger();
     for (const card of page) {
       const bscRef = card.platformData?.bsc?.ref;
       const slRef = card.platformData?.sportlots?.ref;
       if (bscRef) refs.bsc.push(bscRef);
       if (slRef) refs.sportlots.push(slRef);
-      await orphanVariationsOf(ctx, card._id);
-      // NEO-313 — the derived player index goes with the card, in the same
-      // transaction, exactly as `deleteCard` does it.
-      await deleteCardPlayerLinks(ctx, card._id);
-      await ctx.db.delete(card._id);
+      // NEO-313 / NEO-358 — variations promoted, the player and team index
+      // rows, the card and the parallel's counts, in this transaction, exactly
+      // as `deleteCard` does it. (No cross-listing can be found: a home is
+      // refused above.)
+      await removeCardRow(ctx, card, countLedger);
     }
+    await countLedger.flush(ctx);
     return {
       deleted: page.length,
       done: read.isDone,
@@ -1552,8 +1579,8 @@ export const insertParallelCardsPage = internalMutation({
     const set = await parallelSetContext(ctx, parallel);
     const toStored = await resolveCardSlots(ctx, args.parallelId);
     // NEO-313 — the copies' player index is keyed by the PARALLEL's sport
-    // (the card's own chain), walked once per page and only if a copy carries
-    // players; `insertCardRow` writes the rows.
+    // (the card's own chain), walked once per page; `insertCardRow` writes the
+    // rows, and (NEO-358) stamps the sport on every copy as `sportId`.
     let pageSport: { id: Id<"selectorOptions"> | undefined } | undefined;
     const parallelSport = async (): Promise<Id<"selectorOptions"> | undefined> => {
       pageSport ??= {
@@ -1585,6 +1612,8 @@ export const insertParallelCardsPage = internalMutation({
     let missing = 0;
     let skippedChangedSource = 0;
     let processed = 0;
+    // NEO-358 — every copy adds to the parallel's counts; flushed once below.
+    const countLedger = createCardCountLedger();
     for (const copy of args.copies) {
       // NEO-321 (audit N1) — a source card's size is unknown until it is
       // read, so ask for room first; the rest of the page goes next call.
@@ -1690,10 +1719,12 @@ export const insertParallelCardsPage = internalMutation({
         },
         set,
         { sport: parallelSport },
+        countLedger,
       );
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
     }
+    await countLedger.flush(ctx);
     return { created, missing, skippedChangedSource, processed, changed: false };
   },
 });

@@ -30,7 +30,7 @@
  */
 
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -50,6 +50,10 @@ import {
 import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 import { variantTypeKind } from "./variantRole";
 import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-358 — a moved card's counts move with it, and so do its collectors'
+// copies (their denormalised `variantId` / `setId`).
+import { createCardCountLedger } from "./cardCounts";
+import { findSetForSelectorOption } from "./lib/selectorAncestry";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
@@ -83,6 +87,27 @@ export const MAX_CROSS_LISTINGS_PER_MOVE = 200;
  * rows it returns, so this bounds document size, not the write budget.
  */
 export const MAX_CARDS_PER_ROW_READ = MAX_CARDS_PER_MOVE * 4;
+
+/**
+ * NEO-358 — collectors' copies one move re-points. Each is one `patch` on top
+ * of the card's own, in the same transaction, so a move carrying more refuses
+ * whole rather than straining the budget `MAX_CARDS_PER_MOVE` is sized to.
+ * Collections are young; a set with this many copies of the cards being moved
+ * is far from anything real today.
+ */
+export const MAX_COPIES_PER_MOVE = 500;
+
+/**
+ * NEO-358 — "Sets I'm building" entries one conversion re-points from the set
+ * it ends onto its target. Two operations each (the owner's target lookup,
+ * then a patch or a delete).
+ */
+export const MAX_BUILDING_SETS_PER_MOVE = 500;
+
+/** What the operator reads when a move would re-point too many copies. */
+export const tooManyCopiesToMove = (): string =>
+  `Whoa, collectors own more than ${MAX_COPIES_PER_MOVE} copies of these ` +
+  `cards, which is more than one move can carry. Nothing was moved.`;
 
 /** Sets a door's target picker lists for one brand. */
 export const MAX_TARGET_SETS = 500;
@@ -586,6 +611,15 @@ export async function readConversionSource(
  * interleave them — the house shape for a re-number that may exceed one
  * transaction (`restampCardChecklistSortOrdersBatch`). The only field that
  * chain writes is `sortOrder`, so its worst case is a display-order wobble.
+ *
+ * NEO-358 — the only re-pointer of cards, so it is also the only re-pointer
+ * of what is denormalised from a card's row:
+ *  - the counts: each card leaves its old row and lands on `destId`
+ *    (`CardCountLedger`, flushed here, once);
+ *  - collectors' copies: every copy of a moved card (`collectionCopies.by_card`,
+ *    one read per card) gets `variantId = destId` and `setId` = the
+ *    destination's set. More than `MAX_COPIES_PER_MOVE` refuses the whole
+ *    move (`tooManyCopiesToMove`), nothing written.
  */
 export async function moveCards(
   ctx: MutationCtx,
@@ -614,6 +648,10 @@ export async function moveCards(
       .collect();
     base = all.reduce((max, c) => Math.max(max, c.sortOrder), -1) + 1;
   }
+  const countLedger = createCardCountLedger();
+  // Walked lazily: only a move that carries a collector's copy needs it.
+  let destSet: { id: RowId | undefined } | undefined;
+  let copiesMoved = 0;
   for (let i = 0; i < ordered.length; i++) {
     const { card, slotMap } = ordered[i];
     await ctx.db.patch(card._id, {
@@ -622,13 +660,87 @@ export async function moveCards(
       sortOrder: base + i,
       lastUpdated: now,
     });
+    if (card.selectorOptionId !== destId) {
+      countLedger.removeCard(card);
+      countLedger.addCard({
+        selectorOptionId: destId,
+        variationOfCardId: card.variationOfCardId,
+      });
+    }
+    const copies = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_card", (q) => q.eq("cardId", card._id))
+      .take(MAX_COPIES_PER_MOVE - copiesMoved + 1);
+    if (copies.length === 0) continue;
+    copiesMoved += copies.length;
+    if (copiesMoved > MAX_COPIES_PER_MOVE) {
+      throw new ConvexError(tooManyCopiesToMove());
+    }
+    destSet ??= { id: await findSetForSelectorOption(ctx, destId) };
+    const setId = destSet.id;
+    if (!setId) {
+      // A destination with no set above it cannot hold a collector's copy.
+      // Every door moves cards to a row under a set, so this is a broken
+      // chain; refuse rather than strand the copy.
+      throw new ConvexError(
+        "That destination isn't under a set, so collectors' copies can't follow the cards there. Nothing was moved.",
+      );
+    }
+    for (const copy of copies) {
+      if (copy.variantId === destId && copy.setId === setId) continue;
+      await ctx.db.patch(copy._id, {
+        variantId: destId,
+        setId,
+        lastUpdated: now,
+      });
+    }
   }
+  await countLedger.flush(ctx);
   if (existing.length > 0) {
     await ctx.scheduler.runAfter(
       0,
       internal.selectorOptions.restampCardChecklistSortOrdersBatch,
       { selectorOptionId: destId, from: 0, pagesLeft: RESTAMP_MAX_PAGES },
     );
+  }
+}
+
+/**
+ * NEO-358 — before a conversion ends a SET row, its collectors' "Sets I'm
+ * building" entries move to the set its cards went to: a collector building
+ * the source set is now building the target. One entry per (owner, set), so
+ * an owner who already has the target keeps that entry and loses the source's.
+ * More than `MAX_BUILDING_SETS_PER_MOVE` refuses the whole conversion.
+ */
+export async function moveBuildingSets(
+  ctx: MutationCtx,
+  fromSetId: RowId,
+  toSetId: RowId,
+  now: number,
+): Promise<void> {
+  if (fromSetId === toSetId) return;
+  const entries = await ctx.db
+    .query("collectionBuildingSets")
+    .withIndex("by_set", (q) => q.eq("setId", fromSetId))
+    .take(MAX_BUILDING_SETS_PER_MOVE + 1);
+  if (entries.length > MAX_BUILDING_SETS_PER_MOVE) {
+    throw new ConvexError(
+      `Whoa, more than ${MAX_BUILDING_SETS_PER_MOVE} collectors are building ` +
+        `this set, which is more than one move can carry. Nothing was moved.`,
+    );
+  }
+  for (const entry of entries) {
+    const already = await ctx.db
+      .query("collectionBuildingSets")
+      .withIndex("by_owner_and_set", (q) =>
+        q.eq("ownerId", entry.ownerId).eq("setId", toSetId),
+      )
+      .first();
+    if (already) {
+      await ctx.db.delete(entry._id);
+    } else {
+      await ctx.db.patch(entry._id, { setId: toSetId, lastUpdated: now });
+    }
   }
 }
 

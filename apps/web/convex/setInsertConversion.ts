@@ -84,6 +84,7 @@ import {
   lossFieldNames,
   lossOnto,
   lossValidator,
+  moveBuildingSets,
   moveCards,
   moveGuestCrossListings,
   nameAfterPrefixes,
@@ -1256,6 +1257,13 @@ export const convertToInsert = mutation({
     }
     await moveCards(ctx, dest._id, moves, now);
     await moveGuestCrossListings(ctx, guestLinks, dest._id, now);
+    // NEO-358 — a collector building a set that ends here is building the
+    // target set now; moved before the trash icon's helper would sweep them.
+    for (const row of source.rows) {
+      if (row.level === "setName") {
+        await moveBuildingSets(ctx, row._id, targetSet._id, now);
+      }
+    }
 
     // ── end the emptied rows, child first, through the trash icon's helper ──
     for (const row of source.rows) {
