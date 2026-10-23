@@ -95,7 +95,7 @@ export default function ChecklistSearch({
           contained in the field's accessible name (SC 2.5.3). */}
       <span
         aria-hidden="true"
-        className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide w-24 shrink-0"
+        className="text-xs font-semibold text-ink-3 uppercase tracking-wide w-24 shrink-0"
       >
         Search
       </span>
@@ -104,7 +104,7 @@ export default function ChecklistSearch({
           aria-hidden="true"
           viewBox="0 0 16 16"
           fill="none"
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 dark:text-gray-400"
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-3"
         >
           <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
           <path
@@ -114,10 +114,10 @@ export default function ChecklistSearch({
             strokeLinecap="round"
           />
         </svg>
-        {/* surface="panel": the field follows the checklist card it sits in
-            (`bg-white dark:bg-gray-800`) rather than the primitive's
-            always-dark default, which read as a navy hole in the light card.
-            The colours and their contrast live in the primitive. */}
+        {/* surface="panel": the field sits on the checklist card (a raised
+            surface), so it takes the primitive's recessed panel well rather
+            than the standard one. The colours and their contrast live in the
+            primitive. */}
         <Input
           bare
           surface="panel"
@@ -151,10 +151,9 @@ export default function ChecklistSearch({
             // 28px: past the 24px floor (SC 2.5.8) with room to spare inside
             // the field's right padding. No `title` — a tooltip saying less
             // than the name is a second, drifting label.
-            // Colours follow the field's panel surface: gray-600 is 7.6:1 on
-            // white, gray-400 7.0:1 on the dark well; the ring swaps the same
-            // way the field's own does (sky-700 on white, neon in dark).
-            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-700 dark:focus-visible:ring-[#00C2FF]"
+            // Colours are the field's own roles (ink-3, ink on hover), and
+            // focus is the app-wide outline, as on the field itself.
+            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-ink-3 hover:text-ink focus-outline"
           >
             <span aria-hidden="true" className="text-base leading-none">
               ×
@@ -168,7 +167,7 @@ export default function ChecklistSearch({
       <p
         role="status"
         data-card-search-status=""
-        className="text-xs text-gray-500 dark:text-gray-400 tabular-nums"
+        className="text-xs text-ink-3 tabular-nums"
       >
         {countText}
       </p>

@@ -5,6 +5,8 @@ import tsParser from "@typescript-eslint/parser";
 import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import playwright from "eslint-plugin-playwright";
+import themePlugin from "./scripts/eslint/no-raw-palette.mjs";
+import neonButtonOnly from "./scripts/eslint/neon-button-only.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -203,6 +205,32 @@ const playwrightRecommended = {
   files: PLAYWRIGHT_FILES,
 };
 
+/**
+ * Imports no spec may make. `test` comes from support/fixtures.ts, and
+ * support/theme-no-flash.ts is the NEO-356 no-flash exception to hard rule 2
+ * (GUIDE rule 8, approved by Jason 2026-10-22): it reads the root
+ * `data-theme` attribute and runs `evaluate`, which is licensed for that one
+ * check and nothing else. The block after this one lifts the second
+ * restriction for the two specs the rule names.
+ */
+const PLAYWRIGHT_TEST_IMPORT = {
+  name: "@playwright/test",
+  importNames: ["test"],
+  message:
+    "Import `test` from playwright/support/fixtures.ts (it carries the worker env and signIn).",
+};
+
+const PLAYWRIGHT_RESTRICTED_IMPORTS = {
+  paths: [PLAYWRIGHT_TEST_IMPORT],
+  patterns: [
+    {
+      group: ["**/theme-no-flash", "**/theme-no-flash.*"],
+      message:
+        "support/theme-no-flash.ts reads under-the-covers state and is licensed (GUIDE rule 8) for home/theme-prepaint-script and profile/theme-saved-no-flash only. Prove a theme by what is painted (support/theme.ts).",
+    },
+  ],
+};
+
 const playwrightHouseRules = {
   files: PLAYWRIGHT_FILES,
   languageOptions: {
@@ -224,19 +252,7 @@ const playwrightHouseRules = {
           "No data-testid: locate by role, label or text. playwright/GUIDE.md hard rule 2.",
       },
     ],
-    "no-restricted-imports": [
-      "error",
-      {
-        paths: [
-          {
-            name: "@playwright/test",
-            importNames: ["test"],
-            message:
-              "Import `test` from playwright/support/fixtures.ts (it carries the worker env and signIn).",
-          },
-        ],
-      },
-    ],
+    "no-restricted-imports": ["error", PLAYWRIGHT_RESTRICTED_IMPORTS],
     "playwright/no-wait-for-timeout": "error",
     "playwright/no-networkidle": "error",
     "playwright/no-element-handle": "error",
@@ -255,6 +271,17 @@ const playwrightHouseRules = {
   },
 };
 
+/** The two specs GUIDE rule 8 licenses to import support/theme-no-flash.ts. */
+const playwrightNoFlashSpecs = {
+  files: [
+    "playwright/tests/home/theme-prepaint-script.spec.ts",
+    "playwright/tests/profile/theme-saved-no-flash.spec.ts",
+  ],
+  rules: {
+    "no-restricted-imports": ["error", { paths: [PLAYWRIGHT_TEST_IMPORT] }],
+  },
+};
+
 /** The one file allowed to import Playwright's own `test`: it extends it. */
 const playwrightFixturesFile = {
   files: ["playwright/support/fixtures.ts"],
@@ -263,14 +290,58 @@ const playwrightFixturesFile = {
   },
 };
 
+/**
+ * NEO-356 — colours are roles (app/theme.css), so light and dark both work.
+ * `theme/no-raw-palette` bans palette steps, white/black paint, raw hex and
+ * `dark:` in the app's own source; DESIGN.md (Colors) names the role to use
+ * instead. Its allowlist (PERMANENT: print, physical objects, the
+ * forced-dark prototypes) lives in scripts/eslint/theme-allowlist.mjs, which
+ * the rule reads itself. `theme/neon-button-only` sends a neon-filled raw
+ * <button> to NeonButton, the one place a button's colour is decided. `.ts` files
+ * are in scope because class constants live in them too, so this block gives
+ * them the TypeScript parser.
+ */
+const themeColourRoles = {
+  files: ["{app,components,src,lib}/**/*.{ts,tsx}"],
+  ignores: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts"],
+  languageOptions: {
+    parser: tsParser,
+    parserOptions: { ecmaFeatures: { jsx: true }, sourceType: "module" },
+  },
+  plugins: { theme: { rules: { ...themePlugin.rules, "neon-button-only": neonButtonOnly } } },
+  rules: {
+    "theme/no-raw-palette": "error",
+    // A neon-filled action button is a <NeonButton> (scripts/eslint/neon-button-only.mjs).
+    "theme/neon-button-only": "error",
+  },
+};
+
+/**
+ * `.ts` hooks carry `eslint-disable` comments for react-hooks rules, and
+ * themeColourRoles is the first block to lint `.ts` app files, so the plugin
+ * has to be known there or those comments error as unknown rules. Registered
+ * only (no rules switched on): widening react-hooks to `.ts` is NEO-111's
+ * call, not this one.
+ */
+const reactHooksKnownInTs = {
+  files: ["{app,components,src,lib}/**/*.ts"],
+  ignores: ["**/*.test.ts", "**/*.d.ts"],
+  plugins: { "react-hooks": reactHooks },
+  // Those comments target rules this block leaves off; do not report them.
+  linterOptions: { reportUnusedDisableDirectives: "off" },
+};
+
 const eslintConfig = [
   ...reactHooksLegacyScope,
   playwrightRecommended,
   playwrightHouseRules,
+  playwrightNoFlashSpecs,
   playwrightFixturesFile,
   jsxA11yRecommended,
   jsxA11yHouseRules,
   visualCaptionLabels,
+  themeColourRoles,
+  reactHooksKnownInTs,
   {
     ignores: ["dist/", "convex/_generated/"],
   },

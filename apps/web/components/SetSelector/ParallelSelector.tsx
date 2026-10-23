@@ -28,7 +28,9 @@ export default function ParallelSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-amber-100 dark:bg-amber-900 border-amber-300 dark:border-amber-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-amber border-pick-amber-rule"
       isItemTerminal={() => true}
     />
   );

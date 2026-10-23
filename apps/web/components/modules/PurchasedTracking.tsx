@@ -22,11 +22,11 @@ export default function PurchasedTracking({
 }) {
   return (
     <div className="rounded-lg border border-neon-teal/30 p-3 text-center space-y-1">
-      <p className="text-sm text-neon-green">
+      <p className="text-sm text-neon-green-text">
         Postage bought{name ? ` for ${name}` : ""} — the label is ready to mail.
       </p>
       <p className="text-sm">
-        <span className="text-slate-400">Tracking:</span>{" "}
+        <span className="text-ink-3">Tracking:</span>{" "}
         <TrackingCode trackingCode={trackingCode} />
       </p>
     </div>

@@ -326,7 +326,7 @@ export default function MultiSourcePanel({
   const parkFocusOnHeading = () => headingRef.current?.focus();
 
   return (
-    <div className="border border-gray-700 rounded-lg bg-gray-900/60 p-4">
+    <div className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4">
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3
@@ -334,18 +334,18 @@ export default function MultiSourcePanel({
             // a11y: -1 keeps the heading out of the tab order while still
             // being a valid programmatic focus target for the park above.
             tabIndex={-1}
-            className="text-sm font-semibold text-gray-100 focus:outline-none"
+            className="text-sm font-semibold text-ink focus:outline-none"
           >
             {/* NEO-312: shared with copy that points the operator here. */}
             {MULTI_SOURCE_HEADING}
           </h3>
-          <p className="text-xs text-gray-400 mt-0.5">
+          <p className="text-xs text-ink-3 mt-0.5">
             Cards fetched for this variant come from every attached BSC and
             SportLots set. Users can filter the checklist by source.
           </p>
         </div>
         <NeonButton
-          secondary
+          variant="secondary"
           size="2"
           onClick={() => setDialogOpen(true)}
           aria-label="Attach more source sets"
@@ -484,7 +484,7 @@ function SideColumn({
 }) {
   return (
     <div>
-      <header className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+      <header className="text-xs font-semibold text-ink-3 uppercase tracking-wide mb-2">
         {SIDE_LABEL[side]}
       </header>
       {skipNote && (
@@ -505,13 +505,13 @@ function SideColumn({
         // skipped — the one moment this sentence exists to cover.
         <p
           role="status"
-          className="mb-2 border-l-2 border-[#00C2FF] pl-2 text-xs leading-snug text-gray-300"
+          className="mb-2 border-l-2 border-neon-blue-text pl-2 text-xs leading-snug text-ink-2"
         >
           {skipNote}
         </p>
       )}
       {chips.length === 0 && untagged.length === 0 ? (
-        <div className="text-xs text-gray-400 italic">No sets attached.</div>
+        <div className="text-xs text-ink-3 italic">No sets attached.</div>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {chips.map((chip) => (
@@ -540,18 +540,18 @@ function SideColumn({
         // where the facet gets chosen, and offering a detach here would let an
         // operator "fix" it by deleting the evidence.
         <div className="mt-3">
-          <p className="text-[10px] uppercase tracking-wide text-gray-400">
+          <p className="text-[10px] uppercase tracking-wide text-ink-3">
             Needs re-mapping
           </p>
           <ul className="mt-1 flex flex-col gap-1">
             {untagged.map((u) => (
               <li
                 key={u.slot}
-                className="text-xs text-gray-400 break-words"
+                className="text-xs text-ink-3 break-words"
                 title={`Attached before sources were labelled — re-attach it from “${ATTACH_MORE_LABEL}” to say which set it is.`}
               >
                 {u.label}{" "}
-                <span className="text-[10px] text-gray-400 break-all">
+                <span className="text-[10px] text-ink-3 break-all">
                   {u.id}
                 </span>
               </li>
@@ -676,7 +676,7 @@ function Chip({
 
   if (mode === "confirming") {
     return (
-      <li className="px-3 py-1.5 rounded border border-[#FF2E9A] bg-[#FF2E9A]/10">
+      <li className="px-3 py-1.5 rounded border border-neon-pink-text bg-neon-pink/10">
         {/* role="group" + aria-labelledby: the sentence IS the name of this
             little decision surface, so focus landing on Cancel announces what
             is being decided. Not role="alert" — an alert fires once on mount
@@ -698,7 +698,7 @@ function Chip({
         >
           <span
             id={sentenceId}
-            className="flex-1 min-w-[12rem] text-sm text-gray-100"
+            className="flex-1 min-w-[12rem] text-sm text-ink"
           >
             {detachConfirmSentence(side, chip.label, shownCount, chip.isPrimary)}
           </span>
@@ -719,7 +719,7 @@ function Chip({
             // py-1: text-xs's 1rem line-height + 0.25rem top/bottom padding
             // clears WCAG 2.5.8's 24px target-size minimum; px-1 alone left
             // this ~16px tall.
-            className="text-xs font-semibold text-[#FF2E9A] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+            className="text-xs font-semibold text-neon-pink-text hover:underline focus-outline px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
           >
             {counting ? "Counting cards…" : busy ? "Detaching…" : "Confirm"}
           </button>
@@ -729,13 +729,13 @@ function Chip({
             onClick={closeConfirm}
             aria-disabled={busy || undefined}
             aria-label={`Cancel detach ${chip.label}`}
-            className="text-xs text-gray-400 hover:text-gray-200 focus:text-gray-200 focus:outline-none px-1 py-1 aria-disabled:opacity-50"
+            className="text-xs text-ink-3 hover:text-ink-2 focus:text-ink-2 focus-outline px-1 py-1 aria-disabled:opacity-50"
           >
             Cancel
           </button>
           {err && (
             <span
-              className="w-full text-[10px] text-[#FF2E9A]"
+              className="w-full text-[10px] text-neon-pink-text"
               role="alert"
             >
               {err}
@@ -766,7 +766,7 @@ function Chip({
     // line when they will not both fit. Previously both were `truncate`
     // siblings on one row, which clipped the name ("Dugout Collection Artist's
     // Proof…") while the slug — the part nobody reads — survived intact.
-    <li className="flex items-start gap-2 px-3 py-1.5 rounded border border-gray-700 bg-gray-800">
+    <li className="flex items-start gap-2 px-3 py-1.5 rounded border border-rule-strong bg-raised">
       <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-2">
       {mode === "editing" ? (
         <Input
@@ -797,7 +797,7 @@ function Chip({
             setMode("editing");
           }}
           aria-label={`Rename label for ${chip.id}`}
-          className="min-w-0 text-left break-words text-sm text-gray-100 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+          className="min-w-0 text-left break-words text-sm text-ink hover:text-neon-green-text focus:text-neon-green-text focus-outline"
         >
           {chip.label}
         </button>
@@ -806,11 +806,11 @@ function Chip({
         // Outside the rename button on purpose: the qualifier is not part of
         // the label the operator can edit, it is what the row's own scope does
         // to this source.
-        <span className="text-xs text-gray-400 shrink-0">
+        <span className="text-xs text-ink-3 shrink-0">
           · {chip.qualifier}
         </span>
       )}
-      <span className="text-[10px] text-gray-400 break-all" aria-hidden>
+      <span className="text-[10px] text-ink-3 break-all" aria-hidden>
         {chip.id}
       </span>
       {chip.facet && (
@@ -820,7 +820,7 @@ function Chip({
           // gray-400, not gray-500: 10px uppercase at gray-500 is 3.0:1 here,
           // well under 4.5:1, and this tag is what separates a slot that
           // sources a whole set from one that sources a single variant.
-          className="text-[10px] uppercase tracking-wide text-gray-400 shrink-0"
+          className="text-[10px] uppercase tracking-wide text-ink-3 shrink-0"
           aria-label={`${chip.label} is attached as a BSC ${FACET_NOUN[chip.facet]}`}
         >
           {FACET_NOUN[chip.facet]}
@@ -836,12 +836,12 @@ function Chip({
         aria-label={`Remove ${chip.label}`}
         // min-w-6/min-h-6 (24px): the bare "×" glyph plus px-1 alone rendered
         // an ~18x19px hit area, under WCAG 2.5.8's 24x24 target-size minimum.
-        className="inline-flex items-center justify-center min-w-6 min-h-6 text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
+        className="inline-flex items-center justify-center min-w-6 min-h-6 text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
       >
         ×
       </button>
       {err && (
-        <span className="text-[10px] text-[#FF2E9A]" role="alert">
+        <span className="text-[10px] text-neon-pink-text" role="alert">
           {err}
         </span>
       )}

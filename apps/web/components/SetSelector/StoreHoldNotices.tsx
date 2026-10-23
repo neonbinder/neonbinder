@@ -58,7 +58,7 @@ export default function StoreHoldNotices({ holds }: { holds: StoreHolds | null }
   const subtreeWalkSkipped = holds?.subtreeWalkSkipped ?? false;
   const kinds = withheldKinds(withheld);
   const box =
-    "p-3 mb-4 bg-amber-400/10 border border-amber-700 dark:border-amber-400/70 rounded-md text-amber-800 dark:text-amber-300 text-sm";
+    "p-3 mb-4 bg-notice-warn-bg border border-notice-warn-rule shadow-offset rounded-md text-notice-warn-ink text-sm";
   const showWithheld = withheldTotal > 0;
   // N2: when the withheld box already lists the unchecked items, it has said
   // this and what to do; a second box would only repeat it.
@@ -90,7 +90,7 @@ export default function StoreHoldNotices({ holds }: { holds: StoreHolds | null }
             role="group"
             aria-labelledby={summaryId}
             tabIndex={0}
-            className="mt-2 max-h-48 overflow-y-auto overscroll-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF]"
+            className="mt-2 max-h-48 overflow-y-auto overscroll-contain rounded focus-outline"
           >
             <ul className="space-y-2">
               {withheld.map((w, i) => (

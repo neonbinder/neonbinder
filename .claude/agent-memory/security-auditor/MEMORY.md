@@ -77,3 +77,4 @@
 - [Patterns neo345 attribute fill](patterns_neo345_attribute_fill.md) — node-only feature key needs every copy-down door; Proxy-recorded dry run; unarmed enqueuer grew a live re-ask mode
 - [Patterns neo350 public demo and prefill](patterns_neo350_public_demo_and_prefill.md) — client-only demo on a public route: import-graph grep; URL prefill allowlisted at parse and interpolation; branch author email
 - [Patterns neo355 reverse OIDC tokeninfo](patterns_neo355_reverse_oidc_tokeninfo.md) — SA id token → Convex route: allowlist is the gate (aud is mintable), garbage-bearer amplification, 429→401, fail-open gate
+- [Patterns neo356 theme prepaint](patterns_neo356_theme_prepaint.md) — inline pre-paint script safe shape (compare-to-literal); apps/web has no CSP (hash needed if added); getUserProfile now app-wide

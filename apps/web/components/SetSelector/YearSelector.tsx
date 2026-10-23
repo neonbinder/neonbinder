@@ -28,7 +28,9 @@ export default function YearSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-blue border-pick-blue-rule"
     />
   );
 }

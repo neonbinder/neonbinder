@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import CopyButton from "@/components/modules/CopyButton";
 import TrackingCode from "@/components/modules/TrackingCode";
+import NeonButton from "@/components/modules/NeonButton";
 import { formatUsd } from "@/lib/format/money";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time/relative-time";
 import { imageBodyHtml, printHtmlDocument } from "@/lib/print/print-html";
@@ -86,10 +87,10 @@ type RowStatus = { text: string; tone: "info" | "error" };
  * state uses slate-300 on a filled chip rather than dim grey text.
  */
 const TONE_CLASSES: Record<TrackingTone, string> = {
-  idle: "border-slate-600 bg-slate-800/60 text-slate-300",
-  moving: "border-neon-blue/60 bg-neon-blue/10 text-neon-blue",
-  done: "border-neon-green/60 bg-neon-green/10 text-neon-green",
-  warn: "border-neon-yellow/60 bg-neon-yellow/10 text-neon-yellow",
+  idle: "border-control bg-raised/60 text-ink-2",
+  moving: "border-neon-blue/60 bg-neon-blue/10 text-neon-blue-text",
+  done: "border-neon-green/60 bg-neon-green/10 text-neon-green-text",
+  warn: "border-neon-yellow/60 bg-neon-yellow/10 text-neon-yellow-text",
 };
 
 /**
@@ -127,8 +128,8 @@ function ScanUpdatesChip() {
   if (setup.connected) {
     return (
       <p className="text-sm">
-        <span className="text-slate-400">Scan updates:</span>{" "}
-        <span className="text-neon-green font-medium">on</span>
+        <span className="text-ink-3">Scan updates:</span>{" "}
+        <span className="text-neon-green-text font-medium">on</span>
       </p>
     );
   }
@@ -136,8 +137,8 @@ function ScanUpdatesChip() {
   if (setup.pending) {
     return (
       <p className="text-sm">
-        <span className="text-slate-400">Scan updates:</span>{" "}
-        <span className="text-neon-blue font-medium">connecting…</span>
+        <span className="text-ink-3">Scan updates:</span>{" "}
+        <span className="text-neon-blue-text font-medium">connecting…</span>
       </p>
     );
   }
@@ -153,9 +154,9 @@ function ScanUpdatesChip() {
 
   return (
     <p className="text-sm">
-      <span className="text-slate-400">Scan updates:</span>{" "}
-      <span className="text-neon-yellow font-medium">not connected yet</span>{" "}
-      <span className="text-slate-300">
+      <span className="text-ink-3">Scan updates:</span>{" "}
+      <span className="text-neon-yellow-text font-medium">not connected yet</span>{" "}
+      <span className="text-ink-2">
         {hint ? `${hint} ` : ""}
         {noKey
           ? "Add your EasyPost key on "
@@ -165,7 +166,7 @@ function ScanUpdatesChip() {
             /print/shipping is a different page with a similar name. */}
         <Link
           to="/profile/postage"
-          className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+          className="text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
         >
           your profile
         </Link>
@@ -309,7 +310,7 @@ export default function LabelHistoryPage() {
       <div className="space-y-2">
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-2">Label History</h2>
-        <p className="text-slate-400">
+        <p className="text-ink-3">
           Every label you&apos;ve bought, newest first. Reprint one without
           paying for it twice.
         </p>
@@ -317,7 +318,7 @@ export default function LabelHistoryPage() {
             as a delivery guarantee; a First-Class letter is nothing of the
             kind, and the honest version has to be on the page rather than in
             a support reply after the first "it never says delivered". */}
-        <p className="text-sm text-slate-300">
+        <p className="text-sm text-ink-2">
           What the scans tell you: USPS scans a letter as it moves through their
           sorting machines. Nothing scans it when you drop it off, and the last
           scan is your buyer&apos;s own post office marking it{" "}
@@ -328,17 +329,17 @@ export default function LabelHistoryPage() {
       </div>
 
       {purchases === undefined && (
-        <p className="text-sm text-slate-400">Digging through the shoebox…</p>
+        <p className="text-sm text-ink-3">Digging through the shoebox…</p>
       )}
 
       {purchases !== undefined && purchases.length === 0 && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-6 text-center space-y-2">
-          <p className="text-slate-300">No labels yet — nothing to reprint.</p>
-          <p className="text-sm text-slate-400">
+        <div className="rounded-lg border border-panel-rule bg-panel p-6 text-center space-y-2 shadow-offset">
+          <p className="text-ink-2">No labels yet — nothing to reprint.</p>
+          <p className="text-sm text-ink-3">
             Buy postage over on{" "}
             <Link
               to="/print/shipping"
-              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+              className="text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
             >
               Shipping
             </Link>{" "}
@@ -351,7 +352,7 @@ export default function LabelHistoryPage() {
           is not off-screen, it is not loaded. Say so rather than let a seller
           conclude an older label was never saved. */}
       {purchases !== undefined && purchases.length >= HISTORY_LIMIT && (
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-ink-3">
           Showing your {HISTORY_LIMIT} most recent label purchases.
         </p>
       )}
@@ -407,7 +408,7 @@ export default function LabelHistoryPage() {
             return (
               <li
                 key={row._id}
-                className="rounded-lg border border-slate-800 bg-slate-900/40 p-4"
+                className="rounded-lg border border-panel-rule bg-panel p-4 shadow-offset"
               >
                 <div className="flex flex-wrap items-center gap-3 mb-3">
                   <h3
@@ -419,7 +420,7 @@ export default function LabelHistoryPage() {
                     // check, so it needs a ring of its own — `outline-none`
                     // alone would leave a keyboard user with no idea where
                     // focus went (WCAG 2.4.7).
-                    className="text-base font-semibold outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+                    className="text-base font-semibold outline-none focus-outline"
                   >
                     {row.toAddress.name}
                   </h3>
@@ -431,7 +432,9 @@ export default function LabelHistoryPage() {
                     {status.label}
                   </span>
                   <span className="ml-auto flex flex-wrap items-center gap-2">
-                    <button
+                    <NeonButton
+                      variant="secondary"
+                      outline
                       type="button"
                       onClick={() => void handleCheckScans(row)}
                       // Also disabled while a reprint is running: both actions
@@ -452,20 +455,21 @@ export default function LabelHistoryPage() {
                           ? `Checking for new scans for ${rowLabel}`
                           : `Check for new scans for ${rowLabel}`
                       }
-                      className="rounded-md border border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-400 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
                     >
                       {checking ? "Checking…" : "Check for new scans"}
-                    </button>
+                    </NeonButton>
                     {expired ? (
                       // No reprint button: EasyPost has deleted the image, so
                       // the only thing a press could produce is a failure
                       // message. Scans outlive the image, which is why the
                       // check button above is still here.
-                      <span className="text-xs text-slate-400">
+                      <span className="text-xs text-ink-3">
                         Label expired — EasyPost keeps labels for 180 days
                       </span>
                     ) : (
-                      <button
+                      <NeonButton
+                        variant="primary"
+                        outline
                         type="button"
                         onClick={() => void handleReprint(row)}
                         // Same mutual exclusion as the check button above,
@@ -487,18 +491,17 @@ export default function LabelHistoryPage() {
                             ? `Reprinting the label for ${rowLabel}`
                             : `Reprint the label for ${rowLabel}`
                         }
-                        className="rounded-md border border-neon-teal/60 px-3 py-1.5 text-sm font-medium text-neon-teal transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
                       >
                         {busy ? "Reprinting…" : "Reprint"}
-                      </button>
+                      </NeonButton>
                     )}
                   </span>
                 </div>
 
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm">
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Purchased</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-ink-3">Purchased</dt>
+                    <dd className="text-ink-2">
                       {/* The exact timestamp is in the accessible name as well
                           as the `title`: a native tooltip is mouse-only, and
                           "3d ago" is not something to reconcile against an
@@ -513,18 +516,18 @@ export default function LabelHistoryPage() {
                     </dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Weight</dt>
-                    <dd className="text-slate-200">{row.weightOz} oz</dd>
+                    <dt className="text-ink-3">Weight</dt>
+                    <dd className="text-ink-2">{row.weightOz} oz</dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Cost</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-ink-3">Cost</dt>
+                    <dd className="text-ink-2">
                       {formatUsd(row.costCents)}
                     </dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="text-slate-400">Tracking</dt>
-                    <dd className="text-slate-200">
+                    <dt className="text-ink-3">Tracking</dt>
+                    <dd className="text-ink-2">
                       <TrackingCode
                         trackingCode={row.trackingCode}
                         copyLabel={`Copy the tracking number for ${rowLabel}`}
@@ -546,7 +549,7 @@ export default function LabelHistoryPage() {
                             // inline box measured only the 16px glyphs, within
                             // 12px of the copy button above). Not flex: that
                             // would drop the space before the arrow.
-                            className="inline-block py-0.5 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+                            className="inline-block py-0.5 text-sm text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
                           >
                             Public scan page
                             {/* Visible arrow for sighted users, spelled out for
@@ -576,7 +579,7 @@ export default function LabelHistoryPage() {
                               recognises, and an unrecognised link from a
                               stranger is one nobody clicks. Say what is on the
                               other side before they have to guess. */}
-                          <span className="block text-xs text-slate-400">
+                          <span className="block text-xs text-ink-3">
                             EasyPost&apos;s tracking page — same USPS scans, no
                             login.
                           </span>
@@ -589,8 +592,8 @@ export default function LabelHistoryPage() {
                     // not fit in a half-column at 1024px, and this is the line
                     // the whole feature exists for.
                     <div className="flex gap-2 sm:col-span-2">
-                      <dt className="text-slate-400">Latest scan</dt>
-                      <dd className="text-slate-200">
+                      <dt className="text-ink-3">Latest scan</dt>
+                      <dd className="text-ink-2">
                         {glossScanMessage(newest.message)}
                         {formatScanPlace(newest) && (
                           <>
@@ -619,7 +622,7 @@ export default function LabelHistoryPage() {
                     USPS has not touched from a feature that is broken. Copy
                     only: nothing here measures how long it has actually been. */}
                 {scans.length === 0 && (
-                  <p className="mt-2 text-sm text-slate-400">
+                  <p className="mt-2 text-sm text-ink-3">
                     First scan usually lands the day it&apos;s mailed. Been a
                     few days? Hit Check.
                   </p>
@@ -649,7 +652,7 @@ export default function LabelHistoryPage() {
                       // padding-cancelled-by-negative-margin trick TrackingCode's
                       // Copy button already uses — grows the hit area without
                       // shifting layout.
-                      className="p-2 -m-2 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm"
+                      className="p-2 -m-2 text-sm text-neon-teal-text hover:decoration-2 underline focus-outline rounded-sm"
                     >
                       {scansOpen ? "Hide" : "Show"} all scans ({scans.length})
                     </button>
@@ -661,19 +664,19 @@ export default function LabelHistoryPage() {
                       id={scansId}
                       hidden={!scansOpen}
                       aria-label={`USPS scans for ${rowLabel}`}
-                      className="mt-2 space-y-1 border-l border-slate-800 pl-3 text-sm"
+                      className="mt-2 space-y-1 border-l border-rule pl-3 text-sm"
                     >
                       {scans.map((scan, index) => (
                         <li
                           key={`${scan.at}-${index}`}
-                          className="text-slate-200"
+                          className="text-ink-2"
                         >
                           {/* Absolute times here, relative on the summary
                               line. Opening the timeline is what a seller does
                               when "2d ago" stopped being enough. */}
                           <time
                             dateTime={new Date(scan.at).toISOString()}
-                            className="text-slate-400"
+                            className="text-ink-3"
                           >
                             {formatAbsoluteTime(scan.at)}
                           </time>
@@ -702,7 +705,7 @@ export default function LabelHistoryPage() {
                 <p
                   role="status"
                   aria-live="polite"
-                  className={`text-sm mt-2 ${rowStatus?.tone === "error" ? "text-neon-pink" : "text-slate-300"}`}
+                  className={`text-sm mt-2 ${rowStatus?.tone === "error" ? "text-neon-pink-text" : "text-ink-2"}`}
                 >
                   {rowStatus?.text ?? ""}
                 </p>

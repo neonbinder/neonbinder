@@ -398,14 +398,14 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             if (blocked) return;
             toggleChip(chip.teamId);
           }}
-          className={`rounded-full border px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#00C2FF] ${
+          className={`rounded-full border px-2 py-0.5 text-xs focus-outline ${
             on
-              ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558]"
-              : "border-gray-700 bg-gray-800 text-gray-200 hover:border-[#00C2FF] hover:text-[#00C2FF]"
+              ? "border-neon-green-text bg-neon-green/20 text-neon-green-text"
+              : "border-control bg-raised text-ink-2 hover:border-neon-blue-text hover:text-neon-blue-text"
           } ${blocked ? "opacity-40" : ""}`}
         >
           {chip.label}
-          {opts.suffix && <span className="text-[#00C2FF]">{opts.suffix}</span>}
+          {opts.suffix && <span className="text-neon-blue-text">{opts.suffix}</span>}
         </button>
       </li>
     );
@@ -512,16 +512,16 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
       }}
     >
       {error && (
-        <p role="alert" className="text-xs text-[#FF2E9A]">
+        <p role="alert" className="text-xs text-neon-pink-text">
           {error}
         </p>
       )}
 
       <div>
-        <h3 className="text-sm font-semibold text-gray-200">
-          <span className="text-[#00D558]">#{row.cardNumber}</span> {row.cardName}
+        <h3 className="text-sm font-semibold text-ink-2">
+          <span className="text-neon-green-text">#{row.cardNumber}</span> {row.cardName}
         </h3>
-        <p className="mt-0.5 text-xs text-gray-400">
+        <p className="mt-0.5 text-xs text-ink-3">
           {playerLine ? `Players: ${playerLine}` : "No players on this card."}
         </p>
       </div>
@@ -537,7 +537,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
                 agrees. The listing's string is plain text, never an anchor or
                 a `title` (untrusted content on an admin screen, the same rule
                 as the card name). */}
-            <p id="attention-team-marketplace" className="text-xs text-[#00C2FF]">
+            <p id="attention-team-marketplace" className="text-xs text-neon-blue-text">
               {marketplaceHeading(bscName, marketplaceChips.length, marketplaceChips.some((chip) => preselect.includes(chip.teamId)))}
             </p>
             <ul className="flex flex-wrap gap-1.5" aria-labelledby="attention-team-marketplace">
@@ -555,7 +555,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
 
         {careerChips.length > 0 && (
           <div className="space-y-1">
-            <p id="attention-team-suggestions" className="text-xs text-[#00C2FF]">
+            <p id="attention-team-suggestions" className="text-xs text-neon-blue-text">
               {careerHeading(
                 careerChips.some((chip) => chip.inSetYear),
                 bscDisagrees,
@@ -614,15 +614,15 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           is in flight, so it does not flash up and then turn into chips.
         */}
         {bscName !== "" && bscSettled && marketplaceChips.length === 0 && (
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-ink-3">
             Marketplace says:{" "}
-            <span className="text-gray-300">{row.bscTeamName}</span>
+            <span className="text-ink-2">{row.bscTeamName}</span>
           </p>
         )}
         {/* NEO-345 — the card's case, from the team check's recorded
             outcome. Plain text, like every line in this panel. */}
-        {caseLine && <p className="text-xs text-gray-300">{caseLine}</p>}
-        <p className="text-xs text-gray-400">Teams on this card</p>
+        {caseLine && <p className="text-xs text-ink-2">{caseLine}</p>}
+        <p className="text-xs text-ink-3">Teams on this card</p>
         {/* The same picker the card detail panel uses, including its "+ Create"
             path through teams.findOrCreate — so a team no marketplace has ever
             heard of is one keystroke away and the operator is never blocked
@@ -635,7 +635,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           disabled={busy}
         />
         {atCap && (
-          <p id="attention-team-cap" role="status" className="text-xs text-[#00C2FF]">
+          <p id="attention-team-cap" role="status" className="text-xs text-neon-blue-text">
             That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to
             add another.
           </p>
@@ -657,7 +657,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           {busy ? "Saving…" : "Save & Next (Enter)"}
         </NeonButton>
         <NeonButton
-          secondary
+          variant="secondary"
           // Not natively disabled, for the same reason as Save above: this is
           // the button an operator most likely just pressed (it's the ONE
           // that sets `busy`), so native `disabled` would blur the browser's
@@ -673,13 +673,11 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           No team on this card
         </NeonButton>
       </div>
-      {/* a11y (1.4.3): text-gray-500 measures 3.67:1 against this dialog's
-          bg-gray-900 — fails 4.5:1 (the recurring gray-500-on-gray-900 bug,
-          see accessibility-auditor/contrast-reference.md). This component
-          carries no `dark:` variants anywhere (it only ever renders inside
-          CardAttentionWalker's always-dark card), so the fix is the same
-          swap used everywhere else that bug turns up: gray-400, 6.82:1. */}
-      <p id="attention-team-hint" className="text-xs text-gray-400">
+      {/* a11y (1.4.3): text-ink-3, the hint role, which clears 4.5:1 on
+          CardAttentionWalker's sheet in both modes (gray-500 on gray-900 was
+          3.67:1: the recurring bug in accessibility-auditor's
+          contrast-reference.md). */}
+      <p id="attention-team-hint" className="text-xs text-ink-3">
         {chosen.length === 0
           ? "Pick at least one team, or record that this card has none."
           : `Saves ${chosen.length} ${chosen.length === 1 ? "team" : "teams"} on this card. ${shortcut} saves from anywhere.`}

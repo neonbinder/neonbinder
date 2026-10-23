@@ -199,23 +199,23 @@ export default function StaticColumn({
       <button
         ref={collapsedCardRef}
         type="button"
-        className={`w-full text-left ${COLUMN_CARD} flex items-center justify-between gap-3 cursor-pointer text-slate-100 hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]`}
+        className={`w-full text-left ${COLUMN_CARD} flex items-center justify-between gap-3 cursor-pointer text-ink hover:bg-hover-raised focus-outline`}
         aria-label={`${title}: ${selected.name}, change`}
         aria-expanded={false}
         onClick={() => setExpanded(true)}
         onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
         <span className="min-w-0">
-          <span className="block text-xs text-slate-400">{title}</span>
+          <span className="block text-xs text-ink-3">{title}</span>
           <span className="block font-semibold truncate">{selected.name}</span>
         </span>
-        <ChevronDownIcon className="w-5 h-5 shrink-0 text-gray-400" aria-hidden="true" />
+        <ChevronDownIcon className="w-5 h-5 shrink-0 text-ink-3" aria-hidden="true" />
       </button>
     );
   }
 
   return (
-    <div className={`${COLUMN_CARD} text-slate-100`}>
+    <div className={`${COLUMN_CARD} text-ink`}>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-xl font-semibold">{title}</h3>
         {selectedId && expanded && (
@@ -225,9 +225,9 @@ export default function StaticColumn({
             onKeyDown={(e) => activateOnEnter(e, collapseToCard)}
             aria-label={`Collapse ${title.toLowerCase()}`}
             aria-expanded={true}
-            className="p-2 -m-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="p-2 -m-2 rounded focus-outline"
           >
-            <ChevronUpIcon className="w-5 h-5 text-gray-400" aria-hidden="true" />
+            <ChevronUpIcon className="w-5 h-5 text-ink-3" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -257,7 +257,7 @@ export default function StaticColumn({
         {announced}
       </p>
       {rows.length === 0 ? (
-        <p className="text-sm text-slate-400 py-2">
+        <p className="text-sm text-ink-3 py-2">
           {searchFilter ? "No matches found" : `No ${title.toLowerCase()} here yet.`}
         </p>
       ) : (
@@ -281,7 +281,7 @@ export default function StaticColumn({
                 tabIndex={-1}
                 onClick={() => select(item.id)}
                 onKeyDown={(e) => activateOnEnter(e, () => select(item.id))}
-                className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
+                className={`w-full text-left p-3 rounded-md border transition-colors focus-outline ${
                   isSelected ? selectedColor : isHighlighted ? HIGHLIGHT_TINT : ROW_IDLE
                 }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}`}
               >

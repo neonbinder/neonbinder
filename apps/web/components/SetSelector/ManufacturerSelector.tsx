@@ -79,7 +79,9 @@ export default function ManufacturerSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-green-100 dark:bg-green-900 border-green-300 dark:border-green-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-green border-pick-green-rule"
       pinnedEntries={pinnedEntries}
       leadRow={isBrandUnknownRow}
     />

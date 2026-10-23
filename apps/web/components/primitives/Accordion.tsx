@@ -51,18 +51,18 @@ export const Accordion: React.FC<AccordionProps> = ({
         const isOpen = openItems.has(item.id);
 
         return (
-          <div key={item.id} className="border-b border-slate-200">
+          <div key={item.id} className="border-b border-rule">
             <button
               type="button"
               onClick={() => !item.disabled && toggleItem(item.id)}
               disabled={item.disabled}
-              className={`flex w-full items-center justify-between py-4 text-left text-sm font-medium transition-colors hover:text-slate-600 disabled:opacity-50 disabled:cursor-not-allowed ${
-                isOpen ? "bg-slate-50" : ""
+              className={`flex w-full items-center justify-between py-4 text-left text-sm font-medium transition-colors hover:text-ink-2 focus-outline disabled:opacity-50 disabled:cursor-not-allowed ${
+                isOpen ? "bg-hover" : ""
               }`}
             >
-              <span className="text-slate-900">{item.trigger}</span>
+              <span className="text-ink">{item.trigger}</span>
               <svg
-                className={`h-4 w-4 shrink-0 text-slate-500 transition-transform duration-200 ${
+                className={`h-4 w-4 shrink-0 text-ink-3 transition-transform duration-200 ${
                   isOpen ? "rotate-180" : ""
                 }`}
                 fill="none"
@@ -80,7 +80,7 @@ export const Accordion: React.FC<AccordionProps> = ({
 
             {isOpen && (
               <div className="pb-4 pt-2">
-                <div className="text-sm text-slate-700">{item.content}</div>
+                <div className="text-sm text-ink-2">{item.content}</div>
               </div>
             )}
           </div>

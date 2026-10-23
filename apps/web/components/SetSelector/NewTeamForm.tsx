@@ -735,7 +735,7 @@ export default function NewTeamForm({
            list produced it — so it says whose card needs the team before it
            asks anything. gray-400: gray-500 on gray-900 is ~3.6:1, under the
            4.5:1 floor. */
-        <p className="text-xs text-gray-400">Needed by: {neededBy}</p>
+        <p className="text-xs text-ink-3">Needed by: {neededBy}</p>
       )}
 
       <div className="flex flex-wrap items-end gap-2">
@@ -840,7 +840,7 @@ export default function NewTeamForm({
            Jets did it — so this names what is already there and lets the
            operator decide, instead of blocking with a colour that says
            "mistake". `neon-yellow` would claim to know; gray states. */
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-ink-3">
           {draftFullName(draft)} already exists for{" "}
           <span className="font-mono tabular-nums">
             {sameNameEras.join(", ")}
@@ -884,7 +884,7 @@ export default function NewTeamForm({
           className="w-full p-1.5 text-sm"
         />
       </FieldLabel>
-      <p id={aliasHelpId} className="text-xs text-gray-400">
+      <p id={aliasHelpId} className="text-xs text-ink-3">
         Separate with commas. Other names this team answers to — the school,
         an old nickname, how a checklist spells it.
       </p>
@@ -914,11 +914,11 @@ export default function NewTeamForm({
           {/* The visible caption. Not a <label>: the combobox's accessible
               name is its own `aria-label` ("League", which this text matches
               for SC 2.5.3), and a <label> may not contain the listbox. */}
-          <span className="text-xs text-gray-400">League</span>
+          <span className="text-xs text-ink-3">League</span>
           {leagues === undefined && (
             /* SC 4.1.3: the list changes under the operator when the query
                lands, so the wait is announced rather than only drawn. */
-            <span role="status" className="text-xs text-gray-400">
+            <span role="status" className="text-xs text-ink-3">
               Loading leagues…
             </span>
           )}
@@ -957,7 +957,7 @@ export default function NewTeamForm({
               text. Decorative; the combobox role says it to assistive tech. */}
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400"
+            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-ink-3"
           >
             ▾
           </span>
@@ -966,7 +966,7 @@ export default function NewTeamForm({
           /* Only "No league" in the list. Saying so is the difference between
              an empty control and a broken one — the placeholder is the
              invitation to type one. */
-          <p className="text-xs text-gray-400">No leagues in this sport yet.</p>
+          <p className="text-xs text-ink-3">No leagues in this sport yet.</p>
         )}
       </div>
 
@@ -979,7 +979,7 @@ export default function NewTeamForm({
         */
         <div
           id={newLeagueFormId}
-          className="flex flex-col gap-2 rounded-md border border-gray-700 p-2"
+          className="flex flex-col gap-2 rounded-md border border-rule-strong p-2"
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
@@ -1042,7 +1042,7 @@ export default function NewTeamForm({
             <button
               type="button"
               onClick={closeNewLeague}
-              className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
+              className="py-2 -my-2 text-xs text-ink-3 underline decoration-dotted hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
             >
               Cancel
             </button>
@@ -1076,11 +1076,11 @@ function FieldLabel({
   const className = grow
     ? "flex flex-col gap-1 flex-1 min-w-[10rem]"
     : "flex flex-col gap-1";
-  const caption = <span className="text-xs text-gray-400">{text}</span>;
+  const caption = <span className="text-xs text-ink-3">{text}</span>;
   if (htmlFor) {
     return (
       <div className={className}>
-        <label htmlFor={htmlFor} className="text-xs text-gray-400">
+        <label htmlFor={htmlFor} className="text-xs text-ink-3">
           {text}
         </label>
         {children}

@@ -181,7 +181,7 @@ export default function AutographFormatStep({
 
   return (
     <div className="space-y-3">
-      <h3 id={headingId} className="text-sm font-semibold text-gray-200">
+      <h3 id={headingId} className="text-sm font-semibold text-ink-2">
         {autographStepQuestion(count)}
       </h3>
       <div
@@ -213,10 +213,10 @@ export default function AutographFormatStep({
                 if (!disabled) onChange(format);
               }}
               onKeyDown={(event) => onKeyDown(event, index)}
-              className={`flex items-center gap-3 rounded-lg border-2 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
+              className={`flex items-center gap-3 rounded-lg border-2 px-3 py-2.5 text-left transition-colors focus-outline ${
                 checked
-                  ? "border-[#00D558] bg-[#00D558]/10 text-[#00D558]"
-                  : "border-slate-500 text-gray-300 hover:border-gray-300"
+                  ? "border-neon-green-text bg-neon-green/10 text-neon-green-text"
+                  : "border-control text-ink-2 hover:border-ink-2"
               } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
             >
               <SignatureGlyph format={format} />
@@ -230,7 +230,7 @@ export default function AutographFormatStep({
           );
         })}
       </div>
-      <p id={hintId} role="status" className="text-xs text-gray-300">
+      <p id={hintId} role="status" className="text-xs text-ink-2">
         {showBlockedHint && value === undefined ? AUTOGRAPH_NEXT_BLOCKED : null}
       </p>
     </div>
@@ -262,7 +262,7 @@ function SavedLine({
       ref={ref}
       tabIndex={-1}
       role="status"
-      className="mb-3 rounded-md border border-slate-500 px-3 py-2 text-sm text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+      className="mb-3 rounded-md border border-control px-3 py-2 text-sm text-ink-2 focus-outline"
     >
       {autographPromptSaved(value)}
     </p>
@@ -324,17 +324,17 @@ export function AutographFormatPrompt({
       ref={slotRef}
       role="group"
       aria-labelledby="autograph-format-prompt"
-      className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-[#00D558]/60 px-3 py-2"
+      className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-neon-green-text/60 px-3 py-2"
     >
       {/* Glyph and line wrap as ONE item with a 16rem basis, the way the
           ReauthNotice / PausedNotice banners hold their text: on a phone the
           pair takes the whole row and the buttons drop beneath it, rather
           than the buttons squeezing the line until words break mid-word. */}
       <div className="flex min-w-0 flex-1 basis-64 items-center gap-3">
-        <span className="shrink-0 text-[#00D558]">
+        <span className="shrink-0 text-neon-green-text">
           <SignatureGlyph format="On Card" />
         </span>
-        <p id="autograph-format-prompt" className="min-w-0 flex-1 text-sm text-gray-200">
+        <p id="autograph-format-prompt" className="min-w-0 flex-1 text-sm text-ink-2">
           {autographPromptLine(count)}
         </p>
       </div>
@@ -342,7 +342,7 @@ export function AutographFormatPrompt({
         {AUTOGRAPH_FORMATS.map((format) => (
           <NeonButton
             key={format}
-            secondary
+            variant="secondary"
             aria-busy={busy === format || undefined}
             aria-disabled={busy !== null || undefined}
             aria-describedby={error ? errorId : undefined}
@@ -355,10 +355,10 @@ export function AutographFormatPrompt({
       {/* Both regions are mounted from the start — a live region that
           appears at the moment it speaks is often not heard — and collapse
           while empty. No whitespace inside: `empty:` needs no child nodes. */}
-      <p role="status" className="basis-full text-xs text-gray-300 empty:hidden">
+      <p role="status" className="basis-full text-xs text-ink-2 empty:hidden">
         {busy ? AUTOGRAPH_PROMPT_SAVING : null}
       </p>
-      <p id={errorId} role="alert" className="basis-full text-xs text-[#FF2E9A] empty:hidden">
+      <p id={errorId} role="alert" className="basis-full text-xs text-neon-pink-text empty:hidden">
         {error}
       </p>
     </div>

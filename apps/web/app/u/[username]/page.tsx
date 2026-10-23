@@ -85,7 +85,7 @@ function ProfileLinkButton({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="relative flex items-center justify-center w-full py-3 px-5 rounded-full font-semibold text-white transition-opacity hover:opacity-80"
+      className="relative flex items-center justify-center w-full py-3 px-5 rounded-full font-semibold text-ink transition-opacity hover:opacity-80"
       style={{
         background: `linear-gradient(135deg, ${color1}, ${color2})`,
         boxShadow: `0 0 12px #00D55899`,
@@ -104,6 +104,13 @@ function ProfileLinkButton({
 
 // — Page —
 
+/**
+ * NEO-356: a seller's storefront page, dark in both modes. Its buttons wear
+ * the seller's own brand colours with white ink, chosen against this dark
+ * ground, so the page keeps that ground whatever the visitor's mode.
+ * `data-theme="dark"` on each root scopes the dark roles (app/theme.css) to
+ * the page, so `text-ink`, `bg-surface` and the rest resolve dark here.
+ */
 export default function PublicProfilePage() {
   const { username } = useParams<{ username: string }>();
   const profile = useQuery(api.publicProfile.getPublicProfileByUsername, {
@@ -116,10 +123,10 @@ export default function PublicProfilePage() {
   if (profile === undefined) {
     return (
       <div
-        className="min-h-screen flex items-center justify-center"
-        style={{ background: "#0a0a0a" }}
+        data-theme="dark"
+        className="min-h-screen flex items-center justify-center bg-surface"
       >
-        <div className="w-8 h-8 rounded-full border-2 border-white border-t-transparent animate-spin" />
+        <div className="w-8 h-8 rounded-full border-2 border-ink border-t-transparent animate-spin" />
       </div>
     );
   }
@@ -127,13 +134,13 @@ export default function PublicProfilePage() {
   if (profile === null) {
     return (
       <div
-        className="min-h-screen flex flex-col items-center justify-center gap-4 text-white px-6 text-center"
-        style={{ background: "#0a0a0a" }}
+        data-theme="dark"
+        className="min-h-screen flex flex-col items-center justify-center gap-4 text-ink px-6 text-center bg-surface"
       >
         <h1 className="text-2xl font-bold">Profile not found</h1>
-        <p className="text-slate-400">
+        <p className="text-ink-3">
           Create yours at{" "}
-          <Link to="/" className="underline text-white hover:opacity-80">
+          <Link to="/" className="underline text-ink hover:opacity-80">
             NeonBinder
           </Link>
           .
@@ -206,20 +213,20 @@ export default function PublicProfilePage() {
   );
 
   return (
-    <div className="min-h-screen py-12 px-4" style={{ background: "#0a0a0a" }}>
+    <div data-theme="dark" className="min-h-screen py-12 px-4 bg-surface">
       <div className="max-w-md mx-auto">
         {/* Card */}
-        <div className="bg-black/50 backdrop-blur-sm rounded-2xl py-12 px-6 flex flex-col items-center gap-4 text-center">
+        <div className="bg-surface/50 backdrop-blur-sm rounded-2xl py-12 px-6 flex flex-col items-center gap-4 text-center">
           {/* Profile photo */}
           {profile.photoUrl ? (
             <img
               src={profile.photoUrl}
               alt={profile.displayName ?? profile.username}
-              className="w-24 h-24 rounded-full object-cover border-2 border-white/20"
+              className="w-24 h-24 rounded-full object-cover border-2 border-ink/20"
             />
           ) : (
             <div
-              className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-white"
+              className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-ink"
               style={{
                 background: `linear-gradient(135deg, ${color1}, ${color2})`,
                 border: "2px solid rgba(255,255,255,0.2)",
@@ -234,13 +241,13 @@ export default function PublicProfilePage() {
           {/* Name + tagline */}
           <div>
             <h1
-              className="text-2xl font-bold text-white"
+              className="text-2xl font-bold text-ink"
               style={{ fontFamily: "'Neon', sans-serif" }}
             >
               {profile.displayName ?? profile.username}
             </h1>
             {profile.tagline && (
-              <p className="text-slate-300 mt-1 text-sm font-['Lexend']">
+              <p className="text-ink-2 mt-1 text-sm font-['Lexend']">
                 {profile.tagline}
               </p>
             )}
@@ -249,8 +256,8 @@ export default function PublicProfilePage() {
           {/* Marketplace buttons */}
           {marketplaceLinks.length > 0 && (
             <div className="w-full mt-6">
-              <div className="border-t border-white/10 pt-6">
-                <h2 className="text-xs uppercase tracking-widest text-slate-400 font-semibold mb-4">
+              <div className="border-t border-ink/10 pt-6">
+                <h2 className="text-xs uppercase tracking-widest text-ink-3 font-semibold mb-4">
                   Marketplace Stores
                 </h2>
                 <div className="space-y-3">
@@ -272,8 +279,8 @@ export default function PublicProfilePage() {
           {/* Payment buttons */}
           {paymentLinks.length > 0 && (
             <div className="w-full mt-6">
-              <div className="border-t border-white/10 pt-6">
-                <h2 className="text-xs uppercase tracking-widest text-slate-400 font-semibold mb-4">
+              <div className="border-t border-ink/10 pt-6">
+                <h2 className="text-xs uppercase tracking-widest text-ink-3 font-semibold mb-4">
                   Payment Methods
                 </h2>
                 <div className="space-y-3">
@@ -295,7 +302,7 @@ export default function PublicProfilePage() {
           {/* Social icons */}
           {socialLinks.length > 0 && (
             <div className="w-full mt-6">
-              <div className="border-t border-white/10 pt-6">
+              <div className="border-t border-ink/10 pt-6">
                 <div className="flex gap-3 flex-wrap justify-center">
                   {socialLinks.map(({ href, Icon, label }) => (
                     <a
@@ -304,7 +311,7 @@ export default function PublicProfilePage() {
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label={label}
-                      className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                      className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                     >
                       <Icon />
                       <span className="sr-only">{href}</span>
@@ -316,7 +323,7 @@ export default function PublicProfilePage() {
           )}
 
           {/* Footer */}
-          <div className="flex flex-col items-center gap-3 mt-8 pt-6 border-t border-white/10 w-full">
+          <div className="flex flex-col items-center gap-3 mt-8 pt-6 border-t border-ink/10 w-full">
             <img
               src="/logo-120.png"
               alt="NeonBinder"
@@ -324,11 +331,11 @@ export default function PublicProfilePage() {
               height={40}
               className="opacity-70 hover:opacity-100 transition-opacity"
             />
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               Powered by{" "}
               <Link
                 to="/"
-                className="underline hover:text-slate-300 transition-colors"
+                className="underline hover:text-ink-2 transition-colors"
               >
                 NeonBinder
               </Link>

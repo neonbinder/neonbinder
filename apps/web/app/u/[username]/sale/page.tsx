@@ -88,7 +88,7 @@ function PaymentLinkButton({
     <a
       href={href}
       onClick={handleClick}
-      className="relative flex items-center justify-center gap-3 w-full py-3 px-5 rounded-full font-semibold text-white transition-opacity hover:opacity-80 cursor-pointer"
+      className="relative flex items-center justify-center gap-3 w-full py-3 px-5 rounded-full font-semibold text-ink transition-opacity hover:opacity-80 cursor-pointer"
       style={{
         background: `linear-gradient(135deg, ${color1}, ${color2})`,
         boxShadow: `0 0 12px #00D55899`,
@@ -183,12 +183,12 @@ function QrScannerModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+    <div data-theme="dark" className="fixed inset-0 z-50 bg-surface flex flex-col">
       <div className="flex items-center justify-between p-4">
-        <span className="text-white font-semibold">Scan QR Code</span>
+        <span className="text-ink font-semibold">Scan QR Code</span>
         <button
           onClick={onClose}
-          className="text-white text-sm px-4 py-2 rounded-full bg-white/20 hover:bg-white/30 transition-colors"
+          className="text-ink text-sm px-4 py-2 rounded-full bg-ink/20 hover:bg-ink/30 transition-colors"
         >
           Cancel
         </button>
@@ -198,7 +198,7 @@ function QrScannerModal({
       </div>
       {status && (
         <div className="absolute bottom-8 left-0 right-0 flex justify-center">
-          <span className="bg-black/80 text-white text-sm px-4 py-2 rounded-full">
+          <span className="bg-surface/80 text-ink text-sm px-4 py-2 rounded-full">
             {status}
           </span>
         </div>
@@ -207,6 +207,13 @@ function QrScannerModal({
   );
 }
 
+/**
+ * NEO-356: a seller's storefront page, dark in both modes. Its buttons wear
+ * the seller's own brand colours with white ink, chosen against this dark
+ * ground, so the page keeps that ground whatever the visitor's mode.
+ * `data-theme="dark"` on each root scopes the dark roles (app/theme.css) to
+ * the page, so `text-ink`, `bg-surface` and the rest resolve dark here.
+ */
 export default function SalePage() {
   const { username } = useParams<{ username: string }>();
   const location = useLocation();
@@ -257,10 +264,10 @@ export default function SalePage() {
   if (profile === undefined) {
     return (
       <div
-        className="min-h-screen flex items-center justify-center"
-        style={{ background: "#0a0a0a" }}
+        data-theme="dark"
+        className="min-h-screen flex items-center justify-center bg-surface"
       >
-        <div className="w-8 h-8 rounded-full border-2 border-white border-t-transparent animate-spin" />
+        <div className="w-8 h-8 rounded-full border-2 border-ink border-t-transparent animate-spin" />
       </div>
     );
   }
@@ -269,13 +276,13 @@ export default function SalePage() {
   if (profile === null) {
     return (
       <div
-        className="min-h-screen flex flex-col items-center justify-center gap-4 text-white px-6 text-center"
-        style={{ background: "#0a0a0a" }}
+        data-theme="dark"
+        className="min-h-screen flex flex-col items-center justify-center gap-4 text-ink px-6 text-center bg-surface"
       >
         <h1 className="text-2xl font-bold">Profile not found</h1>
-        <p className="text-slate-400">
+        <p className="text-ink-3">
           Create yours at{" "}
-          <Link to="/" className="underline text-white hover:opacity-80">
+          <Link to="/" className="underline text-ink hover:opacity-80">
             NeonBinder
           </Link>
           .
@@ -319,14 +326,14 @@ export default function SalePage() {
   );
 
   return (
-    <div className="min-h-screen py-12 px-4" style={{ background: "#0a0a0a" }}>
+    <div data-theme="dark" className="min-h-screen py-12 px-4 bg-surface">
       <div className="max-w-md mx-auto">
-        <div className="bg-black/50 backdrop-blur-sm rounded-2xl py-12 px-6 flex flex-col items-center gap-6 text-center">
+        <div className="bg-surface/50 backdrop-blur-sm rounded-2xl py-12 px-6 flex flex-col items-center gap-6 text-center">
           {/* Sale total */}
           <div>
-            <p className="text-slate-400 text-sm mb-2">Total Sale Amount</p>
+            <p className="text-ink-3 text-sm mb-2">Total Sale Amount</p>
             <div
-              className="text-5xl font-bold text-white"
+              className="text-5xl font-bold text-ink"
               style={{ fontFamily: "'Neon', sans-serif" }}
             >
               ${(saleTotal || 0).toFixed(2)}
@@ -336,7 +343,7 @@ export default function SalePage() {
           {/* Add Card button */}
           <button
             onClick={() => setScannerOpen(true)}
-            className="w-full py-3 px-5 rounded-full font-semibold text-white border-2 border-white/30 hover:border-white/60 transition-colors cursor-pointer"
+            className="w-full py-3 px-5 rounded-full font-semibold text-ink border-2 border-ink/30 hover:border-ink/60 transition-colors cursor-pointer"
           >
             + Add Card
           </button>
@@ -357,9 +364,9 @@ export default function SalePage() {
               ))}
             </div>
           ) : (
-            <div className="w-full mt-4 p-4 bg-white/10 rounded-lg text-slate-300 text-sm">
+            <div className="w-full mt-4 p-4 bg-ink/10 rounded-lg text-ink-2 text-sm">
               No payment methods configured. Visit{" "}
-              <Link to="/profile/public" className="underline text-white hover:opacity-80">
+              <Link to="/profile/public" className="underline text-ink hover:opacity-80">
                 your profile
               </Link>{" "}
               to add payment information.
@@ -380,7 +387,7 @@ export default function SalePage() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Twitter/X"
-                  className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                  className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                 >
                   <TwitterIcon />
                 </a>
@@ -391,7 +398,7 @@ export default function SalePage() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Instagram"
-                  className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                  className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                 >
                   <InstagramIcon />
                 </a>
@@ -402,7 +409,7 @@ export default function SalePage() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="TikTok"
-                  className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                  className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                 >
                   <TikTokIcon />
                 </a>
@@ -413,7 +420,7 @@ export default function SalePage() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="YouTube"
-                  className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                  className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                 >
                   <YouTubeIcon />
                 </a>
@@ -424,7 +431,7 @@ export default function SalePage() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Facebook"
-                  className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                  className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                 >
                   <FacebookIcon />
                 </a>
@@ -435,7 +442,7 @@ export default function SalePage() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Threads"
-                  className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+                  className="w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 flex items-center justify-center text-ink transition-colors"
                 >
                   <ThreadsIcon />
                 </a>
@@ -452,11 +459,11 @@ export default function SalePage() {
               height={40}
               className="opacity-70 hover:opacity-100 transition-opacity"
             />
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               Powered by{" "}
               <Link
                 to="/"
-                className="underline hover:text-slate-300 transition-colors"
+                className="underline hover:text-ink-2 transition-colors"
               >
                 NeonBinder
               </Link>

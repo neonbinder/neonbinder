@@ -76,7 +76,7 @@ export default function PrintLayout() {
         </p>
       </div>
 
-      <nav aria-label="Print Shop sections" className="border-b border-slate-800">
+      <nav aria-label="Print Shop sections" className="border-b border-rule">
         {/* Wraps rather than scrolls horizontally: a scrolling strip would hide
             tools off-screen, and you cannot use what you cannot see. */}
         <ul className="flex flex-wrap gap-x-6 gap-y-2">
@@ -90,10 +90,10 @@ export default function PrintLayout() {
                 to={section.path}
                 end
                 className={({ isActive }) =>
-                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded-sm " +
+                  "block px-1 py-3 -mb-px border-b-2 text-sm font-medium transition-colors focus-outline rounded-sm " +
                   (isActive
-                    ? "border-neon-teal text-neon-teal"
-                    : "border-transparent text-slate-400 hover:text-foreground hover:border-slate-600")
+                    ? "border-neon-teal-text text-neon-teal-text"
+                    : "border-transparent text-ink-3 hover:text-foreground hover:border-control")
                 }
               >
                 {section.label}

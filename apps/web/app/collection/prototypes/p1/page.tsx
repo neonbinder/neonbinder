@@ -13,6 +13,7 @@ import MyCards from "./MyCards";
 import NoticeLine, { type Notice } from "./notice";
 import { shortCardName } from "./ui";
 import WantList from "./WantList";
+import { ForceDark } from "@/components/primitives/ForceDark";
 
 /**
  * NEO-350 — collection prototype 1, "Set Builder, Collector Edition".
@@ -41,7 +42,7 @@ type TabKey = (typeof TABS)[number]["key"];
 
 const NOTICE_MS = 10_000;
 
-export default function CollectionPrototype1() {
+function CollectionPrototype1Page() {
   useDocumentTitle("Collection · Set Builder Collector Edition");
   const store = usePrototypeStore("p1");
   const [params, setParams] = useSearchParams();
@@ -200,5 +201,18 @@ export default function CollectionPrototype1() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * NEO-356 — this prototype was only ever designed dark and is not migrated to
+ * the colour roles, so it keeps the whole page dark while it is open, whatever
+ * the collector's setting. Leaving restores their own mode.
+ */
+export default function CollectionPrototype1() {
+  return (
+    <ForceDark>
+      <CollectionPrototype1Page />
+    </ForceDark>
   );
 }

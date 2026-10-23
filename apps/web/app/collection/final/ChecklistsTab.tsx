@@ -73,7 +73,7 @@ export default function ChecklistsTab({
     <button
       type="button"
       onClick={() => setRequesting(true)}
-      className={`rounded-sm text-neon-blue underline underline-offset-2 hover:text-white ${FOCUS}`}
+      className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
     >
       {text}
     </button>
@@ -86,7 +86,7 @@ export default function ChecklistsTab({
         <div role="search" className="relative max-w-2xl">
           <MagnifyingGlassIcon
             aria-hidden="true"
-            className="pointer-events-none absolute left-3 top-[2.65rem] h-5 w-5 text-slate-400"
+            className="pointer-events-none absolute left-3 top-[2.65rem] h-5 w-5 text-ink-3"
           />
           <Input
             surface="dark"
@@ -109,7 +109,7 @@ export default function ChecklistsTab({
             className="pl-10"
           />
         </div>
-        <p role="status" className="text-xs text-slate-400">
+        <p role="status" className="text-xs text-ink-3">
           {!query.trim()
             ? ""
             : hits.length === 0
@@ -119,30 +119,30 @@ export default function ChecklistsTab({
                 : `${hits.length} ${hits.length === 1 ? "card matches" : "cards match"}. Pick yours.`}
         </p>
         {query.trim() && hits.length === 0 ? (
-          <div className="max-w-2xl rounded-lg border border-dashed border-neon-blue/50 bg-gray-800 p-4 text-sm text-slate-200">
-            <p className="font-semibold text-slate-100">Not in the binder yet.</p>
-            <p className="mt-1 text-slate-300">
+          <div className="max-w-2xl rounded-lg border border-dashed border-neon-blue/50 bg-raised p-4 shadow-offset text-sm text-ink-2">
+            <p className="font-semibold text-ink">Not in the binder yet.</p>
+            <p className="mt-1 text-ink-2">
               {askLink("Ask us to add it")}. It&apos;s a demo, so your request stays right here with you.
             </p>
           </div>
         ) : (
-          <p className="text-xs text-slate-400">{askLink("Can't find it? Ask us to add it")}</p>
+          <p className="text-xs text-ink-3">{askLink("Can't find it? Ask us to add it")}</p>
         )}
         {shown.length > 0 && (
           <>
             {scoped && (
-              <p className="text-xs text-slate-300">
-                Have, Want and Trade below are for <span className="text-neon-blue">{scoped.name}</span>.{" "}
+              <p className="text-xs text-ink-2">
+                Have, Want and Trade below are for <span className="text-neon-blue-text">{scoped.name}</span>.{" "}
                 <button
                   type="button"
                   onClick={() => setScope("all")}
-                  className={`rounded-sm text-neon-blue underline underline-offset-2 hover:text-white ${FOCUS}`}
+                  className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
                 >
                   Show all binders
                 </button>
               </p>
             )}
-            <ul className="space-y-1.5 rounded-lg bg-gray-800 p-3 sm:p-4">
+            <ul className="space-y-1.5 rounded-lg bg-raised p-3 shadow-offset sm:p-4">
               {shown.map(({ card }) => (
                 <CardRowGroup
                   key={card.id}
@@ -160,7 +160,7 @@ export default function ChecklistsTab({
               <button
                 type="button"
                 onClick={() => setShowAll(true)}
-                className={`rounded px-2 py-1 text-sm text-neon-blue underline underline-offset-2 ${FOCUS}`}
+                className={`rounded px-2 py-1 text-sm text-neon-blue-text underline underline-offset-2 ${FOCUS}`}
               >
                 Show all {hits.length} matches
               </button>
@@ -170,7 +170,7 @@ export default function ChecklistsTab({
       </section>
 
       <section ref={browseRef} aria-label="Browse sets" className="space-y-4">
-        <p className="text-sm text-slate-300">
+        <p className="text-sm text-ink-2">
           Or drill down: sport, year, brand, set, then base, an insert or a parallel.
         </p>
         <Cascade

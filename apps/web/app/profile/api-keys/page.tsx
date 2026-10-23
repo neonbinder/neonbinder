@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { APIKeys } from "@clerk/clerk-react";
 import * as Sentry from "@sentry/react";
 import { ErrorAlert } from "@/components/primitives/ErrorAlert";
-import { clerkNeonAppearance } from "@/components/modules/clerk-appearance";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 
 /**
@@ -77,12 +76,12 @@ export default function ApiKeysPanel() {
         <h2 id="api-keys-heading" className="text-2xl font-bold">
           API Keys
         </h2>
-        <p className="text-slate-400 max-w-2xl">
+        <p className="text-ink-3 max-w-2xl">
           An API key lets a script, spreadsheet or tool talk to Neon Binder as
           you, without your password. Create one per tool so you can revoke a
           single key without breaking everything else.
         </p>
-        <ul className="list-disc pl-5 space-y-1 text-sm text-slate-400 max-w-2xl">
+        <ul className="list-disc pl-5 space-y-1 text-sm text-ink-3 max-w-2xl">
           <li>
             A key acts as your account. Anything holding it can read and change
             your collection, listings and marketplace connections.
@@ -104,10 +103,11 @@ export default function ApiKeysPanel() {
             <ErrorAlert error="API keys are unavailable right now. Refresh the page, and if this keeps happening the feature may not be enabled for this account yet." />
           }
         >
+          {/* No `appearance` here: <ClerkProvider> skins every Clerk
+              component in the page's mode (clerkAppearance, NEO-356). */}
           <APIKeys
-            appearance={clerkNeonAppearance}
             fallback={
-              <p role="status" className="text-sm text-slate-400">
+              <p role="status" className="text-sm text-ink-3">
                 Loading API keys…
               </p>
             }

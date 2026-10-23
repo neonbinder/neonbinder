@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/primitives/Button";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import {
   cardsInSet,
@@ -116,20 +116,20 @@ const Checklist = forwardRef<
   );
 
   return (
-    <section aria-labelledby={`checklist-${setId}`} className="space-y-4 rounded-lg bg-gray-800 p-4 text-slate-100 sm:p-6">
+    <section aria-labelledby={`checklist-${setId}`} className="space-y-4 rounded-lg bg-raised p-4 text-ink shadow-offset sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-2">
           <h3
             id={`checklist-${setId}`}
             ref={headingRef}
             tabIndex={-1}
-            className="rounded-sm text-xl font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="rounded-sm text-xl font-semibold focus-outline"
           >
             {title}
           </h3>
-          <p className="text-sm text-slate-300">
-            {scoped && <span className="text-neon-blue">In {scoped.name}: </span>}
-            Have <span className="font-semibold tabular-nums text-slate-100">{completion.owned}</span> of{" "}
+          <p className="text-sm text-ink-2">
+            {scoped && <span className="text-neon-blue-text">In {scoped.name}: </span>}
+            Have <span className="font-semibold tabular-nums text-ink">{completion.owned}</span> of{" "}
             <span className="tabular-nums">{completion.total}</span>
             {completion.total > 0 && completion.owned === completion.total
               ? " · Complete. Totally rad."
@@ -202,7 +202,7 @@ const Checklist = forwardRef<
                 spellCheck={false}
               />
             </div>
-            <Button
+            <NeonButton
               type="button"
               variant="primary"
               disabled={blocked || toAdd.length === 0}
@@ -210,10 +210,10 @@ const Checklist = forwardRef<
               className={FOCUS}
             >
               {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Mark ${toAdd.length} as Have` : "Mark as Have")}
-            </Button>
+            </NeonButton>
           </div>
           {range && (
-            <div className="space-y-2 text-sm text-slate-300">
+            <div className="space-y-2 text-sm text-ink-2">
               <p>
                 {toAdd.length === 0 && rangeCards.length === 0
                   ? "No cards picked yet."
@@ -221,7 +221,7 @@ const Checklist = forwardRef<
                 {alreadyHave > 0 && `, ${alreadyHave} already in your collection`}
                 {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
               </p>
-              {blocked && <p className="text-neon-yellow">{blockedMessage(plan)}</p>}
+              {blocked && <p className="text-neon-yellow-text">{blockedMessage(plan)}</p>}
               {range.shared.map((s) => (
                 <div
                   key={s.number}
@@ -229,7 +229,7 @@ const Checklist = forwardRef<
                   aria-label={`Cards numbered ${s.number}`}
                   className="flex flex-wrap items-center gap-1.5 rounded-md border border-neon-yellow/50 bg-neon-yellow/5 px-2 py-1.5"
                 >
-                  <span className="text-slate-200">#{s.number} is on {s.cards.length} cards. Which one's yours?</span>
+                  <span className="text-ink-2">#{s.number} is on {s.cards.length} cards. Which one's yours?</span>
                   {s.cards.map((c) => {
                     const on = sharedPicks.has(c.id);
                     return (
@@ -258,11 +258,11 @@ const Checklist = forwardRef<
         </div>
       </div>
 
-      <p role="status" className="text-xs tabular-nums text-slate-400">
+      <p role="status" className="text-xs tabular-nums text-ink-3">
         {visible.length === cards.length ? `${cards.length} cards` : `${visible.length} of ${cards.length} cards`}
       </p>
       {visible.length === 0 ? (
-        <p className="rounded-md border border-dashed border-slate-700 px-3 py-2 text-sm text-slate-400">
+        <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
           {show === "need" && !query ? "Nothing left to chase here. Set complete!" : "No cards match."}
         </p>
       ) : (

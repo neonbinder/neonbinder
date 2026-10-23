@@ -323,7 +323,7 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLTextAreaElement;
     expect(field.value.length).toBeGreaterThanOrEqual(70);
     const meter = screen.getByText(`${field.value.length}/80`);
-    expect(meter.parentElement?.className).toContain("text-gray-400");
+    expect(meter.parentElement?.className).toContain("text-ink-3");
     expect(screen.queryByText(/may clip/)).toBeNull();
   });
 
@@ -333,7 +333,7 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
-    expect(meter.parentElement?.className).toContain("text-[#FF2E9A]");
+    expect(meter.parentElement?.className).toContain("text-neon-pink-text");
     expect(screen.getByText("4 over")).toBeTruthy();
   });
 });

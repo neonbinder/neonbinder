@@ -32,12 +32,12 @@ export const Collapsible: React.FC<CollapsibleProps> = ({
     <div className={`space-y-2 ${className}`}>
       <div className="flex items-center justify-between px-4">
         <div className="flex-1">
-          <h3 className="text-sm font-semibold text-slate-900">{trigger}</h3>
+          <h3 className="text-sm font-semibold text-ink">{trigger}</h3>
         </div>
         <button
           type="button"
           onClick={toggleOpen}
-          className="p-2 rounded-md hover:bg-slate-100 transition-colors"
+          className="p-2 rounded-md text-ink-2 hover:bg-hover transition-colors focus-outline"
         >
           <svg
             className="h-4 w-4"

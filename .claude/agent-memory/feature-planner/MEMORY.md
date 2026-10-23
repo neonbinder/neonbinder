@@ -19,3 +19,4 @@
 - [Listing title inputs are server-assembled](listing-title-inputs-are-server-assembled.md) — assessListingTitle is browser-safe, its inputs are not; extract a pure input builder + ship context on the resolve result
 - [Optional→required is two merges](optional-to-required-is-two-merges.md) — deploy validates existing rows; writers+backfill first, schema flip second; one PR only if prod is hand-cleaned and rechecked (NEO-331)
 - [Old scripts title builder is the title-rule reference](old-scripts-title-builder-is-the-title-rule-reference.md) — insert/parallel names are core; per-leaf short set name rescues overflow; RC-before-short-name is the open disagreement
+- [System theme makes OS colour scheme a test input](system-theme-makes-os-colour-scheme-a-test-input.md) — pin colorScheme dark in playwright.config; only theme specs emulateMedia; restore stored prefs

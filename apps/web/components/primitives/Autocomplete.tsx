@@ -495,7 +495,7 @@ export function Autocomplete<T>({
           // blur the field: blur dismisses, and the list would vanish under
           // the pointer. Options already do this for the same reason.
           onMouseDown={(e) => e.preventDefault()}
-          className={`fixed z-[70] ${listMaxHeightClassName} overflow-y-auto rounded-md border border-gray-700 bg-gray-900 shadow-lg`}
+          className={`fixed z-[70] ${listMaxHeightClassName} overflow-y-auto rounded-md border border-rule-strong bg-raised-deep shadow-lg shadow-offset`}
         >
           {!hasResults && (
             // role="option" + aria-disabled, NOT role="presentation": per the
@@ -514,7 +514,7 @@ export function Autocomplete<T>({
               aria-disabled="true"
               aria-selected={false}
               aria-live="polite"
-              className="px-3 py-2 text-sm text-gray-400"
+              className="px-3 py-2 text-sm text-ink-3"
             >
               {loading ? "Searching…" : emptyMessage}
             </li>
@@ -537,8 +537,8 @@ export function Autocomplete<T>({
                 }}
                 className={`cursor-pointer px-3 py-2 text-sm ${
                   idx === highlightIdx
-                    ? "bg-[#00D558]/20 text-[#00D558]"
-                    : "text-gray-200 hover:bg-gray-800"
+                    ? "bg-neon-green/20 text-neon-green-text"
+                    : "text-ink-2 hover:bg-hover"
                 }`}
               >
                 {selectedKey !== undefined && (
@@ -550,7 +550,7 @@ export function Autocomplete<T>({
                      only direct text node, which is what a flow matches). */
                   <span
                     aria-hidden="true"
-                    className="mr-2 inline-block w-3 text-[#00D558]"
+                    className="mr-2 inline-block w-3 text-neon-green-text"
                   >
                     {isCurrent ? "✓" : ""}
                   </span>
@@ -564,7 +564,7 @@ export function Autocomplete<T>({
                       descriptionBelow
                         ? `block mt-0.5 ${selectedKey !== undefined ? "pl-5" : ""}`
                         : "ml-2"
-                    } text-xs text-gray-400`}
+                    } text-xs text-ink-3`}
                   >
                     {description}
                   </span>

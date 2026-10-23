@@ -12,11 +12,16 @@
  * what to fix, how many elements, the first element's selector. The full
  * result, minus every node's HTML, is attached to the test as JSON.
  *
+ * Every call checks the screen TWICE, once painted light and once painted dark
+ * (Jason, 2026-10-22: "axe should check both light and dark mode"), and always
+ * ends with the OS dark, the suite pin. See `checkAccessibility`.
+ *
  * Violations are product bugs: fix the product. Never add an exclusion here
  * to make a spec pass, and never exclude NeonBinder's own UI.
  */
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
+import { pageHasBanner, paintsLook, type Look } from "./theme";
 
 // axe-core's own types, reached through the package we depend on (axe-core
 // itself is only its transitive dependency).
@@ -87,7 +92,7 @@ export function summarize(violations: Result[]): string[] {
  * CI artifacts, and a page's markup can carry the signed-in account's own
  * details. Selectors and axe's fix-it text are enough to find the element.
  */
-function sanitize(results: AxeResults, meta: Record<string, unknown>) {
+function sanitize(results: AxeResults) {
   const rule = (r: Result) => ({
     id: r.id,
     impact: r.impact,
@@ -97,7 +102,6 @@ function sanitize(results: AxeResults, meta: Record<string, unknown>) {
     nodes: r.nodes.map((n) => ({ target: n.target, impact: n.impact, failureSummary: n.failureSummary })),
   });
   return {
-    ...meta,
     testEngine: results.testEngine?.version,
     violations: results.violations.map(rule),
     // Needs-review results (e.g. contrast over an image): informational, never fail.
@@ -106,14 +110,13 @@ function sanitize(results: AxeResults, meta: Record<string, unknown>) {
   };
 }
 
-export async function checkAccessibility(page: Page, testInfo: TestInfo, opts: AccessibleOptions = {}): Promise<void> {
-  const path = new URL(page.url()).pathname;
-  const label = opts.label ?? path;
-  // axe reads colours as painted right now: a dialog still fading in (Clerk's
-  // modals, Radix overlays) measures its text against a half-transparent
-  // layer and reports contrast the settled screen does not have. Wait for
-  // every finite animation and transition to finish; infinite ones
-  // (spinners, the neon glow) never settle and are ignored.
+/** axe checks whatever is painted right now: let every finite animation and transition finish first. */
+async function settle(page: Page): Promise<void> {
+  // A dialog still fading in (Clerk's modals, Radix overlays), or a colour
+  // transition still running after a mode flip, measures its text against a
+  // half-blended layer and reports contrast the settled screen does not
+  // have. Infinite animations (spinners, the neon glow) never settle and are
+  // ignored.
   await page.waitForFunction(
     () =>
       document
@@ -122,6 +125,10 @@ export async function checkAccessibility(page: Page, testInfo: TestInfo, opts: A
     undefined,
     { timeout: 7_000 },
   );
+}
+
+async function runAxe(page: Page, opts: AccessibleOptions): Promise<AxeResults> {
+  await settle(page);
   let builder = new AxeBuilder({ page }).withTags([...WCAG_TAGS]);
   for (const { selector } of EXCLUDED_REGIONS) builder = builder.exclude(selector);
 
@@ -133,30 +140,103 @@ export async function checkAccessibility(page: Page, testInfo: TestInfo, opts: A
     await opts.within.evaluate((el, [attr, value]) => el.setAttribute(attr, value), [SCOPE_ATTR, token] as const);
     builder = builder.include(`[${SCOPE_ATTR}="${token}"]`);
   }
-
-  let results: AxeResults;
   try {
-    results = await builder.analyze();
+    return await builder.analyze();
   } finally {
     if (opts.within && token) {
       await opts.within.evaluate((el, attr) => el.removeAttribute(attr), SCOPE_ATTR).catch(() => undefined);
     }
   }
+}
 
+interface ModePass {
+  mode: Look;
+  results: AxeResults;
+}
+
+/**
+ * Checks the screen in BOTH modes and leaves the OS dark (the suite pin).
+ *
+ * Light first: `emulateMedia({ colorScheme: "light" })`, wait until the page
+ * is actually painted light, run axe; then dark the same way. That works
+ * because test accounts are on System, so the app follows the OS.
+ *
+ * "Painted" is read with support/theme.ts `paintsLook` (the page colour behind
+ * the header banner), not the `<html data-theme>` attribute: it needs no
+ * exception to the perceivable-only rule, and it is what the user sees. The
+ * attribute would be wrong on the pages that scope their own mode inside the
+ * root (the public profile and sale pages are a dark design of their own).
+ *
+ * Some pages cannot flip, and the check then runs in the mode the page IS in
+ * and SAYS SO (a `note` in the attachment, an `axe-single-mode` annotation in
+ * the report, never silent):
+ *   - the page follows an explicit saved theme, a ForceDark route, or the
+ *     demo toggle's override (it did not repaint within the 7 s budget);
+ *   - the page has no banner to read the mode from.
+ * A spec that saved an explicit theme restores System before calling.
+ */
+export async function checkAccessibility(page: Page, testInfo: TestInfo, opts: AccessibleOptions = {}): Promise<void> {
+  const path = new URL(page.url()).pathname;
+  const label = opts.label ?? path;
   const project = testInfo.project.name;
+
+  const passes: ModePass[] = [];
+  let note: string | undefined;
+  try {
+    if (!(await pageHasBanner(page))) {
+      // Nothing to read the mode from, so no flip can be proven: check the
+      // OS-dark page as it stands.
+      await page.emulateMedia({ colorScheme: "dark" });
+      note = "no page banner to read the mode from; checked as it stood, with the OS dark";
+      passes.push({ mode: "dark", results: await runAxe(page, opts) });
+    } else {
+      await page.emulateMedia({ colorScheme: "light" });
+      const followsLight = await paintsLook(page, "light");
+      if (followsLight) passes.push({ mode: "light", results: await runAxe(page, opts) });
+
+      await page.emulateMedia({ colorScheme: "dark" });
+      const followsDark = await paintsLook(page, "dark");
+      if (followsDark) passes.push({ mode: "dark", results: await runAxe(page, opts) });
+
+      if (!followsLight && !followsDark) {
+        throw new Error(
+          `"${label}" (${project}) painted neither light nor dark after the OS scheme changed; it has no banner colour of either mode.`,
+        );
+      }
+      if (!followsLight) note = "the page stayed dark when the OS went light (pinned dark); only dark was checked";
+      if (!followsDark) note = "the page stayed light when the OS went dark (pinned light); only light was checked";
+    }
+  } finally {
+    // The suite pin, whatever happened above.
+    await page.emulateMedia({ colorScheme: "dark" });
+  }
+  if (note) testInfo.annotations.push({ type: "axe-single-mode", description: `${label}: ${note}` });
+
   await testInfo.attach(`axe ${label} (${project})`, {
     contentType: "application/json",
     body: JSON.stringify(
-      sanitize(results, { label, path, project, scope: opts.within ? "region" : "page", tags: WCAG_TAGS }),
+      {
+        label,
+        path,
+        project,
+        scope: opts.within ? "region" : "page",
+        tags: WCAG_TAGS,
+        modesChecked: passes.map((p) => p.mode),
+        ...(note ? { note } : {}),
+        modes: Object.fromEntries(passes.map((p) => [p.mode, sanitize(p.results)])),
+      },
       null,
       2,
     ),
   });
 
-  const lines = summarize(results.violations);
+  // Every line says which mode it came from.
+  const lines = passes.flatMap((p) => summarize(p.results.violations).map((line) => `(${p.mode}) ${line}`));
+  const modes = passes.map((p) => p.mode).join(" + ");
   expect(
     lines,
-    `axe found ${lines.length} WCAG 2.2 A/AA rule${lines.length === 1 ? "" : "s"} violated on "${label}" (${project}). ` +
+    `axe found ${lines.length} WCAG 2.2 A/AA rule${lines.length === 1 ? "" : "s"} violated on "${label}" (${project}; checked ${modes}${note ? `; ${note}` : ""}). ` +
+      `The mode each came from is in front of its line. ` +
       `These are product bugs: fix them in the product, never by excluding them (playwright/GUIDE.md, "Accessibility checks").`,
   ).toEqual([]);
 }

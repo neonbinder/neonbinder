@@ -236,14 +236,14 @@ function TestingSeedPlaceholderUploadContent() {
   ]);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-background p-6">
-      <p className="font-mono text-sm text-slate-400">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-surface p-6">
+      <p className="font-mono text-sm text-ink-3">
         [testing-seed-placeholder-upload] {status}
       </p>
       {/* Per-file lines, so a flow that fails mid-upload says WHICH fixture and
           why instead of only "redirect never happened". */}
       {progress.length > 0 && (
-        <ul className="font-mono text-xs text-slate-400">
+        <ul className="font-mono text-xs text-ink-3">
           {progress.map((row) => (
             <li key={row.position}>
               {row.name}: {row.state}
@@ -260,8 +260,8 @@ export default function TestingSeedPlaceholderUploadPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-background">
-          <p className="font-mono text-sm text-slate-400">
+        <div className="flex min-h-screen items-center justify-center bg-surface">
+          <p className="font-mono text-sm text-ink-3">
             [testing-seed-placeholder-upload] Loading…
           </p>
         </div>

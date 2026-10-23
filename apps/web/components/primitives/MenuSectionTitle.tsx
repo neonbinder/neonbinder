@@ -13,7 +13,7 @@ export const MenuSectionTitle: React.FC<MenuSectionTitleProps> = ({
 }) => {
   return (
     <div
-      className={`flex items-center py-1.5 px-2 text-sm font-semibold text-slate-500 ${
+      className={`flex items-center py-1.5 px-2 text-sm font-semibold text-ink-3 ${
         withPaddingLeft ? "pl-8" : ""
       } ${className}`}
     >

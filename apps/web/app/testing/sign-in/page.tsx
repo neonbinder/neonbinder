@@ -175,8 +175,8 @@ function TestingSignInContent() {
   }, [isLoaded, signIn, isSignedIn, redirect, account, worker, navigate, setActive]);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background">
-      <p className="text-slate-400 font-mono text-sm">[testing] {status}</p>
+    <div className="flex items-center justify-center min-h-screen bg-surface">
+      <p className="text-ink-3 font-mono text-sm">[testing] {status}</p>
     </div>
   );
 }
@@ -189,8 +189,8 @@ export default function TestingSignInPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-background">
-          <p className="text-slate-400 font-mono text-sm">[testing] Loading…</p>
+        <div className="flex items-center justify-center min-h-screen bg-surface">
+          <p className="text-ink-3 font-mono text-sm">[testing] Loading…</p>
         </div>
       }
     >

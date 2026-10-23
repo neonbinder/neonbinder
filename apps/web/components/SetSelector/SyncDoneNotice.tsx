@@ -113,12 +113,10 @@ export default function SyncDoneNotice({
   return (
     <div
       role="status"
-      // border-amber-700 / dark:border-amber-400/70 (not /60 and /40): composited
-      // over this box's own bg-amber-400/10, the /60 and /40 weights measured
-      // 2.45:1 (light) and 2.57:1 (dark) — both fail WCAG 1.4.11's 3:1 non-text
-      // minimum. This is the same pairing EntityColumn's suggestions pill
-      // already uses (4.75:1 light / 4.96:1 dark).
-      className="p-3 mb-1 bg-amber-400/10 border border-amber-700 dark:border-amber-400/70 rounded-md text-amber-800 dark:text-amber-300 text-sm flex items-start justify-between gap-2"
+      // The warn notice roles (NEO-356): the rule clears WCAG 1.4.11's 3:1
+      // non-text minimum on the notice's own ground in both modes (about
+      // 4.2:1 light, 3.7:1 dark).
+      className="p-3 mb-1 bg-notice-warn-bg border border-notice-warn-rule shadow-offset rounded-md text-notice-warn-ink text-sm flex items-start justify-between gap-2"
     >
       <div className="min-w-0 space-y-1">
         {message && <p className="break-words">{message}</p>}
@@ -161,7 +159,7 @@ export default function SyncDoneNotice({
         // px-2 py-1.5 (not px-1, no py): a bare underline link with no
         // vertical padding measures well under WCAG 2.5.8's 24px minimum
         // target size.
-        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded px-2 py-1.5 aria-disabled:opacity-50"
+        className="shrink-0 text-xs underline hover:no-underline focus-outline rounded px-2 py-1.5 aria-disabled:opacity-50"
       >
         Dismiss
       </button>
@@ -226,7 +224,7 @@ function TwinsLeft({
             }
             onClick={() => setOpen((o) => !o)}
             // WCAG 2.5.8: padded to 24px+; the negative margin keeps the line.
-            className="inline-block min-h-6 px-1 py-0.5 -my-0.5 -ml-1 text-xs underline underline-offset-2 hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded"
+            className="inline-block min-h-6 px-1 py-0.5 -my-0.5 -ml-1 text-xs underline underline-offset-2 hover:no-underline focus-outline rounded"
           >
             {open ? "Show fewer" : `Show all ${entries.length}`}
           </button>

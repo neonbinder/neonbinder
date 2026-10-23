@@ -30,7 +30,7 @@ export default function AdminSetBuilderPage() {
 
   if (profile === undefined) {
     return (
-      <div className="p-6 text-center text-sm text-slate-400">
+      <div className="p-6 text-center text-sm text-ink-3">
         Loading credentials…
       </div>
     );
@@ -88,11 +88,11 @@ export default function AdminSetBuilderPage() {
         <h2
           id="set-builder-heading"
           tabIndex={-1}
-          className="text-lg font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] rounded"
+          className="text-lg font-semibold focus-outline rounded"
         >
           Set Builder
         </h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           Build set parameters using marketplace APIs with searchable dropdowns.
         </p>
       </div>

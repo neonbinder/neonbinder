@@ -29,12 +29,12 @@ export const MenuItem: React.FC<MenuItemProps> = ({
   const variantClasses = {
     default: `cursor-pointer ${
       selected
-        ? "bg-slate-50 text-slate-900"
+        ? "bg-hover text-ink"
         : disabled
-          ? "text-slate-400 cursor-not-allowed opacity-50"
-          : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+          ? "text-ink-3 cursor-not-allowed opacity-50"
+          : "text-ink-3 hover:bg-hover hover:text-ink"
     }`,
-    sectionTitle: "text-slate-500 font-semibold cursor-default px-8",
+    sectionTitle: "text-ink-3 font-semibold cursor-default px-8",
   };
 
   const handleClick = () => {
@@ -55,7 +55,7 @@ export const MenuItem: React.FC<MenuItemProps> = ({
       <span className="flex-1 font-medium">{children}</span>
 
       {rightText && (
-        <span className="text-xs text-slate-400 font-medium">{rightText}</span>
+        <span className="text-xs text-ink-3 font-medium">{rightText}</span>
       )}
 
       {rightIcon && <span className="w-4 h-4 shrink-0">{rightIcon}</span>}

@@ -169,14 +169,14 @@ export default function CardFace({
             >
               {!compact && (
                 <span
-                  className="min-w-0 flex-1 truncate font-bold text-white"
+                  className="nb-card-ink min-w-0 flex-1 truncate font-bold"
                   style={{ fontSize: cq(6.5), lineHeight: 1.1, paddingTop: cq(1) }}
                 >
                   {set.season} {set.name}
                 </span>
               )}
               <span
-                className="ml-auto shrink-0 font-bold text-white tabular-nums"
+                className="nb-card-ink ml-auto shrink-0 font-bold tabular-nums"
                 style={{
                   fontSize: cq(compact ? 11 : 8),
                   padding: `${cq(0.8)} ${cq(2.4)}`,
@@ -288,7 +288,7 @@ export default function CardFace({
       {need && (
         <span
           aria-hidden="true"
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md border border-slate-500 bg-black/85 font-bold text-slate-100"
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 nb-card-need rounded-md border font-bold"
           style={{
             fontSize: cq(compact ? 13 : 9),
             padding: `${cq(1.5)} ${cq(4)}`,
@@ -383,7 +383,7 @@ export function EmptySleeve({
     <div
       role="img"
       aria-label={label}
-      className={`relative flex shrink-0 flex-col items-center justify-center border-2 border-dashed border-slate-500 bg-slate-900/60 text-slate-400 ${className}`}
+      className={`relative flex shrink-0 flex-col items-center justify-center border-2 border-dashed border-control bg-field/60 text-ink-3 ${className}`}
       style={{
         width: WIDTH[size],
         aspectRatio: "5 / 7",

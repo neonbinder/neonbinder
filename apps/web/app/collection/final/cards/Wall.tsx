@@ -16,6 +16,7 @@ import { useMediaQuery, useRoving, useWidth } from "../../prototypes/p3/hooks";
 import { blocksOf, buildWall, printRunText, type WallSection } from "../../prototypes/p3/wallModel";
 import { useMyCards } from "./context";
 import QuickAdd from "./QuickAdd";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the wall: one lit tile per card you have, a dashed outline per
@@ -104,53 +105,57 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
       <button
         type="button"
         onClick={() => api.go("home")}
-        className="mb-3 inline-flex min-h-11 items-center gap-1 rounded-md pr-2 text-sm text-slate-300 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] sm:min-h-8"
+        className="mb-3 inline-flex min-h-11 items-center gap-1 rounded-md pr-2 text-sm text-ink-2 hover:text-ink focus-outline sm:min-h-8"
       >
         <ChevronLeftIcon aria-hidden="true" className="size-4" />
         All my sets
       </button>
 
-      <div className="mc-led flex flex-col gap-4 rounded-2xl border border-slate-800 p-4 sm:flex-row sm:items-end sm:p-5">
+      <div className="mc-led shadow-offset flex flex-col gap-4 rounded-2xl border border-rule p-4 sm:flex-row sm:items-end sm:p-5">
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-ink-3">
             {getSport(set.sportId).name}, {getBrand(set.brandId).name}
           </p>
           <h2
             id="mc-wall-heading"
             ref={heading}
             tabIndex={-1}
-            className="text-2xl font-bold text-white focus:outline-none sm:text-3xl"
+            className="text-2xl font-bold text-ink focus:outline-none sm:text-3xl"
           >
             {setLabel(set)}
           </h2>
-          <p className="mt-2 text-sm text-slate-300">
-            {scopedName && <span className="text-neon-blue">In {scopedName}. </span>}
-            Base: <strong className="text-white">{base.owned}</strong> of {base.total}. Whole set with inserts and
-            parallels: <strong className="text-white">{whole.owned}</strong> of {whole.total}.
+          <p className="mt-2 text-sm text-ink-2">
+            {scopedName && <span className="text-neon-blue-text">In {scopedName}. </span>}
+            Base: <strong className="text-ink">{base.owned}</strong> of {base.total}. Whole set with inserts and
+            parallels: <strong className="text-ink">{whole.owned}</strong> of {whole.total}.
           </p>
         </div>
         <p className="text-right">
           <span
-            className={`mc-percent block text-6xl sm:text-7xl ${complete ? "text-neon-green" : "text-neon-blue"}`}
+            className={`mc-percent block text-6xl sm:text-7xl ${complete ? "text-neon-green-text" : "text-neon-blue-text"}`}
             data-complete={complete}
           >
             {base.percent}%
           </span>
-          <span className="text-xs text-slate-300">{complete ? "Base set complete!" : "of the base set"}</span>
+          <span className="text-xs text-ink-2">{complete ? "Base set complete!" : "of the base set"}</span>
         </p>
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <button
+        <NeonButton
           type="button"
+          variant="secondary"
+          outline
           onClick={() => api.go("needs", setId)}
-          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-600 px-3 text-sm text-slate-200 hover:border-neon-blue hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] sm:min-h-9"
+          className="min-h-11 sm:min-h-9"
         >
           <ListBulletIcon aria-hidden="true" className="size-4" />
           Need list for this set
-        </button>
-        <button
+        </NeonButton>
+        <NeonButton
           type="button"
+          variant="negative"
+          outline
           onClick={() => {
             store.toggleBuilding(setId);
             api.notify(`Took ${setLabel(set)} off the board. Your cards stay put.`, () =>
@@ -158,10 +163,10 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
             );
             api.go("home");
           }}
-          className="inline-flex min-h-11 items-center rounded-md border border-slate-600 px-3 text-sm text-slate-200 hover:border-neon-pink hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] sm:min-h-9"
+          className="min-h-11 sm:min-h-9"
         >
           Stop building this set
-        </button>
+        </NeonButton>
       </div>
 
       <QuickAdd setId={setId} onSpot={setSpot} />
@@ -180,7 +185,7 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
           )}
         </div>
         <div role="group" aria-label="Clicking a tile" className="flex items-center gap-1.5">
-          <span aria-hidden="true" className="text-sm text-slate-400">
+          <span aria-hidden="true" className="text-sm text-ink-3">
             Click a tile to
           </span>
           <Chip pressed={tapDoes === "toggle"} onClick={() => setTapDoes("toggle")}>
@@ -220,8 +225,8 @@ export default function Wall({ setId, focusOnMount }: { setId: SetId; focusOnMou
         />
         {wall.inserts.length > 0 && (
           <>
-            <h3 className="mb-2 mt-6 text-sm font-bold text-slate-200">
-              Inserts <span className="font-normal text-slate-400">(their own numbering)</span>
+            <h3 className="mb-2 mt-6 text-sm font-bold text-ink-2">
+              Inserts <span className="font-normal text-ink-3">(their own numbering)</span>
             </h3>
             {wall.inserts.map((section) => (
               <SectionBlocks
@@ -288,7 +293,7 @@ function SectionBlocks({
                 <div className="flex min-w-0 items-center gap-1.5 pr-1">
                   <span
                     aria-hidden="true"
-                    className="size-2.5 shrink-0 rounded-full border border-slate-500"
+                    className="size-2.5 shrink-0 rounded-full border border-control"
                     style={{
                       background:
                         row.variant.finish.kind === "gold" || row.variant.finish.kind === "superfractor"
@@ -298,9 +303,9 @@ function SectionBlocks({
                             : (tint ?? "transparent"),
                     }}
                   />
-                  <span className="truncate text-xs text-slate-300 sm:text-sm" title={row.label}>
+                  <span className="truncate text-xs text-ink-2 sm:text-sm" title={row.label}>
                     {row.label}
-                    {run && <span className="text-slate-400"> {run}</span>}
+                    {run && <span className="text-ink-3"> {run}</span>}
                   </span>
                 </div>
                 {cells.map((card, i) =>
@@ -358,7 +363,7 @@ function Tile({
     return (
       <span
         aria-hidden="true"
-        className="grid place-items-center rounded-md border border-slate-800 text-[10px] text-slate-700"
+        className="grid place-items-center rounded-md border border-rule text-[10px] text-rule-strong"
         style={{ width: size, height: size }}
       >
         {card.cardNumber}
@@ -389,10 +394,10 @@ function Tile({
   }
 
   const look = have
-    ? "mc-lit bg-neon-blue text-black hover:bg-[#5fd9ff]"
+    ? "mc-lit bg-neon-blue text-on-neon-blue hover:bg-neon-blue-hover"
     : wanted
-      ? "border-[1.5px] border-dashed border-neon-yellow text-neon-yellow hover:border-neon-blue hover:text-white"
-      : "border-[1.5px] border-dashed border-slate-500 text-slate-300 hover:border-neon-blue hover:text-white";
+      ? "border-[1.5px] border-dashed border-neon-yellow-text text-neon-yellow-text hover:border-neon-blue hover:text-ink"
+      : "border-[1.5px] border-dashed border-control text-ink-2 hover:border-neon-blue hover:text-ink";
 
   return (
     <div className="group relative" style={{ width: size, height: size }}>
@@ -406,7 +411,7 @@ function Tile({
         onKeyDown={onKeyDown}
         onKeyUp={(e) => e.key === " " && e.preventDefault()}
         onClick={onClick}
-        className={`relative grid size-full place-items-center rounded-md font-bold tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-black ${
+        className={`relative grid size-full place-items-center rounded-md font-bold tabular-nums transition-colors focus-outline ${
           small ? "text-[10px]" : "text-sm"
         } ${look} ${spot ? "mc-spot" : ""}`}
       >
@@ -420,13 +425,13 @@ function Tile({
       {wanted && (
         <StarIcon
           aria-hidden="true"
-          className="pointer-events-none absolute -left-1.5 -top-1.5 size-3.5 text-neon-yellow drop-shadow-[0_0_2px_#000]"
+          className="pointer-events-none absolute -left-1.5 -top-1.5 size-3.5 text-neon-yellow-text mc-star"
         />
       )}
       {count > 1 && (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute -right-1.5 -top-1.5 rounded bg-neon-yellow px-1 text-[10px] font-bold leading-4 text-black"
+          className="pointer-events-none absolute -right-1.5 -top-1.5 rounded bg-neon-yellow px-1 text-[10px] font-bold leading-4 text-on-neon-yellow"
         >
           ×{count}
         </span>
@@ -437,7 +442,7 @@ function Tile({
         aria-hidden="true"
         onMouseDown={(e) => e.preventDefault()}
         onClick={open}
-        className="absolute -bottom-1.5 -right-1.5 hidden size-5 place-items-center rounded-full border border-slate-500 bg-slate-950 text-slate-200 hover:border-neon-blue hover:text-white [@media(hover:hover)]:group-hover:grid"
+        className="absolute -bottom-1.5 -right-1.5 hidden size-5 place-items-center rounded-full border border-control bg-sheet text-ink-2 hover:border-neon-blue hover:text-ink [@media(hover:hover)]:group-hover:grid"
       >
         <EllipsisHorizontalIcon className="size-3.5" />
       </button>
@@ -449,12 +454,12 @@ function Legend() {
   return (
     <ul
       aria-label="How to read the wall"
-      className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-300"
+      className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-2"
     >
       <li className="flex items-center gap-1.5">
         <span
           aria-hidden="true"
-          className="mc-lit grid size-5 place-items-center rounded bg-neon-blue text-[10px] font-bold text-black"
+          className="mc-lit grid size-5 place-items-center rounded bg-neon-blue text-[10px] font-bold text-on-neon-blue"
         >
           7
         </span>
@@ -463,7 +468,7 @@ function Legend() {
       <li className="flex items-center gap-1.5">
         <span
           aria-hidden="true"
-          className="grid size-5 place-items-center rounded border-[1.5px] border-dashed border-slate-500 text-[10px] font-bold text-slate-300"
+          className="grid size-5 place-items-center rounded border-[1.5px] border-dashed border-control text-[10px] font-bold text-ink-2"
         >
           7
         </span>
@@ -471,21 +476,21 @@ function Legend() {
       </li>
       <li className="flex items-center gap-1.5">
         <span aria-hidden="true" className="relative">
-          <span className="grid size-5 place-items-center rounded border-[1.5px] border-dashed border-neon-yellow text-[10px] font-bold text-neon-yellow">
+          <span className="grid size-5 place-items-center rounded border-[1.5px] border-dashed border-neon-yellow-text text-[10px] font-bold text-neon-yellow-text">
             7
           </span>
-          <StarIcon className="absolute -left-1 -top-1 size-2.5 text-neon-yellow" />
+          <StarIcon className="absolute -left-1 -top-1 size-2.5 text-neon-yellow-text" />
         </span>
         Starred: on your Want List
       </li>
       <li className="flex items-center gap-1.5">
-        <span aria-hidden="true" className="rounded bg-neon-yellow px-1 text-[10px] font-bold leading-4 text-black">
+        <span aria-hidden="true" className="rounded bg-neon-yellow px-1 text-[10px] font-bold leading-4 text-on-neon-yellow">
           ×2
         </span>
         Dupes
       </li>
       <li className="flex items-center gap-1.5">
-        <span aria-hidden="true" className="font-bold text-slate-200">
+        <span aria-hidden="true" className="font-bold text-ink-2">
           v
         </span>
         Image variation

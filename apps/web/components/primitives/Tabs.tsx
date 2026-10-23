@@ -58,7 +58,7 @@ export const TabsList: React.FC<TabsListProps> = ({
 }) => {
   return (
     <div
-      className={`inline-flex items-start p-1.5 rounded-md bg-slate-50 ${className}`}
+      className={`inline-flex items-start p-1.5 rounded-md bg-hover ${className}`}
     >
       {children}
     </div>
@@ -86,10 +86,10 @@ export const TabsTrigger: React.FC<TabsTriggerProps> = ({
       type="button"
       disabled={disabled}
       onClick={() => setActiveTab(value)}
-      className={`inline-flex items-center justify-center whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 ${
+      className={`inline-flex items-center justify-center whitespace-nowrap rounded px-3 py-1.5 text-sm font-medium transition-colors focus-outline disabled:pointer-events-none disabled:opacity-50 ${
         isActive
-          ? "bg-white text-slate-900 shadow-sm"
-          : "text-slate-500 hover:text-slate-900"
+          ? "bg-raised text-ink shadow-sm"
+          : "text-ink-3 hover:text-ink"
       } ${className}`}
     >
       {children}
@@ -116,7 +116,7 @@ export const TabsContent: React.FC<TabsContentProps> = ({
 
   return (
     <div
-      className={`mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${className}`}
+      className={`mt-2 focus-outline ${className}`}
     >
       {children}
     </div>

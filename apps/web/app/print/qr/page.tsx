@@ -123,7 +123,7 @@ export default function QrCodePage() {
   if (myProfile === undefined) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-ink border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -132,10 +132,10 @@ export default function QrCodePage() {
   if (myProfile === null) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
-        <QrCodeIcon className="w-20 h-20 text-neon-pink mb-6" />
+        <QrCodeIcon className="w-20 h-20 text-neon-blue-text mb-6" />
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-3">QR Code Generator</h2>
-        <p className="text-gray-400 max-w-md mb-6">
+        <p className="text-ink-3 max-w-md mb-6">
           Set up your public profile first to generate sale QR codes.
         </p>
         <a href="/profile/public">
@@ -148,14 +148,14 @@ export default function QrCodePage() {
   return (
     <div className="flex flex-col items-center gap-8 py-12 px-4">
       <div className="text-center">
-        <QrCodeIcon className="w-16 h-16 text-neon-green mx-auto mb-4" />
+        <QrCodeIcon className="w-16 h-16 text-neon-green-text mx-auto mb-4" />
         <div className="flex items-center justify-center gap-3 mb-2">
           <h2 className="text-3xl font-bold">QR Code Generator</h2>
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-neon-green/15 text-neon-green border border-neon-green/30">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-neon-green/15 text-neon-green-text border border-neon-green/30">
             Free During Beta
           </span>
         </div>
-        <p className="text-gray-400 max-w-md">
+        <p className="text-ink-3 max-w-md">
           Generate QR codes for in-person card sales. Buyers scan to add items
           to their running total.
         </p>
@@ -165,12 +165,12 @@ export default function QrCodePage() {
       <div className="w-full max-w-xs">
         <label
           htmlFor="amount"
-          className="block text-sm font-medium text-gray-300 mb-2"
+          className="block text-sm font-medium text-ink-2 mb-2"
         >
           Sale Amount
         </label>
         <div className="relative">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg font-bold">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 text-lg font-bold">
             $
           </span>
           <Input
@@ -202,8 +202,11 @@ export default function QrCodePage() {
       {generatedUrl && generatedAmount && (
         <div className="flex flex-col items-center gap-6">
           <div
-            className="rounded-2xl p-4 bg-white border border-neon-green/30"
-            style={{ boxShadow: "0 0 20px rgba(0, 213, 88, 0.15)" }}
+            // `bg-paper`, white in both modes, never a theme surface: a QR
+            // code scans only as dark modules on a light ground (NEO-356).
+            // The halo is scaled by --glow, so light drops it.
+            className="rounded-2xl p-4 border border-neon-green/30 bg-paper"
+            style={{ boxShadow: "0 0 20px rgb(0 213 88 / calc(0.15 * var(--glow)))" }}
           >
             <QrCodeSvg
               ref={svgRef}
@@ -217,12 +220,12 @@ export default function QrCodePage() {
             />
           </div>
 
-          <p className="text-xs text-gray-400 break-all max-w-xs text-center">
+          <p className="text-xs text-ink-3 break-all max-w-xs text-center">
             {generatedUrl}
           </p>
 
           <div className="flex gap-3">
-            <NeonButton secondary onClick={handleDownload} size="3">
+            <NeonButton variant="secondary" onClick={handleDownload} size="3">
               <ArrowDownTrayIcon className="w-5 h-5 mr-2" />
               Download
             </NeonButton>

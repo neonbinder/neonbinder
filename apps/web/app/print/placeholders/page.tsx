@@ -76,19 +76,19 @@ function RecentRuns() {
                   middle-clickable and bookmarkable like one. */}
               <Link
                 to={`/print/placeholders?jobId=${run.jobId}`}
-                className="text-neon-blue underline"
+                className="text-neon-blue-text underline"
                 aria-current={isOpen ? "true" : undefined}
               >
                 {run.jobId.slice(0, 8)}
               </Link>
-              <span className="text-slate-400">{statusLabel(run)}</span>
+              <span className="text-ink-3">{statusLabel(run)}</span>
               {/* `active` is computed server-side from the same ACTIVE_STATUSES
                   the batch caps use, so this badge and the server's "you already
                   have N active batches" refusal can never disagree. */}
               {run.active && (
-                <span className="text-xs text-neon-green">running</span>
+                <span className="text-xs text-neon-green-text">running</span>
               )}
-              {isOpen && <span className="text-xs text-slate-400">(open)</span>}
+              {isOpen && <span className="text-xs text-ink-3">(open)</span>}
             </li>
           );
         })}
@@ -106,7 +106,7 @@ export default function PlaceholderSheetsPage() {
         <Squares2X2Icon className="w-16 h-16 text-neon-purple-text mx-auto mb-4" />
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-2">Placeholder Sheets</h2>
-        <p className="text-gray-400 max-w-xl mx-auto">
+        <p className="text-ink-3 max-w-xl mx-auto">
           Fill a 9-pocket binder page with cards that live somewhere else.
           Upload photos, check the pairs, print a sheet to cut up.
         </p>

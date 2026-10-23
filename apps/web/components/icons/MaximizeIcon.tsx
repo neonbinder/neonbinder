@@ -17,7 +17,17 @@ export const MaximizeIcon = React.forwardRef<SVGSVGElement, MaximizeIconProps>(
         className={className}
         {...props}
       >
-        <rect x="0" y="0" width="512" height="512" fill="#000000" />
+        {/* The black ground lit neon sits on: shown in dark, gone on paper
+            (opacity follows --glow, app/theme.css), so light mode does not
+            draw a black tile on a white card. */}
+        <rect
+          x="0"
+          y="0"
+          width="512"
+          height="512"
+          fill="#000000"
+          style={{ opacity: "var(--glow)" }}
+        />
 
         <line
           x1="80"

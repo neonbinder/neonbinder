@@ -2600,11 +2600,11 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
 // ---------------------------------------------------------------------------
 
 describe("EntityReviewWizard — near matches", () => {
-  // NeonButton paints its neon as an INLINE style, so the variant is readable
-  // straight off the node. happy-dom preserves the authored hex rather than
-  // normalising it to rgb(), so these compare as written.
-  const GREEN = "#00D558";
-  const BLUE = "#00C2FF"; // NeonButton's `secondary`
+  // NeonButton sets its paint as inline `--nb-*` role variables, so the
+  // variant is readable straight off the node: `--nb-fill` names the fill's
+  // role (NEO-356), and happy-dom keeps it as written.
+  const GREEN = "var(--neon-green)";
+  const BLUE = "var(--neon-blue)"; // NeonButton's `secondary`
 
   it("queries players.nearMatches for a player row, skipping the team query", () => {
     currentRows = [
@@ -2642,7 +2642,7 @@ describe("EntityReviewWizard — near matches", () => {
 
     const add = screen.getByRole("button", { name: "Add as New Player" });
     expect(add.textContent).toBe("Add as New Player");
-    expect((add as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
     expect(screen.queryByText("Possible matches")).toBeNull();
   });
 
@@ -2657,12 +2657,11 @@ describe("EntityReviewWizard — near matches", () => {
     // The accessible name is an E2E contract and survives the demotion.
     const add = screen.getByRole("button", { name: "Add as New Player" });
     expect(add.textContent).toBe("Add as New Player");
-    expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
-    expect((add as HTMLElement).style.backgroundColor).not.toBe(GREEN);
-    // NeonButton's own `secondary` foreground is white — 2.07:1 on #00C2FF.
-    // The call site overrides it to black (10.2:1) rather than repainting the
-    // shared primitive; assert the override is actually applied.
-    expect((add as HTMLElement).style.color).toBe("#000000");
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(BLUE);
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).not.toBe(GREEN);
+    // The ink on the cyan fill is the on-neon role (black in both modes,
+    // 10.2:1).
+    expect((add as HTMLElement).style.getPropertyValue("--nb-ink")).toBe("var(--on-neon-blue)");
   });
 
   it("EXACT: the green button becomes 'Link to {name}' and create demotes to a text link", () => {
@@ -2679,14 +2678,14 @@ describe("EntityReviewWizard — near matches", () => {
     // reading the list and to a Maestro `tapOn` matching by it.
     const linkButtons = screen.getAllByLabelText("Link to Mike Trout");
     expect(linkButtons).toHaveLength(1);
-    expect((linkButtons[0] as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect((linkButtons[0] as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
 
     // Create is still reachable, as a text link whose accessible name IS its
     // visible text — no aria-label sitting over words the operator can read.
     const add = screen.getByRole("button", { name: "Add as New Player anyway" });
     expect(add.textContent).toBe("Add as New Player anyway");
     expect(add.getAttribute("aria-label")).toBeNull();
-    expect((add as HTMLElement).style.backgroundColor).toBe("");
+    expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe("");
     // And the old mismatched name is gone.
     expect(screen.queryByLabelText("Add as New Player")).toBeNull();
   });
@@ -2724,7 +2723,7 @@ describe("EntityReviewWizard — near matches", () => {
     renderWizard();
 
     const green = screen.getByLabelText("Link to Mike Trout");
-    expect((green as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect((green as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
     fireEvent.click(green);
 
     await waitFor(() => {
@@ -3421,12 +3420,12 @@ describe("EntityReviewWizard — readability", () => {
     expect(prompt.className).toContain("text-sm");
   });
 
-  it("lifts the kind/sport tag from text-gray-500 to text-gray-400", () => {
+  it("paints the kind/sport tag in the hint ink (was gray-500, too dim)", () => {
     currentRows = [makeRow({ kind: "player", sportValue: "Baseball", status: "ready" })];
     renderWizard();
 
     const tag = screen.getByText(/\(Player · Baseball\)/);
-    expect(tag.className).toContain("text-gray-400");
+    expect(tag.className).toContain("text-ink-3");
     expect(tag.className).not.toContain("text-gray-500");
   });
 });
@@ -4245,7 +4244,7 @@ describe("EntityReviewWizard — back and re-decide", () => {
 
     const back = screen.getByRole("button", { name: "Back to previous decision" });
     expect(back.textContent).toBe("Back");
-    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("border-neon-blue-text");
     // 32px tall, the primary NeonButton's height; laid out as 16px (-my-2) so
     // a wrapped row keeps the footer at the height the text link gave it.
     expect(back.className).toContain("h-8");
@@ -4551,7 +4550,7 @@ describe("EntityReviewWizard — commit failure", () => {
 
     const back = screen.getByRole("button", { name: "Back to review" });
     // The wizard's one Back style: the outlined button, never a text link.
-    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("border-neon-blue-text");
     expect(back.className).toContain("-btn-back-to-review");
     expect(back.className).not.toContain("underline");
     fireEvent.click(back);
@@ -5733,7 +5732,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     const status = screen.getByText("needs a team decision");
     // The cancel colour, because this is the thing standing between the
     // operator and the primary.
-    expect(status.className).toContain("#FF2E9A");
+    expect(status.className).toContain("text-neon-pink-text");
 
     const primary = screen.getByRole("button", { name: "Add as New Player" });
     expect(primary.getAttribute("aria-disabled")).toBe("true");
@@ -8556,7 +8555,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     expect(screen.queryByLabelText("Back to previous decision")).toBeNull();
     // …and it looks like every other Back in the wizard: the outlined button,
     // not a dotted link (Jason, 2026-10-13: "yes stay consistent").
-    expect(backToList.className).toContain("border-[#00C2FF]");
+    expect(backToList.className).toContain("border-neon-blue-text");
     expect(backToList.className).toContain("h-8");
     expect(backToList.className).toContain("-my-2");
     expect(backToList.className).not.toContain("underline");
@@ -9276,13 +9275,14 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       });
     });
 
-    it("N1: the heading shows a focus ring for a keyboard operator only", () => {
+    it("N1: the heading shows a focus outline for a keyboard operator only", () => {
       currentRows = [ambiguousRow()];
       renderWizard();
       const cls = pickHeading()!.className;
-      expect(cls).toContain("focus:outline-none");
-      expect(cls).toContain("focus-visible:ring-1");
-      expect(cls).toContain("focus-visible:ring-[#00C2FF]/70");
+      // focus-outline draws on :focus-visible only (NEO-356), so a pointer
+      // landing focus on the heading shows nothing.
+      expect(cls).toContain("focus-outline");
+      expect(cls).not.toMatch(/(^|\s)focus:ring/);
     });
   });
 
@@ -9444,8 +9444,8 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
   // Item 4 — the opened step's primary is always "Add as New Player".
   // -------------------------------------------------------------------------
   describe("the New Player step Create new opens", () => {
-    const GREEN = "#00D558";
-    const BLUE = "#00C2FF";
+    const GREEN = "var(--neon-green)";
+    const BLUE = "var(--neon-blue)";
 
     it("keeps Add as New Player as the primary however many exact rows nearMatches returns", () => {
       currentRows = [ambiguousRow()];
@@ -9460,7 +9460,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       expect(add.textContent).toBe("Add as New Player");
       expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
       // The same-name rows were just turned down, so they do not demote it.
-      expect((add as HTMLElement).style.backgroundColor).toBe(GREEN);
+      expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(GREEN);
     });
 
     it("is still demoted by a genuinely different close match", () => {
@@ -9474,7 +9474,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       clickCreateNew();
 
       const add = screen.getByRole("button", { name: "Add as New Player" });
-      expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
+      expect((add as HTMLElement).style.getPropertyValue("--nb-fill")).toBe(BLUE);
     });
   });
 

@@ -16,6 +16,7 @@
 - [Adapter mocked fixtures hide gate divergence](reference_adapter_mocked_fixtures_hide_gate_divergence.md) — Checklist tests that vi.mock the whole BSC/SL adapter let a seeded chain model a shape the real adapter refuses — so tightening a chain-level gate surfaces failures in…
 - [Apps web root tsc is red at baseline](reference_apps_web_root_tsc_is_red_at_baseline.md) — root tsc is red at baseline AND no gate typechecks components/app/src — grep the root run for your own .tsx files; an empty grep is the gate
 - [Clerk ui strings live in clerk ui package](reference_clerk_ui_strings_live_in_clerk_ui_package.md) — Clerk's prebuilt-component text is NOT in node_modules — clerk-react loads clerk-js by MAJOR from Clerk's CDN and the UI (plus every en-US string) ships in a separate…
+- [Clerk links and field edges](reference_clerk_appearance_links_and_field_edges.md) — links follow colorPrimary; field edge = 11% box-shadow; fix via appearance.elements
 - [Convex call spread hides bad args](reference_convex_call_spread_hides_bad_args.md) — Spreading conditional keys into a useMutation/useAction call bypasses TS excess-property checking, so a Convex arg the validator will reject at runtime compiles clean
 - [Convex codegen only blocks types](reference_convex_codegen_only_blocks_types.md) — Missing Convex codegen blocks ONLY tsc, never vitest/convex-test — api.js is anyApi/componentsGeneric proxies, so new functions and components resolve at runtime witho…
 - [Convex components unregistered in convex test](reference_convex_components_unregistered_in_convex_test.md) — No test in apps/web calls t.registerComponent, so draining any schedule that reaches a component (wikidataPool, workpool) swaps EnvironmentTeardownError for "Component…
@@ -73,7 +74,8 @@
 - [SetRowActionButton quiet tone is dark-only](reference_setrowactionbutton_quiet_tone_is_dark_only.md) — on the white-in-light-OS checklist card use NeonButton + its contract
 - [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes but no render yet; an ACTION's do not — fence on a server-read count
 - [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's
-- [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery on bg-white dark:bg-gray-800 never passes both themes; two CSS vars, per-theme surfaces incl. hover + /20 tint
+- [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery never passes both modes; decide per useTheme().mode against tokens.ts surfaces (hover + /20 tint too)
+- [light-dark() follows data-theme](reference_light_dark_follows_data_theme.md) — oklch light-dark() arbitrary value for a colour with no role; bg-hover == bg-raised in dark; neon borders → -text
 - [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
 - [Sync Sets held notices not surfaced](project_sync_sets_held_notices_not_surfaced.md) — setName store's held/withheld are dropped at the action boundary on purpose (NEO-312); don't re-propose a channel
 - [Reuse the status-ledger spinner→check pattern](feedback_reuse_the_status_ledger_spinner_to_check_pattern.md) — owner-approved (NEO-312 ParallelBuildPanel): per-item ledger, clock→spin→check glyphs, sleeve strip; reuse for any multi-item run, extract on second use
@@ -130,3 +132,13 @@
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
+- [Tailwind JS-config colours are inlined](reference_tailwind_js_config_colours_are_inlined.md) — neon-* compile to literal hex; redeclare in @theme to theme them by variable
+- [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — globals.css (0,1,0) remaps of --green-9/--focus-8 are dead; out-specify on the Theme element, probe computed values
+- [vitest CSS ?raw import is empty](reference_vitest_css_raw_import_is_empty.md) — CSS imports stub to ""; read stylesheets with readFileSync(join(__dirname, ...))
+- [data-theme="dark" scopes a subtree](reference_data_theme_dark_scopes_a_subtree.md) — pin roles dark for one scene (spin shelf, /u storefronts); light signatures still match; waitForURL glob matches query
+- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools a waitForURL regex; "An error occurred" is usually a missing Convex function on the backend
+- [Unlayered CSS beats Tailwind utilities](reference_unlayered_css_beats_tailwind_utilities.md) — feature stylesheets are unlayered and outrank @utility/@layer rules; strip legacy colours before adding a signature class
+- [Render a component from its unit test](reference_render_a_component_from_its_unit_test.md) — dump happy-dom markup via a scratch vitest config (sequence.hooks "list"), render with real CSS; for screens the backend cannot serve
+- [Printed output is a srcdoc capture](reference_printed_output_is_srcdoc_capture.md) — prove print unchanged by hooking the print iframe srcdoc / QR popup, not page screenshots
+- [App-wide useQuery needs its own boundary](reference_app_wide_usequery_needs_its_own_boundary.md) — a failing/missing Convex function throws in render; boundary + Sentry once
+- [Radix button box beats Tailwind](reference_radix_button_box_beats_tailwind.md) — on NeonButton, Tailwind display/height/padding/radius classes lose to Radix; use min-h, `contents` wrappers, asChild, inline style

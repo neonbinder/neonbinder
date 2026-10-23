@@ -67,7 +67,9 @@ export default function SetVariantSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={noDescription}
-      selectedColor="bg-orange-100 dark:bg-orange-900 border-orange-300 dark:border-orange-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-orange border-pick-orange-rule"
       isItemTerminal={isBaseTerminal}
     />
   );

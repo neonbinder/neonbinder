@@ -26,7 +26,7 @@ function useDebounce<T>(value: T, delay: number): T {
  * Closure values they used to capture are now explicit props.
  */
 const LINK_BUTTON_CLASS =
-  "text-xs text-[#00C2FF] hover:text-[#00C2FF]/80 transition-colors";
+  "text-xs text-neon-blue-text hover:underline transition-colors";
 
 function FillButton({
   onClick,
@@ -41,7 +41,7 @@ function FillButton({
     <button
       onClick={onClick}
       disabled={!canInfer}
-      className={`${LINK_BUTTON_CLASS} disabled:text-slate-500 disabled:cursor-not-allowed break-all text-right`}
+      className={`${LINK_BUTTON_CLASS} disabled:text-ink-3 disabled:cursor-not-allowed break-all text-right`}
       title={canInfer ? "Click to fill with inferred URL" : "Enter a username first"}
     >
       {url}
@@ -304,7 +304,7 @@ export default function PublicProfileEditor() {
   // layout classes so the row keeps the exact dimensions it always had.
   const inputClass = "w-full px-3 py-2";
 
-  const labelClass = "block text-sm font-medium mb-1 text-slate-300";
+  const labelClass = "block text-sm font-medium mb-1 text-ink-2";
 
   const isOwnUsername = existingProfile?.username === debouncedUsername;
   const showAvailability = debouncedUsername.length > 0 && !isOwnUsername;
@@ -355,12 +355,12 @@ export default function PublicProfileEditor() {
     <div className="space-y-8">
       {/* Basic Info */}
       <div className="space-y-4">
-        <h3 className="font-semibold text-slate-200">Basic Info</h3>
+        <h3 className="font-semibold text-ink-2">Basic Info</h3>
 
         {/* Username */}
         <div>
           <label htmlFor="pub-username" className={labelClass}>
-            Username <span className="text-slate-400 text-xs">(neonbinder.com/u/username)</span>
+            Username <span className="text-ink-3 text-xs">(neonbinder.com/u/username)</span>
           </label>
           <div className="relative">
             <Input
@@ -379,11 +379,11 @@ export default function PublicProfileEditor() {
             {showAvailability && (
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium">
                 {usernameAvailable === undefined ? (
-                  <span className="text-slate-400">checking…</span>
+                  <span className="text-ink-3">checking…</span>
                 ) : usernameAvailable ? (
-                  <span className="text-[#00C2FF]">available</span>
+                  <span className="text-neon-blue-text">available</span>
                 ) : (
-                  <span className="text-[#FF2E9A]">taken</span>
+                  <span className="text-neon-pink-text">taken</span>
                 )}
               </span>
             )}
@@ -423,16 +423,16 @@ export default function PublicProfileEditor() {
 
       {/* Profile Photo */}
       <div className="space-y-3">
-        <h3 className="font-semibold text-slate-200">Profile Photo</h3>
+        <h3 className="font-semibold text-ink-2">Profile Photo</h3>
         <div className="flex items-center gap-4">
           {photoPreview ? (
             <img
               src={photoPreview}
               alt="Profile preview"
-              className="w-20 h-20 rounded-full object-cover border-2 border-slate-700"
+              className="w-20 h-20 rounded-full object-cover border-2 border-rule-strong"
             />
           ) : (
-            <div className="w-20 h-20 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center text-slate-500 text-2xl">
+            <div className="w-20 h-20 rounded-full bg-raised border-2 border-rule-strong flex items-center justify-center text-ink-3 text-2xl">
               ?
             </div>
           )}
@@ -447,12 +447,12 @@ export default function PublicProfileEditor() {
             />
             <label
               htmlFor="pub-photo-input"
-              className="inline-block cursor-pointer px-4 py-2 rounded-md bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:bg-slate-700 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-neon-blue"
+              className="inline-block cursor-pointer px-4 py-2 rounded-md bg-raised border border-rule-strong text-sm text-ink-2 hover:bg-hover-raised transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus"
             >
               Choose photo
             </label>
             {stagedPhotoBase64 && (
-              <p className="text-xs text-slate-400 mt-1">Photo staged — will upload on save</p>
+              <p className="text-xs text-ink-3 mt-1">Photo staged — will upload on save</p>
             )}
           </div>
         </div>
@@ -460,14 +460,14 @@ export default function PublicProfileEditor() {
 
       {/* Brand Colors */}
       <div className="space-y-3">
-        <h3 className="font-semibold text-slate-200">Brand Colors</h3>
+        <h3 className="font-semibold text-ink-2">Brand Colors</h3>
         <div className="flex flex-col sm:flex-row gap-6">
           <div className="flex items-center gap-3">
             <input
               type="color"
               value={brandColor1}
               onChange={(e) => edit(setBrandColor1)(e.target.value)}
-              className="w-10 h-10 rounded cursor-pointer border border-slate-700 bg-transparent"
+              className="w-10 h-10 rounded cursor-pointer border border-rule-strong bg-transparent"
               aria-label="Brand color 1"
             />
             <Input
@@ -475,7 +475,7 @@ export default function PublicProfileEditor() {
               type="text"
               value={brandColor1}
               onChange={(e) => edit(setBrandColor1)(e.target.value)}
-              className="w-28 px-2 py-1 text-sm font-mono text-slate-300"
+              className="w-28 px-2 py-1 text-sm font-mono text-ink-2"
               placeholder="#00D558"
               aria-label="Brand hex code 1"
             />
@@ -485,7 +485,7 @@ export default function PublicProfileEditor() {
               type="color"
               value={brandColor2}
               onChange={(e) => edit(setBrandColor2)(e.target.value)}
-              className="w-10 h-10 rounded cursor-pointer border border-slate-700 bg-transparent"
+              className="w-10 h-10 rounded cursor-pointer border border-rule-strong bg-transparent"
               aria-label="Brand color 2"
             />
             <Input
@@ -493,7 +493,7 @@ export default function PublicProfileEditor() {
               type="text"
               value={brandColor2}
               onChange={(e) => edit(setBrandColor2)(e.target.value)}
-              className="w-28 px-2 py-1 text-sm font-mono text-slate-300"
+              className="w-28 px-2 py-1 text-sm font-mono text-ink-2"
               placeholder="#A44AFF"
               aria-label="Brand hex code 2"
             />
@@ -512,7 +512,7 @@ export default function PublicProfileEditor() {
 
       {/* Marketplace Links */}
       <div className="space-y-4">
-        <h3 className="font-semibold text-slate-200">Marketplace Links</h3>
+        <h3 className="font-semibold text-ink-2">Marketplace Links</h3>
         {[
           { id: "pub-ebay", label: "eBay Store URL", value: ebayUrl, setter: setEbayUrl, placeholder: "https://www.ebay.com/str/yourstore", inferKey: "ebay" as const, buttonType: "fill" },
           { id: "pub-bsc", label: "BuySportsCards URL", value: buySportsCardsUrl, setter: setBuySportsCardsUrl, placeholder: "https://www.buysportscards.com/sellers/...", inferKey: "buySportsCards" as const, buttonType: "bsc" },
@@ -546,13 +546,13 @@ export default function PublicProfileEditor() {
 
       {/* Payment Handles */}
       <div className="space-y-4">
-        <h3 className="font-semibold text-slate-200">Payment Handles</h3>
+        <h3 className="font-semibold text-ink-2">Payment Handles</h3>
         <div>
           <div className="flex items-center justify-between mb-1">
             <label htmlFor="pub-paypal" className={labelClass}>
               PayPal username (Friends & Family){" "}
               {paypalUsername && (
-                <span className="text-slate-400 text-xs">→ paypal.me/{paypalUsername}</span>
+                <span className="text-ink-3 text-xs">→ paypal.me/{paypalUsername}</span>
               )}
             </label>
             <FillButton onClick={() => edit(setPaypalUsername)(username)} url={inferredUrls.paypal()} canInfer={canInferUrl} />
@@ -570,7 +570,7 @@ export default function PublicProfileEditor() {
         <div>
           <label htmlFor="pub-paypal-email" className={labelClass}>
             PayPal email (Goods & Services){" "}
-            <span className="text-slate-400 text-xs">Buyer-protected payments</span>
+            <span className="text-ink-3 text-xs">Buyer-protected payments</span>
           </label>
           <Input
             bare
@@ -587,7 +587,7 @@ export default function PublicProfileEditor() {
             <label htmlFor="pub-venmo" className={labelClass}>
               Venmo username{" "}
               {venmoUsername && (
-                <span className="text-slate-400 text-xs">→ venmo.com/{venmoUsername}</span>
+                <span className="text-ink-3 text-xs">→ venmo.com/{venmoUsername}</span>
               )}
             </label>
             <FillButton onClick={() => edit(setVenmoUsername)(username)} url={inferredUrls.venmo()} canInfer={canInferUrl} />
@@ -607,7 +607,7 @@ export default function PublicProfileEditor() {
             <label htmlFor="pub-cashapp" className={labelClass}>
               Cash App username{" "}
               {cashAppUsername && (
-                <span className="text-slate-400 text-xs">→ cash.app/${cashAppUsername}</span>
+                <span className="text-ink-3 text-xs">→ cash.app/${cashAppUsername}</span>
               )}
             </label>
             <FillButton onClick={() => edit(setCashAppUsername)(username)} url={inferredUrls.cashApp()} canInfer={canInferUrl} />
@@ -626,7 +626,7 @@ export default function PublicProfileEditor() {
 
       {/* Social Media */}
       <div className="space-y-4">
-        <h3 className="font-semibold text-slate-200">Social Media</h3>
+        <h3 className="font-semibold text-ink-2">Social Media</h3>
         {[
           { id: "pub-twitter", label: "Twitter / X URL", value: twitterUrl, setter: setTwitterUrl, placeholder: "https://x.com/yourhandle", inferKey: "twitter" as const },
           { id: "pub-instagram", label: "Instagram URL", value: instagramUrl, setter: setInstagramUrl, placeholder: "https://www.instagram.com/yourhandle", inferKey: "instagram" as const },
@@ -668,8 +668,8 @@ export default function PublicProfileEditor() {
             ref={saveMessageRef}
             className={`mt-8 p-3 rounded-md text-sm ${
               saveMessageType === "success"
-                ? "bg-purple-900/30 text-purple-300 border border-purple-800"
-                : "bg-red-900/30 text-red-300 border border-red-800"
+                ? "bg-neon-purple/10 text-neon-purple-text border border-neon-purple/40"
+                : "bg-notice-danger-bg text-notice-danger-ink border border-notice-danger-rule"
             }`}
           >
             {saveMessage}
@@ -793,14 +793,14 @@ function MarketplaceUrlHelpDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-scrim flex items-center justify-center z-50 p-4"
       onClick={onClose}
       onKeyDown={handleKeyDown}
     >
-      <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-        <h3 id={titleId} className="text-lg font-semibold text-slate-200 mb-3">{title}</h3>
-        <p className="text-sm text-slate-400 mb-4">{intro}</p>
-        <ol className="text-sm text-slate-400 space-y-2 mb-6 list-decimal list-inside">
+      <div className="bg-field border border-rule-strong rounded-lg p-6 max-w-md w-full shadow-offset" onClick={(e) => e.stopPropagation()}>
+        <h3 id={titleId} className="text-lg font-semibold text-ink-2 mb-3">{title}</h3>
+        <p className="text-sm text-ink-3 mb-4">{intro}</p>
+        <ol className="text-sm text-ink-3 space-y-2 mb-6 list-decimal list-inside">
           {steps.map((step) => (
             <li key={step}>{step}</li>
           ))}
@@ -810,7 +810,7 @@ function MarketplaceUrlHelpDialog({
             href={openHref}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex-1 inline-flex items-center justify-center text-center px-4 py-2 rounded-md bg-[#00C2FF] text-black font-medium hover:bg-[#00C2FF]/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            className="flex-1 inline-flex items-center justify-center text-center px-4 py-2 rounded-md bg-neon-blue text-on-neon-blue font-medium hover:bg-neon-blue-hover transition-colors focus-outline"
           >
             {openLabel}
           </a>
@@ -818,7 +818,7 @@ function MarketplaceUrlHelpDialog({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            className="flex-1 px-4 py-2 rounded-md bg-slate-700 text-slate-200 font-medium hover:bg-slate-600 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+            className="flex-1 px-4 py-2 rounded-md bg-button-neutral text-ink-2 font-medium hover:bg-button-neutral-hover transition-colors focus-outline"
           >
             Close
           </button>

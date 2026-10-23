@@ -251,7 +251,7 @@ describe("the post-review steps", () => {
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
     const back = screen.getByRole("button", { name: "Back to previous step" });
     expect(back.textContent).toBe("Back");
-    expect(back.className).toContain("border-[#00C2FF]");
+    expect(back.className).toContain("border-neon-blue-text");
     expect(back.className).toContain("h-8");
     expect(back.className).not.toContain("underline");
     // In the buttons' group, next to Cancel — not in the decision slot.

@@ -77,24 +77,24 @@ export function Dropzone({
         className={[
           "flex cursor-pointer flex-col items-center justify-center gap-2",
           "rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors",
-          "focus-within:ring-2 focus-within:ring-neon-purple focus-within:ring-offset-2 focus-within:ring-offset-slate-950",
+          "focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus",
           dragging
             ? "border-neon-purple bg-neon-purple/10"
-            : "border-slate-700 hover:border-slate-500 hover:bg-slate-900/40",
+            : "border-rule-strong hover:border-control hover:bg-field/40",
           disabled ? "cursor-not-allowed opacity-60" : "",
         ].join(" ")}
       >
-        <span className="text-base font-medium text-slate-200">
+        <span className="text-base font-medium text-ink-2">
           {dragging
             ? "Drop them here"
             : disabled
               ? "Sending your photos…"
               : "Drag your card photos here"}
         </span>
-        <span className="text-sm text-slate-400">
-          or <span className="text-neon-blue underline">browse your files</span>
+        <span className="text-sm text-ink-3">
+          or <span className="text-neon-blue-text underline">browse your files</span>
         </span>
-        <span className="text-xs text-slate-400">
+        <span className="text-xs text-ink-3">
           JPEG or PNG, or a single zip. Uploading starts as soon as you choose —
           keep them in scan order (front, back, front, back), because that order
           is what pairs them.
@@ -131,7 +131,7 @@ export function Dropzone({
         key={problem ? "problem" : "ok"}
         role={problem ? "alert" : "status"}
         aria-live={problem ? undefined : "polite"}
-        className={`text-sm ${problem ? "text-neon-pink" : "text-slate-400"}`}
+        className={`text-sm ${problem ? "text-neon-pink-text" : "text-ink-3"}`}
       >
         {problem
           ? problem

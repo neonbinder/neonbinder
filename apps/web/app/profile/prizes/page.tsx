@@ -473,7 +473,7 @@ export default function PrizesPanel() {
     <>
   {/* Prize Pool Section - Feature Flagged */}
   {isPrizeImagesEnabled ? (
-    <div className="space-y-6 p-6 border border-slate-200 dark:border-slate-800 rounded-lg">
+    <div className="space-y-6 p-6 border border-rule rounded-lg">
       <div>
         <h2 className="text-xl font-semibold mb-2">Prize Pool</h2>
         <p className="text-sm text-muted-foreground mb-4">
@@ -483,7 +483,7 @@ export default function PrizesPanel() {
       </div>
 
     {/* Add/Edit Prize Form */}
-    <div className="space-y-4 p-4 bg-slate-50 dark:bg-slate-900/30 rounded-md">
+    <div className="space-y-4 p-4 bg-raised-deep/30 rounded-md">
       <div>
         <label
           htmlFor={editingPrizeId ? "edit-prize-name" : "prize-name"}
@@ -554,8 +554,8 @@ export default function PrizesPanel() {
             }
             className={`w-full p-6 border-2 border-dashed rounded-md transition-colors ${
               pokemonDragActive
-                ? "border-green-500 bg-green-50 dark:bg-green-900/20"
-                : "border-slate-300 dark:border-slate-600 bg-background hover:border-green-400"
+                ? "border-neon-green-text bg-notice-success-bg"
+                : "border-control bg-surface hover:border-neon-green-text"
             }`}
           >
             <input
@@ -581,7 +581,7 @@ export default function PrizesPanel() {
                   ? "edit-prize-pokemon-image"
                   : "prize-pokemon-image"
               }
-              className="cursor-pointer flex flex-col items-center justify-center gap-2 rounded-md peer-focus-visible:ring-2 peer-focus-visible:ring-neon-blue peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-gray-900"
+              className="cursor-pointer flex flex-col items-center justify-center gap-2 rounded-md peer-focus-visible:outline-2 peer-focus-visible:outline-focus peer-focus-visible:outline-offset-2"
             >
               <div className="text-2xl" aria-hidden="true">📸</div>
               <div className="text-sm text-foreground font-medium">
@@ -605,7 +605,7 @@ export default function PrizesPanel() {
                   : newPokemonImagePreview) ?? undefined
               }
               alt="Pokemon preview"
-              className="h-32 w-32 object-cover rounded-md border border-slate-300 dark:border-slate-600"
+              className="h-32 w-32 object-cover rounded-md border border-rule-strong"
             />
           </div>
         )}
@@ -625,8 +625,8 @@ export default function PrizesPanel() {
             }
             className={`w-full p-6 border-2 border-dashed rounded-md transition-colors ${
               sportsDragActive
-                ? "border-green-500 bg-green-50 dark:bg-green-900/20"
-                : "border-slate-300 dark:border-slate-600 bg-background hover:border-green-400"
+                ? "border-neon-green-text bg-notice-success-bg"
+                : "border-control bg-surface hover:border-neon-green-text"
             }`}
           >
             <input
@@ -652,7 +652,7 @@ export default function PrizesPanel() {
                   ? "edit-prize-sports-image"
                   : "prize-sports-image"
               }
-              className="cursor-pointer flex flex-col items-center justify-center gap-2 rounded-md peer-focus-visible:ring-2 peer-focus-visible:ring-neon-blue peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-gray-900"
+              className="cursor-pointer flex flex-col items-center justify-center gap-2 rounded-md peer-focus-visible:outline-2 peer-focus-visible:outline-focus peer-focus-visible:outline-offset-2"
             >
               <div className="text-2xl" aria-hidden="true">⚽</div>
               <div className="text-sm text-foreground font-medium">
@@ -688,18 +688,22 @@ export default function PrizesPanel() {
                   <img
                     src={preview}
                     alt={`Sports preview ${index + 1}`}
-                    className="h-24 w-24 object-cover rounded-md border border-slate-300 dark:border-slate-600"
+                    className="h-24 w-24 object-cover rounded-md border border-rule-strong"
                   />
-                  <button
+                  <NeonButton
                     type="button"
+                    variant="negative"
+                    size="1"
+                    radius="full"
                     onClick={() =>
                       removeSportsImage(index, editingPrizeId !== null)
                     }
                     aria-label={`Remove sports image ${index + 1}`}
-                    className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm"
+                    className="absolute -top-2 -right-2"
+                    style={{ width: 24, padding: 0 }}
                   >
                     <span aria-hidden="true">×</span>
-                  </button>
+                  </NeonButton>
                 </div>
               ))}
             </div>
@@ -716,9 +720,10 @@ export default function PrizesPanel() {
             {isLoading ? "Processing..." : "Update Prize"}
           </NeonButton>
           <NeonButton
+            variant="negative"
             onClick={cancelEditPrize}
             disabled={isLoading}
-            className="flex-1 bg-slate-600 hover:bg-slate-700"
+            className="flex-1"
           >
             Cancel
           </NeonButton>
@@ -742,8 +747,8 @@ export default function PrizesPanel() {
       <div
         className={`p-4 rounded-md ${
           prizeMessageType === "success"
-            ? "bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800"
-            : "bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800"
+            ? "bg-notice-success-bg text-notice-success-ink border border-notice-success-rule"
+            : "bg-notice-danger-bg text-notice-danger-ink border border-notice-danger-rule"
         }`}
       >
         <div className="font-medium">{prizeMessage}</div>
@@ -764,8 +769,8 @@ export default function PrizesPanel() {
                   (sum, prize) => sum + prize.percentage,
                   0,
                 ) === 100
-                  ? "text-green-600 dark:text-green-400"
-                  : "text-red-600 dark:text-red-400"
+                  ? "text-neon-green-text"
+                  : "text-neon-pink-text"
               }`}
             >
               Total:{" "}
@@ -777,7 +782,7 @@ export default function PrizesPanel() {
             {prizes.map((prize) => (
               <div
                 key={prize._id}
-                className="flex items-start justify-between p-4 bg-slate-50 dark:bg-slate-900/30 rounded-md border border-slate-200 dark:border-slate-700"
+                className="flex items-start justify-between p-4 bg-raised-deep/30 rounded-md border border-rule-strong"
               >
                 <div className="flex items-start gap-4 flex-1 min-w-0">
                   <div className="flex flex-wrap gap-3 flex-shrink-0">
@@ -786,7 +791,7 @@ export default function PrizesPanel() {
                         <img
                           src={prize.pokemonImageUrl}
                           alt={`${prize.prizeName} Pokemon`}
-                          className="h-20 w-20 object-cover rounded border border-slate-300 dark:border-slate-600"
+                          className="h-20 w-20 object-cover rounded border border-rule-strong"
                         />
                         <span className="text-xs mt-1 text-muted-foreground">
                           Pokémon
@@ -805,7 +810,7 @@ export default function PrizesPanel() {
                                 <img
                                   src={imageUrl}
                                   alt={`${prize.prizeName} Sports ${index + 1}`}
-                                  className="h-20 w-20 object-cover rounded border border-slate-300 dark:border-slate-600"
+                                  className="h-20 w-20 object-cover rounded border border-rule-strong"
                                 />
                                 <span className="text-xs mt-1 text-muted-foreground">
                                   Sports
@@ -837,14 +842,15 @@ export default function PrizesPanel() {
                       )
                     }
                     disabled={isLoading || editingPrizeId !== null}
-                    className="bg-slate-600 hover:bg-slate-700 px-3 py-1 text-sm"
+                    className="px-3 py-1 text-sm"
                   >
                     Edit
                   </NeonButton>
                   <NeonButton
                     onClick={() => handleDeletePrize(prize._id)}
+                    variant="negative"
                     disabled={isLoading}
-                    className="bg-red-600 hover:bg-red-700 px-3 py-1 text-sm"
+                    className="px-3 py-1 text-sm"
                   >
                     Delete
                   </NeonButton>
@@ -854,24 +860,24 @@ export default function PrizesPanel() {
           </div>
         </div>
       ) : (
-        <div className="p-4 bg-slate-50 dark:bg-slate-900/30 rounded-md text-center text-muted-foreground">
+        <div className="p-4 bg-raised-deep/30 rounded-md text-center text-muted-foreground">
           <p>No prizes configured yet. Add your first prize above.</p>
         </div>
       ))}
     </div>
   ) : (
-    <div className="space-y-6 p-6 border border-slate-200 dark:border-slate-800 rounded-lg">
+    <div className="space-y-6 p-6 border border-rule rounded-lg">
       <div>
         <h2 className="text-xl font-semibold mb-2">Prize Pool</h2>
         <p className="text-sm text-muted-foreground mb-4">
           Manage your prize pool for the wheel of fortune spin.
         </p>
       </div>
-      <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md">
-        <p className="text-amber-800 dark:text-amber-200 font-medium">
+      <div className="p-4 bg-notice-warn-bg border border-notice-warn-rule rounded-md">
+        <p className="text-notice-warn-ink font-medium">
           🚀 Coming Soon!
         </p>
-        <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
+        <p className="text-sm text-notice-warn-ink mt-1">
           Prize pool management with image uploads is coming in a future update.
         </p>
       </div>

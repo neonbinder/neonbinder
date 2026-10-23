@@ -85,8 +85,8 @@ function TestingSeedCredentialsContent() {
   }, [isAuthenticated, isLoading, navigate, redirect, seedAction, sitesParam]);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background">
-      <p className="text-slate-400 font-mono text-sm max-w-3xl px-6 text-center whitespace-pre-line">
+    <div className="flex items-center justify-center min-h-screen bg-surface">
+      <p className="text-ink-3 font-mono text-sm max-w-3xl px-6 text-center whitespace-pre-line">
         [testing-seed] {status}
       </p>
     </div>
@@ -97,8 +97,8 @@ export default function TestingSeedCredentialsPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-background">
-          <p className="text-slate-400 font-mono text-sm">
+        <div className="flex items-center justify-center min-h-screen bg-surface">
+          <p className="text-ink-3 font-mono text-sm">
             [testing-seed] Loading…
           </p>
         </div>

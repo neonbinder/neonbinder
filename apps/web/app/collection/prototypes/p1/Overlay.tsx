@@ -72,7 +72,7 @@ export default function Overlay({
 
   return createPortal(
     <div ref={rootRef} className="fixed inset-0 z-50 font-[Lexend,sans-serif]" onKeyDown={onKeyDown}>
-      <div className="absolute inset-0 bg-black/60" aria-hidden="true" onClick={onClose} />
+      <div className="absolute inset-0 bg-scrim" aria-hidden="true" onClick={onClose} />
       <div
         ref={panelRef}
         role="dialog"
@@ -80,8 +80,8 @@ export default function Overlay({
         aria-labelledby={labelledBy}
         className={
           variant === "drawer"
-            ? "absolute top-0 right-0 h-full w-full sm:w-[40rem] max-w-[95vw] bg-gray-800 text-slate-100 border-l border-gray-700 shadow-xl flex flex-col animate-slide-in-right"
-            : "absolute left-1/2 top-1/2 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-slate-800 bg-gray-800 p-6 text-slate-100 shadow-xl"
+            ? "absolute top-0 right-0 h-full w-full sm:w-[40rem] max-w-[95vw] bg-raised text-ink border-l border-rule-strong shadow-xl flex flex-col animate-slide-in-right"
+            : "absolute left-1/2 top-1/2 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-rule bg-raised p-6 text-ink shadow-xl"
         }
       >
         {children}

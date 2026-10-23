@@ -528,7 +528,8 @@ describe("the status pill", () => {
   /** NEO-119's bar: nothing on this page may be dim grey on near-black. */
   it("never uses the contrast-failing grey NEO-119 removed", () => {
     const { container } = renderPage([makeRow(), bareRow({ _id: "purchase_2" })]);
-    expect(container.innerHTML).not.toContain("text-slate-500");
+    // NEO-356: the page paints with roles, so no grey palette step at all.
+    expect(container.innerHTML).not.toMatch(/text-(slate|gray)-\d/);
   });
 });
 
@@ -961,7 +962,7 @@ describe("the public scan page link", () => {
     renderPage([makeRow()]);
     expect(
       screen.getByText(/same usps scans, no login/i).className,
-    ).not.toContain("text-slate-500");
+    ).not.toMatch(/text-(slate|gray)-\d/);
   });
 });
 

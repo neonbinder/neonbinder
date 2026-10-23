@@ -240,14 +240,14 @@ export function TeamMatchSearch({
           ? ""
           : `${matchCount} possible match${matchCount === 1 ? "" : "es"}`}
       </span>
-      <p id={headingId} className="text-sm font-medium text-neon-blue">
+      <p id={headingId} className="text-sm font-medium text-neon-blue-text">
         {TEAM_MATCH_SECTION_HEADING}
       </p>
       <div className="space-y-1">
         {/* The visible name of the field, word for word its accessible name
             (WCAG 2.2 SC 2.5.3). aria-hidden so it is not read twice: the
             combobox already announces it. */}
-        <p aria-hidden="true" className="text-xs text-slate-400">
+        <p aria-hidden="true" className="text-xs text-ink-3">
           {TEAM_MATCH_SEARCH_LABEL}
         </p>
         <Autocomplete<TeamOption>

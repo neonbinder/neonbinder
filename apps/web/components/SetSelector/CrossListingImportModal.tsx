@@ -520,7 +520,7 @@ export default function CrossListingImportModal({
     // this directory — see the NEO-71-74 note in BaseSetPicker.tsx.
     <Theme>
       <div
-        className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+        className="fixed inset-0 bg-scrim flex items-center justify-center z-50 p-4"
         onClick={() => {
           if (!submitting) onClose();
         }}
@@ -529,17 +529,17 @@ export default function CrossListingImportModal({
           role="dialog"
           aria-modal="true"
           aria-label="Add cross-release cards"
-          className="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full max-h-[85vh] flex flex-col"
+          className="bg-raised-deep border border-rule-strong rounded-xl shadow-offset max-w-lg w-full max-h-[85vh] flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="px-6 py-3 border-b border-gray-700">
-            <h2 className="text-lg font-semibold text-white">
+          <div className="px-6 py-3 border-b border-rule-strong">
+            <h2 className="text-lg font-semibold text-ink">
               Add Cross-Release Cards
             </h2>
             {/* Kept to two lines on purpose: a fixed overlay can't be scrolled
                 by the E2E driver, so every fixed pixel here is a pixel the
                 option list below loses on a 1024x629 viewport. */}
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="text-xs text-ink-3 mt-0.5">
               Link cards printed in another product into this checklist. They
               stay owned by the set they were printed in.
             </p>
@@ -561,7 +561,7 @@ export default function CrossListingImportModal({
                 the banners stay on screen at any viewport height. */}
             <div className="flex-1 min-h-0 flex flex-col gap-3 px-6 py-3">
               <div ref={stepControlsRef} className="shrink-0 space-y-1.5">
-                <div className="text-xs text-purple-400 font-medium uppercase tracking-wide">
+                <div className="text-xs text-neon-purple-text font-medium uppercase tracking-wide">
                   Source set (where the cards were printed)
                 </div>
 
@@ -577,7 +577,7 @@ export default function CrossListingImportModal({
                         {position > 0 && (
                           <span
                             aria-hidden="true"
-                            className="text-gray-600 text-xs"
+                            className="text-control text-xs"
                           >
                             ›
                           </span>
@@ -594,8 +594,8 @@ export default function CrossListingImportModal({
                           title={`Change ${LEVEL_LABEL[LEVELS[index]]}`}
                           className={`px-2 py-0.5 rounded-md border text-xs transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
                             confirmedIndex === index
-                              ? "border-[#00D558] bg-[#00D558]/10 text-[#00D558]"
-                              : "border-gray-600 bg-gray-800 text-gray-300 hover:border-gray-400"
+                              ? "border-neon-green-text bg-neon-green/10 text-neon-green-text"
+                              : "border-control bg-raised text-ink-2 hover:border-ink-3"
                           }`}
                         >
                           {pick.value}
@@ -606,12 +606,12 @@ export default function CrossListingImportModal({
                 )}
 
                 {confirmedPick ? (
-                  <div className="px-3 py-1.5 rounded-lg border border-[#00D558] bg-[#00D558]/10 text-sm text-[#00D558]">
+                  <div className="px-3 py-1.5 rounded-lg border border-neon-green-text bg-neon-green/10 text-sm text-neon-green-text">
                     Source set: {confirmedPick.value}
                   </div>
                 ) : (
                   <>
-                    <div className="text-xs text-gray-400">
+                    <div className="text-xs text-ink-3">
                       {parentValue
                         ? `Pick ${LEVEL_LABEL[activeLevel]} under ${parentValue}`
                         : `Pick ${LEVEL_LABEL[activeLevel]}`}
@@ -659,7 +659,7 @@ export default function CrossListingImportModal({
                           handleConfirmSource(activeIndex - 1);
                         }}
                         aria-label={`Use ${stopParent.value} as the source set`}
-                        className="w-full text-left px-3 py-1.5 rounded-lg border border-[#00C2FF] bg-[#00C2FF]/10 text-sm text-[#00C2FF] hover:bg-[#00C2FF]/20 transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                        className="w-full text-left px-3 py-1.5 rounded-lg border border-neon-blue-text bg-neon-blue/10 text-sm text-neon-blue-text hover:bg-neon-blue/20 transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                       >
                         Use {stopParent.value} as the source set
                       </button>
@@ -671,11 +671,11 @@ export default function CrossListingImportModal({
               {/* One level's options — the flexible, scrollable region. */}
               {!confirmedPick &&
                 (activeLoading ? (
-                  <div className="shrink-0 text-sm text-gray-400 py-2 text-center">
+                  <div className="shrink-0 text-sm text-ink-3 py-2 text-center">
                     Loading…
                   </div>
                 ) : filteredOptions.length === 0 ? (
-                  <div className="shrink-0 text-sm text-gray-400 py-2 text-center">
+                  <div className="shrink-0 text-sm text-ink-3 py-2 text-center">
                     {(activeOptions?.length ?? 0) === 0
                       ? parentValue
                         ? `No ${LEVEL_LABEL[activeLevel]} options under ${parentValue}.`
@@ -700,8 +700,8 @@ export default function CrossListingImportModal({
                         aria-label={`Pick ${LEVEL_LABEL[activeLevel]} ${opt.value}`}
                         className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-all aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
                           picked[activeIndex]?.id === opt._id
-                            ? "border-[#00D558] bg-[#00D558]/10 ring-1 ring-[#00D558] text-gray-100"
-                            : "border-gray-600 bg-gray-800 text-gray-200 hover:border-gray-400"
+                            ? "border-neon-green-text bg-neon-green/10 ring-1 ring-neon-green-text text-ink"
+                            : "border-control bg-raised text-ink-2 hover:border-ink-3"
                         }`}
                       >
                         {opt.value}
@@ -712,7 +712,7 @@ export default function CrossListingImportModal({
 
               <div className="shrink-0 space-y-3">
                 <label className="block space-y-1">
-                  <span className="block text-xs text-purple-400 font-medium uppercase tracking-wide">
+                  <span className="block text-xs text-neon-purple-text font-medium uppercase tracking-wide">
                     Card numbers
                   </span>
                   <Input
@@ -735,7 +735,7 @@ export default function CrossListingImportModal({
                     aria-label="Card numbers to cross-list"
                     className="w-full px-3 py-2 text-sm aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   />
-                  <span className="block text-xs text-gray-400">
+                  <span className="block text-xs text-ink-3">
                     Ranges expand; separate entries with commas.
                   </span>
                 </label>
@@ -747,7 +747,7 @@ export default function CrossListingImportModal({
                 {progress && (
                   <div
                     role="status"
-                    className="p-2 rounded-md border border-gray-700 bg-gray-800/60 text-sm text-gray-300"
+                    className="p-2 rounded-md border border-rule-strong bg-raised/60 text-sm text-ink-2"
                   >
                     {`Linked ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()}…`}
                   </div>
@@ -756,7 +756,7 @@ export default function CrossListingImportModal({
                 {error && (
                   <div
                     role="alert"
-                    className="p-2 rounded-md border border-[#FF2E9A] bg-[#FF2E9A]/10 text-[#FF2E9A] text-sm"
+                    className="p-2 rounded-md border border-neon-pink-text bg-neon-pink/10 text-neon-pink-text text-sm"
                   >
                     {error}
                   </div>
@@ -765,14 +765,14 @@ export default function CrossListingImportModal({
                 {result && (
                   <div
                     role="status"
-                    className="p-3 rounded-md border border-gray-700 bg-gray-800/60 text-sm space-y-1"
+                    className="p-3 rounded-md border border-rule-strong bg-raised/60 text-sm space-y-1"
                   >
-                    <div className="text-[#00D558]">
+                    <div className="text-neon-green-text">
                       Linked {result.linked.length} card
                       {result.linked.length === 1 ? "" : "s"}.
                     </div>
                     {result.alreadyLinked.length > 0 && (
-                      <div className="text-gray-400">
+                      <div className="text-ink-3">
                         Already linked: {result.alreadyLinked.join(", ")}
                       </div>
                     )}
@@ -780,7 +780,7 @@ export default function CrossListingImportModal({
                       the source set is the one failure mode this flow can't
                       fix on its own, and a bare count would hide which ones. */}
                     {result.notFound.length > 0 && (
-                      <div className="text-amber-400">
+                      <div className="text-notice-warn-ink">
                         Not found in source set: {result.notFound.join(", ")} —
                         fetch or commit that set first.
                       </div>
@@ -790,14 +790,14 @@ export default function CrossListingImportModal({
               </div>
             </div>
 
-            <div className="px-6 py-3 border-t border-gray-700 flex justify-end gap-3">
+            <div className="px-6 py-3 border-t border-rule-strong flex justify-end gap-3">
               {/* Both carry aria-disabled rather than `disabled`: see
                   handleSubmit. The submit button is the one that matters —
                   natively disabling it on click blurs it to <body> for the
                   whole import, which is now up to three round-trips long. */}
               <NeonButton
                 type="button"
-                cancel
+                variant="negative"
                 onClick={() => {
                   if (submitting) return;
                   onClose();

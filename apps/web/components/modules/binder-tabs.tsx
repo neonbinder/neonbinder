@@ -14,8 +14,12 @@ export interface NavItem {
   label: string;
   path: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  glowClass: string;
-  activeColor: string;
+  /**
+   * The section's hue (DESIGN.md: One Hue Per Section). `tab-hue-*` in
+   * app/theme.css sets the tab's lit ink, its dark-mode glow and its
+   * light-mode edge; `.binder-tab` / `.binder-row` read them.
+   */
+  hueClass: string;
   requiresAdmin?: boolean;
 }
 
@@ -24,22 +28,19 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Dashboard",
     path: "/dashboard",
     icon: HomeIcon,
-    glowClass: "binder-tab-glow-green",
-    activeColor: "text-neon-green",
+    hueClass: "tab-hue-green",
   },
   {
     label: "Collection",
     path: "/collection",
     icon: RectangleStackIcon,
-    glowClass: "binder-tab-glow-blue",
-    activeColor: "text-neon-blue",
+    hueClass: "tab-hue-blue",
   },
   {
     label: "Inventory",
     path: "/inventory",
     icon: ArchiveBoxIcon,
-    glowClass: "binder-tab-glow-yellow",
-    activeColor: "text-neon-yellow",
+    hueClass: "tab-hue-yellow",
   },
   {
     // NEO-155 — one tab for every admin tool. This was "Set Builder" →
@@ -52,8 +53,7 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Admin",
     path: "/admin",
     icon: WrenchScrewdriverIcon,
-    glowClass: "binder-tab-glow-orange",
-    activeColor: "text-neon-orange",
+    hueClass: "tab-hue-orange",
     requiresAdmin: true,
   },
   {
@@ -63,15 +63,13 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Print Shop",
     path: "/print",
     icon: PrinterIcon,
-    glowClass: "binder-tab-glow-teal",
-    activeColor: "text-neon-teal",
+    hueClass: "tab-hue-teal",
   },
   {
     label: "Profile",
     path: "/profile",
     icon: UserIcon,
-    glowClass: "binder-tab-glow-purple",
-    activeColor: "text-neon-purple-text",
+    hueClass: "tab-hue-purple",
   },
 ];
 
@@ -102,6 +100,10 @@ const STAGGER_STEP_PX = 6;
 // and the active one slides fully out, so it reads as 160 -> 170 without
 // animating `width` (a layout property, re-laid out every frame). Hover pulls
 // a resting tab 6px out. Under reduced motion only the colours ease.
+//
+// Colours come from `.binder-tab` in app/theme.css, keyed on the hue class and
+// on the `aria-current` NavLink sets: dark lights the current tab with its
+// glow; light gives every tab a 4px edge in its hue (6px when current).
 
 export default function BinderTabs() {
   const items = useVisibleNavItems();
@@ -112,14 +114,11 @@ export default function BinderTabs() {
           key={item.path}
           to={item.path}
           className={({ isActive }) =>
-            `binder-tab flex items-center gap-3 rounded-l-xl cursor-pointer
+            `binder-tab ${item.hueClass} flex items-center gap-3 rounded-l-xl cursor-pointer
             transition-[transform,background-color,color,box-shadow] duration-200 ease-out
-            motion-reduce:transition-colors
+            motion-reduce:transition-colors focus-outline
             py-4 pl-4 pr-5 w-[170px]
-            ${isActive
-              ? `${item.glowClass} ${item.activeColor} bg-gray-900 translate-x-0`
-              : "bg-gray-800/80 text-gray-400 translate-x-[10px] hover:translate-x-[4px] hover:bg-gray-800"
-            }`
+            ${isActive ? "translate-x-0" : "translate-x-[10px] hover:translate-x-[4px]"}`
           }
           style={{ marginRight: `-${index * STAGGER_STEP_PX}px` }}
         >

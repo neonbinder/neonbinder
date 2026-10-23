@@ -97,7 +97,7 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
   return (
     <section
       aria-label="Quick add"
-      className="mt-5 grid gap-4 rounded-2xl border border-slate-800 bg-slate-950 p-4 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]"
+      className="mt-5 grid gap-4 rounded-2xl border border-rule bg-sheet p-4 shadow-offset md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]"
     >
       <div>
         <Input
@@ -110,7 +110,7 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
           onKeyDown={onNumberKey}
           aria-describedby={numberHintId}
         />
-        <p id={numberHintId} role="status" className="mt-2 text-sm text-slate-300">
+        <p id={numberHintId} role="status" className="mt-2 text-sm text-ink-2">
           {hint}
         </p>
         {matches.length > 1 && (
@@ -123,14 +123,14 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
                     api.addOne(c);
                     setNumText("");
                   }}
-                  className={`flex min-h-11 w-full items-center gap-2 rounded-md border border-slate-700 px-3 text-left text-sm text-slate-100 hover:border-neon-blue sm:min-h-9 ${FOCUS}`}
+                  className={`flex min-h-11 w-full items-center gap-2 rounded-md border border-field-rule px-3 text-left text-sm text-ink hover:border-neon-blue sm:min-h-9 ${FOCUS}`}
                 >
-                  <span className="font-bold text-white">{c.variantPath.name ?? "Base"}</span>
+                  <span className="font-bold text-ink">{c.variantPath.name ?? "Base"}</span>
                   <span className="min-w-0 flex-1 truncate">
                     #{c.cardNumber} {playerNames(c)}
                     {c.variation ? `, ${c.variation} variation` : ""}
                   </span>
-                  <span className={store.ownedInScope(c.id) ? "text-neon-blue" : "text-slate-400"}>
+                  <span className={store.ownedInScope(c.id) ? "text-neon-blue-text" : "text-ink-3"}>
                     {statusOf(c.id)}
                   </span>
                   <span className="sr-only">. Adds one.</span>
@@ -186,28 +186,28 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
             </label>
           </div>
         </div>
-        <p id={rangeHelpId} className="mt-2 text-xs text-slate-400">
+        <p id={rangeHelpId} className="mt-2 text-xs text-ink-3">
           Commas between pieces. A minus leaves a number out.
         </p>
 
         {range && (
-          <div className="mt-3 rounded-lg border border-slate-700 bg-black/40 p-3">
+          <div className="mt-3 rounded-lg border border-rule-strong bg-surface/40 p-3">
             {range.invalid ? (
-              <p className="text-sm text-neon-yellow">
+              <p className="text-sm text-neon-yellow-text">
                 Can&apos;t read that. Try numbers and runs like 1-50, -12.
               </p>
             ) : (
               <>
-                <p className="text-sm text-slate-200">
-                  <strong className="text-lg text-white">
+                <p className="text-sm text-ink-2">
+                  <strong className="text-lg text-ink">
                     Adds {toAdd.length} {toAdd.length === 1 ? "card" : "cards"}
                   </strong>{" "}
                   to {rowName}, into {target}.{already > 0 && ` ${already} you already have stay as they are.`}
                 </p>
                 {range.unknown.length > 0 && (
-                  <p className="mt-1 text-sm text-slate-400">Not on this checklist: {range.unknown.join(", ")}.</p>
+                  <p className="mt-1 text-sm text-ink-3">Not on this checklist: {range.unknown.join(", ")}.</p>
                 )}
-                {blocked && <p className="mt-1 text-sm text-neon-yellow">{blockedMessage(plan)}</p>}
+                {blocked && <p className="mt-1 text-sm text-neon-yellow-text">{blockedMessage(plan)}</p>}
                 {range.shared.map((group) => (
                   <div
                     key={group.number}
@@ -215,7 +215,7 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
                     aria-label={`Which #${group.number} is yours?`}
                     className="mt-2 rounded-md border border-neon-yellow/50 bg-neon-yellow/5 px-2 py-1.5"
                   >
-                    <p className="text-sm text-slate-200">
+                    <p className="text-sm text-ink-2">
                       #{group.number} is on {group.cards.length} cards. Which one&apos;s yours?
                     </p>
                     <div className="mt-1 flex flex-wrap gap-1.5">
@@ -236,8 +236,8 @@ export default function QuickAdd({ setId, onSpot }: { setId: SetId; onSpot: (ids
                             }
                             className={`min-h-11 rounded-full border px-3 text-sm sm:min-h-8 ${FOCUS} ${
                               on
-                                ? "border-neon-blue bg-neon-blue text-black"
-                                : "border-slate-600 text-slate-200 hover:border-neon-blue"
+                                ? "border-selection bg-neon-blue text-on-neon-blue"
+                                : "border-control text-ink-2 hover:border-neon-blue"
                             }`}
                           >
                             #{c.cardNumber} {playerNames(c)}

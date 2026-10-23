@@ -19,19 +19,19 @@ export default function MissingCredentialsBanner({
   return (
     <div
       role="alert"
-      className="max-w-2xl mx-auto mt-12 p-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md"
+      className="max-w-2xl mx-auto mt-12 p-6 bg-notice-warn-bg border border-notice-warn-rule rounded-md"
     >
-      <h2 className="text-xl font-semibold text-amber-800 dark:text-amber-200 mb-2">
+      <h2 className="text-xl font-semibold text-notice-warn-ink mb-2">
         Set Builder requires marketplace credentials
       </h2>
-      <p className="text-amber-800 dark:text-amber-200 mb-4">
+      <p className="text-notice-warn-ink mb-4">
         You need to connect <strong>{joined}</strong> before Set Builder can
         work. Set them up on your Profile.
       </p>
       <Link
         to="/profile/credentials"
         aria-label="Configure credentials in Profile"
-        className="inline-block px-4 py-2 rounded-md bg-neon-green text-black font-semibold hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green"
+        className="inline-block px-4 py-2 rounded-md bg-neon-green text-on-neon-green font-semibold hover:opacity-90 focus-outline"
         style={{ fontFamily: "'Lexend', sans-serif" }}
       >
         Configure credentials in Profile →

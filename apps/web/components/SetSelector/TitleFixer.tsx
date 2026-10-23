@@ -123,19 +123,19 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   return (
     <div className="space-y-3">
       {error && (
-        <p role="alert" className="text-xs text-[#FF2E9A]">
+        <p role="alert" className="text-xs text-neon-pink-text">
           {error}
         </p>
       )}
 
       <div>
-        <h3 className="text-sm font-semibold text-gray-200">
-          <span className="text-[#00D558]">#{row.cardNumber}</span> {row.cardName}
+        <h3 className="text-sm font-semibold text-ink-2">
+          <span className="text-neon-green-text">#{row.cardNumber}</span> {row.cardName}
         </h3>
         {/* a11y (1.3.1): `list-style: none` strips the implicit list/listitem
             role in Safari + VoiceOver. `role="list"` restores it so a screen
             reader still announces "list, N items" for the reasons below. */}
-        <ul role="list" className="mt-0.5 list-none text-xs text-gray-400">
+        <ul role="list" className="mt-0.5 list-none text-xs text-ink-3">
           {items.map((item) => (
             <li key={item.kind}>{attentionItemLabel(item)}</li>
           ))}
@@ -143,7 +143,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       </div>
 
       <div>
-        <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400">
+        <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3">
           <span>Card title</span>
           <span className="flex items-center gap-2">
             <TitleLengthMeter length={title.length} soft surface="dark" />
@@ -168,7 +168,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               }
               // a11y (2.5.8): min-h-6 lifts the 15px label line to a 24px
               // target; the 10px caption type stays as it was.
-              className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#00C2FF] underline decoration-dotted focus:outline-none focus:ring-1 focus:ring-[#00C2FF] hover:text-white"
+              className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-neon-blue-text underline decoration-dotted focus-outline hover:text-ink"
             >
               {preview.loading
                 ? "Rebuilding…"
@@ -219,7 +219,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             id={`${uid}-regen-confirm`}
             role="status"
             aria-atomic="true"
-            className="mt-1 text-[10px] text-[#00C2FF]"
+            className="mt-1 text-[10px] text-neon-blue-text"
           >
             Regenerate again to replace the title you have typed.
           </p>
@@ -239,9 +239,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             {preview.chips.map((chip, idx) => (
               <li
                 key={`${chip.label}-${chip.value}-${idx}`}
-                className="rounded-full border border-gray-700 bg-gray-800/60 px-2 py-0.5 text-[10px] text-gray-200"
+                className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
               >
-                <span className="mr-1 uppercase tracking-wide text-gray-400">
+                <span className="mr-1 uppercase tracking-wide text-ink-3">
                   {chip.label}
                 </span>
                 {chip.value}
@@ -253,7 +253,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
 
       {fixesVariation && (
         <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400">
+          <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3">
             <span>Variation</span>
             <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} surface="dark" />
           </div>
@@ -307,7 +307,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       {/* gray-400, not gray-500: 500 measures 3.67:1 on this dialog's
           bg-gray-900 and fails 1.4.3 — the recurring bug logged in
           accessibility-auditor/contrast-reference.md. */}
-      <p id={`${uid}-save-hint`} className="text-xs text-gray-400">
+      <p id={`${uid}-save-hint`} className="text-xs text-ink-3">
         {fixesVariation
           ? "Saves the title and variation on this card."
           : "Saves the title on this card."}

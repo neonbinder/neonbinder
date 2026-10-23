@@ -2884,9 +2884,9 @@ export default function CardChecklist({
 
   if (!cards) {
     return (
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+      <div className="bg-raised p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Cards</h2>
-        <div className="text-gray-400">Loading checklist...</div>
+        <div className="text-ink-3">Loading checklist...</div>
       </div>
     );
   }
@@ -2980,12 +2980,12 @@ export default function CardChecklist({
 
   return (
     <div className="w-full flex flex-col gap-4">
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+      <div className="bg-raised p-6 rounded-lg shadow">
         <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
           <h2 className="text-xl font-semibold">
             Cards{" "}
             {cards.length > 0 && (
-              <span className="text-sm font-normal text-gray-400">
+              <span className="text-sm font-normal text-ink-3">
                 ({cards.length})
               </span>
             )}
@@ -3009,7 +3009,7 @@ export default function CardChecklist({
                 Add Card
               </NeonButton>
               <NeonButton
-                secondary
+                variant="secondary"
                 onClick={() => {
                   if (!editsHeld) setShowCrossListingModal(true);
                 }}
@@ -3024,7 +3024,7 @@ export default function CardChecklist({
                 ) : (
                   <NeonButton
                     ref={syncButtonRef}
-                    secondary
+                    variant="secondary"
                     onClick={handleSync}
                     disabled={busy}
                     aria-label="Sync card checklist"
@@ -3068,7 +3068,7 @@ export default function CardChecklist({
             headless 1024×629 viewports put Player name 440–800px off-screen
             and broke every flow that wanted to add a custom card. */}
         {showAddForm && (
-          <div className="bg-gray-50 dark:bg-gray-900/40 p-4 mb-4 rounded-lg space-y-3">
+          <div className="bg-raised-deep/40 p-4 mb-4 rounded-lg space-y-3">
             <h3 className="font-semibold text-sm">Add Card</h3>
             <div className="flex gap-2">
               <Input
@@ -3123,10 +3123,9 @@ export default function CardChecklist({
                   a badged one.
                   No `htmlFor`: the picker is a chip row, not one input, and
                   its controls carry their own aria-labels.
-                  a11y: `text-gray-500 dark:text-gray-400`, matching the Team
-                  label below — see the long note there for why the bare
-                  `text-gray-400` the drawer uses fails 1.4.3 on this panel. */}
-              <label className="block text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                  a11y: `text-ink-3`, matching the Team label below; the role
+                  clears 4.5:1 on this panel in both modes (NEO-356). */}
+              <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
                 Players (optional)
               </label>
               {/* Distinct accessible names, because this component also
@@ -3171,19 +3170,10 @@ export default function CardChecklist({
                   drawer's Teams label so the two read as the same field.
                   No `htmlFor`: the picker is a chip row, not one input, and its
                   controls carry their own aria-labels.
-                  a11y: `text-gray-500 dark:text-gray-400`, NOT the bare
-                  `text-gray-400` the drawer's "Teams" label uses. Tailwind's
-                  default media-based dark mode means `dark:` only applies
-                  under a dark OS preference — a visitor in light mode sees
-                  this on the form's `bg-gray-50` panel with no dark override,
-                  and plain `text-gray-400` there measures well under 4.5:1
-                  (script-verified against the panel's white/gray-50 light
-                  background). This pair is the one confirmed passing in both
-                  themes elsewhere in this file (see the sub-line note in
-                  CardChecklistItem.tsx). The drawer's own "Teams" label has
-                  the same bare-`text-gray-400` gap but is pre-existing and out
-                  of scope here — see NEO-208 a11y audit notes. */}
-              <label className="block text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                  a11y: `text-ink-3`, the hint role, which clears 4.5:1 on
+                  this panel in both modes (NEO-356 replaced the old
+                  gray-500/gray-400 light/dark pair). */}
+              <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
                 Team (optional)
               </label>
               <TeamPicker
@@ -3206,7 +3196,7 @@ export default function CardChecklist({
                 Add
               </NeonButton>
               <NeonButton
-                cancel
+                variant="negative"
                 onClick={closeAddForm}
                 aria-label="Cancel new card"
               >
@@ -3217,7 +3207,7 @@ export default function CardChecklist({
         )}
 
         {lastSynced && (
-          <div className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          <div className="text-xs text-ink-3 mb-3">
             Last synced:{" "}
             {new Date(lastSynced).toLocaleDateString(undefined, {
               month: "short",
@@ -3229,7 +3219,7 @@ export default function CardChecklist({
                 "last synced > 7d" badge. Advisory only, and the value it sits
                 next to comes from a live query that re-renders this. */}
             {Date.now() - lastSynced > 7 * 24 * 60 * 60 * 1000 && (
-              <span className="ml-1 text-amber-500">(stale)</span>
+              <span className="ml-1 text-notice-warn-ink">(stale)</span>
             )}
           </div>
         )}
@@ -3266,7 +3256,7 @@ export default function CardChecklist({
             ref={soloFetchRef}
             tabIndex={-1}
             aria-labelledby="solo-fetch-status"
-            className="p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm flex items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+            className="p-2 mb-3 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm flex items-center justify-between gap-3 focus-outline"
           >
             <span id="solo-fetch-status" role="status">
               {soloProgressMessage(
@@ -3318,17 +3308,12 @@ export default function CardChecklist({
             aria-atomic="true"
             className={
               // a11y (1.4.3): mirrors the status box below it exactly (same
-              // structure, pink swapped in for blue) rather than the brand's
-              // literal `#FF2E9A` — this container renders in BOTH light and
-              // dark (`bg-white dark:bg-gray-800`, unlike the always-dark
-              // review modal), and pink text at any low opacity measures
-              // under 4.5:1 against both a near-white light background and
-              // this file's `gray-800` dark one. Tailwind's `pink-*` scale,
-              // paired the same way `blue-*` already is below, measures
-              // 6.7:1 light / 10.1:1 dark.
+              // structure, the danger notice swapped in for info) rather than
+              // the brand's neon pink as text, which is under 4.5:1 on this
+              // card. The notice roles clear 4.5:1 in both modes (NEO-356).
               syncNotice.tone === "error"
-                ? "p-2 mb-3 bg-pink-100 dark:bg-pink-900/30 border border-pink-300 dark:border-pink-700 rounded-md text-pink-800 dark:text-pink-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-600 dark:focus-visible:ring-pink-300"
-                : "p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+                ? "p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm focus-outline"
+                : "p-2 mb-3 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm focus-outline"
             }
           >
             {syncNotice.text}
@@ -3399,7 +3384,7 @@ export default function CardChecklist({
             normal single-release checklist is visually unchanged. */}
         {hasCrossListed && (
           <div className="flex items-center gap-2 flex-wrap mb-3">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-24 shrink-0">
+            <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide w-24 shrink-0">
               Cross-release
             </span>
             <Chip
@@ -3434,9 +3419,9 @@ export default function CardChecklist({
             why, like every other held control. */}
         {attentionCount > 0 && (
           <div className="flex items-center gap-2 flex-wrap mb-3">
-            {/* a11y (1.4.3): text-gray-500 dark:text-gray-400 — 4.84:1 light /
-                6.82:1 dark against this card's surface. */}
-            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide w-24 shrink-0">
+            {/* a11y (1.4.3): text-ink-3 clears 4.5:1 against this card's
+                surface in both modes. */}
+            <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide w-24 shrink-0">
               Attention
             </span>
             <SetRowActionButton
@@ -3493,7 +3478,7 @@ export default function CardChecklist({
 
         {sortedCards.length === 0 ? (
           <div className="text-center py-6">
-            <p className="text-gray-500 dark:text-gray-400 mb-4">
+            <p className="text-ink-3 mb-4">
               No cards in this checklist yet.
             </p>
             {parallelBuild?.role === "parallel" ? (
@@ -3538,7 +3523,7 @@ export default function CardChecklist({
           {searchedCards.length === 0 ? (
             // NEO-343: the query found nothing. The field and its clear
             // button sit directly above, so this only has to say so.
-            <p className="text-center py-6 text-gray-500 dark:text-gray-400">
+            <p className="text-center py-6 text-ink-3">
               {searchEmptyText(searchQuery)}
             </p>
           ) : (

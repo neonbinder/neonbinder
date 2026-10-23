@@ -30,9 +30,9 @@ import {
  * Amber, the house "an unanswered question, nothing broke" colour
  * (`SyncDoneNotice`, the suggestions pill, `CardAttentionBadge`) — and the
  * same colour the profile card uses for this exact state, so the two surfaces
- * read as one signal. Border weights are the pairing `SyncDoneNotice` already
- * measured against WCAG 1.4.11 (border-amber-700 / dark:border-amber-400/70
- * over bg-amber-400/10). The 4px left rule is the non-colour cue; the bold
+ * read as one signal. It paints with the warn notice roles (NEO-356), whose
+ * rule clears WCAG 1.4.11's 3:1 on its own ground in both modes (about 4.2:1
+ * light, 3.7:1 dark). The 4px left rule is the non-colour cue; the bold
  * lead names the platforms so colour is never the only signal.
  *
  * `role="status"` (polite) rather than `role="alert"`: worth announcing when
@@ -125,7 +125,7 @@ export default function ReauthNotice({
   return (
     <div
       role="status"
-      className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 border border-l-4 border-amber-700 dark:border-amber-400/70 bg-amber-400/10 rounded-md text-amber-800 dark:text-amber-300 text-sm"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 border border-l-4 border-notice-warn-rule bg-notice-warn-bg shadow-offset rounded-md text-notice-warn-ink text-sm"
     >
       <p className="min-w-0 flex-1 basis-64">
         <strong className="font-semibold">
@@ -135,7 +135,7 @@ export default function ReauthNotice({
       </p>
       <Link
         to="/profile/credentials"
-        className="shrink-0 inline-block px-3 py-1.5 rounded-md bg-neon-green text-black text-xs font-semibold hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="shrink-0 inline-block px-3 py-1.5 rounded-md bg-neon-green text-on-neon-green text-xs font-semibold hover:opacity-90 focus-outline"
       >
         {REAUTH_NOTICE_COPY.link}
       </Link>
@@ -145,7 +145,7 @@ export default function ReauthNotice({
         aria-label={REAUTH_NOTICE_COPY.dismissLabel}
         // px-2 py-1.5 keeps the target at or above WCAG 2.5.8's 24px minimum,
         // as SyncDoneNotice's Dismiss does.
-        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00C2FF] rounded px-2 py-1.5"
+        className="shrink-0 text-xs underline hover:no-underline focus-outline rounded px-2 py-1.5"
       >
         {REAUTH_NOTICE_COPY.dismiss}
       </button>

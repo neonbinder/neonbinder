@@ -6,6 +6,7 @@ import type { OpenView } from "./openView";
 import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine } from "./parts";
 import type { PocketHandlers } from "./Pocket";
 import ShareLink from "./ShareLink";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * NEO-350 — the one open-binder view of My Binders: the header (back, title,
@@ -67,19 +68,15 @@ export default function BinderView({
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-slate-600 px-3 text-sm font-medium text-slate-100 hover:border-neon-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
-        >
+        <NeonButton type="button" variant="secondary" outline onClick={onBack} className="min-h-10">
           <ArrowLeftIcon aria-hidden="true" className="h-4 w-4" />
           Back to the shelf
-        </button>
+        </NeonButton>
         <div className="flex min-w-0 items-center gap-2">
           <h2
             ref={headingRef}
             tabIndex={-1}
-            className="truncate text-2xl font-bold text-white focus:outline-none sm:text-3xl"
+            className="truncate text-2xl font-bold text-ink focus:outline-none sm:text-3xl"
           >
             {open.title}
           </h2>
@@ -87,15 +84,15 @@ export default function BinderView({
             <span
               className={
                 open.badge.tone === "smart"
-                  ? "rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-black"
-                  : "rounded border border-neon-blue px-1.5 text-xs font-bold leading-5 text-neon-blue"
+                  ? "rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-on-neon-purple"
+                  : "rounded border border-neon-blue-text px-1.5 text-xs font-bold leading-5 text-neon-blue-text"
               }
             >
               {open.badge.text}
             </span>
           )}
         </div>
-        <p aria-live="polite" className="text-sm tabular-nums text-slate-300">
+        <p aria-live="polite" className="text-sm tabular-nums text-ink-2">
           {whereLabel(pages.length, wide, at)}
         </p>
         <div className="ml-auto flex flex-wrap items-center gap-2">

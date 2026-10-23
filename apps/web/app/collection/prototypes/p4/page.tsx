@@ -6,6 +6,7 @@ import BindersPanel from "./BindersPanel";
 import Counter from "./Counter";
 import CopyTable from "./CopyTable";
 import { RING } from "./ui";
+import { ForceDark } from "@/components/primitives/ForceDark";
 
 /**
  * NEO-350 — collection prototype 4, "Dealer's Counter".
@@ -36,7 +37,7 @@ const TABS = [
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
-export default function CollectionPrototype4() {
+function CollectionPrototype4Page() {
   const name = prototypeName(4);
   useDocumentTitle(`${name} · Collection prototype`);
   const store = usePrototypeStore("p4");
@@ -112,5 +113,18 @@ export default function CollectionPrototype4() {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * NEO-356 — this prototype was only ever designed dark and is not migrated to
+ * the colour roles, so it keeps the whole page dark while it is open, whatever
+ * the collector's setting. Leaving restores their own mode.
+ */
+export default function CollectionPrototype4() {
+  return (
+    <ForceDark>
+      <CollectionPrototype4Page />
+    </ForceDark>
   );
 }

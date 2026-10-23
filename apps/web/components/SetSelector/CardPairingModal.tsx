@@ -664,7 +664,7 @@ function PairableRow({
       {...listeners}
       className={`flex items-center gap-2 rounded cursor-grab active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
-      } ${isLinkTarget ? "ring-2 ring-[#00C2FF] bg-[#00C2FF]/10" : ""}`}
+      } ${isLinkTarget ? "ring-2 ring-selection bg-neon-blue/10" : ""}`}
     >
       {children}
     </li>
@@ -1704,10 +1704,10 @@ function ConflictRadioGroup({
       // the explanation and the pills are the decision; they read
       // top-to-bottom, always. (The pills themselves still wrap — see the
       // radiogroup's own `flex flex-wrap` below.)
-      className="flex flex-col items-start gap-1.5 border-l-2 border-[#FF2E9A] pl-2 py-1"
+      className="flex flex-col items-start gap-1.5 border-l-2 border-neon-pink-text pl-2 py-1"
       {...{ [handleAttr]: handleKey }}
     >
-      <span id={warningId} className="text-xs text-[#FF2E9A]">
+      <span id={warningId} className="text-xs text-neon-pink-text">
         {/* Decorative — the sentence itself carries the meaning, so AT
             shouldn't also be made to announce "warning sign" first. */}
         <span aria-hidden="true">⚠</span> {warning}
@@ -1763,8 +1763,8 @@ function ConflictRadioGroup({
             onClick={() => onChoose(option.side, false)}
             className={`text-xs rounded px-2 py-1.5 ${
               chosen === option.side
-                ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00C2FF]"
-                : "bg-gray-700/60 text-gray-300"
+                ? "bg-selection/20 text-ink ring-2 ring-selection"
+                : "bg-chip/60 text-ink-2"
             }`}
           >
             {/* 1.4.1 Use of Color — the cyan/gray fill pair differs by hue
@@ -2496,7 +2496,7 @@ export default function CardPairingModal({
   return createPortal(
     <Theme>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="card-pairing-heading"
@@ -2544,15 +2544,15 @@ export default function CardPairingModal({
           }
         }}
       >
-        <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-5xl max-h-[92vh] flex flex-col">
-          <header className="p-4 border-b border-gray-700">
+        <div className="bg-raised-deep border border-rule-strong rounded-lg shadow-offset w-full max-w-5xl max-h-[92vh] flex flex-col">
+          <header className="p-4 border-b border-rule-strong">
             <h2
               id="card-pairing-heading"
-              className="text-lg font-semibold text-gray-100"
+              className="text-lg font-semibold text-ink"
             >
               Match Cards{setLabel ? ` — ${setLabel}` : ""}
             </h2>
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-ink-3 mt-1">
               {nothingToReconcile
                 ? "Every card paired across both marketplaces. Review and confirm — no cards are saved until you do."
                 : "No cards are saved until you confirm. Anything left in a column below is discarded — keep a card to save it as single-marketplace."}
@@ -2566,7 +2566,7 @@ export default function CardPairingModal({
                 long as Confirm is blocked, which outlasts the fetch itself
                 until this run's teams have landed (`confirmBlocked`). */}
             {confirmBlocked && (
-              <p id="pairing-streaming-status" className="text-xs text-[#00C2FF] mt-1">
+              <p id="pairing-streaming-status" className="text-xs text-neon-blue-text mt-1">
                 {pairingStreamingSentence(streamProgress)}
               </p>
             )}
@@ -2604,11 +2604,11 @@ export default function CardPairingModal({
 
               Opaque and flush with the dialog body (`bg-gray-900`), so at
               rest it reads as the section heading it always was. */}
-          <div className="flex-none px-4 pt-4 bg-gray-900 border-b border-gray-700/60">
+          <div className="flex-none px-4 pt-4 bg-raised-deep border-b border-rule-strong/60">
             <button
               type="button"
               ref={matchedToggleRef}
-              className="text-sm font-semibold text-gray-200 px-2 py-1.5"
+              className="text-sm font-semibold text-ink-2 px-2 py-1.5"
               onClick={() => setMatchedCollapsed((v) => !v)}
               // The count is appended ONLY when there is a conflict: an
               // aria-label overrides the button's own text for assistive
@@ -2633,7 +2633,7 @@ export default function CardPairingModal({
             >
               {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
               {nameConflictCount > 0 && (
-                <span className="text-[#FF2E9A] ml-2">
+                <span className="text-neon-pink-text ml-2">
                   {/* The glyph is decorative — "name conflict(s)" already
                       carries the meaning in words, so AT shouldn't also be
                       made to announce "warning sign" on top of that. */}
@@ -2647,7 +2647,7 @@ export default function CardPairingModal({
                   "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
                   one line reads as one number the eye has to parse apart. */}
               {playersConflictCount > 0 && (
-                <span className="block text-[#FF2E9A]">
+                <span className="block text-neon-pink-text">
                   <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
                   player conflict
                   {playersConflictCount === 1 ? "" : "s"}
@@ -2721,7 +2721,7 @@ export default function CardPairingModal({
                     return (
                     <li
                       key={candidateKey(m.card)}
-                      className="flex flex-col gap-1 text-sm text-gray-200 bg-gray-800/60 rounded px-2 py-1"
+                      className="flex flex-col gap-1 text-sm text-ink-2 bg-raised/60 rounded px-2 py-1"
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="flex min-w-0 items-center gap-2">
@@ -2735,7 +2735,7 @@ export default function CardPairingModal({
                                   and it is not the operator's to edit: it is
                                   BSC's number, and `candidateKey`, `domKey` and
                                   `compareCards` are all derived from it. */}
-                              <span className="text-gray-400 shrink-0">
+                              <span className="text-ink-3 shrink-0">
                                 #{m.card.cardNumber}
                               </span>
                               <Input
@@ -2835,7 +2835,7 @@ export default function CardPairingModal({
                                 onBlur={() => finishEdit(true)}
                               />
                               {m.card.cardVariation && (
-                                <span className="text-gray-400 shrink-0">
+                                <span className="text-ink-3 shrink-0">
                                   · {m.card.cardVariation}
                                 </span>
                               )}
@@ -2849,7 +2849,7 @@ export default function CardPairingModal({
                                 <span
                                   id={`name-edit-error-${domKey(m.card)}`}
                                   role="alert"
-                                  className="text-xs text-[#FF2E9A]"
+                                  className="text-xs text-neon-pink-text"
                                 >
                                   {nameError.message}
                                 </span>
@@ -2865,7 +2865,7 @@ export default function CardPairingModal({
                               // inline-block + min-h-6: the text-sm line alone
                               // is a ~20px target; SC 2.5.8 needs 24px (axe
                               // target-size).
-                              className="inline-block min-h-6 text-left border-b border-dotted border-gray-600 hover:border-[#00C2FF] hover:text-white"
+                              className="inline-block min-h-6 text-left border-b border-dotted border-control hover:border-neon-blue-text hover:text-ink"
                               onClick={() => {
                                 // Prefilled with `cardName` ALONE — not
                                 // `label()`. The number and the variation
@@ -2886,14 +2886,14 @@ export default function CardPairingModal({
                             </button>
                           )}
                           {m.confidence > 0 && m.confidence < 1 && (
-                            <span className="text-xs text-amber-400 shrink-0">
+                            <span className="text-xs text-notice-warn-ink shrink-0">
                               {Math.round(m.confidence * 100)}%
                             </span>
                           )}
                         </span>
                         <button
                           type="button"
-                          className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                          className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
                           onClick={() => {
                             dispatch({ type: "UNLINK", index: i });
                             refocus(matchedToggleRef.current);
@@ -3048,7 +3048,7 @@ export default function CardPairingModal({
                               owning the answer is exactly what stops a
                               marketplace becoming the source of truth. */}
                           {m.playersConflict.preferred && (
-                            <span className="text-xs text-gray-400">
+                            <span className="text-xs text-ink-3">
                               NeonBinder currently stores:{" "}
                               {joinPlayers(
                                 m.playersConflict.preferred === "sportlots"
@@ -3161,7 +3161,7 @@ export default function CardPairingModal({
                             <span
                               id={`players-edit-error-${domKey(m.card)}`}
                               role="alert"
-                              className="text-xs text-[#FF2E9A]"
+                              className="text-xs text-neon-pink-text"
                             >
                               {playersError.message}
                             </span>
@@ -3205,7 +3205,7 @@ export default function CardPairingModal({
                   screen — the columns are what "the other column" means. */}
               {(state.unmatchedBsc.length > 0 ||
                 state.unmatchedSl.length > 0) && (
-                <p className="text-xs text-gray-400 mb-2">
+                <p className="text-xs text-ink-3 mb-2">
                   Drag a card onto its match in the other column to link them
                   (or click one, then click its match).
                 </p>
@@ -3213,12 +3213,12 @@ export default function CardPairingModal({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <section>
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-gray-200">
+                  <h3 className="text-sm font-semibold text-ink-2">
                     BSC only ({state.unmatchedBsc.length})
                   </h3>
                   <button
                     type="button"
-                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40 px-2 py-1.5"
+                    className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
                     disabled={state.unmatchedBsc.length === 0}
                     onClick={() => {
                       dispatch({ type: "KEEP_ALL", side: "bsc" });
@@ -3261,8 +3261,8 @@ export default function CardPairingModal({
                         type="button"
                         className={`flex-1 text-left text-sm rounded px-2 py-1 ${
                           selectedBsc === candidateKey(c)
-                            ? "bg-cyan-900/60 text-cyan-100"
-                            : "bg-gray-800/60 text-gray-200"
+                            ? "bg-selection/20 text-ink ring-2 ring-selection"
+                            : "bg-raised/60 text-ink-2"
                         }`}
                         onClick={() =>
                           setSelectedBsc(
@@ -3281,7 +3281,7 @@ export default function CardPairingModal({
                       </button>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-cyan-300 px-2 py-1.5"
+                        className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
                         onClick={() => {
                           dispatch({
                             type: "KEEP",
@@ -3301,12 +3301,12 @@ export default function CardPairingModal({
 
               <section>
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-gray-200">
+                  <h3 className="text-sm font-semibold text-ink-2">
                     SportLots only ({state.unmatchedSl.length})
                   </h3>
                   <button
                     type="button"
-                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40 px-2 py-1.5"
+                    className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
                     disabled={state.unmatchedSl.length === 0}
                     onClick={() => {
                       dispatch({ type: "KEEP_ALL", side: "sl" });
@@ -3344,7 +3344,7 @@ export default function CardPairingModal({
                       <button
                         type="button"
                         disabled={!selectedBsc}
-                        className="flex-1 text-left text-sm rounded px-2 py-1 bg-gray-800/60 text-gray-200 disabled:opacity-60"
+                        className="flex-1 text-left text-sm rounded px-2 py-1 bg-raised/60 text-ink-2 disabled:opacity-60"
                         onClick={() => {
                           if (!selectedBsc) return;
                           // Same operation the drag path performs — including
@@ -3359,7 +3359,7 @@ export default function CardPairingModal({
                       </button>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-cyan-300 px-2 py-1.5"
+                        className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
                         onClick={() => {
                           dispatch({
                             type: "KEEP",
@@ -3382,8 +3382,8 @@ export default function CardPairingModal({
                   the same card, following the cursor. */}
               <DragOverlay>
                 {activeDragLabel && (
-                  <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00C2FF] ring-2 ring-[#00C2FF] shadow-lg text-sm font-medium">
-                    <span className="text-gray-200">{activeDragLabel}</span>
+                  <div className="px-3 py-2 rounded-lg border bg-raised border-selection ring-2 ring-selection shadow-lg text-sm font-medium">
+                    <span className="text-ink-2">{activeDragLabel}</span>
                   </div>
                 )}
               </DragOverlay>
@@ -3395,12 +3395,12 @@ export default function CardPairingModal({
                 that could be kept, so "Nothing kept — every unmatched card
                 above will be discarded" describes cards that do not exist. */}
             {!nothingToReconcile && (
-            <section className="border-t border-gray-700 pt-3">
-              <h3 className="text-sm font-semibold text-gray-200 mb-2">
+            <section className="border-t border-rule-strong pt-3">
+              <h3 className="text-sm font-semibold text-ink-2 mb-2">
                 Keeping ({state.keptBsc.length + state.keptSl.length})
               </h3>
               {state.keptBsc.length + state.keptSl.length === 0 ? (
-                <p className="text-xs text-gray-400 italic">
+                <p className="text-xs text-ink-3 italic">
                   Nothing kept — every unmatched card above will be discarded.
                 </p>
               ) : (
@@ -3408,12 +3408,12 @@ export default function CardPairingModal({
                   {state.keptBsc.map((c) => (
                     <li
                       key={`kb-${candidateKey(c)}`}
-                      className="flex items-center justify-between text-sm text-gray-200"
+                      className="flex items-center justify-between text-sm text-ink-2"
                     >
                       <span>BSC: {label(c)}</span>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                        className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
                         onClick={() => {
                           dispatch({
                             type: "UNKEEP",
@@ -3431,12 +3431,12 @@ export default function CardPairingModal({
                   {state.keptSl.map((c) => (
                     <li
                       key={`ks-${candidateKey(c)}`}
-                      className="flex items-center justify-between text-sm text-gray-200"
+                      className="flex items-center justify-between text-sm text-ink-2"
                     >
                       <span>SL: {label(c)}</span>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                        className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
                         onClick={() => {
                           dispatch({
                             type: "UNKEEP",
@@ -3457,9 +3457,9 @@ export default function CardPairingModal({
             )}
           </div>
 
-          <footer className="p-4 border-t border-gray-700 flex items-center justify-between gap-4">
+          <footer className="p-4 border-t border-rule-strong flex items-center justify-between gap-4">
             <div className="min-w-0 space-y-0.5">
-              <span className="block text-xs text-gray-400">
+              <span className="block text-xs text-ink-3">
                 {totalToSave} card{totalToSave === 1 ? "" : "s"} will be saved
               </span>
               {/* NEO-330 — teams that missed the wait. The streaming line is
@@ -3468,14 +3468,14 @@ export default function CardPairingModal({
                   button it is about. Quiet and static (the status region
                   announced it once); Confirm's description points at it. */}
               {teamsLate && (
-                <p id="pairing-teams-late" className="text-xs text-gray-300">
+                <p id="pairing-teams-late" className="text-xs text-ink-2">
                   {teamsLateNotice}
                 </p>
               )}
             </div>
             <div className="flex gap-2">
               <NeonButton
-                secondary
+                variant="secondary"
                 size="2"
                 onClick={requestClose}
                 // Specific, matching every other dialog in this directory —

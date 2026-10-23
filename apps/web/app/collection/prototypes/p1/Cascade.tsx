@@ -108,7 +108,7 @@ export default function Cascade({
       role="group"
       aria-label={label}
       {...{ [DRILL_ROW_ATTR]: "" }}
-      className="relative flex flex-row items-start gap-4 overflow-x-auto pb-4"
+      className="relative flex flex-row items-start gap-4 overflow-x-auto pr-2 pb-4"
     >
       {column("sport", "Sports", sportItems(), drill.sport)}
       {drill.sport && column("year", "Years", yearItems(drill.sport), drill.year === null ? null : String(drill.year))}

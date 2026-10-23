@@ -1195,7 +1195,7 @@ export default function EntityColumn({
   // rightOf a row, and a second match here is a resolution hazard.)
   const customForm = (
     <div
-      className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+      className="bg-raised p-6 rounded-lg shadow"
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         // Escape steps BACK out of a confirm before it closes the form: the
@@ -1240,12 +1240,10 @@ export default function EntityColumn({
             autoFocus
           />
           {customStage.kind === "checking" && (
-            // text-gray-500 measures ~3:1 against both bg-white and the
-            // dark:bg-gray-800 this form actually renders on — below WCAG
-            // 1.4.3's 4.5:1 for normal text. gray-600/dark:gray-400 matches
-            // the same dual-mode pairing already used a few lines down for
+            // text-ink-3 clears WCAG 1.4.3's 4.5:1 on this form's raised
+            // surface in both modes, the same role used a few lines down for
             // "Fetching from marketplaces…".
-            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3" role="status">
+            <p className="text-xs text-ink-3 mb-3" role="status">
               Checking where this name is already used…
             </p>
           )}
@@ -1253,7 +1251,7 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1275,7 +1273,7 @@ export default function EntityColumn({
               Add
             </NeonButton>
             <NeonButton
-              cancel
+              variant="negative"
               className={fieldClass("btn-cancel")}
               aria-label={cancelLabel}
               onClick={closeCustomForm}
@@ -1294,7 +1292,7 @@ export default function EntityColumn({
           </p>
           {rehomeSentence && (
             // Same dual-mode contrast as the other explanatory lines here.
-            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+            <p className="text-xs text-ink-3 mb-3">
               {rehomeSentence}
             </p>
           )}
@@ -1302,7 +1300,7 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1328,7 +1326,7 @@ export default function EntityColumn({
               Create
             </NeonButton>
             <NeonButton
-              secondary
+              variant="secondary"
               className={fieldClass("btn-confirm-back")}
               aria-label={backToInputLabel}
               onClick={backToInput}
@@ -1346,20 +1344,20 @@ export default function EntityColumn({
           <p className="text-sm mb-1">{existsSentence}</p>
           {otherMatchCount > 0 && (
             // Same dual-mode contrast fix as the "Checking…" status line above.
-            <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">
+            <p className="text-xs text-ink-3 mb-2">
               {otherMatchCount === 1
                 ? "1 other place also has it."
                 : `${otherMatchCount} other places also have it.`}
             </p>
           )}
-          <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+          <p className="text-xs text-ink-3 mb-3">
             Going to it keeps one row. Creating it here makes a second.
           </p>
           {customError && (
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1380,7 +1378,7 @@ export default function EntityColumn({
             {/* Decision 5: kept, but secondary and explicit — duplicating a
                 name across parents is sometimes right, and never a default. */}
             <NeonButton
-              secondary
+              variant="secondary"
               className={fieldClass("btn-create-anyway")}
               aria-label={createAnywayLabel}
               onClick={() => void runCreate(customStage.value, true)}
@@ -1396,7 +1394,7 @@ export default function EntityColumn({
               Create here anyway
             </NeonButton>
             <NeonButton
-              cancel
+              variant="negative"
               className={fieldClass("btn-exists-back")}
               aria-label={backToInputLabel}
               onClick={backToInput}
@@ -1419,7 +1417,7 @@ export default function EntityColumn({
             {customStage.matches.map((match, i) => (
               <li key={match._id}>
                 <NeonButton
-                  secondary
+                  variant="secondary"
                   ref={i === 0 ? confirmPrimaryRef : undefined}
                   className={fieldClass(`btn-pick-shared-${i}`)}
                   aria-label={pickSharedLabel(match.label)}
@@ -1431,13 +1429,13 @@ export default function EntityColumn({
               </li>
             ))}
             {customStage.total > customStage.matches.length && (
-              <li className="text-xs text-gray-600 dark:text-gray-400">
+              <li className="text-xs text-ink-3">
                 + {customStage.total - customStage.matches.length} more
               </li>
             )}
           </ul>
           <NeonButton
-            cancel
+            variant="negative"
             className={fieldClass("btn-shared-back")}
             aria-label={backToInputLabel}
             onClick={backToInput}
@@ -1473,7 +1471,7 @@ export default function EntityColumn({
         aria-label={`${suggestions.length} name${
           suggestions.length === 1 ? "" : "s"
         } to check — review suggestions`}
-        className="text-xs px-2.5 py-1 rounded-full border border-amber-700 dark:border-amber-400/70 bg-amber-400/15 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+        className="text-xs px-2.5 py-1 rounded-full border border-notice-warn-rule bg-neon-orange/15 text-notice-warn-ink focus-outline"
       >
         {suggestions.length} name{suggestions.length === 1 ? "" : "s"} to check
       </button>
@@ -1532,7 +1530,7 @@ export default function EntityColumn({
         )}
         {level && !hideCustom && (
           <NeonButton
-            secondary
+            variant="secondary"
             className={fieldClass("btn-open-custom")}
             onClick={openCustomForm}
             onKeyDown={(e) => activateOnEnter(e, openCustomForm)}
@@ -1546,7 +1544,7 @@ export default function EntityColumn({
           // NEO-237: in the place "+ Custom" would be, the line that says why
           // it is not — and what to do instead. Plain text, not a disabled
           // button: there is nothing here to press.
-          <span className="text-xs text-gray-600 dark:text-gray-400">
+          <span className="text-xs text-ink-3">
             {hideCustom.reason}
           </span>
         )}
@@ -1586,11 +1584,11 @@ export default function EntityColumn({
     // still false — the interaction effect no-ops until the first sync lands).
     if (showSyncingPanel) {
       return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+        <div className="bg-raised p-6 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">
             {syncingLabel ?? `Syncing ${addButtonText.replace(/^Sync /, "")}`}
           </h2>
-          <p className="text-gray-600 dark:text-gray-400">
+          <p className="text-ink-3">
             Fetching from marketplaces…
           </p>
         </div>
@@ -1606,7 +1604,7 @@ export default function EntityColumn({
     return (
       <>
         {syncStatus?.status === "error" && (
-          <div className="p-3 mb-1 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm">
+          <div className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm">
             {syncStatus.message || "Couldn't sync options."}
           </div>
         )}
@@ -1663,7 +1661,7 @@ export default function EntityColumn({
           queried, and a stale/clashed decision is something to look at again,
           not something to acknowledge. */}
       {suggestionOutcome && (
-        <p className="text-xs text-gray-400" role="status">
+        <p className="text-xs text-ink-3" role="status">
           {suggestionOutcome}
         </p>
       )}
@@ -1703,7 +1701,7 @@ export default function EntityColumn({
         // because a background sync can land while this column is scrolled well
         // off-screen and an in-flow banner would announce to nobody.
         <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-amber-400/60 rounded text-xs text-amber-300 shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
           role="status"
           aria-live="polite"
         >

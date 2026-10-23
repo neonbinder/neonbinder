@@ -8,6 +8,7 @@ import type { BinderLabel } from "../store";
 import { binderTeamPicks, defaultLabelForNew, sameLabel, shelfColors, validLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * A new binder off the shelf (p2's dialog): one you fill yourself (with real
@@ -27,10 +28,10 @@ import { teamRule } from "./model";
 type RuleKind = "player" | "team";
 
 const CHOICE =
-  "flex cursor-pointer items-start gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 has-[:checked]:border-[#00C2FF] has-[:checked]:text-white has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#00C2FF]";
+  "flex cursor-pointer items-start gap-2 rounded-md border border-field-rule bg-field px-3 py-2 text-sm text-ink-2 has-[:checked]:border-selection has-[:checked]:text-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus";
 const SELECT =
-  "w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
-const LABEL = "mb-1 block text-sm font-medium text-slate-300";
+  "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
+const LABEL = "mb-1 block text-sm font-medium text-ink-2";
 
 const sortedPlayers = [...players].sort((a, b) => a.name.localeCompare(b.name));
 const sortedTeams = [...teams].sort(
@@ -88,10 +89,10 @@ export default function NewBinderDialog({
   return (
     <Modal labelledBy={titleId} onClose={onClose} className="max-w-lg">
       <form onSubmit={submit} className="p-5">
-        <h2 id={titleId} className="text-xl font-bold text-white">
+        <h2 id={titleId} className="text-xl font-bold text-ink">
           New binder
         </h2>
-        <p className="mt-1 text-sm text-slate-300">Name it, then pick how it fills up.</p>
+        <p className="mt-1 text-sm text-ink-2">Name it, then pick how it fills up.</p>
 
         <div className="mt-4">
           <Input
@@ -111,26 +112,26 @@ export default function NewBinderDialog({
               <input
                 type="radio"
                 name={`${titleId}-kind`}
-                className="mt-0.5 h-4 w-4 accent-[#00C2FF]"
+                className="mt-0.5 h-4 w-4 accent-selection"
                 checked={kind === "manual"}
                 onChange={() => setKind("manual")}
               />
               <span>
                 <span className="block font-medium">I&apos;ll slot cards in myself</span>
-                <span className="block text-slate-400">Drag from the pack, or file a copy from its details.</span>
+                <span className="block text-ink-3">Drag from the pack, or file a copy from its details.</span>
               </span>
             </label>
             <label className={CHOICE}>
               <input
                 type="radio"
                 name={`${titleId}-kind`}
-                className="mt-0.5 h-4 w-4 accent-[#00C2FF]"
+                className="mt-0.5 h-4 w-4 accent-selection"
                 checked={kind === "smart"}
                 onChange={() => setKind("smart")}
               />
               <span>
                 <span className="block font-medium">Smart: it fills itself</span>
-                <span className="block text-slate-400">
+                <span className="block text-ink-3">
                   Every card that fits the rule, the ones you have and the ones you need.
                 </span>
               </span>
@@ -142,13 +143,13 @@ export default function NewBinderDialog({
           <label className={`${CHOICE} mt-4`}>
             <input
               type="checkbox"
-              className="mt-0.5 h-4 w-4 accent-[#00C2FF]"
+              className="mt-0.5 h-4 w-4 accent-selection"
               checked={pages}
               onChange={(e) => setPages(e.target.checked)}
             />
             <span>
               <span className="block font-medium">Give it nine-pocket pages</span>
-              <span className="block text-slate-400">
+              <span className="block text-ink-3">
                 So it can match the binder on your real shelf, pocket for pocket.
               </span>
             </span>
@@ -193,19 +194,19 @@ export default function NewBinderDialog({
             </div>
             {ruleKind === "team" && (
               <>
-                <p className="text-sm text-slate-300">
+                <p className="text-sm text-ink-2">
                   Cards showing the {team?.name ?? "team"} on the card, in that jersey.
                 </p>
                 <label className={CHOICE}>
                   <input
                     type="checkbox"
-                    className="mt-0.5 h-4 w-4 accent-[#00C2FF]"
+                    className="mt-0.5 h-4 w-4 accent-selection"
                     checked={alumni}
                     onChange={(e) => setAlumni(e.target.checked)}
                   />
                   <span>
                     <span className="block font-medium">Also count anyone who played for them</span>
-                    <span className="block text-slate-400">
+                    <span className="block text-ink-3">
                       Their alumni too, on any team&apos;s card. College days count.
                     </span>
                   </span>
@@ -215,23 +216,25 @@ export default function NewBinderDialog({
           </div>
         )}
 
-        <section aria-labelledby={`${titleId}-spine`} className="mt-5 border-t border-slate-700 pt-4">
+        <section aria-labelledby={`${titleId}-spine`} className="mt-5 border-t border-rule-strong pt-4">
           <div className="flex flex-wrap items-center gap-3">
-            <h3 id={`${titleId}-spine`} className="text-sm font-medium text-slate-300">
+            <h3 id={`${titleId}-spine`} className="text-sm font-medium text-ink-2">
               Spine label
             </h3>
             {!styling && <LabelChip name={trimmed || "Your binder"} label={draft} />}
-            <button
+            <NeonButton
               type="button"
+              variant="secondary"
+              outline
               aria-expanded={styling}
               onClick={() => setStyling((v) => !v)}
-              className="ml-auto min-h-10 rounded-md border border-slate-600 px-3 text-sm font-medium text-slate-100 hover:border-neon-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+              className="ml-auto min-h-10"
             >
               {styling ? "Done styling" : "Style the spine"}
-            </button>
+            </NeonButton>
           </div>
           {!styling && (
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1 text-xs text-ink-3">
               {custom
                 ? "Your colors and lettering."
                 : kind === "smart"
@@ -254,25 +257,18 @@ export default function NewBinderDialog({
               />
             </div>
           )}
-          <p role="alert" className="mt-2 text-sm text-amber-300 empty:hidden">
+          <p role="alert" className="mt-2 text-sm text-notice-warn-ink empty:hidden">
             {labelError ? "Both label colors need to be hex, like #203731." : ""}
           </p>
         </section>
 
         <div className="mt-6 flex flex-wrap justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-10 rounded-md border border-slate-600 px-4 text-sm font-medium text-slate-200 hover:border-slate-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
-          >
+          <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
             Cancel
-          </button>
-          <button
-            type="submit"
-            className="min-h-10 rounded-md bg-neon-green px-4 text-sm font-bold text-black hover:bg-[#33e07c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
-          >
+          </NeonButton>
+          <NeonButton type="submit" className="min-h-10">
             Put it on the shelf
-          </button>
+          </NeonButton>
         </div>
       </form>
     </Modal>

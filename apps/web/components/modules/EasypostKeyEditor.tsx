@@ -122,7 +122,7 @@ export default function EasypostKeyEditor() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-ink-3">
         Connect EasyPost to buy postage for your labels — about $0.80 for a 1oz
         letter, a little less than a stamp. Postage is charged to your own
         EasyPost account; NeonBinder never handles the money.
@@ -130,16 +130,16 @@ export default function EasypostKeyEditor() {
 
       <p className="text-sm">
         {saved === null ? (
-          <span className="text-slate-400">Checking connection…</span>
+          <span className="text-ink-3">Checking connection…</span>
         ) : saved ? (
-          <span className="text-neon-green">EasyPost key saved.</span>
+          <span className="text-neon-green-text">EasyPost key saved.</span>
         ) : (
-          <span className="text-slate-400">No EasyPost key saved yet.</span>
+          <span className="text-ink-3">No EasyPost key saved yet.</span>
         )}
       </p>
 
       <div>
-        <label htmlFor="easypost-key" className="block text-sm font-medium mb-1 text-slate-300">
+        <label htmlFor="easypost-key" className="block text-sm font-medium mb-1 text-ink-2">
           {saved ? "Replace API key" : "API key"}
         </label>
         <Input
@@ -156,13 +156,13 @@ export default function EasypostKeyEditor() {
           data-lpignore="true"
           aria-describedby="easypost-key-hint"
         />
-        <p id="easypost-key-hint" className="text-xs text-slate-400 mt-1">
+        <p id="easypost-key-hint" className="text-xs text-ink-3 mt-1">
           Find it in EasyPost under Account Settings → API Keys. Use a Production
           key to buy real postage; a Test key prices labels without charging.
           First time?{" "}
           <Link
             to="/easypost-setup"
-            className="underline text-slate-300 hover:text-neon-teal"
+            className="underline text-ink-2 hover:text-neon-teal-text"
           >
             Follow the setup guide
           </Link>
@@ -179,7 +179,7 @@ export default function EasypostKeyEditor() {
             type="button"
             onClick={() => void handleClear()}
             disabled={busy}
-            className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2 disabled:opacity-50"
+            className="text-sm text-ink-3 hover:text-ink-2 underline p-2 -m-2 disabled:opacity-50"
           >
             Remove key
           </button>
@@ -191,7 +191,7 @@ export default function EasypostKeyEditor() {
         role={messageType === "error" ? "alert" : "status"}
         aria-live={messageType === "error" ? "assertive" : "polite"}
         className={`text-sm ${
-          messageType === "success" ? "text-neon-green" : "text-neon-pink"
+          messageType === "success" ? "text-neon-green-text" : "text-neon-pink-text"
         }`}
       >
         {message}

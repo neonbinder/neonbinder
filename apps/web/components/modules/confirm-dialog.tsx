@@ -154,14 +154,14 @@ export function ConfirmDialog({
           ? "confirm-dialog-description confirm-dialog-error"
           : "confirm-dialog-description"
       }
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 outline-none"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 outline-none"
       onKeyDown={handleKeyDown}
       onClick={() => {
         if (!busy) onCancel();
       }}
     >
       <div
-        className="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-xl"
+        className="w-full max-w-md rounded-lg border border-rule-strong bg-field p-6 shadow-xl shadow-offset"
         onClick={(event) => event.stopPropagation()}
       >
         <h2
@@ -172,7 +172,7 @@ export function ConfirmDialog({
         </h2>
         <p
           id="confirm-dialog-description"
-          className="mb-5 text-sm text-slate-400"
+          className="mb-5 text-sm text-ink-3"
         >
           {description}
         </p>
@@ -180,7 +180,7 @@ export function ConfirmDialog({
           <p
             id="confirm-dialog-error"
             role="alert"
-            className="mb-5 text-sm text-[#FF2E9A]"
+            className="mb-5 text-sm text-neon-pink-text"
           >
             {error}
           </p>
@@ -201,13 +201,13 @@ export function ConfirmDialog({
             role="group"
             tabIndex={0}
             aria-label={childrenLabel}
-            className="mb-5 max-h-60 overflow-y-auto rounded border border-slate-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00D558]"
+            className="mb-5 max-h-60 overflow-y-auto rounded border border-control focus-outline"
           >
             {children}
           </div>
         )}
         <div className="flex gap-3">
-          <NeonButton cancel type="button" onClick={onConfirm} disabled={busy}>
+          <NeonButton variant="negative" type="button" onClick={onConfirm} disabled={busy}>
             {/* Label keyed off the SAME condition as `disabled` (NEO-128): the
                 E2E driver cannot read `enabled` on web, so the label is the only
                 evidence that the control is inert. */}
@@ -215,7 +215,7 @@ export function ConfirmDialog({
           </NeonButton>
           <NeonButton
             ref={cancelRef}
-            secondary
+            variant="secondary"
             type="button"
             onClick={onCancel}
             disabled={busy}

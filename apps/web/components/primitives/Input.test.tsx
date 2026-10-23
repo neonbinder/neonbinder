@@ -31,28 +31,23 @@ import { Textarea } from "./Textarea";
 const field = () => screen.getByLabelText("field") as HTMLInputElement;
 
 describe("Input — surface", () => {
-  it("defaults to the always-dark field", () => {
+  it("defaults to the input well, in roles that follow the mode (NEO-356)", () => {
     render(<Input bare aria-label="field" />);
     const el = field();
-    expect(el.classList.contains("bg-slate-900")).toBe(true);
-    expect(el.classList.contains("bg-white")).toBe(false);
-  });
-
-  it("'panel' follows the bi-themed card: white in light, gray-900 in dark", () => {
-    render(<Input bare surface="panel" aria-label="field" />);
-    const el = field();
-    for (const cls of [
-      "bg-white",
-      "text-gray-900",
-      "placeholder:text-gray-500",
-      "border-gray-500",
-      "dark:bg-gray-900",
-      "dark:text-gray-100",
-      "dark:placeholder:text-gray-400",
-    ]) {
+    for (const cls of ["bg-field", "border-field-rule", "text-ink", "placeholder:text-ink-3", "focus-outline"]) {
       expect(el.classList.contains(cls)).toBe(true);
     }
-    expect(el.classList.contains("bg-slate-900")).toBe(false);
+    expect(el.className).not.toMatch(/\bdark:/);
+  });
+
+  it("'panel' is the recessed well on a raised card, edged in the control colour", () => {
+    render(<Input bare surface="panel" aria-label="field" />);
+    const el = field();
+    for (const cls of ["bg-raised-deep", "border-control", "text-ink", "placeholder:text-ink-3"]) {
+      expect(el.classList.contains(cls)).toBe(true);
+    }
+    expect(el.classList.contains("bg-field")).toBe(false);
+    expect(el.className).not.toMatch(/\bdark:/);
   });
 });
 
@@ -97,18 +92,17 @@ describe("Input — bare mode", () => {
     expect(cls).not.toContain("py-2");
     expect(cls).not.toContain("text-base");
     // ...but the visual identity is still applied.
-    expect(cls).toContain("bg-slate-900");
+    expect(cls).toContain("bg-field");
     expect(cls).toContain("w-28");
     expect(cls).toContain("p-1.5");
   });
 
-  it("pairs its hardcoded surface with a hardcoded text colour", () => {
-    // The surface is always bg-slate-900, so its text colour is hardcoded too
-    // rather than borrowed from the page's `--foreground` token (which used to
-    // flip to #171717 under a light-mode OS, before NEO-341 pinned it dark).
+  it("pairs its own surface with its own ink, not the page's", () => {
+    // The field owns its well, so it owns the ink on it (`text-ink`) rather
+    // than borrowing the page's `--foreground`.
     render(<Input bare aria-label="field" />);
     const cls = field().className;
-    expect(cls).toContain("text-slate-100");
+    expect(cls).toContain("text-ink");
     expect(cls).not.toContain("text-foreground");
   });
 

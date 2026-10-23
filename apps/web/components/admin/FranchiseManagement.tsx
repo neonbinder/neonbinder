@@ -120,7 +120,7 @@ function RemoveTeamButton({
         void onRemove(teamId, label);
       }}
       aria-disabled={unavailable}
-      className={`ml-auto rounded-sm px-1 py-1 text-xs text-neon-pink underline underline-offset-2 transition-colors hover:text-neon-pink/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-pink ${
+      className={`ml-auto rounded-sm px-1 py-1 text-xs text-neon-pink-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline ${
         unavailable ? "cursor-not-allowed opacity-50" : ""
       }`}
     >
@@ -178,11 +178,11 @@ function FranchiseDetail({
   }, [loadedId]);
 
   if (view === undefined) {
-    return <p className="text-sm text-slate-400">Loading the franchise…</p>;
+    return <p className="text-sm text-ink-3">Loading the franchise…</p>;
   }
   if (view === null) {
     return (
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-ink-3">
         That franchise is gone. Pick another from the list.
       </p>
     );
@@ -246,11 +246,11 @@ function FranchiseDetail({
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="scroll-mt-32 text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-purple"
+          className="scroll-mt-32 text-lg font-semibold leading-tight focus-outline focus-visible:rounded-sm"
         >
           {franchise.name}
         </h3>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           {teams.length === 1 ? "1 team" : `${teams.length} teams`} on this
           thread
         </p>
@@ -266,13 +266,13 @@ function FranchiseDetail({
         {/* Read-only treatment: a recessed surface rather than a `disabled`
             input, whose opacity takes the text under the 4.5:1 floor. */}
         <p
-          className={`w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-300 ${FIELD_BOX_HEIGHT}`}
+          className={`w-full rounded-md border border-rule bg-sheet px-3 py-2 text-base text-ink-2 ${FIELD_BOX_HEIGHT}`}
         >
           Sport:{" "}
           {sportLabel || sportNameById.get(franchise.sportId) || "Unknown"}
         </p>
       </div>
-      <p className="-mt-2 text-sm text-slate-400">
+      <p className="-mt-2 text-sm text-ink-3">
         Call it whatever reads right to you — the teams keep their own names.
       </p>
 
@@ -290,15 +290,15 @@ function FranchiseDetail({
           The thread. See the file header for why this is a rail and not a
           list, and why undated rows sit outside it.
           ------------------------------------------------------------------ */}
-      <div className="space-y-3 border-t border-slate-800 pt-4">
+      <div className="space-y-3 border-t border-rule pt-4">
         <h4 className="text-base font-semibold">The thread</h4>
 
         {teams.length === 0 ? (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-ink-3">
             No teams yet. Open a team on{" "}
             <Link
               to="/admin/teams"
-              className="rounded-sm text-neon-purple-text underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+              className="rounded-sm text-neon-purple-text underline underline-offset-2 hover:text-ink focus-outline"
             >
               Team Management
             </Link>{" "}
@@ -316,7 +316,7 @@ function FranchiseDetail({
                 sequence; the rail only says it to the eye. */}
             <span
               aria-hidden="true"
-              className="absolute left-[3px] top-3 bottom-3 w-px bg-slate-700"
+              className="absolute left-[3px] top-3 bottom-3 w-px bg-rule-strong"
             />
             <ol className="space-y-1 pl-5">
               {dated.map((team) => {
@@ -330,11 +330,11 @@ function FranchiseDetail({
                     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-1.5">
                       <Link
                         to={`/admin/teams?team=${team._id}`}
-                        className="rounded-sm text-sm text-slate-100 underline decoration-slate-700 underline-offset-4 transition-colors hover:decoration-neon-purple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+                        className="rounded-sm text-sm text-ink underline decoration-rule-strong underline-offset-4 transition-colors hover:decoration-neon-purple focus-outline"
                       >
                         {label}
                       </Link>
-                      <span className="font-mono text-xs tabular-nums text-slate-400">
+                      <span className="font-mono text-xs tabular-nums text-ink-3">
                         {eraLabel(team.yearsActive)}
                       </span>
                       <RemoveTeamButton
@@ -352,11 +352,11 @@ function FranchiseDetail({
         )}
 
         {undated.length > 0 && (
-          <div className="space-y-1 border-t border-dashed border-slate-800 pt-3">
-            <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <div className="space-y-1 border-t border-dashed border-rule pt-3">
+            <h5 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
               No years yet
             </h5>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               Add active years on Team Management and these drop into the thread
               in order.
             </p>
@@ -370,7 +370,7 @@ function FranchiseDetail({
                   >
                     <Link
                       to={`/admin/teams?team=${team._id}`}
-                      className="rounded-sm text-sm text-slate-100 underline decoration-slate-700 underline-offset-4 transition-colors hover:decoration-neon-purple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+                      className="rounded-sm text-sm text-ink underline decoration-rule-strong underline-offset-4 transition-colors hover:decoration-neon-purple focus-outline"
                     >
                       {label}
                     </Link>
@@ -388,7 +388,7 @@ function FranchiseDetail({
         )}
 
         {truncated && (
-          <p className="text-sm text-neon-yellow" role="status">
+          <p className="text-sm text-neon-yellow-text" role="status">
             Showing the first {teams.length} teams on this franchise. There are
             more.
           </p>
@@ -397,7 +397,7 @@ function FranchiseDetail({
 
       {status && (
         <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
+          className={`text-sm ${status.isError ? "text-neon-pink-text" : "text-ink-2"}`}
           role={status.isError ? "alert" : "status"}
         >
           {status.text}
@@ -620,7 +620,7 @@ export default function FranchiseManagement() {
             id="franchise-sport-filter"
             value={sportFilter}
             onChange={(e) => setSportFilter(e.target.value)}
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+            className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
           >
             <option value={ALL_SPORTS}>All sports</option>
             {sportList.map((sport) => (
@@ -635,7 +635,7 @@ export default function FranchiseManagement() {
             auto-width node growing from 0 to ~200px is the other half of the
             reflow. See LeagueManagement.tsx. */}
         <p
-          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
+          className={`flex items-center text-xs text-ink-3 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>
@@ -659,11 +659,11 @@ export default function FranchiseManagement() {
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,18rem)_1fr] gap-4">
         {/* Master */}
-        <div className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto">
+        <div className="rounded-lg border border-rule max-h-[32rem] overflow-y-auto">
           {listing === undefined ? (
-            <p className="p-3 text-sm text-slate-400">Loading franchises…</p>
+            <p className="p-3 text-sm text-ink-3">Loading franchises…</p>
           ) : visible.length === 0 ? (
-            <p className="p-3 text-sm text-slate-400">
+            <p className="p-3 text-sm text-ink-3">
               {rows.length === 0
                 ? "No franchises yet. Start one to string a team's old names together."
                 : "No franchises match that filter."}
@@ -679,16 +679,16 @@ export default function FranchiseManagement() {
                       ref={isSelected ? selectedRowRef : null}
                       onClick={() => select(row._id)}
                       aria-current={isSelected ? "true" : undefined}
-                      className={`flex w-full flex-col gap-y-0.5 border-l-2 px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
+                      className={`flex w-full flex-col gap-y-0.5 border-l-2 px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
-                          : "border-transparent text-slate-300 hover:bg-slate-900"
+                          : "border-transparent text-ink-2 hover:bg-list-hover"
                       }`}
                     >
                       <span className="w-full truncate" title={row.name}>
                         {row.name}
                       </span>
-                      <span className="flex w-full items-baseline gap-x-2 text-xs text-slate-400">
+                      <span className="flex w-full items-baseline gap-x-2 text-xs text-ink-3">
                         <span>
                           {sportNameById.get(row.sportId) ?? "Unknown sport"}
                         </span>
@@ -708,7 +708,7 @@ export default function FranchiseManagement() {
         </div>
 
         {/* Detail */}
-        <div className="rounded-lg border border-slate-800 p-4">
+        <div className="rounded-lg border border-rule p-4">
           {status && (
             /* The add form's own line, at the head of the column that carries
                the form — and `sticky`, so it is pinned under the sticky header
@@ -722,8 +722,8 @@ export default function FranchiseManagement() {
                `binder-header`'s logo group made, which cost this suite a
                swallowed tap in NEO-260. It never scrolls the page. */
             <p
-              className={`pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
-                status.isError ? "text-neon-pink" : "text-slate-300"
+              className={`pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-rule bg-surface px-3 py-2 text-sm ${
+                status.isError ? "text-neon-pink-text" : "text-ink-2"
               }`}
               role={status.isError ? "alert" : "status"}
             >
@@ -733,7 +733,7 @@ export default function FranchiseManagement() {
           {adding ? (
             <div className="space-y-4">
               <h3 className="text-lg font-semibold">Start a franchise</h3>
-              <p className="text-sm text-slate-400">
+              <p className="text-sm text-ink-3">
                 One name for a team's whole run — every version of it, in every
                 city it ever played.
               </p>
@@ -764,7 +764,7 @@ export default function FranchiseManagement() {
                     id="new-franchise-sport"
                     value={addSportId}
                     onChange={(e) => setNewSportId(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+                    className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
                   >
                     {sportList.map((sport) => (
                       <option key={sport._id} value={sport._id}>
@@ -782,7 +782,7 @@ export default function FranchiseManagement() {
                 >
                   {busy ? "Starting…" : "Start franchise"}
                 </NeonButton>
-                <NeonButton type="button" cancel onClick={closeAddForm}>
+                <NeonButton type="button" variant="negative" onClick={closeAddForm}>
                   Cancel
                 </NeonButton>
               </div>
@@ -795,7 +795,7 @@ export default function FranchiseManagement() {
               sportNameById={sportNameById}
             />
           ) : (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-3">
               Pick a franchise to see every team on it, oldest first.
             </p>
           )}

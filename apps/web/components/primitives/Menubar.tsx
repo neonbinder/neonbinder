@@ -31,7 +31,7 @@ export const Menubar: React.FC<MenubarProps> = ({
   return (
     <MenubarContext.Provider value={{ activeItem, setActiveItem }}>
       <div
-        className={`inline-flex items-start p-1.5 rounded-md border border-slate-300 bg-white ${className}`}
+        className={`inline-flex items-start p-1.5 rounded-md border border-control bg-raised ${className}`}
       >
         {children}
       </div>
@@ -58,7 +58,7 @@ export const MenubarItem: React.FC<MenubarItemProps> = ({
       type="button"
       onClick={() => setActiveItem(value)}
       className={`flex items-center px-3 py-1.5 text-sm font-medium transition-colors ${
-        isActive ? "bg-slate-50 rounded" : "hover:bg-slate-50 rounded"
+        isActive ? "bg-hover rounded" : "hover:bg-hover rounded"
       } ${className}`}
     >
       {children}

@@ -16,6 +16,7 @@ import OwnedShelf from "./OwnedShelf";
 import Scoreboard from "./Scoreboard";
 import Wall from "./Wall";
 import "./p3.css";
+import { ForceDark } from "@/components/primitives/ForceDark";
 
 /**
  * NEO-350 — collection prototype 3, "Checklist Wall".
@@ -50,7 +51,7 @@ let hasMounted = false;
 
 const knownSet = (id: string | null): id is SetId => !!id && sets.some((s) => s.id === id);
 
-export default function CollectionPrototype3() {
+function CollectionPrototype3Page() {
   const name = prototypeName(3);
   useDocumentTitle(`${name} · Collection prototype`);
   const store = usePrototypeStore("p3");
@@ -257,5 +258,18 @@ export default function CollectionPrototype3() {
         )}
       </div>
     </P3Context.Provider>
+  );
+}
+
+/**
+ * NEO-356 — this prototype was only ever designed dark and is not migrated to
+ * the colour roles, so it keeps the whole page dark while it is open, whatever
+ * the collector's setting. Leaving restores their own mode.
+ */
+export default function CollectionPrototype3() {
+  return (
+    <ForceDark>
+      <CollectionPrototype3Page />
+    </ForceDark>
   );
 }

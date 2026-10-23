@@ -93,7 +93,7 @@ export default function MobileNav({ onClose }: MobileNavProps) {
     <div className="lg:hidden" onKeyDown={handleKeyDown}>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/60 z-40"
+        className="fixed inset-0 bg-scrim z-40"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -104,9 +104,9 @@ export default function MobileNav({ onClose }: MobileNavProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-nav-title"
-        className="fixed top-0 right-0 h-full w-64 max-w-[85vw] bg-gray-900 border-l border-gray-700 z-50 flex flex-col animate-slide-in-right overscroll-contain"
+        className="fixed top-0 right-0 h-full w-64 max-w-[85vw] bg-raised-deep text-foreground border-l border-rule-strong z-50 flex flex-col animate-slide-in-right overscroll-contain"
       >
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between gap-2">
+        <div className="p-4 border-b border-rule-strong flex items-center justify-between gap-2">
           <h2 id="mobile-nav-title" className="neon-header text-xl">
             Menu
           </h2>
@@ -114,7 +114,7 @@ export default function MobileNav({ onClose }: MobileNavProps) {
             type="button"
             onClick={onClose}
             aria-label="Close menu"
-            className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-white hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue transition-colors"
+            className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-md text-ink-3 hover:text-ink hover:bg-hover focus-outline transition-colors"
           >
             <XMarkIcon className="w-6 h-6" aria-hidden="true" />
           </button>
@@ -124,13 +124,9 @@ export default function MobileNav({ onClose }: MobileNavProps) {
             <NavLink
               key={item.path}
               to={item.path}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue
-                ${isActive
-                  ? `${item.glowClass} ${item.activeColor} bg-gray-800`
-                  : "text-gray-400 hover:text-white hover:bg-gray-800"
-                }`
-              }
+              // `binder-row` (app/theme.css) colours the row and lights the
+              // current one (aria-current) in its tab's hue.
+              className={`binder-row ${item.hueClass} flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 focus-outline`}
             >
               <item.icon className="w-5 h-5 shrink-0" aria-hidden="true" />
               <span className="text-sm font-medium">{item.label}</span>

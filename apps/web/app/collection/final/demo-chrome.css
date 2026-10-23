@@ -1,0 +1,18 @@
+/*
+ * NEO-356 — the public demo's Sign up tab (DemoRail). It wears the lit
+ * index-tab look without claiming to be the current page: `aria-current`
+ * would announce an exit as "current page", so the look is a class instead.
+ * Dark: the lit tab's ground, ink and glow in its hue. Light: the lit tab's
+ * 6px edge and soft drop (app/theme.css, `.binder-tab[aria-current]`).
+ * Unlayered, so it outranks the `.binder-tab` rules in the components layer.
+ */
+.demo-tab-lit,
+.demo-tab-lit:hover {
+  background-color: var(--tab-lit);
+  color: var(--tab-ink);
+  box-shadow: var(--tab-glow);
+}
+[data-theme="light"] .demo-tab-lit,
+[data-theme="light"] .demo-tab-lit:hover {
+  box-shadow: inset 6px 0 0 var(--tab-hue), 0 8px 18px -10px rgb(0 0 0 / 0.35);
+}

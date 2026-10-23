@@ -1,0 +1,662 @@
+/*
+ * NEO-356 — the colour system, in two modes.
+ *
+ * Components paint with ROLES (`bg-surface`, `text-ink-2`, `border-rule`,
+ * `text-neon-pink-text`, `bg-on-neon-blue`...), never with palette steps
+ * (`bg-gray-900`, `text-white`, `ring-[#00C2FF]`). Each role is a CSS variable
+ * set twice: on `:root` (dark, the app as it looked before NEO-356, value for
+ * value) and on `[data-theme="light"]` (theme 6, "Trapper Keeper Glo").
+ * `<html data-theme>` is always resolved to `light` or `dark`: index.html's
+ * pre-paint script sets it from the stored choice or the system setting, and
+ * `src/theme/ThemeProvider.tsx` keeps it current after that.
+ *
+ * The `@theme inline` block at the end turns every role into a Tailwind
+ * colour, so `bg-raised` compiles to `background-color: var(--raised)` and
+ * follows the mode with no `dark:` variant. Opacity modifiers work too
+ * (`bg-raised/80` is a color-mix over the variable).
+ *
+ * Which role to reach for, and the rules around them: DESIGN.md (Colors). The TS mirror
+ * of these values, for code that needs a colour as data (team livery contrast):
+ * src/theme/tokens.ts, kept in step by src/theme/tokens.test.tsx.
+ *
+ * Dark values are Tailwind's own palette steps, copied as literals so the
+ * compiled CSS does not depend on Tailwind emitting a palette variable that no
+ * class happens to use.
+ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces: page, three raised steps, the input well, hover. */
+  --surface: #0a0a0a; /* the page; was --background */
+  --raised: oklch(27.8% 0.033 256.848); /* graphite cards and rows: was gray-800 */
+  --raised-deep: oklch(21% 0.034 264.665); /* panels, menus, the lit tab: was gray-900 */
+  --sheet: oklch(12.9% 0.042 264.695); /* big sheets and dialogs: was slate-950 */
+  --field: oklch(20.8% 0.042 265.755); /* input wells: was slate-900 */
+  --hover: oklch(27.8% 0.033 256.848); /* was hover:bg-gray-800 */
+
+  /* Lines. */
+  --rule: oklch(27.9% 0.041 260.031); /* dividers, the header rule: was slate-800 */
+  --rule-strong: oklch(37.2% 0.044 257.287); /* card and panel borders: was slate-700 / gray-700 */
+  --field-rule: oklch(37.2% 0.044 257.287); /* a text field's border: was slate-700 */
+  /* A control's boundary (checkbox, radio, a field on a card): needs 3:1
+   * (SC 1.4.11). slate-500 is the first step that passes on slate-900 and
+   * gray-800; it replaces border-slate-500/-600 (600 was 2.4:1). */
+  --control: oklch(55.4% 0.046 257.417);
+
+  /* Ink. */
+  --ink: #ffffff; /* was text-white / slate-100 */
+  --ink-2: oklch(86.9% 0.022 252.894); /* labels: was slate-300 / slate-200 */
+  --ink-3: oklch(70.4% 0.04 256.788); /* hints, placeholders: was slate-400 / gray-400 */
+  --foreground: #ededed; /* body text */
+  --wordmark: currentColor; /* the Neon Binder wordmark: inherits in dark */
+
+  /* State. */
+  --focus: #00c2ff;
+  --selection: #00c2ff;
+  --scrim: rgb(0 0 0 / 0.6);
+  --offset-shadow: transparent; /* the light-mode signature; nothing in dark */
+  --offset-shadow-complete: transparent;
+
+  /* Neon. One hue plays three roles: the fill (`bg-neon-X`, borders, rings),
+   * the hue as text on the page (`text-neon-X-text`), and the ink on the fill
+   * (`text-on-neon-X`). In dark the text is the fill itself, except violet,
+   * whose fill is under 4.5:1 on graphite. */
+  --neon-green: #00d558;
+  --neon-pink: #ff2e9a;
+  --neon-blue: #00c2ff;
+  --neon-yellow: #ffe600;
+  --neon-orange: #ff9e00;
+  --neon-teal: #00e5c0;
+  --neon-purple: #a44aff;
+
+  --neon-green-text: #00d558;
+  /* Pink as text is a touch lighter than the fill so it reaches 4.5:1 on a
+   * graphite card (the fill is 4.27:1 there). */
+  --neon-pink-text: #ff40a3;
+  --neon-blue-text: #00c2ff;
+  --neon-yellow-text: #ffe600;
+  --neon-orange-text: #ff9e00;
+  --neon-teal-text: #00e5c0;
+  --neon-purple-text: #b56bff;
+
+  --on-neon-green: #000000;
+  --on-neon-pink: #000000;
+  --on-neon-blue: #000000;
+  --on-neon-yellow: #000000;
+  --on-neon-orange: #000000;
+  --on-neon-teal: #000000;
+  --on-neon-purple: #000000;
+
+  /* A neon fill under the pointer: 85% of the fill over what is behind it. */
+  --neon-green-hover: color-mix(in oklab, #00d558 85%, transparent);
+  --neon-pink-hover: color-mix(in oklab, #ff2e9a 85%, transparent);
+  --neon-blue-hover: color-mix(in oklab, #00c2ff 85%, transparent);
+  --neon-yellow-hover: color-mix(in oklab, #ffe600 85%, transparent);
+  --neon-orange-hover: color-mix(in oklab, #ff9e00 85%, transparent);
+  --neon-teal-hover: color-mix(in oklab, #00e5c0 85%, transparent);
+  /* Violet is the darkest fill, so fading it toward the black page drops its
+   * black ink under 4.5:1 (about 3.9:1). It is NeonButton's tertiary fill, so
+   * under the pointer it lightens instead, as every fill does in light. */
+  --neon-purple-hover: #b66eff;
+
+  /* Notices: a tinted ground, readable ink, a rule. Dark is the family the
+   * app's notices already used most (blue/amber/red/green 900 ground, 200-300
+   * ink, 700 rule). */
+  --notice-info-bg: color-mix(in oklab, oklch(37.9% 0.146 265.522) 30%, transparent);
+  --notice-info-ink: oklch(88.2% 0.059 254.128);
+  --notice-info-rule: oklch(48.8% 0.243 264.376);
+  --notice-warn-bg: color-mix(in oklab, oklch(41.4% 0.112 45.904) 20%, transparent);
+  --notice-warn-ink: oklch(87.9% 0.169 91.605);
+  --notice-warn-rule: oklch(55.5% 0.163 48.998);
+  --notice-danger-bg: color-mix(in oklab, oklch(39.6% 0.141 25.723) 30%, transparent);
+  --notice-danger-ink: oklch(88.5% 0.062 18.334);
+  --notice-danger-rule: oklch(50.5% 0.213 27.518);
+  --notice-success-bg: color-mix(in oklab, oklch(39.3% 0.095 152.535) 20%, transparent);
+  --notice-success-ink: oklch(87.1% 0.15 154.449);
+  --notice-success-rule: oklch(52.7% 0.154 150.069);
+
+  /* Rows. A list row that is a TILE (the set picker's columns, the
+   * collection's cascade): its fill, its edge, and the fill under the
+   * pointer. Dark is the cascade as it always was (gray-700 / gray-600). */
+  --row: oklch(37.3% 0.034 259.733);
+  --row-rule: oklch(44.6% 0.03 256.802);
+  --row-hover: oklch(44.6% 0.03 256.802);
+  /* A hover that sits ON a raised surface: a popover's option, an icon
+   * button on a card, a collapsed column card (gray-700 in dark, where
+   * `--hover` would equal the card itself). */
+  --hover-raised: oklch(37.3% 0.034 259.733);
+  /* A flat list row (no fill at rest) under the pointer, on the page: the
+   * admin master lists (slate-900 in dark). */
+  --list-hover: oklch(20.8% 0.042 265.755);
+  /* A checklist row under the pointer, on a raised card (gray-700 at half
+   * strength in dark). */
+  --list-hover-raised: color-mix(in oklab, oklch(37.3% 0.034 259.733) 50%, transparent);
+
+  /* Neutral chips (a tag, a source pill, a filter chip at rest) and the
+   * step up from them (a chip on a row tile, a chip under the pointer).
+   * These, the row tiles above and the neutral buttons below are the dark
+   * mode's light greys: ink-3 and the pink and violet -text hues miss 4.5:1
+   * on all of them, and green, cyan and amber miss on the -600 step. Quiet
+   * text there is ink-2; a destructive hover is a pink fill. The full list is
+   * TEXT_NEVER_ON in src/theme/tokens.ts. */
+  --chip: oklch(37.3% 0.034 259.733);
+  --chip-strong: oklch(44.6% 0.03 256.802);
+  /* A neutral filled button: secondary actions beside a neon one. */
+  --button-neutral: oklch(37.2% 0.044 257.287);
+  --button-neutral-hover: oklch(44.6% 0.043 257.281);
+
+  /* A quiet tile on the page: a Print Shop tool card, a drop-zone summary.
+   * Dark is the well at 40% on the black page (was bg-slate-900/40), its
+   * hover the full well, its edge the divider. Light makes it a white sheet
+   * with a visible edge: a 40% white well on the light page is invisible. */
+  --panel: color-mix(in oklab, oklch(20.8% 0.042 265.755) 40%, transparent);
+  --panel-hover: oklch(20.8% 0.042 265.755);
+  --panel-rule: oklch(27.9% 0.041 260.031);
+
+  /* A promo panel's neon wash (the public landing page): the hue at 10% on
+   * the black page, with an edge in the hue. Light makes it a white sheet
+   * with a neutral edge; a 10% wash on paper is a pastel smudge. Use as
+   * gradient stops (`from-wash-green to-wash-blue`). */
+  --wash-green: color-mix(in oklab, #00d558 10%, transparent);
+  --wash-blue: color-mix(in oklab, #00c2ff 10%, transparent);
+  --wash-pink: color-mix(in oklab, #ff2e9a 10%, transparent);
+  --wash-rule-green: color-mix(in oklab, #00d558 30%, transparent);
+  --wash-rule-pink: color-mix(in oklab, #ff2e9a 40%, transparent);
+
+  /* The committed selection's line where the selection is otherwise a fill:
+   * nothing in dark (the hued fill carries it), a line in light, where a
+   * tint alone is a colour-only mark (WCAG 1.4.1). */
+  --selection-line: transparent;
+
+  /* Glow strength: 1 where neon is lit (dark), 0 on paper (light). Every
+   * glow multiplies its alpha by it, `rgb(0 194 255 / calc(0.6 * var(--glow)))`,
+   * and so does the black ground lit neon art sits on. */
+  --glow: 1;
+
+  /* Paper: printed things and their previews (a spine sheet, a QR tile) are
+   * white in both modes. */
+  --paper: #ffffff;
+  --on-paper: #000000;
+
+  /* Hued picks, badges and categories: a fill, its edge and ink on it, per
+   * hue. The set picker's columns each pick in their own hue (pink sports,
+   * blue years, green brands, purple sets, orange variant types, teal
+   * variants, amber parallels); the checklist's attribute badges use the
+   * same family. Dark is Tailwind's -900 fill, -700 edge, -300 ink. */
+  --pick-pink: oklch(40.8% 0.153 2.432);
+  --pick-pink-rule: oklch(52.5% 0.223 3.958);
+  --pick-pink-ink: oklch(82.3% 0.12 346.018);
+  --pick-blue: oklch(37.9% 0.146 265.522);
+  --pick-blue-rule: oklch(48.8% 0.243 264.376);
+  --pick-blue-ink: oklch(80.9% 0.105 251.813);
+  --pick-green: oklch(39.3% 0.095 152.535);
+  --pick-green-rule: oklch(52.7% 0.154 150.069);
+  --pick-green-ink: oklch(87.1% 0.15 154.449);
+  --pick-purple: oklch(38.1% 0.176 304.987);
+  --pick-purple-rule: oklch(49.6% 0.265 301.924);
+  --pick-purple-ink: oklch(82.7% 0.119 306.383);
+  --pick-orange: oklch(40.8% 0.123 38.172);
+  --pick-orange-rule: oklch(55.3% 0.195 38.402);
+  --pick-orange-ink: oklch(83.7% 0.128 66.29);
+  --pick-teal: oklch(38.6% 0.063 188.416);
+  --pick-teal-rule: oklch(51.1% 0.096 186.391);
+  --pick-teal-ink: oklch(85.5% 0.138 181.071);
+  --pick-amber: oklch(41.4% 0.112 45.904);
+  --pick-amber-rule: oklch(55.5% 0.163 48.998);
+  --pick-amber-ink: oklch(87.9% 0.169 91.605);
+  --pick-red: oklch(39.6% 0.141 25.723);
+  --pick-red-rule: oklch(50.5% 0.213 27.518);
+  --pick-red-ink: oklch(80.8% 0.114 19.571);
+  --pick-emerald: oklch(37.8% 0.077 168.94);
+  --pick-emerald-rule: oklch(50.8% 0.118 165.612);
+  --pick-emerald-ink: oklch(84.5% 0.143 164.978);
+
+  /* The collection scoreboard's pips and the "found it" ring. */
+  --pip-owned: #00c2ff;
+  --pip-owned-glow: 0 0 4px rgba(0, 194, 255, 0.8);
+  --pip-want: #ffe600;
+  --pip-want-width: 1px;
+  --pip-missing: oklch(44.6% 0.043 257.281);
+  --spot: #ffe600;
+
+  /* The binder shelf's ledges. */
+  --ledge: linear-gradient(#1e293b, #0f172a 70%);
+  --ledge-shadow: 0 -1px 0 #00c2ff inset, 0 10px 24px rgba(0, 194, 255, 0.12), 0 2px 0 rgba(0, 0, 0, 0.6);
+  --ledge-special: linear-gradient(#2a1023, #12070f 70%);
+  --ledge-special-shadow: 0 -1px 0 #ff2e9a inset, 0 10px 24px rgba(255, 46, 154, 0.16), 0 2px 0 rgba(0, 0, 0, 0.6);
+
+  /* The binder index tabs (right edge). Shadows that use the tab's own hue
+   * are set on the tab itself (a `var()` resolves where it is declared). */
+  --tab-rest: color-mix(in oklab, oklch(27.8% 0.033 256.848) 80%, transparent);
+  --tab-rest-hover: oklch(27.8% 0.033 256.848);
+  --tab-rest-ink: var(--ink-3);
+  --tab-rest-hover-ink: var(--ink-3);
+  --tab-lit: oklch(21% 0.034 264.665);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --surface: #f7f8fc;
+  --raised: #ffffff;
+  --raised-deep: #ffffff;
+  --sheet: #ffffff;
+  --field: #ffffff;
+  --hover: #f0f2f9;
+
+  --rule: #dde0ea;
+  --rule-strong: #bcb9cf;
+  --field-rule: #757090; /* a field's edge needs 3:1 (SC 1.4.11) */
+  --control: #757090;
+
+  --ink: #18122b;
+  --ink-2: #322b48;
+  --ink-3: #57516e;
+  --foreground: #18122b;
+  --wordmark: #007a3b;
+
+  --focus: #7a2bd9;
+  --selection: #006da6;
+  --scrim: rgb(24 18 43 / 0.4);
+  --offset-shadow: #00c2ff;
+  --offset-shadow-complete: #00d558;
+
+  /* Fills stay full strength; as text each hue is deepened to 4.5:1. */
+  --neon-green-text: #007a3b;
+  --neon-pink-text: #c40068;
+  --neon-blue-text: #006da6;
+  --neon-yellow-text: #7a6400;
+  --neon-orange-text: #9a4d00;
+  --neon-teal-text: #007060;
+  --neon-purple-text: #7a2bd9;
+
+  --neon-green-hover: #33e07c;
+  --neon-pink-hover: #ff5cb0;
+  --neon-blue-hover: #4dd5ff;
+  --neon-yellow-hover: #ffeb33;
+  --neon-orange-hover: #ffb133;
+  --neon-teal-hover: #33eacd;
+  --neon-purple-hover: #b66eff;
+
+  --notice-info-bg: #eaf5fc;
+  --notice-info-ink: #005f8f;
+  --notice-info-rule: #006da6;
+  --notice-warn-bg: #fff5d6;
+  --notice-warn-ink: #6b4e00;
+  --notice-warn-rule: #a36a00;
+  /* Danger is a notice, not a button: red in both modes, as dark's red-900
+   * family already is. Buttons never borrow it (negative is pink). */
+  --notice-danger-bg: #fdecee;
+  --notice-danger-ink: #a3001a;
+  --notice-danger-rule: #c4001f;
+  --notice-success-bg: #e7f7ed;
+  --notice-success-ink: #006632;
+  --notice-success-rule: #007a3b;
+
+  /* Rows: white tiles with a visible edge, a cool tint under the pointer. */
+  --row: #ffffff;
+  --row-rule: #bcb9cf;
+  --row-hover: #f0f2f9;
+  --hover-raised: #f0f2f9;
+  --list-hover: #f0f2f9;
+  --list-hover-raised: #f0f2f9;
+
+  /* chip-strong and button-neutral-hover are one step up the grey: ink reads
+   * on them, but the green, pink, cyan and yellow -text hues do not (4.1 to
+   * 4.49:1), so neon text never sits on them. src/theme/tokens.ts
+   * TEXT_NEVER_ON lists the pairs; tokens.test.tsx holds the table to the
+   * palette and scans the class strings for any element that breaks it. */
+  --chip: #e8eaf2;
+  --chip-strong: #dde0ea;
+  --button-neutral: #e8eaf2;
+  --button-neutral-hover: #dde0ea;
+
+  --selection-line: #006da6;
+  --glow: 0;
+
+  --panel: #ffffff;
+  --panel-hover: #f0f2f9;
+  --panel-rule: #bcb9cf;
+
+  --wash-green: #ffffff;
+  --wash-blue: #ffffff;
+  --wash-pink: #ffffff;
+  --wash-rule-green: #bcb9cf;
+  --wash-rule-pink: #bcb9cf;
+
+  /* Hued picks: a pale tint of the hue, the same -700 edge (3:1 on white
+   * and on the tint), and -800 ink (4.5:1 on the tint). */
+  --pick-pink: oklch(94.8% 0.028 342.258);
+  --pick-pink-ink: oklch(45.9% 0.187 3.815);
+  --pick-blue: oklch(93.2% 0.032 255.585);
+  --pick-blue-ink: oklch(42.4% 0.199 265.638);
+  --pick-green: oklch(96.2% 0.044 156.743);
+  --pick-green-ink: oklch(44.8% 0.119 151.328);
+  --pick-purple: oklch(94.6% 0.033 307.174);
+  --pick-purple-ink: oklch(43.8% 0.218 303.724);
+  --pick-orange: oklch(95.4% 0.038 75.164);
+  --pick-orange-ink: oklch(47% 0.157 37.304);
+  --pick-teal: oklch(95.3% 0.051 180.801);
+  --pick-teal-ink: oklch(43.7% 0.078 188.216);
+  --pick-amber: oklch(96.2% 0.059 95.617);
+  --pick-amber-ink: oklch(47.3% 0.137 46.201);
+  --pick-red: oklch(93.6% 0.032 17.717);
+  --pick-red-ink: oklch(44.4% 0.177 26.899);
+  --pick-emerald: oklch(95% 0.052 163.051);
+  --pick-emerald-ink: oklch(43.2% 0.095 166.913);
+
+  /* Pips differ by shape as well as colour: a solid dot, a thick amber ring,
+   * a thin control-colour ring. */
+  --pip-owned: #006da6;
+  --pip-owned-glow: none;
+  --pip-want: #a36a00;
+  --pip-want-width: 2px;
+  --pip-missing: #757090;
+  --spot: #b86a00;
+
+  --ledge: linear-gradient(#d9ccf5, #b7a3e6 80%);
+  --ledge-shadow: 0 -2px 0 #0077c2 inset, 0 8px 18px -10px rgb(0 0 0 / 0.25);
+  --ledge-special: linear-gradient(#d9ccf5, #b7a3e6);
+  --ledge-special-shadow: 0 -2px 0 #c2006a inset;
+
+  --tab-rest: #ffffff;
+  --tab-rest-hover: #ffffff;
+  --tab-rest-ink: var(--ink-3);
+  --tab-rest-hover-ink: var(--ink);
+  --tab-lit: #ffffff;
+}
+
+/* ------------------------------------------------------------ signatures */
+
+/* The light theme's one bold move: a hard neon offset under a sheet, bottom
+ * and right only, no blur. Green when the sheet's set is complete. Applied
+ * explicitly (`shadow-offset`) to scoreboards, the set picker's columns,
+ * sheets, popovers and notices. In dark it does nothing, so the element keeps
+ * whatever shadow it had. Specificity (0,2,0) beats a `shadow-lg` on the same
+ * element in light; it composes with Tailwind's ring variables, so a selection
+ * ring still draws. Focus on an offset sheet sits 4px out, clear of the
+ * shadow. */
+@utility shadow-offset {
+  /* The sheet's other two edges (Jason, 2026-10-22: "it is hard to make out
+   * that they are a card"): a 1px hairline down the left and across the top,
+   * drawn inset so it shifts nothing and is never clipped. A sheet that
+   * already has a full border (`border`, `border-2`) keeps its own edge and
+   * skips the hairline, or the two would double up. */
+  [data-theme="light"] & {
+    --offset-edge: inset 1px 1px 0 var(--rule-strong);
+  }
+  [data-theme="light"] &:is([class~="border"], [class~="border-2"]) {
+    --offset-edge: 0 0 #0000;
+  }
+  /* `:hover` too, at (0,3,0): a `hover:shadow-lg` glow on the same element
+   * (the dark mode's lit hover) must not swap the offset out in light. */
+  [data-theme="light"] &,
+  [data-theme="light"] &:hover {
+    --tw-shadow: 5px 5px 0 var(--offset-shadow), var(--offset-edge);
+    box-shadow:
+      var(--tw-inset-shadow, 0 0 #0000), var(--tw-inset-ring-shadow, 0 0 #0000),
+      var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000),
+      var(--tw-shadow);
+  }
+  [data-theme="light"] &:is([data-complete="true"], :has([data-complete="true"])) {
+    --tw-shadow: 5px 5px 0 var(--offset-shadow-complete), var(--offset-edge);
+  }
+  [data-theme="light"] &:focus-visible {
+    outline-offset: 4px;
+  }
+}
+
+/* Focus is an outline, never a box-shadow ring: a ring is a box-shadow, and
+ * any shadow rule (the offset above, a selected state) can clobber it. One
+ * class: 2px of the focus colour, 2px clear of the control. */
+@utility focus-outline {
+  &:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+}
+
+/* The committed selection on a hued pick (the set picker's rows): a 4px edge
+ * down the left in `--selection-line`, the binder tab's own mark. Nothing in
+ * dark (the line is transparent there; the hued fill carries the selection).
+ * A different SHAPE from the keyboard highlight's full 2px ring, so the two
+ * read apart by more than colour, and both can sit on one row: it sets the
+ * inset-shadow slot, which the ring and shadow utilities compose with. */
+@utility selection-edge {
+  --tw-inset-shadow: inset 4px 0 0 var(--selection-line);
+  box-shadow:
+    var(--tw-inset-shadow), var(--tw-inset-ring-shadow, 0 0 #0000),
+    var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000),
+    var(--tw-shadow, 0 0 #0000);
+}
+
+/* Radix draws its own focus rings (2px outlines) in each control's accent:
+ * green on a green button, pink on a pink one, so focus looked different on
+ * every control and, on a light page, pale. Point Radix's focus colour at ours
+ * so every control focuses the same way: cyan in dark, violet in light.
+ * (0,2,0) outranks Radix's per-accent rule; `.radix-themes` covers controls
+ * without an accent attribute. */
+[data-theme] :is(.radix-themes, [data-accent-color]) {
+  --focus-8: var(--focus);
+}
+
+/* The scoreboard pips (7px). */
+@utility pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+}
+@utility pip-owned {
+  background-color: var(--pip-owned);
+  box-shadow: var(--pip-owned-glow);
+}
+@utility pip-want {
+  border: var(--pip-want-width) solid var(--pip-want);
+}
+@utility pip-missing {
+  border: 1px solid var(--pip-missing);
+}
+
+/* The binder shelf's ledges: colour only; each shelf sets its own size. */
+@utility shelf-ledge {
+  background: var(--ledge);
+  box-shadow: var(--ledge-shadow);
+}
+@utility shelf-ledge-special {
+  background: var(--ledge-special);
+  box-shadow: var(--ledge-special-shadow);
+}
+
+/* The brand mark (light mode): the binder outline from public/logo-mark.svg,
+ * painted in the current text colour through a mask. BrandMark applies it. */
+@utility brand-mark-mask {
+  background-color: currentColor;
+  -webkit-mask: url("/logo-mark.svg") center / contain no-repeat;
+  mask: url("/logo-mark.svg") center / contain no-repeat;
+}
+
+/* --------------------------------------------- binder index tabs and rows */
+
+/* In the components layer, so a utility on the same element still wins (the
+ * collection demo's own tab sets its colours with utilities). */
+@layer components {
+  /* Each tab's hue. `--tab-glow` is the dark mode's lit glow; light draws a
+   * 4px edge in the hue instead (6px on the lit tab). */
+  .tab-hue-green { --tab-hue: var(--neon-green); --tab-ink: var(--neon-green-text); --tab-glow: 0 0 12px 2px rgba(0, 213, 88, 0.4), inset 0 0 8px rgba(0, 213, 88, 0.1); }
+  .tab-hue-blue { --tab-hue: var(--neon-blue); --tab-ink: var(--neon-blue-text); --tab-glow: 0 0 12px 2px rgba(0, 194, 255, 0.4), inset 0 0 8px rgba(0, 194, 255, 0.1); }
+  .tab-hue-yellow { --tab-hue: var(--neon-yellow); --tab-ink: var(--neon-yellow-text); --tab-glow: 0 0 12px 2px rgba(255, 230, 0, 0.4), inset 0 0 8px rgba(255, 230, 0, 0.1); }
+  .tab-hue-pink { --tab-hue: var(--neon-pink); --tab-ink: var(--neon-pink-text); --tab-glow: 0 0 12px 2px rgba(255, 46, 154, 0.4), inset 0 0 8px rgba(255, 46, 154, 0.1); }
+  .tab-hue-purple { --tab-hue: var(--neon-purple); --tab-ink: var(--neon-purple-text); --tab-glow: 0 0 12px 2px rgba(164, 74, 255, 0.4), inset 0 0 8px rgba(164, 74, 255, 0.1); }
+  .tab-hue-orange { --tab-hue: var(--neon-orange); --tab-ink: var(--neon-orange-text); --tab-glow: 0 0 12px 2px rgba(255, 158, 0, 0.4), inset 0 0 8px rgba(255, 158, 0, 0.1); }
+  .tab-hue-teal { --tab-hue: var(--neon-teal); --tab-ink: var(--neon-teal-text); --tab-glow: 0 0 12px 2px rgba(0, 229, 192, 0.4), inset 0 0 8px rgba(0, 229, 192, 0.1); }
+
+  /* The right-edge tab. The lit tab is the one NavLink marks aria-current.
+   * Dark: the lit tab glows in its hue. Light: every tab wears a 4px edge in
+   * its hue, the lit one 6px and a soft drop. */
+  .binder-tab {
+    background-color: var(--tab-rest);
+    color: var(--tab-rest-ink);
+  }
+  .binder-tab:hover {
+    background-color: var(--tab-rest-hover);
+    color: var(--tab-rest-hover-ink);
+  }
+  .binder-tab[aria-current="page"] {
+    background-color: var(--tab-lit);
+    color: var(--tab-ink);
+    box-shadow: var(--tab-glow);
+  }
+  [data-theme="light"] .binder-tab {
+    box-shadow: inset 4px 0 0 var(--tab-hue), inset 0 0 0 1px var(--rule);
+  }
+  [data-theme="light"] .binder-tab[aria-current="page"] {
+    box-shadow: inset 6px 0 0 var(--tab-hue), 0 8px 18px -10px rgb(0 0 0 / 0.35);
+  }
+
+  /* A row in the mobile menu: same hues, same lit rule. */
+  .binder-row {
+    color: var(--ink-3);
+  }
+  .binder-row:hover {
+    color: var(--ink);
+    background-color: var(--hover);
+  }
+  .binder-row[aria-current="page"] {
+    color: var(--tab-ink);
+    background-color: var(--hover);
+    box-shadow: var(--tab-glow);
+  }
+  [data-theme="light"] .binder-row[aria-current="page"] {
+    box-shadow: inset 4px 0 0 var(--tab-hue);
+  }
+}
+
+/* ------------------------------------------------- roles as Tailwind colours */
+
+@theme inline {
+  --color-background: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-ring: var(--focus);
+
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-raised-deep: var(--raised-deep);
+  --color-sheet: var(--sheet);
+  --color-field: var(--field);
+  --color-hover: var(--hover);
+
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-field-rule: var(--field-rule);
+  --color-control: var(--control);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-wordmark: var(--wordmark);
+
+  --color-focus: var(--focus);
+  --color-selection: var(--selection);
+  --color-scrim: var(--scrim);
+
+  --color-neon-green: var(--neon-green);
+  --color-neon-pink: var(--neon-pink);
+  --color-neon-blue: var(--neon-blue);
+  --color-neon-yellow: var(--neon-yellow);
+  --color-neon-orange: var(--neon-orange);
+  --color-neon-teal: var(--neon-teal);
+  --color-neon-purple: var(--neon-purple);
+
+  --color-neon-green-text: var(--neon-green-text);
+  --color-neon-pink-text: var(--neon-pink-text);
+  --color-neon-blue-text: var(--neon-blue-text);
+  --color-neon-yellow-text: var(--neon-yellow-text);
+  --color-neon-orange-text: var(--neon-orange-text);
+  --color-neon-teal-text: var(--neon-teal-text);
+  --color-neon-purple-text: var(--neon-purple-text);
+
+  --color-on-neon-green: var(--on-neon-green);
+  --color-on-neon-pink: var(--on-neon-pink);
+  --color-on-neon-blue: var(--on-neon-blue);
+  --color-on-neon-yellow: var(--on-neon-yellow);
+  --color-on-neon-orange: var(--on-neon-orange);
+  --color-on-neon-teal: var(--on-neon-teal);
+  --color-on-neon-purple: var(--on-neon-purple);
+
+  --color-neon-green-hover: var(--neon-green-hover);
+  --color-neon-pink-hover: var(--neon-pink-hover);
+  --color-neon-blue-hover: var(--neon-blue-hover);
+  --color-neon-yellow-hover: var(--neon-yellow-hover);
+  --color-neon-orange-hover: var(--neon-orange-hover);
+  --color-neon-teal-hover: var(--neon-teal-hover);
+  --color-neon-purple-hover: var(--neon-purple-hover);
+
+  --color-notice-info-bg: var(--notice-info-bg);
+  --color-notice-info-ink: var(--notice-info-ink);
+  --color-notice-info-rule: var(--notice-info-rule);
+  --color-notice-warn-bg: var(--notice-warn-bg);
+  --color-notice-warn-ink: var(--notice-warn-ink);
+  --color-notice-warn-rule: var(--notice-warn-rule);
+  --color-notice-danger-bg: var(--notice-danger-bg);
+  --color-notice-danger-ink: var(--notice-danger-ink);
+  --color-notice-danger-rule: var(--notice-danger-rule);
+  --color-notice-success-bg: var(--notice-success-bg);
+  --color-notice-success-ink: var(--notice-success-ink);
+  --color-notice-success-rule: var(--notice-success-rule);
+
+  --color-row: var(--row);
+  --color-row-rule: var(--row-rule);
+  --color-row-hover: var(--row-hover);
+  --color-hover-raised: var(--hover-raised);
+  --color-list-hover: var(--list-hover);
+  --color-list-hover-raised: var(--list-hover-raised);
+  --color-chip: var(--chip);
+  --color-chip-strong: var(--chip-strong);
+  --color-button-neutral: var(--button-neutral);
+  --color-button-neutral-hover: var(--button-neutral-hover);
+  --color-selection-line: var(--selection-line);
+  --color-panel: var(--panel);
+  --color-panel-hover: var(--panel-hover);
+  --color-panel-rule: var(--panel-rule);
+  --color-wash-green: var(--wash-green);
+  --color-wash-blue: var(--wash-blue);
+  --color-wash-pink: var(--wash-pink);
+  --color-wash-rule-green: var(--wash-rule-green);
+  --color-wash-rule-pink: var(--wash-rule-pink);
+  --color-paper: var(--paper);
+  --color-on-paper: var(--on-paper);
+  --color-pick-pink: var(--pick-pink);
+  --color-pick-pink-rule: var(--pick-pink-rule);
+  --color-pick-pink-ink: var(--pick-pink-ink);
+  --color-pick-blue: var(--pick-blue);
+  --color-pick-blue-rule: var(--pick-blue-rule);
+  --color-pick-blue-ink: var(--pick-blue-ink);
+  --color-pick-green: var(--pick-green);
+  --color-pick-green-rule: var(--pick-green-rule);
+  --color-pick-green-ink: var(--pick-green-ink);
+  --color-pick-purple: var(--pick-purple);
+  --color-pick-purple-rule: var(--pick-purple-rule);
+  --color-pick-purple-ink: var(--pick-purple-ink);
+  --color-pick-orange: var(--pick-orange);
+  --color-pick-orange-rule: var(--pick-orange-rule);
+  --color-pick-orange-ink: var(--pick-orange-ink);
+  --color-pick-teal: var(--pick-teal);
+  --color-pick-teal-rule: var(--pick-teal-rule);
+  --color-pick-teal-ink: var(--pick-teal-ink);
+  --color-pick-amber: var(--pick-amber);
+  --color-pick-amber-rule: var(--pick-amber-rule);
+  --color-pick-amber-ink: var(--pick-amber-ink);
+  --color-pick-red: var(--pick-red);
+  --color-pick-red-rule: var(--pick-red-rule);
+  --color-pick-red-ink: var(--pick-red-ink);
+  --color-pick-emerald: var(--pick-emerald);
+  --color-pick-emerald-rule: var(--pick-emerald-rule);
+  --color-pick-emerald-ink: var(--pick-emerald-ink);
+
+  --color-pip-owned: var(--pip-owned);
+  --color-pip-want: var(--pip-want);
+  --color-pip-missing: var(--pip-missing);
+  --color-spot: var(--spot);
+}

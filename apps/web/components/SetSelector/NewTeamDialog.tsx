@@ -352,7 +352,7 @@ export default function NewTeamDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4 outline-none"
+        className="fixed inset-0 z-[60] flex items-center justify-center bg-scrim p-4 outline-none"
         onKeyDown={onKeyDown}
         onClick={() => {
           if (!creating) onClose();
@@ -379,12 +379,12 @@ export default function NewTeamDialog({
           content height wins and the cap does nothing.
         */}
         <div
-          className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
+          className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset"
           onClick={(event) => event.stopPropagation()}
         >
           <h2
             id={titleId}
-            className="shrink-0 px-5 pt-5 pb-4 text-lg font-semibold text-gray-100"
+            className="shrink-0 px-5 pt-5 pb-4 text-lg font-semibold text-ink"
           >
             {/* The name the operator typed, so the dialog is visibly about the
                 thing they were doing rather than a generic form. */}
@@ -460,9 +460,9 @@ export default function NewTeamDialog({
               ("adds a second era") whose answer is the button directly below
               it. The actions because a dialog whose primary action can leave
               the viewport is a dialog that cannot be completed. */}
-          <div className="shrink-0 space-y-4 border-t border-gray-800 px-5 pt-4 pb-5">
+          <div className="shrink-0 space-y-4 border-t border-rule px-5 pt-4 pb-5">
             {error && (
-              <p id={errorId} role="alert" className="text-sm text-[#FF2E9A]">
+              <p id={errorId} role="alert" className="text-sm text-neon-pink-text">
                 {error}
               </p>
             )}
@@ -492,7 +492,7 @@ export default function NewTeamDialog({
                 {creating ? "Creating…" : "Create team"}
               </NeonButton>
               <NeonButton
-                cancel
+                variant="negative"
                 type="button"
                 onClick={onClose}
                 disabled={creating}

@@ -83,6 +83,12 @@ Reference specs that show the patterns below:
    so a failure screenshot and the ARIA snapshot capture a blank page, and
    sets `test.use({ screenshot: "off" })` for the file. Failure artifacts are
    published.
+8. **One named exception to rule 2: the NEO-356 no-flash check (approved by Jason
+   2026-10-22).** `support/theme-no-flash.ts` (an init script, `evaluate` and the root
+   `data-theme` attribute) is used by `home/theme-prepaint-script` and
+   `profile/theme-saved-no-flash` for that check ONLY; it licenses nothing else.
+   `no-restricted-imports` in `eslint.config.mjs` refuses the import in every
+   other file, so a third importer is a lint error.
 
 ## Rules every spec satisfies (R1-R4, R7, R7a, R9)
 
@@ -219,8 +225,8 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `SL_PAUSED`) and `signIn(redirect, { account? })`, which opens
   `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` (a nested
   `?` stays literal and a nested `&` is written `%26`). `LAUNCH_GATE` (45 s).
-  `expectAccessible(page, { within?, label? })`, the axe check (see
-  "Accessibility checks").
+  `expectAccessible(page, { within?, label? })`, the axe check, run in light
+  AND dark (see "Accessibility checks").
 - `support/a11y.ts`: what `expectAccessible` runs: the WCAG tags, the one
   list of excluded third-party regions (each with its reason), the failure
   summary and the attachment. Specs never import it directly.
@@ -243,6 +249,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
+- `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs), `paintsLook`, `pageHasBanner` (what `expectAccessible` uses to prove each mode; see "Accessibility checks").
 - `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
   `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
   `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
@@ -420,9 +427,42 @@ for each pass, and a skipped test counts as a failure.
 
 `expectAccessible(page)` runs axe-core against the page and fails the test
 on any WCAG 2.0, 2.1 or 2.2 level A or AA violation, one line per violated
-rule (impact, rule id, what to fix, how many elements, the first element's
-selector, the rule's help link). The result, without any node's HTML, is
-attached to the test as JSON (`axe <label> (<project>)` in the report).
+rule (mode, impact, rule id, what to fix, how many elements, the first
+element's selector, the rule's help link). The result, without any node's
+HTML, is attached to the test as JSON (`axe <label> (<project>)` in the
+report).
+
+**Every call checks the screen in BOTH modes** (Jason, 2026-10-22: "axe should
+check both light and dark mode"). The helper emulates a light OS
+(`page.emulateMedia({ colorScheme: "light" })`), waits until the page is
+actually painted light, runs axe; then does the same dark; and it always ends
+with the OS dark, the suite pin. Specs make no extra call and no mode choice.
+It works because test accounts are on System, so the app follows the OS.
+- **Each violation line is prefixed with its mode**: `(light) [serious]
+  color-contrast: ...` or `(dark) ...`. The attachment holds `modesChecked`
+  and one result per mode.
+- **"Painted" is proven by `support/theme.ts` `paintsLook`** (the page colour
+  behind the header banner), not by the `<html data-theme>` attribute: that
+  needs no exception to hard rule 2, it is what the user sees, and it is
+  right on the pages that scope their own mode inside the root (the public
+  profile and sale pages are a dark design of their own), where the attribute
+  would say light on a page that is still dark.
+- **A page that cannot flip is checked in the mode it is in, and the result
+  says so** (`note` in the attachment, an `axe-single-mode` annotation in the
+  report): the page stayed on one mode when the OS changed (an explicit saved
+  theme, a ForceDark route, the collection demo's Light/Dark switch once
+  flipped, i.e. the page is pinned; the probe waits the 7 s budget before it
+  concludes that), or the page has no header banner to read the mode from
+  (the public profile and sale pages). A single-mode result is a coverage
+  note, not a failure; do not make a screen single-mode on purpose.
+- **A spec that saves an explicit theme restores System BEFORE calling
+  `expectAccessible`**, and one that flips the demo switch calls it before
+  touching the switch. `profile/theme-setting` calls it once, on System.
+- **Cost.** One call is now two axe runs plus two scheme flips: measured
+  about +0.75 s on a light marketing page (0.4-1.3 s each), more where the
+  DOM is large (set builder, wizard). A pinned page adds the 7 s probe. Add
+  the call where a new screen or state appears, not as a habit after every
+  step.
 
 ```ts
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -459,10 +499,23 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   NeonBinder's and that NeonBinder cannot change, each entry with its reason.
   Never add NeonBinder's own UI to it, and never exclude something to make a
   spec pass.
-- The browser runs in Playwright's default light colour scheme. The app
-  renders dark whatever the OS setting (`dark:` keys off `<html
-  class="dark">`, NEO-341), so this is what every user sees; never force a
-  colour scheme in a spec.
+- The suite runs as a dark-OS user: `playwright.config.ts` pins
+  `use.colorScheme: "dark"`, and the app follows the OS while a collector is on
+  System (the default), so every spec sees the dark theme between axe checks.
+  `expectAccessible` flips the OS itself and puts it back dark (above). Only
+  the theme specs (`profile/theme-setting`, `home/collection-demo-theme`,
+  `home/binder-tracking-demo-theme`) otherwise call `page.emulateMedia` or
+  change the saved theme, and each restores what it changed: System saved and
+  the OS dark again, in a `finally` block (R7), so a later spec on the same
+  worker never runs light. No other spec forces a colour scheme or picks a
+  theme. A spec that opens a context of its own (`browser.newContext`) gets
+  the browser default, which is LIGHT, unless it passes `colorScheme`; the
+  helper normalises that for axe, but a look assertion in such a context must
+  say which OS it is on.
+  Prove a mode by what is painted (`support/theme.ts`: the page colour and a
+  heading's colour, via `toHaveCSS`) plus the control that reads as chosen,
+  never by the `<html data-theme>` attribute (the two no-flash specs of rule 8
+  are the only exception).
 - `incomplete` results in the attachment (axe could not decide, e.g. text
   over an image or gradient) never fail a test; read them when changing a
   screen's colours.

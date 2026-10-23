@@ -26,6 +26,8 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { WIKIDATA_QID, wikidataUrl } from "@/lib/players/wikidata-id";
 import { teamFullName } from "@/lib/teams/team-name";
+import { useTheme } from "@/src/theme/ThemeProvider";
+import { surfaceHex } from "@/src/theme/tokens";
 
 /**
  * NEO-240 — League Management, the third of the entity editors.
@@ -114,15 +116,15 @@ const LEVEL_LABEL = new Map<LeagueLevel, string>(
 const COUNTER_ANNOUNCE_DEBOUNCE_MS = 400;
 
 /**
- * The surface the team chips in the detail panel are painted on — slate-900,
- * which is also the background `PlayerManagement` measures its row team colour
- * against.
+ * The surface the team chips in the detail panel are painted on: the `field`
+ * role (slate-900 in dark, white in light; NEO-356), read per mode through
+ * `surfaceHex` so the colour is measured against the fill actually painted.
  *
  * Explicit rather than inherited from the page: a colour measured against
  * "whatever is behind this" is only as honest as that surface is stable. A chip
  * that carries its own background can be measured honestly.
  */
-const TEAM_CHIP_BG = "#0f172a";
+const TEAM_CHIP_SURFACE = "field" as const;
 
 /** WCAG 2.2 SC 1.4.3 for text this size. Not a readout, a gate — this is UI. */
 const TEXT_MIN_CONTRAST = 4.5;
@@ -244,6 +246,8 @@ function LeagueDetail({
 }) {
   const saveLeagueFields = useMutation(api.leagues.saveLeagueFields);
   const enrichFromWikidata = useAction(api.leagues.enrichFromWikidata);
+  const { mode } = useTheme();
+  const teamChipBg = surfaceHex(TEAM_CHIP_SURFACE, mode);
 
   // Local draft state, re-seeded when the selected league changes. Binding
   // straight to the live row would drop keystrokes whenever an unrelated
@@ -518,7 +522,7 @@ function LeagueDetail({
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="scroll-mt-32 text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
+          className="scroll-mt-32 text-lg font-semibold leading-tight focus-outline focus-visible:rounded-sm"
         >
           {league.name}
         </h3>
@@ -529,7 +533,7 @@ function LeagueDetail({
               href={qidUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-neon-blue underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-blue rounded-sm"
+              className="text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
             >
               Wikidata {qid}
               <span className="sr-only"> (opens in new tab)</span>
@@ -540,20 +544,20 @@ function LeagueDetail({
             // operator can see the bad value and fix it in the editor below;
             // never as a link, because the id would be interpolated into the
             // href verbatim.
-            <span className="text-sm text-slate-400">Wikidata {qid}</span>
+            <span className="text-sm text-ink-3">Wikidata {qid}</span>
           ))}
       </div>
 
       {nameTakenId && (
         <div
           role="alert"
-          className="flex flex-wrap items-center gap-3 rounded-md border border-neon-pink/40 bg-neon-pink/5 p-3 text-sm text-neon-pink"
+          className="flex flex-wrap items-center gap-3 rounded-md border border-neon-pink/40 bg-neon-pink/5 p-3 shadow-offset text-sm text-neon-pink-text"
         >
           <span>That name already exists</span>
           <button
             type="button"
             onClick={() => onSelect(nameTakenId)}
-            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-pink"
+            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus-outline"
           >
             Open the existing league
           </button>
@@ -582,7 +586,7 @@ function LeagueDetail({
               without `disabled`'s opacity, which would take the text under the
               4.5:1 floor. */}
           <p
-            className={`w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-300 ${FIELD_BOX_HEIGHT}`}
+            className={`w-full rounded-md border border-rule bg-sheet px-3 py-2 text-base text-ink-2 ${FIELD_BOX_HEIGHT}`}
           >
             Sport: {sportLabel}
           </p>
@@ -616,7 +620,7 @@ function LeagueDetail({
           <span className="hidden sm:block" aria-hidden="true" />
           <p
             id={qidCaptionId}
-            className={`text-sm ${qidValid ? "text-slate-400" : "text-neon-pink"}`}
+            className={`text-sm ${qidValid ? "text-ink-3" : "text-neon-pink-text"}`}
           >
             {qidValid
               ? "Leave empty to clear it."
@@ -651,7 +655,7 @@ function LeagueDetail({
 
         <p
           id={yearsCaptionId}
-          className={`text-sm ${yearsValid ? "text-slate-400" : "text-neon-pink"}`}
+          className={`text-sm ${yearsValid ? "text-ink-3" : "text-neon-pink-text"}`}
         >
           {yearsValid
             ? "Leave Active to empty while the league is still running."
@@ -694,14 +698,14 @@ function LeagueDetail({
               {draftAliases.map((alias) => (
                 <li
                   key={alias}
-                  className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 text-xs text-slate-300"
+                  className="rounded-full border border-rule-strong bg-field px-2.5 py-0.5 text-xs text-ink-2"
                 >
                   {alias}
                 </li>
               ))}
             </ul>
           )}
-          <p id={aliasCaptionId} className="mt-2 text-sm text-slate-400">
+          <p id={aliasCaptionId} className="mt-2 text-sm text-ink-3">
             Other spellings that mean this league, comma-separated — e.g.
             American League, National League
           </p>
@@ -715,14 +719,14 @@ function LeagueDetail({
       {rowMovedUnderDraft && (
         <div
           role="status"
-          className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-neon-orange/40 bg-neon-orange/5 px-3 py-2 text-sm text-neon-orange"
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-neon-orange/40 bg-neon-orange/5 px-3 py-2 shadow-offset text-sm text-neon-orange-text"
         >
           <span>This league was updated elsewhere — Reload to see the latest.</span>
           <button
             type="button"
             onClick={reloadFromRow}
             aria-label={`Reload league ${league.name}`}
-            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 transition-colors hover:bg-neon-orange/10 focus:outline-none focus:ring-2 focus:ring-neon-orange"
+            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 transition-colors hover:bg-neon-orange/10 focus-outline"
           >
             Reload
           </button>
@@ -731,13 +735,13 @@ function LeagueDetail({
 
       {/* A hairline, not a card: the roster is a second subject within the same
           panel, and boxing it would have implied a second surface. */}
-      <div className="space-y-3 border-t border-slate-800 pt-4">
+      <div className="space-y-3 border-t border-rule pt-4">
         <h3 className="text-base font-semibold">Teams in this league</h3>
 
         {teams === undefined ? (
-          <p className="text-sm text-slate-400">Loading teams…</p>
+          <p className="text-sm text-ink-3">Loading teams…</p>
         ) : teams.length === 0 ? (
-          <p className="rounded-md border border-dashed border-slate-800 px-3 py-2 text-sm text-slate-400">
+          <p className="rounded-md border border-dashed border-rule px-3 py-2 text-sm text-ink-3">
             No teams yet.
           </p>
         ) : (
@@ -748,7 +752,7 @@ function LeagueDetail({
           <ul aria-label="Teams in this league" className="flex flex-wrap gap-1.5">
             {teams.map((team) => {
               // Painted in the team's own livery when that colour is readable
-              // (see `teamTextColor`); `text-slate-300` stays on the element as
+              // (see `teamTextColor`); `text-ink-2` stays on the element as
               // the fallback the inline colour overrides, so a team with no
               // readable colour is muted rather than absent. The name reads the
               // same either way — colour carries no meaning on its own.
@@ -756,14 +760,14 @@ function LeagueDetail({
               // fill: the fill IS the background this colour was measured
               // against, and a lighter hover state would take a knife-edge
               // colour under the floor exactly while it is being pointed at.
-              const color = teamTextColor(team.colors, TEAM_CHIP_BG);
+              const color = teamTextColor(team.colors, teamChipBg);
               return (
                 <li key={team._id}>
                   <Link
                     to={`/admin/teams?team=${team._id}`}
                     title={`Open ${teamFullName(team)} in Team Management`}
                     style={color ? { color } : undefined}
-                    className="flex min-h-6 items-center rounded-full bg-slate-900 px-2.5 py-1 text-sm text-slate-300 underline underline-offset-2 transition-shadow hover:ring-1 hover:ring-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-teal"
+                    className="flex min-h-6 items-center rounded-full bg-field px-2.5 py-1 text-sm text-ink-2 underline underline-offset-2 transition-shadow hover:ring-1 hover:ring-control focus-outline"
                   >
                     {/* NEO-236 — the full name. A league roster is read as a
                         list of franchises, and a chip saying "Giants" among
@@ -784,24 +788,20 @@ function LeagueDetail({
         <p className="text-sm">
           <Link
             to={`/admin/teams?league=${league._id}`}
-            className="rounded-sm text-neon-blue underline underline-offset-2 transition-colors hover:text-neon-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+            className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline"
           >
             Manage in Team Management
           </Link>
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-4">
+      <div className="flex flex-wrap gap-2 border-t border-rule pt-4">
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>
           {busy === "save" ? "Saving…" : "Save"}
         </NeonButton>
-        {/* Black label, like the "Add stint" button on the Players screen:
-            NeonButton's `secondary` paints white on #00C2FF, which is 2.07:1 —
-            under SC 1.4.3's 4.5:1 floor. Black on the same blue is 10.1:1. */}
         <NeonButton
           type="button"
-          secondary
-          style={{ color: "#000000" }}
+          variant="secondary"
           onClick={() => void reEnrich()}
           disabled={busy !== null}
         >
@@ -811,7 +811,7 @@ function LeagueDetail({
 
       {status && (
         <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
+          className={`text-sm ${status.isError ? "text-neon-pink-text" : "text-ink-2"}`}
           role={status.isError ? "alert" : "status"}
         >
           {status.text}
@@ -1061,7 +1061,7 @@ export default function LeagueManagement() {
             id="sport-filter"
             value={sportFilter}
             onChange={(e) => setSportFilter(e.target.value)}
-            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+            className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline"
           >
             <option value="all">All sports</option>
             {sportList.map((sport) => (
@@ -1087,7 +1087,7 @@ export default function LeagueManagement() {
             The announcement rides the sr-only channel below instead, one
             debounce behind, and this node stays synchronous for the eyes. */}
         <p
-          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
+          className={`flex items-center text-xs text-ink-3 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>
@@ -1111,11 +1111,11 @@ export default function LeagueManagement() {
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,18rem)_1fr] gap-4">
         {/* Master */}
-        <div className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto">
+        <div className="rounded-lg border border-rule max-h-[32rem] overflow-y-auto">
           {management === undefined ? (
-            <p className="p-3 text-sm text-slate-400">Loading leagues…</p>
+            <p className="p-3 text-sm text-ink-3">Loading leagues…</p>
           ) : visible.length === 0 ? (
-            <p className="p-3 text-sm text-slate-400">
+            <p className="p-3 text-sm text-ink-3">
               No leagues match that filter.
             </p>
           ) : (
@@ -1137,10 +1137,10 @@ export default function LeagueManagement() {
                       // metadata segments cannot share a line without one of
                       // them truncating, and a clipped league name defeats the
                       // list's only job.
-                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#00C2FF] ${
+                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                         isSelected
-                          ? "border-neon-teal bg-neon-teal/10 text-neon-teal"
-                          : "border-transparent text-slate-300 hover:bg-slate-900"
+                          ? "border-neon-teal-text bg-neon-teal/10 text-neon-teal-text"
+                          : "border-transparent text-ink-2 hover:bg-list-hover"
                       }`}
                     >
                       <span className="w-full truncate" title={league.name}>
@@ -1151,7 +1151,7 @@ export default function LeagueManagement() {
                             4.0:1, under SC 1.4.3's 4.5:1 floor for text this
                             size. */}
                         {sportLabel && (
-                          <span className="shrink-0 text-slate-400">
+                          <span className="shrink-0 text-ink-3">
                             {sportLabel}
                           </span>
                         )}
@@ -1168,15 +1168,15 @@ export default function LeagueManagement() {
                         {league.abbreviation ? (
                           <span
                             className={`min-w-0 shrink-0 truncate pl-2 ${
-                              sportLabel ? "border-l border-slate-700" : ""
+                              sportLabel ? "border-l border-rule-strong" : ""
                             }`}
                           >
                             {league.abbreviation}
                           </span>
                         ) : (
                           <span
-                            className={`shrink-0 pl-2 text-neon-orange ${
-                              sportLabel ? "border-l border-slate-700" : ""
+                            className={`shrink-0 pl-2 text-neon-orange-text ${
+                              sportLabel ? "border-l border-rule-strong" : ""
                             }`}
                             title="No abbreviation yet"
                           >
@@ -1186,7 +1186,7 @@ export default function LeagueManagement() {
                         )}
                         {/* NEO-331: level is required, so there is no
                             "Level not set" glyph any more. */}
-                        <span className="min-w-0 truncate border-l border-slate-700 pl-2">
+                        <span className="min-w-0 truncate border-l border-rule-strong pl-2">
                           {levelLabel}
                         </span>
                       </span>
@@ -1201,7 +1201,7 @@ export default function LeagueManagement() {
         {/* Detail — the add form takes this column while it is open, rather
             than opening a dialog. A modal here would hide the very list the
             operator is checking their new name against. */}
-        <div className="rounded-lg border border-slate-800 p-4">
+        <div className="rounded-lg border border-rule p-4">
           {status && (
             /* The add form's own line, at the head of the column that carries
                the form — and `sticky`, so it is pinned under the sticky header
@@ -1218,8 +1218,8 @@ export default function LeagueManagement() {
                operator is being handed to the new league's panel and moving
                them off it would be a worse bug than the one this fixes. */
             <p
-              className={`pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
-                status.isError ? "text-neon-pink" : "text-slate-300"
+              className={`pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-rule bg-surface px-3 py-2 text-sm ${
+                status.isError ? "text-neon-pink-text" : "text-ink-2"
               }`}
               role={status.isError ? "alert" : "status"}
             >
@@ -1248,7 +1248,7 @@ export default function LeagueManagement() {
               onSelect={selectLeague}
             />
           ) : (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-3">
               Select a league to see its teams and edit what we know about it.
             </p>
           )}

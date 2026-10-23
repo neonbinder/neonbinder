@@ -56,13 +56,13 @@ export default function CardPrefixRow({
 
   return (
     <label
-      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label={`Set feature ${label}`}
     >
-      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-ink-3">
         <span
           title={CARD_PREFIX_FEATURE.hint}
-          className="cursor-help underline decoration-dotted decoration-gray-500"
+          className="cursor-help underline decoration-dotted decoration-ink-3"
         >
           {label}
         </span>
@@ -82,7 +82,7 @@ export default function CardPrefixRow({
         ariaDescribedBy={hintId}
         placeholder="e.g. DK-"
         dataFeatKey={CARD_PREFIX_FEATURE.key}
-        className={`${fieldClass("prefix")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+        className={`${fieldClass("prefix")} w-full p-1 border rounded text-xs bg-raised-deep border-field-rule focus-outline`}
       />
     </label>
   );

@@ -1259,7 +1259,7 @@ export default function SetSelector() {
       {drill.truncatedOnLoad && (
         <p
           id={truncatedNoticeId}
-          className="text-sm text-amber-800 dark:text-amber-300"
+          className="text-sm text-notice-warn-ink"
         >
           {TRUNCATED_LINK_NOTICE}
         </p>
@@ -1311,11 +1311,11 @@ export default function SetSelector() {
             role="group"
             aria-label={RESOLVING_LINK_LABEL}
             aria-busy="true"
-            className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+            className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 bg-raised p-6 rounded-lg shadow"
           >
             <div
               aria-hidden="true"
-              className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
+              className="h-[50px] rounded-md border border-row-rule bg-row"
             />
           </div>
         ) : (
@@ -1490,7 +1490,7 @@ export default function SetSelector() {
                   // only under an Insert type (the server refuses it
                   // elsewhere), so the door is shown only there.
                   selectedVariantTypeId && isInsertTypeSelected ? (
-                    <NeonButton secondary onClick={() => setGroupingOpen(true)}>
+                    <NeonButton variant="secondary" onClick={() => setGroupingOpen(true)}>
                       Group Parallels
                     </NeonButton>
                   ) : undefined
@@ -1552,7 +1552,7 @@ export default function SetSelector() {
                   the quieter secondary. */}
               <NeonButton
                 ref={baseMappingButtonRef}
-                secondary={baseHasMapping}
+                variant={baseHasMapping ? "secondary" : "primary"}
                 onClick={() => setBaseMappingOpen(true)}
               >
                 {baseHasMapping ? "Re-map Base" : "Map Base Set"}

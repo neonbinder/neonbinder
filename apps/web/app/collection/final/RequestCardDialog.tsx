@@ -1,9 +1,8 @@
 import { useId, useState, type FormEvent } from "react";
-import { Button } from "@/components/primitives/Button";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import Overlay from "../prototypes/p1/Overlay";
-import { OUTLINE_BUTTON } from "../prototypes/p1/ui";
 import { useCollectionMode } from "./mode";
 import type { CollectionStore } from "./store";
 
@@ -54,16 +53,16 @@ export default function RequestCardDialog({
     <Overlay labelledBy={headingId} onClose={onClose} variant="modal">
       <div className="max-h-[calc(100vh-4rem)] space-y-4 overflow-y-auto">
         <div className="space-y-1">
-          <h2 id={headingId} tabIndex={-1} className="text-lg font-bold text-white focus:outline-none">
+          <h2 id={headingId} tabIndex={-1} className="text-lg font-bold text-ink focus:outline-none">
             Ask us to add a card
           </h2>
-          <p className="text-sm text-slate-300">
+          <p className="text-sm text-ink-2">
             {mode === "public"
               ? "Tell us what you've got. With an account, your requests go to our crew to add."
               : "Tell us what you've got. These binders are a demo, so for now your request stays on the list below."}
           </p>
           {searched.trim() && (
-            <p className="text-xs text-slate-400">You searched “{searched.trim()}”. We&apos;ll keep that with it.</p>
+            <p className="text-xs text-ink-3">You searched “{searched.trim()}”. We&apos;ll keep that with it.</p>
           )}
         </div>
 
@@ -101,30 +100,30 @@ export default function RequestCardDialog({
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
           />
-          <p role="status" className="min-h-[1.25rem] text-sm text-neon-green">
+          <p role="status" className="min-h-[1.25rem] text-sm text-neon-green-text">
             {sent ?? ""}
           </p>
           <div className="flex flex-wrap justify-end gap-3">
-            <button type="button" onClick={onClose} className={OUTLINE_BUTTON}>
+            <NeonButton type="button" variant="secondary" outline onClick={onClose}>
               Done
-            </button>
-            <Button type="submit" variant="primary" disabled={!filled}>
+            </NeonButton>
+            <NeonButton type="submit" variant="primary" disabled={!filled}>
               Send request
-            </Button>
+            </NeonButton>
           </div>
         </form>
 
         {store.cardRequests.length > 0 && (
-          <section aria-label="Requested" className="space-y-2 border-t border-slate-700 pt-3">
-            <h3 className="text-sm font-semibold text-slate-200">Requested</h3>
+          <section aria-label="Requested" className="space-y-2 border-t border-rule-strong pt-3">
+            <h3 className="text-sm font-semibold text-ink-2">Requested</h3>
             <ul className="space-y-1.5 text-sm">
               {store.cardRequests.map((r) => (
-                <li key={r.id} className="rounded-md border border-slate-700 px-3 py-2">
-                  <span className="block text-slate-100">
+                <li key={r.id} className="rounded-md border border-rule-strong px-3 py-2">
+                  <span className="block text-ink">
                     {[r.set, r.cardNumber && `#${r.cardNumber}`, r.player].filter(Boolean).join(" ") ||
                       r.notes}
                   </span>
-                  <span className="block text-xs text-slate-400">Demo request · only you can see it</span>
+                  <span className="block text-xs text-ink-3">Demo request · only you can see it</span>
                 </li>
               ))}
             </ul>

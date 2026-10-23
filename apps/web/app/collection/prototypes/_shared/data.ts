@@ -15,6 +15,7 @@
  */
 
 import { contrastRatio } from "@/lib/print/contrast";
+import { tokenHex } from "@/src/theme/tokens";
 import { brands, cards, players, sets, sports, teams } from "./catalog";
 import { myCopies } from "./collector";
 import type {
@@ -413,18 +414,22 @@ export function binderCopies(binder: Binder, copies: Copy[] = myCopies): Copy[] 
 export const DARK_SURFACE = "#0F172A";
 /** Readable fallback ink on that surface (Tailwind slate-300). */
 export const LIVERY_FALLBACK = "#CBD5E1";
+/** The fallback on a light surface (the `ink-2` role in light mode). */
+export const LIVERY_FALLBACK_LIGHT = tokenHex("ink-2", "light");
 
 /**
- * A team's colour for TEXT on a dark surface: the primary when it reaches
- * 4.5:1 there, else the secondary when that does (Packers gold, Padres gold),
- * else slate-300. Never a livery that fails contrast.
+ * A team's colour for TEXT on a surface: the primary when it reaches 4.5:1
+ * there, else the secondary when that does (Packers gold, Padres gold), else
+ * the label ink that reads on it (slate-300 on dark, the light ink-2 on light).
+ * Never a livery that fails contrast. Pass the surface the text sits on in
+ * the current mode (`surfaceHex(role, mode)`, see src/theme/tokens.ts).
  */
 export function teamTextColor(team: Team, surface: string = DARK_SURFACE): string {
   for (const hex of [team.primary, team.secondary]) {
     const ratio = contrastRatio(hex, surface);
     if (ratio !== null && ratio >= 4.5) return hex;
   }
-  return LIVERY_FALLBACK;
+  return (contrastRatio(LIVERY_FALLBACK, surface) ?? 0) >= 4.5 ? LIVERY_FALLBACK : LIVERY_FALLBACK_LIGHT;
 }
 
 /** Black or white, whichever reads better ON a fill of this colour. */

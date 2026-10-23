@@ -74,3 +74,14 @@
     transition: none;
   }
 }
+
+/* NEO-356 — a card face is a printed object: its type keeps the same
+ * colours in both screen modes. */
+.nb-card-ink {
+  color: #fff;
+}
+.nb-card-need {
+  border-color: #64748b;
+  background-color: rgb(0 0 0 / 0.85);
+  color: #f1f5f9;
+}

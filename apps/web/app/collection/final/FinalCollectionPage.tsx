@@ -349,12 +349,12 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
 
   return (
     <ViewScopeProvider value={scope}>
-      <div className="text-slate-100">
+      <div className="text-ink">
         <div className="space-y-4">
           <DemoBar onReset={resetDemo} onExit={onExit} />
           <h1 className="text-2xl font-bold">Collection</h1>
 
-          <nav aria-label="Collection sections" className="border-b border-slate-800">
+          <nav aria-label="Collection sections" className="border-b border-rule">
             <ul className="flex flex-wrap gap-x-6 gap-y-2">
               {TABS.map((t) => {
                 const active = t.key === tab;
@@ -366,10 +366,10 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
                       onClick={settleQuery}
                       aria-current={active ? "page" : undefined}
                       className={
-                        "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] " +
+                        "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
                         (active
-                          ? "border-neon-blue text-neon-blue"
-                          : "border-transparent text-slate-400 hover:border-slate-600 hover:text-white")
+                          ? "border-selection text-neon-blue-text"
+                          : "border-transparent text-ink-3 hover:border-control hover:text-ink")
                       }
                     >
                       {t.label}

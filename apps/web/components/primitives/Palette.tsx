@@ -15,12 +15,12 @@ export const Palette: React.FC<PaletteProps> = ({
   return (
     <div className={`flex flex-col items-center gap-2 ${className}`}>
       <div
-        className="w-14 h-10 rounded border border-slate-200"
+        className="w-14 h-10 rounded border border-rule"
         style={{ backgroundColor: color }}
       />
       <div className="flex flex-col items-center">
-        <span className="text-xs font-medium text-slate-900">{shade}</span>
-        <span className="text-xs text-slate-400">{color}</span>
+        <span className="text-xs font-medium text-ink">{shade}</span>
+        <span className="text-xs text-ink-3">{color}</span>
       </div>
     </div>
   );

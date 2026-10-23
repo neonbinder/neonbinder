@@ -11,7 +11,7 @@ export default function AdminTeamsPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold mb-1">Team Management</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           Teams are globally shared rows — every collector sees the same team
           data, so edits here affect everyone.
         </p>

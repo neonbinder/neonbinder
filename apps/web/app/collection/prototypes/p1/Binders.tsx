@@ -1,6 +1,5 @@
 import { useId, useState, type FormEvent } from "react";
 import { ArrowLeftIcon, BoltIcon, RectangleStackIcon } from "@heroicons/react/24/outline";
-import { Button } from "@/components/primitives/Button";
 import { Input } from "@/components/primitives/Input";
 import NeonButton from "@/components/modules/NeonButton";
 import {
@@ -170,9 +169,9 @@ function NewBinderDialog({
           <button type="button" onClick={onClose} className={OUTLINE_BUTTON}>
             Cancel
           </button>
-          <Button type="submit" variant="primary" disabled={!name.trim()} className={FOCUS}>
+          <NeonButton type="submit" variant="primary" disabled={!name.trim()} className={FOCUS}>
             Make binder
-          </Button>
+          </NeonButton>
         </div>
       </form>
     </Overlay>
@@ -330,9 +329,9 @@ function ManualDetail({
             })}
           </select>
         </label>
-        <Button type="button" variant="primary" disabled={!pick} onClick={file} className={FOCUS}>
+        <NeonButton type="button" variant="primary" disabled={!pick} onClick={file} className={FOCUS}>
           File it
-        </Button>
+        </NeonButton>
       </div>
       {filed.length === 0 ? (
         <p className="rounded-md border border-dashed border-slate-700 px-3 py-2 text-sm text-slate-400">

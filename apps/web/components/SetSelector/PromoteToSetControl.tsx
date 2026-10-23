@@ -241,14 +241,14 @@ function PromoteDialog({
           describedBy={note ? noteId : undefined}
         />
       )}
-      {preview === undefined && <p className="text-sm text-slate-400">{promoteCopy.loading}</p>}
+      {preview === undefined && <p className="text-sm text-ink-3">{promoteCopy.loading}</p>}
       {preview !== undefined && !preview.ok && (
-        <p id={reasonId} className="text-sm text-[#FF2E9A]">
+        <p id={reasonId} className="text-sm text-neon-pink-text">
           {preview.reason}
         </p>
       )}
       {note && (
-        <p id={noteId} className="text-sm text-slate-300">
+        <p id={noteId} className="text-sm text-ink-2">
           {note}
         </p>
       )}

@@ -18,7 +18,7 @@ import {
   type CopyId,
 } from "../prototypes/_shared/data";
 import { FeatureBadges } from "../prototypes/p1/ChecklistRow";
-import { FOCUS, QUIET_BUTTON, liveryOn, printRunText, shortCardName, shortDate } from "../prototypes/p1/ui";
+import { FOCUS, QUIET_BUTTON, liveryOn, useLiverySurface, printRunText, shortCardName, shortDate } from "../prototypes/p1/ui";
 import { lineNames, lineSummary } from "./lineItems";
 import type { CollectionStore, Notify } from "./store";
 
@@ -57,6 +57,7 @@ export default function CardDetail({
   const owned = store.ownedCount(card.id);
   const set = getSet(card.setId);
   const team = getTeam(card.teamIds[0]);
+  const panel = useLiverySurface("raised");
   const run = printRunText(card);
   const binders = store.state.binders;
   const formBinders = store.fileableBinders;
@@ -135,7 +136,7 @@ export default function CardDetail({
         <CardFace card={card} size="fill" state={owned > 0 ? "owned" : "need"} />
         <div className="min-w-0 space-y-2 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-base font-semibold text-slate-100">
+            <p className="text-base font-semibold text-ink">
               {owned > 0 ? `You have ${owned}` : "Need it"}
               <span className="sr-only">.</span>
             </p>
@@ -145,8 +146,8 @@ export default function CardDetail({
               onClick={toggleWant}
               className={`inline-flex min-h-8 items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${FOCUS} ${
                 wanted
-                  ? "border-neon-yellow bg-neon-yellow/10 text-neon-yellow"
-                  : "border-slate-600 text-slate-300 hover:border-slate-400 hover:text-white"
+                  ? "border-neon-yellow-text bg-neon-yellow/10 text-neon-yellow-text"
+                  : "border-control text-ink-2 hover:border-ink-3 hover:text-ink"
               }`}
             >
               {wanted ? (
@@ -158,12 +159,12 @@ export default function CardDetail({
             </button>
           </div>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-            <dt className="text-slate-400">Set</dt>
-            <dd className="text-slate-200">{setLabel(set)}</dd>
-            <dt className="text-slate-400">{card.variantPath.type === "Base" ? "Type" : card.variantPath.type.slice(0, -1)}</dt>
-            <dd className="text-slate-200">{variantLabel(card.variantPath)}</dd>
-            <dt className="text-slate-400">Team</dt>
-            <dd style={{ color: liveryOn(card) }}>
+            <dt className="text-ink-3">Set</dt>
+            <dd className="text-ink-2">{setLabel(set)}</dd>
+            <dt className="text-ink-3">{card.variantPath.type === "Base" ? "Type" : card.variantPath.type.slice(0, -1)}</dt>
+            <dd className="text-ink-2">{variantLabel(card.variantPath)}</dd>
+            <dt className="text-ink-3">Team</dt>
+            <dd style={{ color: liveryOn(card, panel) }}>
               {card.teamIds
                 .map((id) => {
                   const t = getTeam(id);
@@ -171,8 +172,8 @@ export default function CardDetail({
                 })
                 .join(" / ") || `${team.location} ${team.name}`}
             </dd>
-            <dt className="text-slate-400">{card.playerIds.length > 1 ? "Players" : "Player"}</dt>
-            <dd className="text-slate-200">
+            <dt className="text-ink-3">{card.playerIds.length > 1 ? "Players" : "Player"}</dt>
+            <dd className="text-ink-2">
               {card.playerIds
                 .map((id) => {
                   const p = getPlayer(id);
@@ -182,27 +183,27 @@ export default function CardDetail({
             </dd>
             {run && (
               <>
-                <dt className="text-slate-400">Print run</dt>
-                <dd className="text-slate-200">{run === "1/1" ? "1 of 1" : `Numbered ${run}`}</dd>
+                <dt className="text-ink-3">Print run</dt>
+                <dd className="text-ink-2">{run === "1/1" ? "1 of 1" : `Numbered ${run}`}</dd>
               </>
             )}
             {card.variation && (
               <>
-                <dt className="text-slate-400">Variation</dt>
-                <dd className="text-slate-200">{card.variation}</dd>
+                <dt className="text-ink-3">Variation</dt>
+                <dd className="text-ink-2">{card.variation}</dd>
               </>
             )}
           </dl>
           <FeatureBadges card={card} />
           {inBinders.length > 0 && (
-            <p className="text-slate-300">
-              <span className="text-slate-400">In binders: </span>
+            <p className="text-ink-2">
+              <span className="text-ink-3">In binders: </span>
               {inBinders.map((b) => (b.kind === "smart" ? `${b.name} (smart)` : b.name)).join(", ")}
             </p>
           )}
           {wantsFor.length > 0 && (
-            <p className="text-slate-300">
-              <span className="text-slate-400">Wanted: </span>
+            <p className="text-ink-2">
+              <span className="text-ink-3">Wanted: </span>
               {wantWhere}
             </p>
           )}
@@ -210,15 +211,15 @@ export default function CardDetail({
       </div>
 
       <section aria-label={`Your copies of ${name}`} className="space-y-2">
-        <h3 className="text-base font-semibold text-slate-100">
+        <h3 className="text-base font-semibold text-ink">
           Your copies{copies.length > 0 ? ` (${copies.length} ${copies.length === 1 ? "line" : "lines"})` : ""}
         </h3>
         {copies.length === 0 ? (
-          <p className="rounded-md border border-dashed border-slate-700 px-3 py-2 text-sm text-slate-400">
+          <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
             None yet. Fill in what you know below and add it.
           </p>
         ) : (
-          <ul className="divide-y divide-slate-800 rounded-md border border-slate-800">
+          <ul className="divide-y divide-rule rounded-md border border-rule">
             {copies.map((copy, i) =>
               editing?.id === copy.id ? (
                 <li key={copy.id} className="p-2">
@@ -241,19 +242,19 @@ export default function CardDetail({
                     else copyRefs.current.delete(copy.id);
                   }}
                   className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm ${
-                    copy.id === focusCopyId ? "bg-blue-900/20 ring-2 ring-inset ring-[#00C2FF]" : ""
+                    copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                   }`}
                 >
                   <span className="min-w-0 flex-1">
-                    <span className="block text-slate-100">
+                    <span className="block text-ink">
                       {lineSummary(copy, binders)}
                       {store.isUpForTrade(copy) && (
-                        <span className="ml-2 rounded border border-neon-green/60 px-1 text-xs text-neon-green">
+                        <span className="ml-2 rounded border border-neon-green/60 px-1 text-xs text-neon-green-text">
                           Up for trade
                         </span>
                       )}
                     </span>
-                    <span className="block text-xs text-slate-400">
+                    <span className="block text-xs text-ink-3">
                       Added {shortDate(copy.acquiredAt)}
                       {copy.costBasis !== undefined && ` · paid $${copy.costBasis.toFixed(2)}`}
                       {copy.location && ` · ${copy.location}`}
@@ -271,7 +272,7 @@ export default function CardDetail({
                   </button>
                   <button
                     type="button"
-                    className={`${QUIET_BUTTON} hover:text-neon-pink`}
+                    className={`${QUIET_BUTTON} hover:text-neon-pink-text`}
                     aria-label={`Remove ${name}, ${names[i]}`}
                     onClick={() => remove(copy)}
                   >

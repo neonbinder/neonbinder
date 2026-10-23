@@ -261,18 +261,18 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       }}
     >
       {error && (
-        <p role="alert" className="text-xs text-[#FF2E9A]">
+        <p role="alert" className="text-xs text-neon-pink-text">
           {error}
         </p>
       )}
 
       <div>
-        <h3 className="text-sm font-semibold text-gray-200">
-          <span className="text-[#00D558]">#{row.cardNumber}</span> {row.cardName}
+        <h3 className="text-sm font-semibold text-ink-2">
+          <span className="text-neon-green-text">#{row.cardNumber}</span> {row.cardName}
         </h3>
         {/* a11y (1.4.3): gray-400 (6.82:1 on this dialog's gray-900), never
             gray-500 — see the note in MissingTeamFixer. */}
-        <p className="mt-0.5 text-xs text-gray-400">
+        <p className="mt-0.5 text-xs text-ink-3">
           These names are on the card, but nothing on it links to a player or a
           team yet.
         </p>
@@ -280,7 +280,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
 
       {(unlinkedPlayerNames.length > 0 || unlinkedTeamNames.length > 0) && (
         <div className="space-y-1">
-          <p id="attention-unlinked-names" className="text-xs text-[#00C2FF]">
+          <p id="attention-unlinked-names" className="text-xs text-neon-blue-text">
             Typed on this card, not linked yet
           </p>
           <ul
@@ -295,10 +295,10 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
                 // Deliberately not a <button>: these are the problem, not an
                 // option. Nothing here toggles, so nothing here is pressable.
                 key={`${kind}:${name}`}
-                className="rounded-full border border-dashed border-[#00C2FF]/60 px-2 py-0.5 text-xs text-[#00C2FF]"
+                className="rounded-full border border-dashed border-neon-blue-text/60 px-2 py-0.5 text-xs text-neon-blue-text"
               >
                 {name}
-                <span className="ml-1 text-gray-400">{kind}</span>
+                <span className="ml-1 text-ink-3">{kind}</span>
               </li>
             ))}
           </ul>
@@ -306,7 +306,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       )}
 
       <div className="space-y-1" ref={firstControlRef}>
-        <p className="text-xs text-gray-400">Players on this card</p>
+        <p className="text-xs text-ink-3">Players on this card</p>
         {/* The same picker the card detail panel uses, including its
             "+ Create" path through players.findOrCreate — so a rookie no
             marketplace has heard of is one keystroke away. */}
@@ -319,7 +319,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       </div>
 
       <div className="space-y-1">
-        <p className="text-xs text-gray-400">Teams on this card</p>
+        <p className="text-xs text-ink-3">Teams on this card</p>
         <TeamPicker
           value={teamIds}
           onChange={applyTeams}
@@ -331,7 +331,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
           <p
             id="attention-unreviewed-cap"
             role="status"
-            className="text-xs text-[#00C2FF]"
+            className="text-xs text-neon-blue-text"
           >
             That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to
             add another.
@@ -352,7 +352,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
           {busy ? "Saving…" : "Save & Next (Enter)"}
         </NeonButton>
       </div>
-      <p id="attention-unreviewed-hint" className="text-xs text-gray-400">
+      <p id="attention-unreviewed-hint" className="text-xs text-ink-3">
         {summary}
       </p>
     </div>

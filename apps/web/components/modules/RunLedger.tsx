@@ -44,24 +44,25 @@ type HeroIcon = ComponentType<SVGProps<SVGSVGElement>>;
 /**
  * Each state's glyph and colour. The glyph is `aria-hidden`: the line's text
  * says the state in words, so colour and shape are never the only signal
- * (SC 1.4.1). Colours are the `-700` / `-300` pairs this file's banner family
- * already clears 4.5:1 with on `blue-100` and `blue-900/30`-over-`gray-800`.
+ * (SC 1.4.1). Colours are roles (app/theme.css): the notice inks the blue
+ * banner's own text uses, and the neon text hues, all 4.5:1 on that banner in
+ * both modes.
  */
 export const RUN_GLYPH: Record<RunLineKind, { icon: HeroIcon; tone: string }> = {
-  waiting: { icon: ClockIcon, tone: "text-blue-700 dark:text-blue-300" },
+  waiting: { icon: ClockIcon, tone: "text-notice-info-ink" },
   building: {
     icon: ArrowPathIcon,
-    tone: "text-blue-700 dark:text-[#00C2FF] motion-safe:animate-spin",
+    tone: "text-neon-blue-text motion-safe:animate-spin",
   },
-  built: { icon: CheckIcon, tone: "text-green-700 dark:text-[#00D558]" },
-  skipped: { icon: MinusCircleIcon, tone: "text-blue-700 dark:text-blue-300" },
-  blocked: { icon: NoSymbolIcon, tone: "text-amber-700 dark:text-amber-300" },
-  stopped: { icon: StopCircleIcon, tone: "text-blue-700 dark:text-blue-300" },
+  built: { icon: CheckIcon, tone: "text-neon-green-text" },
+  skipped: { icon: MinusCircleIcon, tone: "text-notice-info-ink" },
+  blocked: { icon: NoSymbolIcon, tone: "text-notice-warn-ink" },
+  stopped: { icon: StopCircleIcon, tone: "text-notice-info-ink" },
   failed: {
     icon: ExclamationTriangleIcon,
-    tone: "text-pink-700 dark:text-pink-300",
+    tone: "text-neon-pink-text",
   },
-  unfinished: { icon: ClockIcon, tone: "text-amber-700 dark:text-amber-300" },
+  unfinished: { icon: ClockIcon, tone: "text-notice-warn-ink" },
 };
 
 /**
@@ -92,16 +93,21 @@ export function RunGlyph({
  * so the whole strip is `aria-hidden`; a slot's `title` repeats its line for
  * a pointer. The Base-parallels section's pre-run strip (NEO-321) draws the
  * same sleeves the run then fills.
+ *
+ * Every tone is a role, and every edge clears 3:1 on the build banner
+ * (`notice-info-bg`) in both modes: an empty sleeve is the line alone, so a
+ * pale line is an invisible sleeve. Waiting is an empty sleeve in the accent
+ * blue; blocked and unfinished share the warning ink, filled and empty.
  */
 export const SLEEVE_TONE: Record<RunLineKind, string> = {
-  waiting: "border-blue-400 dark:border-blue-500 bg-transparent",
-  building: "border-[#00C2FF] bg-[#00C2FF]/40 motion-safe:animate-pulse",
-  built: "border-green-700 dark:border-[#00D558] bg-[#00D558]",
-  skipped: "border-blue-300 dark:border-blue-700 bg-blue-300/40 dark:bg-blue-700/40",
-  blocked: "border-amber-700 dark:border-amber-400 bg-amber-400",
-  stopped: "border-blue-300 dark:border-blue-700 bg-blue-300/40 dark:bg-blue-700/40",
-  failed: "border-pink-700 dark:border-pink-400 bg-[#FF2E9A]",
-  unfinished: "border-amber-700 dark:border-amber-400 bg-transparent",
+  waiting: "border-neon-blue-text bg-transparent",
+  building: "border-neon-blue bg-neon-blue/40 motion-safe:animate-pulse",
+  built: "border-neon-green-text bg-neon-green",
+  skipped: "border-notice-info-rule bg-notice-info-rule/40",
+  blocked: "border-notice-warn-ink bg-notice-warn-ink",
+  stopped: "border-notice-info-rule bg-notice-info-rule/40",
+  failed: "border-neon-pink-text bg-neon-pink",
+  unfinished: "border-notice-warn-ink bg-transparent",
 };
 
 export type SleeveItem = { key: string; kind: RunLineKind; title: string };

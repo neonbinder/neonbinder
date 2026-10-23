@@ -16,7 +16,7 @@ export default function AdminLeaguesPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold mb-1">League Management</h2>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-ink-3">
           Leagues are globally shared rows — every collector sees the same
           league data, so edits here affect everyone.
         </p>

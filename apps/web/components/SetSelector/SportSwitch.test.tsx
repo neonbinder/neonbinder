@@ -184,7 +184,7 @@ describe("SportSwitch", () => {
     const { container } = render(
       <SportSwitch value={FOOTBALL} setSportId={BASEBALL} onChange={vi.fn()} />,
     );
-    const nameSpan = container.querySelector('span[class*="FFE600"]');
+    const nameSpan = container.querySelector('span[class*="text-neon-yellow-text"]');
     expect(nameSpan).not.toBeNull();
     expect(nameSpan?.textContent).toBe("Football");
   });
@@ -194,7 +194,7 @@ describe("SportSwitch", () => {
     const { container } = render(
       <SportSwitch value={BASEBALL} setSportId={BASEBALL} onChange={vi.fn()} />,
     );
-    expect(container.querySelector('span[class*="FFE600"]')).toBeNull();
+    expect(container.querySelector('span[class*="text-neon-yellow-text"]')).toBeNull();
   });
 
   describe("NEO-341 — onOpenChange", () => {

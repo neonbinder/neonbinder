@@ -79,7 +79,9 @@ export default function SetSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={view ? describeByBrand : noDescription}
-      selectedColor="bg-purple-100 dark:bg-purple-900 border-purple-300 dark:border-purple-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-purple border-pick-purple-rule"
     />
   );
 }

@@ -372,7 +372,7 @@ export default function CardAttentionWalker({
     // a nested <Theme> — it escapes the root Theme's CSS scope.
     <Theme>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="card-attention-walker-title"
@@ -451,7 +451,7 @@ export default function CardAttentionWalker({
           keeps it viewport-width minus the overlay's `p-4` on a narrow
           window — nothing in here carries a min-width, so it reflows.
         */}
-        <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+        <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset">
           {/*
             NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up this
             set", "Step x of y" (a role="status" region, so moving it is
@@ -527,13 +527,13 @@ export default function CardAttentionWalker({
               // A kind this bundle has no fixer for. Renders no fixer body and
               // no controls that could write the wrong thing — Skip below is
               // still available, so the operator is never stuck.
-              <p className="text-sm italic text-gray-400">
+              <p className="text-sm italic text-ink-3">
                 {unfixableReason(primaryItem)}
               </p>
             ) : (
               // role="status": the walk ending is news — the fixer that had
               // focus just left — and this is the line that says how it ended.
-              <p className="text-sm text-gray-200" role="status">
+              <p className="text-sm text-ink-2" role="status">
                 {walkDoneLine(awaitingLookup)}
               </p>
             )}
@@ -541,7 +541,7 @@ export default function CardAttentionWalker({
 
           {/* `shrink-0` with the header above: the body is the only elastic
               row, so Skip and Close never compress or leave the viewport. */}
-          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-gray-700 px-6 py-4">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-rule-strong px-6 py-4">
             <div>
               {current && (
                 <button
@@ -552,13 +552,13 @@ export default function CardAttentionWalker({
                   // "Skip for now" matches. py-2 -my-2: a 24px target (2.5.8)
                   // without moving the footer.
                   aria-label={`Skip for now, card ${current.cardNumber}`}
-                  className="-my-2 py-2 text-xs text-gray-400 underline decoration-dotted focus:text-[#00C2FF] focus:outline-none hover:text-[#00C2FF]"
+                  className="-my-2 py-2 text-xs text-ink-3 underline decoration-dotted focus:text-neon-blue-text focus-outline hover:text-neon-blue-text"
                 >
                   Skip for now
                 </button>
               )}
             </div>
-            <NeonButton ref={closeBtnRef} cancel onClick={onClose}>
+            <NeonButton ref={closeBtnRef} variant="negative" onClick={onClose}>
               {remaining.length === 0 ? "Done (Esc)" : "Close (Esc)"}
             </NeonButton>
           </div>

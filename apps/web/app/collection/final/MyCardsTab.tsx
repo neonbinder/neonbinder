@@ -122,7 +122,7 @@ export default function MyCardsTab(props: CollectionTabProps) {
     <MyCardsContext.Provider value={api}>
       <div className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <p className="text-sm text-slate-300">Every set you&apos;re chasing, lit up like a scoreboard.</p>
+          <p className="text-sm text-ink-2">Every set you&apos;re chasing, lit up like a scoreboard.</p>
           <div className="flex flex-wrap items-center gap-3">
             <BinderPicker store={store} />
             <button type="button" onClick={() => go("needs")} className={QUIET_BUTTON}>
@@ -132,8 +132,8 @@ export default function MyCardsTab(props: CollectionTabProps) {
           </div>
         </div>
         {scopedName && (
-          <p className="rounded-md border border-neon-blue/50 bg-neon-blue/5 px-3 py-2 text-sm text-slate-200">
-            Counting only what&apos;s in <span className="font-semibold text-neon-blue">{scopedName}</span>. New haves
+          <p className="rounded-md border border-neon-blue/50 bg-neon-blue/5 px-3 py-2 text-sm text-ink-2">
+            Counting only what&apos;s in <span className="font-semibold text-neon-blue-text">{scopedName}</span>. New haves
             go there too.
           </p>
         )}

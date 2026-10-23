@@ -800,10 +800,10 @@ describe("ParallelGroupingModal — several rows at once", () => {
     ];
     renderModal();
     const row = () => screen.getByRole("group", { name: `${MOJO} Gold` });
-    expect(row().className).toContain("border-yellow-700");
+    expect(row().className).toContain("border-notice-warn-rule");
     fireEvent.click(tick(`${MOJO} Gold`));
-    expect(row().className).toContain("border-neon-blue");
-    expect(row().className).not.toContain("border-yellow-700");
+    expect(row().className).toContain("border-selection");
+    expect(row().className).not.toContain("border-notice-warn-rule");
     // The badge still says it was suggested.
     expect(within(row()).getByText("Suggested")).toBeTruthy();
   });

@@ -17,7 +17,7 @@ export const NeonHeader = React.forwardRef<HTMLHeadingElement, NeonHeaderProps>(
     return (
       <h1
         ref={ref}
-        className={`text-6xl font-bold mb-4 text-neon-green ${className}`}
+        className={`text-6xl font-bold mb-4 text-neon-green-text ${className}`}
         {...props}
       >
         {children}

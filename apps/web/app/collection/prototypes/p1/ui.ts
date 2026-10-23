@@ -3,7 +3,8 @@
  *
  * The class strings the admin Set Builder and Players screens use, copied
  * here with their light halves dropped (the collection side is dark only) and
- * the admin's orange swapped for Collection's neon blue. Keeping them in one
+ * the admin's orange swapped for Collection's neon blue. NEO-356: colour
+ * roles, so the demo (which shares these) follows the light/dark mode. Keeping them in one
  * place is what makes this prototype read as the same app as the admin tools.
  */
 
@@ -19,61 +20,67 @@ import {
   type CardFeature,
   type Copy,
 } from "../_shared/data";
+import { useTheme } from "@/src/theme/ThemeProvider";
+import { surfaceHex, type SurfaceRole } from "@/src/theme/tokens";
 
-/** The set builder's column/panel surface (Tailwind gray-800). */
+/** The set builder's column/panel surface (Tailwind gray-800): the `raised`
+ * role in dark. Livery on a raised panel in either mode: `liveryOn(card,
+ * surfaceHex("raised", mode))`. */
 export const PANEL_HEX = "#1F2937";
 
 export const FOCUS =
-  "focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
+  "focus-outline";
 
 /** EntitySelector's column card, dark half. */
-export const COLUMN_CARD = "bg-gray-800 p-6 rounded-lg shadow";
+export const COLUMN_CARD = "bg-raised p-6 rounded-lg shadow shadow-offset";
 export const COLUMN_WIDTH =
   "min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0";
 
-export const ROW_IDLE = "bg-gray-700 border-gray-600 hover:bg-gray-600";
+/** An idle row: a tile on the column card (`row` roles, app/theme.css). */
+export const ROW_IDLE = "bg-row border-row-rule hover:bg-row-hover";
 export const HIGHLIGHT_STROKE =
-  "ring-2 ring-inset ring-[#00D558] shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] outline-2 -outline-offset-2 outline-transparent";
-export const HIGHLIGHT_TINT = "bg-[#00D558]/20 border-[#00D558]";
-export const DESCRIPTION_TONE = "text-sm text-gray-300";
+  "ring-2 ring-inset ring-neon-green-text shadow-[inset_0_0_14px_rgb(0_213_88/calc(0.28*var(--glow)))] outline-2 -outline-offset-2 outline-transparent";
+export const HIGHLIGHT_TINT = "bg-neon-green/20 border-neon-green-text";
+export const DESCRIPTION_TONE = "text-sm text-ink-2";
 
-/** Each column's selected fill, as in the admin cascade (dark halves). */
+/** Each column's selected row, as in the admin cascade: the column's hued
+ * fill and edge (`pick-*` roles) and, in light, the selection edge. */
 export const SELECTED = {
-  sport: "bg-pink-900 border-pink-700",
-  year: "bg-blue-900 border-blue-700",
-  brand: "bg-green-900 border-green-700",
-  set: "bg-purple-900 border-purple-700",
-  variantType: "bg-orange-900 border-orange-700",
-  variant: "bg-teal-900 border-teal-700",
+  sport: "bg-pick-pink border-pick-pink-rule selection-edge",
+  year: "bg-pick-blue border-pick-blue-rule selection-edge",
+  brand: "bg-pick-green border-pick-green-rule selection-edge",
+  set: "bg-pick-purple border-pick-purple-rule selection-edge",
+  variantType: "bg-pick-orange border-pick-orange-rule selection-edge",
+  variant: "bg-pick-teal border-pick-teal-rule selection-edge",
 } as const;
 
-/** CardChecklistItem's attribute badges, dark halves. */
+/** CardChecklistItem's attribute badges: fill, edge and ink of one hue. */
 export const FEATURE_BADGE: Record<CardFeature | "NUM", { label: string; cls: string }> = {
-  RC: { label: "RC", cls: "bg-amber-900 text-amber-300 border-amber-700" },
-  AU: { label: "AU", cls: "bg-purple-900 text-purple-300 border-purple-700" },
-  Relic: { label: "RELIC", cls: "bg-pink-900 text-pink-300 border-pink-700" },
-  SP: { label: "SP", cls: "bg-red-900 text-red-300 border-red-700" },
-  NUM: { label: "#'d", cls: "bg-emerald-900 text-emerald-300 border-emerald-700" },
+  RC: { label: "RC", cls: "bg-pick-amber border-pick-amber-rule text-pick-amber-ink" },
+  AU: { label: "AU", cls: "bg-pick-purple border-pick-purple-rule text-pick-purple-ink" },
+  Relic: { label: "RELIC", cls: "bg-pick-pink border-pick-pink-rule text-pick-pink-ink" },
+  SP: { label: "SP", cls: "bg-pick-red border-pick-red-rule text-pick-red-ink" },
+  NUM: { label: "#'d", cls: "bg-pick-emerald border-pick-emerald-rule text-pick-emerald-ink" },
 };
 
 /** PlayerManagement's select. */
 export const SELECT =
-  "w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
-export const LABEL = "block text-sm font-medium mb-1 text-slate-300";
+  "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
+export const LABEL = "block text-sm font-medium mb-1 text-ink-2";
 
 /** PlayerManagement's pill, used for filter chips and rule chips. */
 export const CHIP =
   "min-h-6 rounded-full border px-2.5 py-1 text-sm transition-colors " + FOCUS;
-export const CHIP_OFF = "border-slate-700 text-slate-200 hover:border-neon-blue hover:text-neon-blue";
-export const CHIP_ON = "border-neon-blue bg-neon-blue text-black";
+export const CHIP_OFF = "border-field-rule text-ink-2 hover:border-neon-blue hover:text-neon-blue-text";
+export const CHIP_ON = "border-selection bg-neon-blue text-on-neon-blue";
 
 /** A quiet text button (the checklist row's Edit/Del). */
 export const QUIET_BUTTON =
-  "min-h-6 rounded px-2 py-1 text-xs text-slate-300 hover:text-neon-blue " + FOCUS;
+  "min-h-6 rounded px-2 py-1 text-xs text-ink-2 hover:text-neon-blue-text " + FOCUS;
 
 /** Outline button on dark, for secondary actions beside a neon one. */
 export const OUTLINE_BUTTON =
-  "inline-flex min-h-9 items-center gap-1.5 rounded-md border border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-200 hover:border-slate-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 " +
+  "inline-flex min-h-9 items-center gap-1.5 rounded-md border border-control px-3 py-1.5 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 " +
   FOCUS;
 
 // ---------------------------------------------------------------------------
@@ -95,6 +102,16 @@ export function setAndVariant(card: Card): string {
 /** The lead team's colour for text on the set builder's gray-800 panel. */
 export function liveryOn(card: Card, surface: string = PANEL_HEX): string {
   return teamTextColor(getTeam(card.teamIds[0]), surface);
+}
+
+/**
+ * NEO-356 — the surface a piece of livery sits on, as `#rrggbb` in the
+ * current mode, so `teamTextColor` picks a team colour that reads there
+ * (`teamTextColor(team, useLiverySurface("sheet"))`).
+ */
+export function useLiverySurface(surface: SurfaceRole = "raised"): string {
+  const { mode } = useTheme();
+  return surfaceHex(surface, mode);
 }
 
 /** "Qty 2 · PSA 10 · Near Mint · 23/50 · $12.00 · Box 3 · For sale $40". */

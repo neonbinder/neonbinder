@@ -1,27 +1,29 @@
 ---
 name: runtime-colour-needs-a-per-theme-split
-description: A data-driven colour (team livery) on a `bg-white dark:bg-gray-800` surface can never pass 4.5:1 in both themes with one hex — decide per theme and feed two CSS custom properties
+description: A data-driven colour (team livery) can never pass 4.5:1 on both a light and a dark surface with one hex — since NEO-356, decide for the current mode via useTheme().mode + tokens.ts surfaces
 metadata:
   type: reference
 ---
 
-Tailwind 4's `dark:` here is the `prefers-color-scheme` media variant, while
-Radix is forced `appearance="dark"` — so a popover written
-`bg-white dark:bg-gray-800` really renders WHITE for a light-OS user. Any
-runtime colour (team `primaryColor`) shown on it must be checked per theme.
+No single hex clears 4.5:1 on both white (needs L <= ~0.18) and graphite
+gray-800 (needs L >= ~0.26), so "use it only if it passes both" silently drops
+every colour. Decide for the mode the page is in.
 
-No single hex clears 4.5:1 on both white (needs L <= ~0.18) and gray-800
-(needs L >= ~0.26), so "use it only if it passes both" silently drops every
-colour. Decide each theme independently and render:
+Since NEO-356 (roles + `<html data-theme>`), the pattern is:
 
 ```tsx
-style={{ "--livery-light": light, "--livery-dark": dark } as CSSProperties}
-className={`${light ? "text-[color:var(--livery-light)]" : "text-gray-700"} ${
-  dark ? "dark:text-[color:var(--livery-dark)]" : "dark:text-gray-300"}`}
+const { mode } = useTheme();                       // src/theme/ThemeProvider
+const ground = tokenHex("raised", mode);           // src/theme/tokens.ts
+const color = passes(hex, ground) ? hex : null;
+<span className={color ? undefined : "text-ink-2"} style={color ? { color } : undefined}>
 ```
 
-Check every surface the row sits on in that theme: base, hover
-(`gray-100` / `gray-700`), and translucent highlights composited over the base
-(`bg-[#00D558]/20` has no dark split). Tailwind 4 grays are oklch — use
-gray-800 ~ `#1e2939`, gray-700 ~ `#364153`, not the v3 hexes.
-`PlayerPicker`'s `liveryColors` (NEO-313) is the worked example.
+Check every surface the row sits on in that mode: base, hover, and
+translucent highlights composited over the base (`bg-neon-green/20`).
+`useTheme()` outside a provider reads `<html data-theme>` (dark by default), so
+a unit test sets `document.documentElement.dataset.theme` per case.
+Worked examples: `PlayerPicker` `liveryColor`, `TeamsOnCardsSection`
+`liveryTextColor`, `SetAttributesPanel` `teamTextColor`.
+
+The pre-NEO-356 version used two CSS vars and a `dark:` pair; `dark:` is now
+banned by `theme/no-raw-palette`. See [[light-dark-follows-data-theme]].

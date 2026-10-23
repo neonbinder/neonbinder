@@ -69,8 +69,8 @@ function TestingNeedsReauthContent() {
   }, [isAuthenticated, isLoading, markNeedsReauth, navigate, redirect, site]);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background">
-      <p className="text-slate-400 font-mono text-sm">
+    <div className="flex items-center justify-center min-h-screen bg-surface">
+      <p className="text-ink-3 font-mono text-sm">
         [testing-needs-reauth] {status}
       </p>
     </div>
@@ -81,8 +81,8 @@ export default function TestingNeedsReauthPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-background">
-          <p className="text-slate-400 font-mono text-sm">
+        <div className="flex items-center justify-center min-h-screen bg-surface">
+          <p className="text-ink-3 font-mono text-sm">
             [testing-needs-reauth] Loading…
           </p>
         </div>

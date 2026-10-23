@@ -39,22 +39,22 @@ export function SportForm({ onDone }: { onDone?: () => void }) {
   }, [start]);
 
   return (
-    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+    <div className="bg-raised p-6 rounded-lg shadow shadow-offset">
       <h2 className="text-xl font-semibold mb-4">Syncing Sport Options</h2>
 
       {loading && (
-        <p className="text-gray-600 dark:text-gray-400 mb-4">
+        <p className="text-ink-3 mb-4">
           Fetching the latest sport options from all connected platforms...
         </p>
       )}
 
       {message &&
         (hasError ? (
-          <div className="p-3 mb-4 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm">
+          <div className="p-3 mb-4 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm">
             {message}
           </div>
         ) : (
-          <div className="p-3 mb-4 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm">
+          <div className="p-3 mb-4 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm">
             {message}
           </div>
         ))}
@@ -66,7 +66,7 @@ export function SportForm({ onDone }: { onDone?: () => void }) {
               Retry
             </NeonButton>
           )}
-          <NeonButton cancel onClick={onDone}>
+          <NeonButton variant="negative" onClick={onDone}>
             {hasError ? "Cancel" : "Close"}
           </NeonButton>
         </div>

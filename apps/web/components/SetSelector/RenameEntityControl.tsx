@@ -186,7 +186,7 @@ export default function RenameEntityControl({
         // stays small beside the name it edits — but it wears the panel's one
         // focus ring (2px #00C2FF, offset). The old `focus:outline-none` with
         // only a colour change was a focus indicator in name only.
-        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:opacity-50"
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-ink-3 hover:text-neon-green-text focus-outline disabled:opacity-50"
       >
         <PencilSquareIcon className="w-4 h-4" aria-hidden="true" />
       </button>
@@ -241,7 +241,7 @@ export default function RenameEntityControl({
         <p
           id={errorId}
           role="alert"
-          className="order-last basis-full max-w-prose text-xs leading-snug text-[#FF2E9A]"
+          className="order-last basis-full max-w-prose text-xs leading-snug text-neon-pink-text"
         >
           {error}
         </p>

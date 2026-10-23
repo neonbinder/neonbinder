@@ -30,7 +30,9 @@ export default function VariantSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-teal-100 dark:bg-teal-900 border-teal-300 dark:border-teal-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-teal border-pick-teal-rule"
       isItemTerminal={() => true}
     />
   );

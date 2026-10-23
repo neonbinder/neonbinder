@@ -21,12 +21,12 @@ export default function ComingSoon() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black relative overflow-hidden font-sans">
+    <div className="min-h-screen flex items-center justify-center bg-surface relative overflow-hidden font-sans">
       {/* Content Container */}
       <div className="relative z-10 max-w-3xl mx-auto px-6 py-12 text-center">
         {/* Construction Sign */}
         <div className="mb-0 inline-block">
-          <div className="bg-neon-yellow text-black px-8 py-6 transform -rotate-2 shadow-2xl border-4 border-black">
+          <div className="bg-neon-yellow text-on-neon-yellow px-8 py-6 transform -rotate-2 shadow-2xl border-4 border-on-neon-yellow">
             <div className="text-5xl font-bold mb-3">🚧</div>
             <div className="text-3xl font-bold mb-2" style={{ fontFamily: "'Lexend', sans-serif" }}>
               COMING SOON
@@ -43,10 +43,11 @@ export default function ComingSoon() {
         {/* Subtitle */}
         <div className="mb-12 space-y-6">
           <p
-            className="text-3xl font-bold text-neon-blue"
+            className="text-3xl font-bold text-neon-blue-text"
             style={{
               fontFamily: "'Lexend', sans-serif",
-              textShadow: "0 0 10px rgba(0, 194, 255, 0.6)",
+              // Scaled by --glow (app/theme.css): lit in dark, none in light.
+              textShadow: "0 0 10px rgb(0 194 255 / calc(0.6 * var(--glow)))",
             }}
           >
             Your Collection Management Hub
@@ -54,36 +55,36 @@ export default function ComingSoon() {
 
           {/* Features Grid */}
           <div className="grid md:grid-cols-3 gap-8 my-12">
-            <div className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <div className="p-6 rounded-lg bg-raised-deep border border-rule shadow-offset">
               <div className="mb-4 flex justify-center">
                 <BindersIcon size={60} />
               </div>
-              <h3 className="text-xl font-semibold mb-2 text-neon-green">
+              <h3 className="text-xl font-semibold mb-2 text-neon-green-text">
                 Maintain
               </h3>
-              <p className="text-slate-600 dark:text-slate-400">
+              <p className="text-ink-3">
                 Your complete trading card collection in one powerful platform
               </p>
             </div>
-            <div className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <div className="p-6 rounded-lg bg-raised-deep border border-rule shadow-offset">
               <div className="mb-4 flex justify-center">
                 <ConvertIcon size={60} />
               </div>
-              <h3 className="text-xl font-semibold mb-2 text-neon-blue">
+              <h3 className="text-xl font-semibold mb-2 text-neon-blue-text">
                 Convert
               </h3>
-              <p className="text-slate-600 dark:text-slate-400">
+              <p className="text-ink-3">
                 Your inventory into listings across all major card selling platforms
               </p>
             </div>
-            <div className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <div className="p-6 rounded-lg bg-raised-deep border border-rule shadow-offset">
               <div className="mb-4 flex justify-center">
                 <MaximizeIcon size={80} />
               </div>
               <h3 className="text-xl font-semibold mb-2">
                 Maximize
               </h3>
-              <p className="text-slate-600 dark:text-slate-400">
+              <p className="text-ink-3">
                 Your sales with multi-platform distribution
               </p>
             </div>
@@ -91,7 +92,7 @@ export default function ComingSoon() {
 
           {/* Mailing List Message */}
           <div className="my-12 text-center">
-            <p className="text-lg text-white leading-relaxed">
+            <p className="text-lg text-ink leading-relaxed">
               Thanks for signing up for our mailing list! Follow along as we build and launch Neon Binder.
               We&apos;re excited to share our progress and get your feedback as we grow.
             </p>
@@ -101,30 +102,29 @@ export default function ComingSoon() {
 
         {/* Call to Action */}
         <div className="space-y-6">
-          <p className="text-2xl font-bold text-neon-pink" style={{ fontFamily: "'Lexend', sans-serif" }}>
+          <p className="text-2xl font-bold text-neon-pink-text" style={{ fontFamily: "'Lexend', sans-serif" }}>
             ✨ Get Ready for Launch ✨
           </p>
           {isSignedIn && (
             <Link
               href="#"
               onClick={handleProfileClick}
-              className="text-neon-blue text-lg font-semibold mb-8"
-              style={{ color: "#00C2FF" }}
+              className="text-neon-blue-text text-lg font-semibold mb-8"
             >
               Complete Your Profile →
             </Link>
           )}
-          <p className="text-xl text-white">
+          <p className="text-xl text-ink">
             Complete your profile information to be ready when we launch
           </p>
         </div>
 
         {/* 90s Footer Elements */}
         <div className="mt-16 pt-8 border-t-4 border-neon-purple space-y-3">
-          <p className="text-lg font-bold text-neon-pink animate-neon-glow" style={{ fontFamily: "'Lexend', sans-serif" }}>
+          <p className="text-lg font-bold text-neon-pink-text animate-neon-glow" style={{ fontFamily: "'Lexend', sans-serif" }}>
             {progressBar} {percent}% Complete
           </p>
-          <p className="text-sm text-white" style={{ fontFamily: "'Lexend', sans-serif" }}>
+          <p className="text-sm text-ink" style={{ fontFamily: "'Lexend', sans-serif" }}>
             Built with retro vibes for the modern collector
           </p>
         </div>

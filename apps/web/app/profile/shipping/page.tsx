@@ -11,10 +11,10 @@ import ReturnAddressEditor from "@/components/modules/ReturnAddressEditor";
  */
 export default function ShippingPanel() {
   return (
-    <section className="space-y-6 p-6 border border-slate-800 rounded-lg">
+    <section className="space-y-6 p-6 border border-rule rounded-lg">
       <div>
         <h2 className="text-xl font-semibold">Shipping</h2>
-        <p className="text-sm text-slate-400 mt-1">
+        <p className="text-sm text-ink-3 mt-1">
           Your return address for printed shipping labels
         </p>
       </div>

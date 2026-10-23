@@ -1455,12 +1455,11 @@ describe("TeamPicker — the popover escapes its clip box (NEO-272)", () => {
     // the one this popover has always carried.
     for (const cls of [
       "w-64",
-      "bg-white",
-      "dark:bg-gray-800",
-      "border-gray-300",
-      "dark:border-gray-600",
+      "bg-raised",
+      "border-control",
       "rounded-md",
       "shadow-lg",
+      "shadow-offset",
     ]) {
       expect(popover().className).toContain(cls);
     }

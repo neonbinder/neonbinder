@@ -3,6 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import Pocket, { type PocketHandlers, type PocketVariant } from "./Pocket";
 import type { PageModel, SlotRef } from "../../prototypes/p2/model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * The open binder (p2's BinderDesk, copied to use this folder's Pocket):
@@ -168,7 +169,7 @@ export default function BinderDesk(props: BinderDeskProps) {
           <Page {...props} page={rightPage.page} number={rightPage.number} />
         </div>
       ) : (
-        <div ref={rightRef} className="p2-cover flex items-center justify-center text-center text-sm text-slate-400">
+        <div ref={rightRef} className="p2-cover flex items-center justify-center text-center text-sm text-ink-3">
           <p>The back cover. That&apos;s the whole binder.</p>
         </div>
       )}
@@ -280,23 +281,25 @@ function TurnButton({
         aria-label={label}
         title={`${label} (${back ? "PageUp" : "PageDown"})`}
         aria-keyshortcuts={back ? "PageUp" : "PageDown"}
-        className="flex w-11 flex-none items-center justify-center rounded-xl border border-slate-700 bg-slate-950 text-slate-200 hover:border-neon-blue hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-30"
+        className="flex w-11 flex-none items-center justify-center rounded-xl border border-rule-strong bg-sheet text-ink-2 hover:border-neon-blue hover:text-ink focus-outline disabled:cursor-not-allowed disabled:opacity-30"
       >
         <Icon aria-hidden="true" className="h-6 w-6" />
       </button>
     );
   }
   return (
-    <button
+    <NeonButton
       type="button"
+      variant="secondary"
+      outline
       onClick={onClick}
       disabled={disabled}
       aria-keyshortcuts={back ? "PageUp" : "PageDown"}
-      className="inline-flex min-h-11 flex-1 items-center justify-center gap-1 rounded-xl border border-slate-600 bg-slate-900 px-3 text-sm font-medium text-slate-100 hover:border-neon-blue hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-40"
+      className="min-h-11 flex-1"
     >
       {back && <Icon aria-hidden="true" className="h-5 w-5" />}
       {label}
       {!back && <Icon aria-hidden="true" className="h-5 w-5" />}
-    </button>
+    </NeonButton>
   );
 }

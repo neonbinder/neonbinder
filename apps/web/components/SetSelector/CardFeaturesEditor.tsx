@@ -82,7 +82,7 @@ export default function CardFeaturesEditor({
         type="button"
         onClick={() => setExpanded(true)}
         aria-label="Show features editor"
-        className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+        className="text-xs text-ink-3 hover:text-neon-green-text focus:text-neon-green-text focus-outline"
       >
         Show features ▾
       </button>
@@ -91,18 +91,18 @@ export default function CardFeaturesEditor({
 
   return (
     <div
-      className="border border-gray-700 rounded p-2 space-y-1.5"
+      className="border border-rule-strong rounded p-2 space-y-1.5"
       aria-label="Card features editor"
     >
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+        <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
           Features
         </span>
         <button
           type="button"
           onClick={() => setExpanded(false)}
           aria-label="Hide features editor"
-          className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+          className="text-xs text-ink-3 hover:text-neon-green-text focus:text-neon-green-text focus-outline"
         >
           Hide ▴
         </button>
@@ -205,7 +205,7 @@ function CardFeatureRow({
     };
     return (
       <label
-        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
+        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
         aria-label={`Feature ${label}`}
       >
         <input
@@ -214,13 +214,13 @@ function CardFeatureRow({
           disabled={boolBusy}
           onChange={(e) => void handleToggle(e.target.checked)}
           aria-label={`Value for ${label}`}
-          className="accent-[#00D558]"
+          className="accent-neon-green-text"
         />
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+        <span className="text-[10px] uppercase tracking-wide text-ink-3">
           {label}
         </span>
         {boolError && (
-          <span className="text-[10px] text-[#FF2E9A]" role="alert">
+          <span className="text-[10px] text-neon-pink-text" role="alert">
             {boolError}
           </span>
         )}
@@ -232,10 +232,10 @@ function CardFeatureRow({
 
   return (
     <label
-      className="flex flex-col gap-0.5 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-0.5 p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label={`Feature ${label}`}
     >
-      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-ink-3">
         <span>{label}</span>
       </span>
       <FeatureValueControl
@@ -251,7 +251,7 @@ function CardFeatureRow({
         onEmptyCommit={() => onSave("")}
         ariaLabel={`Value for ${label}`}
         placeholder="—"
-        className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+        className={`${fieldClass()} w-full p-1 border rounded text-xs bg-raised-deep border-field-rule focus-outline`}
       />
     </label>
   );

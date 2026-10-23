@@ -26,7 +26,9 @@ export default function SportSelector({
       setExpanded={setExpanded}
       getDisplayName={displayByValue}
       getDescription={() => undefined}
-      selectedColor="bg-pink-100 dark:bg-pink-900 border-pink-300 dark:border-pink-700"
+      // NEO-356: the column's own hue (`pick-*` roles, app/theme.css): the
+      // -900 fill in dark, a pale tint in light, the -700 edge in both.
+      selectedColor="bg-pick-pink border-pick-pink-rule"
     />
   );
 }

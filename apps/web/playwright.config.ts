@@ -64,6 +64,9 @@ export default defineConfig({
     : [["list"]],
   use: {
     baseURL: APP_URL,
+    // NEO-356: the app follows the OS colour scheme (System is the default),
+    // so pin the suite to dark. Only the theme specs call page.emulateMedia.
+    colorScheme: "dark",
     actionTimeout: UX_BUDGET,
     navigationTimeout: 30_000,
     // CI headless viewport, same as Maestro and the first port.

@@ -40,18 +40,18 @@ export default function NoticeLine({
       <div
         className={
           notice
-            ? "flex items-center gap-3 rounded-md border border-neon-blue/60 bg-slate-950 px-3 py-2 text-sm shadow-lg"
+            ? "flex items-center gap-3 rounded-md border border-neon-blue/60 bg-sheet px-3 py-2 text-sm shadow-lg"
             : ""
         }
       >
-        <p role="status" className={notice ? "flex-1 text-slate-100" : "sr-only"}>
+        <p role="status" className={notice ? "flex-1 text-ink" : "sr-only"}>
           {notice?.message ?? ""}
         </p>
         {notice?.undo && (
           <button
             type="button"
             onClick={onUndo}
-            className={`min-h-8 rounded px-2 py-1 text-sm font-semibold text-neon-blue underline underline-offset-2 hover:text-white ${FOCUS}`}
+            className={`min-h-8 rounded px-2 py-1 text-sm font-semibold text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
           >
             Undo
           </button>
@@ -61,7 +61,7 @@ export default function NoticeLine({
             type="button"
             onClick={onDismiss}
             aria-label="Dismiss message"
-            className={`flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:text-white ${FOCUS}`}
+            className={`flex h-8 w-8 items-center justify-center rounded text-ink-3 hover:text-ink ${FOCUS}`}
           >
             <XMarkIcon className="h-4 w-4" aria-hidden="true" />
           </button>

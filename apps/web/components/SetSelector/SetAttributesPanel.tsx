@@ -26,6 +26,9 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
+import { useTheme } from "@/src/theme/ThemeProvider";
+import type { ThemeMode } from "@/src/theme/theme-mode";
+import { tokenHex } from "@/src/theme/tokens";
 import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
@@ -136,7 +139,7 @@ import {
  * a focus indicator in name only.
  */
 const ATTRIBUTES_TOGGLE_CLASS =
-  "text-xs py-1 rounded text-gray-400 hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900";
+  "text-xs py-1 rounded text-ink-3 hover:text-neon-green-text focus-outline";
 
 /**
  * NEO-291 — where the Card prefix row is editable.
@@ -575,7 +578,7 @@ export default function SetAttributesPanel({
 
   return (
     <div
-      className="border border-gray-700 rounded-lg bg-gray-900/60 p-4 space-y-3"
+      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3"
       role="region"
       aria-label="Set attributes panel"
     >
@@ -588,7 +591,7 @@ export default function SetAttributesPanel({
               deepest current selection at ANY level, so this one control
               renames sports, years, manufacturers, sets and variants alike. */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="text-sm font-semibold text-gray-100">
+            <h3 className="text-sm font-semibold text-ink">
               {headerTitle}
             </h3>
             {/* NEO-239: every level renames, variantType included.
@@ -649,7 +652,7 @@ export default function SetAttributesPanel({
               clip at the end of the nowrap team name, and widened a 412px
               page by ~50px, sliding the whole page (and the card drawer)
               sideways on a phone. */}
-          <p className="relative text-xs text-gray-400 mt-0.5 truncate" title={breadcrumb}>
+          <p className="relative text-xs text-ink-3 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
             {/* NEO-277: the set's team, said the way a collector says it —
                 "Bulls", in Durham Bulls blue — on the collapsed summary bar,
@@ -778,7 +781,7 @@ export default function SetAttributesPanel({
         // while the panel is collapsed is still seen. (The header control that
         // first needed this, "Mark as base set", went with NEO-334.)
         <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
           role="status"
           aria-live="polite"
         >
@@ -789,7 +792,7 @@ export default function SetAttributesPanel({
       {expanded && (
         <>
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+            <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
               Set attributes
             </span>
           </div>
@@ -934,13 +937,13 @@ function ShortNameRow({
 
   return (
     <label
-      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label={`Set feature ${label}`}
     >
-      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-ink-3">
         <span
           title={SHORT_NAME_FEATURE.hint}
-          className="cursor-help underline decoration-dotted decoration-gray-500"
+          className="cursor-help underline decoration-dotted decoration-control"
         >
           {label}
         </span>
@@ -957,7 +960,7 @@ function ShortNameRow({
         ariaDescribedBy={hintId}
         placeholder={inherited ?? "e.g. Upper Deck Hologram"}
         dataFeatKey={SHORT_NAME_FEATURE.key}
-        className={`${fieldClass("short-name")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+        className={`${fieldClass("short-name")} w-full p-1 border rounded text-xs bg-raised-deep border-rule-strong focus:border-neon-green-text focus-outline`}
       />
     </label>
   );
@@ -998,13 +1001,13 @@ function BrandPrefixRow({
 
   return (
     <label
-      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label={`Set feature ${label}`}
     >
-      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-ink-3">
         <span
           title={BRAND_PREFIX_FEATURE.hint}
-          className="cursor-help underline decoration-dotted decoration-gray-500"
+          className="cursor-help underline decoration-dotted decoration-control"
         >
           {label}
         </span>
@@ -1024,7 +1027,7 @@ function BrandPrefixRow({
         ariaDescribedBy={hintId}
         placeholder="e.g. Upper Deck"
         dataFeatKey={BRAND_PREFIX_FEATURE.key}
-        className={`${fieldClass("brand-prefix")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+        className={`${fieldClass("brand-prefix")} w-full p-1 border rounded text-xs bg-raised-deep border-rule-strong focus:border-neon-green-text focus-outline`}
       />
     </label>
   );
@@ -1102,7 +1105,7 @@ export function slViaAllBrandsRefusal(e: unknown): string | null {
 function BaseSetTag() {
   return (
     <span
-      className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-[#00D558]/50 text-[#00D558]"
+      className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-neon-green-text/50 text-neon-green-text"
       title="Titled Base, so this type holds the set's base checklist."
     >
       Base set
@@ -1132,13 +1135,13 @@ function BrandUnknownRenameNotice({ value }: { value: string }) {
         onKeyDown={(event) => activateOnEnter(event, reveal)}
         // min-w-6 min-h-6 and the ring, as the real pencil carries them: a
         // bare 16x16 icon is under WCAG 2.5.8's 24x24 minimum target.
-        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 opacity-50 cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-ink-3 opacity-50 cursor-not-allowed focus-outline"
       >
         <PencilSquareIcon className="w-4 h-4" aria-hidden="true" />
       </button>
       <span
         id={reasonId}
-        className={revealed ? "text-[11px] text-gray-400" : "sr-only"}
+        className={revealed ? "text-[11px] text-ink-3" : "sr-only"}
       >
         {BRAND_UNKNOWN_RENAME_REFUSAL}
       </span>
@@ -1191,21 +1194,21 @@ function SlViaAllBrandsToggle({
 
   return (
     <div
-      className="flex flex-col gap-1 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label="Set feature SportLots link"
     >
-      <span className="text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="text-[10px] uppercase tracking-wide text-ink-3">
         SportLots
       </span>
       <button
         type="button"
-        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
+        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
           on
-            ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
+            ? "border-neon-green-text bg-neon-green/10 text-ink"
             : // gray-500: the 3:1 boundary tone on this panel's dark surface
               // (gray-600 measures ~2.0:1 against gray-800; -500 clears it).
-              "border-gray-500 text-gray-300 hover:border-[#00D558]"
-        } ${unavailable ? "opacity-60 cursor-not-allowed hover:border-gray-500" : ""}`}
+              "border-control text-ink-2 hover:border-neon-green-text"
+        } ${unavailable ? "opacity-60 cursor-not-allowed hover:border-control" : ""}`}
         aria-pressed={on}
         aria-disabled={unavailable || undefined}
         aria-describedby={disabledReason ? reasonId : undefined}
@@ -1215,7 +1218,7 @@ function SlViaAllBrandsToggle({
         <span
           aria-hidden="true"
           className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
-            on ? "border-[#00D558] bg-[#00D558]" : "border-gray-500"
+            on ? "border-neon-green-text bg-neon-green" : "border-control"
           }`}
         />
         <span>{SL_VIA_ALL_BRANDS_TOGGLE_TEXT}</span>
@@ -1224,7 +1227,7 @@ function SlViaAllBrandsToggle({
         // Next to the control it describes, not only in a tooltip: a
         // disabled control that keeps its reason on hover asks a keyboard
         // user to work it out.
-        <span id={reasonId} className="text-[11px] text-gray-400">
+        <span id={reasonId} className="text-[11px] text-ink-3">
           {disabledReason}
         </span>
       )}
@@ -1281,13 +1284,13 @@ function AutographFormatRow({
   };
   return (
     <label
-      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label={`Set feature ${label}`}
     >
-      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-ink-3">
         <span
           title={AUTOGRAPH_FORMAT_FEATURE.hint}
-          className="cursor-help underline decoration-dotted decoration-gray-500"
+          className="cursor-help underline decoration-dotted decoration-control"
         >
           {label}
         </span>
@@ -1302,7 +1305,7 @@ function AutographFormatRow({
         aria-describedby={hintId}
         aria-busy={busy || undefined}
         onChange={(e) => void handleChange(e.target.value)}
-        className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+        className={`${fieldClass()} w-full p-1 border rounded text-xs bg-raised-deep border-rule-strong focus:border-neon-green-text focus-outline`}
       >
         {/* The house "No value" (NEO-217): selectable, and it clears. */}
         <option value="">No value</option>
@@ -1372,15 +1375,15 @@ function SetFeatureRow({
     );
     return (
       <div
-        className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+        className="flex flex-col gap-0.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
         aria-label={`Set feature ${label}`}
       >
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+        <span className="text-[10px] uppercase tracking-wide text-ink-3">
           <span
             title={feat.hint}
             className={
               feat.hint
-                ? "cursor-help underline decoration-dotted decoration-gray-500"
+                ? "cursor-help underline decoration-dotted decoration-control"
                 : undefined
             }
           >
@@ -1388,22 +1391,22 @@ function SetFeatureRow({
           </span>
         </span>
         {feat.hint && <span className="sr-only">{feat.hint}</span>}
-        <span className="text-gray-300">{value ?? "—"}</span>
+        <span className="text-ink-2">{value ?? "—"}</span>
       </div>
     );
   }
 
   return (
     <label
-      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
       aria-label={`Set feature ${label}`}
     >
-      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-ink-3">
         <span
           title={feat.hint}
           className={
             feat.hint
-              ? "cursor-help underline decoration-dotted decoration-gray-500"
+              ? "cursor-help underline decoration-dotted decoration-control"
               : undefined
           }
         >
@@ -1428,7 +1431,7 @@ function SetFeatureRow({
         ariaDescribedBy={feat.hint ? hintId : undefined}
         placeholder="—"
         dataFeatKey={feat.key}
-        className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+        className={`${fieldClass()} w-full p-1 border rounded text-xs bg-raised-deep border-rule-strong focus:border-neon-green-text focus-outline`}
       />
     </label>
   );
@@ -1931,11 +1934,11 @@ function SetTeamRow({
       role="group"
       aria-labelledby={labelId}
       aria-describedby={hintId}
-      className="flex flex-col gap-1 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
     >
       <span
         id={labelId}
-        className="text-[10px] uppercase tracking-wide text-gray-400"
+        className="text-[10px] uppercase tracking-wide text-ink-3"
       >
         Team
       </span>
@@ -1954,7 +1957,7 @@ function SetTeamRow({
         // Next to the control it describes, not only in the toast: this is
         // the state the operator will find the row in after a save, and a
         // disabled picker with no sentence beside it is a question.
-        <p role="status" className="text-[10px] text-[#00D558]">
+        <p role="status" className="text-[10px] text-neon-green-text">
           Applying to cards…
         </p>
       )}
@@ -1970,7 +1973,7 @@ function SetTeamRow({
             type="button"
             onClick={() => void handleClear()}
             disabled={busy}
-            className="text-[11px] text-gray-300 underline decoration-dotted underline-offset-2 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none disabled:opacity-50"
+            className="text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline disabled:opacity-50"
           >
             Clear team
           </button>
@@ -1978,7 +1981,7 @@ function SetTeamRow({
             type="button"
             onClick={handleKeep}
             disabled={busy}
-            className="text-[11px] text-gray-300 underline decoration-dotted underline-offset-2 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none disabled:opacity-50"
+            className="text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-green-text focus:text-neon-green-text focus-outline disabled:opacity-50"
           >
             Keep {storedNames ?? "current team"}
           </button>
@@ -1988,7 +1991,7 @@ function SetTeamRow({
           whose save reaches beyond the row, and that has to be readable
           before the pick, not discoverable after it. gray-400 on this
           ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
-      <p id={hintId} className="text-[10px] text-gray-400">
+      <p id={hintId} className="text-[10px] text-ink-3">
         {teamHintCopy(level)}
       </p>
       {confirm && (
@@ -2024,12 +2027,12 @@ function SetTeamRow({
 }
 
 /**
- * Composited panel ground for the contrast gate below: `bg-gray-900/60`
- * (#111827 at 60%) over the near-black page (#0a0a0a). Worked out once here
- * rather than guessed, because a franchise colour can clear 4.5:1 on pure
- * black and miss it on this slightly lifted surface.
+ * The panel ground for the contrast gate below, per mode. Dark: `bg-raised-deep/60`
+ * (gray-900 at 60%) over the near-black page, worked out once here rather
+ * than guessed, because a franchise colour can clear 4.5:1 on pure black and
+ * miss it on this slightly lifted surface. Light: the panel is white.
  */
-const PANEL_GROUND = "#0e121b";
+const PANEL_GROUND = { dark: "#0e121b", light: tokenHex("raised-deep", "light") } as const;
 
 /** WCAG 2.2 SC 1.4.3 for text this size. A gate, not a readout — this is UI. */
 const LIVERY_MIN_CONTRAST = 4.5;
@@ -2046,12 +2049,13 @@ const LIVERY_MIN_CONTRAST = 4.5;
  */
 function teamTextColor(
   colors: { primary?: string; secondary?: string } | undefined,
+  mode: ThemeMode,
 ): string | null {
   for (const candidate of [colors?.primary, colors?.secondary]) {
     if (!candidate) continue;
     const hex = normalizeHexColor(candidate);
     if (!hex) continue;
-    const ratio = contrastRatio(hex, PANEL_GROUND);
+    const ratio = contrastRatio(hex, PANEL_GROUND[mode]);
     if (ratio !== null && ratio >= LIVERY_MIN_CONTRAST) return hex;
   }
   return null;
@@ -2067,6 +2071,7 @@ function teamTextColor(
  * change is worse than one that fills in a beat later.
  */
 function SetTeamLivery({ teamIds }: { teamIds: Array<Id<"teams">> }) {
+  const { mode } = useTheme();
   const rows = useQuery(api.teams.getManyByIds, { ids: teamIds });
   if (!rows || rows.length === 0) return null;
   return (
@@ -2074,13 +2079,13 @@ function SetTeamLivery({ teamIds }: { teamIds: Array<Id<"teams">> }) {
       <span aria-hidden="true">· </span>
       <span className="sr-only">Team: </span>
       {rows.map((team, i) => {
-        const color = teamTextColor(team.colors);
+        const color = teamTextColor(team.colors, mode);
         return (
           <span key={team._id}>
             {i > 0 && ", "}
             <span
               title={teamFullName(team)}
-              className={color ? "font-semibold" : "font-semibold text-gray-300"}
+              className={color ? "font-semibold" : "font-semibold text-ink-2"}
               style={color ? { color } : undefined}
             >
               {teamShortName(team)}
@@ -2355,7 +2360,7 @@ function DeleteSelectorRowControl({
         // as low-key as it was — a grey icon, pink only on hover — because
         // deleting is the rare act here (NEO-219), and a chip would advertise
         // it beside every name.
-        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 hover:text-[#FF2E9A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-500"
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-ink-3 hover:text-neon-pink-text focus-outline aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-ink-3"
       >
         <TrashIcon className="w-4 h-4" aria-hidden="true" />
       </button>
@@ -2364,7 +2369,7 @@ function DeleteSelectorRowControl({
           id={reasonId}
           className={
             reasonRevealed
-              ? "w-full text-[10px] text-gray-400"
+              ? "w-full text-[10px] text-ink-3"
               : "sr-only"
           }
         >

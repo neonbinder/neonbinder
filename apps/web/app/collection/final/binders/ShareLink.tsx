@@ -2,6 +2,7 @@ import { useId, useRef, useState } from "react";
 import { LinkIcon } from "@heroicons/react/24/outline";
 import { useCollectionMode } from "../mode";
 import { shareUrl, type ShareTarget } from "./model";
+import NeonButton from "@/components/modules/NeonButton";
 
 /**
  * "Share": the open view's public link, readable by a human
@@ -45,9 +46,12 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
         }
       }}
     >
-      <button
+      {/* Pink outline at rest, lit pink while the panel is open. */}
+      <NeonButton
         ref={buttonRef}
         type="button"
+        variant="negative"
+        outline={!open}
         aria-expanded={open}
         aria-controls={panelId}
         aria-label={`Share ${what}`}
@@ -57,48 +61,40 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
           setCopied(null);
           if (next) void copy();
         }}
-        className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] ${
-          open
-            ? "border-neon-pink bg-neon-pink text-black"
-            : "border-slate-600 text-slate-100 hover:border-neon-pink"
-        }`}
+        className="min-h-10"
       >
         <LinkIcon aria-hidden="true" className="h-4 w-4" />
         Share
-      </button>
+      </NeonButton>
       <div
         id={panelId}
         hidden={!open}
-        className="absolute right-0 top-full z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-neon-pink/60 bg-slate-950 p-3 text-sm shadow-2xl"
+        className="absolute right-0 top-full z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-neon-pink/60 bg-sheet p-3 text-sm shadow-2xl shadow-offset"
       >
-        <p className="font-semibold text-white">Share {what}</p>
-        <p className="mt-2 break-all rounded-md bg-slate-900 px-2 py-1.5 font-medium text-neon-blue">
+        <p className="font-semibold text-ink">Share {what}</p>
+        <p className="mt-2 break-all rounded-md bg-field px-2 py-1.5 font-medium text-neon-blue-text">
           {link}
         </p>
-        <p role="status" className="mt-2 text-slate-200">
+        <p role="status" className="mt-2 text-ink-2">
           {copied === "yes"
             ? "Copied! Paste it anywhere."
             : copied === "no"
               ? "Couldn't reach your clipboard. Copy the link above by hand."
               : ""}
         </p>
-        <p className="mt-1 text-slate-300">
+        <p className="mt-1 text-ink-2">
           {mode === "public"
             ? "Just an example: demo binders don't get a real page."
             : "Just an example: share links arrive when your real collection does."}
         </p>
         <div className="mt-2 flex gap-2">
-          <button
-            type="button"
-            onClick={() => void copy()}
-            className="min-h-9 rounded-md bg-neon-pink px-3 text-sm font-bold text-black hover:bg-[#ff5cb0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
-          >
+          <NeonButton type="button" variant="negative" onClick={() => void copy()} className="min-h-9">
             Copy link
-          </button>
+          </NeonButton>
           <button
             type="button"
             onClick={close}
-            className="min-h-9 rounded-md px-3 text-sm text-slate-300 underline underline-offset-4 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+            className="min-h-9 rounded-md px-3 text-sm text-ink-2 underline underline-offset-4 hover:text-ink focus-outline"
           >
             Done
           </button>

@@ -1,5 +1,5 @@
 import { useId, type FormEvent, type KeyboardEvent } from "react";
-import { Button } from "@/components/primitives/Button";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import {
@@ -50,12 +50,12 @@ const CONDITIONS: Condition[] = [
 ];
 const GRADERS: Grader[] = ["PSA", "BGS", "SGC", "CGC", "TAG"];
 
-const LABEL = "block text-sm font-medium text-slate-300 mb-1";
+const LABEL = "block text-sm font-medium text-ink-2 mb-1";
 const SELECT =
-  "w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]";
+  "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
 const CHOICE =
-  "flex cursor-pointer items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 has-[:checked]:border-[#00C2FF] has-[:checked]:text-white has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#00C2FF]";
-const CHECK = "h-4 w-4 accent-[#00C2FF]";
+  "flex cursor-pointer items-center gap-2 rounded-md border border-field-rule bg-field px-3 py-2 text-sm text-ink-2 has-[:checked]:border-selection has-[:checked]:text-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus";
+const CHECK = "h-4 w-4 accent-selection";
 
 /** Number fields hold `undefined` when blank, never NaN. */
 function parseMoney(text: string): number | undefined {
@@ -113,14 +113,14 @@ export default function CopyDetailsForm({
       onKeyDown={onKeyDown}
       aria-labelledby={heading ? headingId : undefined}
       aria-label={heading ? undefined : `Details for ${cardLabel(card)}`}
-      className={`rounded-lg border border-slate-800 bg-slate-950 p-4 text-slate-100 sm:p-5 ${className}`}
+      className={`rounded-lg border border-rule bg-sheet p-4 text-ink shadow-offset sm:p-5 ${className}`}
     >
       {heading && (
-        <h2 id={headingId} className="text-lg font-bold text-white">
+        <h2 id={headingId} className="text-lg font-bold text-ink">
           {heading}
         </h2>
       )}
-      <p className="mt-1 text-sm text-slate-400">
+      <p className="mt-1 text-sm text-ink-3">
         Only the quantity is needed. Fill in the rest whenever you like.
       </p>
 
@@ -336,18 +336,18 @@ export default function CopyDetailsForm({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-slate-600 px-4 py-2 text-sm font-medium text-slate-200 hover:border-slate-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+          className="rounded-md border border-control px-4 py-2 text-sm font-medium text-ink-2 hover:border-ink-3 hover:text-ink focus-outline"
         >
           Cancel
         </button>
-        <Button
+        <NeonButton
           type="submit"
           variant="primary"
           disabled={!quantityValid}
-          className="focus-visible:ring-2 focus-visible:ring-[#00C2FF]"
+          className="focus-outline"
         >
           {saveLabel}
-        </Button>
+        </NeonButton>
       </div>
     </form>
   );

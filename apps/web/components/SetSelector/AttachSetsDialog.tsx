@@ -89,8 +89,8 @@ const LABEL_SIDE: Record<Side, MarketplaceSide> = { bsc: "bsc", sportlots: "sl" 
  * in the side's own hue (the ReconciliationModal / BaseSetPicker treatment).
  */
 const ID_SUFFIX: Record<Side, string> = {
-  bsc: "text-[11px] font-normal tabular-nums text-blue-300/80",
-  sportlots: "text-[11px] font-normal tabular-nums text-purple-300/80",
+  bsc: "text-[11px] font-normal tabular-nums text-neon-blue-text",
+  sportlots: "text-[11px] font-normal tabular-nums text-neon-purple-text",
 };
 
 type Candidate = {
@@ -576,17 +576,17 @@ export default function AttachSetsDialog({
     // needed — createPortal(document.body) escapes the root Theme's CSS scope.
     <Theme>
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-scrim flex items-center justify-center z-50 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="attach-sets-title"
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl w-full max-w-5xl max-h-[85vh] flex flex-col">
-        <div className="px-6 py-4 border-b border-gray-700">
-          <h2 id="attach-sets-title" className="text-lg font-semibold text-gray-100">
+      <div className="bg-raised-deep border border-rule-strong rounded-lg shadow-xl shadow-offset w-full max-w-5xl max-h-[85vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-rule-strong">
+          <h2 id="attach-sets-title" className="text-lg font-semibold text-ink">
             Attach more source sets
           </h2>
-          <p className="text-xs text-gray-400 mt-0.5">
+          <p className="text-xs text-ink-3 mt-0.5">
             Pick BSC and/or SportLots sets to attach to this NeonBinder variant —
             including sets from elsewhere in {yearMfr || "this year"}. Cards from
             every attached set roll up into a single checklist; users can filter
@@ -716,18 +716,18 @@ export default function AttachSetsDialog({
         </div>
 
         {errorMsg && (
-          <div className="px-6 pb-2 text-sm text-[#FF2E9A]" role="alert">
+          <div className="px-6 pb-2 text-sm text-neon-pink-text" role="alert">
             {errorMsg}
           </div>
         )}
 
-        <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between gap-4">
-          <div className="text-xs text-gray-400">
+        <div className="px-6 py-4 border-t border-rule-strong flex items-center justify-between gap-4">
+          <div className="text-xs text-ink-3">
             {totalSelected} set{totalSelected === 1 ? "" : "s"} selected
           </div>
           <div className="flex gap-2">
             <NeonButton
-              secondary
+              variant="secondary"
               onClick={onClose}
               aria-label="Cancel attach sets"
             >
@@ -894,13 +894,13 @@ function Pane({
     <section className="flex flex-col min-h-0" aria-label={paneLabel}>
       <header className="mb-2">
         <div className="flex items-baseline justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-200 truncate">
+          <h3 className="text-sm font-semibold text-ink-2 truncate">
             {title}
           </h3>
-          <span className="text-xs text-gray-400 shrink-0">{count}</span>
+          <span className="text-xs text-ink-3 shrink-0">{count}</span>
         </div>
         {subtitle && (
-          <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>
+          <p className="text-[11px] text-ink-3 mt-0.5">{subtitle}</p>
         )}
         {breadcrumb && <div className="mt-1.5">{breadcrumb}</div>}
       </header>
@@ -911,7 +911,7 @@ function Pane({
         // this dialog reserves for a marketplace that actually failed.
         <p
           role="status"
-          className="mb-2 border-l-2 border-[#00C2FF] pl-2 text-xs leading-snug text-gray-300"
+          className="mb-2 border-l-2 border-neon-blue-text pl-2 text-xs leading-snug text-ink-2"
         >
           {notice}
         </p>
@@ -933,19 +933,19 @@ function Pane({
           // operator's decision, not because a marketplace failed (pink) or
           // came back empty (gray). amber-300 on this panel's gray-900 ground
           // clears WCAG 1.4.3 comfortably.
-          <li className="text-xs text-amber-300 px-2 py-1 leading-snug">
+          <li className="text-xs text-notice-warn-ink px-2 py-1 leading-snug">
             {PAUSE_NOTICE_COPY.pane(sideLabel(side))}
           </li>
         )}
         {!paused && loading && (
-          <li className="text-xs text-gray-400 italic px-2 py-1">Loading…</li>
+          <li className="text-xs text-ink-3 italic px-2 py-1">Loading…</li>
         )}
         {!paused && !loading && error && (
           // Surfaced per pane, not merged into one dialog-level message: before
           // NEO-196 an adapter failure was swallowed entirely and read as "this
           // marketplace has nothing", which is the opposite of what it means.
           <li
-            className="text-xs text-[#FF2E9A] px-2 py-1 break-words"
+            className="text-xs text-neon-pink-text px-2 py-1 break-words"
             role="alert"
           >
             {error}
@@ -956,7 +956,7 @@ function Pane({
             // gray-400, not gray-500: on this panel's ground gray-500 lands at
             // 3.67:1, under the 4.5:1 WCAG 1.4.3 floor for body text — and this
             // line is the ONLY explanation an empty pane gives.
-            className="text-xs text-gray-400 italic px-2 py-1"
+            className="text-xs text-ink-3 italic px-2 py-1"
           >
             {emptyNote ??
               (search.trim() ? `No matches for “${search.trim()}”.` : emptyText)}
@@ -979,14 +979,9 @@ function BreadcrumbButton({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={ariaLabel}
-      className="hit-area-24 text-xs px-2 py-0.5 rounded border border-gray-700 bg-gray-800 text-[#00C2FF] hover:border-[#00C2FF] focus:border-[#00C2FF] focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
-    >
+    <NeonButton variant="secondary" outline size="1" type="button" onClick={onClick} aria-label={ariaLabel}>
       ‹ {label}
-    </button>
+    </NeonButton>
   );
 }
 
@@ -1064,7 +1059,7 @@ function CandidateRow({
   return (
     <li
       className={`flex items-start gap-1 rounded ${
-        isSelected ? "bg-gray-800 text-gray-100" : "bg-gray-800/40 text-gray-300"
+        isSelected ? "bg-raised text-ink" : "bg-raised/40 text-ink-2"
       }`}
     >
       <label
@@ -1078,7 +1073,7 @@ function CandidateRow({
           <span className="mt-0.5 shrink-0">
             <span
               aria-hidden="true"
-              className="text-[10px] uppercase tracking-wide text-gray-400"
+              className="text-[10px] uppercase tracking-wide text-ink-3"
             >
               attached
             </span>
@@ -1089,7 +1084,7 @@ function CandidateRow({
             type="checkbox"
             checked={isSelected}
             onChange={() => onToggle(side, candidate, facet)}
-            className="accent-[#00D558] mt-1"
+            className="accent-neon-green-text mt-1"
             aria-label={`Toggle ${label}`}
           />
         )}
@@ -1103,7 +1098,7 @@ function CandidateRow({
               </>
             )}
           </div>
-          <div className="text-[10px] text-gray-400 truncate">
+          <div className="text-[10px] text-ink-3 truncate">
             id: {candidate.platformValue}
           </div>
           {remap && !attached && (
@@ -1111,7 +1106,7 @@ function CandidateRow({
             // slots, so the operator reads one thing in two places rather
             // than two things. gray-400, not gray-500: this line is the only
             // thing that says picking this row re-maps instead of adding.
-            <div className="text-[10px] uppercase tracking-wide text-gray-400">
+            <div className="text-[10px] uppercase tracking-wide text-ink-3">
               Needs re-mapping
             </div>
           )}
@@ -1129,14 +1124,17 @@ function CandidateRow({
         </div>
       </label>
       {onBrowse && (
-        <button
+        <NeonButton
+          variant="secondary"
+          outline
+          size="1"
           type="button"
           onClick={() => onBrowse(candidate)}
           aria-label={`Browse BSC set ${label}`}
-          className="hit-area-24 shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00C2FF] hover:border-[#00C2FF] focus:border-[#00C2FF] focus:outline-none focus:ring-1 focus:ring-[#00C2FF]"
+          className="shrink-0 self-start mt-1.5 mr-1"
         >
           Browse ›
-        </button>
+        </NeonButton>
       )}
     </li>
   );

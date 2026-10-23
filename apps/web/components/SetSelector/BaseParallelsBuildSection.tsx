@@ -332,15 +332,15 @@ export default function BaseParallelsBuildSection({
   return (
     <section
       aria-labelledby={HEADING_ID}
-      className="border border-gray-700 rounded-lg bg-gray-900/60 p-4"
+      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4"
     >
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 max-w-prose">
-          <h3 id={HEADING_ID} className="text-sm font-semibold text-gray-100">
+          <h3 id={HEADING_ID} className="text-sm font-semibold text-ink">
             {sectionHeading(sourceValue)}
           </h3>
           {tally && tally.total > 0 && (
-            <p className="mt-0.5 text-xs text-gray-400">
+            <p className="mt-0.5 text-xs text-ink-3">
               {summaryText(tally)}
               {sourceValue ? ` ${explainerText(sourceValue)}` : ""}
               {plan?.truncated && parallels
@@ -349,7 +349,7 @@ export default function BaseParallelsBuildSection({
             </p>
           )}
           {attention.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5 text-xs text-amber-300">
+            <ul className="mt-1.5 space-y-0.5 text-xs text-notice-warn-ink">
               {attention.slice(0, ATTENTION_LIST_MAX).map((item) => (
                 <li key={item.id} className="break-words">
                   {item.text}
@@ -408,7 +408,7 @@ export default function BaseParallelsBuildSection({
         // every other reason is something the operator has to do first.
         <p
           id={REASON_ID}
-          className={`mt-2 text-xs ${reason === LOADING_TEXT ? "text-gray-400" : "text-amber-300"}`}
+          className={`mt-2 text-xs ${reason === LOADING_TEXT ? "text-ink-3" : "text-notice-warn-ink"}`}
         >
           {reason}
         </p>
@@ -416,7 +416,7 @@ export default function BaseParallelsBuildSection({
 
       {startError && (
         // A failure the operator is waiting on, so an alert (the house split).
-        <p role="alert" className="mt-2 text-xs text-pink-300">
+        <p role="alert" className="mt-2 text-xs text-notice-danger-ink">
           {startError}
         </p>
       )}

@@ -228,13 +228,13 @@ function FieldDiff({ field }: { field: SyncDiffField }) {
   const em = "—";
   return (
     <div className="font-mono text-xs leading-5 min-w-0">
-      <div className="text-[#FF2E9A] break-words">
+      <div className="text-neon-pink-text break-words">
         {/* The glyph is decoration; "was"/"now" is what AT reads. */}
         <span aria-hidden="true">− </span>
         <span className="sr-only">was </span>
         {field.oldValue || em}
       </div>
-      <div className="text-[#00D558] break-words">
+      <div className="text-neon-green-text break-words">
         <span aria-hidden="true">+ </span>
         <span className="sr-only">now </span>
         {field.newValue || em}
@@ -253,8 +253,8 @@ function CardDiffRow({
   onToggleField: (index: number, name: string) => void;
 }) {
   return (
-    <li className="border border-gray-700 rounded p-3 bg-gray-800/40">
-      <div className="text-sm text-gray-100 font-medium mb-2">
+    <li className="border border-rule-strong rounded p-3 bg-raised/40">
+      <div className="text-sm text-ink font-medium mb-2">
         #{card.cardNumber} {card.cardName}
       </div>
       <ul className="flex flex-col gap-2">
@@ -268,7 +268,7 @@ function CardDiffRow({
                 type="checkbox"
                 checked={isChecked}
                 onChange={() => onToggleField(card.index, f.name)}
-                className="mt-0.5 h-4 w-4 shrink-0 accent-[#00D558]"
+                className="mt-0.5 h-4 w-4 shrink-0 accent-neon-green"
                 // The visible label is the field name; the accessible name has
                 // to carry the card too, or a screen-reader user hears "Card
                 // name" nine times with nothing to tell them apart (WCAG 2.4.6).
@@ -281,7 +281,7 @@ function CardDiffRow({
               <div className="min-w-0 flex-1">
                 <label
                   htmlFor={id}
-                  className="flex flex-wrap items-center gap-2 text-xs text-gray-300 cursor-pointer"
+                  className="flex flex-wrap items-center gap-2 text-xs text-ink-2 cursor-pointer"
                 >
                   <span className="font-semibold">
                     {FIELD_LABEL[f.name] ?? f.name}
@@ -296,7 +296,7 @@ function CardDiffRow({
                       // 1.4.3's 4.5:1 for this text-xs badge, on exactly the
                       // label the tier exists to make someone stop and read.
                       // /10 measures 4.55:1.
-                      className="rounded px-1.5 py-0.5 bg-[#FF2E9A]/10 text-[#FF2E9A]"
+                      className="rounded px-1.5 py-0.5 bg-neon-pink/10 text-neon-pink-text"
                       // Not decoration: "check this one deliberately" is the
                       // entire point of the tier.
                     >
@@ -304,12 +304,12 @@ function CardDiffRow({
                     </span>
                   )}
                   {f.foldEqual && (
-                    <span className="rounded px-1.5 py-0.5 bg-gray-700 text-gray-300">
+                    <span className="rounded px-1.5 py-0.5 bg-chip text-ink-2">
                       formatting
                     </span>
                   )}
                   {SOURCE_LABEL[f.source] && (
-                    <span className="rounded px-1.5 py-0.5 bg-[#00C2FF]/15 text-[#00C2FF]">
+                    <span className="rounded px-1.5 py-0.5 bg-neon-blue/15 text-neon-blue-text">
                       {SOURCE_LABEL[f.source]}
                     </span>
                   )}
@@ -583,7 +583,7 @@ export default function SyncReviewModal({
   return createPortal(
     <Theme>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="sync-review-heading"
@@ -622,21 +622,21 @@ export default function SyncReviewModal({
           }
         }}
       >
-        <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-4xl max-h-[92vh] flex flex-col">
-          <header className="p-4 border-b border-gray-700">
+        <div className="bg-raised-deep border border-rule-strong shadow-offset rounded-lg w-full max-w-4xl max-h-[92vh] flex flex-col">
+          <header className="p-4 border-b border-rule-strong">
             <h2
               id="sync-review-heading"
-              className="text-lg font-semibold text-gray-100"
+              className="text-lg font-semibold text-ink"
             >
               Review Changes{setLabel ? ` — ${setLabel}` : ""}
             </h2>
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-ink-3 mt-1">
               NeonBinder owns this checklist. A sync always refreshes the
               marketplace links; it only changes what a card SAYS where you tick
               a box below. Nothing here is applied — or deleted — unless you say
               so.
             </p>
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-ink-3 mt-1">
               {groups.contentChanges.length} card
               {groups.contentChanges.length === 1 ? "" : "s"} with content
               changes · {groups.formattingOnly.length} formatting-only ·{" "}
@@ -667,12 +667,12 @@ export default function SyncReviewModal({
               <section aria-labelledby="sync-review-conflicts">
                 <h3
                   id="sync-review-conflicts"
-                  className="text-sm font-semibold text-[#FF2E9A] mb-1"
+                  className="text-sm font-semibold text-neon-pink-text mb-1"
                 >
                   Linked to two cards ({diff.conflicts.length}) — held back from
                   this sync
                 </h3>
-                <p className="text-xs text-gray-400 mb-2">
+                <p className="text-xs text-ink-3 mb-2">
                   Each of these is linked by BuySportsCards to one NeonBinder
                   card and by SportLots to a different one. NeonBinder will not
                   write either row while they disagree, so these cards are not
@@ -706,9 +706,9 @@ export default function SyncReviewModal({
                     return (
                       <li
                         key={c.index}
-                        className="border border-gray-700 rounded p-3 bg-gray-800/40"
+                        className="border border-rule-strong rounded p-3 bg-raised/40"
                       >
-                        <div className="text-sm text-gray-100 font-medium mb-2">
+                        <div className="text-sm text-ink font-medium mb-2">
                           #{c.cardNumber} {c.cardName}
                         </div>
                         {/* Same control shape as the pairing modal's
@@ -768,8 +768,8 @@ export default function SyncReviewModal({
                               }
                               className={`text-xs rounded px-2 py-1.5 ${
                                 chosen === o.value
-                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00C2FF]"
-                                  : "bg-gray-700/60 text-gray-300"
+                                  ? "bg-notice-info-bg text-ink ring-2 ring-selection"
+                                  : "bg-chip/60 text-ink-2"
                               }`}
                             >
                               {/* A non-colour cue for the state the ring/hue
@@ -778,7 +778,7 @@ export default function SyncReviewModal({
                                 {chosen === o.value ? "✓ " : ""}
                               </span>
                               {o.label}
-                              <span className="text-gray-400"> — {o.detail}</span>
+                              <span className="text-ink-3"> — {o.detail}</span>
                             </button>
                           ))}
                         </div>
@@ -793,12 +793,12 @@ export default function SyncReviewModal({
             <section aria-labelledby="sync-review-content">
               <h3
                 id="sync-review-content"
-                className="text-sm font-semibold text-gray-200 mb-2"
+                className="text-sm font-semibold text-ink-2 mb-2"
               >
                 Content changes ({groups.contentChanges.length})
               </h3>
               {groups.contentChanges.length === 0 ? (
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-ink-3">
                   Nothing upstream contradicts what NeonBinder already says.
                 </p>
               ) : (
@@ -834,7 +834,7 @@ export default function SyncReviewModal({
                     <button
                       type="button"
                       id="sync-review-formatting"
-                      className="text-sm font-semibold text-gray-200"
+                      className="text-sm font-semibold text-ink-2"
                       aria-expanded={!formattingCollapsed}
                       // a11y: only meaningful while expanded — the list
                       // unmounts entirely rather than being hidden when
@@ -854,7 +854,7 @@ export default function SyncReviewModal({
                     </button>
                   </h3>
                   <NeonButton
-                    secondary
+                    variant="secondary"
                     size="1"
                     onClick={toggleAllFormatting}
                     aria-label={
@@ -868,7 +868,7 @@ export default function SyncReviewModal({
                       : "Accept all formatting changes"}
                   </NeonButton>
                 </div>
-                <p className="text-xs text-gray-400 mb-2">
+                <p className="text-xs text-ink-3 mb-2">
                   Spelling, capitalisation and accents only — these cards still
                   say the same thing, so they are pre-accepted.
                 </p>
@@ -893,7 +893,7 @@ export default function SyncReviewModal({
                 <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
                   <h3
                     id="sync-review-removed"
-                    className="text-sm font-semibold text-gray-200"
+                    className="text-sm font-semibold text-ink-2"
                   >
                     {`No longer listed upstream (${orphans.length.toLocaleString()})`}
                   </h3>
@@ -902,7 +902,7 @@ export default function SyncReviewModal({
                       marketplaces never reaches a delete affordance at all. */}
                   <button
                     type="button"
-                    className="text-xs text-gray-300 underline"
+                    className="text-xs text-ink-2 underline"
                     onClick={() =>
                       setDeleteIds(
                         allOrphansSelected
@@ -938,7 +938,7 @@ export default function SyncReviewModal({
                         : "Select all"}
                   </button>
                 </div>
-                <p className="text-xs text-gray-400 mb-2">
+                <p className="text-xs text-ink-3 mb-2">
                   Every marketplace this card was linked to answered this sync,
                   and none of them lists it any more. A marketplace dropping a
                   card never deletes it here — these rows keep their NeonBinder
@@ -974,7 +974,7 @@ export default function SyncReviewModal({
                 {orphansOverCap && (
                   <p
                     id="sync-delete-cap"
-                    className="text-xs text-[#FFB020] mb-2"
+                    className="text-xs text-notice-warn-ink mb-2"
                   >
                     One pass can delete up to{" "}
                     {maxDeleteSelection.toLocaleString()} cards. Select first{" "}
@@ -1022,15 +1022,15 @@ export default function SyncReviewModal({
                           aria-describedby={
                             orphansOverCap ? "sync-delete-cap" : undefined
                           }
-                          className="h-4 w-4 shrink-0 accent-[#FF2E9A] aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                          className="h-4 w-4 shrink-0 accent-neon-pink aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                           aria-label={`Delete #${r.cardNumber} ${r.cardName}`}
                         />
                         <label
                           htmlFor={id}
-                          className="text-xs text-gray-300 cursor-pointer"
+                          className="text-xs text-ink-2 cursor-pointer"
                         >
                           #{r.cardNumber} {r.cardName}
-                          <span className="text-gray-400">
+                          <span className="text-ink-3">
                             {" "}
                             — was on{" "}
                             {r.sides
@@ -1059,7 +1059,7 @@ export default function SyncReviewModal({
                 only when it has something to say. */}
             {(diff.collisionInsertCount > 0 ||
               diff.ambiguityBlockedCount > 0) && (
-              <p className="text-xs text-gray-400" role="status">
+              <p className="text-xs text-ink-3" role="status">
                 {diff.collisionInsertCount > 0 &&
                   `${diff.collisionInsertCount} card${
                     diff.collisionInsertCount === 1 ? "" : "s"
@@ -1076,7 +1076,7 @@ export default function SyncReviewModal({
             )}
           </div>
 
-          <footer className="p-4 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap">
+          <footer className="p-4 border-t border-rule-strong flex items-center justify-between gap-2 flex-wrap">
             {/* a11y (WCAG 4.1.3): this running total updates on every checkbox
                 toggle, the same "cart count" shape the SC's own examples use —
                 without a live region a screen-reader user gets no non-visual
@@ -1086,7 +1086,7 @@ export default function SyncReviewModal({
                 never toggles to "alert" here, so there is no reason to add the
                 explicit attribute — see the codebase's own status/alert notice
                 pattern for when that IS needed. */}
-            <span className="text-xs text-gray-400" role="status">
+            <span className="text-xs text-ink-3" role="status">
               {acceptedFieldCount.toLocaleString()} change
               {acceptedFieldCount === 1 ? "" : "s"} will be applied
               {anyOrphanSelected
@@ -1105,7 +1105,7 @@ export default function SyncReviewModal({
             <div className="flex gap-2">
               <NeonButton
                 ref={skipBtnRef}
-                secondary
+                variant="secondary"
                 size="2"
                 disabled={saving}
                 onClick={requestSkip}
@@ -1135,7 +1135,7 @@ export default function SyncReviewModal({
         {confirmingDeletes && (
           <div
             ref={confirmDialogRef}
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-scrim p-4"
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="sync-delete-confirm-heading"
@@ -1188,17 +1188,17 @@ export default function SyncReviewModal({
               }
             }}
           >
-            <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-md p-4">
+            <div className="bg-raised-deep border border-rule-strong shadow-offset rounded-lg w-full max-w-md p-4">
               <h3
                 id="sync-delete-confirm-heading"
-                className="text-base font-semibold text-gray-100"
+                className="text-base font-semibold text-ink"
               >
                 Delete {selectedDeleteIds.length.toLocaleString()} card
                 {selectedDeleteIds.length === 1 ? "" : "s"}?
               </h3>
               <p
                 id="sync-delete-confirm-body"
-                className="text-xs text-gray-400 mt-2"
+                className="text-xs text-ink-3 mt-2"
               >
                 These rows and their cross-listings are removed from NeonBinder.
                 Anything that varies them is re-parented rather than deleted.
@@ -1228,7 +1228,7 @@ export default function SyncReviewModal({
               <div className="flex justify-end gap-2 mt-4">
                 <NeonButton
                   ref={confirmCancelRef}
-                  secondary
+                  variant="secondary"
                   size="2"
                   onClick={() => {
                     setConfirmingDeletes(false);
@@ -1243,7 +1243,7 @@ export default function SyncReviewModal({
                   Cancel
                 </NeonButton>
                 <NeonButton
-                  cancel
+                  variant="negative"
                   size="2"
                   onClick={submit}
                   aria-label={`Confirm deleting ${selectedDeleteIds.length.toLocaleString()} cards`}

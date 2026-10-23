@@ -15,12 +15,14 @@ import {
   FOCUS,
   QUIET_BUTTON,
   liveryOn,
+  useLiverySurface,
   printRunText,
   setAndVariant,
   shortCardName,
 } from "../prototypes/p1/ui";
 import { lineNames, lineSummary } from "./lineItems";
 import type { CollectionStore } from "./store";
+import NeonButton from "@/components/modules/NeonButton";
 
 /** What a row's controls do; built once by the list that shows the rows. */
 export interface RowActions {
@@ -60,14 +62,14 @@ function HaveToggle({ pressed, label, onToggle }: { pressed: boolean; label: str
       onClick={stop(onToggle)}
       className={`${SLOT_HAVE} inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold transition-colors ${FOCUS} ${
         pressed
-          ? "border-neon-blue bg-neon-blue text-black"
-          : "border-slate-500 text-slate-200 hover:border-neon-blue hover:text-neon-blue"
+          ? "border-selection bg-neon-blue text-on-neon-blue"
+          : "border-control text-ink-2 hover:border-neon-blue hover:text-neon-blue-text"
       }`}
     >
       <span
         aria-hidden="true"
         className={`flex h-4 w-4 items-center justify-center rounded-sm border ${
-          pressed ? "border-black bg-black text-neon-blue" : "border-current"
+          pressed ? "border-on-neon-blue bg-on-neon-blue text-neon-blue" : "border-current"
         }`}
       >
         {pressed && <CheckIcon className="h-3.5 w-3.5" />}
@@ -79,16 +81,19 @@ function HaveToggle({ pressed, label, onToggle }: { pressed: boolean; label: str
 
 function AddButton({ label, onAdd }: { label: string; onAdd: () => void }) {
   return (
-    <button
+    <NeonButton
       type="button"
+      variant="secondary"
+      outline
+      size="1"
       aria-label={label}
       title="Add another copy"
       onClick={stop(onAdd)}
-      className={`${SLOT_ADD} inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-neon-blue/60 px-2 py-1 text-xs font-semibold text-neon-blue hover:border-neon-blue hover:bg-neon-blue/10 ${FOCUS}`}
+      className={`${SLOT_ADD} min-h-8`}
     >
       <PlusIcon aria-hidden="true" className="h-3.5 w-3.5" />
       <span className="max-sm:hidden">Add</span>
-    </button>
+    </NeonButton>
   );
 }
 
@@ -110,8 +115,8 @@ function SmallToggle({
 }) {
   const on =
     tone === "want"
-      ? "border-neon-yellow text-neon-yellow bg-neon-yellow/10"
-      : "border-neon-green text-neon-green bg-neon-green/10";
+      ? "border-neon-yellow-text text-neon-yellow-text bg-neon-yellow/10"
+      : "border-neon-green-text text-neon-green-text bg-neon-green/10";
   return (
     <button
       type="button"
@@ -119,7 +124,7 @@ function SmallToggle({
       aria-label={label}
       onClick={stop(onToggle)}
       className={`${SLOT_ICON} inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rounded-md border px-1.5 py-1 text-xs font-medium transition-colors ${FOCUS} ${
-        pressed ? on : "border-slate-700 text-slate-400 hover:border-slate-400 hover:text-slate-100"
+        pressed ? on : "border-field-rule text-ink-3 hover:border-ink-3 hover:text-ink"
       }`}
     >
       {icon}
@@ -170,6 +175,7 @@ export default function CardRowGroup({
   const wanted = store.isWanted(card.id);
   const lines = lineNames(copies, binders);
   const team = getTeam(card.teamIds[0]);
+  const panel = useLiverySurface("raised");
   const run = printRunText(card);
   const sub: string[] = [];
   if (showSet) sub.push(setAndVariant(card));
@@ -220,14 +226,14 @@ export default function CardRowGroup({
 
   const body = (summary: string | null, top: boolean) => (
     <>
-      <span className="w-12 shrink-0 text-right font-mono text-sm text-slate-400">#{card.cardNumber}</span>
+      <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
         <div className="text-sm sm:truncate">
-          <span className="font-medium text-slate-100">{playerNames(card)}</span>
-          {summary && <span className="text-neon-blue"> · {summary}</span>}
+          <span className="font-medium text-ink">{playerNames(card)}</span>
+          {summary && <span className="text-neon-blue-text"> · {summary}</span>}
         </div>
-        <div className="min-h-[1rem] truncate text-xs text-slate-400">
-          <span style={{ color: liveryOn(card) }} title={`${team.location} ${team.name}`}>
+        <div className="min-h-[1rem] truncate text-xs text-ink-3">
+          <span style={{ color: liveryOn(card, panel) }} title={`${team.location} ${team.name}`}>
             {teamNames(card)}
           </span>
           {sub.length > 0 && <span> · {sub.join(" · ")}</span>}
@@ -238,15 +244,15 @@ export default function CardRowGroup({
   );
 
   const rowCls =
-    "flex cursor-pointer items-center gap-x-2 gap-y-1 p-2.5 hover:bg-gray-700/50 max-sm:flex-wrap max-sm:justify-end sm:gap-3";
+    "flex cursor-pointer items-center gap-x-2 gap-y-1 p-2.5 hover:bg-list-hover-raised max-sm:flex-wrap max-sm:justify-end sm:gap-3";
 
   return (
     <li
       ref={groupRef}
-      className={`overflow-hidden rounded-md border border-gray-600 ${
-        card.variation ? "ml-8 border-l-2 border-l-gray-500" : ""
+      className={`overflow-hidden rounded-md border border-rule-strong ${
+        card.variation ? "ml-8 border-l-2 border-l-control" : ""
       } ${stacked ? "border-l-2 border-l-neon-blue/70" : ""} ${
-        isSelected || highlighted ? "border-[#00C2FF] bg-blue-900/10 ring-2 ring-[#00C2FF]" : ""
+        isSelected || highlighted ? "border-selection bg-pick-blue/10 ring-2 ring-selection" : ""
       }`}
     >
       {copies.length === 0 ? (
@@ -259,7 +265,7 @@ export default function CardRowGroup({
           {trailing(undefined, null, true)}
         </div>
       ) : (
-        <div className={stacked ? "divide-y divide-gray-700" : ""}>
+        <div className={stacked ? "divide-y divide-rule-strong" : ""}>
           {copies.map((copy, i) => {
             const top = i === 0;
             const line = lines[i];

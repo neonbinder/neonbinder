@@ -15,10 +15,10 @@ export default function Chip({
       type="button"
       aria-pressed={pressed}
       onClick={onClick}
-      className={`min-h-11 rounded-full border px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00C2FF] focus-visible:ring-offset-2 focus-visible:ring-offset-black sm:min-h-8 ${
+      className={`min-h-11 rounded-full border px-3 text-sm font-medium focus-outline sm:min-h-8 ${
         pressed
-          ? "border-neon-blue bg-neon-blue text-black"
-          : "border-slate-600 text-slate-200 hover:border-slate-400 hover:text-white"
+          ? "border-selection bg-neon-blue text-on-neon-blue"
+          : "border-control text-ink-2 hover:border-ink-3 hover:text-ink"
       }`}
     >
       {children}
