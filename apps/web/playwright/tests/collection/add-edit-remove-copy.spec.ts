@@ -2,7 +2,11 @@
 // the catalog (drill, search, a player suggestion), mark it Have, add a second
 // copy in the drawer with a condition and notes, see identical copies fold into
 // one line and different ones sit apart, edit and remove the copies, and the
-// card reads "need" again. My Cards lists the card while it is owned.
+// card reads "need" again. My Cards lists the card while it is owned. Along the
+// way: the checklist's total is the number of regular cards it lists (the
+// stored count is what the page reads), the card drawer rides on the URL (Back
+// closes it), and the drawer fits the phone as a sheet and the desktop as a
+// side panel.
 //
 // The signed-in page is the REAL collection (Convex, per user), not the demo:
 // it shows only "My Cards" and "Checklists", no demo bar and no "Demo theme"
@@ -26,7 +30,7 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 test(
   "Collection: find a card, mark Have, add an identical and a different copy, edit and remove them",
   { tag: ["@smoke", "@collection"] },
-  async ({ page, signIn }) => {
+  async ({ page, signIn, isMobile }) => {
     // --- Signed-in /collection is the real thing, not the demo --------------
     await signIn("/collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({
@@ -43,6 +47,10 @@ test(
     // R2: the account starts with nothing, so every count below is this spec's.
     await expect(page.getByRole("heading", { level: 2, name: "Everything I own" })).toBeVisible();
     await expect(page.getByText(/^Nothing in the binder yet\./)).toBeVisible();
+    // The scoreboard has landed too ("0 on the board"), so axe reads the settled page.
+    await expect(page.getByRole("heading", { level: 2, name: "Sets I'm building" })).toBeVisible();
+    await expect(page.getByText(/^\d+ on the board$/)).toBeVisible();
+    await expectAccessible(page, { label: "My Cards, empty" });
 
     // --- Drill to the seed's 2024 Topps Chrome Base --------------------------
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
@@ -51,7 +59,7 @@ test(
     await expect(searchBox).toBeVisible();
 
     const cascade = page.getByRole("group", { name: "Sport, year, brand and set" });
-    const drill = async (column: string, option: string) => {
+    const drill = async (column: string, option: string, next?: string) => {
       await cascade
         .getByRole("listbox", { name: column })
         .getByRole("option")
@@ -59,11 +67,28 @@ test(
         .click();
       // The picked column collapses to its summary.
       await expect(cascade.getByRole("button", { name: `${column}: ${option}, change` })).toBeVisible();
+      if (next) {
+        // The columns sit in one row that scrolls sideways; on a phone the next
+        // one starts off screen. It must be reachable (and on a desktop, it is).
+        const nextList = cascade.getByRole("listbox", { name: next });
+        await nextList.scrollIntoViewIfNeeded();
+        await expect(nextList).toBeInViewport();
+      }
     };
-    await drill("Sports", "Baseball");
-    await drill("Years", "2024");
-    await drill("Brands", "Topps");
-    await drill("Sets", "Topps Chrome");
+    await drill("Sports", "Baseball", "Years");
+    await drill("Years", "2024", "Brands");
+    await drill("Brands", "Topps", "Sets");
+    await drill("Sets", "Topps Chrome", "Variant Types");
+
+    // The catalog's own count for the Base checklist, read off its row before
+    // it is picked (the drill's read of the stored count).
+    const baseOption = cascade
+      .getByRole("listbox", { name: "Variant Types" })
+      .getByRole("option")
+      .filter({ has: page.getByText("Base", { exact: true }) });
+    const baseCount = baseOption.getByText(/^\d+ cards?$/);
+    await expect(baseCount).toBeVisible();
+    const catalogTotal = Number(/^\d+/.exec((await baseCount.textContent()) ?? "")?.[0]);
     await drill("Variant Types", "Base");
 
     const checklist = page.getByRole("region", { name: "2024 Topps Chrome Base" });
@@ -73,6 +98,26 @@ test(
     const total = Number(/^Have 0 of (\d+)/.exec((await progress.textContent()) ?? "")?.[1]);
     expect(total, "the Base checklist starts at Have 0 of N").toBeGreaterThan(1);
     await expect(progress).toHaveText(`Have 0 of ${total} · Need ${total}`);
+
+    // --- The total is the stored count, and it is the right one --------------
+    // "Have 0 of T" reads the row's stored count of regular cards (the server
+    // counts by hand only when the stored one is missing). T must be the number
+    // of regular cards the checklist lists: a stale count, or the count with
+    // photo variations swapped in, makes the two differ. A missing count that
+    // the server can still tally by hand reads the same number, so the page
+    // shows the right total either way; one it cannot tally reads "N owned",
+    // which fails the "Have 0 of" read above, and a Base row with no count
+    // fails the catalog read below.
+    const countLine = checklist.getByRole("status").filter({ hasText: /^\d+ cards?$/ });
+    await expect(countLine).toBeVisible();
+    const listed = Number(/^\d+/.exec((await countLine.textContent()) ?? "")?.[0]);
+    // The list is fully on screen: one Details button per listed card (nothing is owned yet).
+    await expect(checklist.getByRole("button", { name: /^Details for / })).toHaveCount(listed);
+    const variationRows = await checklist
+      .getByRole("button", { name: /^Details for .*, [^,]+ variation$/ })
+      .count();
+    expect(total, "T equals the regular cards listed").toBe(listed - variationRows);
+    expect(catalogTotal, "the cascade's count for Base is the same T").toBe(total);
 
     // The card this spec uses: the first Base row that reads "#N First Last"
     // (two or more words, one player, no variation), never #300 (the
@@ -161,14 +206,23 @@ test(
     await searchBox.fill(`"${words.length > 1 ? [...words].reverse().join(" ") : `${player} xylophone`}"`);
     await expect(quick.getByText("Not in the catalog yet.")).toBeVisible();
     await expect(hitRow(quick)).toHaveCount(0);
+    await expectAccessible(page, { label: "Checklists, search finds nothing" });
 
     // --- A player suggestion lists every card of that player -----------------
     await searchBox.fill(player);
     const suggestions = quick.getByRole("region", { name: "Suggestions" });
-    await suggestions.getByRole("button", { name: `Every ${player} card`, exact: true }).click();
+    const everyButton = suggestions.getByRole("button", { name: `Every ${player} card`, exact: true });
+    await expect(everyButton).toBeVisible();
+    await showCardRow(quick);
+    // The search has settled on its hits (not "Flipping through the catalog…").
+    await expect(quick.getByRole("status").filter({ hasText: /\d+ cards? match|The first \d+ matches/ })).toBeVisible();
+    await expectAccessible(page, { label: "Checklists, search hits with suggestions" });
+    await everyButton.click();
     const every = page.getByRole("region", { name: `Every ${player} card` });
     await expect(every).toBeVisible();
     await showCardRow(every);
+    await expect(every.getByRole("status").filter({ hasText: /\d+ cards?/ })).toBeVisible();
+    await expectAccessible(page, { label: "Checklists, every card of one player" });
     // The step is a history entry: Back returns to the search and its suggestions.
     await page.goBack();
     await expect(every).toBeHidden();
@@ -178,16 +232,43 @@ test(
     await searchBox.fill("");
     await expect(suggestions).toBeHidden();
 
-    // --- The drawer: add, fold, edit, remove ---------------------------------
-    await detailsButton.click();
+    // --- The drawer rides on the URL: Back closes it --------------------------
     const drawer = page.getByRole("dialog", {
       name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}`),
     });
+    await detailsButton.click();
+    await expect(drawer.getByText(/^You have 1\.?$/)).toBeVisible();
+    await expect(page).toHaveURL(/[?&]detail=[^&]+/);
+    // Opened from the checklist's rows, it says where the card sits among them.
+    await expect(drawer.getByRole("status").filter({ hasText: /^Card \d+ of \d+, / })).toHaveText(
+      new RegExp(`^Card \\d+ of ${listed}, 2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}`),
+    );
+    await page.goBack();
+    await expect(drawer).toBeHidden();
+    await expect(page).not.toHaveURL(/[?&]detail=/);
+    // The checklist is still there, on the same card, with its copy.
+    await expect(checklist.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })).toBeVisible();
+    await expect(haveOn).toBeVisible();
+    await expect(progress).toHaveText(`Have 1 of ${total} · Need ${total - 1}`);
+
+    // --- The drawer: add, fold, edit, remove ---------------------------------
+    // "Add another" opens it on its Add a copy form, and the URL says so.
+    await checklist.getByRole("button", { name: `Add another ${short}`, exact: true }).click();
+    await expect(page).toHaveURL(/[?&]detail=[^&]+/);
+    await expect(page).toHaveURL(/[?&]mode=add(&|$)/);
     await expect(drawer.getByText(/^You have 1\.?$/)).toBeVisible();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
     // Fully on screen before axe reads it (the drawer slides in).
     await expect(drawer).toBeInViewport({ ratio: 0.99 });
+    // A phone gets a sheet nearly the width of the screen; a desktop a side
+    // panel that leaves the page showing beside it (the drawer is `w-full`
+    // capped at 95vw below the `sm` breakpoint and 40rem above it).
+    const box = await drawer.boundingBox();
+    const view = page.viewportSize();
+    if (!box || !view) throw new Error("the drawer or the viewport could not be measured");
+    if (isMobile) expect(box.width, "the drawer fills the phone").toBeGreaterThanOrEqual(view.width * 0.9);
+    else expect(box.width, "the drawer is a side panel").toBeLessThanOrEqual(view.width * 0.75);
     await expectAccessible(page, { within: drawer, label: "Card drawer, one copy" });
 
     const addForm = drawer.getByRole("form", { name: "Add another copy" });
@@ -213,6 +294,8 @@ test(
     // Edit the stacked line.
     await yourCopies.getByRole("button", { name: `Edit ${short}, Raw, Near Mint ×2`, exact: true }).click();
     const editForm = drawer.getByRole("form", { name: "Edit Raw, Near Mint ×2" });
+    await expect(editForm).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card drawer, edit form open" });
     await editForm.getByRole("combobox", { name: "Condition" }).selectOption("Excellent");
     await editForm.getByRole("button", { name: "Save copy" }).click();
     await expect(drawer.getByRole("status").filter({ hasText: `Saved ${short}, Raw, Excellent ×2` })).toBeVisible();
@@ -228,6 +311,7 @@ test(
 
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
+    await expect(page).not.toHaveURL(/[?&]detail=/);
     await expect(haveOff).toBeVisible();
     await expect(progress).toHaveText(`Have 0 of ${total} · Need ${total}`);
 
