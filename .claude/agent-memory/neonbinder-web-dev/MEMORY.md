@@ -143,3 +143,6 @@
 - [App-wide useQuery needs its own boundary](reference_app_wide_usequery_needs_its_own_boundary.md) — a failing/missing Convex function throws in render; boundary + Sentry once
 - [Radix button box beats Tailwind](reference_radix_button_box_beats_tailwind.md) — on NeonButton, Tailwind display/height/padding/radius classes lose to Radix; use min-h, `contents` wrappers, asChild, inline style
 - [rAF focus request clears by identity](reference_raf_focus_request_clear_by_identity.md) — functional clear or a stale frame drops a newer move; happy-dom blur() fires no focusout
+- [Write tool turns unicode escapes into chars](reference_write_tool_turns_unicode_escapes_into_chars.md) — a written `￿` can land as the literal char; grep and fix
+- [Compiler memo lost by a derived JSX map](reference_compiler_memo_lost_by_derived_jsx_map.md) — preserve-manual-memoization: drop the manual memo, never disable the rule
+- [Collection views test on a hand-built store](reference_collection_views_test_on_a_hand_built_store.md) — RealCollection.test.tsx fakes the store; add each new hook to it

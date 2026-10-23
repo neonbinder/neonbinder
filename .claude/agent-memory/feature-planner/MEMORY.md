@@ -20,3 +20,5 @@
 - [Optional→required is two merges](optional-to-required-is-two-merges.md) — deploy validates existing rows; writers+backfill first, schema flip second; one PR only if prod is hand-cleaned and rechecked (NEO-331)
 - [Old scripts title builder is the title-rule reference](old-scripts-title-builder-is-the-title-rule-reference.md) — insert/parallel names are core; per-leaf short set name rescues overflow; RC-before-short-name is the open disagreement
 - [System theme makes OS colour scheme a test input](system-theme-makes-os-colour-scheme-a-test-input.md) — pin colorScheme dark in playwright.config; only theme specs emulateMedia; restore stored prefs
+- [Shared UI needs the catalog behind an interface too](shared-ui-needs-the-catalog-behind-an-interface-too.md) — demo views import the fake catalog directly; plan a per-view model + hooks, not just a store swap
+- [Per-user E2E tables reset in bootstrap](per-user-e2e-tables-reset-in-bootstrap-not-the-global-reset.md) — resetMyTestState, not only the global drain

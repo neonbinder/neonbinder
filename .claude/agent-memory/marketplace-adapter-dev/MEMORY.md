@@ -39,3 +39,4 @@
 - [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label
 - [E2E seed carries no cards](reference_e2e_seed_carries_no_cards.md) — bundle is 8 reference tables; preview cards come from setup.spec through insertCardRow, so derived fields need no backfill
 - [Pin tests need a bypass plant](reference_pin_tests_need_a_bypass_plant.md) — *.pin tests scan source; a planted throw leaves them green, plant a forbidden call instead
+- [convex-test t.run rejects undefined](reference_convex_test_t_run_rejects_undefined.md) — an array holding undefined throws; map to null
