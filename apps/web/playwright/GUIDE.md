@@ -83,6 +83,10 @@ Reference specs that show the patterns below:
    so a failure screenshot and the ARIA snapshot capture a blank page, and
    sets `test.use({ screenshot: "off" })` for the file. Failure artifacts are
    published.
+8. **One named exception to rule 2: the NEO-356 no-flash check (approved by Jason
+   2026-10-22).** `support/theme-no-flash.ts` (an init script, `evaluate` and the root
+   `data-theme` attribute) is used by `home/theme-prepaint-script` and
+   `profile/theme-saved-no-flash` for that check ONLY; it licenses nothing else.
 
 ## Rules every spec satisfies (R1-R4, R7, R7a, R9)
 
