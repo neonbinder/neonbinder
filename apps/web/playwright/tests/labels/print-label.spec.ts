@@ -65,7 +65,8 @@ test(
       page.getByRole("button", { name: "Print Label" }).click(),
     );
     expectRotatedFourBySixPage(report);
-    expect(report.text).toContain("Jane Buyer");
+    // The printed label sets names in capitals, as USPS addresses read.
+    expect(report.text).toContain("JANE BUYER");
     expect(report.text).toContain("SPRINGFIELD IL 62704");
     expect(report.text).toContain("AUSTIN TX 78701");
 
