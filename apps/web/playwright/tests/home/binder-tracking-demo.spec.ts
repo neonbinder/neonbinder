@@ -44,6 +44,34 @@ test(
     await expect(binders).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeHidden();
 
+    // NEO-359: the demo's Show box stands among the binders, with its five rows
+    // and the strip of cards not sorted into a row yet; Back returns to the shelf.
+    const special = page.getByRole("list", { name: "Special places" });
+    const showBox = binders.getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ });
+    await expect(showBox).toBeVisible();
+    const sale = Number(/(\d+) cards? for sale"/.exec((await showBox.ariaSnapshot()) ?? "")?.[1]);
+    await showBox.click();
+    await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
+    const open = page.getByRole("region", { name: "Show box, open", exact: true });
+    await expect(open.getByRole("group", { name: /^Row \d, \d+ cards?$/ })).toHaveCount(5);
+    await expect(page.getByRole("group", { name: "Not sorted into a row yet", exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Collection demo, the Show box" });
+    await page.goBack();
+    await expect(binders).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeHidden();
+
+    // The Inventory long box counts every card in a box (the Show box's), and in
+    // the demo it leads to the Managing Inventory tour page; Back returns here.
+    const inventory = special.getByRole("link", { name: `Inventory, ${sale} ${sale === 1 ? "card" : "cards"} for sale`, exact: true });
+    await expect(inventory).toBeVisible();
+    await expectAccessible(page, { label: "Collection demo, the shelf with a box and Inventory" });
+    await inventory.click();
+    await expect(page).toHaveURL(/\/managing-inventory/);
+    await expect(page.getByText("Real-Time Inventory Control")).toBeVisible();
+    await page.goBack();
+    await expect(binders).toBeVisible();
+    await expect(inventory).toBeVisible();
+
     // "Back to the tour" goes straight out, to the tour.
     await page.getByRole("button", { name: "Back to the tour" }).click();
     await expect(page).toHaveURL(/\/binder-tracking$/);
