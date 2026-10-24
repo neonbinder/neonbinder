@@ -184,7 +184,9 @@ export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMo
           <ListBulletIcon aria-hidden="true" className="size-4" />
           Need list for this set
         </NeonButton>
+        {/* A set with no checklist has nothing to build; one already on the board can still come off. */}
         {building !== undefined &&
+          (isBuilding || variants.length > 0) &&
           (isBuilding ? (
             <NeonButton type="button" variant="negative" outline onClick={() => stopBuilding(set)} className="min-h-11 sm:min-h-9">
               Stop building this set

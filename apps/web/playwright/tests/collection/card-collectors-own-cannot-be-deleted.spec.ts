@@ -1,4 +1,8 @@
-// NEO-358 (R1): a card a collector owns cannot be deleted from the set builder.
+// NEO-358 (R1): a card a collector owns cannot be deleted from the set builder,
+// and the collector's catalog hides a set while nothing is in it (see "HIDDEN
+// UNTIL IT HOLDS A CARD" below; one set and one card serve both, so the second
+// check costs navigations, not another fixture).
+//
 // The operator presses Del, then Confirm; the server refuses; the checklist's
 // notice banner says so as an alert ("Hold up! A collector has this card, so it
 // stays in the catalog."), the confirm resets to Del, focus returns to the
@@ -23,6 +27,21 @@
 // drill below is that spec's collector cascade, kept local for the same reason
 // it is local there: `support/set-builder.ts` drives the admin builder.
 //
+// HIDDEN UNTIL IT HOLDS A CARD (Jason, 2026-10-24: "hide anything that is a
+// zero"): every row the app creates is born with a known subtree count of 0, and
+// the collector's Checklists cascade (`collectionCatalog.drill`) leaves out a
+// level whose count is exactly 0. So the hand-made set, created empty above, is
+// NOT in the Sets column of Baseball > 2024 > Topps until its first card lands;
+// it is there once the card is added, and gone again once the card is deleted
+// (the delete takes the count back to 0). The real Topps Chrome set sits in that
+// same column with cards (the seed's commit), so seeing it first proves the
+// column has loaded and an absent hand-made set is the filter, not a column that
+// has not answered yet (R2: the absence is never asserted alone). The ancestors
+// (Baseball, 2024, Topps) are real rows from the reference bundle with no stored
+// subtree count, which reads as unknown and is shown, so the drill reaches the
+// column; only the rows this spec creates are known-empty. That is why the proof
+// lives on the hand-made set and not on a bundle row.
+//
 // MINTED NAMES are single tokens: the set `cdr-<worker>-<attempt>` (the same
 // shape `mtf-` uses), the card number `361-<attempt>` and the card name
 // `Held<token>`.
@@ -31,7 +50,7 @@ import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 
 test(
-  "A card a collector owns cannot be deleted: the set builder says so, resets to Del, keeps focus on it and keeps the card",
+  "A set is hidden from the collector until it holds a card; a card a collector owns cannot be deleted: the set builder says so, resets to Del, keeps focus on it and keeps the card",
   { tag: ["@smoke", "@collection"] },
   async ({ page, signIn, env }) => {
     const A = env.ATTEMPT_ID;
@@ -40,7 +59,7 @@ test(
     const cardName = `Held${env.ATTEMPT_TOKEN}`;
     const refusal = "Hold up! A collector has this card, so it stays in the catalog.";
 
-    // --- A card of our own, in a set of our own ------------------------------
+    // --- An empty set of our own ----------------------------------------------
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     const build = {
@@ -51,12 +70,11 @@ test(
       variantType: "Insert",
       variant: "Base",
     };
+    // Ends on the Base checklist's "Open add card form": the set and its
+    // Insert > Base rows exist, with no card in any of them.
     await drillToCustom(page, build);
-    await addCardViaForm(page, { cardNumber: number, playerName: cardName });
 
-    // --- The collector (this account) marks it Have --------------------------
-    await page.goto("/collection?tab=checklists");
-    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+    // --- The collector's cascade -----------------------------------------------
     const cascade = page.getByRole("group", { name: "Sport, year, brand and set" });
     const drill = async (column: string, option: string) => {
       await cascade
@@ -66,9 +84,36 @@ test(
         .click();
       await expect(cascade.getByRole("button", { name: `${column}: ${option}, change` })).toBeVisible();
     };
-    await drill("Sports", "Baseball");
-    await drill("Years", "2024");
-    await drill("Brands", "Topps");
+    const setOption = cascade
+      .getByRole("listbox", { name: "Sets" })
+      .getByRole("option")
+      .filter({ has: page.getByText(setName, { exact: true }) });
+    /** Baseball > 2024 > Topps, with the Sets column open and loaded (the real Topps Chrome is in it). */
+    const openSets = async () => {
+      await page.goto("/collection?tab=checklists");
+      await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+      await drill("Sports", "Baseball");
+      await drill("Years", "2024");
+      await drill("Brands", "Topps");
+      await expect(
+        cascade
+          .getByRole("listbox", { name: "Sets" })
+          .getByRole("option")
+          .filter({ has: page.getByText("Topps Chrome", { exact: true }) }),
+      ).toBeVisible();
+    };
+
+    // --- Empty: the collector is not offered the set ---------------------------
+    await openSets();
+    await expect(setOption).toHaveCount(0);
+
+    // --- A card of our own, in that set ------------------------------------------
+    await drillToCustom(page, build);
+    await addCardViaForm(page, { cardNumber: number, playerName: cardName });
+
+    // --- Holding a card: the set is offered, and the collector marks it Have ----
+    await openSets();
+    await expect(setOption).toBeVisible();
     await drill("Sets", setName);
     await drill("Variant Types", "Insert");
     await drill("Insert", "Base");
@@ -106,11 +151,7 @@ test(
     await expectAccessible(page, { label: "Checklist after a refused card delete" });
 
     // --- Clean up: the collector lets go, then the card can go ---------------
-    await page.goto("/collection?tab=checklists");
-    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
-    await drill("Sports", "Baseball");
-    await drill("Years", "2024");
-    await drill("Brands", "Topps");
+    await openSets();
     await drill("Sets", setName);
     await drill("Variant Types", "Insert");
     await drill("Insert", "Base");
@@ -130,5 +171,9 @@ test(
     await confirmDeleteCardButton(page, number).click();
     await expect(editCardButton(page, number)).toBeHidden();
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
+
+    // --- Empty again: the delete took the set's count back to zero -------------
+    await openSets();
+    await expect(setOption).toHaveCount(0);
   },
 );

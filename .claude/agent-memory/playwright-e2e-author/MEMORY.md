@@ -75,3 +75,4 @@
 - [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing stored count invisible; drawer URL, add-mode route, width
 - [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection; hand-made card names, Insert column
 - [Wizard save wait is a commit headroom ruler](patterns_wizard_save_wait_is_a_commit_headroom_ruler.md) — red 'Saved N cards' on a 300-card commit: not thrown; Step 1 of N in the PNG is the review drain; ~3.5s healthy vs 7s budget
+- [Hidden empty levels need app-created rows](patterns_hidden_empty_levels_need_app_created_rows.md) — NEO-358: prove the zero-hide on a spec-made set, sibling visible first, then absent/present/absent

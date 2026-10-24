@@ -95,6 +95,9 @@ function ScoreCard({ set }: { set: SetRef }) {
   const label = setLabel(set);
   const complete = completion ? isComplete(completion) : false;
   const known = completion ? totalKnown(completion) : true;
+  // No checklist on the set (the catalog hides every row known to hold no
+  // cards), so there is no base to count: a settled board, never a skeleton.
+  const empty = summary?.variants.length === 0;
 
   return (
     <article className="mc-led shadow-offset relative flex h-full flex-col gap-3 rounded-2xl border border-rule p-4 transition-colors focus-within:border-selection hover:border-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-4 has-[:focus-visible]:outline-focus">
@@ -116,6 +119,8 @@ function ScoreCard({ set }: { set: SetRef }) {
 
       {summary === null ? (
         <p className="text-sm text-ink-2">This set is no longer in the catalog. Your cards stay put.</p>
+      ) : empty ? (
+        <p className="text-sm text-ink-2">No cards in this set yet. It&apos;s still in the shrink-wrap!</p>
       ) : (
         <>
           <div className="flex items-end justify-between gap-3">

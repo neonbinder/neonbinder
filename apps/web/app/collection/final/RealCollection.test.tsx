@@ -336,6 +336,34 @@ describe("My Cards on the real collection", () => {
     expect(screen.queryByText("Nothing on the board yet. Pick a set and light it up.")).toBeNull();
   });
 
+  it("a set on the board with no cards yet settles: no skeleton, no empty row list, and its wall offers no Build", () => {
+    const EMPTY: SetRef = { ...SET, id: "set-empty", name: "Topps Bare" };
+    const store = makeStore();
+    const summaryOf = store.value.data.useSetSummary;
+    store.value.data.useSetSummary = (id) =>
+      id === EMPTY.id ? { set: EMPTY, variants: [], totalCards: 0, totalCardsAll: 0 } : summaryOf(id);
+    store.value.data.useBuildingSets = () => [SET, EMPTY];
+    renderAt("/collection", store);
+    const board = screen.getByRole("link", { name: "2024 Topps Bare" }).closest("article")!;
+    expect(within(board).getByText("No cards in this set yet. It's still in the shrink-wrap!")).toBeTruthy();
+    expect(board.querySelector('[class*="animate-pulse"]')).toBeNull();
+    expect(within(board).queryByRole("list")).toBeNull();
+    // The neighbouring board still counts its base.
+    expect(screen.getByRole("list", { name: "2024 Topps Chrome by row" })).toBeTruthy();
+    cleanup();
+
+    // On the board already: it can still come off.
+    renderAt(`/collection?tab=cards&set=${EMPTY.id}`, store);
+    expect(screen.getByRole("button", { name: "Stop building this set" })).toBeTruthy();
+    cleanup();
+
+    // Not on the board: nothing to build, so no Build.
+    store.value.data.useBuildingSets = () => [SET];
+    renderAt(`/collection?tab=cards&set=${EMPTY.id}`, store);
+    expect(screen.getByRole("heading", { level: 2, name: "2024 Topps Bare" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Build this set" })).toBeNull();
+  });
+
   it("a wall's checklists fold until opened, Base first", () => {
     const { log } = renderAt(`/collection?tab=cards&set=${SET.id}`);
     expect(screen.getByRole("group", { name: "2024 Topps Chrome checklist wall" })).toBeTruthy();
