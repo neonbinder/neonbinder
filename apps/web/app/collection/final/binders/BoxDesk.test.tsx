@@ -232,7 +232,7 @@ describe("the box on the page (demo store)", () => {
       <Theme>
         <MemoryRouter initialEntries={[start]}>
           <Routes>
-            <Route path="/collection" element={<FinalCollectionPage />} />
+            <Route path="/inventory" element={<FinalCollectionPage surface="inventory" />} />
           </Routes>
         </MemoryRouter>
       </Theme>,
@@ -240,7 +240,7 @@ describe("the box on the page (demo store)", () => {
   }
 
   it("opens the Show box with its unsorted strip, and Alt+ArrowUp from the table lands the card in Row 5 and keeps the keyboard on it", async () => {
-    renderPage("/collection?tab=binders&b=box-show");
+    renderPage("/inventory?b=box-show");
     const region = await screen.findByRole("region", { name: "Show box, open" });
     const strip = screen.getByRole("group", { name: "Not sorted into a row yet" });
     const unsorted = [...strip.querySelectorAll<HTMLElement>("[data-box-copy]")];
@@ -317,7 +317,7 @@ describe("the for-sale view", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete the box" }));
     return waitFor(() => {
       expect(screen.getByText("Nothing's for sale yet.")).toBeTruthy();
-      expect(screen.getByText(/Make a box from the shelf/)).toBeTruthy();
+      expect(screen.getByText(/Make a box \(New box\)/)).toBeTruthy();
     });
   });
 });

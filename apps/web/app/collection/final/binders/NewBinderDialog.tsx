@@ -5,18 +5,32 @@ import { spineFontById, spineFontFamilyCss } from "@/lib/print/spine-fonts";
 import Modal from "../../prototypes/p2/Modal";
 import { useSearchText } from "../catalog/search";
 import { searchable, useCapabilities, useSuggestions } from "../data/store";
-import type { ContainerKind, ContainerLabel, ContainerRule, NewContainer, Suggestion } from "../data/types";
+import type {
+  ContainerKind,
+  ContainerLabel,
+  ContainerRule,
+  NewContainer,
+  Suggestion,
+} from "../data/types";
 import { useDraftRuleHints } from "./hooks";
-import { defaultLabel, sameLabel, shelfColors, teamPicks, validLabel } from "./label";
+import {
+  defaultLabel,
+  sameLabel,
+  shelfColors,
+  teamPicks,
+  validLabel,
+} from "./label";
 import LabelDesigner from "./LabelDesigner";
 import { teamRule } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
- * NEO-359 — something new for the shelf: a binder you fill yourself, a box
- * (everything in a box is for sale), or, where the store can do it
- * (capability `smartBinders`, the demo for now), a smart binder that fills
- * itself from a rule.
+ * NEO-359 — something new for a shelf. On My Binders (`kind="binder"`): a
+ * binder you fill yourself, or, where the store can do it (capability
+ * `smartBinders`, the demo for now), a smart binder that fills itself from a
+ * rule. On Inventory (`kind="box"`): a box, where everything is for sale.
+ * The two never share the dialog: binders are the collection's, boxes are
+ * Inventory's.
  *
  * A rule names an NB id, never a name: the player or team is picked from a
  * type-ahead over the catalog. A team rule means cards SHOWING the team, in
@@ -39,19 +53,30 @@ type TeamSuggestion = Extract<Suggestion, { kind: "team" }>;
 
 const CHOICE =
   "flex cursor-pointer items-start gap-2 rounded-md border border-field-rule bg-field px-3 py-2 text-sm text-ink-2 has-[:checked]:border-selection has-[:checked]:text-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus";
-const SELECT = "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
+const SELECT =
+  "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
 const LABEL = "mb-1 block text-sm font-medium text-ink-2";
 
 const KINDS: { kind: Kind; title: string; line: string }[] = [
-  { kind: "binder", title: "A binder", line: "You slot the cards in. Nine-pocket pages, like the real one." },
-  { kind: "box", title: "A box", line: "Everything in it is for sale. Five rows, like a long box." },
-  { kind: "smart", title: "Smart: it fills itself", line: "Every card that fits the rule, the ones you have and the ones you need." },
+  {
+    kind: "binder",
+    title: "A binder",
+    line: "You slot the cards in. Nine-pocket pages, like the real one.",
+  },
+  {
+    kind: "smart",
+    title: "Smart: it fills itself",
+    line: "Every card that fits the rule, the ones you have and the ones you need.",
+  },
 ];
 
 export default function NewBinderDialog({
+  kind: made = "binder",
   onCreate,
   onClose,
 }: {
+  /** What this shelf makes: binders (My Binders) or boxes (Inventory). */
+  kind?: ContainerKind;
   /** Resolves with null when it is on the shelf (the caller closes the dialog), or why it was refused. */
   onCreate: (input: NewContainer) => Promise<string | null>;
   onClose: () => void;
@@ -65,7 +90,12 @@ export default function NewBinderDialog({
   const [missed, setMissed] = useState(0);
   const { smartBinders } = useCapabilities();
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<Kind>("binder");
+  const [kind, setKind] = useState<Kind>(made === "box" ? "box" : "binder");
+  // A choice to make only where there is one: a binder or a smart binder.
+  const choices =
+    made === "box"
+      ? []
+      : KINDS.filter((k) => k.kind !== "smart" || smartBinders);
   const [ruleKind, setRuleKind] = useState<RuleKind>("player");
   const [player, setPlayer] = useState<PlayerSuggestion | null>(null);
   const [team, setTeam] = useState<TeamSuggestion | null>(null);
@@ -89,15 +119,22 @@ export default function NewBinderDialog({
         : null;
   const hints = useDraftRuleHints(rule);
   const containerKind: ContainerKind = kind === "box" ? "box" : "binder";
-  const fallback = defaultLabel({ kind: containerKind, rule: rule ?? undefined }, hints);
+  const fallback = defaultLabel(
+    { kind: containerKind, rule: rule ?? undefined },
+    hints,
+  );
   const draft = custom ?? fallback;
-  const picks = smart ? teamPicks(hints.teams ?? [], hints.ruleTeam ?? null) : [];
+  const picks = smart
+    ? teamPicks(hints.teams ?? [], hints.ruleTeam ?? null)
+    : [];
   const noun = kind === "box" ? "box" : "binder";
   const ruleMissing = smart && !rule;
 
   useEffect(() => {
     if (missed === 0) return;
-    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+    formRef.current
+      ?.querySelector<HTMLElement>('[aria-invalid="true"]')
+      ?.focus();
   }, [missed]);
 
   async function submit(e: FormEvent) {
@@ -130,11 +167,22 @@ export default function NewBinderDialog({
 
   return (
     <Modal labelledBy={titleId} onClose={onClose} className="max-w-lg">
-      <form ref={formRef} onSubmit={(e) => void submit(e)} className="p-5" noValidate>
+      <form
+        ref={formRef}
+        onSubmit={(e) => void submit(e)}
+        className="p-5"
+        noValidate
+      >
         <h2 id={titleId} className="text-xl font-bold text-ink">
-          New binder or box
+          {made === "box" ? "New box" : "New binder"}
         </h2>
-        <p className="mt-1 text-sm text-ink-2">Name it, then pick what it is.</p>
+        <p className="mt-1 text-sm text-ink-2">
+          {made === "box"
+            ? "Name it. Everything you put in it is for sale, in five rows like a long box."
+            : choices.length > 1
+              ? "Name it, then pick how it fills up."
+              : "Name it. Nine-pocket pages, like the real one."}
+        </p>
 
         <div className="mt-4">
           <Input
@@ -147,36 +195,42 @@ export default function NewBinderDialog({
           />
         </div>
 
-        <fieldset className="mt-4">
-          <legend className={LABEL}>What is it?</legend>
-          <div className="grid gap-2">
-            {KINDS.filter((k) => k.kind !== "smart" || smartBinders).map((k) => (
-              <label key={k.kind} className={CHOICE}>
-                <input
-                  type="radio"
-                  name={`${titleId}-kind`}
-                  className="mt-0.5 h-4 w-4 accent-selection"
-                  checked={kind === k.kind}
-                  onChange={() => {
-                    setKind(k.kind);
-                    // A label styled for a binder is not a box's tape: start over.
-                    setCustom(null);
-                  }}
-                />
-                <span>
-                  <span className="block font-medium">{k.title}</span>
-                  <span className="block text-ink-3">{k.line}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        {choices.length > 1 && (
+          <fieldset className="mt-4">
+            <legend className={LABEL}>How it fills</legend>
+            <div className="grid gap-2">
+              {choices.map((k) => (
+                <label key={k.kind} className={CHOICE}>
+                  <input
+                    type="radio"
+                    name={`${titleId}-kind`}
+                    className="mt-0.5 h-4 w-4 accent-selection"
+                    checked={kind === k.kind}
+                    onChange={() => {
+                      setKind(k.kind);
+                      // A label styled for a binder is not a box's tape: start over.
+                      setCustom(null);
+                    }}
+                  />
+                  <span>
+                    <span className="block font-medium">{k.title}</span>
+                    <span className="block text-ink-3">{k.line}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
 
         {smart && (
           <div className="mt-4 space-y-3">
             <label className="block">
               <span className={LABEL}>Rule</span>
-              <select className={SELECT} value={ruleKind} onChange={(e) => setRuleKind(e.target.value as RuleKind)}>
+              <select
+                className={SELECT}
+                value={ruleKind}
+                onChange={(e) => setRuleKind(e.target.value as RuleKind)}
+              >
                 <option value="player">Every card of a player</option>
                 <option value="team">A team</option>
               </select>
@@ -189,7 +243,9 @@ export default function NewBinderDialog({
                 picked={player}
                 onPick={setPlayer}
                 nameOf={(p) => p.name}
-                error={tried && !player ? "Pick a player from the list." : undefined}
+                error={
+                  tried && !player ? "Pick a player from the list." : undefined
+                }
               />
             ) : (
               <>
@@ -199,11 +255,16 @@ export default function NewBinderDialog({
                   placeholder="Type a team: try packers"
                   picked={team}
                   onPick={setTeam}
-                  nameOf={(t) => (t.location ? `${t.location} ${t.name}` : t.name)}
-                  error={tried && !team ? "Pick a team from the list." : undefined}
+                  nameOf={(t) =>
+                    t.location ? `${t.location} ${t.name}` : t.name
+                  }
+                  error={
+                    tried && !team ? "Pick a team from the list." : undefined
+                  }
                 />
                 <p className="text-sm text-ink-2">
-                  Cards showing the {team?.name ?? "team"} on the card, in that jersey.
+                  Cards showing the {team?.name ?? "team"} on the card, in that
+                  jersey.
                 </p>
                 <label className={CHOICE}>
                   <input
@@ -213,8 +274,13 @@ export default function NewBinderDialog({
                     onChange={(e) => setAlumni(e.target.checked)}
                   />
                   <span>
-                    <span className="block font-medium">Also count anyone who played for them</span>
-                    <span className="block text-ink-3">Their alumni too, on any team&apos;s card. College days count.</span>
+                    <span className="block font-medium">
+                      Also count anyone who played for them
+                    </span>
+                    <span className="block text-ink-3">
+                      Their alumni too, on any team&apos;s card. College days
+                      count.
+                    </span>
                   </span>
                 </label>
               </>
@@ -222,12 +288,23 @@ export default function NewBinderDialog({
           </div>
         )}
 
-        <section aria-labelledby={`${titleId}-spine`} className="mt-5 border-t border-rule-strong pt-4">
+        <section
+          aria-labelledby={`${titleId}-spine`}
+          className="mt-5 border-t border-rule-strong pt-4"
+        >
           <div className="flex flex-wrap items-center gap-3">
-            <h3 id={`${titleId}-spine`} className="text-sm font-medium text-ink-2">
+            <h3
+              id={`${titleId}-spine`}
+              className="text-sm font-medium text-ink-2"
+            >
               {kind === "box" ? "Box label" : "Spine label"}
             </h3>
-            {!styling && <LabelChip name={trimmed || (kind === "box" ? "Your box" : "Your binder")} label={draft} />}
+            {!styling && (
+              <LabelChip
+                name={trimmed || (kind === "box" ? "Your box" : "Your binder")}
+                label={draft}
+              />
+            )}
             <NeonButton
               type="button"
               variant="secondary"
@@ -236,7 +313,11 @@ export default function NewBinderDialog({
               onClick={() => setStyling((v) => !v)}
               className="ml-auto min-h-10"
             >
-              {styling ? "Done styling" : kind === "box" ? "Style the label" : "Style the spine"}
+              {styling
+                ? "Done styling"
+                : kind === "box"
+                  ? "Style the label"
+                  : "Style the spine"}
             </NeonButton>
           </div>
           {!styling && (
@@ -265,16 +346,31 @@ export default function NewBinderDialog({
               />
             </div>
           )}
-          <p role="alert" className="mt-2 text-sm text-notice-warn-ink empty:hidden">
-            {labelError ? "Both label colors need to be hex, like #203731." : ""}
+          <p
+            role="alert"
+            className="mt-2 text-sm text-notice-warn-ink empty:hidden"
+          >
+            {labelError
+              ? "Both label colors need to be hex, like #203731."
+              : ""}
           </p>
         </section>
 
-        <p id={errorId} role="alert" className="mt-4 text-sm text-neon-pink-text empty:hidden">
+        <p
+          id={errorId}
+          role="alert"
+          className="mt-4 text-sm text-neon-pink-text empty:hidden"
+        >
           {error ?? ""}
         </p>
         <div className="mt-6 flex flex-wrap justify-end gap-3">
-          <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
+          <NeonButton
+            type="button"
+            variant="negative"
+            outline
+            onClick={onClose}
+            className="min-h-10"
+          >
             Cancel
           </NeonButton>
           <NeonButton
@@ -337,14 +433,20 @@ function EntityPicker<T extends PlayerSuggestion | TeamSuggestion>({
           setQ(nameOf(s));
         }}
         loading={searchable(settled) && suggestions === undefined}
-        emptyMessage={kind === "player" ? "No player by that name" : "No team by that name"}
+        emptyMessage={
+          kind === "player" ? "No player by that name" : "No team by that name"
+        }
         hideWhenEmpty={!searchable(q)}
         inputGeometryClassName="px-3 py-2 text-base"
         selectedKey={picked?.id}
         describedBy={error ? errorId : undefined}
         invalid={!!error}
       />
-      <p id={errorId} role="alert" className="mt-1 text-sm text-notice-warn-ink empty:hidden">
+      <p
+        id={errorId}
+        role="alert"
+        className="mt-1 text-sm text-notice-warn-ink empty:hidden"
+      >
         {error ?? ""}
       </p>
     </div>

@@ -26,14 +26,14 @@ import { useMyCards } from "./context";
 /**
  * NEO-350 / NEO-359 — "Everything else I own": the cards that are not on a
  * set build, as a compact image grid, with the shelf down the side: Main and
- * Up for Trade first, then your own binders and boxes (a box is the sale
- * table: what is in it is for sale), then smart binders (demo only), each
- * listing what it holds.
+ * Up for Trade first, then your own binders, then smart binders (demo
+ * only), each listing what it holds. Boxes (the sale table) are Inventory's
+ * and never stand here (NEO-359).
  *
  * Both stores feed it through the same reads: "Every card I own" and
  * "Everything else" page the owned-cards list (`useOwnedCards`) under All,
  * or the scoped home's copies (`useContainerCopies`) when the binder picker
- * has one; a binder, box or pile picked on the rail pages its own copies
+ * has one; a binder or pile picked on the rail pages its own copies
  * whatever the picker says. The rail is navigation: the shelf showing is
  * `aria-current`.
  *
@@ -200,10 +200,11 @@ export default function OwnedShelf() {
   const roving = useRoving(grid, visibleIds);
   const focusFirstNew = useFocusFirstNew(visibleIds, roving.focusKey);
 
-  // The rail: Main and Up for Trade, then the collector's binders and boxes as
-  // made, then smart binders. The Want List holds wants, not copies.
+  // The rail: Main and Up for Trade, then the collector's binders as made,
+  // then smart binders. The Want List holds wants, not copies.
   const shelves = (containers ?? []).filter((c) => c.system !== "want");
-  const homesAndPiles = shelves.filter((c) => !c.rule);
+  // Boxes are Inventory's: the rail lists binders and piles only (NEO-359).
+  const homesAndPiles = shelves.filter((c) => !c.rule && c.kind !== "box");
   const smart = shelves.filter((c) => c.rule);
 
   const pick = (next: Shelf) => {
@@ -244,7 +245,7 @@ export default function OwnedShelf() {
         Everything else I own
       </h2>
       <p className="mt-1 text-sm text-ink-3">
-        Singles, slabs and PC cards that aren&apos;t part of a set build, plus your binders and boxes.
+        Singles, slabs and PC cards that aren&apos;t part of a set build, plus your binders.
       </p>
 
       <div className="mt-4 flex flex-col gap-4 lg:flex-row">
@@ -259,7 +260,7 @@ export default function OwnedShelf() {
             <RailItem active={shelf === "all"} onClick={() => pick("all")} name="Every card I own" detail={allDetail} />
             {homesAndPiles.length > 0 && (
               <li className="hidden pt-2 text-xs font-bold text-ink-3 lg:block" aria-hidden="true">
-                Binders and boxes
+                Binders
               </li>
             )}
             {homesAndPiles.map((b) => (
@@ -268,8 +269,7 @@ export default function OwnedShelf() {
                 active={shelf === b.id}
                 onClick={() => pick(b.id)}
                 name={b.name}
-                tag={b.kind === "box" ? "box" : undefined}
-                detail={b.kind === "box" ? `${countDetail(b.count)}, for sale` : countDetail(b.count)}
+                detail={countDetail(b.count)}
               />
             ))}
             {smart.length > 0 && (
@@ -350,9 +350,7 @@ export default function OwnedShelf() {
               {shelf === "else" && items.length === 0 && !more
                 ? "Every card here is on a set build. Gnarly."
                 : items.length === 0 && !more
-                  ? picked?.kind === "box"
-                    ? "Nothing on the sale table yet. Move a card into this box to sell it."
-                    : "Nothing in here yet."
+                  ? "Nothing in here yet."
                   : "Nothing here matches. Loosen a filter."}
             </p>
           ) : (
@@ -402,7 +400,7 @@ export default function OwnedShelf() {
   );
 }
 
-/** Under a picked shelf's title: what a box, the trade pile, a smart binder or a described binder is. */
+/** Under a picked shelf's title: what the trade pile, a smart binder or a described binder is. */
 function ShelfNote({
   container,
   describeRule,
@@ -413,8 +411,7 @@ function ShelfNote({
   if (!container) return null;
   let text: string | null = null;
   if (container.rule) text = `Fills itself: ${describeRule ? describeRule(container.rule) : container.name}.`;
-  else if (container.system === "trade") text = "Cards you'd swap. Each one still lives in its own binder or box.";
-  else if (container.kind === "box") text = "A box is the sale table: every card in here is for sale.";
+  else if (container.system === "trade") text = "Cards you'd swap. Each one still lives where it lives.";
   if (container.description) text = text ? `${text} ${container.description}` : container.description;
   return text ? <p className="mt-1 text-sm text-ink-2">{text}</p> : null;
 }
@@ -430,8 +427,8 @@ function RailItem({
   onClick: () => void;
   name: string;
   detail: string;
-  /** A smart binder, or a box (the sale table). */
-  tag?: "smart" | "box";
+  /** A smart binder. */
+  tag?: "smart";
 }) {
   return (
     <li className="shrink-0">
@@ -449,11 +446,6 @@ function RailItem({
           {tag === "smart" && (
             <span className="rounded border border-neon-purple px-1 text-[10px] font-bold text-neon-purple-text">
               Smart
-            </span>
-          )}
-          {tag === "box" && (
-            <span className="rounded border border-neon-orange-text px-1 text-[10px] font-bold text-neon-orange-text">
-              Box
             </span>
           )}
           <span className="truncate">{name}</span>

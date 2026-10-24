@@ -125,6 +125,14 @@ export default function CopyDetailsForm({
   const showHomes = !!homes && homes.length > 0 && !!onHomeChange;
   const pickedHome = showHomes ? homes.find((h) => h.id === homeId) : undefined;
   const showTrade = upForTrade !== undefined && !!onUpForTradeChange;
+  // Said only where the list has a box: a box is the sale table.
+  const homeHelp = !showHomes
+    ? null
+    : pickedHome?.kind === "box"
+      ? "It's in a box, so it's for sale."
+      : homes?.some((h) => h.kind === "box")
+        ? "A binder keeps it. A box puts it up for sale."
+        : null;
   const quantityValid = Number.isInteger(value.quantity) && value.quantity >= 1;
 
   function submit(e: FormEvent) {
@@ -312,10 +320,12 @@ export default function CopyDetailsForm({
               <select
                 className={SELECT}
                 value={homeId ?? ""}
-                aria-describedby={homeHelpId}
+                aria-describedby={homeHelp ? homeHelpId : undefined}
                 onChange={(e) => onHomeChange?.(e.target.value)}
               >
-                {homeId === undefined && <option value="">Pick a binder or box</option>}
+                {homeId === undefined && (
+                  <option value="">{homes.some((h) => h.kind === "box") ? "Pick a binder or box" : "Pick a binder"}</option>
+                )}
                 {homes.map((h) => (
                   <option key={h.id} value={h.id}>
                     {h.kind === "box" ? `${h.name} (box, for sale)` : h.name}
@@ -323,11 +333,11 @@ export default function CopyDetailsForm({
                 ))}
               </select>
             </label>
-            <p id={homeHelpId} className="mt-1 text-xs text-ink-3">
-              {pickedHome?.kind === "box"
-                ? "It's in a box, so it's for sale."
-                : "A binder keeps it. A box puts it up for sale."}
-            </p>
+            {homeHelp && (
+              <p id={homeHelpId} className="mt-1 text-xs text-ink-3">
+                {homeHelp}
+              </p>
+            )}
           </div>
         )}
 

@@ -217,22 +217,32 @@ describe("the public collection demo", () => {
 
 describe("the public demo never touches Convex", () => {
   // `convex/react` is mocked EMPTY above: any hook the demo reached for throws "No export is defined".
-  it("makes a box and moves a card into it on fixture data alone", async () => {
+  it("makes a binder and moves a card into it on fixture data alone", async () => {
     renderDemo();
     openTab("My Binders");
-    fireEvent.click(screen.getByRole("button", { name: /New binder or box/ }));
+    fireEvent.click(screen.getByRole("button", { name: "New binder" }));
     const dialog = screen.getByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("radio", { name: /A box/ }));
-    fireEvent.change(within(dialog).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.change(within(dialog).getByLabelText("Binder name"), { target: { value: "Bills PC" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
-    expect(await screen.findByRole("region", { name: "Dime box, open" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "Bills PC" })).toBeTruthy();
 
     const hunt = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
     fireEvent.change(hunt, { target: { value: "jim kelly" } });
     fireEvent.click(screen.getByRole("button", { name: /^Move here: / }));
     await waitFor(() =>
-      expect(screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Dime box\.$/.test(s.textContent ?? ""))).toBe(true),
+      expect(
+        screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Bills PC, page 1, pocket 1\.$/.test(s.textContent ?? "")),
+      ).toBe(true),
     );
     expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=/);
+  });
+
+  it("matches the real collection: no box on the shelf, and the Inventory door goes to the tour", () => {
+    renderDemo();
+    openTab("My Binders");
+    expect(within(screen.getByRole("list", { name: "Your binders" })).queryByRole("button", { name: /Show box|, box,/ })).toBeNull();
+    // The seed's Show box still counts behind the door.
+    const door = within(screen.getByRole("list", { name: "Special places" })).getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ });
+    expect(door.getAttribute("href")).toBe("/managing-inventory");
   });
 });

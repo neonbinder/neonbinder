@@ -56,8 +56,9 @@ import { isHome, type Container, type Scope } from "./data/types";
  * `ViewScopeProvider`, where both stores read it (`useScope`). Picking a
  * scope replaces the current entry (`useSetScope`); every view change carries
  * the scope of the moment on, so Back restores the scope each view had. An
- * unknown or deleted id, or one that is not a home (the Want List, the Up for
- * Trade pile, a smart binder), reads as All, and an unknown id anywhere else
+ * unknown or deleted id, or one that is not a binder that holds copies (the
+ * Want List, the Up for Trade pile, a smart binder, or a box, which is
+ * Inventory's), reads as All, and an unknown id anywhere else
  * falls back the same quiet way: to the deepest level that still makes sense.
  *
  * Public mode is always the demo store and never reaches Convex or Clerk.
@@ -175,9 +176,13 @@ export function useCollectionMode(): CollectionModeValue {
 /** The scope param: a binder or box id, or absent for All. */
 export const SCOPE_PARAM = "scope";
 
-/** A container the picker can scope to: a home (the stores refuse anything else). */
+/**
+ * A container the picker can scope to: a binder that is a home. A box is
+ * Inventory's, so the collection never narrows to one (NEO-359).
+ */
 function scopable(containers: readonly Container[], id: string): boolean {
-  return isHome(containers.find((c) => c.id === id));
+  const c = containers.find((x) => x.id === id);
+  return isHome(c) && c?.kind !== "box";
 }
 
 /**

@@ -278,6 +278,15 @@ function renderAt(start: string, store = makeStore()) {
                 </>
               }
             />
+            <Route
+              path="/inventory"
+              element={
+                <>
+                  <FinalCollectionPage surface="inventory" />
+                  <LocationProbe />
+                </>
+              }
+            />
           </Routes>
         </CollectionStoreContext.Provider>
       </MemoryRouter>
@@ -312,14 +321,13 @@ describe("My Cards on the real collection", () => {
     expect(log.variantCards).toContain(GOLD.id);
   });
 
-  it("shows the shelf of binders and boxes, My Binders and the Binder picker (the real capabilities)", () => {
+  it("shows the shelf of binders, My Binders and the Binder picker (the real capabilities), never a box", () => {
     renderAt("/collection");
     expect(screen.getByRole("heading", { level: 2, name: "Everything else I own" })).toBeTruthy();
     const rail = screen.getByRole("navigation", { name: "Shelves and binders" });
     expect(within(rail).getByRole("button", { name: /^Main/ })).toBeTruthy();
-    // A box is the sale table.
-    const box = within(rail).getByRole("button", { name: /Show box/ });
-    expect(box.textContent).toMatch(/for sale/);
+    // A box is the sale table: Inventory's, not the collection's.
+    expect(within(rail).queryByRole("button", { name: /Show box/ })).toBeNull();
     const tabs = within(screen.getByRole("navigation", { name: "Collection sections" }));
     expect(tabs.getByRole("link", { name: "My Binders" })).toBeTruthy();
   });
@@ -371,15 +379,10 @@ describe("My Cards on the real collection", () => {
     expect(statuses()).toContain("1+ cards");
   });
 
-  it("offers only homes to the Binder picker: never the Want List or Up for Trade", () => {
+  it("offers only binders to the Binder picker: never the Want List, Up for Trade or a box", () => {
     renderAt("/collection");
     const picker = screen.getByRole("combobox", { name: "Binder" });
-    expect(within(picker).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "All",
-      "Main",
-      "Ohtani rainbow",
-      "Show box (box)",
-    ]);
+    expect(within(picker).getAllByRole("option").map((o) => o.textContent)).toEqual(["All", "Main", "Ohtani rainbow"]);
   });
 
   it("with binders off there is no shelf and no tab, only a tally of the collection", () => {
@@ -654,6 +657,58 @@ describe("the card drawer on the real collection", () => {
     expect(actions.removeCopy).toHaveBeenCalledWith(COPY_OHTANI);
     await waitFor(() =>
       expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Removed #1 Shohei Ohtani, Raw · Main")).toBe(true),
+    );
+  });
+});
+
+describe("Inventory on the real collection (NEO-359)", () => {
+  it("is the boxes and what is for sale, apart from the collection", () => {
+    renderAt("/inventory");
+    expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Collection sections" })).toBeNull();
+    const boxes = screen.getByRole("list", { name: "Your boxes" });
+    expect(within(boxes).getByRole("button", { name: "Show box, box, 0 cards for sale" })).toBeTruthy();
+    expect(within(boxes).queryByRole("button", { name: /^Main,|^Ohtani rainbow,/ })).toBeNull();
+    expect(screen.getByText("0 cards for sale in 1 box.")).toBeTruthy();
+  });
+
+  it("with no box yet, says nothing is for sale and how to start", () => {
+    const store = makeStore();
+    store.value.data.useContainers = () => CONTAINERS.filter((c) => c.kind !== "box");
+    renderAt("/inventory", store);
+    expect(screen.getByText("Nothing for sale yet.")).toBeTruthy();
+    expect(screen.getByText(/press Sell/)).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "The whole stock" })).toBeNull();
+    expect(screen.getByRole("button", { name: "New box" })).toBeTruthy();
+  });
+
+  it("New box makes a box, never a binder", async () => {
+    const { actions } = renderAt("/inventory");
+    fireEvent.click(screen.getByRole("button", { name: "New box" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
+    await waitFor(() => expect(actions.createContainer).toHaveBeenCalledWith({ kind: "box", name: "Dime box" }));
+  });
+
+  it("the drawer's Sell puts a binder's copy in a box; its Move offers binders only", async () => {
+    const { actions } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Move #1 Shohei Ohtani, Raw" }));
+    const to = within(within(drawer).getByRole("form", { name: "Move Raw" })).getByRole("combobox", { name: "Move to" });
+    expect(within(to).getAllByRole("option").map((o) => o.textContent)).toEqual(["Ohtani rainbow"]);
+    fireEvent.click(within(drawer).getByRole("button", { name: "Keep it here" }));
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
+    const panel = within(drawer).getByRole("form", { name: "Sell Raw" });
+    expect(within(within(panel).getByRole("combobox", { name: "Into which box" })).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Show box",
+    ]);
+    fireEvent.click(within(panel).getByRole("button", { name: "Put it up for sale" }));
+    await waitFor(() => expect(actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", undefined));
+    await waitFor(() =>
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "#1 Shohei Ohtani is up for sale in Show box.")).toBe(true),
     );
   });
 });

@@ -16,14 +16,16 @@ import { Input } from "@/components/primitives/Input";
 import CardFace from "../prototypes/_shared/CardFace";
 import CopyDetailsForm, { type FormHome } from "../prototypes/_shared/CopyDetailsForm";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT, shortDate, useLiverySurface } from "../prototypes/p1/ui";
-import { FeatureBadges, ForSaleBadge, TradeBadge } from "./CardRows";
+import { Link } from "react-router";
+import { FeatureBadges, TradeBadge } from "./CardRows";
 import { useScopedName } from "./catalog/home";
 import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
 import { printRunLabel, setLabel, shortCardName, teamTextColor, variantLabel } from "./data/labels";
 import {
   emptyCopyDetails,
+  bindersOf,
+  boxesOf,
   homesOf,
-  isForSale,
   isWantedIn,
   systemContainer,
   useCapabilities,
@@ -37,6 +39,7 @@ import {
 } from "./data/store";
 import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
+import { useCollectionMode } from "./mode";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -77,10 +80,6 @@ function formHomes(homes: readonly Container[]): FormHome[] {
   return homes.map((h) => ({ id: h.id, name: h.name, kind: h.kind }));
 }
 
-/** "Show box (box, for sale)" or "Main": how a pick names a home. */
-function homeOption(h: Pick<Container, "name" | "kind">): string {
-  return h.kind === "box" ? `${h.name} (box, for sale)` : h.name;
-}
 
 /**
  * Everything about one card: the card, its facts, every line item you own
@@ -130,6 +129,10 @@ export default function CardDetail({
   const run = printRunLabel(card);
   const name = shortCardName(card);
   const homes = capabilities.binders ? homesOf(containers) : [];
+  // "Where it lives" on an add offers one kind: binders (the collection's
+  // screens), or boxes when the add starts in one (Inventory). Never a mix.
+  const binderHomes = bindersOf(containers);
+  const boxHomes = boxesOf(containers);
   const names = lineNames(lines, containers);
   const wants = capabilities.wants ? allWants : undefined;
   const wanted = capabilities.wants && isWantedIn(wants, card.id, scope);
@@ -147,6 +150,7 @@ export default function CardDetail({
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
+  const addKinds = capabilities.binders ? (boxHomes.some((h) => h.id === defaultHome) ? boxHomes : binderHomes) : [];
   const [editing, setEditing] = useState<{ id: string; value: FormValue; trade: boolean } | null>(null);
 
   const addRef = useRef<HTMLDivElement>(null);
@@ -249,13 +253,14 @@ export default function CardDetail({
       (r) => {
         const what = whole ? name : `${quantity} of ${name}`;
         const stacked = r.folded ? ", stacked with the ones already there" : "";
-        const sale =
-          to?.kind === "box" && copy.homeKind !== "box"
-            ? ` ${many ? "They're" : "It's"} for sale now.`
-            : to?.kind !== "box" && copy.homeKind === "box"
-              ? " Off the sale table."
-              : "";
-        return `Moved ${what} to ${to?.name ?? "its new home"}${stacked}.${sale}`;
+        const where = to?.name ?? "its new home";
+        if (to?.kind === "box" && copy.homeKind !== "box") {
+          return `${what} ${many ? "are" : "is"} up for sale in ${where}${stacked}.`;
+        }
+        if (to?.kind !== "box" && copy.homeKind === "box") {
+          return `Took ${what} off sale. ${many ? "They're" : "It's"} back in ${where}${stacked}.`;
+        }
+        return `Moved ${what} to ${where}${stacked}.`;
       },
     );
   };
@@ -397,9 +402,9 @@ export default function CardDetail({
           }}
           hideSaleFields
           hideBinders
-          homes={homes.length > 0 ? formHomes(homes) : undefined}
+          homes={addKinds.length > 0 ? formHomes(addKinds) : undefined}
           homeId={addHome}
-          onHomeChange={homes.length > 0 ? (id) => setDraftHome(id) : undefined}
+          onHomeChange={addKinds.length > 0 ? (id) => setDraftHome(id) : undefined}
           upForTrade={capabilities.trade ? draftTrade : undefined}
           onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
           heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
@@ -410,14 +415,24 @@ export default function CardDetail({
   );
 }
 
-/** Where a line lives, as a small tag: a binder or a box glyph and the home's name. */
-function HomeTag({ copy, homes }: { copy: Copy; homes?: readonly NamedBinder[] }) {
+/**
+ * Where a line lives, as a small tag: a binder glyph and its name, or, for a
+ * line in a box, the orange "For sale · Show box" (a box is the sale table).
+ */
+function HomeTag({ copy, homes, sale }: { copy: Copy; homes?: readonly NamedBinder[]; sale: boolean }) {
   const where = binderText(copy, homes);
+  if (sale && copy.homeKind === "box") {
+    return (
+      <span className="ml-2 inline-flex items-center gap-1 rounded border border-neon-orange-text px-1 text-xs font-semibold text-neon-orange-text">
+        <ArchiveBoxIcon aria-hidden="true" className="h-3.5 w-3.5" />
+        For sale{where ? ` · ${where}` : ""}
+      </span>
+    );
+  }
   if (!where) return null;
-  const Icon = copy.homeKind === "box" ? ArchiveBoxIcon : BookOpenIcon;
   return (
     <span className="ml-2 inline-flex items-center gap-1 text-xs text-ink-3">
-      <Icon aria-hidden="true" className="h-3.5 w-3.5" />
+      <BookOpenIcon aria-hidden="true" className="h-3.5 w-3.5" />
       <span className="sr-only">in </span>
       {where}
     </span>
@@ -425,14 +440,37 @@ function HomeTag({ copy, homes }: { copy: Copy; homes?: readonly NamedBinder[] }
 }
 
 /**
- * "Your copies": each line item with Edit, Move and Remove. Shared by a
- * card's detail and by a card the catalog no longer holds, whose copies the
- * collector can still see and take out.
+ * What a line's panel does. "move": to another home of the same kind
+ * (binder to binder, box to box), so the sale never changes in passing.
+ * "sell": out of a binder into a box, up for sale. "unsell": out of a box
+ * back into a binder, off sale.
+ */
+type Shift = "move" | "sell" | "unsell";
+
+/** The homes a line can go to for a shift: never the one it is in. */
+function shiftHomes(copy: Copy, homes: readonly Container[], shift: Shift): Container[] {
+  const inBox = copy.homeKind === "box";
+  return homes.filter((h) => {
+    if (h.id === copy.homeId) return false;
+    const box = h.kind === "box";
+    return shift === "move" ? box === inBox : shift === "sell" ? box : !box;
+  });
+}
+
+/**
+ * "Your copies": each line item with Edit, Move, Sell (or Take off sale)
+ * and Remove. Shared by a card's detail and by a card the catalog no longer
+ * holds, whose copies the collector can still see and take out.
+ *
+ * NEO-359: the collection and Inventory never mix in one list. Move goes to
+ * another binder (or, for a line in a box, another box). Going up for sale
+ * is its own path: Sell picks a box; a line in a box has Take off sale,
+ * which picks the binder it goes back into.
  *
  * Remove takes the row, and the button with it, away once the write lands:
  * the keyboard moves to the next copy's Edit (or Remove), else the one
  * before, else the "Your copies" heading. A move that folds the whole line
- * into a twin lands the keyboard on the twin's Move button.
+ * into a twin lands the keyboard on the twin's Move (or Sell) button.
  */
 export function CopyList({
   name,
@@ -463,7 +501,7 @@ export function CopyList({
   showTrade?: boolean;
   /** Copies in a box wear a "For sale" tag (capability `binders`). */
   showSale?: boolean;
-  /** Where a line can move to (capability `binders`). Move shows only with two or more. */
+  /** Every home a line can go to (capability `binders`): Move, Sell and Take off sale pick from it. */
   homes?: readonly Container[];
   /** Moves `quantity` of the line; resolves `null` when the server refused. */
   onMove?: (copy: Copy, toHomeId: ContainerId, quantity: number) => Promise<MoveResult | null>;
@@ -499,8 +537,8 @@ export function CopyList({
     onRemove(copy);
   };
 
-  /** The line whose Move panel is open. */
-  const [moving, setMoving] = useState<CopyId | null>(null);
+  /** The line whose Move, Sell or Take off sale panel is open. */
+  const [moving, setMoving] = useState<{ id: CopyId; shift: Shift } | null>(null);
   /** After a move lands: the line the cards are now (a fold's twin), for the keyboard. */
   const [landed, setLanded] = useState<CopyId | null>(null);
   const landedHere = landed !== null && lines.some((c) => c.id === landed);
@@ -519,21 +557,29 @@ export function CopyList({
       // shows), onto the list's heading, never left on the page body.
       const root = sectionRef.current;
       const id = CSS.escape(landed);
-      const target = landedHere ? root?.querySelector<HTMLElement>(`[data-copy-move="${id}"]`) : null;
+      const target = landedHere
+        ? (root?.querySelector<HTMLElement>(`[data-copy-move="${id}"]`) ??
+          root?.querySelector<HTMLElement>(`[data-copy-sell="${id}"]`))
+        : null;
       (target ?? headingRef.current)?.focus();
     });
     return () => cancelAnimationFrame(frame);
   }, [landed, landedHere]);
-  const canMove = !!onMove && !!homes && homes.length > 1;
-  const moveButton = (id: CopyId) =>
-    sectionRef.current?.querySelector<HTMLElement>(`[data-copy-move="${CSS.escape(id)}"]`) ?? null;
-  const closeMove = (id: CopyId) => {
-    moveButton(id)?.focus();
+  const canShift = !!onMove && !!homes;
+  const shelf = homes ?? [];
+  const opener = (id: CopyId, shift: Shift) =>
+    sectionRef.current?.querySelector<HTMLElement>(
+      `[data-copy-${shift === "move" ? "move" : "sell"}="${CSS.escape(id)}"]`,
+    ) ?? null;
+  const closeMove = (id: CopyId, shift: Shift) => {
+    opener(id, shift)?.focus();
     setMoving(null);
   };
-  const submitMove = (copy: Copy, toHomeId: ContainerId, quantity: number) => {
+  const toggle = (id: CopyId, shift: Shift) =>
+    setMoving(moving?.id === id && moving.shift === shift ? null : { id, shift });
+  const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number) => {
     if (!onMove) return;
-    closeMove(copy.id);
+    closeMove(copy.id, shift);
     void onMove(copy, toHomeId, quantity).then((r) => {
       if (r) setLanded(r.copyId);
     });
@@ -575,8 +621,7 @@ export function CopyList({
                 <span className="min-w-0 flex-1">
                   <span className="block text-ink">
                     <span>{lineWhat(copy)}</span>
-                    <HomeTag copy={copy} homes={binders} />
-                    {showSale && isForSale(copy) && <ForSaleBadge />}
+                    <HomeTag copy={copy} homes={binders} sale={showSale} />
                     {showTrade && copy.upForTrade && <TradeBadge />}
                   </span>
                   <span className="block text-xs text-ink-3">
@@ -601,16 +646,30 @@ export function CopyList({
                     Edit
                   </button>
                 )}
-                {canMove && (
+                {canShift && shiftHomes(copy, shelf, "move").length > 0 && (
                   <button
                     type="button"
                     className={QUIET_BUTTON}
                     data-copy-move={copy.id}
                     aria-label={`Move ${name}, ${names[i]}`}
-                    aria-expanded={moving === copy.id}
-                    onClick={() => setMoving(moving === copy.id ? null : copy.id)}
+                    aria-expanded={moving?.id === copy.id && moving.shift === "move"}
+                    onClick={() => toggle(copy.id, "move")}
                   >
                     Move
+                  </button>
+                )}
+                {canShift && showSale && (
+                  <button
+                    type="button"
+                    className={QUIET_BUTTON}
+                    data-copy-sell={copy.id}
+                    aria-label={
+                      copy.homeKind === "box" ? `Take ${name}, ${names[i]}, off sale` : `Sell ${name}, ${names[i]}`
+                    }
+                    aria-expanded={moving?.id === copy.id && moving.shift !== "move"}
+                    onClick={() => toggle(copy.id, copy.homeKind === "box" ? "unsell" : "sell")}
+                  >
+                    {copy.homeKind === "box" ? "Take off sale" : "Sell"}
                   </button>
                 )}
                 <button
@@ -622,13 +681,14 @@ export function CopyList({
                 >
                   Remove
                 </button>
-                {canMove && moving === copy.id && homes && (
+                {canShift && moving?.id === copy.id && (
                   <MovePanel
                     copy={copy}
                     line={names[i]}
-                    homes={homes}
-                    onMove={(to, quantity) => submitMove(copy, to, quantity)}
-                    onCancel={() => closeMove(copy.id)}
+                    shift={moving.shift}
+                    homes={shiftHomes(copy, shelf, moving.shift)}
+                    onMove={(to, quantity) => submitMove(copy, moving.shift, to, quantity)}
+                    onCancel={() => closeMove(copy.id, moving.shift)}
                   />
                 )}
               </li>
@@ -640,15 +700,46 @@ export function CopyList({
   );
 }
 
+/** What each panel says. */
+const SHIFT_WORDS: Record<
+  Shift,
+  { form: (line: string) => string; pick: string; quantity: string; keep: string; go: (n: number | null) => string }
+> = {
+  move: {
+    form: (line) => `Move ${line}`,
+    pick: "Move to",
+    quantity: "Quantity to move",
+    keep: "Keep it here",
+    go: (n) => (n === null ? "Move it" : `Move ${n}`),
+  },
+  sell: {
+    form: (line) => `Sell ${line}`,
+    pick: "Into which box",
+    quantity: "Quantity to sell",
+    keep: "Keep it",
+    go: (n) => (n === null ? "Put it up for sale" : `Put ${n} up for sale`),
+  },
+  unsell: {
+    form: (line) => `Take ${line} off sale`,
+    pick: "Back into",
+    quantity: "Quantity to take back",
+    keep: "Leave it for sale",
+    go: (n) => (n === null ? "Take it off sale" : `Take ${n} off sale`),
+  },
+};
+
 /**
- * A line's Move control, open under it: where to (every other home), and,
- * on a stack, how many go ("Quantity to move", all of them to start). Enter
- * moves, Escape keeps it where it is; either way the keyboard goes back to
- * the line's Move button.
+ * A line's Move, Sell or Take off sale control, open under it: where to
+ * (`homes`, already narrowed to the shift), and, on a stack, how many go (all
+ * of them to start). Enter goes, Escape keeps it where it is; either way the
+ * keyboard goes back to the button that opened it.
+ *
+ * Sell with no box yet says how to make one (on Inventory) instead.
  */
 function MovePanel({
   copy,
   line,
+  shift,
   homes,
   onMove,
   onCancel,
@@ -656,23 +747,24 @@ function MovePanel({
   copy: Copy;
   /** The line's name ("Raw, Mint ×3"), for the panel's own name. */
   line: string;
+  shift: Shift;
   homes: readonly Container[];
   onMove: (toHomeId: ContainerId, quantity: number) => void;
   onCancel: () => void;
 }) {
   const selectId = useId();
   const helpId = useId();
-  const others = homes.filter((h) => h.id !== copy.homeId);
-  const [to, setTo] = useState<ContainerId>(others[0]?.id ?? "");
+  const words = SHIFT_WORDS[shift];
+  const { inventoryHref, mode } = useCollectionMode();
+  const [to, setTo] = useState<ContainerId>(homes[0]?.id ?? "");
   const [quantity, setQuantity] = useState<number>(copy.quantity);
   const stack = copy.quantity > 1;
   const valid = Number.isInteger(quantity) && quantity >= 1 && quantity <= copy.quantity;
-  const dest = others.find((h) => h.id === to);
-  const sellNote =
-    dest?.kind === "box" && copy.homeKind !== "box"
-      ? "A box is the sale table: these go up for sale."
-      : dest && dest.kind !== "box" && copy.homeKind === "box"
-        ? "Into a binder: these come off the sale table."
+  const note =
+    shift === "sell"
+      ? "Everything in a box is for sale. Boxes live on Inventory."
+      : shift === "unsell"
+        ? "Into a binder: it's yours to keep again."
         : null;
 
   const submit = (e: FormEvent) => {
@@ -680,7 +772,7 @@ function MovePanel({
     if (!valid || !to) return;
     onMove(to, quantity);
   };
-  const onKeyDown = (e: KeyboardEvent<HTMLFormElement>) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -688,42 +780,74 @@ function MovePanel({
     }
   };
 
-  // The panel opens with the keyboard on its first pick.
+  // The panel opens with the keyboard on its first pick (or, with nowhere
+  // to go, on its way out).
   const ref = useRef<HTMLSelectElement>(null);
+  const linkRef = useRef<HTMLAnchorElement>(null);
   useEffect(() => {
-    ref.current?.focus();
+    (ref.current ?? linkRef.current)?.focus();
   }, []);
+
+  if (homes.length === 0) {
+    return (
+      <div
+        role="group"
+        aria-label={words.form(line)}
+        onKeyDown={onKeyDown}
+        className="basis-full rounded-md border border-dashed border-control bg-sheet p-3"
+      >
+        <p className="text-sm text-ink">No boxes yet, so there&apos;s nowhere to sell it from.</p>
+        <p className="mt-1 text-xs text-ink-3">
+          {mode === "public"
+            ? "Boxes come with Inventory: take the tour to see how selling works."
+            : "Make a box on Inventory, then come back and press Sell."}
+        </p>
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={onCancel} className={QUIET_BUTTON}>
+            {words.keep}
+          </button>
+          <Link
+            ref={linkRef}
+            to={inventoryHref}
+            className="inline-flex min-h-8 items-center rounded-md px-2 text-sm font-semibold text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
+          >
+            Go to Inventory
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <form
       onSubmit={submit}
       onKeyDown={onKeyDown}
-      aria-label={`Move ${line}`}
+      aria-label={words.form(line)}
       className="basis-full rounded-md border border-dashed border-control bg-sheet p-3"
     >
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
         <div>
           <label htmlFor={selectId} className={LABEL}>
-            Move to
+            {words.pick}
           </label>
           <select
             id={selectId}
             ref={ref}
             className={SELECT}
             value={to}
-            aria-describedby={sellNote ? helpId : undefined}
+            aria-describedby={note ? helpId : undefined}
             onChange={(e) => setTo(e.target.value)}
           >
-            {others.map((h) => (
+            {homes.map((h) => (
               <option key={h.id} value={h.id}>
-                {homeOption(h)}
+                {h.name}
               </option>
             ))}
           </select>
         </div>
         {stack && (
           <Input
-            label="Quantity to move"
+            label={words.quantity}
             type="number"
             inputMode="numeric"
             min={1}
@@ -736,18 +860,18 @@ function MovePanel({
           />
         )}
       </div>
-      {sellNote && (
+      {note && (
         <p id={helpId} className="mt-2 text-xs text-ink-3">
-          {sellNote}
+          {note}
         </p>
       )}
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         <button type="button" onClick={onCancel} className={QUIET_BUTTON}>
-          Keep it here
+          {words.keep}
         </button>
         {/* aria-disabled, not disabled: the button stays focusable and says why it waits (submit refuses it). */}
         <NeonButton type="submit" variant="secondary" size="1" aria-disabled={!valid || !to || undefined}>
-          {stack && valid ? `Move ${quantity}` : "Move it"}
+          {words.go(stack && valid ? quantity : null)}
         </NeonButton>
       </div>
     </form>

@@ -9,7 +9,6 @@ import {
   searchable,
   systemContainer,
   useBuildingSets,
-  useCollectionStore,
   useContainers,
   useDemoExtension,
   useScope,
@@ -29,15 +28,15 @@ import "./box.css";
 
 /**
  * The landing of My Binders (p2's shelf): the collector's binders standing
- * spine out, Main first, with their boxes standing among them as box ends.
- * Beside them, the special shelf: All my cards, the Want List and Up for
- * Trade, plus the long box of Inventory, every other way into the
- * collection. Below, the clear binders: sets to flip through. The demo has a
+ * spine out, Main first. Boxes are not here: they are Inventory's
+ * (`InventoryShelf`, on `/inventory`). Beside them, the special shelf: All
+ * my cards, the Want List and Up for Trade, plus the long box of Inventory,
+ * the door to the cards for sale (the demo's leads to the Inventory tour). Below, the clear binders: sets to flip through. The demo has a
  * whole catalog there, narrowed by sport, years and name; the real
  * collection shows the sets you're building and a set search.
  *
  * Spines wear their labels in the Print Shop's spine-label look (see
- * `SpineLabel.tsx`); a box wears its label as the masking tape on its end.
+ * `SpineLabel.tsx`); a box on Inventory wears its label as the masking tape on its end.
  * The accessible name of every spine stays plain text: name, count, smart
  * or system role.
  *
@@ -66,6 +65,11 @@ const SPINE_H = "h-[196px] sm:h-[236px]";
 /** The cards a count stands for: physical copies; null while unknown. */
 function copiesIn(count: ContainerCount | null): number | null {
   return count ? count.copies : null;
+}
+
+/** A box you sell from (not a smart one): Inventory's, never the collection's shelf. */
+function isSaleBox(c: Container): boolean {
+  return c.kind === "box" && !c.rule;
 }
 
 /** Copies in every box: what is for sale. Null while a box's count is unknown. */
@@ -100,10 +104,10 @@ export default function Shelf({ onOpen, onNewBinder }: ShelfProps) {
   const main = systemContainer(containers, "main");
   const want = systemContainer(containers, "want");
   const trade = systemContainer(containers, "trade");
-  const own = containers.filter((c) => !c.system);
+  // Binders only: boxes are Inventory's (they never stand on this shelf).
+  const own = containers.filter((c) => !c.system && !isSaleBox(c));
   const mine = [...own.filter((c) => !c.rule), ...own.filter((c) => c.rule)];
   const binders = containers.filter((c) => c.kind === "binder" && c.system !== "want" && c.system !== "trade").length;
-  const boxes = own.filter((c) => c.kind === "box").length;
   const forSale = forSaleCount(containers);
   const scoped = scope === "all" ? null : containers.find((c) => c.id === scope);
   const total = summary ? summary.copies : null;
@@ -116,9 +120,7 @@ export default function Shelf({ onOpen, onNewBinder }: ShelfProps) {
         My Binders
       </h2>
       <p className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]">
-        {totalText} {total === 1 ? "card" : "cards"}, {binders} {binders === 1 ? "binder" : "binders"}
-        {boxes > 0 ? `, ${boxes} ${boxes === 1 ? "box" : "boxes"}` : ""}
-        {forSale !== null ? `, ${forSale.toLocaleString("en-US")} for sale` : ""}.
+        {totalText} {total === 1 ? "card" : "cards"}, {binders} {binders === 1 ? "binder" : "binders"}.
       </p>
       <p className="mt-2 max-w-2xl text-ink-2">
         Pull a binder off the shelf, or hunt for a card down below and we&apos;ll show you where it lives.{" "}
@@ -134,7 +136,7 @@ export default function Shelf({ onOpen, onNewBinder }: ShelfProps) {
       <div className="mt-6 grid gap-x-8 gap-y-10 xl:grid-cols-[minmax(0,1fr)_auto]">
         <section aria-labelledby="nb-my-shelf" className="min-w-0">
           <h3 id="nb-my-shelf" className="text-xl font-bold text-ink">
-            Your shelf
+            Your binders
           </h3>
           <ul className="p2-shelf mt-1" aria-label="Your binders">
             {main && (
@@ -144,11 +146,7 @@ export default function Shelf({ onOpen, onNewBinder }: ShelfProps) {
             )}
             {mine.map((c, i) => (
               <li key={c.id} className="flex-none">
-                {c.kind === "box" && !c.rule ? (
-                  <BoxSpine container={c} current={scope === c.id} index={i + 1} onOpen={onOpen} />
-                ) : (
-                  <BinderSpine container={c} current={scope === c.id} index={i + 1} onOpen={onOpen} />
-                )}
+                <BinderSpine container={c} current={scope === c.id} index={i + 1} onOpen={onOpen} />
               </li>
             ))}
             <li className="flex-none">
@@ -159,7 +157,7 @@ export default function Shelf({ onOpen, onNewBinder }: ShelfProps) {
                 style={{ "--i": mine.length + 1 } as CSSProperties}
               >
                 <PlusIcon aria-hidden="true" className="h-6 w-6 shrink-0" />
-                <span className="p2-spine-name text-sm font-bold">New binder or box</span>
+                <span className="p2-spine-name text-sm font-bold">New binder</span>
               </button>
             </li>
           </ul>
@@ -188,7 +186,7 @@ export default function Shelf({ onOpen, onNewBinder }: ShelfProps) {
               </li>
             )}
             <li className="flex-none">
-              <InventoryBox forSale={forSale} onOpen={() => onOpen({ kind: "sale" })} />
+              <InventoryBox forSale={forSale} />
             </li>
           </ul>
           <div className="nb-special-ledge shelf-ledge-special" aria-hidden="true" />
@@ -348,13 +346,24 @@ function BoxSpine({
  * the yellow price tag (the same tag a for-sale card wears in its sleeve)
  * says how many are for sale: every card in every box.
  *
- * In the demo it leads to Inventory (or its tour page). On the real
- * collection it opens every for-sale copy at once (`ForSaleView`), until the
- * real Inventory page reads boxes.
+ * On the collection's shelf it is the door to Inventory (`/inventory`; the
+ * demo's leads to the Inventory tour page). On Inventory itself it opens
+ * every for-sale copy at once (`onOpen`, `ForSaleView`).
  */
-function InventoryBox({ forSale, onOpen }: { forSale: number | null; onOpen: () => void }) {
+function InventoryBox({
+  forSale,
+  onOpen,
+  tape = "Inventory",
+  name = "Inventory",
+}: {
+  forSale: number | null;
+  onOpen?: () => void;
+  /** The lettering on its tape. */
+  tape?: string;
+  /** The first words of its accessible name. */
+  name?: string;
+}) {
   const { inventoryHref } = useCollectionMode();
-  const real = useCollectionStore().kind === "convex";
   const words = forSale === null ? "counting what's for sale" : `${cardCount(forSale)} for sale`;
   const art = (
     <>
@@ -364,7 +373,7 @@ function InventoryBox({ forSale, onOpen }: { forSale: number | null; onOpen: () 
         <span className="nb-longbox-divider" style={{ "--tab": "#FF2E9A", "--at": "66%" } as CSSProperties} />
       </span>
       <span aria-hidden="true" className="nb-longbox-box">
-        <span className="nb-longbox-tape">Inventory</span>
+        <span className="nb-longbox-tape">{tape}</span>
         <span className="nb-longbox-handle" />
       </span>
       <span aria-hidden="true" className="nb-longbox-tag">
@@ -372,17 +381,123 @@ function InventoryBox({ forSale, onOpen }: { forSale: number | null; onOpen: () 
       </span>
     </>
   );
-  if (real) {
+  if (onOpen) {
     return (
-      <button type="button" onClick={onOpen} data-spine="sale" aria-label={`Inventory, ${words}`} className="nb-longbox">
+      <button type="button" onClick={onOpen} data-spine="sale" aria-label={`${name}, ${words}`} className="nb-longbox">
         {art}
       </button>
     );
   }
   return (
-    <Link to={inventoryHref} aria-label={`Inventory, ${words}`} className="nb-longbox">
+    <Link to={inventoryHref} aria-label={`${name}, ${words}`} className="nb-longbox">
       {art}
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inventory's shelf: the boxes
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-359 — the landing of Inventory (`/inventory`): the collector's boxes,
+ * standing box end out on the show table, and "New box". Beside them the
+ * long box of the whole stock: every card in every box at once
+ * (`ForSaleView`). Nothing from the collection stands here: binders, the
+ * Want List and Up for Trade are My Binders' (Jason: "Inventory is things
+ * for sale and My Collection is things that are for your collection").
+ */
+export function InventoryShelf({ onOpen, onNewBox }: { onOpen: (view: ViewKey) => void; onNewBox: () => void }) {
+  const containers = useContainers();
+  if (!containers) {
+    return (
+      <div>
+        <h2 tabIndex={-1} data-shelf-heading className="sr-only">
+          Your boxes
+        </h2>
+        <LoadingNote>Pulling your boxes out from under the table…</LoadingNote>
+        <SkeletonBars rows={3} className="mt-4" />
+      </div>
+    );
+  }
+  const boxes = containers.filter((c) => c.kind === "box" && !c.rule && !c.system);
+  const forSale = forSaleCount(containers);
+  const saleText = forSale === null ? "Counting what's for sale" : `${cardCount(forSale)} for sale`;
+
+  return (
+    <div>
+      <SpineFontFaces />
+      <h2 tabIndex={-1} data-shelf-heading className="sr-only">
+        Your boxes
+      </h2>
+      {boxes.length === 0 ? (
+        <>
+          <p className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]">
+            Nothing for sale yet.
+          </p>
+          <p className="mt-2 max-w-2xl text-ink-2">
+            A box is your sale table: every card in it is for sale. Make one, then put cards in it: open any card in
+            My Cards or Checklists and press Sell, or open the box and hunt for a card to move in.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]">
+            {saleText} in {boxes.length} {boxes.length === 1 ? "box" : "boxes"}.
+          </p>
+          <p className="mt-2 max-w-2xl text-ink-2">
+            Open a box to sort it into rows, or pull the long box for the whole stock at once.
+          </p>
+        </>
+      )}
+
+      <div className="mt-6 grid gap-x-8 gap-y-10 xl:grid-cols-[minmax(0,1fr)_auto]">
+        <section aria-labelledby="nb-box-shelf" className="min-w-0">
+          <h3 id="nb-box-shelf" className="text-xl font-bold text-ink">
+            Your boxes
+          </h3>
+          <ul className="p2-shelf mt-1" aria-label="Your boxes">
+            {boxes.map((c, i) => (
+              <li key={c.id} className="flex-none">
+                <BoxSpine container={c} current={false} index={i} onOpen={onOpen} />
+              </li>
+            ))}
+            <li className="flex-none">
+              <button
+                type="button"
+                onClick={onNewBox}
+                className={`p2-spine p2-spine--new w-[58px] justify-center gap-3 text-ink-2 hover:text-ink ${SPINE_H}`}
+                style={{ "--i": boxes.length } as CSSProperties}
+              >
+                <PlusIcon aria-hidden="true" className="h-6 w-6 shrink-0" />
+                <span className="p2-spine-name text-sm font-bold">New box</span>
+              </button>
+            </li>
+          </ul>
+          <div className="p2-ledge shelf-ledge" aria-hidden="true" />
+        </section>
+
+        {boxes.length > 0 && (
+          <section aria-labelledby="nb-stock-shelf" className="nb-special w-fit max-w-full min-w-0">
+            <h3 id="nb-stock-shelf" className="nb-special-sign">
+              The whole stock
+            </h3>
+            <p className="mt-1 max-w-[22rem] px-1 text-sm text-ink-2">Every card in every box, all at once.</p>
+            <ul className="p2-shelf nb-special-shelf" aria-label="The whole stock">
+              <li className="flex-none">
+                <InventoryBox
+                  forSale={forSale}
+                  tape="For sale"
+                  name="Everything for sale"
+                  onOpen={() => onOpen({ kind: "sale" })}
+                />
+              </li>
+            </ul>
+            <div className="nb-special-ledge shelf-ledge-special" aria-hidden="true" />
+          </section>
+        )}
+      </div>
+    </div>
   );
 }
 

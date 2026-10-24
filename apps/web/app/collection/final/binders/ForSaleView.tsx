@@ -10,15 +10,9 @@ import { forSaleCount } from "./Shelf";
 import "./box.css";
 
 /**
- * NEO-359 — the Inventory long box on the real collection: every copy that
- * is for sale, which is every copy whose home is a box, box by box. The
- * headline is the shelf's "N for sale" (the boxes' counts summed).
- *
- * Kept in this one component on purpose: what the long box opens on real
- * data is still being settled with Jason (a combined view here, or the real
- * Inventory page once it reads boxes), so changing it touches this file and
- * the shelf's `InventoryBox` only. The demo's long box still leads to the
- * Inventory tour.
+ * NEO-359 — Inventory's whole stock (`/inventory?sale=1`, the long box on
+ * Inventory's shelf): every copy that is for sale, which is every copy whose
+ * home is a box, box by box. The headline is the boxes' counts summed.
  */
 export default function ForSaleView({
   onOpenBox,
@@ -43,7 +37,7 @@ export default function ForSaleView({
       <div className="mt-4 rounded-lg border border-dashed border-control px-4 py-8 text-center">
         <p className="text-ink">Nothing&apos;s for sale yet.</p>
         <p className="mt-1 text-sm text-ink-2">
-          Make a box from the shelf (New binder or box), then move cards into it. Everything in a box is for sale.
+          Make a box (New box), then move cards into it. Everything in a box is for sale.
         </p>
       </div>
     );

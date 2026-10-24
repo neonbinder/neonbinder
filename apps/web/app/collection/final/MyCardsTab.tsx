@@ -26,8 +26,8 @@ import "./cards/cards.css";
  * lit when you have the card. "Sets I'm building" is the collector's own
  * pick (the set picker, or Stop building on a wall), never guessed.
  *
- * The binder picker narrows every count and light to one binder or box,
- * Have files into it, and the shelf below lists binders and boxes.
+ * The binder picker narrows every count and light to one binder,
+ * Have files into it, and the shelf below lists binders (boxes are Inventory's).
  *
  * Where you are inside the tab rides on the URL next to `?tab=cards`:
  * `&set=<id>` is a set's wall, `&view=needs[&for=<id>]` the need list.

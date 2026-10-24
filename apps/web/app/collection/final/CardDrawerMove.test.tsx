@@ -6,11 +6,13 @@ import PublicCollectionDemo from "./PublicCollectionDemo";
 import { initialCollectionState } from "./store";
 
 /**
- * NEO-359 — the drawer's Move panel on a line item, on the public demo (fixture
- * data; the Convex client module is mocked EMPTY, so reaching for it would
- * throw): move all of a line or part of a stack, the keyboard coming back to
- * the line's Move button (or to the twin's, once a move folds the line away),
- * and a box as the sale table.
+ * NEO-359 — a line item's Move, Sell and Take off sale panels in the drawer,
+ * on the public demo (fixture data; the Convex client module is mocked
+ * EMPTY, so reaching for it would throw). The collection and Inventory never
+ * mix in one pick: Move goes binder to binder (or box to box), Sell picks a
+ * box, Take off sale picks the binder it goes back into. All of a line or
+ * part of a stack, the keyboard coming back to the button that opened the
+ * panel (or to the twin's, once a move folds the line away).
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }) }));
 vi.mock("convex/react", () => ({}));
@@ -36,11 +38,13 @@ function renderDrawer() {
 
 const frames = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
 const lines = (drawer: HTMLElement) => within(within(drawer).getByRole("region", { name: /^Your copies of / })).getAllByRole("listitem");
-const moveButtons = (drawer: HTMLElement) => within(drawer).getAllByRole("button", { name: /^Move #/ });
-/** The Move button of the stack of three (its line id is stable through a split). */
-const stackMove = (drawer: HTMLElement) =>
-  moveButtons(drawer).find((b) => b.getAttribute("data-copy-move") === STACK.id)!;
+/** The stack of three's Take off sale / Sell button (its line id is stable through a split). */
+const stackSell = (drawer: HTMLElement) =>
+  within(drawer)
+    .getAllByRole("button", { name: /^(Take #.+ off sale|Sell #.+)$/ })
+    .find((b) => b.getAttribute("data-copy-sell") === STACK.id)!;
 const status = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+const optionsOf = (select: HTMLElement) => within(select).getAllByRole("option").map((o) => o.textContent);
 
 beforeEach(() => window.sessionStorage.clear());
 afterEach(() => {
@@ -48,133 +52,143 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
-describe("the drawer's Move panel", () => {
-  it("offers Move on a line when there is somewhere else to go, and opens on the destination pick", () => {
+/** Takes `count` of the stack off sale into the slab case. */
+async function takeOff(drawer: HTMLElement, count: number, source = stackSell(drawer)) {
+  fireEvent.click(source);
+  const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
+  fireEvent.change(within(panel).getByRole("combobox", { name: "Back into" }), { target: { value: "binder-slab-case" } });
+  const qty = within(panel).queryByRole("spinbutton", { name: "Quantity to take back" });
+  if (qty) fireEvent.change(qty, { target: { value: String(count) } });
+  fireEvent.click(within(panel).getByRole("button", { name: /^Take (\d+|it) off sale$/ }));
+}
+
+describe("the drawer's Move, Sell and Take off sale", () => {
+  it("a line in a box has Take off sale, not Move, and it picks a binder only", () => {
     const drawer = renderDrawer();
-    const button = stackMove(drawer);
+    const stackMove = () =>
+      within(drawer)
+        .queryAllByRole("button", { name: /^Move #/ })
+        .find((b) => b.getAttribute("data-copy-move") === STACK.id);
+    // It is the only box, so the line has nowhere to Move to.
+    expect(stackMove()).toBeUndefined();
+    const button = stackSell(drawer);
+    expect(button.textContent).toBe("Take off sale");
+    expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
     expect(button.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(button);
     expect(button.getAttribute("aria-expanded")).toBe("true");
-    const panel = within(drawer).getByRole("form", { name: /^Move / });
-    const to = within(panel).getByRole("combobox", { name: "Move to" }) as HTMLSelectElement;
+    const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
+    const to = within(panel).getByRole("combobox", { name: "Back into" });
     expect(document.activeElement).toBe(to);
-    // Every other home, never the one it is in, the Want List or Up for Trade.
-    const options = within(to).getAllByRole("option").map((o) => o.textContent);
-    expect(options.join("|")).not.toMatch(/Show box|Want List|Up for Trade/);
+    // Binders only: never a box, the Want List or Up for Trade.
+    const options = optionsOf(to);
+    expect(options.join("|")).not.toMatch(/box|Want List|Up for Trade/i);
     expect(options).toContain("Main");
     expect(options).toContain("Slab case");
   });
 
   it("asks how many on a stack, all of them to start, and refuses a number outside 1 to the stack", () => {
     const drawer = renderDrawer();
-    fireEvent.click(stackMove(drawer));
-    const panel = within(drawer).getByRole("form", { name: /^Move / });
-    const qty = within(panel).getByRole("spinbutton", { name: "Quantity to move" }) as HTMLInputElement;
+    fireEvent.click(stackSell(drawer));
+    const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
+    const qty = within(panel).getByRole("spinbutton", { name: "Quantity to take back" }) as HTMLInputElement;
     expect(qty.value).toBe("3");
-    const go = () => within(panel).getByRole("button", { name: /^Move( \d+|\sit)$/ });
-    expect(go().textContent).toBe("Move 3");
+    const go = () => within(panel).getByRole("button", { name: /^Take (\d+|it) off sale$/ });
+    expect(go().textContent).toBe("Take 3 off sale");
 
     // The button stays focusable (aria-disabled) and a press while invalid moves nothing.
     fireEvent.change(qty, { target: { value: "0" } });
     expect(go().getAttribute("aria-disabled")).toBe("true");
     expect(within(panel).getByText("Pick 1 to 3.")).toBeTruthy();
     fireEvent.click(go());
-    expect(within(drawer).getByRole("form", { name: /^Move / })).toBeTruthy();
-    expect(status(/Moved/)).toBe(false);
+    expect(within(drawer).getByRole("form", { name: /^Take .+ off sale$/ })).toBeTruthy();
+    expect(status(/off sale/)).toBe(false);
     fireEvent.change(qty, { target: { value: "4" } });
     expect(go().getAttribute("aria-disabled")).toBe("true");
     fireEvent.change(qty, { target: { value: "2" } });
     expect(go().getAttribute("aria-disabled")).toBeNull();
-    expect(go().textContent).toBe("Move 2");
+    expect(go().textContent).toBe("Take 2 off sale");
   });
 
-  it("splits a stack: the line keeps the rest, the part lands in the destination, and the keyboard returns to the line's Move button", async () => {
+  it("splits a stack: the box keeps the rest, the part lands in the binder, and the keyboard returns to Take off sale", async () => {
     const drawer = renderDrawer();
     expect(lines(drawer)).toHaveLength(LINES);
-    const source = stackMove(drawer);
-    const sourceId = source.getAttribute("data-copy-move");
-    fireEvent.click(source);
-    const panel = within(drawer).getByRole("form", { name: /^Move / });
-    fireEvent.change(within(panel).getByRole("combobox", { name: "Move to" }), { target: { value: "binder-slab-case" } });
-    fireEvent.change(within(panel).getByRole("spinbutton", { name: "Quantity to move" }), { target: { value: "2" } });
-    fireEvent.click(within(panel).getByRole("button", { name: "Move 2" }));
+    await takeOff(drawer, 2);
     await waitFor(() => expect(lines(drawer)).toHaveLength(LINES + 1));
     await frames();
 
-    expect(status(/^Moved 2 of #.+ to Slab case\. Off the sale table\.$/)).toBe(true);
-    const kept = moveButtons(drawer).find((b) => b.getAttribute("data-copy-move") === sourceId)!;
-    expect(kept).toBeTruthy();
+    expect(status(/^Took 2 of #.+ off sale\. They're back in Slab case\.$/)).toBe(true);
+    const kept = stackSell(drawer);
+    expect(kept.textContent).toBe("Take off sale");
     expect(within(drawer).getByText(/×2/)).toBeTruthy();
     expect(document.activeElement).toBe(kept);
-    // The panel is closed.
-    expect(within(drawer).queryByRole("form", { name: /^Move / })).toBeNull();
+    expect(within(drawer).queryByRole("form", { name: /off sale$/ })).toBeNull();
   });
 
-  it("moving the rest of a split into the line already there folds them, and the keyboard goes to that twin's Move button", async () => {
+  it("taking the rest off into the line already there folds them, and the keyboard goes to that twin's Move button", async () => {
     const drawer = renderDrawer();
-    const move = async (count: number, source: HTMLElement) => {
-      fireEvent.click(source);
-      const panel = within(drawer).getByRole("form", { name: /^Move / });
-      fireEvent.change(within(panel).getByRole("combobox", { name: "Move to" }), { target: { value: "binder-slab-case" } });
-      const qty = within(panel).queryByRole("spinbutton", { name: "Quantity to move" });
-      if (qty) fireEvent.change(qty, { target: { value: String(count) } });
-      fireEvent.click(within(panel).getByRole("button", { name: /^Move( \d+|\sit)$/ }));
-    };
-    const sourceId = stackMove(drawer).getAttribute("data-copy-move");
-    await move(1, stackMove(drawer));
+    await takeOff(drawer, 1);
     await waitFor(() => expect(lines(drawer)).toHaveLength(LINES + 1));
     await frames();
 
-    // The two left in Main now go to the same slab case: they fold into the one already there.
-    const rest = moveButtons(drawer).find((b) => b.getAttribute("data-copy-move") === sourceId)!;
-    await move(2, rest);
+    // The two left in the box now go to the same slab case: they fold into the one already there.
+    await takeOff(drawer, 2);
     await waitFor(() => expect(lines(drawer)).toHaveLength(LINES));
     await frames();
 
     expect(status(/stacked with the ones already there/)).toBe(true);
     const stack = within(drawer).getByText(/×3/).closest("li")!;
     const twin = within(stack).getByRole("button", { name: /^Move #/ });
-    expect(twin.getAttribute("data-copy-move")).not.toBe(sourceId);
+    expect(twin.getAttribute("data-copy-move")).not.toBe(STACK.id);
     expect(document.activeElement).toBe(twin);
   });
 
-  it("into a box says it goes up for sale, and names the sale table before it is done", async () => {
+  it("a binder's line moves to another binder only, and Sell puts it in a box", async () => {
     const drawer = renderDrawer();
-    // Out of the box into Main first: off the sale table, and the badge goes.
-    expect(within(drawer).getAllByText("For sale").length).toBeGreaterThan(0);
-    fireEvent.click(stackMove(drawer));
-    let panel = within(drawer).getByRole("form", { name: /^Move / });
-    expect(within(panel).getByText("Into a binder: these come off the sale table.")).toBeTruthy();
-    fireEvent.change(within(panel).getByRole("combobox", { name: "Move to" }), { target: { value: "binder-main" } });
-    fireEvent.click(within(panel).getByRole("button", { name: "Move 3" }));
-    await waitFor(() => expect(within(drawer).queryByText("For sale")).toBeNull());
+    await takeOff(drawer, 3);
+    await waitFor(() => expect(stackSell(drawer).textContent).toBe("Sell"));
     await frames();
 
-    // And back in: the box is the sale table.
-    fireEvent.click(stackMove(drawer));
-    panel = within(drawer).getByRole("form", { name: /^Move / });
-    fireEvent.change(within(panel).getByRole("combobox", { name: "Move to" }), { target: { value: "box-show" } });
-    expect(within(panel).getByText("A box is the sale table: these go up for sale.")).toBeTruthy();
-    fireEvent.click(within(panel).getByRole("button", { name: "Move 3" }));
-    await waitFor(() => expect(status(/Moved #.+ to Show box\. They're for sale now\.$/)).toBe(true));
+    // Move: binders only.
+    const move = within(drawer)
+      .getAllByRole("button", { name: /^Move #/ })
+      .find((b) => b.getAttribute("data-copy-move") === STACK.id)!;
+    fireEvent.click(move);
+    const movePanel = within(drawer).getByRole("form", { name: /^Move / });
+    const options = optionsOf(within(movePanel).getByRole("combobox", { name: "Move to" }));
+    expect(options.join("|")).not.toMatch(/box|Slab case|Want List|Up for Trade/i);
+    expect(options).toContain("Main");
+    fireEvent.click(within(movePanel).getByRole("button", { name: "Keep it here" }));
     await frames();
-    expect(within(drawer).getAllByText("For sale").length).toBeGreaterThan(0);
+    expect(document.activeElement).toBe(move);
+
+    // Sell: boxes only, and the line reads For sale once it lands.
+    const sell = stackSell(drawer);
+    expect(sell.textContent).toBe("Sell");
+    fireEvent.click(sell);
+    const sellPanel = within(drawer).getByRole("form", { name: /^Sell / });
+    expect(optionsOf(within(sellPanel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Show box"]);
+    expect(within(sellPanel).getByText("Everything in a box is for sale. Boxes live on Inventory.")).toBeTruthy();
+    fireEvent.click(within(sellPanel).getByRole("button", { name: "Put 3 up for sale" }));
+    await waitFor(() => expect(status(/^#.+ are up for sale in Show box\.$/)).toBe(true));
+    await frames();
+    expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
   });
 
-  it("Escape and Keep it here close the panel and leave the card where it is, the keyboard on the Move button", async () => {
+  it("Escape and Leave it for sale close the panel and leave the card where it is, the keyboard on the button", async () => {
     const drawer = renderDrawer();
-    const button = stackMove(drawer);
+    const button = stackSell(drawer);
     fireEvent.click(button);
-    fireEvent.keyDown(within(drawer).getByRole("form", { name: /^Move / }), { key: "Escape" });
+    fireEvent.keyDown(within(drawer).getByRole("form", { name: /off sale$/ }), { key: "Escape" });
     await frames();
-    expect(within(drawer).queryByRole("form", { name: /^Move / })).toBeNull();
+    expect(within(drawer).queryByRole("form", { name: /off sale$/ })).toBeNull();
     expect(document.activeElement).toBe(button);
 
     fireEvent.click(button);
-    fireEvent.click(within(drawer).getByRole("button", { name: "Keep it here" }));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Leave it for sale" }));
     await frames();
-    expect(within(drawer).queryByRole("form", { name: /^Move / })).toBeNull();
+    expect(within(drawer).queryByRole("form", { name: /off sale$/ })).toBeNull();
     expect(lines(drawer)).toHaveLength(LINES);
-    expect(status(/Moved/)).toBe(false);
+    expect(status(/off sale/)).toBe(false);
   });
 });

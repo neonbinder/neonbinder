@@ -2,8 +2,8 @@ import { systemContainer, useContainers, useScope } from "../data/store";
 import { isHome, type Copy } from "../data/types";
 
 /**
- * Where a new Have lands, as a notice says it: the scoped binder or box
- * ("Ohtani rainbow", "Show box"), else Main.
+ * Where a new Have lands, as a notice says it: the scoped binder
+ * ("Ohtani rainbow"), else Main.
  */
 export function useHomeName(): string {
   const containers = useContainers();
@@ -13,7 +13,7 @@ export function useHomeName(): string {
   return systemContainer(containers, "main")?.name ?? "Main";
 }
 
-/** The binder or box the page narrows counts to, when one is picked. */
+/** The binder the page narrows counts to, when one is picked. */
 export function useScopedName(): string | null {
   const containers = useContainers();
   const scope = useScope();

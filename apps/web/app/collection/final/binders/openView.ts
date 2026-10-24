@@ -178,5 +178,7 @@ function scopeLineFor(view: ViewKey, container: Container | undefined): string |
     return `${container.name} fills itself, so Checklists and My Cards look through everything.`;
   }
   if (!isHome(container)) return "Checklists and My Cards are looking through everything.";
+  // A box is Inventory's: it never narrows the collection.
+  if (container.kind === "box") return null;
   return `Checklists and My Cards are looking through ${container.name}.`;
 }

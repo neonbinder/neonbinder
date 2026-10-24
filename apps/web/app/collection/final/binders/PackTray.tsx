@@ -87,6 +87,8 @@ interface PackTrayProps {
   targets: SlotTarget[];
   /** The home "Move here" moves into, or null when none is open. */
   moveTo: MoveTarget | null;
+  /** Which of a card's copies this screen may move (default: any). My Binders leaves a box's alone. */
+  canMoveCopy?: (copy: Copy) => boolean;
   /** An owned card waiting on "which copy?", or null. */
   choosing: Choosing | null;
   onChoose: (choosing: Choosing) => void;
@@ -113,6 +115,8 @@ interface PackTrayProps {
 }
 
 export const AIMED_TARGET = "aimed";
+
+const anyCopy = () => true;
 
 /** Cards shown in each group at once; the line above still says how many fit. */
 export const TRAY_LIMIT = 24;
@@ -149,6 +153,8 @@ export default function PackTray(props: PackTrayProps) {
     onSay,
     inputRef,
   } = props;
+  const canMoveCopy = props.canMoveCopy ?? anyCopy;
+  const movable = (copies: readonly Copy[], to: ContainerId) => movableCopies(copies, to).filter(canMoveCopy);
   const [slotting, setSlotting] = useState<Card | null>(null);
   const actButtons = useRef(new Map<string, HTMLButtonElement>());
   const chooserRef = useRef<HTMLDivElement>(null);
@@ -209,7 +215,7 @@ export default function PackTray(props: PackTrayProps) {
   /** Move (or flag) one of the card's copies: straight away with one to pick from, else ask which. */
   const choose = (card: Card, verb: Choosing["verb"]) => {
     setSlotting(null);
-    const list = verb === "move" ? (moveTo ? movableCopies(mineOf(card.id), moveTo.id) : []) : tradeableCopies(mineOf(card.id));
+    const list = verb === "move" ? (moveTo ? movable(mineOf(card.id), moveTo.id) : []) : tradeableCopies(mineOf(card.id));
     if (list.length === 0) return;
     if (list.length === 1) {
       if (verb === "move") onMove(card, list[0]);
@@ -274,7 +280,7 @@ export default function PackTray(props: PackTrayProps) {
   const choosingCopies = choosing
     ? choosing.verb === "move"
       ? moveTo
-        ? movableCopies(mineOf(choosing.card.id), moveTo.id)
+        ? movable(mineOf(choosing.card.id), moveTo.id)
         : []
       : tradeableCopies(mineOf(choosing.card.id))
     : [];
@@ -410,7 +416,7 @@ export default function PackTray(props: PackTrayProps) {
                           mode={mode}
                           wanted={wantMode && props.isWanted(card.id)}
                           moveTo={mode === "file" ? moveTo : null}
-                          canMove={!!moveTo && movableCopies(copies, moveTo.id).length > 0}
+                          canMove={!!moveTo && movable(copies, moveTo.id).length > 0}
                           canTrade={tradeableCopies(copies).length > 0}
                           lifted={props.draggingId === card.id}
                           onFind={(place) => onFind(card, place)}
@@ -602,12 +608,12 @@ function OwnedCard({
               <li key={`${place.homeId}:${place.pocket?.page ?? "-"}:${place.pocket?.slot ?? "-"}:${place.row ?? "-"}`}>
                 <button
                   type="button"
-                  aria-label={`Find ${short} in ${where}`}
+                  aria-label={`Find ${short} in ${where}${place.box ? ", for sale" : ""}`}
                   onClick={() => onFind(place)}
                   className={`rounded-sm text-left text-xs leading-snug text-neon-blue-text underline decoration-neon-blue/50 underline-offset-2 hover:text-ink max-sm:min-h-8 ${FOCUS}`}
                 >
                   In {where}
-                  {place.box && <span className="sr-only">, for sale</span>}
+                  {place.box && ", for sale"}
                 </button>
               </li>
             );

@@ -16,14 +16,20 @@ import NeonButton from "@/components/modules/NeonButton";
 import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 import { isEditableTarget } from "@/lib/dom/is-editable-target";
 import CardFace from "../prototypes/_shared/CardFace";
-import type { Notice } from "../prototypes/p1/notice";
+import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import { useReducedMotion, useWideDesk } from "../prototypes/p2/hooks";
 import "../prototypes/p2/p2.css";
 import { SPREAD_DROP_ID, stepCount, stepOfPage } from "./binders/BinderDesk";
 import BinderView from "./binders/BinderView";
 import "./binders/binders.css";
 import BoxDesk from "./binders/BoxDesk";
-import { cardDragId, copyDragId, parseRowId, parseSlotId, pocketHop } from "./binders/dnd";
+import {
+  cardDragId,
+  copyDragId,
+  parseRowId,
+  parseSlotId,
+  pocketHop,
+} from "./binders/dnd";
 import EditContainerDialog from "./binders/EditContainerDialog";
 import ForSaleView from "./binders/ForSaleView";
 import { useCardMap, useLabelHints } from "./binders/hooks";
@@ -62,9 +68,19 @@ import {
   type ViewKey,
 } from "./binders/model";
 import NewBinderDialog from "./binders/NewBinderDialog";
-import { defaultLayout, openView, viewKey, type Tally } from "./binders/openView";
-import PackTray, { AIMED_TARGET, type Choosing, type MoveTarget, type SlotTarget } from "./binders/PackTray";
-import Shelf from "./binders/Shelf";
+import {
+  defaultLayout,
+  openView,
+  viewKey,
+  type Tally,
+} from "./binders/openView";
+import PackTray, {
+  AIMED_TARGET,
+  type Choosing,
+  type MoveTarget,
+  type SlotTarget,
+} from "./binders/PackTray";
+import Shelf, { InventoryShelf } from "./binders/Shelf";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
 import {
@@ -103,30 +119,51 @@ import {
   type NewContainer,
   type Scope,
 } from "./data/types";
-import { useCollectionParams } from "./mode";
+import { useNavigate } from "react-router";
+import { useCollectionMode, useCollectionParams } from "./mode";
 import { usePageApi, type OpenCardOptions } from "./pageApi";
 import type { CollectionTab, GoToTabParams } from "./store";
 
 /**
  * My Binders (NEO-350, on the shared store since NEO-359): a shelf of
- * spines (your binders and boxes, plus the special shelf: All my cards,
- * Want List, Up for Trade and the Inventory long box), an open binder of
- * nine-pocket pages or an open box of five rows, and the hunt tray, where
+ * spines (your binders, plus the special shelf: All my cards, Want List, Up
+ * for Trade and the Inventory long box), an open binder of nine-pocket
+ * pages, and the hunt tray, where
  * you look for a card: it shows where each copy lives and takes you there,
  * moves a copy into what is open, puts one up for trade, or adds a new one.
  * A card pressed in its sleeve slides out into the page's shared card drawer.
  *
  * Everything reads and writes through the store hooks (`./data/store`), so
  * the demo and the real collection run the same code. What is open lives on
- * the URL (`b=`, `set=`, `all=1`, `sale=1`), pushed so Back steps out of it;
- * opening a binder or box scopes the whole page to it on the same push.
+ * the URL (`b=`, `set=`, `all=1`), pushed so Back steps out of it; opening
+ * a binder scopes the whole page to it on the same push.
+ *
+ * The same desk is Inventory (`surface="inventory"`, `/inventory`): the box
+ * shelf, an open box of five rows (`b=`) and the whole stock (`sale=1`),
+ * with the hunt tray only while a box is open. See `DeskSurface`.
  *
  * Every drag has a button or a key that does the same thing: Slot in / Move
  * here / Put here in the tray, Up for trade, a box card's row picker and
  * Alt+arrows, and the keyboard sensor's pocket hop.
  */
 
+/**
+ * Which screen the desk is on (NEO-359, Jason: "Inventory is things for
+ * sale and My Collection is things that are for your collection. They
+ * should not mix on the screens"):
+ *
+ * - `"collection"`: My Binders on `/collection`. Binders only: Main, your
+ *   binders, the special shelf. A box id on the URL (`b=`), or the old
+ *   combined for-sale view (`sale=1`), goes to `/inventory` instead.
+ * - `"inventory"`: `/inventory`. Boxes only: the box shelf, an open box
+ *   (`b=<boxId>`) and everything for sale at once (`sale=1`). A binder id
+ *   goes to My Binders.
+ */
+export type DeskSurface = "collection" | "inventory";
+
 export interface MyBindersTabProps {
+  /** The collection's My Binders (default), or the Inventory screen. */
+  surface?: DeskSurface;
   openCard: (cardId: CardId, opts?: OpenCardOptions) => void;
   goToTab: (tab: CollectionTab, p?: GoToTabParams) => void;
   notify: (message: string, undo?: () => void) => void;
@@ -151,7 +188,21 @@ interface OwnedPile {
   truncated: boolean;
 }
 
-export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo, onDismissNotice }: MyBindersTabProps) {
+/** A home that is a box: the sale table. */
+function isBoxHome(c: Container | undefined): boolean {
+  return !!c && c.kind === "box" && isHome(c);
+}
+
+export default function MyBindersTab({
+  surface = "collection",
+  openCard,
+  goToTab,
+  notify,
+  notice,
+  onUndo,
+  onDismissNotice,
+}: MyBindersTabProps) {
+  const inventory = surface === "inventory";
   const containers = useContainers();
   const capabilities = useCapabilities();
   const demo = useDemoExtension();
@@ -168,20 +219,52 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   const s = params.get("set");
   let view: ViewKey | null = null;
   // While the shelf loads, an open binder on the URL stays open (it says so);
-  // once it is in, an unknown or deleted one falls back to the shelf.
-  if (b && (!containers || containers.some((c) => c.id === b))) view = { kind: "binder", binderId: b };
-  else if (s) view = { kind: "set", setId: s };
-  else if (params.get("sale")) view = { kind: "sale" };
+  // once it is in, an unknown or deleted one falls back to the shelf. Each
+  // screen opens only its own: a box on Inventory, anything else here.
+  const named = b ? containers?.find((c) => c.id === b) : undefined;
+  const ownsIt = (c: Container) => (inventory ? isBoxHome(c) : !isBoxHome(c));
+  if (b && (!containers || (named && ownsIt(named))))
+    view = { kind: "binder", binderId: b };
+  else if (inventory) {
+    if (params.get("sale")) view = { kind: "sale" };
+  } else if (s) view = { kind: "set", setId: s };
   else if (params.get("all")) view = { kind: "all" };
   const viewId = view ? viewKey(view) : "shelf";
-  const container = view?.kind === "binder" ? containers?.find((c) => c.id === view.binderId) : undefined;
+
+  // A link to the other screen's thing (a box here, a binder on Inventory,
+  // the old `sale=1`) goes there, in place of this entry, so Back skips it.
+  // The public demo has no Inventory screen: there, a box id just shows the shelf.
+  const navigate = useNavigate();
+  const { mode: pageMode } = useCollectionMode();
+  const elsewhere =
+    pageMode === "public"
+      ? null
+      : inventory
+        ? named && !isBoxHome(named)
+          ? `/collection?${new URLSearchParams({ tab: "binders", b: named.id }).toString()}`
+          : null
+        : named && isBoxHome(named)
+          ? `/inventory?${new URLSearchParams({ b: named.id }).toString()}`
+          : params.get("sale")
+            ? "/inventory?sale=1"
+            : null;
+  useEffect(() => {
+    if (elsewhere) void navigate(elsewhere, { replace: true });
+  }, [elsewhere, navigate]);
+  const container =
+    view?.kind === "binder"
+      ? containers?.find((c) => c.id === view.binderId)
+      : undefined;
   const isWant = container?.system === "want";
   const isTrade = container?.system === "trade";
   const isSmart = !!container?.rule;
   const isBox = !!container && container.kind === "box" && isHome(container);
   const homeOpen = isHome(container) ? container : undefined;
 
-  const [stepState, setStepState] = useState<{ view: string; at: number }>({ view: "shelf", at: 0 });
+  const [stepState, setStepState] = useState<{ view: string; at: number }>({
+    view: "shelf",
+    at: 0,
+  });
   const [modes, setModes] = useState<Record<string, LayoutMode>>({});
   const [limits, setLimits] = useState<Record<string, number>>({});
   const [sort, setSort] = useState<SortKey>("checklist");
@@ -202,46 +285,83 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   const searchRef = useRef<HTMLInputElement>(null);
   const deskRef = useRef<HTMLDivElement>(null);
 
-  const mode: LayoutMode = view ? (modes[viewId] ?? defaultLayout(view, container)) : "stack";
+  const mode: LayoutMode = view
+    ? (modes[viewId] ?? defaultLayout(view, container))
+    : "stack";
   const defaultLimit =
-    view?.kind === "set" ? SET_CARDS_DEFAULT_LIMIT : view?.kind === "all" ? OWNED_CARDS_DEFAULT_LIMIT : CONTAINER_COPIES_DEFAULT_LIMIT;
+    view?.kind === "set"
+      ? SET_CARDS_DEFAULT_LIMIT
+      : view?.kind === "all"
+        ? OWNED_CARDS_DEFAULT_LIMIT
+        : CONTAINER_COPIES_DEFAULT_LIMIT;
   const limit = limits[viewId] ?? defaultLimit;
-  const more = () => setLimits((l) => ({ ...l, [viewId]: limit + defaultLimit }));
+  const more = () =>
+    setLimits((l) => ({ ...l, [viewId]: limit + defaultLimit }));
 
   // -- what the open view reads ----------------------------------------------
   const listId = container && !isWant ? container.id : null;
   const listPage = useContainerCopies(listId, { limit });
   const listCopies = listPage?.copies;
-  const wantIds = useMemo(() => (isWant && wants ? wants.map((w) => w.cardId) : null), [isWant, wants]);
-  const listCardIds = useMemo(() => (listCopies ? listCopies.map((c) => c.cardId) : null), [listCopies]);
+  const wantIds = useMemo(
+    () => (isWant && wants ? wants.map((w) => w.cardId) : null),
+    [isWant, wants],
+  );
+  const listCardIds = useMemo(
+    () => (listCopies ? listCopies.map((c) => c.cardId) : null),
+    [listCopies],
+  );
   const cards = useCardMap(isWant ? wantIds : listId ? listCardIds : null);
   // The Want List pages like a set: every want's card is read (for the
   // order), but copies only for the wants on screen, `limit` at a time.
   const orderedWants = useMemo(
-    () => (isWant && wants && containers && cards ? orderWants(wants, containers, cards) : null),
+    () =>
+      isWant && wants && containers && cards
+        ? orderWants(wants, containers, cards)
+        : null,
     [isWant, wants, containers, cards],
   );
-  const shownWants = useMemo(() => orderedWants?.slice(0, limit) ?? null, [orderedWants, limit]);
-  const shownWantIds = useMemo(() => shownWants?.map((w) => w.cardId) ?? null, [shownWants]);
-  const wantCopies = useCopiesOfCards(shownWantIds && shownWantIds.length ? shownWantIds : null);
-  const wantsTruncated = !!orderedWants && !!shownWants && orderedWants.length > shownWants.length;
+  const shownWants = useMemo(
+    () => orderedWants?.slice(0, limit) ?? null,
+    [orderedWants, limit],
+  );
+  const shownWantIds = useMemo(
+    () => shownWants?.map((w) => w.cardId) ?? null,
+    [shownWants],
+  );
+  const wantCopies = useCopiesOfCards(
+    shownWantIds && shownWantIds.length ? shownWantIds : null,
+  );
+  const wantsTruncated =
+    !!orderedWants && !!shownWants && orderedWants.length > shownWants.length;
 
   // A binder whose numbered pockets follow a checklist: Need sleeves for the gaps.
   const pocketVariant =
-    homeOpen && homeOpen.kind === "binder" && listCopies ? firstPocketVariant(listCopies) : null;
+    homeOpen && homeOpen.kind === "binder" && listCopies
+      ? firstPocketVariant(listCopies)
+      : null;
   const checklist = useVariantCards(pocketVariant);
   const followed = useMemo(
-    () => (listCopies && pocketVariant ? followedChecklist(listCopies, checklist) : null),
+    () =>
+      listCopies && pocketVariant
+        ? followedChecklist(listCopies, checklist)
+        : null,
     [listCopies, pocketVariant, checklist],
   );
-  const followedIds = useMemo(() => followed?.map((c) => c.id) ?? null, [followed]);
+  const followedIds = useMemo(
+    () => followed?.map((c) => c.id) ?? null,
+    [followed],
+  );
   const followedCopies = useCopiesOfCards(followedIds);
-  const ownedAnywhere = (id: CardId) => (followedCopies?.[id] ?? []).some((c) => c.quantity > 0);
+  const ownedAnywhere = (id: CardId) =>
+    (followedCopies?.[id] ?? []).some((c) => c.quantity > 0);
 
   const setId = view?.kind === "set" ? view.setId : null;
   const setSummary = useSetSummary(setId);
   const setCards = useSetCards(setId, { limit });
-  const setCardIds = useMemo(() => setCards?.cards.map((c) => c.id) ?? null, [setCards]);
+  const setCardIds = useMemo(
+    () => setCards?.cards.map((c) => c.id) ?? null,
+    [setCards],
+  );
   const setCopies = useCopiesOfCards(setCardIds);
 
   // -- the pages --------------------------------------------------------------
@@ -253,18 +373,37 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     loading = !setCards;
     truncated = !!setCards?.truncated;
   } else if (view?.kind === "all") {
-    if (allPile) pages = pilePages(allPile.copies, allPile.cards, sort, filters);
+    if (allPile)
+      pages = pilePages(allPile.copies, allPile.cards, sort, filters);
     loading = !allPile;
     truncated = !!allPile?.truncated;
   } else if (isWant) {
-    if (shownWants && cards && containers) pages = wantPages({ wants: shownWants, containers, cards, copiesByCard: wantCopies });
+    if (shownWants && cards && containers)
+      pages = wantPages({
+        wants: shownWants,
+        containers,
+        cards,
+        copiesByCard: wantCopies,
+      });
     loading = !wants || !cards;
     truncated = wantsTruncated;
   } else if (container && !isBox) {
     if (listCopies && cards) {
-      if (isSmart) pages = mode === "pockets" ? cardPages(listCopies, cards) : stackPages(listCopies, cards);
-      else if (isTrade || mode === "stack") pages = stackPages(listCopies, cards);
-      else pages = binderPages({ binderId: container.id, copies: listCopies, cards, followed, ownedAnywhere });
+      if (isSmart)
+        pages =
+          mode === "pockets"
+            ? cardPages(listCopies, cards)
+            : stackPages(listCopies, cards);
+      else if (isTrade || mode === "stack")
+        pages = stackPages(listCopies, cards);
+      else
+        pages = binderPages({
+          binderId: container.id,
+          copies: listCopies,
+          cards,
+          followed,
+          ownedAnywhere,
+        });
     }
     loading = !listCopies || !cards;
     truncated = !!listPage?.truncated;
@@ -281,17 +420,24 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     setStepState({ view: viewId, at: next });
     // A browsed set pages in from the store as the collector nears the end.
     // So does the Want List.
-    if ((view?.kind === "set" || isWant) && truncated && next >= steps - 2) more();
+    if ((view?.kind === "set" || isWant) && truncated && next >= steps - 2)
+      more();
   };
 
   // -- the cover --------------------------------------------------------------
   const hints = useLabelHints(container ?? null);
   const label: ContainerLabel =
-    view?.kind === "all" ? labelOf("all") : container ? labelOf(container, hints) : PLAIN_LABEL;
+    view?.kind === "all"
+      ? labelOf("all")
+      : container
+        ? labelOf(container, hints)
+        : PLAIN_LABEL;
   const tally: Tally = { have: null, need: null, cards: null };
   if (view?.kind === "set") {
     if (setCards && !setCards.truncated) {
-      const have = setCards.cards.filter((c) => (setCopies?.[c.id] ?? []).some((x) => x.quantity > 0)).length;
+      const have = setCards.cards.filter((c) =>
+        (setCopies?.[c.id] ?? []).some((x) => x.quantity > 0),
+      ).length;
       tally.have = setCopies ? have : null;
       tally.need = setCopies ? setCards.cards.length - have : null;
     }
@@ -304,7 +450,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     const all = shownWants && !wantsTruncated ? shownWants : null;
     const landed =
       all && (wantCopies || all.length === 0)
-        ? all.filter((w) => (wantCopies?.[w.cardId] ?? []).some((c) => c.quantity > 0)).length
+        ? all.filter((w) =>
+            (wantCopies?.[w.cardId] ?? []).some((c) => c.quantity > 0),
+          ).length
         : null;
     tally.have = landed;
     tally.need = landed === null || !all ? null : all.length - landed;
@@ -343,17 +491,28 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     setFound(null);
     setFoundCopy(null);
     setPending(null);
+    if (inventory) {
+      // Inventory is one screen, not a tab: its views carry no tab and no
+      // scope (a box opened here does not narrow the collection's counts).
+      const p = new URLSearchParams({ scope: "all" });
+      if (next?.kind === "binder") p.set("b", next.binderId);
+      if (next?.kind === "sale") p.set("sale", "1");
+      setParams(p);
+      return;
+    }
     const p = new URLSearchParams({ tab: "binders" });
     if (next?.kind === "binder") p.set("b", next.binderId);
     if (next?.kind === "set") p.set("set", next.setId);
     if (next?.kind === "all") p.set("all", "1");
-    if (next?.kind === "sale") p.set("sale", "1");
     // Opening scopes the page to it on the same push: a home to itself,
     // anything else that is a container (and All my cards) to everything.
     // A set to browse, or the shelf, keeps the scope.
     let to: Scope | null = scopeTo ?? null;
-    if (!to && next?.kind === "binder") to = isHome(containers?.find((c) => c.id === next.binderId)) ? next.binderId : "all";
-    if (!to && (next?.kind === "all" || next?.kind === "sale")) to = "all";
+    if (!to && next?.kind === "binder")
+      to = isHome(containers?.find((c) => c.id === next.binderId))
+        ? next.binderId
+        : "all";
+    if (!to && next?.kind === "all") to = "all";
     if (to) p.set("scope", to);
     setParams(p);
   };
@@ -367,12 +526,17 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     shownView.current = viewId;
     if (viewId === "shelf") {
       const root = rootRef.current;
-      const spine = root?.querySelector<HTMLElement>(`[data-spine="${CSS.escape(prev)}"]`);
-      (spine ?? root?.querySelector<HTMLElement>("[data-shelf-heading]"))?.focus();
+      const spine = root?.querySelector<HTMLElement>(
+        `[data-spine="${CSS.escape(prev)}"]`,
+      );
+      (
+        spine ?? root?.querySelector<HTMLElement>("[data-shelf-heading]")
+      )?.focus();
       return;
     }
     headingRef.current?.focus({ preventScroll: true });
-    if (wide) deskRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    if (wide)
+      deskRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
     else rootRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
   }, [viewId, wide]);
 
@@ -380,7 +544,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   const drawn = pages.length;
   useEffect(() => {
     if (!found) return;
-    const el = rootRef.current?.querySelector<HTMLElement>('[data-found="true"]');
+    const el = rootRef.current?.querySelector<HTMLElement>(
+      '[data-found="true"]',
+    );
     el?.focus({ preventScroll: true });
     el?.scrollIntoView({ block: "nearest", behavior: "auto" });
   }, [found, viewId, drawn]);
@@ -398,7 +564,10 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
       const delta = e.key === "PageDown" ? 1 : e.key === "PageUp" ? -1 : 0;
       if (!delta) return;
       e.preventDefault();
-      setStepState({ view: viewId, at: Math.max(0, Math.min(at + delta, steps - 1)) });
+      setStepState({
+        view: viewId,
+        at: Math.max(0, Math.min(at + delta, steps - 1)),
+      });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -411,14 +580,29 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   const allHits = searchable(settled) ? search?.cards : NO_CARDS;
   const trayHits = useMemo(() => allHits?.slice(0, TRAY_COPIES), [allHits]);
   const trayIds = useMemo(() => trayHits?.map((c) => c.id) ?? null, [trayHits]);
-  const trayCopies = useCopiesOfCards(trayIds && trayIds.length ? trayIds : null);
-  const trayTruncated = !!search?.truncated || (allHits?.length ?? 0) > TRAY_COPIES;
-  const mine = (cardId: CardId) => (trayCopies?.[cardId] ?? []).filter((c) => c.quantity > 0);
+  const trayCopies = useCopiesOfCards(
+    trayIds && trayIds.length ? trayIds : null,
+  );
+  const trayTruncated =
+    !!search?.truncated || (allHits?.length ?? 0) > TRAY_COPIES;
+  const mine = (cardId: CardId) =>
+    (trayCopies?.[cardId] ?? []).filter((c) => c.quantity > 0);
+  /**
+   * The copies this screen moves: on Inventory any (into a box is up for
+   * sale); in My Binders only a binder's, since taking a card off the sale
+   * table is the card drawer's "Take off sale", never a drag in passing.
+   */
+  const canMoveCopy = (copy: Copy) => inventory || copy.homeKind !== "box";
+  const movable = (copies: readonly Copy[], to: string) =>
+    movableCopies(copies, to).filter(canMoveCopy);
 
   // -- writes -------------------------------------------------------------------
   const main = systemContainer(containers, "main");
   /** Where a plain add goes: the page's scope when that is a home, else Main. */
-  const scopeHome = (scope !== "all" ? containers?.find((c) => c.id === scope && isHome(c)) : undefined) ?? main;
+  const scopeHome =
+    (scope !== "all"
+      ? containers?.find((c) => c.id === scope && isHome(c))
+      : undefined) ?? main;
   const containerOf = (id: string) => containers?.find((c) => c.id === id);
 
   const whereIn = (home: Container, slot: number | undefined | null) => {
@@ -429,16 +613,29 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   };
 
   const jumpTo = (slot: number) => {
-    if (homeOpen && homeOpen.kind === "binder" && mode === "pockets") turn(stepOfPage(slotRefOf(homeOpen.id, slot).page, wide));
+    if (homeOpen && homeOpen.kind === "binder" && mode === "pockets")
+      turn(stepOfPage(slotRefOf(homeOpen.id, slot).page, wide));
   };
 
   /** One new copy into a home (at a pocket or row), said the way the page says Have. */
-  const addCopy = (card: Card, home: Container, slot?: number, savedFor?: Card | null) => {
-    const details = { ...emptyCopyDetails(), homeId: home.id, ...(slot === undefined ? {} : { slot }) };
-    const why = savedFor ? ` (that pocket's saved for ${shortCardName(savedFor)})` : "";
+  const addCopy = (
+    card: Card,
+    home: Container,
+    slot?: number,
+    savedFor?: Card | null,
+  ) => {
+    const details = {
+      ...emptyCopyDetails(),
+      homeId: home.id,
+      ...(slot === undefined ? {} : { slot }),
+    };
+    const why = savedFor
+      ? ` (that pocket's saved for ${shortCardName(savedFor)})`
+      : "";
     return run(
       () => actions.addLineItem(card, details),
-      () => `Added ${shortCardName(card)} to ${home.name}${whereIn(home, slot)}${why}`,
+      () =>
+        `Added ${shortCardName(card)} to ${home.name}${whereIn(home, slot)}${why}`,
     );
   };
 
@@ -452,7 +649,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     const copies = listCopies ?? [];
     const guarded = guardPocket(copies, slotOf(ref), card, followed);
     if (pocketsOf(copies).has(guarded.slot)) {
-      notify(`That pocket's full. Pick an empty one for ${shortCardName(card)}.`);
+      notify(
+        `That pocket's full. Pick an empty one for ${shortCardName(card)}.`,
+      );
       return;
     }
     setAimed(null);
@@ -462,7 +661,12 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
 
   /** A new copy filed in a home: the open binder's next pocket when it is laid out, else unslotted. */
   const fileIn = (card: Card, target: Container) => {
-    if (homeOpen?.id === target.id && target.kind === "binder" && mode === "pockets" && listCopies) {
+    if (
+      homeOpen?.id === target.id &&
+      target.kind === "binder" &&
+      mode === "pockets" &&
+      listCopies
+    ) {
       const slot = pocketFor(listCopies, card, followed);
       jumpTo(slot);
       void addCopy(card, target, slot);
@@ -484,7 +688,8 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
 
   // -- moving a copy you own ----------------------------------------------------------
   const moveTarget = homeOpen ?? null;
-  const moves = (card: Card) => !!moveTarget && movableCopies(mine(card.id), moveTarget.id).length > 0;
+  const moves = (card: Card) =>
+    !!moveTarget && movable(mine(card.id), moveTarget.id).length > 0;
 
   /** Moves this copy into the open home: the pocket or row given, the aimed pocket, or its own. */
   const moveInto = (card: Card, copy: Copy, dropped: number | null) => {
@@ -492,14 +697,17 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     let slot: number | null = dropped;
     let savedFor: Card | null = null;
     if (moveTarget.kind === "binder") {
-      if (slot === null && aimed && aimed.binderId === moveTarget.id) slot = slotOf(aimed);
+      if (slot === null && aimed && aimed.binderId === moveTarget.id)
+        slot = slotOf(aimed);
       const copies = listCopies ?? [];
       if (slot !== null) {
         const guarded = guardPocket(copies, slot, card, followed);
         slot = guarded.slot;
         savedFor = guarded.savedFor;
         if (pocketsOf(copies).has(slot)) {
-          notify(`That pocket's full. Pick an empty one for ${shortCardName(card)}.`);
+          notify(
+            `That pocket's full. Pick an empty one for ${shortCardName(card)}.`,
+          );
           return;
         }
       } else if (mode === "pockets") {
@@ -510,19 +718,23 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     setPending(null);
     if (slot !== null) jumpTo(slot);
     const from = copy.homeName ? ` from ${copy.homeName}` : "";
-    const why = savedFor ? ` (that pocket's saved for ${shortCardName(savedFor)})` : "";
+    const why = savedFor
+      ? ` (that pocket's saved for ${shortCardName(savedFor)})`
+      : "";
     void run(
-      () => actions.moveCopy(copy, moveTarget.id, slot === null ? {} : { slot }),
-      () => `Moved ${shortCardName(card)}${from} to ${moveTarget.name}${whereIn(moveTarget, slot)}${why}.`,
+      () =>
+        actions.moveCopy(copy, moveTarget.id, slot === null ? {} : { slot }),
+      () =>
+        `Moved ${shortCardName(card)}${from} to ${moveTarget.name}${whereIn(moveTarget, slot)}${why}.`,
     );
   };
 
   /** "Move here", or a drop: straight away with one copy to move, else ask which. */
   const askMove = (card: Card, dropped: number | null) => {
     if (!moveTarget) return;
-    const movable = movableCopies(mine(card.id), moveTarget.id);
-    if (movable.length === 0) return;
-    if (movable.length === 1) return moveInto(card, movable[0], dropped);
+    const list = movable(mine(card.id), moveTarget.id);
+    if (list.length === 0) return;
+    if (list.length === 1) return moveInto(card, list[0], dropped);
     setPending({ card, verb: "move", slot: dropped });
   };
 
@@ -530,27 +742,45 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     setPending(null);
     void run(
       () => actions.setTrade(copy, true),
-      () => `${shortCardName(card)} is up for trade. It stays in ${copy.homeName ?? "its binder"}.`,
+      () =>
+        `${shortCardName(card)} is up for trade. It stays in ${copy.homeName ?? "its binder"}.`,
     );
   };
 
   /** Into a row of the open box (or out of every row). Resolves with the line it is now. */
-  const placeInBox = async (copy: Copy, row: number | null): Promise<CopyId | null> => {
+  const placeInBox = async (
+    copy: Copy,
+    row: number | null,
+  ): Promise<CopyId | null> => {
     const card = cards?.get(copy.cardId);
     const name = card ? shortCardName(card) : "That card";
     const result = await run(
       () => actions.placeCopy(copy, row),
-      () => (row === null ? `${name} is out of its row.` : `${name} is in ${rowName(row)}.`),
+      () =>
+        row === null
+          ? `${name} is out of its row.`
+          : `${name} is in ${rowName(row)}.`,
     );
     return result?.copyId ?? null;
   };
 
   /** Go where a copy lives: the pocket or box row, ringed, or the drawer on that copy. */
   const findAt = (card: Card, place: Place) => {
-    const target = containerOf(place.homeId);
+    const home = containerOf(place.homeId);
+    // The other screen's: a box from My Binders, a binder from Inventory.
+    // The card drawer opens on it here, and says where it lives.
+    const target =
+      home && (inventory ? isBoxHome(home) : !isBoxHome(home))
+        ? home
+        : undefined;
     if (target && place.pocket && target.kind === "binder") {
-      const ref: SlotRef = { binderId: target.id, page: place.pocket.page, slot: place.pocket.slot };
-      if (container?.id !== target.id) goTo({ kind: "binder", binderId: target.id });
+      const ref: SlotRef = {
+        binderId: target.id,
+        page: place.pocket.page,
+        slot: place.pocket.slot,
+      };
+      if (container?.id !== target.id)
+        goTo({ kind: "binder", binderId: target.id });
       setModes((m) => ({ ...m, [target.id]: "pockets" }));
       setStepState({ view: target.id, at: stepOfPage(ref.page, wide) });
       setFound(ref);
@@ -560,13 +790,17 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
       return;
     }
     if (target && place.box) {
-      if (container?.id !== target.id) goTo({ kind: "binder", binderId: target.id });
+      if (container?.id !== target.id)
+        goTo({ kind: "binder", binderId: target.id });
       setFoundCopy(place.copyIds[0] ?? null);
       setQuery("");
       notify(`Found ${shortCardName(card)}: ${placeWords(place)}.`);
       return;
     }
-    openCard(card.id, { copyId: place.copyIds.length === 1 ? place.copyIds[0] : undefined, seed: card });
+    openCard(card.id, {
+      copyId: place.copyIds.length === 1 ? place.copyIds[0] : undefined,
+      seed: card,
+    });
   };
 
   const onSlot = (card: Card, targetId: string) => {
@@ -576,21 +810,48 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     else justAdd(card);
   };
 
-  const homes = homesOf(containers);
+  // Slot in files a new copy on this screen only: a binder here, a box on Inventory.
+  const homes = homesOf(containers).filter((h) =>
+    inventory ? isBoxHome(h) : !isBoxHome(h),
+  );
   const targets: SlotTarget[] = [
-    ...(homeOpen ? [{ id: homeOpen.id, label: homeOpen.kind === "box" ? "This box" : "This binder" }] : []),
-    ...homes.filter((h) => h.id !== homeOpen?.id).map((h) => ({ id: h.id, label: h.name })),
+    ...(homeOpen
+      ? [
+          {
+            id: homeOpen.id,
+            label: homeOpen.kind === "box" ? "This box" : "This binder",
+          },
+        ]
+      : []),
+    ...homes
+      .filter((h) => h.id !== homeOpen?.id)
+      .map((h) => ({ id: h.id, label: h.name })),
   ];
-  const moveTo: MoveTarget | null = moveTarget ? { id: moveTarget.id, name: moveTarget.name } : null;
+  const moveTo: MoveTarget | null = moveTarget
+    ? { id: moveTarget.id, name: moveTarget.name }
+    : null;
 
   // -- pockets ----------------------------------------------------------------
   const openPocket = (card: Card, pocketCopies: Copy[]) =>
-    openCard(card.id, { copyId: soleCopyId(pocketCopies), list: listIds, seed: card });
+    openCard(card.id, {
+      copyId: soleCopyId(pocketCopies),
+      list: listIds,
+      seed: card,
+    });
 
-  const addFromPocket = (card: Card, slot?: SlotRef, wantFor?: string | null) => {
+  const addFromPocket = (
+    card: Card,
+    slot?: SlotRef,
+    wantFor?: string | null,
+  ) => {
     if (isWant) {
       // Landed a want for a binder: the add form files into that binder.
-      openCard(card.id, { mode: "add", list: listIds, seed: card, binderId: wantFor ?? undefined });
+      openCard(card.id, {
+        mode: "add",
+        list: listIds,
+        seed: card,
+        binderId: wantFor ?? undefined,
+      });
       return;
     }
     if (slot) placeIn(card, slot);
@@ -609,7 +870,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   // -- drag and drop ----------------------------------------------------------
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 180, tolerance: 8 },
+    }),
     useSensor(KeyboardSensor, { coordinateGetter: pocketHop }),
   );
 
@@ -631,12 +894,19 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     return c ? shortCardName(c) : null;
   };
   const describeOver = (id: UniqueIdentifier): string => {
-    if (id === SPREAD_DROP_ID) return isWant ? "your Want List" : `${container?.name ?? "the binder"}`;
+    if (id === SPREAD_DROP_ID)
+      return isWant ? "your Want List" : `${container?.name ?? "the binder"}`;
     const row = parseRowId(id);
-    if (row) return row.row === null ? "the table, out of every row" : rowName(row.row);
+    if (row)
+      return row.row === null
+        ? "the table, out of every row"
+        : rowName(row.row);
     const slot = parseSlotId(id);
     if (!slot) return "nowhere";
-    const full = homeOpen && pocketsOf(listCopies ?? []).has(slotOf(slot)) ? ", which is full" : "";
+    const full =
+      homeOpen && pocketsOf(listCopies ?? []).has(slotOf(slot))
+        ? ", which is full"
+        : "";
     return `page ${slot.page + 1}, pocket ${slot.slot + 1}${full}`;
   };
   const announcements: Announcements = {
@@ -645,7 +915,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
       if (!name) return undefined;
       const card = cardOf(active.id);
       if (card && moves(card)) {
-        const from = placesOf(mine(card.id), containers ?? []).map(placeWords).join(", ");
+        const from = placesOf(mine(card.id), containers ?? [])
+          .map(placeWords)
+          .join(", ");
         return `Picked up ${name}, now in ${from}. Dropping it moves it to ${moveTarget?.name}. Arrow keys hop, Space drops it, Escape puts it back.`;
       }
       return `Picked up ${name}. Arrow keys hop, Space drops it, Escape puts it back.`;
@@ -653,12 +925,16 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     onDragOver: ({ active, over }) => {
       const name = nameOf(active.id);
       if (!name) return undefined;
-      return over ? `${name} is over ${describeOver(over.id)}.` : `${name} is not over anything it can drop on.`;
+      return over
+        ? `${name} is over ${describeOver(over.id)}.`
+        : `${name} is not over anything it can drop on.`;
     },
     onDragEnd: ({ active, over }) => {
       const name = nameOf(active.id);
       if (!name) return undefined;
-      return over ? `Dropped ${name} on ${describeOver(over.id)}.` : `${name} went back.`;
+      return over
+        ? `Dropped ${name} on ${describeOver(over.id)}.`
+        : `${name} went back.`;
     },
     onDragCancel: ({ active }) => {
       const name = nameOf(active.id);
@@ -697,7 +973,8 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
       return void addCopy(card, container, row.row ?? undefined);
     }
     const slot = parseSlotId(over);
-    if (moves(card) && (slot || over === SPREAD_DROP_ID)) return askMove(card, slot ? slotOf(slot) : null);
+    if (moves(card) && (slot || over === SPREAD_DROP_ID))
+      return askMove(card, slot ? slotOf(slot) : null);
     if (slot) return placeIn(card, slot);
     if (over === SPREAD_DROP_ID) {
       if (isWant) return addWant(card);
@@ -710,7 +987,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   // The New and Edit dialogs wait on their write: each resolves with null
   // once it landed (and the dialog is closed), or with why it was refused,
   // which the dialog says itself.
-  const createContainer = async (input: NewContainer): Promise<string | null> => {
+  const createContainer = async (
+    input: NewContainer,
+  ): Promise<string | null> => {
     try {
       const result = await actions.createContainer(input);
       notify(
@@ -720,7 +999,10 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
         result.undo,
       );
       setDialog(null);
-      goTo({ kind: "binder", binderId: result.containerId }, input.rule ? "all" : result.containerId);
+      goTo(
+        { kind: "binder", binderId: result.containerId },
+        input.rule ? "all" : result.containerId,
+      );
       return null;
     } catch (error) {
       return writeErrorMessage(error);
@@ -733,17 +1015,25 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     setDialog(null);
     void run(
       () => actions.updateContainer(c, { label: next }),
-      () => (next ? `New label on ${c.name}. Looking sharp.` : `${c.name} is back to its default label.`),
+      () =>
+        next
+          ? `New label on ${c.name}. Looking sharp.`
+          : `${c.name} is back to its default label.`,
     );
   };
 
-  const saveContainer = async (patch: ContainerPatch): Promise<string | null> => {
+  const saveContainer = async (
+    patch: ContainerPatch,
+  ): Promise<string | null> => {
     if (!container) return null;
     const c = container;
     try {
       const result = await actions.updateContainer(c, patch);
       setDialog(null);
-      notify(patch.name ? `${c.name} is now ${patch.name}.` : `Saved ${c.name}.`, result.undo);
+      notify(
+        patch.name ? `${c.name} is now ${patch.name}.` : `Saved ${c.name}.`,
+        result.undo,
+      );
       return null;
     } catch (error) {
       return writeErrorMessage(error);
@@ -773,14 +1063,26 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     if (view) setModes((m) => ({ ...m, [viewId]: next }));
   };
 
-  const wholeBinderDrop = !(homeOpen && homeOpen.kind === "binder" && mode === "pockets");
+  const wholeBinderDrop = !(
+    homeOpen &&
+    homeOpen.kind === "binder" &&
+    mode === "pockets"
+  );
   const dragCopy = activeId ? copyOf(activeId) : null;
-  const dragCard = activeId ? (cardOf(activeId) ?? (dragCopy ? cards?.get(dragCopy.cardId) : null)) : null;
+  const dragCard = activeId
+    ? (cardOf(activeId) ?? (dragCopy ? cards?.get(dragCopy.cardId) : null))
+    : null;
   const trayMode = isWant ? "want" : isTrade ? "trade" : "file";
 
   return (
-    <div ref={rootRef} className="nb-tray-clear scroll-mt-4" onFocus={(e) => keepClearOfTray(e.target)}>
-      {view?.kind === "all" && <OwnedPileLoader limit={limit} onData={setAllPile} />}
+    <div
+      ref={rootRef}
+      className="nb-tray-clear scroll-mt-4"
+      onFocus={(e) => keepClearOfTray(e.target)}
+    >
+      {view?.kind === "all" && (
+        <OwnedPileLoader limit={limit} onData={setAllPile} />
+      )}
       <DndContext
         sensors={sensors}
         collisionDetection={keyboardAwareCollision}
@@ -796,7 +1098,17 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
         }}
       >
         {!view || !open ? (
-          <Shelf onOpen={(next) => goTo(next)} onNewBinder={() => setDialog("new")} />
+          inventory ? (
+            <InventoryShelf
+              onOpen={(next) => goTo(next)}
+              onNewBox={() => setDialog("new")}
+            />
+          ) : (
+            <Shelf
+              onOpen={(next) => goTo(next)}
+              onNewBinder={() => setDialog("new")}
+            />
+          )
         ) : (
           <BinderView
             open={open}
@@ -835,7 +1147,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
             {view.kind === "sale" ? (
               <ForSaleView
                 onOpenBox={(box) => goTo({ kind: "binder", binderId: box.id })}
-                onOpenCard={(card, copy) => openCard(card.id, { copyId: copy.id, seed: card })}
+                onOpenCard={(card, copy) =>
+                  openCard(card.id, { copyId: copy.id, seed: card })
+                }
               />
             ) : isBox && container ? (
               listCopies && cards ? (
@@ -846,7 +1160,11 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
                   truncated={!!listPage?.truncated}
                   onMore={more}
                   onOpen={(card, copy) =>
-                    openCard(card.id, { copyId: copy.id, seed: card, list: listCopies.map((c) => c.cardId) })
+                    openCard(card.id, {
+                      copyId: copy.id,
+                      seed: card,
+                      list: listCopies.map((c) => c.cardId),
+                    })
                   }
                   onPlace={placeInBox}
                   found={foundCopy}
@@ -861,40 +1179,66 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
 
         {view && truncated && !isBox && view.kind !== "sale" && (
           <div className="mt-3 flex justify-center">
-            <NeonButton type="button" variant="secondary" outline onClick={more} className="min-h-10">
+            <NeonButton
+              type="button"
+              variant="secondary"
+              outline
+              onClick={more}
+              className="min-h-10"
+            >
               {view.kind === "set" ? "Load more of the set" : "Show more cards"}
             </NeonButton>
           </div>
         )}
 
-        <PackTray
-          mode={trayMode}
-          query={query}
-          onQuery={setQuery}
-          hits={trimmed ? trayHits : NO_CARDS}
-          truncated={trayTruncated}
-          copiesByCard={trayIds && trayIds.length ? trayCopies : {}}
-          containers={containers ?? []}
-          isWanted={(cardId) => isWantedIn(wants, cardId, "all")}
-          targets={targets}
-          moveTo={isWant || isTrade ? null : moveTo}
-          choosing={pending}
-          onChoose={(c) => setPending({ ...c, slot: null })}
-          onCancelChoose={() => setPending(null)}
-          onSlot={onSlot}
-          onMove={(card, copy) => moveInto(card, copy, pending?.card.id === card.id ? pending.slot : null)}
-          onTrade={putUpForTrade}
-          onFind={findAt}
-          onWant={addWant}
-          aimedAt={aimedAt}
-          onCancelAim={() => setAimed(null)}
-          notice={notice}
-          onUndo={onUndo}
-          onDismissNotice={onDismissNotice}
-          onSay={(text) => notify(text)}
-          inputRef={searchRef}
-          draggingId={activeId?.startsWith("card:") ? activeId.slice(5) : null}
-        />
+        {inventory && !isBox && (
+          // Inventory's shelf and sale view have no hunt tray to carry the status line.
+          <NoticeLine
+            notice={notice}
+            onUndo={onUndo}
+            onDismiss={onDismissNotice}
+            floating
+          />
+        )}
+        {(!inventory || isBox) && (
+          <PackTray
+            mode={trayMode}
+            query={query}
+            onQuery={setQuery}
+            hits={trimmed ? trayHits : NO_CARDS}
+            truncated={trayTruncated}
+            copiesByCard={trayIds && trayIds.length ? trayCopies : {}}
+            containers={containers ?? []}
+            isWanted={(cardId) => isWantedIn(wants, cardId, "all")}
+            targets={targets}
+            moveTo={isWant || isTrade ? null : moveTo}
+            choosing={pending}
+            onChoose={(c) => setPending({ ...c, slot: null })}
+            onCancelChoose={() => setPending(null)}
+            onSlot={onSlot}
+            onMove={(card, copy) =>
+              moveInto(
+                card,
+                copy,
+                pending?.card.id === card.id ? pending.slot : null,
+              )
+            }
+            onTrade={putUpForTrade}
+            onFind={findAt}
+            onWant={addWant}
+            aimedAt={aimedAt}
+            onCancelAim={() => setAimed(null)}
+            notice={notice}
+            onUndo={onUndo}
+            onDismissNotice={onDismissNotice}
+            onSay={(text) => notify(text)}
+            inputRef={searchRef}
+            draggingId={
+              activeId?.startsWith("card:") ? activeId.slice(5) : null
+            }
+            canMoveCopy={canMoveCopy}
+          />
+        )}
 
         <DragOverlay dropAnimation={reducedMotion ? null : undefined}>
           {dragCard ? (
@@ -905,9 +1249,19 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
         </DragOverlay>
       </DndContext>
 
-      {dialog === "new" && <NewBinderDialog onCreate={createContainer} onClose={() => setDialog(null)} />}
+      {dialog === "new" && (
+        <NewBinderDialog
+          kind={inventory ? "box" : "binder"}
+          onCreate={createContainer}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === "label" && container && (
-        <LabelEditorDialog binder={container} onSave={saveLabel} onClose={() => setDialog(null)} />
+        <LabelEditorDialog
+          binder={container}
+          onSave={saveLabel}
+          onClose={() => setDialog(null)}
+        />
       )}
       {dialog === "edit" && container && !container.system && (
         <EditContainerDialog
@@ -929,13 +1283,23 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
  */
 function keepClearOfTray(target: EventTarget) {
   // The tray's own controls, and a dialog's (it sits over the tray), are left alone.
-  if (!(target instanceof HTMLElement) || target.closest(".p2-pack, [role='dialog'], [role='alertdialog']")) return;
-  const tray = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--nb-tray-h")) || 0;
+  if (
+    !(target instanceof HTMLElement) ||
+    target.closest(".p2-pack, [role='dialog'], [role='alertdialog']")
+  )
+    return;
+  const tray =
+    parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--nb-tray-h",
+      ),
+    ) || 0;
   if (tray <= 0) return;
   const rect = target.getBoundingClientRect();
   const limit = window.innerHeight - tray - 16;
   // Never scroll a control taller than the room above the tray off its top.
-  if (rect.bottom > limit && rect.top > 0) window.scrollBy({ top: Math.min(rect.bottom - limit, rect.top) });
+  if (rect.bottom > limit && rect.top > 0)
+    window.scrollBy({ top: Math.min(rect.bottom - limit, rect.top) });
 }
 
 /**
@@ -943,7 +1307,13 @@ function keepClearOfTray(target: EventTarget) {
  * list pages the server, so it is not something the shelf should pay for.
  * Hands what it has to the tab.
  */
-function OwnedPileLoader({ limit, onData }: { limit: number; onData: (pile: OwnedPile | null) => void }) {
+function OwnedPileLoader({
+  limit,
+  onData,
+}: {
+  limit: number;
+  onData: (pile: OwnedPile | null) => void;
+}) {
   const owned = useOwnedCards({ limit });
   const ids = useMemo(() => owned?.cards.map((c) => c.id) ?? null, [owned]);
   const copiesByCard = useCopiesOfCards(ids && ids.length ? ids : null);

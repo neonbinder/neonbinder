@@ -1,17 +1,17 @@
 import { FOCUS } from "../prototypes/p1/ui";
-import { homesOf, useCapabilities, useContainers, useScope } from "./data/store";
+import { bindersOf, useCapabilities, useContainers, useScope } from "./data/store";
 import { useSetScope } from "./mode";
 
 /**
- * "Binder: [All ▾]": which binder or box the page looks through, and where
- * Have and "Mark a range as Have" file new copies.
+ * "Binder: [All ▾]": which binder the page looks through, and where Have
+ * and "Mark a range as Have" file new copies.
  *
  * - All: every copy counts; a new copy goes to Main; Want is unscoped.
- * - A binder or box: only its copies count, Have adds to it, Want is for it.
+ * - A binder: only its copies count, Have adds to it, Want is for it.
  *
- * Only homes are offered (Main, your binders, your boxes): the Want List
- * holds wants, Up for Trade is a flag, and a smart binder fills itself, so
- * none of them can hold a new copy.
+ * Only binders that hold copies are offered (Main and your own): the Want
+ * List holds wants, Up for Trade is a flag, a smart binder fills itself, and
+ * boxes (the sale table) are Inventory's, never the collection's (NEO-359).
  *
  * Sticky, so every tab sees the same choice. It lives on the page URL
  * (`scope=`, see `./mode`): a pick replaces the current history entry, and
@@ -25,7 +25,7 @@ export default function BinderPicker() {
   const { scope: canScope } = useCapabilities();
   const containers = useContainers();
   if (!canScope) return null;
-  const options = homesOf(containers);
+  const options = bindersOf(containers);
   // While the shelf loads, the picker still shows the scope it will answer to.
   const value = scope === "all" || options.some((c) => c.id === scope) ? scope : "all";
   return (
@@ -45,7 +45,7 @@ export default function BinderPicker() {
         <option value="all">All</option>
         {options.map((c) => (
           <option key={c.id} value={c.id}>
-            {c.kind === "box" ? `${c.name} (box)` : c.name}
+            {c.name}
           </option>
         ))}
       </select>

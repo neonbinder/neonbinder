@@ -476,6 +476,20 @@ export function homesOf(containers: readonly Container[] | undefined): Container
 }
 
 /**
+ * The binders a copy can live in: Main first, then the collector's own. The
+ * collection's screens (the Binder picker, My Binders, the My Cards rail,
+ * the drawer's Move) offer only these. Boxes are Inventory's (NEO-359).
+ */
+export function bindersOf(containers: readonly Container[] | undefined): Container[] {
+  return homesOf(containers).filter((c) => c.kind !== "box");
+}
+
+/** The boxes: the sale table. Inventory's, and the drawer's Sell. */
+export function boxesOf(containers: readonly Container[] | undefined): Container[] {
+  return homesOf(containers).filter((c) => c.kind === "box");
+}
+
+/**
  * Whether a card reads as wanted under a scope: with a home picked, wanted
  * for that home; under All, wanted at all.
  */
