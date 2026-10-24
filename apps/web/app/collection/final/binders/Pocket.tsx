@@ -3,6 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import CardFace from "../../prototypes/_shared/CardFace";
 import { cardCaption, cardNumberLine } from "../captions";
 import { cardLabel } from "../data/labels";
+import { isForSale } from "../data/store";
 import type { Card, ContainerId, Copy } from "../data/types";
 import { pocketDropId } from "./dnd";
 import IdTooltip, { IdLines } from "./IdTooltip";
@@ -23,6 +24,12 @@ import NeonButton from "@/components/modules/NeonButton";
  * button instead: the faces are the point of flipping through a set.
  *
  * `found` rings a pocket the hunt tray led the collector to.
+ *
+ * `saleTag` (the Up for Trade pile only, the one collection view that lists
+ * box copies): a copy whose home is a box wears the yellow "For sale" price
+ * sticker, so a trade pile mixing binder and box copies shows which is
+ * inventory. The pocket's name already ends ", for sale", so the sticker is
+ * hidden from assistive tech.
  *
  * Every pocket holding a card raises an identity slip on hover or focus
  * (`IdTooltip`): season, set, insert or parallel, then number and player.
@@ -47,6 +54,8 @@ interface PocketProps extends PocketHandlers {
   aimed: boolean;
   /** The pocket a hunt in the tray just found: ringed, and focused. */
   found?: boolean;
+  /** Wear the "For sale" sticker on a copy in a box (the Up for Trade pile only). */
+  saleTag?: boolean;
 }
 
 export { pocketDropId };
@@ -83,6 +92,7 @@ export default function Pocket({
   pageNumber,
   aimed,
   found = false,
+  saleTag = false,
   onOpen,
   onAdd,
   onAim,
@@ -103,6 +113,7 @@ export default function Pocket({
     const { card, copies } = content;
     const qty = copies.reduce((n, c) => n + c.quantity, 0);
     const slab = copies.length === 1 ? slabLabel(copies[0]) : null;
+    const sale = saleTag && copies.some(isForSale);
     const open = () => slideOut(faceRef.current, () => onOpen(card, copies));
     const art = (
       <>
@@ -117,6 +128,11 @@ export default function Pocket({
         {qty > 1 && (
           <span aria-hidden="true" className="p2-qty">
             ×{qty}
+          </span>
+        )}
+        {sale && (
+          <span aria-hidden="true" className="p2-tag">
+            For sale
           </span>
         )}
       </>

@@ -667,6 +667,49 @@ describe("Up for Trade is a flag: the pile lists flagged copies where they live"
   const hunt = () => screen.getByRole("searchbox", { name: "Hunt for a card to trade" });
   const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
 
+  /**
+   * The demo with exactly two copies up for trade: one in a binder, one in
+   * the Show box (Jason, 2026-10-24: Up for Trade crosses collection and
+   * inventory).
+   */
+  function seedMixedTrade() {
+    const seed = initialCollectionState();
+    const inBox = seed.copies.find((c) => c.homeId === SHOW_BOX_ID)!;
+    const inBinder = seed.copies.find((c) => c.homeId !== SHOW_BOX_ID && c.cardId !== inBox.cardId)!;
+    const state = {
+      ...seed,
+      copies: seed.copies.map((c) => ({ ...c, upForTrade: c.id === inBox.id || c.id === inBinder.id })),
+    };
+    window.sessionStorage.setItem("nb-collection-final", JSON.stringify(state));
+    return { boxCard: demoCard(inBox.cardId)!, binderCard: demoCard(inBinder.cardId)!, copies: inBox.quantity + inBinder.quantity };
+  }
+  const startsWith = (text: string) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+
+  it("lists a box copy flagged up for trade, wearing a For sale tag; a binder copy wears none", () => {
+    const { boxCard, binderCard, copies } = seedMixedTrade();
+    renderBinders("/collection?tab=binders");
+    // The spine counts both, the box copy too.
+    fireEvent.click(screen.getByRole("button", { name: `Up for Trade, ${copies} cards up for trade` }));
+    const pile = screen.getByRole("region", { name: "Up for Trade, open" });
+    const boxPocket = within(pile).getByRole("button", { name: startsWith(cardLabel(boxCard)) });
+    expect(boxPocket.getAttribute("aria-label")).toMatch(/, for sale, up for trade$/);
+    const tag = within(boxPocket).getByText("For sale");
+    expect(tag.getAttribute("aria-hidden")).toBe("true");
+    const binderPocket = within(pile).getByRole("button", { name: startsWith(cardLabel(binderCard)) });
+    expect(binderPocket.getAttribute("aria-label")).not.toMatch(/for sale/);
+    expect(within(binderPocket).queryByText("For sale")).toBeNull();
+  });
+
+  it("the box copy on the trade pile stays off All my cards", () => {
+    const { boxCard } = seedMixedTrade();
+    renderBinders("/collection?tab=binders&all=1");
+    expect(screen.getByRole("heading", { level: 2, name: "All my cards" })).toBeTruthy();
+    expect(screen.queryAllByRole("button", { name: /, for sale/ })).toHaveLength(0);
+    expect(screen.queryByText("For sale")).toBeNull();
+    const held = initialCollectionState().copies.some((c) => c.cardId === boxCard.id && c.homeId !== SHOW_BOX_ID);
+    if (!held) expect(screen.queryAllByRole("button", { name: startsWith(cardLabel(boxCard)) })).toHaveLength(0);
+  });
+
   it("flagging from the trade tray says the copy stays where it lives", async () => {
     renderBinders("/collection?tab=binders&b=binder-trade-bait");
     fireEvent.change(hunt(), { target: { value: "jim kelly" } });

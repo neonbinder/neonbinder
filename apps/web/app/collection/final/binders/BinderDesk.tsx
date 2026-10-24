@@ -23,6 +23,8 @@ interface BinderDeskProps extends PocketHandlers {
   vinyl: string;
   cover: ReactNode;
   variant: PocketVariant;
+  /** Tag a box copy's pocket "For sale" (the Up for Trade pile only). */
+  saleTags?: boolean;
   aimed: SlotRef | null;
   /** The pocket a hunt found, ringed until the binder closes. */
   found?: SlotRef | null;
@@ -211,6 +213,7 @@ function Page({
   page,
   number,
   variant,
+  saleTags,
   aimed,
   found,
   onOpen,
@@ -230,6 +233,7 @@ function Page({
           key={i}
           pocket={pocket}
           variant={variant}
+          saleTag={saleTags}
           index={i}
           pageNumber={number}
           aimed={sameSlot(aimed, pocket.slot)}

@@ -28,9 +28,11 @@
  * NEO-364 makes them exclude boxes: `collection.summary` (the Main tally and
  * its recount), `collection.ownedCards`, `collection.variantCompletion` and
  * `collection.setCompletion` under All, `collection.copiesInVariant` under
- * All and `collection.tradeCopies` (both filtered here), and the trade
- * pile's stored count in `collectionContainers.list`. Real Inventory is off, so no real
- * copy lives in a box yet.
+ * All (filtered here). The trade pile is the one collection view that
+ * keeps box copies (trade spans collection and inventory), so
+ * `collection.tradeCopies` and the trade pile's stored count in
+ * `collectionContainers.list` already say what the screen shows. Real
+ * Inventory is off, so no real copy lives in a box yet.
  *
  * Conversions between the server's copy and the view's (see `CopyDetails` in
  * `./types`): `costCents` ↔ `costBasis` dollars, `acquiredOn` ↔ `acquiredAt`,
@@ -702,8 +704,8 @@ export const CONVEX_DATA: CollectionData = {
       if (pages === undefined) return undefined;
       const copies = pages.results.slice(0, limit).map((r) => toCopy(r, homes));
       return {
-        // The trade pile is the collection's: never a copy in a box (NEO-364 moves this to the server).
-        copies: bySlot(isTrade ? collectionCopies(copies) : copies),
+        // The trade pile spans collection and inventory: box copies stay (`inCollection` in `./store`).
+        copies: bySlot(copies),
         truncated: pages.results.length > limit || !pages.exhausted,
       };
     }, [containerId, row, isTrade, trade, inContainer, limit, homes]);
@@ -716,8 +718,8 @@ export const CONVEX_DATA: CollectionData = {
     return useMemo((): ContainerCopies | undefined => {
       if (pages === undefined || !homes) return undefined;
       return {
-        // Never a copy in a box (NEO-364 moves this to the server).
-        copies: collectionCopies(pages.results.slice(0, limit).map((r) => toCopy(r, homes))),
+        // Every flagged copy, a box's too: trade spans collection and inventory.
+        copies: pages.results.slice(0, limit).map((r) => toCopy(r, homes)),
         truncated: pages.results.length > limit || !pages.exhausted,
       };
     }, [pages, limit, homes]);

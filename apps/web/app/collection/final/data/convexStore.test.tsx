@@ -3,6 +3,8 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { ConvexCollectionProvider, __test } from "./convexStore";
 import {
+  collectionCopiesIn,
+  collectionCopiesOfCards,
   ScopeProvider,
   useCapabilities,
   useCollectionActions,
@@ -761,12 +763,36 @@ describe("a card for sale never reaches a collection screen (NEO-359)", () => {
     ]);
   });
 
-  it("drops a box's copies from the Up for Trade pile, both ways it is read", () => {
+  it("keeps a box's flagged copies on the Up for Trade pile, both ways it is read, and its spine counts them (trade spans both)", () => {
     loaded.set("collectionContainers:list", SHELF);
     paged.pages.set("collection:tradeCopies", [[row("inMain", "m", { upForTrade: true }), row("inBox", "box", { upForTrade: true })]]);
-    const { result } = renderHook(() => ({ trade: useTradeCopies(), pile: useContainerCopies("t") }), { wrapper });
-    expect(result.current.trade!.copies.map((c) => c.id)).toEqual(["inMain"]);
-    expect(result.current.pile!.copies.map((c) => c.id)).toEqual(["inMain"]);
+    const { result } = renderHook(
+      () => ({ trade: useTradeCopies(), pile: useContainerCopies("t"), shelf: useContainers() }),
+      { wrapper },
+    );
+    expect(result.current.trade!.copies.map((c) => [c.id, c.homeKind])).toEqual([
+      ["inMain", "binder"],
+      ["inBox", "box"],
+    ]);
+    expect(result.current.pile!.copies.map((c) => c.id)).toEqual(["inMain", "inBox"]);
+    expect(result.current.shelf!.find((c) => c.id === "t")!.count).toEqual({ copies: 2, lines: 2 });
+  });
+
+  it("a box copy up for trade still stays off the checklist and every collection read of its card", () => {
+    loaded.set("collectionContainers:list", SHELF);
+    loaded.set("collection:copiesInVariant", [row("inBox", "box", { upForTrade: true })]);
+    loaded.set("collection:copiesOf", [row("inBox", "box", { upForTrade: true })]);
+    loaded.set("collection:copiesOfMany", [{ cardId: "card1", copies: [row("inBox", "box", { upForTrade: true })] }]);
+    const { result } = renderHook(
+      () => ({ checklist: useCopiesInVariant("v1"), drawer: useCopiesOf("card1"), many: useCopiesOfCards(["card1"]) }),
+      { wrapper },
+    );
+    expect(result.current.checklist).toEqual([]);
+    // A row, a found card or a landed want reads it through the collection's filter: gone.
+    expect(collectionCopiesIn(result.current.drawer, "all")).toEqual([]);
+    expect(collectionCopiesOfCards(result.current.many)!.card1).toEqual([]);
+    // The drawer itself still lists it, for sale and up for trade.
+    expect(result.current.drawer!.map((c) => [c.homeKind, c.upForTrade])).toEqual([["box", true]]);
   });
 
   it("lists a box's own copies (Inventory) and every home for many cards", () => {
@@ -1060,6 +1086,16 @@ describe("optimistic updates: a copy is never shown in two places", () => {
     expect(copiesOf()[0]).toMatchObject({ homeId: MAIN, upForTrade: true });
     expect(count("trade")).toEqual({ copies: 3, lines: 1 });
     expect(count(MAIN)).toEqual({ copies: 3, lines: 1 });
+  });
+
+  it("flagging a box's line puts it on the trade pile and its spine count, and it stays in the box (trade spans both)", async () => {
+    seed([], [base({ homeId: BOX, quantity: 1 })]);
+    calls.answers.set("collection:setTrade", { previous: false });
+    await actions().setTrade({ ...COPY_AT(BOX), quantity: 1, homeKind: "box" }, true);
+    expect((local.get("collection:tradeCopies", { paginationOpts: opts }) as { page: { _id: string }[] }).page.map((r) => r._id)).toEqual(["copy1"]);
+    expect(rowsIn("collection:copiesInContainer", BOX).map((r) => r._id)).toEqual(["copy1"]);
+    expect(count("trade")).toEqual({ copies: 1, lines: 1 });
+    expect(count(BOX)).toEqual({ copies: 1, lines: 1 });
   });
 
   it("unflagging takes the line off the trade pile", async () => {

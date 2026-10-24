@@ -128,6 +128,7 @@ export default function BinderView({
           vinyl={open.vinyl}
           cover={<Cover open={open} actions={actions} />}
           variant={open.pockets}
+          saleTags={open.saleTags}
           aimed={aimed}
           found={found}
           wholeBinderDrop={wholeBinderDrop}

@@ -44,6 +44,12 @@ export interface OpenView {
   vinyl: string;
   /** Sleeves with Add on every card (a set), or a binder's own pockets. */
   pockets: PocketVariant;
+  /**
+   * A copy in a box wears a "For sale" tag on its pocket. Only the Up for
+   * Trade pile: the one collection view that lists box copies (trade spans
+   * collection and inventory).
+   */
+  saleTags: boolean;
   /** Open as a box (five rows), not a binder of pages. */
   box: boolean;
 }
@@ -113,6 +119,7 @@ export function openView(input: OpenInput): OpenView {
     scopeLine: scopeLineFor(view, container),
     vinyl: browsing ? "#1e293b" : label.background,
     pockets: browsing ? "browse" : "binder",
+    saleTags: view.kind === "binder" && container?.system === "trade",
     box,
   };
 }

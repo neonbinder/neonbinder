@@ -188,13 +188,15 @@ export interface CollectionData {
   /**
    * The copies in one container, in slot order (unslotted last), up to
    * `limit`. A binder or box: the copies whose home it is (a box's for the
-   * Inventory tab). The Up for Trade pile: the flagged copies (same as
-   * `useTradeCopies`). A smart binder: the copies its rule matches (demo
-   * only). The Want List: none (`useWants`). The trade pile and a smart
-   * binder never list a copy in a box.
+   * Inventory tab). The Up for Trade pile: every flagged copy, a box's too
+   * (same as `useTradeCopies`). A smart binder: the copies its rule matches
+   * (demo only), never one in a box. The Want List: none (`useWants`).
    */
   useContainerCopies(containerId: ContainerId | null, options?: PageOptions): ContainerCopies | undefined;
-  /** Every copy flagged Up for Trade in a binder (never one in a box), up to `limit`. */
+  /**
+   * Every copy flagged Up for Trade, in a binder or a box (trade spans
+   * collection and inventory; see `inCollection`), up to `limit`.
+   */
   useTradeCopies(options?: PageOptions): ContainerCopies | undefined;
   /** The Want List: every want (at most `MAX_WANTS`). */
   useWants(): Want[] | undefined;
@@ -543,21 +545,27 @@ export function isForSale(copy: Pick<Copy, "homeKind">): boolean {
 // the binder and moved to whatever box it is in."
 //
 // A copy whose home is a box is inventory. It never appears on a collection
-// screen: My Binders (every binder, All my cards, Up for Trade, a smart
-// binder, the Want List's "landed", a browsed set, the hunt tray), My Cards
-// (scoreboards, the wall, the need list, every owned-card shelf, "Everything
-// else"), Checklists (Have, completion, row stacks, the drill's "have N of
-// M") and the shelf's counts. It appears on the Inventory tab and in the
-// card's own drawer (`useCopiesOf`), whose line reads "For sale · <box>" so
-// it can be taken off sale.
+// screen: My Binders (every binder, All my cards, a smart binder, the Want
+// List's "landed", a browsed set, the hunt tray), My Cards (scoreboards, the
+// wall, the need list, every owned-card shelf, "Everything else"), Checklists
+// (Have, completion, row stacks, the drill's "have N of M") and the shelf's
+// counts. It appears on the Inventory tab and in the card's own drawer
+// (`useCopiesOf`), whose line reads "For sale · <box>" so it can be taken off
+// sale.
+//
+// One exception: the Up for Trade pile. Jason, 2026-10-24: Up for Trade
+// crosses both, because trade spans collection and inventory. A copy flagged
+// up for trade shows there wherever it lives, binder or box, and the pile's
+// spine counts it; a box copy's pocket wears a "For sale" tag so it reads as
+// inventory. The pile is the only collection view that includes box copies.
 //
 // The rule lives here, once. Both stores apply it to their collection reads
 // (`useCopiesInVariant`, `useVariantCompletion`, `useSetCompletion`,
-// `useDrill`, `useSummary`, `useOwnedCards`, `useTradeCopies` and the trade
-// pile's and smart binders' `useContainerCopies`); a view that reads every
-// home (`useCopiesOf`, `useCopiesOfCards`) for a collection screen passes the
-// answer through `collectionCopies` / `collectionCopiesIn` /
-// `collectionCopiesOfCards`.
+// `useDrill`, `useSummary`, `useOwnedCards` and smart binders'
+// `useContainerCopies`), and never to the trade pile's (`useTradeCopies`
+// and its `useContainerCopies`); a view that reads every home (`useCopiesOf`,
+// `useCopiesOfCards`) for a collection screen passes the answer through
+// `collectionCopies` / `collectionCopiesIn` / `collectionCopiesOfCards`.
 
 /** True when a copy may show on a collection screen: its home is a binder, not a box. */
 export function inCollection(copy: Pick<Copy, "homeKind">): boolean {

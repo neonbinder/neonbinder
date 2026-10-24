@@ -468,24 +468,63 @@ describe("a card for sale is out of the collection (NEO-359)", () => {
     expect(r().box!.copies.some((c) => c.cardId === copy.cardId)).toBe(false);
   });
 
-  it("a copy up for trade leaves the Up for Trade pile while it is for sale, keeping its flag", async () => {
+  it("a copy up for trade stays on the Up for Trade pile when it goes up for sale, and the spine still counts it (trade spans both)", async () => {
     const seedCopy = loneBinderCopy();
-    const { result } = renderHook(() => ({ ...useCollectionRig(seedCopy.cardId), containers: useContainers() }), { wrapper });
+    const { result } = renderHook(
+      () => ({ ...useCollectionRig(seedCopy.cardId), containers: useContainers(), pile: useContainerCopies(TRADE_BINDER_ID) }),
+      { wrapper },
+    );
     const r = () => result.current;
     await act(async () => {
       await r().actions.setTrade(r().copiesOf!.find((c) => c.id === seedCopy.id)!, true);
     });
     const traded = r().copiesOf!.find((c) => c.id === seedCopy.id)!;
     expect(r().trade!.copies.map((c) => c.id)).toContain(traded.id);
-    const pile = () => r().containers!.find((c) => c.id === TRADE_BINDER_ID)!.count!.lines;
-    const lines = pile();
+    const spine = () => r().containers!.find((c) => c.id === TRADE_BINDER_ID)!.count!;
+    const before = { spine: spine(), completion: r().completion!, summary: r().summary!, owned: r().owned!.total };
 
+    let sold = traded.id;
     await act(async () => {
-      await r().actions.moveCopy(traded, SHOW_BOX_ID);
+      sold = (await r().actions.moveCopy(traded, SHOW_BOX_ID)).copyId;
     });
-    expect(r().trade!.copies.some((c) => c.cardId === traded.cardId)).toBe(false);
-    expect(pile()).toBe(lines - 1);
-    expect(r().copiesOf!.find((c) => c.cardId === traded.cardId)).toMatchObject({ homeKind: "box", upForTrade: true });
+    // On the trade pile, both ways it is read, as a box copy; the spine still counts it.
+    expect(r().trade!.copies.find((c) => c.id === sold)).toMatchObject({ homeKind: "box", upForTrade: true });
+    expect(r().pile!.copies.find((c) => c.id === sold)).toMatchObject({ homeKind: "box", upForTrade: true });
+    expect(spine()).toEqual(before.spine);
+    // Everywhere else it is Inventory's: off the checklist, its Have counts, All my cards and My Cards.
+    expect(r().inVariant!.some((c) => c.cardId === traded.cardId)).toBe(false);
+    expect(r().completion!.ownedAll).toBe(before.completion.ownedAll - 1);
+    expect(r().owned!.cards.map((c) => c.id)).not.toContain(traded.cardId);
+    expect(r().owned!.total).toBe(before.owned - 1);
+    expect(r().summary!.copies).toBe(before.summary.copies - 1);
+    expect(collectionCopiesIn(r().copiesOf, "all")).toEqual([]);
+    expect(collectionCopiesOfCards(r().copiesOfCards)![traded.cardId]).toEqual([]);
+    expect(r().box!.copies.map((c) => c.id)).toContain(sold);
+  });
+
+  it("a box copy flagged up for trade joins the pile and its count, and stays out of every binder and the binders' shelf counts", async () => {
+    const boxCopy = initialCollectionState().copies.find((c) => c.homeId === SHOW_BOX_ID && !c.upForTrade)!;
+    const { result } = renderHook(
+      () => ({ ...useCollectionRig(boxCopy.cardId), containers: useContainers(), pile: useContainerCopies(TRADE_BINDER_ID), main: useContainerCopies(MAIN_BINDER_ID) }),
+      { wrapper },
+    );
+    const r = () => result.current;
+    const count = (id: string) => r().containers!.find((c) => c.id === id)!.count!;
+    const before = { trade: count(TRADE_BINDER_ID), main: count(MAIN_BINDER_ID), completion: r().completion!.ownedAll, owned: r().owned!.total };
+    const copy = r().copiesOf!.find((c) => c.id === boxCopy.id)!;
+    await act(async () => {
+      await r().actions.setTrade(copy, true);
+    });
+    expect(r().trade!.copies.map((c) => c.id)).toContain(copy.id);
+    expect(r().pile!.copies.map((c) => c.id)).toContain(copy.id);
+    expect(count(TRADE_BINDER_ID)).toEqual({ copies: before.trade.copies + copy.quantity, lines: before.trade.lines + 1 });
+    // Still in its box, still nowhere on the collection's screens.
+    expect(r().box!.copies.map((c) => c.id)).toContain(copy.id);
+    expect(r().main!.copies.map((c) => c.id)).not.toContain(copy.id);
+    expect(count(MAIN_BINDER_ID)).toEqual(before.main);
+    expect(r().inVariant!.map((c) => c.id)).not.toContain(copy.id);
+    expect(r().completion!.ownedAll).toBe(before.completion);
+    expect(r().owned!.total).toBe(before.owned);
   });
 
   it("the seed's collection screens hold nothing from the Show box, and its trade pile is not empty", () => {
@@ -496,7 +535,6 @@ describe("a card for sale is out of the collection (NEO-359)", () => {
     expect(onlyBoxed.length).toBeGreaterThan(0);
     expect(result.current.owned!.cards.some((c) => onlyBoxed.includes(c.id))).toBe(false);
     expect(result.current.trade!.copies.length).toBeGreaterThan(0);
-    expect(result.current.trade!.copies.every((c) => c.homeKind !== "box")).toBe(true);
   });
 });
 

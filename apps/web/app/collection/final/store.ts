@@ -162,8 +162,8 @@ export interface OpResult<T> {
 
 /**
  * v4 (NEO-359): one home per copy, slots, trade flag, the Show box. v5: the
- * single trade-bait dupe stays in the collection, up for trade (a card for
- * sale is Inventory's and never on the Up for Trade pile).
+ * single trade-bait dupe stays in the collection, up for trade; the rest of
+ * Trade bait goes to the Show box, for sale.
  */
 const STATE_VERSION = 5;
 const STORAGE_KEY = "nb-collection-final";
@@ -227,8 +227,9 @@ function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>
   const pocket = pockets.get(copy.id);
   // The single dupes in Trade bait are what the collector would swap, so they
   // stay in the collection, up for trade; the stack and the big singles go
-  // to the Show box, for sale. A card for sale is Inventory's and never on
-  // the collection's screens, the Up for Trade pile included (NEO-359).
+  // to the Show box, for sale (and not up for trade). A card for sale is
+  // Inventory's and never on the collection's screens; only the Up for Trade
+  // pile would show one, since trade spans both (NEO-359).
   const upForTrade =
     wasTradeBait && copy.quantity === 1 && !copy.serialNumber && copy.costBasis === undefined;
   let homeId: ContainerId;

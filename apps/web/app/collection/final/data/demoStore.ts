@@ -21,7 +21,8 @@
  *
  * NEO-359: every collection read sees only the copies whose home is not a
  * box (`collectionOf`, the store's `inCollection` rule); `useCopiesOf`,
- * `useCopiesOfCards` and a box's own `useContainerCopies` list them all.
+ * `useCopiesOfCards` and a box's own `useContainerCopies` list them all, and
+ * the Up for Trade pile (`tradeOf`) keeps every flagged copy, a box's too.
  *
  * Writes go through the reducer's pure ops (`../store` `demoOps`), so a
  * refusal (a taken pocket, the Want List as a home) rejects with the same
@@ -288,6 +289,15 @@ function collectionOf(state: CollectionState): DemoCopy[] {
   return kept;
 }
 
+/**
+ * The Up for Trade pile: every flagged copy, wherever it lives. Trade spans
+ * collection and inventory, so a box copy stays (the one collection view
+ * that keeps it; see `inCollection`).
+ */
+function tradeOf(state: CollectionState): DemoCopy[] {
+  return state.copies.filter((c) => c.upForTrade);
+}
+
 /** The collection's copies a scope looks through: one home's, or all of them. */
 function inScope(state: CollectionState, scope: Scope): DemoCopy[] {
   const copies = collectionOf(state);
@@ -300,8 +310,9 @@ function inScope(state: CollectionState, scope: Scope): DemoCopy[] {
 function containerCopies(state: CollectionState, id: string): DemoCopy[] {
   const container = state.containers.find((c) => c.id === id);
   if (!container || container.system === "want") return [];
-  // The trade pile and a smart binder are the collection's: never a copy in a box.
-  if (container.system === "trade") return collectionOf(state).filter((c) => c.upForTrade);
+  // The trade pile spans collection and inventory: every flagged copy, a box's too.
+  if (container.system === "trade") return tradeOf(state);
+  // A smart binder is the collection's: never a copy in a box.
   if (container.rule) {
     const rule = fixtureRule(container.rule);
     return collectionOf(state).filter((c) => {
@@ -685,7 +696,7 @@ export const DEMO_DATA: CollectionData = {
     const state = useDemoState().state;
     const limit = options?.limit;
     return useMemo(
-      () => page(collectionOf(state).filter((c) => c.upForTrade), state.containers, limit),
+      () => page(tradeOf(state), state.containers, limit),
       [state, limit],
     );
   },
