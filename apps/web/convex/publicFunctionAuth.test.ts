@@ -938,6 +938,7 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetSelectorSyncStatusBatch",
     "resetCardTeamLinksBatch",
     "resetCollectionCopiesBatch",
+    "resetCollectionWantsBatch",
     "resetCollectionContainersBatch",
     "resetCollectionBuildingSetsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
@@ -2173,6 +2174,35 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["collection.buildingSets", (t) => t.query(api.collection.buildingSets, {})],
     ["collection.addHaves", (t) => t.mutation(api.collection.addHaves, { cardIds: [] })],
     ["collection.removeCopies", (t) => t.mutation(api.collection.removeCopies, { copyIds: [] })],
+    // NEO-359 — binders and boxes, Up for Trade, the Want List, whole-set browse.
+    [
+      "collection.copiesInContainer",
+      (t) =>
+        t.query(api.collection.copiesInContainer, {
+          containerId: NOT_AN_ID,
+          paginationOpts: { numItems: 10, cursor: null },
+        }),
+    ],
+    [
+      "collection.tradeCopies",
+      (t) => t.query(api.collection.tradeCopies, { paginationOpts: { numItems: 10, cursor: null } }),
+    ],
+    ["collection.copiesOfMany", (t) => t.query(api.collection.copiesOfMany, { cardIds: [] })],
+    [
+      "collection.cardsInSet",
+      (t) =>
+        t.query(api.collection.cardsInSet, {
+          setId: NOT_AN_ID,
+          paginationOpts: { numItems: 10, cursor: null },
+        }),
+    ],
+    ["collectionContainers.list", (t) => t.query(api.collectionContainers.list, {})],
+    ["collectionContainers.ensureSystem", (t) => t.mutation(api.collectionContainers.ensureSystem, {})],
+    [
+      "collectionContainers.create",
+      (t) => t.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" }),
+    ],
+    ["collectionWants.list", (t) => t.query(api.collectionWants.list, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -2228,7 +2258,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         quantity: 1,
         lastUpdated: 0,
       });
-      return { setId, cardId, copyId };
+      return { setId, cardId, copyId, homeId };
     });
     const calls = [
       () => t.mutation(api.collection.addHave, { cardId: ids.cardId }),
@@ -2237,6 +2267,14 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       () => t.mutation(api.collection.removeCopy, { copyId: ids.copyId }),
       () => t.mutation(api.collection.restoreCopy, { cardId: ids.cardId, details: { quantity: 1 } }),
       () => t.mutation(api.collection.setBuilding, { setId: ids.setId, building: true }),
+      // NEO-359
+      () => t.mutation(api.collection.moveCopy, { copyId: ids.copyId, toHomeId: ids.homeId }),
+      () => t.mutation(api.collection.placeCopy, { copyId: ids.copyId, slot: 0 }),
+      () => t.mutation(api.collection.setTrade, { copyId: ids.copyId, on: true }),
+      () => t.mutation(api.collectionContainers.update, { containerId: ids.homeId, label: null }),
+      () => t.mutation(api.collectionContainers.empty, { containerId: ids.homeId }),
+      () => t.mutation(api.collectionContainers.remove, { containerId: ids.homeId }),
+      () => t.mutation(api.collectionWants.set, { cardId: ids.cardId, on: true }),
     ];
     for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
     const after = await t.run(async (ctx) => ({

@@ -104,6 +104,7 @@ On success it prints the per-table counts:
   "collectionBuildingSetsDeleted": 3,
   "collectionContainersDeleted": 4,
   "collectionCopiesDeleted": 27,
+  "collectionWantsDeleted": 6,
   "crossListingsDeleted": 5,
   "entityReviewQueueDeleted": 0,
   "franchisesDeleted": 12,
@@ -128,6 +129,11 @@ card or set would be stranded. Copies drain first and their containers right
 after them (a copy names its home), all before the selector rows and the
 cards, in both scopes. A collector's Main binder is re-created on their next
 add.
+
+NEO-359: `collectionWantsDeleted` is collectors' Want Lists, across every
+account. Wants drain after the copies and before the containers (a want can
+be scoped to one of the collector's binders or boxes) and the cards they name,
+in both scopes.
 `cardTeamLinksDeleted` is the derived team → cards index, drained before the
 cards like `cardPlayerLinksDeleted`.
 `selectorSyncStatusDeleted` is the per-column sync notices ("SportLots could

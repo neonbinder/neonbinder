@@ -8196,6 +8196,8 @@ type SetBuilderResetResult = {
   selectorSyncStatusDeleted: number;
   /** NEO-358 — collectors' copies, drained before the cards they name. */
   collectionCopiesDeleted: number;
+  /** NEO-359 — collectors' Want Lists, drained before the cards and containers they name. */
+  collectionWantsDeleted: number;
   /** NEO-358 — collectors' binders and boxes, drained after the copies in them. */
   collectionContainersDeleted: number;
   /** NEO-358 — collectors' "Sets I'm building", drained before the sets. */
@@ -8301,6 +8303,7 @@ async function runSetBuilderReset(
     slSetReviewsDeleted: 0,
     selectorSyncStatusDeleted: 0,
     collectionCopiesDeleted: 0,
+    collectionWantsDeleted: 0,
     collectionContainersDeleted: 0,
     collectionBuildingSetsDeleted: 0,
     selectorOptionsDeleted: 0,
@@ -8324,7 +8327,8 @@ async function runSetBuilderReset(
   // `"exceptReferenceSeed"` scope drops entries from this list but never
   // reorders the rest, so every ordering note below still holds for the
   // tables it does drain — and every table that points INTO the skipped
-  // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionBuildingSets,
+  // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionWants,
+  // collectionContainers, collectionBuildingSets,
   // cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
@@ -8349,11 +8353,20 @@ async function runSetBuilderReset(
       "collectionCopiesDeleted",
       internal.selectorOptions.resetCollectionCopiesBatch,
     ],
+    // NEO-359 — collectors' wants point at a card and, when scoped, at one
+    // of their binders or boxes. So they go BEFORE the cards and BEFORE the
+    // containers. Not a reference-seed table: every scope drains it.
+    [
+      "collectionWantsDeleted",
+      internal.selectorOptions.resetCollectionWantsBatch,
+    ],
     // NEO-358 — the binders and boxes those copies lived in, AFTER the copies
-    // (a copy's `homeId` names one), so an interrupted reset never leaves a
-    // copy without its home. Every collector's Main is gone too; it is
-    // re-created lazily on their next add. A container holds no catalog id,
-    // so its place relative to the selector rows does not matter.
+    // (a copy's `homeId` names one) and the wants (NEO-359: a want's
+    // `binderId` names one), so an interrupted reset never leaves a copy
+    // without its home. Every collector's Main is gone too; it is re-created
+    // lazily on their next add. NEO-359: a smart binder's `rule` names
+    // catalog ids (players, teams, selector rows), so containers stay BEFORE
+    // the selector rows and the players and teams.
     [
       "collectionContainersDeleted",
       internal.selectorOptions.resetCollectionContainersBatch,
@@ -8627,6 +8640,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // NEO-358 — collectors' copies, their binders and boxes, and "Sets I'm
     // building".
     collectionCopiesDeleted: v.number(),
+    // NEO-359 — collectors' Want Lists.
+    collectionWantsDeleted: v.number(),
     collectionContainersDeleted: v.number(),
     collectionBuildingSetsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
@@ -9076,8 +9091,31 @@ export const resetSelectorSyncStatusBatch = internalMutation({
 });
 
 /**
+ * Internal: drain `collectionWants`, looped by `runSetBuilderReset` after the
+ * copies and BEFORE the containers a want may be scoped to and the cards it
+ * names. NEO-359. Every collector's wants, across every account; armed like
+ * every batch here.
+ */
+export const resetCollectionWantsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("collectionWants").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
  * Internal: drain `collectionContainers`, looped by `runSetBuilderReset` right
- * AFTER `collectionCopies` (a copy's `homeId` names a container). NEO-358.
+ * AFTER `collectionCopies` and `collectionWants` (a copy's `homeId` and a
+ * want's `binderId` name a container). NEO-358.
  * Every collector's binders and boxes, across every account; a collector's
  * Main is re-created lazily on their next add. Without this a global reset
  * left every account's emptied containers behind.

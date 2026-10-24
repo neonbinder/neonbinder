@@ -55,6 +55,8 @@ import type * as cardTeamLinks from "../cardTeamLinks.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as collection from "../collection.js";
 import type * as collectionCatalog from "../collectionCatalog.js";
+import type * as collectionContainers from "../collectionContainers.js";
+import type * as collectionWants from "../collectionWants.js";
 import type * as combinedNamesReport from "../combinedNamesReport.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
@@ -202,6 +204,8 @@ declare const fullApi: ApiFromModules<{
   checklistCandidates: typeof checklistCandidates;
   collection: typeof collection;
   collectionCatalog: typeof collectionCatalog;
+  collectionContainers: typeof collectionContainers;
+  collectionWants: typeof collectionWants;
   combinedNamesReport: typeof combinedNamesReport;
   credentials: typeof credentials;
   crons: typeof crons;

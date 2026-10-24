@@ -41,7 +41,7 @@ function TestingResetContent() {
         setStatus("Resetting test state...");
         const counts = await resetMutation({});
         setStatus(
-          `Reset complete (pp=${counts.publicProfiles} up=${counts.userProfiles} pz=${counts.prizePool} cc=${counts.collectionCopies} ct=${counts.collectionContainers} bs=${counts.collectionBuildingSets}) — redirecting...`,
+          `Reset complete (pp=${counts.publicProfiles} up=${counts.userProfiles} pz=${counts.prizePool} cc=${counts.collectionCopies} cw=${counts.collectionWants} ct=${counts.collectionContainers} bs=${counts.collectionBuildingSets}) — redirecting...`,
         );
         navigate(redirect);
       } catch (e: unknown) {

@@ -12,8 +12,13 @@
  *   3. its variation children are PROMOTED, not deleted (NEO-189);
  *   4. its derived player index rows (NEO-313, `cardPlayerLinks`);
  *   5. its derived team index rows (NEO-358, `cardTeamLinks`);
- *   6. the row itself;
- *   7. its row's card counts go down, and the subtree counts of every row
+ *   6. collectors' WANTS of it (NEO-359, `collectionWants.by_card`): deleted,
+ *      never a refusal. A want is a wish, not a holding. Up to
+ *      `WANT_SWEEP_BATCH` go in the caller's transaction, each owner's Want
+ *      List count moved with it; any past that are swept by a scheduled
+ *      continuation (`collectionWants.sweepWantsOfDeletedCard`);
+ *   7. the row itself;
+ *   8. its row's card counts go down, and the subtree counts of every row
  *      above it (`CardCountLedger`; the caller flushes).
  *
  * Callers that delete a PAGE of cards ask `collectedCardIds` for the whole page
@@ -33,6 +38,7 @@
  */
 
 import { ConvexError } from "convex/values";
+import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deleteCardPlayerLinks } from "./cardPlayerLinks";
@@ -46,6 +52,48 @@ import { collectedCardRefusal, type CollectorCount } from "../lib/collection/col
  * copy of a card to say so.
  */
 export const COLLECTOR_COUNT_LINES = 100;
+
+/**
+ * NEO-359 — wants of one deleted card removed in the deleting transaction.
+ * Past it the rest go in a scheduled continuation, so a card on many Want
+ * Lists never blows a page delete's budget.
+ */
+export const WANT_SWEEP_BATCH = 50;
+
+/**
+ * NEO-359 — delete up to `WANT_SWEEP_BATCH` wants of `cardId` (the card is
+ * gone, or going, in this transaction), moving each owner's Want List count
+ * down by one. A Want row without a stored count stays uncounted (its next
+ * read or write counts it); one that would go below zero is cleared to
+ * uncounted. Returns the deleted ids and whether more remain.
+ */
+export async function sweepCardWants(
+  ctx: MutationCtx,
+  cardId: Id<"cardChecklist">,
+): Promise<{ wantIds: Array<Id<"collectionWants">>; hasMore: boolean }> {
+  const wants = await ctx.db
+    .query("collectionWants")
+    .withIndex("by_card", (q) => q.eq("cardId", cardId))
+    .take(WANT_SWEEP_BATCH + 1);
+  const hasMore = wants.length > WANT_SWEEP_BATCH;
+  const batch = hasMore ? wants.slice(0, WANT_SWEEP_BATCH) : wants;
+  for (const want of batch) {
+    await ctx.db.delete(want._id);
+    const wantRow = await ctx.db
+      .query("collectionContainers")
+      .withIndex("by_owner_and_system", (q) =>
+        q.eq("ownerId", want.ownerId).eq("system", "want"),
+      )
+      .first();
+    if (wantRow?.count) {
+      const next = wantRow.count.lines - 1;
+      await ctx.db.patch(wantRow._id, {
+        count: next >= 0 ? { copies: next, lines: next } : undefined,
+      });
+    }
+  }
+  return { wantIds: batch.map((want) => want._id), hasMore };
+}
 
 /**
  * NEO-21: every card delete drops its `cardCrossListings` junction rows first,
@@ -161,6 +209,8 @@ export type RemovedCardRow = {
   crossListingIds: Array<Id<"cardCrossListings">>;
   playerLinkIds: Array<Id<"cardPlayerLinks">>;
   teamLinkIds: Array<Id<"cardTeamLinks">>;
+  /** NEO-359 — the wants deleted in this transaction (a continuation may sweep more). */
+  wantIds: Array<Id<"collectionWants">>;
 };
 
 /**
@@ -188,12 +238,19 @@ export async function removeCardRow(
   const playerLinkIds = await deleteCardPlayerLinks(ctx, card._id);
   // 5. the team index
   const teamLinkIds = await deleteCardTeamLinks(ctx, card._id);
-  // 6. the card
+  // 6. collectors' wants of it: deleted, never a refusal (NEO-359)
+  const wants = await sweepCardWants(ctx, card._id);
+  if (wants.hasMore) {
+    await ctx.scheduler.runAfter(0, internal.collectionWants.sweepWantsOfDeletedCard, {
+      cardId: card._id,
+    });
+  }
+  // 7. the card
   await ctx.db.delete(card._id);
-  // 7. its row's count, and (NEO-358) its row's chain remembered while the
+  // 8. its row's count, and (NEO-358) its row's chain remembered while the
   //    row still exists, so the subtree counts above it still move if the
   //    caller ends the emptied row before it flushes.
   ledger.removeCard(card);
   await ledger.rememberChain(ctx, card.selectorOptionId);
-  return { crossListingIds, playerLinkIds, teamLinkIds };
+  return { crossListingIds, playerLinkIds, teamLinkIds, wantIds: wants.wantIds };
 }
