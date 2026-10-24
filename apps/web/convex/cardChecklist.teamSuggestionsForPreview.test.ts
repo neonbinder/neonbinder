@@ -27,6 +27,7 @@ import {
   TEAMS_SECTION_NAMES_PER_REQUEST,
   TEAMS_SECTION_PLAYERS_PER_REQUEST,
 } from "../components/SetSelector/teams-on-cards";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -138,7 +139,7 @@ async function storedCard(
   teamOnCardIds: Array<Id<"teams">>,
 ) {
   await t.run(async (ctx) => {
-    const cardId = await ctx.db.insert("cardChecklist", {
+    const cardId = await insertTestCard(ctx, {
       selectorOptionId,
       cardNumber: "1",
       cardName: "Card",

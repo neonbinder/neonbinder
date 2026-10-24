@@ -27,6 +27,7 @@ import {
   blockedAllPaused,
   blockedSidePaused,
 } from "./parallelChecklistBuild";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -226,7 +227,7 @@ async function insertCard(
   card: Partial<Doc<"cardChecklist">> & { cardNumber: string; cardName: string },
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId: insertId,
       platformData: {},
       sortOrder: 0,
@@ -664,7 +665,7 @@ describe("buildParallelChecklist — capped result lists (MAX_LISTED_CARDS)", ()
     // insert card claims — unclaimed/extra.
     await t.run(async (ctx) => {
       for (let i = 0; i < 60; i++) {
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: insert,
           cardNumber: `unmatched-${i}`,
           cardName: `Unmatched ${i}`,
@@ -950,7 +951,7 @@ describe("buildParallelChecklist — blocks write nothing", () => {
     const parallelId = await seedParallel(t, insert);
     await t.run(async (ctx) => {
       for (let i = 0; i <= MAX_INSERT_CARDS_FOR_BUILD; i++) {
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: insert,
           cardNumber: String(i),
           cardName: `Card ${i}`,

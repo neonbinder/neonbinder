@@ -1,6 +1,6 @@
 /**
  * NEO-358 — `previewListingTitle` (Regenerate) and `titleForStoredCard` (what
- * the armed `backfillCardSearchFields` writes) give the same answer.
+ * the NEO-358 title backfill wrote, retired in NEO-363) give the same answer.
  *
  * The preview's body was moved, unchanged, into `storedCardTitle.ts`; this
  * pins that the two stay one implementation across the shapes a stored card
@@ -20,6 +20,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { titleForStoredCard } from "./storedCardTitle";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -90,7 +91,7 @@ async function seed(t: T) {
     await ctx.db.delete(gone);
 
     const card = (selectorOptionId: Id<"selectorOptions">, cardNumber: string, extra: Partial<Card>) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId,
         cardNumber,
         cardName: `Card ${cardNumber}`,

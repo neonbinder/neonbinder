@@ -23,6 +23,7 @@ import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Doc, Id } from "./_generated/dataModel";
 import { applyBscAttributeFill } from "./cardChecklist";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -164,6 +165,9 @@ type InsertCardOpts = {
   teamCheckDoneAt?: number;
   // NEO-102: an operator confirmed this card carries no team.
   teamNoneConfirmedAt?: number;
+  // NEO-363: the sport stamped at birth, for a card whose chain has since
+  // lost its sport (the walk below would find none).
+  sportId?: Id<"selectorOptions">;
 };
 
 async function insertCard(
@@ -173,7 +177,7 @@ async function insertCard(
   opts: InsertCardOpts = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -187,6 +191,23 @@ async function insertCard(
       ...(opts.teamNoneConfirmedAt !== undefined
         ? { teamNoneConfirmedAt: opts.teamNoneConfirmedAt }
         : {}),
+      ...(opts.sportId ? { sportId: opts.sportId } : {}),
+    }),
+  );
+}
+
+/**
+ * NEO-363 — a card is born with a sport (`cardChecklist.sportId` is required),
+ * so an "orphaned" card is one whose chain lost its sport AFTER birth. The row
+ * still carries the sport it was stamped with; the chain walk finds none.
+ */
+async function detachedSport(t: ReturnType<typeof convexTest>) {
+  return t.run(async (ctx) =>
+    ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
+      platformData: {},
+      lastUpdated: Date.now(),
     }),
   );
 }
@@ -618,7 +639,10 @@ describe("applyBscTeamResolution", () => {
         lastUpdated: Date.now(),
       }),
     );
-    const cardId = await insertCard(t, orphanedOptId, "1", { bsc: "bsc-1" });
+    const cardId = await insertCard(t, orphanedOptId, "1", {
+      bsc: "bsc-1",
+      sportId: await detachedSport(t),
+    });
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
@@ -993,7 +1017,10 @@ describe("applyBscTeamResolution records the outcome (NEO-345)", () => {
         lastUpdated: Date.now(),
       }),
     );
-    const cardId = await insertCard(t, orphanLeaf, "1", { bsc: "bsc-1" });
+    const cardId = await insertCard(t, orphanLeaf, "1", {
+      bsc: "bsc-1",
+      sportId: await detachedSport(t),
+    });
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
@@ -1053,7 +1080,7 @@ describe("applyBscAttributeFill (NEO-345)", () => {
           }),
         );
       }
-      return ctx.db.insert("cardChecklist", {
+      return insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Card 1",

@@ -15,6 +15,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -63,7 +64,7 @@ async function seedCard(
   fields: Partial<Doc<"cardChecklist">> = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId: leafId,
       cardNumber,
       cardName: `Card ${cardNumber}`,

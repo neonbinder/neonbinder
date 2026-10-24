@@ -688,9 +688,7 @@ export const search = query({
         return sportId ? s.eq("sportId", sportId) : s;
       })
       .take(SEARCH_SCAN);
-    const matches = hits.filter(
-      (c) => c.listingTitle !== undefined && titleMatches(c.listingTitle, parsed),
-    );
+    const matches = hits.filter((c) => titleMatches(c.listingTitle, parsed));
     const reader = new CatalogReader(ctx);
     const cards = [];
     for (const row of matches.slice(0, limit)) cards.push(await reader.cardWithPath(row));

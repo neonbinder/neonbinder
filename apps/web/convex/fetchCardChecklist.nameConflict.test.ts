@@ -29,6 +29,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 type Card = {
   cardNumber: string;
@@ -505,7 +506,7 @@ describe("fetchCardChecklist — auto-matched player disagreements (NEO-251)", (
         sportId,
         lastUpdated: Date.now(),
       });
-      await ctx.db.insert("cardChecklist", {
+      await insertTestCard(ctx, {
         selectorOptionId: insertId,
         cardNumber: "227c",
         cardName: "Card 227c",
@@ -541,7 +542,7 @@ describe("fetchCardChecklist — auto-matched player disagreements (NEO-251)", (
         sportId,
         lastUpdated: Date.now(),
       });
-      await ctx.db.insert("cardChecklist", {
+      await insertTestCard(ctx, {
         selectorOptionId: insertId,
         cardNumber: "227c",
         cardName: "Card 227c",

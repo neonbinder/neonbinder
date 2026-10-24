@@ -55,7 +55,11 @@ import {
   type ResolvedNames,
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
-import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
+import {
+  insertCardRow,
+  requireCardSport,
+  type CarriedCardFields,
+} from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
   cardNumberStem,
@@ -1711,7 +1715,8 @@ export const getCardChecklist = query({
       variationOfCardId: v.optional(v.id("cardChecklist")),
       variationParentManual: v.optional(v.boolean()),
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
-      listingTitle: v.optional(v.string()),
+      // NEO-363: the title is required on every row.
+      listingTitle: v.string(),
       listingDescription: v.optional(v.string()),
       // NEO-101: the generated title's core was cut to fit at creation time
       // (see schema.ts). Returned because the checklist derives the
@@ -1731,7 +1736,8 @@ export const getCardChecklist = query({
       // NEO-91: cross-marketplace SKU (see convex/sku.ts).
       sku: v.optional(v.string()),
       // NEO-358: the card's sport, denormalised for the collector's search.
-      sportId: v.optional(v.id("selectorOptions")),
+      // NEO-363: required on every row.
+      sportId: v.id("selectorOptions"),
       sortOrder: v.number(),
       lastUpdated: v.number(),
       // NEO-21: set only on guest rows — cards printed in another product
@@ -5616,10 +5622,12 @@ export const addCustomCard = mutation({
 
     // NEO-358 — the card's sport, stamped once at insert for the collector's
     // search. Already walked when the card carries players; the SKU below
-    // reads the same answer rather than walking the chain again.
-    const insertSportId =
+    // reads the same answer rather than walking the chain again. NEO-363:
+    // required on the row, so a broken chain refuses the card.
+    const insertSportId = requireCardSport(
       cardSportId ??
-      (await findSportForSelectorOption(ctx, args.selectorOptionId));
+        (await findSportForSelectorOption(ctx, args.selectorOptionId)),
+    );
 
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
@@ -5661,7 +5669,7 @@ export const addCustomCard = mutation({
       // field is absent, not `false`, on the overwhelming majority of rows
       // that fit fine (mean real title length is 34 characters).
       ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
-      ...(insertSportId ? { sportId: insertSportId } : {}),
+      sportId: insertSportId,
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
@@ -5686,8 +5694,7 @@ export const addCustomCard = mutation({
     // commitCardChecklist can no longer disagree (they used to emit NB-BB- and
     // NB-BA- for the same set, because one passed "Baseball" and the other the
     // lowercased "baseball" into a capitalized-keyed map).
-    const skuSportId = insertSportId;
-    const skuSportRow = skuSportId ? await ctx.db.get(skuSportId) : null;
+    const skuSportRow = await ctx.db.get(insertSportId);
     await ctx.db.patch(id, {
       sku: generateSku({
         skuCode: skuSportRow?.sportConfig?.skuCode,
@@ -6128,9 +6135,8 @@ export const previewListingTitle = query({
     await requireAdmin(ctx);
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("previewListingTitle: no such card");
-    // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts`, so the
-    // armed `backfillCardSearchFields` fills a missing title with exactly what
-    // Regenerate offers here.
+    // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts` (for the
+    // NEO-358 title backfill, retired in NEO-363).
     const { title, coreFits, dropped, inputs } = await titleForStoredCard(ctx, card);
     return { title, coreFits, dropped, inputs };
   },

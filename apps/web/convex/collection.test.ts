@@ -20,6 +20,7 @@ import {
 } from "./collection";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -664,7 +665,7 @@ async function insertManyOwned(
     const ids: Array<Id<"cardChecklist">> = [];
     let stamp = 1_000_000;
     for (let i = 0; i < cards; i++) {
-      const cardId = await ctx.db.insert("cardChecklist", {
+      const cardId = await insertTestCard(ctx, {
         selectorOptionId: fx.baseId,
         cardNumber: `M${i}`,
         cardName: "",

@@ -36,6 +36,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -2191,9 +2192,17 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
   test("the id-taking collection writes reject an anonymous caller and write nothing", async () => {
     const t = convexTest(schema, modules);
     const ids = await t.run(async (ctx) => {
+      // NEO-363 — a card cannot exist without a sport above it.
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        lastUpdated: 0,
+      });
       const setId = await ctx.db.insert("selectorOptions", {
         level: "setName",
         value: "Topps Chrome",
+        parentId: sportId,
         platformData: {},
         lastUpdated: 0,
       });
@@ -2204,7 +2213,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
         platformData: {},
         lastUpdated: 0,
       });
-      const cardId = await ctx.db.insert("cardChecklist", {
+      const cardId = await insertTestCard(ctx, {
         selectorOptionId: variantId,
         cardNumber: "1",
         cardName: "Card",

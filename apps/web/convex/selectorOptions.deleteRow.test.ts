@@ -29,6 +29,7 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -129,7 +130,7 @@ async function insertCard(
   cardName: string,
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName,
@@ -605,7 +606,9 @@ describe("deleteSelectorOption — refusals", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    const setId = await insertRow(t, "setName", "Topps Chrome");
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
     const rowId = await insertRow(t, "insert", "Future Stars", {
       parentId: setId,
       isCustom: true,
@@ -629,7 +632,9 @@ describe("deleteSelectorOption — refusals", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    const setId = await insertRow(t, "setName", "2022 Chronicles");
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "2022 Chronicles", { parentId: sportId });
     const homeRowId = await insertRow(t, "insert", "Home", {
       parentId: setId,
       isCustom: true,
@@ -836,7 +841,9 @@ describe("deleteSelectorOption — refusals", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    const setId = await insertRow(t, "setName", "Topps Chrome");
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
     const baseId = await insertRow(t, "variantType", "Base", {
       parentId: setId,
     });
@@ -960,7 +967,9 @@ describe("getSelectorOptionHoldings", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    const setId = await insertRow(t, "setName", "Topps Chrome");
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
     const rowId = await insertRow(t, "insert", "Future Stars", {
       parentId: setId,
       isCustom: true,
@@ -1270,7 +1279,9 @@ describe("deleteSelectorOption — adversarial", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
-    const setId = await insertRow(t, "setName", "Topps Chrome");
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "Topps Chrome", { parentId: sportId });
     const rowId = await insertRow(t, "insert", "Future Stars", {
       parentId: setId,
       isCustom: true,
@@ -1356,8 +1367,11 @@ describe("commitCardChecklistChunk — deleted parent row", () => {
   test("still commits normally while the row exists", async () => {
     const t = convexTest(schema, modules);
 
+    // NEO-363 — a card cannot be committed without a sport above it.
+    const sportId = await insertRow(t, "sport", "Baseball");
     const setId = await insertRow(t, "setName", "Topps Chrome", {
       isCustom: true,
+      parentId: sportId,
     });
 
     const result = await t.run(async (ctx) =>

@@ -32,6 +32,7 @@ import {
   confirmPhraseFor,
   ENV_FLAG as WIPE_ENV_FLAG,
 } from "./wipeVariantTypeSubtree";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -96,7 +97,7 @@ async function addCard(
   extra: Partial<Doc<"cardChecklist">> = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run((ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -151,7 +152,7 @@ describe("the ledger", () => {
     await addCard(t, s.base, "1a", { variationOfCardId: parent });
     await t.run(async (ctx) => {
       const ledger = createCardCountLedger();
-      const id = await ctx.db.insert("cardChecklist", {
+      const id = await insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "2",
         cardName: "Two",
@@ -263,16 +264,17 @@ describe("every writer lands the true counts", () => {
     });
     expect(await stored(t, s.parallel)).toEqual({ cardCount: 3, nonVariationCardCount: 2 });
     expect(await stored(t, s.parallel)).toEqual(await truth(t, s.parallel));
-    // NEO-358 — and the sport is stamped at insert.
+    // NEO-358 — and the sport is stamped at insert (required since NEO-363,
+    // so the fixture's own parent card carries it too).
     const sportIds = await t.run(async (ctx) =>
       (
         await ctx.db
           .query("cardChecklist")
           .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", s.parallel))
           .collect()
-      ).map((c) => c.sportId ?? null),
+      ).map((c) => c.sportId),
     );
-    expect(sportIds.filter((id) => id === s.sport)).toHaveLength(2);
+    expect(sportIds).toEqual([s.sport, s.sport, s.sport]);
   });
 
   test("commitCardChecklistChunk: one flush for the chunk's inserts", async () => {

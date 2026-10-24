@@ -45,6 +45,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 // @ts-expect-error plain .mjs with no declaration file; test files are not typechecked anyway
 import { SELECTOR_DEPENDANT_TABLES } from "../scripts/reference-seed/cli.mjs";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -140,7 +141,7 @@ async function seedEveryDrainedTable(
     const cardIds: Id<"cardChecklist">[] = [];
     for (let i = 1; i <= 5; i += 1) {
       cardIds.push(
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: variantId,
           cardNumber: String(i),
           cardName: `Card ${i}`,
@@ -941,7 +942,7 @@ describe("NEO-313: the reset also drains cardPlayerLinks and playerSports", () =
         sportId: otherSport,
         nameNormalized: "multi player sport",
       });
-      const cardId = await ctx.db.insert("cardChecklist", {
+      const cardId = await insertTestCard(ctx, {
         selectorOptionId: variantId,
         cardNumber: "99",
         cardName: "Multi Sport Card",

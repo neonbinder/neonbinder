@@ -23,6 +23,7 @@ import {
 import { removeCardRow } from "./cardRowDelete";
 import { moveCards } from "./setShapeMove";
 import { rehomeSetRowsToBrand } from "./brandRehome";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -95,7 +96,7 @@ async function addCard(
   extra: Partial<Doc<"cardChecklist">> = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run((ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -117,7 +118,7 @@ async function insertCounted(
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) => {
     const ledger = createCardCountLedger();
-    const id = await ctx.db.insert("cardChecklist", {
+    const id = await insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -191,7 +192,7 @@ describe("the ledger carries every delta up the chain", () => {
     await t.run(async (ctx) => {
       const ledger = createCardCountLedger();
       for (let i = 0; i < 25; i++) {
-        const id = await ctx.db.insert("cardChecklist", {
+        const id = await insertTestCard(ctx, {
           selectorOptionId: i % 2 === 0 ? s.base : s.insert,
           cardNumber: String(i),
           cardName: `Card ${i}`,

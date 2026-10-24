@@ -19,6 +19,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -301,7 +302,7 @@ describe("NEO-254: the backfill fills rows written before the field", () => {
     playerIds: Array<Id<"players">>,
   ) {
     return t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Legacy",
@@ -362,7 +363,7 @@ describe("NEO-254: the backfill fills rows written before the field", () => {
     const { sportId, variantTypeId } = await seedSetTree(t);
     const gooden = await seedGooden(t, sportId);
     const cardId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Real",

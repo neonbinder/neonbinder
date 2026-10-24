@@ -22,6 +22,7 @@ import { ConvexError } from "convex/values";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -56,15 +57,24 @@ const SENTINEL_LAST_UPDATED = 1_700_000_000_000;
 async function seedSet(
   t: ReturnType<typeof convexTest>,
 ): Promise<Id<"selectorOptions">> {
-  return t.run(async (ctx) =>
-    ctx.db.insert("selectorOptions", {
-      level: "setName",
-      value: "2024 Topps Chrome",
+  return t.run(async (ctx) => {
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
       platformData: {},
       children: [],
       lastUpdated: SENTINEL_LAST_UPDATED,
-    }),
-  );
+    });
+    return ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value: "2024 Topps Chrome",
+      platformData: {},
+      parentId: sportId,
+      children: [],
+      lastUpdated: SENTINEL_LAST_UPDATED,
+    });
+  });
 }
 
 /** A Base variantType holding two BSC slots and two SportLots slots. */
@@ -108,7 +118,7 @@ async function seedCard(
   },
 ): Promise<void> {
   await t.run(async (ctx) => {
-    await ctx.db.insert("cardChecklist", {
+    await insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,

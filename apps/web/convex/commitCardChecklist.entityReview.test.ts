@@ -41,6 +41,7 @@ import {
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1069,7 +1070,7 @@ describe("commitCardChecklist: a custom card's skipped pendingPlayerNames entry 
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const customCardId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "C1",
         cardName: "Hand-added Card",
@@ -1124,7 +1125,7 @@ describe("commitCardChecklist: a custom card's skipped pendingPlayerNames entry 
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const customCardId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "C1",
         cardName: "Hand-added Card",
@@ -2213,7 +2214,7 @@ describe("commitCardChecklist: unreviewed names", () => {
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const handAddedId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Hand added",
@@ -2256,7 +2257,7 @@ describe("commitCardChecklist: unreviewed names", () => {
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "9001",
         cardName: "Hand added, not in this sync",
@@ -3927,7 +3928,7 @@ describe("settled pending names retire on marketplace rows too (NEO-296)", () =>
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const customId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "C1",
         cardName: "Hand added",

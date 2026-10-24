@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -143,7 +144,7 @@ async function seedPrePipelineSet(
     const baseCardIds: Array<Id<"cardChecklist">> = [];
     for (let i = 0; i < 3; i++) {
       const features = opts?.baseCardFeaturesPerIndex?.[i];
-      const id = await ctx.db.insert("cardChecklist", {
+      const id = await insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: String(i + 1),
         cardName: `Base ${i + 1}`,
@@ -156,7 +157,7 @@ async function seedPrePipelineSet(
     }
     const insertCardIds: Array<Id<"cardChecklist">> = [];
     for (let i = 0; i < 2; i++) {
-      const id = await ctx.db.insert("cardChecklist", {
+      const id = await insertTestCard(ctx, {
         selectorOptionId: insertId,
         cardNumber: `S${i + 1}`,
         cardName: `Star ${i + 1}`,
