@@ -149,3 +149,4 @@
 - [Collection views test on a hand-built store](reference_collection_views_test_on_a_hand_built_store.md) — RealCollection.test.tsx fakes the store; add each new hook to it
 - [convex-test scale walks cost per range read](reference_convex_test_scale_walks_cost_per_range_read.md) — paged walk over 5k distinct keys ~26s; use few keys x many rows
 - [Card fixtures insert through insertTestCard](reference_card_fixtures_insert_through_insert_test_card.md) — required listingTitle/sportId; raw test inserts fail at runtime; t.run drops closures
+- [No timeout binary empties a grep gate](reference_no_timeout_binary_empties_a_grep_gate.md) — `timeout` is missing on macOS; `timeout … tsc | grep` is a false green; tee to a file, check line count

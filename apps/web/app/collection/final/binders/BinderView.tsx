@@ -1,9 +1,9 @@
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 import { ArrowLeftIcon } from "@heroicons/react/24/outline";
-import type { LayoutMode, PageModel, PileFilters, SlotRef, SortKey } from "../../prototypes/p2/model";
 import BinderDesk, { whereLabel } from "./BinderDesk";
+import type { LayoutMode, PageModel, PileFilters, SlotRef, SortKey } from "./model";
 import type { OpenView } from "./openView";
-import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine } from "./parts";
+import { Cover, MobileSummary, ModeToggle, PileTools, ScopeLine, type CoverActions } from "./parts";
 import type { PocketHandlers } from "./Pocket";
 import ShareLink from "./ShareLink";
 import NeonButton from "@/components/modules/NeonButton";
@@ -15,7 +15,8 @@ import NeonButton from "@/components/modules/NeonButton";
  * binder, the Want List, All my cards and a set you are browsing all render
  * here; what differs between them arrives in `open` (see `openView.ts`), so
  * a browsed set gets the same Share and layout toggle as a binder, and no
- * label controls because it has no label.
+ * label controls because it has no label. A box (and the for-sale view)
+ * passes its own desk as `children` in place of the spread of pages.
  */
 
 export interface PileControls {
@@ -34,6 +35,7 @@ interface BinderViewProps extends PocketHandlers {
   onBack: () => void;
   onLayout: (mode: LayoutMode) => void;
   onEditLabel: () => void;
+  onEditContainer: () => void;
   onGoChecklists: () => void;
   pile: PileControls;
   aimed: SlotRef | null;
@@ -42,6 +44,10 @@ interface BinderViewProps extends PocketHandlers {
   reducedMotion: boolean;
   headingRef: Ref<HTMLHeadingElement>;
   deskRef: Ref<HTMLDivElement>;
+  /** A desk of its own (a box's rows) in place of the binder's pages. */
+  children?: ReactNode;
+  /** Words under the title while the pages load, or for a desk with no pages. */
+  status?: string;
 }
 
 export default function BinderView({
@@ -53,6 +59,7 @@ export default function BinderView({
   onBack,
   onLayout,
   onEditLabel,
+  onEditContainer,
   onGoChecklists,
   pile,
   aimed,
@@ -64,7 +71,10 @@ export default function BinderView({
   onOpen,
   onAdd,
   onAim,
+  children,
+  status,
 }: BinderViewProps) {
+  const actions: CoverActions = { onEditLabel, onEditContainer };
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -85,7 +95,9 @@ export default function BinderView({
               className={
                 open.badge.tone === "smart"
                   ? "rounded bg-neon-purple px-1.5 text-xs font-bold leading-5 text-on-neon-purple"
-                  : "rounded border border-neon-blue-text px-1.5 text-xs font-bold leading-5 text-neon-blue-text"
+                  : open.badge.tone === "sale"
+                    ? "rounded bg-neon-yellow px-1.5 text-xs font-bold leading-5 text-on-neon-yellow"
+                    : "rounded border border-neon-blue-text px-1.5 text-xs font-bold leading-5 text-neon-blue-text"
               }
             >
               {open.badge.text}
@@ -93,7 +105,7 @@ export default function BinderView({
           )}
         </div>
         <p aria-live="polite" className="text-sm tabular-nums text-ink-2">
-          {whereLabel(pages.length, wide, at)}
+          {status ?? whereLabel(pages.length, wide, at)}
         </p>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {open.share && <ShareLink key={open.key} target={open.share} />}
@@ -104,16 +116,17 @@ export default function BinderView({
 
       {open.scopeLine && <ScopeLine text={open.scopeLine} onGo={onGoChecklists} />}
 
-      {!wide && <MobileSummary open={open} onEditLabel={onEditLabel} />}
+      {(!wide || children) && <MobileSummary open={open} actions={actions} />}
 
       <div ref={deskRef} className="scroll-mt-2">
+        {children ?? (
         <BinderDesk
           pages={pages}
           wide={wide}
           at={at}
           onTurn={onTurn}
           vinyl={open.vinyl}
-          cover={<Cover open={open} onEditLabel={onEditLabel} />}
+          cover={<Cover open={open} actions={actions} />}
           variant={open.pockets}
           aimed={aimed}
           found={found}
@@ -124,6 +137,7 @@ export default function BinderView({
           onAdd={onAdd}
           onAim={onAim}
         />
+        )}
       </div>
     </div>
   );

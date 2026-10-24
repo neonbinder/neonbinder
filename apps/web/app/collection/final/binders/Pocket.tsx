@@ -1,16 +1,12 @@
 import { useRef } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import CardFace from "../../prototypes/_shared/CardFace";
-import { cardLabel, getPlayer, type BinderId, type Card, type Copy } from "../../prototypes/_shared/data";
-import {
-  havePocketLabel,
-  money,
-  slabLabel,
-  type SlotRef,
-} from "../../prototypes/p2/model";
 import { cardCaption, cardNumberLine } from "../captions";
+import { cardLabel } from "../data/labels";
+import type { Card, ContainerId, Copy } from "../data/types";
+import { pocketDropId } from "./dnd";
 import IdTooltip, { IdLines } from "./IdTooltip";
-import type { BinderPocket } from "./model";
+import { havePocketLabel, slabLabel, type PocketModel, type SlotRef } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
@@ -38,13 +34,13 @@ export type PocketVariant = "binder" | "browse";
 
 export interface PocketHandlers {
   onOpen: (card: Card, copies: Copy[]) => void;
-  /** `wantFor`: on the Want List, the binder the want is for (null: none). */
-  onAdd: (card: Card, slot?: SlotRef, wantFor?: BinderId | null) => void;
+  /** `wantFor`: on the Want List, the binder or box the want is for (null: none). */
+  onAdd: (card: Card, slot?: SlotRef, wantFor?: ContainerId | null) => void;
   onAim: (slot: SlotRef) => void;
 }
 
 interface PocketProps extends PocketHandlers {
-  pocket: BinderPocket;
+  pocket: PocketModel;
   variant: PocketVariant;
   index: number;
   pageNumber: number;
@@ -53,9 +49,7 @@ interface PocketProps extends PocketHandlers {
   found?: boolean;
 }
 
-export function pocketDropId(slot: SlotRef): string {
-  return `pocket:${slot.binderId}:${slot.page}:${slot.slot}`;
-}
+export { pocketDropId };
 
 function prefersReducedMotion(): boolean {
   try {
@@ -109,12 +103,13 @@ export default function Pocket({
     const { card, copies } = content;
     const qty = copies.reduce((n, c) => n + c.quantity, 0);
     const slab = copies.length === 1 ? slabLabel(copies[0]) : null;
-    const sale = copies.find((c) => c.forSale);
+    // A copy whose home is a box is for sale (NEO-359): the tag says so, no price.
+    const sale = copies.some((c) => c.homeKind === "box");
     const open = () => slideOut(faceRef.current, () => onOpen(card, copies));
     const art = (
       <>
         <span ref={faceRef} className="block">
-          <CardFace card={card} size="fill" serial={copies.length === 1 ? copies[0].serialNumber : undefined} />
+          <CardFace model={card} size="fill" serial={copies.length === 1 ? copies[0].serialNumber : undefined} />
         </span>
         {slab && (
           <span aria-hidden="true" className="p2-slab">
@@ -128,7 +123,7 @@ export default function Pocket({
         )}
         {sale && (
           <span aria-hidden="true" className="p2-tag">
-            {sale.askPrice ? money(sale.askPrice) : "Sale"}
+            Sale
           </span>
         )}
       </>
@@ -174,13 +169,13 @@ export default function Pocket({
       return (
         <IdTooltip content={slip(card)}>
           <div ref={setNodeRef} className={`p2-sleeve${ring}`}>
-            <CardFace card={card} size="fill" state="need" />
+            <CardFace model={card} size="fill" state="need" />
             <AddChip label={`Add ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
           </div>
         </IdTooltip>
       );
     }
-    const who = getPlayer(card.playerIds[0]).name.split(" ").slice(-1)[0];
+    const who = (card.players[0]?.name ?? "").split(" ").slice(-1)[0];
     return (
       <IdTooltip content={slip(card)}>
         <button

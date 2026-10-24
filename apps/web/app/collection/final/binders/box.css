@@ -1,0 +1,332 @@
+/*
+ * NEO-359 — boxes: a box end standing on the shelf (`BoxSpine` in
+ * Shelf.tsx) and the open box (`BoxDesk.tsx`), a top-down look into a long
+ * box: five rows behind tall dividers whose neon tabs poke up, card tops
+ * standing in each row, and a strip on the table for cards not sorted into a
+ * row yet.
+ *
+ * A box is a physical object, like the vinyl and the card faces: its kraft
+ * keeps its colours in light and dark. Only the table it stands on (the
+ * unsorted strip) follows the page's theme.
+ */
+
+.nb-box {
+  --kraft: #e7dfcc;
+  --kraft-hi: #f4eedf;
+  --kraft-lo: #d3c8ae;
+  --kraft-edge: #8a8170;
+  --kraft-ink: #3a3226;
+  --kraft-well: #c9bc9d;
+}
+
+/* ------------------------------------------------------ the shelf's box end */
+
+.nb-boxspine {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 116px;
+  height: 150px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transform-origin: 50% 100%;
+  transition: transform 160ms ease-out;
+  animation: p2-spines-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 35ms);
+}
+@media (min-width: 640px) {
+  .nb-boxspine {
+    height: 168px;
+  }
+}
+.nb-boxspine:hover,
+.nb-boxspine--current {
+  transform: translateY(-8px);
+}
+.nb-boxspine:focus-visible {
+  outline: none;
+  transform: translateY(-8px);
+  box-shadow:
+    0 0 0 2px #020617,
+    0 0 0 5px #00c2ff,
+    0 0 20px rgba(0, 194, 255, 0.5);
+}
+/* The lid's lip, a shade darker than the end it sits on. */
+.nb-boxspine-lid {
+  height: 12px;
+  margin: 0 -3px;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(#d6ccb4, #c4b897);
+  box-shadow: 0 0 0 1px #8a8170;
+}
+.nb-boxspine-end {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  height: calc(100% - 12px);
+  padding: 14px 10px 12px;
+  border-radius: 0 0 3px 3px;
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.035) 0 2px, transparent 2px 5px),
+    linear-gradient(90deg, #e4ddcc, #f6f1e6 30%, #e0d8c4);
+  box-shadow:
+    0 0 0 1px #8a8170,
+    0 8px 18px rgba(0, 0, 0, 0.55);
+}
+/* The label is masking tape across the end: short, wide, a touch crooked. */
+.nb-boxspine-end .nb-label {
+  flex: 1 1 auto;
+  width: 100%;
+  max-height: 64px;
+  border-radius: 1px;
+  transform: rotate(-1.5deg);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+.nb-boxspine-end .nb-label-name {
+  writing-mode: horizontal-tb;
+  transform: none;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.05;
+  /* The fitter sizes for lettering down a spine; across tape it is a fixed hand. */
+  font-size: 15px !important;
+}
+.nb-boxspine-handle {
+  flex: none;
+  width: 40px;
+  height: 12px;
+  border-radius: 999px;
+  background: #1f1b14;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.8);
+}
+.nb-longbox-tag.nb-boxspine-tag {
+  right: -6px;
+  bottom: 22px;
+}
+.nb-boxspine .nb-pip {
+  bottom: -2px;
+}
+
+/* The Inventory long box is a button on the real collection: no chrome of its own. */
+button.nb-longbox {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ------------------------------------------------------------ the open box */
+
+.nb-box {
+  position: relative;
+  padding: 14px 14px 18px;
+  border-radius: 6px;
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.03) 0 2px, transparent 2px 6px),
+    linear-gradient(180deg, var(--kraft-hi), var(--kraft) 40%, var(--kraft-lo));
+  box-shadow:
+    0 0 0 1px var(--kraft-edge),
+    inset 0 0 0 6px rgba(0, 0, 0, 0.04),
+    0 18px 40px -10px rgba(0, 0, 0, 0.6);
+}
+
+.nb-box-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  min-height: 112px;
+  margin-top: 16px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--kraft-well), color-mix(in oklab, var(--kraft-well) 70%, #000 8%));
+  box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.25);
+  transition: box-shadow 120ms ease-out;
+}
+.nb-box-row:first-child {
+  margin-top: 6px;
+}
+.nb-box-row[data-over="true"] {
+  box-shadow:
+    inset 0 3px 6px rgba(0, 0, 0, 0.25),
+    0 0 0 3px #00d558,
+    0 0 22px rgba(0, 213, 88, 0.45);
+}
+
+/* The divider: a tall card at the front of the row, its neon tab sticking up. */
+.nb-box-divider {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 10px;
+  border-right: 1px solid var(--kraft-edge);
+  background: #eef1f4;
+  color: var(--kraft-ink);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.nb-box-tab {
+  position: absolute;
+  top: -14px;
+  left: 8px;
+  padding: 2px 9px 3px;
+  border-radius: 4px 4px 0 0;
+  background: var(--tab);
+  color: #000;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.5) inset;
+}
+
+.nb-box-cards {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px 6px;
+  padding: 10px 10px 8px;
+  list-style: none;
+  margin: 0;
+}
+.nb-box-empty {
+  align-self: center;
+  padding: 10px 14px;
+  color: var(--kraft-ink);
+  font-size: 13px;
+}
+
+/* A card standing in the row: its top shows, it lifts when pointed at. */
+.nb-box-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 72px;
+}
+.nb-box-card[data-lifted="true"] {
+  opacity: 0.35;
+}
+.nb-box-face {
+  position: relative;
+  display: block;
+  width: 72px;
+  height: 66px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px 4px 0 0;
+  background: none;
+  cursor: grab;
+  touch-action: manipulation;
+}
+.nb-box-face > :first-child {
+  transition: transform 150ms ease-out;
+}
+.nb-box-face:hover > :first-child,
+.nb-box-face:focus-visible > :first-child {
+  transform: translateY(-6px);
+}
+.nb-box-face:focus-visible {
+  outline: 3px solid #00c2ff;
+  outline-offset: 1px;
+}
+.nb-box-face[data-found="true"] {
+  outline: 3px solid #ff2e9a;
+  outline-offset: 1px;
+}
+.nb-box-qty {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 2;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.nb-box-row-pick {
+  width: 72px;
+  min-height: 28px;
+  padding: 0 4px;
+  border: 1px solid var(--kraft-edge);
+  border-radius: 4px;
+  background: var(--kraft-hi);
+  color: var(--kraft-ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+.nb-box-row-pick:focus-visible {
+  outline: 3px solid #00c2ff;
+  outline-offset: 1px;
+}
+@media (max-width: 639px) {
+  .nb-box-row {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+  .nb-box-row-pick {
+    min-height: 44px;
+  }
+}
+
+/* --------------------------------------------- on the table: not in a row */
+
+.nb-box-unsorted {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 2px dashed var(--control);
+  border-radius: 8px;
+  transition: border-color 120ms ease-out;
+}
+.nb-box-unsorted[data-over="true"] {
+  border-color: var(--neon-green-text);
+}
+.nb-box-unsorted .nb-box-cards {
+  padding: 8px 0 0;
+}
+.nb-box-unsorted .nb-box-row-pick {
+  border-color: var(--control);
+  background: var(--field);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------- for sale, all boxes */
+
+.nb-sale-box + .nb-sale-box {
+  margin-top: 22px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-boxspine,
+  .nb-box-face > :first-child,
+  .nb-box-row {
+    animation: none;
+    transition: none;
+  }
+}
+
+[data-theme="light"] .nb-boxspine:focus-visible {
+  box-shadow: none;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+[data-theme="light"] .nb-box {
+  box-shadow:
+    0 0 0 1px var(--kraft-edge),
+    inset 0 0 0 6px rgba(0, 0, 0, 0.04),
+    0 10px 24px -12px rgba(0, 0, 0, 0.35);
+}
+[data-theme="light"] .nb-box-face:focus-visible,
+[data-theme="light"] .nb-box-row-pick:focus-visible {
+  outline-color: var(--focus);
+}

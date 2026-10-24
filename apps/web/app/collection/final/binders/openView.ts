@@ -1,15 +1,14 @@
-import { describeRule, getSet, setLabel } from "../../prototypes/_shared/data";
-import type { LayoutMode, ViewKey } from "../../prototypes/p2/model";
-import type { CollectionBinder, CollectionStore } from "../store";
-import { binderShareTarget, binderTally, liveryOf, setShareTarget, type ShareTarget } from "./model";
+import { setLabel } from "../data/labels";
+import { isHome, type Container, type ContainerLabel, type ContainerRule, type SetRef } from "../data/types";
+import { containerShareTarget, setShareTarget, type LayoutMode, type ShareTarget, type ViewKey } from "./model";
 import type { PocketVariant } from "./Pocket";
 
 /**
- * NEO-350 — what is open in My Binders, as data for the one binder view
- * (`BinderView.tsx`). A binder you file in, a smart binder, a system binder,
- * the Want List, All my cards or a set you are browsing all open into the
- * same header, cover and spread: everything that differs between them is
- * decided here, once, and the view only reads it.
+ * NEO-350 / NEO-359 — what is open in My Binders, as data for the one open
+ * view (`BinderView.tsx`). A binder you file in, a box, a smart binder, a
+ * system container, the Want List, All my cards or a set you are browsing
+ * all open into the same header and cover: everything that differs between
+ * them is decided here, once, and the view only reads it.
  */
 
 export interface Tally {
@@ -19,23 +18,25 @@ export interface Tally {
 }
 
 export interface OpenView {
-  /** Stable per view: the binder id, `set:<id>` or `all`. */
+  /** Stable per view: the container id, `set:<id>`, `all` or `sale`. */
   key: string;
   title: string;
   /** The chip beside the title. */
-  badge: { text: string; tone: "smart" | "browse" } | null;
-  /** What Share shares; null: nothing to share. */
+  badge: { text: string; tone: "smart" | "browse" | "sale" } | null;
+  /** What Share shares; null: nothing to share (or no share links here). */
   share: ShareTarget | null;
   /** The layout toggle's current choice; null: not offered. */
   layout: LayoutMode | null;
   /** Sort and filters for the master pile (All my cards). */
   pileTools: boolean;
-  /** The binder whose spine label the cover offers to edit and print. */
-  label: CollectionBinder | null;
+  /** The container whose spine label the cover offers to edit and print, and the label it wears. */
+  label: { container: Container; label: ContainerLabel } | null;
+  /** The container the cover offers to rename or delete (the collector's own). */
+  editable: Container | null;
   tally: Tally;
   /** Tally as wants (to chase, landed), in the Want List's pink. */
   want: boolean;
-  /** The cover's lines, first one also on a phone. */
+  /** The cover's lines, the first one also on a phone. */
   blurb: string[];
   /** What Checklists and My Cards look through with this open; null: unchanged. */
   scopeLine: string | null;
@@ -43,66 +44,80 @@ export interface OpenView {
   vinyl: string;
   /** Sleeves with Add on every card (a set), or a binder's own pockets. */
   pockets: PocketVariant;
+  /** Open as a box (five rows), not a binder of pages. */
+  box: boolean;
 }
 
-/** The default layout of a view: real pages where it has them, else a stack. */
-export function defaultLayout(view: ViewKey, binder: CollectionBinder | undefined): LayoutMode {
+/** The default layout of a view: pockets for binders, sets and smart binders; a stack for the piles. */
+export function defaultLayout(view: ViewKey, container: Container | undefined): LayoutMode {
   if (view.kind === "set") return "pockets";
-  return !binder ? "stack" : binder.kind === "smart" || binder.layout ? "pockets" : "stack";
+  if (view.kind !== "binder" || !container) return "stack";
+  return container.system === "trade" ? "stack" : "pockets";
 }
 
 export function viewKey(view: ViewKey): string {
-  return view.kind === "binder" ? view.binderId : view.kind === "set" ? `set:${view.setId}` : "all";
+  if (view.kind === "binder") return view.binderId;
+  if (view.kind === "set") return `set:${view.setId}`;
+  return view.kind;
 }
 
-export function openView(
-  view: ViewKey,
-  binder: CollectionBinder | undefined,
-  store: CollectionStore,
-  mode: LayoutMode,
-): OpenView {
-  const want = binder?.system === "want";
-  const set = view.kind === "set" ? getSet(view.setId) : null;
+export interface OpenInput {
+  view: ViewKey;
+  container: Container | undefined;
+  /** The browsed set, once it is in. */
+  set: SetRef | null | undefined;
+  mode: LayoutMode;
+  tally: Tally;
+  /** The label the container wears (its own, else its default). */
+  label: ContainerLabel;
+  /** A smart binder's rule in words, when the store can say it (the demo). */
+  describeRule?: (rule: ContainerRule) => string;
+  /** Share links exist here (capability `share`). */
+  canShare: boolean;
+}
+
+export function openView(input: OpenInput): OpenView {
+  const { view, container, set, mode, tally, label, describeRule, canShare } = input;
+  const want = container?.system === "want";
+  const box = view.kind === "binder" && container?.kind === "box";
+  const browsing = view.kind === "set";
+  const title = browsing
+    ? set
+      ? setLabel(set)
+      : "Browse a set"
+    : view.kind === "all"
+      ? "All my cards"
+      : view.kind === "sale"
+        ? "For sale"
+        : (container?.name ?? "Binder");
+  let share: ShareTarget | null = null;
+  if (canShare) share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
   return {
     key: viewKey(view),
-    title: set ? setLabel(set) : view.kind === "binder" ? (binder?.name ?? "Binder") : "All my cards",
-    badge: set
+    title,
+    badge: browsing
       ? { text: "Browsing", tone: "browse" }
-      : binder?.kind === "smart"
+      : container?.rule
         ? { text: "Smart", tone: "smart" }
-        : null,
-    share: set ? setShareTarget(set) : binder ? binderShareTarget(binder) : null,
-    layout: set || (binder && !want) ? mode : null,
+        : box
+          ? { text: "For sale", tone: "sale" }
+          : null,
+    share,
+    layout: box || want || view.kind === "sale" ? null : browsing || container ? mode : null,
     pileTools: view.kind === "all",
-    label: binder ?? null,
-    tally: tallyFor(view, binder, store),
+    label: container ? { container, label } : null,
+    editable: container && !container.system ? container : null,
+    tally,
     want,
-    blurb: blurbFor(view, binder, mode),
-    scopeLine: scopeLineFor(view, binder),
-    vinyl: set ? "#1e293b" : liveryOf(binder ?? "all").primary,
-    pockets: set ? "browse" : "binder",
+    blurb: blurbFor(input),
+    scopeLine: scopeLineFor(view, container),
+    vinyl: browsing ? "#1e293b" : label.background,
+    pockets: browsing ? "browse" : "binder",
+    box,
   };
 }
 
-function tallyFor(view: ViewKey, binder: CollectionBinder | undefined, store: CollectionStore): Tally {
-  const { copies } = store.state;
-  if (view.kind === "set") {
-    const c = store.completion(view.setId);
-    return { have: c.owned, need: c.total - c.owned, cards: null };
-  }
-  if (view.kind === "all") {
-    return { have: null, need: null, cards: copies.reduce((n, c) => n + c.quantity, 0) };
-  }
-  if (!binder) return { have: null, need: null, cards: 0 };
-  if (binder.system === "want") {
-    const landed = store.wantCardIds.filter((id) => store.ownedCount(id) > 0).length;
-    return { have: landed, need: store.wantCardIds.length - landed, cards: null };
-  }
-  const count = binderTally(binder, copies);
-  return { have: count.have ?? null, need: count.need ?? null, cards: count.cards };
-}
-
-function blurbFor(view: ViewKey, binder: CollectionBinder | undefined, mode: LayoutMode): string[] {
+function blurbFor({ view, container, mode, describeRule }: OpenInput): string[] {
   if (view.kind === "set") {
     return [
       mode === "pockets"
@@ -113,24 +128,38 @@ function blurbFor(view: ViewKey, binder: CollectionBinder | undefined, mode: Lay
   }
   if (view.kind === "all") {
     return [
-      "Every card you own, one pocket per copy. A yellow tag means it's for sale.",
+      "Every card you own, one pocket per copy. A yellow tag means it lives in a box, for sale.",
       "Press a card to pull it out of the sleeve and see the details.",
     ];
   }
-  if (!binder) return [];
-  if (binder.system === "want") {
+  if (view.kind === "sale") {
+    return ["Every card in every box you own: the stuff that's for sale."];
+  }
+  if (!container) return [];
+  if (container.system === "want") {
     return [
       "Cards you're chasing, grouped by the binder they're for.",
       "Land one? Press its sleeve to add it.",
       "While this is open, the hunt below adds to your Want List.",
     ];
   }
+  if (container.system === "trade") {
+    return [
+      "Copies you'd swap. Each one still lives in its own binder or box.",
+      "Hunt for a card below and put it up for trade.",
+    ];
+  }
   const lines: string[] = [];
-  if (binder.description) lines.push(binder.description);
-  if (binder.kind === "smart") {
-    lines.push(`Fills itself: ${describeRule(binder.rule)}.`);
-    if (mode === "pockets") lines.push("Empty sleeves are your needs. Got one? Press it.");
-  } else if (mode === "pockets") {
+  if (container.description) lines.push(container.description);
+  if (container.rule) {
+    lines.push(describeRule ? `Fills itself: ${describeRule(container.rule)}.` : "Fills itself from its rule.");
+    return lines;
+  }
+  if (container.kind === "box") {
+    lines.push("Everything in here is for sale. Drag a card between rows, or pick its row.");
+    return lines;
+  }
+  if (mode === "pockets") {
     lines.push("Hunt for a card below and drag it into any pocket, or press an empty pocket to fill that one.");
   } else {
     lines.push("Hunt for a card below and drag it onto the binder to file it here.");
@@ -138,15 +167,16 @@ function blurbFor(view: ViewKey, binder: CollectionBinder | undefined, mode: Lay
   return lines;
 }
 
-function scopeLineFor(view: ViewKey, binder: CollectionBinder | undefined): string | null {
-  if (view.kind === "set") return null;
+function scopeLineFor(view: ViewKey, container: Container | undefined): string | null {
+  if (view.kind === "set" || view.kind === "sale") return null;
   if (view.kind === "all") return "Checklists and My Cards are looking through everything.";
-  if (!binder) return null;
-  if (binder.system === "want") {
+  if (!container) return null;
+  if (container.system === "want") {
     return "Checklists and My Cards are looking through everything, with your wants lit up.";
   }
-  if (binder.kind === "smart") {
-    return `${binder.name} fills itself, so Checklists and My Cards look through everything.`;
+  if (container.rule) {
+    return `${container.name} fills itself, so Checklists and My Cards look through everything.`;
   }
-  return `Checklists and My Cards are looking through ${binder.name}.`;
+  if (!isHome(container)) return "Checklists and My Cards are looking through everything.";
+  return `Checklists and My Cards are looking through ${container.name}.`;
 }
