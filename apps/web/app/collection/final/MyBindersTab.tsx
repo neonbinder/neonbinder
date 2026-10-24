@@ -84,6 +84,7 @@ import Shelf, { InventoryShelf } from "./binders/Shelf";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
 import {
+  collectionCopiesOfCards,
   CONTAINER_COPIES_DEFAULT_LIMIT,
   emptyCopyDetails,
   homesOf,
@@ -324,9 +325,12 @@ export default function MyBindersTab({
     () => shownWants?.map((w) => w.cardId) ?? null,
     [shownWants],
   );
-  const wantCopies = useCopiesOfCards(
+  // Every collection read below drops copies in a box (`collectionCopiesOfCards`):
+  // a card held only in a box reads as not had here (NEO-359).
+  const wantHeld = useCopiesOfCards(
     shownWantIds && shownWantIds.length ? shownWantIds : null,
   );
+  const wantCopies = useMemo(() => collectionCopiesOfCards(wantHeld), [wantHeld]);
   const wantsTruncated =
     !!orderedWants && !!shownWants && orderedWants.length > shownWants.length;
 
@@ -347,7 +351,11 @@ export default function MyBindersTab({
     () => followed?.map((c) => c.id) ?? null,
     [followed],
   );
-  const followedCopies = useCopiesOfCards(followedIds);
+  const followedHeld = useCopiesOfCards(followedIds);
+  const followedCopies = useMemo(
+    () => collectionCopiesOfCards(followedHeld),
+    [followedHeld],
+  );
   const ownedAnywhere = (id: CardId) =>
     (followedCopies?.[id] ?? []).some((c) => c.quantity > 0);
 
@@ -358,7 +366,8 @@ export default function MyBindersTab({
     () => setCards?.cards.map((c) => c.id) ?? null,
     [setCards],
   );
-  const setCopies = useCopiesOfCards(setCardIds);
+  const setHeld = useCopiesOfCards(setCardIds);
+  const setCopies = useMemo(() => collectionCopiesOfCards(setHeld), [setHeld]);
 
   // -- the pages --------------------------------------------------------------
   let pages: PageModel[] = [];
@@ -576,8 +585,14 @@ export default function MyBindersTab({
   const allHits = searchable(settled) ? search?.cards : NO_CARDS;
   const trayHits = useMemo(() => allHits?.slice(0, TRAY_COPIES), [allHits]);
   const trayIds = useMemo(() => trayHits?.map((c) => c.id) ?? null, [trayHits]);
-  const trayCopies = useCopiesOfCards(
+  // The hunt tray on Inventory moves box copies too; in My Binders it never
+  // lists a box (a card for sale is Inventory's, NEO-359).
+  const huntCopies = useCopiesOfCards(
     trayIds && trayIds.length ? trayIds : null,
+  );
+  const trayCopies = useMemo(
+    () => (inventory ? huntCopies : collectionCopiesOfCards(huntCopies)),
+    [inventory, huntCopies],
   );
   const trayTruncated =
     !!search?.truncated || (allHits?.length ?? 0) > TRAY_COPIES;
@@ -1312,7 +1327,9 @@ function OwnedPileLoader({
 }) {
   const owned = useOwnedCards({ limit });
   const ids = useMemo(() => owned?.cards.map((c) => c.id) ?? null, [owned]);
-  const copiesByCard = useCopiesOfCards(ids && ids.length ? ids : null);
+  // Binder copies only: a card for sale lives in its box, on Inventory (NEO-359).
+  const held = useCopiesOfCards(ids && ids.length ? ids : null);
+  const copiesByCard = useMemo(() => collectionCopiesOfCards(held), [held]);
   useEffect(() => {
     if (!owned || (ids && ids.length && !copiesByCard)) {
       onData(null);

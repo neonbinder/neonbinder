@@ -703,6 +703,7 @@ describe("the shelf, wants and the new paged reads", () => {
   });
 
   it("reads trade copies as a page", () => {
+    loaded.set("collectionContainers:list", [{ _id: "m", kind: "binder", system: "main", name: "Main", count: { copies: 2, lines: 1 } }]);
     paged.pages.set("collection:tradeCopies", [[{ _id: "c", cardId: "k", variantId: "v", setId: "s", homeId: "m", quantity: 2, upForTrade: true, lastUpdated: 1 }]]);
     const { result } = renderHook(() => useTradeCopies(), { wrapper });
     expect(result.current).toMatchObject({ truncated: false, copies: [{ id: "c", upForTrade: true }] });
@@ -717,6 +718,7 @@ describe("the shelf, wants and the new paged reads", () => {
         .filter((id) => id === "k0")
         .map((id) => ({ cardId: id, copies: [{ _id: "c", cardId: id, variantId: "v", setId: "s", homeId: "m", quantity: 1, lastUpdated: 1 }] }));
     });
+    loaded.set("collectionContainers:list", [{ _id: "m", kind: "binder", system: "main", name: "Main", count: { copies: 1, lines: 1 } }]);
     const { result } = renderHook(() => useCopiesOfCards(ids), { wrapper });
     expect(asked).toEqual([50, 50, 20]);
     expect(result.current!.k0).toHaveLength(1);
@@ -727,6 +729,70 @@ describe("the shelf, wants and the new paged reads", () => {
     queried.length = 0;
     renderHook(() => useSetCards("set1"), { wrapper });
     expect(queried).toContainEqual(expect.objectContaining({ name: "collection:cardsInSet", args: { setId: "set1" } }));
+  });
+});
+
+describe("a card for sale never reaches a collection screen (NEO-359)", () => {
+  const SHELF = [
+    { _id: "m", kind: "binder", system: "main", name: "Main", count: { copies: 1, lines: 1 } },
+    { _id: "t", kind: "binder", system: "trade", name: "Up for Trade", count: { copies: 2, lines: 2 } },
+    { _id: "box", kind: "box", name: "Show box", count: { copies: 1, lines: 1 } },
+  ];
+  const row = (id: string, homeId: string, extra: Record<string, unknown> = {}) => ({
+    _id: id,
+    cardId: "card1",
+    variantId: "v1",
+    setId: "s",
+    homeId,
+    quantity: 1,
+    lastUpdated: 1,
+    ...extra,
+  });
+
+  it("drops a box's copies from the checklist's copies, and keeps them in the card's own drawer", () => {
+    loaded.set("collectionContainers:list", SHELF);
+    loaded.set("collection:copiesInVariant", [row("inMain", "m"), row("inBox", "box")]);
+    loaded.set("collection:copiesOf", [row("inMain", "m"), row("inBox", "box")]);
+    const { result } = renderHook(() => ({ checklist: useCopiesInVariant("v1"), drawer: useCopiesOf("card1") }), { wrapper });
+    expect(result.current.checklist!.map((c) => c.id)).toEqual(["inMain"]);
+    expect(result.current.drawer!.map((c) => [c.id, c.homeKind])).toEqual([
+      ["inMain", "binder"],
+      ["inBox", "box"],
+    ]);
+  });
+
+  it("drops a box's copies from the Up for Trade pile, both ways it is read", () => {
+    loaded.set("collectionContainers:list", SHELF);
+    paged.pages.set("collection:tradeCopies", [[row("inMain", "m", { upForTrade: true }), row("inBox", "box", { upForTrade: true })]]);
+    const { result } = renderHook(() => ({ trade: useTradeCopies(), pile: useContainerCopies("t") }), { wrapper });
+    expect(result.current.trade!.copies.map((c) => c.id)).toEqual(["inMain"]);
+    expect(result.current.pile!.copies.map((c) => c.id)).toEqual(["inMain"]);
+  });
+
+  it("lists a box's own copies (Inventory) and every home for many cards", () => {
+    loaded.set("collectionContainers:list", SHELF);
+    paged.pages.set("collection:copiesInContainer", [[row("inBox", "box")]]);
+    loaded.set("collection:copiesOfMany", [{ cardId: "card1", copies: [row("inMain", "m"), row("inBox", "box")] }]);
+    const { result } = renderHook(() => ({ box: useContainerCopies("box"), many: useCopiesOfCards(["card1"]) }), { wrapper });
+    expect(result.current.box!.copies.map((c) => c.id)).toEqual(["inBox"]);
+    expect(result.current.many!.card1.map((c) => c.id)).toEqual(["inMain", "inBox"]);
+  });
+
+  it("waits for the shelf: until it is in, a copy's home could be a box, so nothing shows", () => {
+    loaded.set("collection:copiesInVariant", [row("inBox", "box")]);
+    loaded.set("collection:copiesOf", [row("inBox", "box")]);
+    loaded.set("collection:copiesOfMany", [{ cardId: "card1", copies: [row("inBox", "box")] }]);
+    paged.pages.set("collection:tradeCopies", [[row("inBox", "box", { upForTrade: true })]]);
+    const { result } = renderHook(
+      () => ({
+        checklist: useCopiesInVariant("v1"),
+        drawer: useCopiesOf("card1"),
+        many: useCopiesOfCards(["card1"]),
+        trade: useTradeCopies(),
+      }),
+      { wrapper },
+    );
+    expect(result.current).toEqual({ checklist: undefined, drawer: undefined, many: undefined, trade: undefined });
   });
 });
 

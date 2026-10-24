@@ -76,7 +76,6 @@ export function PileTools({
       </label>
       <div role="group" aria-label="Only show" className="flex flex-wrap gap-2">
         {toggle("graded", "Graded")}
-        {toggle("forSale", "For sale")}
         {toggle("rookies", "Rookies")}
       </div>
     </div>

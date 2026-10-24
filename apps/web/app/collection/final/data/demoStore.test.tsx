@@ -27,6 +27,8 @@ import {
   useVariantCompletion,
   useWants,
   ScopeProvider,
+  collectionCopiesIn,
+  collectionCopiesOfCards,
 } from "./store";
 
 /**
@@ -222,13 +224,16 @@ describe("writing through the contract", () => {
   });
 });
 
+/** The seed's copies the collection shows: every one not in the Show box (NEO-359). */
+const collectionSeed = () => initialCollectionState().copies.filter((c) => c.homeId !== SHOW_BOX_ID);
+
 describe("everything I own", () => {
   it("lists every held card once, the newest Have first, with its count", async () => {
     const { result } = renderHook(
       () => ({ actions: useCollectionActions(), owned: useOwnedCards(), cards: useVariantCards(GOLD) }),
       { wrapper },
     );
-    const seed = initialCollectionState().copies;
+    const seed = collectionSeed();
     const distinct = new Set(seed.filter((c) => c.quantity > 0).map((c) => c.cardId));
     expect(result.current.owned!.total).toBe(distinct.size);
     expect(new Set(result.current.owned!.cards.map((c) => c.id)).size).toBe(result.current.owned!.cards.length);
@@ -247,7 +252,7 @@ describe("everything I own", () => {
       { wrapper },
     );
     const offBuild = (buildingIds: ReadonlySet<string>) => {
-      const held = new Set(initialCollectionState().copies.filter((c) => c.quantity > 0).map((c) => c.cardId));
+      const held = new Set(collectionSeed().filter((c) => c.quantity > 0).map((c) => c.cardId));
       return [...held].filter((id) => {
         const card = demoCard(id);
         return !card || !buildingIds.has(card.set.id);
@@ -390,6 +395,108 @@ describe("moving a copy through the contract", () => {
     expect(boxRes.current.box!.copies.find((c) => c.id === unsorted.id)?.slot).toBe(2);
     await act(undo);
     expect(boxRes.current.box!.copies.find((c) => c.id === unsorted.id)?.slot).toBeUndefined();
+  });
+});
+
+describe("a card for sale is out of the collection (NEO-359)", () => {
+  // Jason, 2026-10-24: "Binders are your collection and For Sale are your
+  // inventory." A copy whose home is a box leaves every collection read and
+  // shows on Inventory and in its own drawer; taking it off sale brings it back.
+  /** A seed card held exactly once, in a binder, with nothing in a box. */
+  const loneBinderCopy = () => {
+    const seed = initialCollectionState().copies;
+    return seed.find(
+      (c) => c.homeId !== SHOW_BOX_ID && c.quantity === 1 && !c.upForTrade && seed.filter((o) => o.cardId === c.cardId).length === 1,
+    )!;
+  };
+
+  function useCollectionRig(cardId: string) {
+    const variantId = demoCard(cardId)!.variant.id;
+    const ids = [cardId];
+    return {
+      actions: useCollectionActions(),
+      copiesOf: useCopiesOf(cardId),
+      copiesOfCards: useCopiesOfCards(ids),
+      inVariant: useCopiesInVariant(variantId),
+      completion: useVariantCompletion(variantId),
+      owned: useOwnedCards({ limit: 1000 }),
+      summary: useSummary(),
+      trade: useTradeCopies(),
+      box: useContainerCopies(SHOW_BOX_ID),
+    };
+  }
+
+  it("selling one takes it off All my cards, My Cards and the checklist, onto Inventory; Take off sale brings it back", async () => {
+    const seedCopy = loneBinderCopy();
+    const { result } = renderHook(() => useCollectionRig(seedCopy.cardId), { wrapper });
+    const r = () => result.current;
+    const copy = r().copiesOf!.find((c) => c.id === seedCopy.id)!;
+    const before = { completion: r().completion!, summary: r().summary!, owned: r().owned!.total };
+    expect(r().inVariant!.map((c) => c.id)).toContain(copy.id);
+    expect(r().owned!.cards.map((c) => c.id)).toContain(copy.cardId);
+    expect(r().box!.copies.map((c) => c.id)).not.toContain(copy.id);
+
+    let sold = copy.id;
+    await act(async () => {
+      sold = (await r().actions.moveCopy(copy, SHOW_BOX_ID)).copyId;
+    });
+    // Out of the collection: the checklist, its counts, All my cards, the shelf's tally.
+    expect(r().inVariant!.some((c) => c.cardId === copy.cardId)).toBe(false);
+    expect(r().completion!.ownedAll).toBe(before.completion.ownedAll - 1);
+    expect(r().owned!.cards.map((c) => c.id)).not.toContain(copy.cardId);
+    expect(r().owned!.total).toBe(before.owned - 1);
+    expect(r().summary!.copies).toBe(before.summary.copies - 1);
+    expect(r().summary!.cards).toBe(before.summary.cards - 1);
+    // On Inventory, and still in its own drawer, for sale.
+    expect(r().box!.copies.map((c) => c.id)).toContain(sold);
+    expect(r().copiesOf!.find((c) => c.id === sold)).toMatchObject({ homeId: SHOW_BOX_ID, homeKind: "box" });
+    // Every home's read keeps it; the collection's filter drops it.
+    expect(r().copiesOfCards![copy.cardId].map((c) => c.id)).toEqual([sold]);
+    expect(collectionCopiesOfCards(r().copiesOfCards)![copy.cardId]).toEqual([]);
+    expect(collectionCopiesIn(r().copiesOf, "all")).toEqual([]);
+
+    // Take off sale: back into a binder, back in every count.
+    const inBox = r().copiesOf!.find((c) => c.id === sold)!;
+    await act(async () => {
+      await r().actions.moveCopy(inBox, MAIN_BINDER_ID);
+    });
+    expect(r().inVariant!.some((c) => c.cardId === copy.cardId)).toBe(true);
+    expect(r().completion!.ownedAll).toBe(before.completion.ownedAll);
+    expect(r().owned!.cards.map((c) => c.id)).toContain(copy.cardId);
+    expect(r().owned!.total).toBe(before.owned);
+    expect(r().summary!.copies).toBe(before.summary.copies);
+    expect(r().box!.copies.some((c) => c.cardId === copy.cardId)).toBe(false);
+  });
+
+  it("a copy up for trade leaves the Up for Trade pile while it is for sale, keeping its flag", async () => {
+    const seedCopy = loneBinderCopy();
+    const { result } = renderHook(() => ({ ...useCollectionRig(seedCopy.cardId), containers: useContainers() }), { wrapper });
+    const r = () => result.current;
+    await act(async () => {
+      await r().actions.setTrade(r().copiesOf!.find((c) => c.id === seedCopy.id)!, true);
+    });
+    const traded = r().copiesOf!.find((c) => c.id === seedCopy.id)!;
+    expect(r().trade!.copies.map((c) => c.id)).toContain(traded.id);
+    const pile = () => r().containers!.find((c) => c.id === TRADE_BINDER_ID)!.count!.lines;
+    const lines = pile();
+
+    await act(async () => {
+      await r().actions.moveCopy(traded, SHOW_BOX_ID);
+    });
+    expect(r().trade!.copies.some((c) => c.cardId === traded.cardId)).toBe(false);
+    expect(pile()).toBe(lines - 1);
+    expect(r().copiesOf!.find((c) => c.cardId === traded.cardId)).toMatchObject({ homeKind: "box", upForTrade: true });
+  });
+
+  it("the seed's collection screens hold nothing from the Show box, and its trade pile is not empty", () => {
+    const { result } = renderHook(() => ({ owned: useOwnedCards({ limit: 1000 }), trade: useTradeCopies() }), { wrapper });
+    const boxed = new Set(initialCollectionState().copies.filter((c) => c.homeId === SHOW_BOX_ID).map((c) => c.cardId));
+    const binders = new Set(collectionSeed().map((c) => c.cardId));
+    const onlyBoxed = [...boxed].filter((id) => !binders.has(id));
+    expect(onlyBoxed.length).toBeGreaterThan(0);
+    expect(result.current.owned!.cards.some((c) => onlyBoxed.includes(c.id))).toBe(false);
+    expect(result.current.trade!.copies.length).toBeGreaterThan(0);
+    expect(result.current.trade!.copies.every((c) => c.homeKind !== "box")).toBe(true);
   });
 });
 

@@ -160,8 +160,12 @@ export interface OpResult<T> {
 // Seed
 // ---------------------------------------------------------------------------
 
-/** v4 (NEO-359): one home per copy, slots, trade flag, the Show box. */
-const STATE_VERSION = 4;
+/**
+ * v4 (NEO-359): one home per copy, slots, trade flag, the Show box. v5: the
+ * single trade-bait dupe stays in the collection, up for trade (a card for
+ * sale is Inventory's and never on the Up for Trade pile).
+ */
+const STATE_VERSION = 5;
 const STORAGE_KEY = "nb-collection-final";
 /** The public demo's own sessionStorage key (never the app's). */
 export const PUBLIC_STORAGE_KEY = "nb-collection-demo-public";
@@ -221,18 +225,21 @@ function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>
   const wasTradeBait = binderIds.includes(TRADE_BINDER_ID);
   const binder = binderIds.find((id) => id !== TRADE_BINDER_ID);
   const pocket = pockets.get(copy.id);
+  // The single dupes in Trade bait are what the collector would swap, so they
+  // stay in the collection, up for trade; the stack and the big singles go
+  // to the Show box, for sale. A card for sale is Inventory's and never on
+  // the collection's screens, the Up for Trade pile included (NEO-359).
+  const upForTrade =
+    wasTradeBait && copy.quantity === 1 && !copy.serialNumber && copy.costBasis === undefined;
   let homeId: ContainerId;
   let slot: number | undefined;
-  if (forSale) {
+  if (forSale && !upForTrade) {
     homeId = SHOW_BOX_ID;
     slot = showBoxRow(copy);
   } else {
     homeId = binder ?? MAIN_BINDER_ID;
     slot = pocket && pocket[0] === homeId ? pocket[1] : undefined;
   }
-  // The dupes in Trade bait are what the collector would swap; the big
-  // singles there are for sale only.
-  const upForTrade = wasTradeBait && (copy.quantity > 1 || !copy.serialNumber) && copy.costBasis === undefined;
   return {
     ...details,
     id: copy.id,

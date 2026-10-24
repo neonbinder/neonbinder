@@ -52,13 +52,13 @@ export type LayoutMode = "pockets" | "stack";
 
 export type SortKey = "checklist" | "newest" | "player";
 
+/** All my cards' "Only show" chips. No "For sale": a card for sale is Inventory's and never in the pile (NEO-359). */
 export interface PileFilters {
   graded: boolean;
-  forSale: boolean;
   rookies: boolean;
 }
 
-export const NO_FILTERS: PileFilters = { graded: false, forSale: false, rookies: false };
+export const NO_FILTERS: PileFilters = { graded: false, rookies: false };
 
 /** A real pocket in a binder: where a drop or a pick lands. `slot` is the pocket on its page (0-8). */
 export interface SlotRef {
@@ -221,7 +221,6 @@ export function pilePages(
   const kept = copies.filter((c) => {
     if (c.quantity < 1) return false;
     if (filters.graded && !c.graded) return false;
-    if (filters.forSale && c.homeKind !== "box") return false;
     if (filters.rookies && !cards.get(c.cardId)?.features.includes("RC")) return false;
     return true;
   });

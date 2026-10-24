@@ -12,7 +12,7 @@ import {
   teamNames,
   teamTextColor,
 } from "./data/labels";
-import { isForSale, isWantedIn, useCapabilities, useContainers, useCopiesOf, useScope, useWants } from "./data/store";
+import { collectionCopiesIn, isWantedIn, useCapabilities, useContainers, useCopiesOf, useScope, useWants } from "./data/store";
 import type { Card, Copy, CopyId } from "./data/types";
 import { lineNames, lineSummary } from "./lineItems";
 
@@ -161,15 +161,6 @@ export function FeatureBadges({ card }: { card: Pick<Card, "features" | "printRu
   );
 }
 
-/** The orange price-sticker a copy in a box wears. */
-export function ForSaleBadge() {
-  return (
-    <span className="ml-2 rounded border border-neon-orange-text px-1 text-xs font-semibold text-neon-orange-text">
-      For sale
-    </span>
-  );
-}
-
 /** The green tag a copy flagged Up for trade wears. */
 export function TradeBadge() {
   return (
@@ -185,7 +176,9 @@ const slot = (cls: string) => <span aria-hidden="true" className={`${cls} shrink
  * row under the same number, joined by a neon rail so the stack reads as one
  * card. Card-wide controls (+ Add, and Want in the demo) sit on the stack's
  * top row; each line carries its own Have and Details (and Trade). Each line
- * says where it lives, and a line in a box wears "For sale".
+ * says which binder it lives in. A copy in a box is for sale, Inventory's,
+ * and never reaches a row (NEO-359: `collectionCopiesIn`); the card's drawer
+ * still lists it.
  *
  * Every control's name is distinct: the line's grade is in it, and its home
  * too when two lines would otherwise read the same.
@@ -203,7 +196,7 @@ export default function CardRowGroup({
   groupRef,
 }: {
   card: Card;
-  /** The collector's copies of this card, in the page's scope. */
+  /** The collector's copies of this card in the collection (never one in a box), in the page's scope. */
   copies: Copy[] | undefined;
   actions: RowActions;
   /** Search results span sets: show which set and variant on the subline. */
@@ -273,21 +266,15 @@ export default function CardRowGroup({
     </span>
   );
 
-  const body = (summary: string | null, top: boolean, forSale = false) => (
+  const body = (summary: string | null, top: boolean) => (
     <>
       <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
-        {/* The For sale badge sits outside the truncated text, so a long name never cuts it off. */}
         <div className="flex min-w-0 items-baseline text-sm">
           <span className="min-w-0 sm:truncate">
             <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
             {summary && <span className="text-neon-blue-text"> · {summary}</span>}
           </span>
-          {forSale && (
-            <span className="shrink-0">
-              <ForSaleBadge />
-            </span>
-          )}
         </div>
         <div className="min-h-[1rem] truncate text-xs text-ink-3">
           {team && (
@@ -343,7 +330,7 @@ export default function CardRowGroup({
             const line = names[i];
             return (
               <div key={copy.id} className={rowCls} onClick={() => rowClick(copy.id)}>
-                {body(lineSummary(copy, binders), top, capabilities.binders && isForSale(copy))}
+                {body(lineSummary(copy, binders), top)}
                 <HaveToggle pressed label={`Have ${name}, ${line}`} onToggle={() => actions.removeLine(card, copy)} />
                 {top ? <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} /> : slot(SLOT_ADD)}
                 {trades && (
@@ -371,7 +358,7 @@ export default function CardRowGroup({
 export function SearchHitRow(props: Omit<Parameters<typeof CardRowGroup>[0], "copies">) {
   const all = useCopiesOf(props.card.id);
   const scope = useScope();
-  // The page's scope narrows every row, as the checklist's do.
-  const copies = all && scope !== "all" ? all.filter((c) => c.homeId === scope) : all;
+  // The collection's copies only, narrowed by the page's scope, as the checklist's rows are.
+  const copies = collectionCopiesIn(all, scope);
   return <CardRowGroup {...props} copies={copies} />;
 }

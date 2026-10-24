@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
+import { demoCard, demoVariantId } from "./data/demoStore";
+import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID } from "./store";
 
 /**
  * NEO-358 — a checklist's numbers agree (Jason, 2026-10-23): "Have 2 of 300 ·
@@ -131,5 +133,40 @@ describe("a checklist's counts agree", () => {
     const spoken = within(strip).getByText(/ lit up/).textContent ?? "";
     const [, base, all] = /^\d+ of (\d+) lit up, \d+ of (\d+) with variations/.exec(spoken) ?? [];
     expect(Number(all), spoken).toBeGreaterThan(Number(base));
+  });
+});
+
+describe("a card for sale is out of the checklist (NEO-359)", () => {
+  // Jason, 2026-10-24: "Binders are your collection and For Sale are your
+  // inventory." A card held only in a box reads as not had in a checklist;
+  // taking it off sale from its drawer puts it back in the count.
+  const INSERT = demoVariantId(CHROME, { type: "Inserts", name: "Chrome Rookie Autographs" });
+  const seed = initialCollectionState().copies;
+  const inInsert = (cardId: string) => demoCard(cardId)?.variant.id === INSERT;
+  const boxedOnly = seed.find(
+    (c) =>
+      c.homeId === SHOW_BOX_ID &&
+      inInsert(c.cardId) &&
+      !seed.some((o) => o.cardId === c.cardId && o.homeId !== SHOW_BOX_ID),
+  )!;
+  const heldInBinders = new Set(seed.filter((c) => c.homeId !== SHOW_BOX_ID && inInsert(c.cardId)).map((c) => c.cardId));
+
+  it("counts only the binders' copies, and Take off sale brings the card back", async () => {
+    expect(boxedOnly, "the seed sells a Chrome rookie auto from the Show box").toBeTruthy();
+    renderDemo(
+      `${DEMO}&tab=checklists&set=${CHROME}&type=Inserts&variant=Chrome+Rookie+Autographs&detail=${boxedOnly.cardId}`,
+    );
+    const section = screen.getByRole("heading", { level: 3, name: /Chrome Rookie Autographs$/, hidden: true }).closest("section")!;
+    expect(haveLine(section).owned).toBe(heldInBinders.size);
+
+    // Its drawer still lists it, for sale; take it off sale into a binder.
+    const drawer = screen.getByRole("dialog");
+    expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Take #.+ off sale$/ }));
+    const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
+    fireEvent.change(within(panel).getByRole("combobox", { name: "Back into" }), { target: { value: MAIN_BINDER_ID } });
+    fireEvent.click(within(panel).getByRole("button", { name: /^Take (\d+|it) off sale$/ }));
+    await waitFor(() => expect(haveLine(section).owned).toBe(heldInBinders.size + 1));
+    expect(within(drawer).queryByText(/^For sale · Show box$/)).toBeNull();
   });
 });

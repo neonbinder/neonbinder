@@ -3,6 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "./FinalCollectionPage";
+import { demoCard } from "./data/demoStore";
+import { cardLabel, shortCardName } from "./data/labels";
+import { initialCollectionState, SHOW_BOX_ID } from "./store";
 
 // NEO-356: the demo bar's theme switch asks Clerk who is looking (signed in here).
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
@@ -67,7 +70,7 @@ describe("My Binders", () => {
       "Up for Trade",
     ]);
     // The demo store has Inventory, so its door is the Inventory tab.
-    const box = within(special).getByRole("link", { name: "Inventory, 6 cards for sale" });
+    const box = within(special).getByRole("link", { name: "Inventory, 5 cards for sale" });
     expect(box.getAttribute("href")).toBe("/collection?tab=inventory");
 
     const mine = screen.getByRole("list", { name: "Your binders" });
@@ -75,6 +78,23 @@ describe("My Binders", () => {
     expect(spines[0].getAttribute("aria-label")).toMatch(/^Main,/);
     expect(within(mine).queryByRole("button", { name: /^All my cards,/ })).toBeNull();
     expect(within(mine).queryByRole("button", { name: /^Want List,/ })).toBeNull();
+  });
+
+  it("All my cards holds the binders' cards only: no For sale filter, no card that lives in a box (NEO-359)", () => {
+    const seed = initialCollectionState().copies;
+    const inBinders = new Set(seed.filter((c) => c.homeId !== SHOW_BOX_ID).map((c) => c.cardId));
+    const onlyBoxed = seed.filter((c) => c.homeId === SHOW_BOX_ID && !inBinders.has(c.cardId)).map((c) => demoCard(c.cardId)!);
+    expect(onlyBoxed.length).toBeGreaterThan(0);
+    renderBinders("/collection?tab=binders&all=1");
+    expect(screen.getByRole("heading", { level: 2, name: "All my cards" })).toBeTruthy();
+    expect(screen.getByText("Every card in your binders, one pocket per copy.")).toBeTruthy();
+    expect(screen.queryByText(/yellow tag/)).toBeNull();
+    const only = screen.getByRole("group", { name: "Only show" });
+    expect(within(only).getAllByRole("button").map((b) => b.textContent)).toEqual(["Graded", "Rookies"]);
+    for (const card of onlyBoxed) {
+      expect(screen.queryAllByRole("button", { name: new RegExp(`^${cardLabel(card).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) })).toHaveLength(0);
+    }
+    expect(screen.queryAllByRole("button", { name: /, for sale/ })).toHaveLength(0);
   });
 
   it("All my cards still opens everything and scopes the page to All", () => {
@@ -235,14 +255,26 @@ describe("the hunt tray", () => {
     expect(screen.queryByRole("button", { name: /^Find #12 Jim Kelly in Slab case/ })).toBeNull();
   });
 
-  it("Move here leaves a copy in a box alone: taking it off sale is the drawer's", async () => {
+  it("never lists a copy in a box: a card for sale is Inventory's, and taking it off sale is the drawer's (NEO-359)", async () => {
+    // A seed card with a copy in a binder and a copy in the Show box.
+    const seed = initialCollectionState().copies;
+    const both = seed.find(
+      (c) => c.homeId === SHOW_BOX_ID && seed.some((o) => o.cardId === c.cardId && o.homeId !== SHOW_BOX_ID),
+    )!;
+    const card = demoCard(both.cardId)!;
+    const short = shortCardName(card);
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     renderBinders("/collection?tab=binders&b=binder-slab-case");
-    fireEvent.change(hunt(), { target: { value: "96 contenders favre" } });
-    // Favre has a copy in a binder and one in the Show box: only the binder's moves, straight away.
-    expect(screen.getByRole("button", { name: /^Find #1 Brett Favre in Show box, row \d, for sale$/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /^Move here: 1996 Playoff Contenders #1 Brett Favre/ }));
-    expect(screen.queryByRole("group", { name: /^Which #1 Brett Favre moves/ })).toBeNull();
-    await waitFor(() => expect(statusSays(/^Moved #1 Brett Favre from (?!Show box).+ to Slab case, page 1, pocket \d+\.$/)).toBe(true));
+    fireEvent.change(hunt(), { target: { value: `${card.set.name} ${card.players[0].name}` } });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: new RegExp(`^Find ${escape(short)} in `) }).length).toBeGreaterThan(0));
+    expect(screen.queryAllByRole("button", { name: /in Show box/ })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: /, for sale$/ })).toHaveLength(0);
+    // Only the binder's copy is there to move, so it moves straight away.
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`^Move here: ${escape(cardLabel(card))}`) }));
+    expect(screen.queryByRole("group", { name: new RegExp(`^Which ${escape(short)} moves`) })).toBeNull();
+    await waitFor(() =>
+      expect(statusSays(new RegExp(`^Moved ${escape(short)} from (?!Show box).+ to Slab case, page 1, pocket \\d+\\.$`))).toBe(true),
+    );
   });
 
   it("Add another still adds a new copy", () => {

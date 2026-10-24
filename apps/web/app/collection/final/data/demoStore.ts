@@ -15,9 +15,13 @@
  * opens the same view.
  *
  * The scope (`useScope`, from the page URL) applies here as on Convex: with
- * a binder or box picked, `useCopiesInVariant`, `useVariantCompletion` and
- * the drill's "have N of M" count only that home, while `useCopiesOf` lists
+ * a binder picked, `useCopiesInVariant`, `useVariantCompletion` and the
+ * drill's "have N of M" count only that home, while `useCopiesOf` lists
  * every copy (the drawer shows each with its home).
+ *
+ * NEO-359: every collection read sees only the copies whose home is not a
+ * box (`collectionOf`, the store's `inCollection` rule); `useCopiesOf`,
+ * `useCopiesOfCards` and a box's own `useContainerCopies` list them all.
  *
  * Writes go through the reducer's pure ops (`../store` `demoOps`), so a
  * refusal (a taken pocket, the Want List as a home) rejects with the same
@@ -74,6 +78,7 @@ import {
   completionOf,
   CONTAINER_COPIES_DEFAULT_LIMIT,
   emptyCopyDetails,
+  inCollection,
   OWNED_CARDS_DEFAULT_LIMIT,
   searchable,
   SET_CARDS_DEFAULT_LIMIT,
@@ -267,21 +272,39 @@ function toDemoCopy(copy: Copy): DemoCopy {
   return stored;
 }
 
-/** The copies a scope looks through: one home's, or all of them. */
+/** The collection's copies, per reducer state (`inCollection`, NEO-359). */
+const collectionCache = new WeakMap<CollectionState, DemoCopy[]>();
+
+/**
+ * The copies the collection's screens see: every one whose home is not a
+ * box (a copy in a box is for sale, Inventory's; see `inCollection`).
+ */
+function collectionOf(state: CollectionState): DemoCopy[] {
+  const cached = collectionCache.get(state);
+  if (cached) return cached;
+  const kinds = new Map(state.containers.map((c) => [c.id, c.kind]));
+  const kept = state.copies.filter((c) => inCollection({ homeKind: kinds.get(c.homeId) ?? "binder" }));
+  collectionCache.set(state, kept);
+  return kept;
+}
+
+/** The collection's copies a scope looks through: one home's, or all of them. */
 function inScope(state: CollectionState, scope: Scope): DemoCopy[] {
-  if (scope === "all") return state.copies;
+  const copies = collectionOf(state);
+  if (scope === "all") return copies;
   const home = state.containers.find((c) => c.id === scope);
-  return isHome(home) ? state.copies.filter((c) => c.homeId === scope) : state.copies;
+  return isHome(home) ? copies.filter((c) => c.homeId === scope) : copies;
 }
 
 /** The copies a container lists (see `useContainerCopies`), in slot order. */
 function containerCopies(state: CollectionState, id: string): DemoCopy[] {
   const container = state.containers.find((c) => c.id === id);
   if (!container || container.system === "want") return [];
-  if (container.system === "trade") return state.copies.filter((c) => c.upForTrade);
+  // The trade pile and a smart binder are the collection's: never a copy in a box.
+  if (container.system === "trade") return collectionOf(state).filter((c) => c.upForTrade);
   if (container.rule) {
     const rule = fixtureRule(container.rule);
-    return state.copies.filter((c) => {
+    return collectionOf(state).filter((c) => {
       const card = fixtureCards.find((f) => f.id === c.cardId);
       return !!card && evaluateRule(rule, card);
     });
@@ -580,7 +603,7 @@ export const DEMO_DATA: CollectionData = {
 
   useOwnedCards(options) {
     const limit = Math.max(1, Math.floor(options?.limit ?? OWNED_CARDS_DEFAULT_LIMIT));
-    const copies = useDemoState().state.copies;
+    const copies = collectionOf(useDemoState().state);
     return useMemo((): OwnedCards => {
       // The reducer appends each new copy, so the newest copies are last:
       // walking backwards lists the most recently added card first.
@@ -623,7 +646,9 @@ export const DEMO_DATA: CollectionData = {
   },
 
   useSummary() {
-    const { copies, buildingSetIds } = useDemoState().state;
+    const state = useDemoState().state;
+    const copies = collectionOf(state);
+    const buildingSetIds = state.buildingSetIds;
     return useMemo(() => {
       const building = new Set<string>(buildingSetIds);
       const cards = new Set(copies.map((c) => c.cardId));
@@ -660,7 +685,7 @@ export const DEMO_DATA: CollectionData = {
     const state = useDemoState().state;
     const limit = options?.limit;
     return useMemo(
-      () => page(state.copies.filter((c) => c.upForTrade), state.containers, limit),
+      () => page(collectionOf(state).filter((c) => c.upForTrade), state.containers, limit),
       [state, limit],
     );
   },

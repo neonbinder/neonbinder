@@ -128,7 +128,7 @@ function blurbFor({ view, container, mode, describeRule }: OpenInput): string[] 
   }
   if (view.kind === "all") {
     return [
-      "Every card you own, one pocket per copy. A yellow tag means it lives in a box, for sale.",
+      "Every card in your binders, one pocket per copy.",
       "Press a card to pull it out of the sleeve and see the details.",
     ];
   }

@@ -141,11 +141,11 @@ export interface CollectionData {
   useSetPath(setId: SetId | null): SetPath | null | undefined;
   /** A checklist's cards, in checklist order. */
   useVariantCards(variantId: VariantId | null): Card[] | undefined;
-  /** How much of a checklist the collector has (in the demo, inside the picked binder). */
+  /** How much of a checklist the collector's collection holds (inside the picked binder); a copy in a box never counts. */
   useVariantCompletion(variantId: VariantId | null): Completion | undefined;
   /**
    * How much of a whole set the collector has, every checklist together (in
-   * the view scope). The totals are the set summary's; while the summary or
+   * the view scope; a copy in a box never counts). The totals are the set summary's; while the summary or
    * the counts load, `undefined`.
    */
   useSetCompletion(setId: SetId | null): SetCompletion | undefined;
@@ -163,14 +163,19 @@ export interface CollectionData {
   useEntityCards(pick: EntityPick | null): SearchResult | undefined;
   /** "Sets I'm building", as the collector chose them (never inferred). */
   useBuildingSets(): SetRef[] | undefined;
-  /** Every copy of one card the collector owns, in every home. */
+  /**
+   * Every copy of one card the collector owns, in every home, boxes too:
+   * the card's drawer. A collection screen passes it through
+   * `collectionCopiesIn`.
+   */
   useCopiesOf(cardId: CardId | null): Copy[] | undefined;
-  /** The collector's copies of every card in a checklist (in the demo, inside the picked binder). */
+  /** The collector's copies of every card in a checklist (inside the picked binder), never one in a box. */
   useCopiesInVariant(variantId: VariantId | null): Copy[] | undefined;
-  /** The whole collection at a glance. */
+  /** The whole collection at a glance: copies in a box are inventory, not counted. */
   useSummary(): CollectionSummary | undefined;
   /**
-   * Every card the collector holds, most recently touched first, up to
+   * Every card the collector holds in the collection (never a copy in a
+   * box), most recently touched first, up to
    * `limit`: raise the limit to page further. The Convex store pages the
    * server for as many as it needs, so there is no ceiling but the limit.
    */
@@ -182,18 +187,22 @@ export interface CollectionData {
   useContainers(): Container[] | undefined;
   /**
    * The copies in one container, in slot order (unslotted last), up to
-   * `limit`. A binder or box: the copies whose home it is. The Up for Trade
-   * pile: the flagged copies (same as `useTradeCopies`). A smart binder: the
-   * copies its rule matches (demo only). The Want List: none (`useWants`).
+   * `limit`. A binder or box: the copies whose home it is (a box's for the
+   * Inventory tab). The Up for Trade pile: the flagged copies (same as
+   * `useTradeCopies`). A smart binder: the copies its rule matches (demo
+   * only). The Want List: none (`useWants`). The trade pile and a smart
+   * binder never list a copy in a box.
    */
   useContainerCopies(containerId: ContainerId | null, options?: PageOptions): ContainerCopies | undefined;
-  /** Every copy flagged Up for Trade, wherever it lives, up to `limit`. */
+  /** Every copy flagged Up for Trade in a binder (never one in a box), up to `limit`. */
   useTradeCopies(options?: PageOptions): ContainerCopies | undefined;
   /** The Want List: every want (at most `MAX_WANTS`). */
   useWants(): Want[] | undefined;
   /**
    * The collector's copies of each card asked for (the hunt tray), keyed by
-   * card id; a card held nowhere maps to `[]`. Keep the list short: the
+   * card id; a card held nowhere maps to `[]`. Every home, boxes too (the
+   * Inventory tray moves a box's copies): a collection screen passes the
+   * answer through `collectionCopiesOfCards`. Keep the list short: the
    * Convex store asks in chunks of 50, and lists at most ten line items of a
    * card (enough to say "you have it, here"; `useCopiesOf` has them all).
    */
@@ -522,6 +531,66 @@ export function wantOf(wants: readonly Want[] | undefined, cardId: CardId): Want
 /** True when the copy's home is a box: it is for sale. */
 export function isForSale(copy: Pick<Copy, "homeKind">): boolean {
   return copy.homeKind === "box";
+}
+
+// ---------------------------------------------------------------------------
+// The collection never shows a card that is for sale (NEO-359)
+// ---------------------------------------------------------------------------
+//
+// Jason, 2026-10-24: "cards that are for sale should not be in binders. They
+// are two different concepts. Binders are your collection and For Sale are
+// your inventory. When a card is put up for sale it should be taken out of
+// the binder and moved to whatever box it is in."
+//
+// A copy whose home is a box is inventory. It never appears on a collection
+// screen: My Binders (every binder, All my cards, Up for Trade, a smart
+// binder, the Want List's "landed", a browsed set, the hunt tray), My Cards
+// (scoreboards, the wall, the need list, every owned-card shelf, "Everything
+// else"), Checklists (Have, completion, row stacks, the drill's "have N of
+// M") and the shelf's counts. It appears on the Inventory tab and in the
+// card's own drawer (`useCopiesOf`), whose line reads "For sale · <box>" so
+// it can be taken off sale.
+//
+// The rule lives here, once. Both stores apply it to their collection reads
+// (`useCopiesInVariant`, `useVariantCompletion`, `useSetCompletion`,
+// `useDrill`, `useSummary`, `useOwnedCards`, `useTradeCopies` and the trade
+// pile's and smart binders' `useContainerCopies`); a view that reads every
+// home (`useCopiesOf`, `useCopiesOfCards`) for a collection screen passes the
+// answer through `collectionCopies` / `collectionCopiesIn` /
+// `collectionCopiesOfCards`.
+
+/** True when a copy may show on a collection screen: its home is a binder, not a box. */
+export function inCollection(copy: Pick<Copy, "homeKind">): boolean {
+  return !isForSale(copy);
+}
+
+/** The copies a collection screen shows: every one whose home is not a box. `undefined` (loading) stays `undefined`. */
+export function collectionCopies<T extends Pick<Copy, "homeKind">>(copies: readonly T[]): T[];
+export function collectionCopies<T extends Pick<Copy, "homeKind">>(copies: readonly T[] | undefined): T[] | undefined;
+export function collectionCopies<T extends Pick<Copy, "homeKind">>(copies: readonly T[] | undefined): T[] | undefined {
+  return copies?.filter(inCollection);
+}
+
+/**
+ * A collection screen's copies of a card under the page's scope: the
+ * collection's only, narrowed to the picked binder when one is picked.
+ */
+export function collectionCopiesIn<T extends Pick<Copy, "homeKind" | "homeId">>(
+  copies: readonly T[] | undefined,
+  scope: Scope,
+): T[] | undefined {
+  const kept = collectionCopies(copies);
+  return kept && scope !== "all" ? kept.filter((c) => c.homeId === scope) : kept;
+}
+
+/** `useCopiesOfCards`' answer for a collection screen: each card's collection copies (`[]` when only a box holds it). */
+export function collectionCopiesOfCards(
+  byCard: Record<CardId, Copy[]> | undefined,
+): Record<CardId, Copy[]> | undefined {
+  if (!byCard) return byCard;
+  const out: Record<CardId, Copy[]> = {};
+  for (const [id, copies] of Object.entries(byCard)) out[id] = collectionCopies(copies);
+  return out;
 }
 
 /** A line item's slot order: slotted first, by slot; then the rest as they came. */

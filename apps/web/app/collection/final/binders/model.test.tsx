@@ -165,8 +165,8 @@ describe("All my cards: the pile", () => {
     expect(cardsOnPages(pilePages(all, byId, "checklist", { ...NO_FILTERS, graded: true }))).toEqual([c1.id]);
   });
 
-  it("filters to for-sale copies by their home being a box", () => {
-    expect(cardsOnPages(pilePages(all, byId, "checklist", { ...NO_FILTERS, forSale: true }))).toEqual([c2.id]);
+  it("has no For sale filter: a card for sale is Inventory's, never in the pile (NEO-359)", () => {
+    expect(Object.keys(NO_FILTERS).sort()).toEqual(["graded", "rookies"]);
   });
 
   it("sorts newest first, then by checklist", () => {

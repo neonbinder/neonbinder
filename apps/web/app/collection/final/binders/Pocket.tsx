@@ -103,8 +103,6 @@ export default function Pocket({
     const { card, copies } = content;
     const qty = copies.reduce((n, c) => n + c.quantity, 0);
     const slab = copies.length === 1 ? slabLabel(copies[0]) : null;
-    // A copy whose home is a box is for sale (NEO-359): the tag says so, no price.
-    const sale = copies.some((c) => c.homeKind === "box");
     const open = () => slideOut(faceRef.current, () => onOpen(card, copies));
     const art = (
       <>
@@ -119,11 +117,6 @@ export default function Pocket({
         {qty > 1 && (
           <span aria-hidden="true" className="p2-qty">
             ×{qty}
-          </span>
-        )}
-        {sale && (
-          <span aria-hidden="true" className="p2-tag">
-            Sale
           </span>
         )}
       </>

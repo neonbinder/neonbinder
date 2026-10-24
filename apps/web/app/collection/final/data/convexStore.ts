@@ -21,6 +21,17 @@
  * leaves in the same update that adds it where it lands, so a card never
  * shows in two places.
  *
+ * NEO-359: a copy in a box is for sale and never shows on a collection
+ * screen (`inCollection` in `./store`). The lists the server sends are
+ * filtered here once the shelf says which homes are boxes (every copy read
+ * waits for the shelf). The server's COUNTS still include box copies, and
+ * NEO-364 makes them exclude boxes: `collection.summary` (the Main tally and
+ * its recount), `collection.ownedCards`, `collection.variantCompletion` and
+ * `collection.setCompletion` under All, `collection.copiesInVariant` under
+ * All and `collection.tradeCopies` (both filtered here), and the trade
+ * pile's stored count in `collectionContainers.list`. Real Inventory is off, so no real
+ * copy lives in a box yet.
+ *
  * Conversions between the server's copy and the view's (see `CopyDetails` in
  * `./types`): `costCents` ↔ `costBasis` dollars, `acquiredOn` ↔ `acquiredAt`,
  * `grading` ↔ `graded`, absent notes ↔ "". `updateCopy` on the server
@@ -52,6 +63,7 @@ import type {
 import { finishForVariant } from "./finish";
 import {
   bySlot,
+  collectionCopies,
   CollectionStoreContext,
   completionOf,
   CONTAINER_COPIES_DEFAULT_LIMIT,
@@ -562,7 +574,9 @@ export const CONVEX_DATA: CollectionData = {
   useCopiesOf(cardId) {
     const homes = useHomes();
     const raw = useQuery(api.collection.copiesOf, cardId ? { cardId } : "skip");
-    return useMemo(() => raw?.map((r) => toCopy(r, homes)), [raw, homes]);
+    // Waits for the shelf: until a copy's home is known it cannot be told
+    // apart from one in a box, and a collection screen never shows those.
+    return useMemo(() => (homes ? raw?.map((r) => toCopy(r, homes)) : undefined), [raw, homes]);
   },
 
   useCopiesInVariant(variantId) {
@@ -572,7 +586,11 @@ export const CONVEX_DATA: CollectionData = {
       api.collection.copiesInVariant,
       variantId ? { variantId, ...(homeId ? { homeId } : {}) } : "skip",
     );
-    return useMemo(() => raw?.map((r) => toCopy(r, homes)), [raw, homes]);
+    // NEO-364: under All the server lists box copies too; they never show here.
+    return useMemo(
+      () => (homes && raw ? collectionCopies(raw.map((r) => toCopy(r, homes))) : undefined),
+      [raw, homes],
+    );
   },
 
   useSummary() {
@@ -678,12 +696,14 @@ export const CONVEX_DATA: CollectionData = {
     );
     const trade = usePagedUpTo(api.collection.tradeCopies, isTrade ? {} : "skip", limit);
     return useMemo((): ContainerCopies | undefined => {
-      if (containerId === null || row === undefined) return undefined;
+      if (containerId === null || row === undefined || !homes) return undefined;
       if (row === null || row.system === "want") return { copies: [], truncated: false };
       const pages = isTrade ? trade : inContainer;
       if (pages === undefined) return undefined;
+      const copies = pages.results.slice(0, limit).map((r) => toCopy(r, homes));
       return {
-        copies: bySlot(pages.results.slice(0, limit).map((r) => toCopy(r, homes))),
+        // The trade pile is the collection's: never a copy in a box (NEO-364 moves this to the server).
+        copies: bySlot(isTrade ? collectionCopies(copies) : copies),
         truncated: pages.results.length > limit || !pages.exhausted,
       };
     }, [containerId, row, isTrade, trade, inContainer, limit, homes]);
@@ -694,9 +714,10 @@ export const CONVEX_DATA: CollectionData = {
     const limit = limitOf(options?.limit, CONTAINER_COPIES_DEFAULT_LIMIT);
     const pages = usePagedUpTo(api.collection.tradeCopies, {}, limit);
     return useMemo((): ContainerCopies | undefined => {
-      if (pages === undefined) return undefined;
+      if (pages === undefined || !homes) return undefined;
       return {
-        copies: pages.results.slice(0, limit).map((r) => toCopy(r, homes)),
+        // Never a copy in a box (NEO-364 moves this to the server).
+        copies: collectionCopies(pages.results.slice(0, limit).map((r) => toCopy(r, homes))),
         truncated: pages.results.length > limit || !pages.exhausted,
       };
     }, [pages, limit, homes]);
@@ -724,6 +745,8 @@ export const CONVEX_DATA: CollectionData = {
       if (key === null) return undefined;
       const out: Record<string, Copy[]> = {};
       if (key === "") return out;
+      // Every home, boxes too; waits for the shelf so a box copy is known as one.
+      if (!homes) return undefined;
       for (const id of key.split("\n")) out[id] = [];
       for (let i = 0; i < Object.keys(requests).length; i++) {
         const part = results[String(i)] as RawCopiesOfMany | undefined | Error;
@@ -754,10 +777,17 @@ function limitOf(limit: number | undefined, fallback: number): number {
   return Math.max(1, Math.floor(limit ?? fallback));
 }
 
-/** The shelf by id, for a copy's home name and kind. Stable while the shelf is. */
-function useHomes(): Homes {
+/**
+ * The shelf by id, for a copy's home name and kind. Stable while the shelf
+ * is; `undefined` while it loads (a copy's home kind is unknown until then,
+ * and the collection's reads wait for it: NEO-359).
+ */
+function useHomes(): Homes | undefined {
   const raw = useQuery(api.collectionContainers.list, {});
-  return useMemo(() => new Map((raw ?? []).map((c) => [c._id as string, { kind: c.kind, name: c.name }])), [raw]);
+  return useMemo(
+    () => (raw ? new Map(raw.map((c) => [c._id as string, { kind: c.kind, name: c.name }])) : undefined),
+    [raw],
+  );
 }
 
 /** The scope as a `homeId` argument: the picked home, or undefined under All. */
