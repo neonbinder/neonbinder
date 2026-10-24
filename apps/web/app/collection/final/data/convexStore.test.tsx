@@ -317,7 +317,7 @@ describe("copies between the view and the server", () => {
 });
 
 describe("the real store's capabilities and reads", () => {
-  it("turns on binders, wants, trade and scope, and leaves the demo-only features off", () => {
+  it("turns on binders, wants, trade and scope, and leaves the demo-only features and Inventory off", () => {
     const { result } = renderHook(() => ({ caps: useCapabilities(), demo: useDemoExtension() }), { wrapper });
     expect(result.current.caps).toEqual(REAL_CAPABILITIES);
     expect(result.current.caps).toMatchObject({
@@ -329,6 +329,7 @@ describe("the real store's capabilities and reads", () => {
       share: false,
       cardRequests: false,
       demoChrome: false,
+      inventory: false,
     });
     expect(result.current.demo).toBeUndefined();
   });

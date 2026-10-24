@@ -94,6 +94,8 @@ describe("the demo store in app mode", () => {
       "My Cards",
       "My Binders",
       "Checklists",
+      // The demo store has Inventory (NEO-359); the real one does not yet.
+      "Inventory",
     ]);
   });
 

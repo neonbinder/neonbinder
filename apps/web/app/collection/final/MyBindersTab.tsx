@@ -119,8 +119,7 @@ import {
   type NewContainer,
   type Scope,
 } from "./data/types";
-import { useNavigate } from "react-router";
-import { useCollectionMode, useCollectionParams } from "./mode";
+import { useCollectionParams, useReplaceParams } from "./mode";
 import { usePageApi, type OpenCardOptions } from "./pageApi";
 import type { CollectionTab, GoToTabParams } from "./store";
 
@@ -138,9 +137,10 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * the URL (`b=`, `set=`, `all=1`), pushed so Back steps out of it; opening
  * a binder scopes the whole page to it on the same push.
  *
- * The same desk is Inventory (`surface="inventory"`, `/inventory`): the box
- * shelf, an open box of five rows (`b=`) and the whole stock (`sale=1`),
- * with the hunt tray only while a box is open. See `DeskSurface`.
+ * The same desk is the Inventory tab (`surface="inventory"`, `tab=inventory`,
+ * the demo only for now): the box shelf, an open box of five rows (`b=`)
+ * and the whole stock (`sale=1`), with the hunt tray only while a box is
+ * open. See `DeskSurface`.
  *
  * Every drag has a button or a key that does the same thing: Slot in / Move
  * here / Put here in the tray, Up for trade, a box card's row picker and
@@ -152,17 +152,18 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * sale and My Collection is things that are for your collection. They
  * should not mix on the screens"):
  *
- * - `"collection"`: My Binders on `/collection`. Binders only: Main, your
+ * - `"collection"`: My Binders (`tab=binders`). Binders only: Main, your
  *   binders, the special shelf. A box id on the URL (`b=`), or the old
- *   combined for-sale view (`sale=1`), goes to `/inventory` instead.
- * - `"inventory"`: `/inventory`. Boxes only: the box shelf, an open box
- *   (`b=<boxId>`) and everything for sale at once (`sale=1`). A binder id
- *   goes to My Binders.
+ *   combined for-sale view (`sale=1`), goes to the Inventory tab instead
+ *   where the store has one, and otherwise just shows the shelf.
+ * - `"inventory"`: the Inventory tab (`tab=inventory`). Boxes only: the box
+ *   shelf, an open box (`b=<boxId>`) and everything for sale at once
+ *   (`sale=1`). A binder id goes to My Binders.
  */
 export type DeskSurface = "collection" | "inventory";
 
 export interface MyBindersTabProps {
-  /** The collection's My Binders (default), or the Inventory screen. */
+  /** The collection's My Binders (default), or the Inventory tab. */
   surface?: DeskSurface;
   openCard: (cardId: CardId, opts?: OpenCardOptions) => void;
   goToTab: (tab: CollectionTab, p?: GoToTabParams) => void;
@@ -231,26 +232,21 @@ export default function MyBindersTab({
   else if (params.get("all")) view = { kind: "all" };
   const viewId = view ? viewKey(view) : "shelf";
 
-  // A link to the other screen's thing (a box here, a binder on Inventory,
-  // the old `sale=1`) goes there, in place of this entry, so Back skips it.
-  // The public demo has no Inventory screen: there, a box id just shows the shelf.
-  const navigate = useNavigate();
-  const { mode: pageMode } = useCollectionMode();
-  const elsewhere =
-    pageMode === "public"
-      ? null
-      : inventory
-        ? named && !isBoxHome(named)
-          ? `/collection?${new URLSearchParams({ tab: "binders", b: named.id }).toString()}`
-          : null
-        : named && isBoxHome(named)
-          ? `/inventory?${new URLSearchParams({ b: named.id }).toString()}`
-          : params.get("sale")
-            ? "/inventory?sale=1"
-            : null;
+  // A link to the other tab's thing (a box here, a binder on Inventory, the
+  // old `sale=1`) goes there, in place of this entry, so Back skips it. A
+  // store with no Inventory tab (the real collection, for now) just shows
+  // the shelf for a box id.
+  const replaceParams = useReplaceParams();
+  const elsewhere: CollectionTab | null = inventory
+    ? named && !isBoxHome(named)
+      ? "binders"
+      : null
+    : capabilities.inventory && ((named && isBoxHome(named)) || params.get("sale"))
+      ? "inventory"
+      : null;
   useEffect(() => {
-    if (elsewhere) void navigate(elsewhere, { replace: true });
-  }, [elsewhere, navigate]);
+    if (elsewhere) replaceParams((p) => p.set("tab", elsewhere));
+  }, [elsewhere, replaceParams]);
   const container =
     view?.kind === "binder"
       ? containers?.find((c) => c.id === view.binderId)
@@ -492,9 +488,9 @@ export default function MyBindersTab({
     setFoundCopy(null);
     setPending(null);
     if (inventory) {
-      // Inventory is one screen, not a tab: its views carry no tab and no
-      // scope (a box opened here does not narrow the collection's counts).
-      const p = new URLSearchParams({ scope: "all" });
+      // A box opened here never narrows the collection's counts, so its
+      // views leave the scope as it was for the other tabs.
+      const p = new URLSearchParams({ tab: "inventory" });
       if (next?.kind === "binder") p.set("b", next.binderId);
       if (next?.kind === "sale") p.set("sale", "1");
       setParams(p);

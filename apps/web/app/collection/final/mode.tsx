@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   type MutableRefObject,
+  type Ref,
   type ReactNode,
 } from "react";
 import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
@@ -82,7 +83,10 @@ export interface DemoHistoryState {
 
 /** Where a signed-in destination goes from the public demo, and why. */
 export const PUBLIC_DESTINATIONS = {
-  /** The Inventory long box: `/inventory` needs an account. */
+  /**
+   * The Inventory long box, for a demo store with no Inventory tab:
+   * `/inventory` needs an account. (The demo has the tab today, NEO-359.)
+   */
   inventory: "/managing-inventory",
   /** "Print label" / "Print this label": `/print/spine-label` needs an account. */
   printShop: "/print-shop",
@@ -92,7 +96,7 @@ export const PUBLIC_DESTINATIONS = {
 
 interface CollectionModeValue {
   mode: CollectionMode;
-  /** Where the Inventory long box leads. */
+  /** Where the Inventory long box leads when the store has no Inventory tab. */
   inventoryHref: string;
   /** Where a "Print label" link leads, given the Print Shop link the app uses. */
   printLabelHref: (appHref: string) => string;
@@ -328,7 +332,7 @@ export function ParamLink({
   search,
   onClick,
   ...rest
-}: Omit<LinkProps, "to" | "state"> & { search: ParamsInit }) {
+}: Omit<LinkProps, "to" | "state"> & { search: ParamsInit; ref?: Ref<HTMLAnchorElement> }) {
   const target = useViewTarget()(search);
   const latestRef = useLatestEntry();
   return (

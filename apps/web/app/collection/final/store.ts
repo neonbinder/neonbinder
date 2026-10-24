@@ -34,10 +34,10 @@
  * `updateCopy` never folds and never changes a home (that is `moveCopy`).
  *
  * ---------------------------------------------------------------------------
- * Props contract for the three tabs (My Cards, My Binders, Checklists)
+ * Props contract for the tabs (My Cards, My Binders, Checklists, Inventory)
  * ---------------------------------------------------------------------------
  *
- *   type CollectionTab = "cards" | "binders" | "checklists";   // ?tab=
+ *   type CollectionTab = "cards" | "binders" | "checklists" | "inventory";   // ?tab=
  *
  * - `goToTab("checklists", { q })` opens Checklists with that search
  *   prefilled; `goToTab("checklists", { cardId })` opens that card's
@@ -131,7 +131,7 @@ export interface CollectionState {
   version: number;
 }
 
-export type CollectionTab = "cards" | "binders" | "checklists";
+export type CollectionTab = "cards" | "binders" | "checklists" | "inventory";
 
 export interface GoToTabParams {
   /** Checklists: prefill the search box. */

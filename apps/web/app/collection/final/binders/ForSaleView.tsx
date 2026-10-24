@@ -10,7 +10,7 @@ import { forSaleCount } from "./Shelf";
 import "./box.css";
 
 /**
- * NEO-359 — Inventory's whole stock (`/inventory?sale=1`, the long box on
+ * NEO-359 — Inventory's whole stock (`tab=inventory&sale=1`, the long box on
  * Inventory's shelf): every copy that is for sale, which is every copy whose
  * home is a box, box by box. The headline is the boxes' counts summed.
  */

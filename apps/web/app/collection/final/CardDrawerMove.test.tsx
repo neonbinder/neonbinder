@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
-import { initialCollectionState } from "./store";
+import { initialCollectionState, MAIN_BINDER_ID, PUBLIC_STORAGE_KEY } from "./store";
 
 /**
  * NEO-359 — a line item's Move, Sell and Take off sale panels in the drawer,
@@ -190,5 +190,26 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(within(drawer).queryByRole("form", { name: /off sale$/ })).toBeNull();
     expect(lines(drawer)).toHaveLength(LINES);
     expect(status(/off sale/)).toBe(false);
+  });
+
+  it("Sell with no box yet says how to make one, and goes to the demo's Inventory tab", async () => {
+    // The demo with its boxes gone: every copy back in Main.
+    const seed = initialCollectionState();
+    const boxes = new Set(seed.containers.filter((c) => c.kind === "box").map((c) => c.id));
+    const state = {
+      ...seed,
+      containers: seed.containers.filter((c) => !boxes.has(c.id)),
+      copies: seed.copies.map((c) => (boxes.has(c.homeId) ? { ...c, homeId: MAIN_BINDER_ID, row: undefined, slot: undefined } : c)),
+    };
+    window.sessionStorage.setItem(PUBLIC_STORAGE_KEY, JSON.stringify(state));
+    const drawer = renderDrawer();
+    fireEvent.click(stackSell(drawer));
+    const group = within(drawer).getByRole("group", { name: /^Sell / });
+    expect(within(group).getByText("No boxes yet, so there's nowhere to sell it from.")).toBeTruthy();
+    expect(within(group).getByText("Make a box on Inventory, then come back and press Sell.")).toBeTruthy();
+    const link = within(group).getByRole("link", { name: "Go to Inventory" });
+    await frames();
+    expect(document.activeElement).toBe(link);
+    expect(link.getAttribute("href")).toBe("/binder-tracking?demo=on&tab=inventory");
   });
 });

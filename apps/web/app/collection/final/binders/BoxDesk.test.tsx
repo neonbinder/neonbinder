@@ -232,7 +232,7 @@ describe("the box on the page (demo store)", () => {
       <Theme>
         <MemoryRouter initialEntries={[start]}>
           <Routes>
-            <Route path="/inventory" element={<FinalCollectionPage surface="inventory" />} />
+            <Route path="/collection" element={<FinalCollectionPage />} />
           </Routes>
         </MemoryRouter>
       </Theme>,
@@ -240,7 +240,7 @@ describe("the box on the page (demo store)", () => {
   }
 
   it("opens the Show box with its unsorted strip, and Alt+ArrowUp from the table lands the card in Row 5 and keeps the keyboard on it", async () => {
-    renderPage("/inventory?b=box-show");
+    renderPage("/collection?tab=inventory&b=box-show");
     const region = await screen.findByRole("region", { name: "Show box, open" });
     const strip = screen.getByRole("group", { name: "Not sorted into a row yet" });
     const unsorted = [...strip.querySelectorAll<HTMLElement>("[data-box-copy]")];

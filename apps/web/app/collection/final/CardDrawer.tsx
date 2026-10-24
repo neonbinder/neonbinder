@@ -160,7 +160,7 @@ function GoneCard({ cardId, focusCopyId }: { cardId: CardId; focusCopyId?: CopyI
         binders={binders}
         focusCopyId={focusCopyId}
         showTrade={capabilities.trade}
-        showSale={capabilities.binders}
+        showSale={capabilities.binders && capabilities.inventory}
         onRemove={(copy) =>
           void api.run(
             () => writes.removeCopy(copy),

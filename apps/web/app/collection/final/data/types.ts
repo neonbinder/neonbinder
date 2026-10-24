@@ -598,6 +598,13 @@ export interface Capabilities {
   smartBinders: boolean;
   /** Share links for a binder, the Want List or a set (no public profile route yet). */
   share: boolean;
+  /**
+   * Inventory (NEO-359): the Inventory tab with the boxes, New box, an open
+   * box, everything for sale at once, and the card drawer's Sell / Take off
+   * sale. Demo only until the real Inventory ships; the real shelf's
+   * Inventory long box leads to the `/inventory` page instead.
+   */
+  inventory: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -609,6 +616,7 @@ export const ALL_CAPABILITIES: Capabilities = {
   demoChrome: true,
   smartBinders: true,
   share: true,
+  inventory: true,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -620,9 +628,10 @@ export const NO_CAPABILITIES: Capabilities = {
   demoChrome: false,
   smartBinders: false,
   share: false,
+  inventory: false,
 };
 
-/** What the real collection can do today (NEO-359: binders, boxes, wants, trade and scope). */
+/** What the real collection can do today (NEO-359: binders, wants, trade and scope; Inventory comes later). */
 export const REAL_CAPABILITIES: Capabilities = {
   ...NO_CAPABILITIES,
   binders: true,

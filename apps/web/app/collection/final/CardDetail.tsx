@@ -16,7 +16,6 @@ import { Input } from "@/components/primitives/Input";
 import CardFace from "../prototypes/_shared/CardFace";
 import CopyDetailsForm, { type FormHome } from "../prototypes/_shared/CopyDetailsForm";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT, shortDate, useLiverySurface } from "../prototypes/p1/ui";
-import { Link } from "react-router";
 import { FeatureBadges, TradeBadge } from "./CardRows";
 import { useScopedName } from "./catalog/home";
 import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
@@ -39,7 +38,7 @@ import {
 } from "./data/store";
 import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
-import { useCollectionMode } from "./mode";
+import { ParamLink } from "./mode";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -150,7 +149,12 @@ export default function CardDetail({
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
-  const addKinds = capabilities.binders ? (boxHomes.some((h) => h.id === defaultHome) ? boxHomes : binderHomes) : [];
+  // A box takes adds only where the store has Inventory (the demo, for now).
+  const addKinds = !capabilities.binders
+    ? []
+    : capabilities.inventory && boxHomes.some((h) => h.id === defaultHome)
+      ? boxHomes
+      : binderHomes;
   const [editing, setEditing] = useState<{ id: string; value: FormValue; trade: boolean } | null>(null);
 
   const addRef = useRef<HTMLDivElement>(null);
@@ -385,7 +389,7 @@ export default function CardDetail({
         }}
         onRemove={remove}
         showTrade={capabilities.trade}
-        showSale={capabilities.binders}
+        showSale={capabilities.binders && capabilities.inventory}
         homes={capabilities.binders ? homes : undefined}
         onMove={capabilities.binders ? move : undefined}
       />
@@ -465,7 +469,9 @@ function shiftHomes(copy: Copy, homes: readonly Container[], shift: Shift): Cont
  * NEO-359: the collection and Inventory never mix in one list. Move goes to
  * another binder (or, for a line in a box, another box). Going up for sale
  * is its own path: Sell picks a box; a line in a box has Take off sale,
- * which picks the binder it goes back into.
+ * which picks the binder it goes back into. Both come with Inventory (the
+ * `inventory` capability: the demo only for now); without it a line has
+ * Edit, Move and Remove.
  *
  * Remove takes the row, and the button with it, away once the write lands:
  * the keyboard moves to the next copy's Edit (or Remove), else the one
@@ -499,7 +505,7 @@ export function CopyList({
   renderEditor?: (copy: Copy, index: number) => ReactNode;
   /** Copies flagged Up for trade wear a tag (capability `trade`). */
   showTrade?: boolean;
-  /** Copies in a box wear a "For sale" tag (capability `binders`). */
+  /** Sell / Take off sale, and a box line's "For sale · <box>" tag (capabilities `binders` and `inventory`). */
   showSale?: boolean;
   /** Every home a line can go to (capability `binders`): Move, Sell and Take off sale pick from it. */
   homes?: readonly Container[];
@@ -755,7 +761,6 @@ function MovePanel({
   const selectId = useId();
   const helpId = useId();
   const words = SHIFT_WORDS[shift];
-  const { inventoryHref, mode } = useCollectionMode();
   const [to, setTo] = useState<ContainerId>(homes[0]?.id ?? "");
   const [quantity, setQuantity] = useState<number>(copy.quantity);
   const stack = copy.quantity > 1;
@@ -797,22 +802,18 @@ function MovePanel({
         className="basis-full rounded-md border border-dashed border-control bg-sheet p-3"
       >
         <p className="text-sm text-ink">No boxes yet, so there&apos;s nowhere to sell it from.</p>
-        <p className="mt-1 text-xs text-ink-3">
-          {mode === "public"
-            ? "Boxes come with Inventory: take the tour to see how selling works."
-            : "Make a box on Inventory, then come back and press Sell."}
-        </p>
+        <p className="mt-1 text-xs text-ink-3">Make a box on Inventory, then come back and press Sell.</p>
         <div className="mt-3 flex flex-wrap justify-end gap-2">
           <button type="button" onClick={onCancel} className={QUIET_BUTTON}>
             {words.keep}
           </button>
-          <Link
+          <ParamLink
             ref={linkRef}
-            to={inventoryHref}
+            search={{ tab: "inventory" }}
             className="inline-flex min-h-8 items-center rounded-md px-2 text-sm font-semibold text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
           >
             Go to Inventory
-          </Link>
+          </ParamLink>
         </div>
       </div>
     );

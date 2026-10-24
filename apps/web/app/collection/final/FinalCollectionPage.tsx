@@ -8,12 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  Link,
-  useLocation,
-  useNavigate,
-  useNavigationType,
-} from "react-router";
+import { useLocation, useNavigate, useNavigationType } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import CardDrawer from "./CardDrawer";
@@ -100,7 +95,7 @@ import type { CollectionTab, GoToTabParams } from "./store";
  *   the page runs on the demo store.
  *
  * Tabs on `?tab=` (My Cards, My Binders when the store has binders,
- * Checklists), drawn like the admin section strip, sharing one status line
+ * Checklists, and Inventory where the store has it), drawn like the admin section strip, sharing one status line
  * with Undo and one right-side card drawer opened through `openCard`.
  * Every tab reads the store's hooks, so the demo and the real collection
  * run the same views.
@@ -113,12 +108,13 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * (default) is the signed-in binder shell, `"public"` the marketing page with
  * its own persist key, public destinations and the demo's exits.
  *
- * `surface` is WHICH screen (NEO-359): `"collection"` (default) is the
- * collection's three tabs; `"inventory"` is `/inventory`, the collector's
- * boxes and what is for sale, on the same store, status line and card
- * drawer, with no tabs and no Binder picker. Jason: "Inventory is things for
+ * Inventory (NEO-359, `tab=inventory`, the `inventory` capability: the demo
+ * only for now) is the collector's boxes and what is for sale, on the same
+ * desk as My Binders (`surface="inventory"`), status line and card drawer,
+ * and never narrowed by the Binder picker. Jason: "Inventory is things for
  * sale and My Collection is things that are for your collection. They
- * should not mix on the screens."
+ * should not mix on the screens." The real collection has no Inventory tab
+ * yet: its shelf's Inventory long box leads to the `/inventory` page.
  */
 
 const TABS: {
@@ -129,9 +125,10 @@ const TABS: {
   { key: "cards", label: "My Cards" },
   { key: "binders", label: "My Binders", needs: "binders" },
   { key: "checklists", label: "Checklists" },
+  { key: "inventory", label: "Inventory", needs: "inventory" },
 ];
 
-/** The tabs this store can show: My Binders only where binders are built. */
+/** The tabs this store can show: My Binders only where binders are built, Inventory where it is. */
 function tabsFor(capabilities: Capabilities) {
   return TABS.filter((t) => !t.needs || capabilities[t.needs]);
 }
@@ -190,22 +187,17 @@ export interface FinalCollectionPageProps {
   keepParams?: Record<string, string>;
   /** Public mode: leave the demo ("Back to the tour"). */
   onExit?: () => void;
-  /** `"collection"` (default): the collection's tabs. `"inventory"`: `/inventory`. */
-  surface?: CollectionSurface;
 }
-
-export type CollectionSurface = "collection" | "inventory";
 
 export default function FinalCollectionPage({
   mode = "app",
   keepParams,
   onExit,
-  surface = "collection",
 }: FinalCollectionPageProps) {
   const mounted = useContext(CollectionStoreContext);
   const page = (
     <CollectionModeProvider mode={mode} keepParams={keepParams}>
-      <CollectionPage onExit={onExit} inventory={surface === "inventory"} />
+      <CollectionPage onExit={onExit} />
     </CollectionModeProvider>
   );
   if (mounted) return page;
@@ -218,36 +210,21 @@ export default function FinalCollectionPage({
   );
 }
 
-function CollectionPage({
-  onExit,
-  inventory,
-}: {
-  onExit?: () => void;
-  inventory: boolean;
-}) {
+function CollectionPage({ onExit }: { onExit?: () => void }) {
   const isPublic = useCollectionMode().mode === "public";
   const { capabilities, demo } = useCollectionStore();
   const containers = useContainers();
   const tabs = tabsFor(capabilities);
-  const [params, setViewParams] = useCollectionParams();
+  const [params, setParams] = useCollectionParams();
   const replaceParams = useReplaceParams();
   const navigate = useNavigate();
-  // Inventory has no tabs of its own: a view of the collection (Checklists,
-  // from the card drawer) is a push to `/collection`.
-  const setParams = (next: URLSearchParams | Record<string, string>) => {
-    if (!inventory) return setViewParams(next);
-    void navigate({
-      pathname: "/collection",
-      search: `?${new URLSearchParams(next).toString()}`,
-    });
-  };
   const tabParam = params.get("tab");
-  // A tab this store does not have (`?tab=binders` on the real collection) opens My Cards.
-  const tab: CollectionTab = inventory
-    ? "binders"
-    : tabs.some((t) => t.key === tabParam)
-      ? (tabParam as CollectionTab)
-      : "cards";
+  // A tab this store does not have (`?tab=binders` on the real collection,
+  // `?tab=inventory` before the real Inventory ships) opens My Cards.
+  const tab: CollectionTab = tabs.some((t) => t.key === tabParam)
+    ? (tabParam as CollectionTab)
+    : "cards";
+  const inventory = tab === "inventory";
   const onChecklists = tab === "checklists";
 
   // The Checklists drill and its ringed row live on the URL (see
@@ -349,22 +326,21 @@ function CollectionPage({
       (params.get("view") === "needs" ? "Take it to the show" : null);
   } else if (tab === "binders") {
     const b = params.get("b");
-    detail = inventory
-      ? (containers?.find((x) => x.id === b && x.kind === "box")?.name ??
-        (params.get("sale") ? "Everything for sale" : null))
-      : (containers?.find((x) => x.id === b)?.name ??
-        titleSet ??
-        (params.get("all") ? "All my cards" : null));
+    detail =
+      containers?.find((x) => x.id === b && x.kind !== "box")?.name ??
+      titleSet ??
+      (params.get("all") ? "All my cards" : null);
+  } else if (inventory) {
+    const b = params.get("b");
+    detail =
+      containers?.find((x) => x.id === b && x.kind === "box")?.name ??
+      (params.get("sale") ? "Everything for sale" : null);
   } else {
     detail = drillState.title;
   }
   const label = TABS.find((t) => t.key === tab)?.label ?? "Collection";
   useDocumentTitle(
-    inventory
-      ? detail
-        ? `${detail} · Inventory`
-        : "Inventory"
-      : `${detail ? `${label} · ${detail}` : label} · ${isPublic ? "Collection demo" : "Collection"}`,
+    `${detail ? `${label} · ${detail}` : label} · ${isPublic ? "Collection demo" : "Collection"}`,
   );
 
   // The Binder picker's scope comes from the URL, checked against the shelf
@@ -633,57 +609,49 @@ function CollectionPage({
                 {capabilities.demoChrome && demo && (
                   <DemoBar onReset={resetDemo} onExit={onExit} />
                 )}
-                {inventory ? (
-                  <InventoryHeader />
-                ) : (
-                  <>
-                    <h1 className="text-2xl font-bold">Collection</h1>
+                <h1 className="text-2xl font-bold">Collection</h1>
 
-                    <nav
-                      aria-label="Collection sections"
-                      className="border-b border-rule"
-                    >
-                      <ul className="flex flex-wrap gap-x-6 gap-y-2">
-                        {tabs.map((t) => {
-                          const active = t.key === tab;
-                          return (
-                            <li key={t.key}>
-                              <ParamLink
-                                // Checklists opens where you left it.
-                                search={
-                                  t.key === "checklists"
-                                    ? checklistsSearch()
-                                    : { tab: t.key }
-                                }
-                                onClick={settleQuery}
-                                aria-current={active ? "page" : undefined}
-                                className={
-                                  "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
-                                  (active
-                                    ? "border-selection text-neon-blue-text"
-                                    : "border-transparent text-ink-3 hover:border-control hover:text-ink")
-                                }
-                              >
-                                {t.label}
-                              </ParamLink>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </nav>
-                  </>
-                )}
+                <nav
+                  aria-label="Collection sections"
+                  className="border-b border-rule"
+                >
+                  <ul className="flex flex-wrap gap-x-6 gap-y-2">
+                    {tabs.map((t) => {
+                      const active = t.key === tab;
+                      return (
+                        <li key={t.key}>
+                          <ParamLink
+                            // Checklists opens where you left it.
+                            search={
+                              t.key === "checklists"
+                                ? checklistsSearch()
+                                : { tab: t.key }
+                            }
+                            onClick={settleQuery}
+                            aria-current={active ? "page" : undefined}
+                            className={
+                              "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
+                              (active
+                                ? "border-selection text-neon-blue-text"
+                                : "border-transparent text-ink-3 hover:border-control hover:text-ink")
+                            }
+                          >
+                            {t.label}
+                          </ParamLink>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </nav>
 
-                {inventory && !capabilities.binders && (
-                  <p className="text-ink-2">
-                    Inventory isn&apos;t open here yet.
-                  </p>
-                )}
                 {tab === "cards" && <MyCardsTab />}
-                {tab === "binders" && capabilities.binders && (
+                {(tab === "binders" || inventory) && capabilities.binders && (
                   // My Binders' pack tray is pinned to the bottom, where the floating
-                  // toast would sit on its search box, so the tray shows the notice.
+                  // toast would sit on its search box, so the tray shows the notice
+                  // (Inventory floats its own where no box is open). One desk per
+                  // tab: what each has aimed or found stays its own.
                   <MyBindersTab
+                    key={tab}
                     surface={inventory ? "inventory" : "collection"}
                     openCard={openCard}
                     goToTab={goToTab}
@@ -718,7 +686,7 @@ function CollectionPage({
                 <DemoRail onExit={onExit} />
               )}
 
-              {!drawer && tab !== "binders" && (
+              {!drawer && tab !== "binders" && !inventory && (
                 <NoticeLine
                   notice={notice}
                   onUndo={undo}
@@ -752,29 +720,6 @@ function CollectionPage({
         </ScopedRows>
       </ViewScopeProvider>
     </PageApiContext.Provider>
-  );
-}
-
-/**
- * The top of `/inventory`: what the screen is, and the way back to the
- * collection (Inventory is its own place, not a tab of it).
- */
-function InventoryHeader() {
-  return (
-    <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b border-rule pb-3">
-      <div>
-        <h1 className="text-2xl font-bold">Inventory</h1>
-        <p className="mt-1 text-sm text-ink-2">
-          Your boxes: everything in them is for sale.
-        </p>
-      </div>
-      <Link
-        to="/collection?tab=binders"
-        className="rounded-sm text-sm font-medium text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
-      >
-        Back to My Binders
-      </Link>
-    </div>
   );
 }
 

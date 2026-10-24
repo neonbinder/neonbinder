@@ -9,6 +9,7 @@ import {
   searchable,
   systemContainer,
   useBuildingSets,
+  useCapabilities,
   useContainers,
   useDemoExtension,
   useScope,
@@ -17,7 +18,7 @@ import {
   useSummary,
 } from "../data/store";
 import type { Container, ContainerCount, SetRef } from "../data/types";
-import { useCollectionMode } from "../mode";
+import { ParamLink, useCollectionMode } from "../mode";
 import { NO_BROWSE_FILTER, type BrowseFilter } from "../store";
 import { useLabelHints } from "./hooks";
 import IdTooltip, { IdLines } from "./IdTooltip";
@@ -29,9 +30,9 @@ import "./box.css";
 /**
  * The landing of My Binders (p2's shelf): the collector's binders standing
  * spine out, Main first. Boxes are not here: they are Inventory's
- * (`InventoryShelf`, on `/inventory`). Beside them, the special shelf: All
+ * (`InventoryShelf`, the Inventory tab). Beside them, the special shelf: All
  * my cards, the Want List and Up for Trade, plus the long box of Inventory,
- * the door to the cards for sale (the demo's leads to the Inventory tour). Below, the clear binders: sets to flip through. The demo has a
+ * the door to the cards for sale. Below, the clear binders: sets to flip through. The demo has a
  * whole catalog there, narrowed by sport, years and name; the real
  * collection shows the sets you're building and a set search.
  *
@@ -346,9 +347,10 @@ function BoxSpine({
  * the yellow price tag (the same tag a for-sale card wears in its sleeve)
  * says how many are for sale: every card in every box.
  *
- * On the collection's shelf it is the door to Inventory (`/inventory`; the
- * demo's leads to the Inventory tour page). On Inventory itself it opens
- * every for-sale copy at once (`onOpen`, `ForSaleView`).
+ * On the collection's shelf it is the door to Inventory: the Inventory tab
+ * where the store has one (the demo), otherwise the `/inventory` page. On
+ * Inventory itself it opens every for-sale copy at once (`onOpen`,
+ * `ForSaleView`).
  */
 function InventoryBox({
   forSale,
@@ -364,6 +366,7 @@ function InventoryBox({
   name?: string;
 }) {
   const { inventoryHref } = useCollectionMode();
+  const { inventory: hasTab } = useCapabilities();
   const words = forSale === null ? "counting what's for sale" : `${cardCount(forSale)} for sale`;
   const art = (
     <>
@@ -388,6 +391,13 @@ function InventoryBox({
       </button>
     );
   }
+  if (hasTab) {
+    return (
+      <ParamLink search={{ tab: "inventory" }} aria-label={`${name}, ${words}`} className="nb-longbox">
+        {art}
+      </ParamLink>
+    );
+  }
   return (
     <Link to={inventoryHref} aria-label={`${name}, ${words}`} className="nb-longbox">
       {art}
@@ -400,7 +410,7 @@ function InventoryBox({
 // ---------------------------------------------------------------------------
 
 /**
- * NEO-359 — the landing of Inventory (`/inventory`): the collector's boxes,
+ * NEO-359 — the landing of the Inventory tab: the collector's boxes,
  * standing box end out on the show table, and "New box". Beside them the
  * long box of the whole stock: every card in every box at once
  * (`ForSaleView`). Nothing from the collection stands here: binders, the

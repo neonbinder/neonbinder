@@ -59,7 +59,8 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
             <>
               <p className="text-ink">Fake cards, real buttons. Go nuts: nothing leaves this tab.</p>
               <p className="text-ink-2">
-                Inventory and label printing need an account, so those links show you the tour instead.
+                Selling works here too: make a box on Inventory and put cards up for sale. Label printing needs an
+                account, so that link shows you the tour instead.
               </p>
             </>
           ) : (

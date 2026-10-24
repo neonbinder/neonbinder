@@ -21,7 +21,7 @@ import {
 
 /**
  * NEO-358 — signed-in `/collection` on a store shaped like the real one:
- * `kind: "convex"`, `REAL_CAPABILITIES` (binders and boxes, wants, trade and
+ * `kind: "convex"`, `REAL_CAPABILITIES` (binders, wants, trade and
  * scope on; smart binders, share and card requests off), reads that can be
  * `undefined`, and writes that resolve with an undo. The store here is hand-built over a tiny
  * catalog, so these tests pin what the views do with the contract
@@ -274,15 +274,6 @@ function renderAt(start: string, store = makeStore()) {
               element={
                 <>
                   <FinalCollectionPage />
-                  <LocationProbe />
-                </>
-              }
-            />
-            <Route
-              path="/inventory"
-              element={
-                <>
-                  <FinalCollectionPage surface="inventory" />
                   <LocationProbe />
                 </>
               }
@@ -661,55 +652,42 @@ describe("the card drawer on the real collection", () => {
   });
 });
 
-describe("Inventory on the real collection (NEO-359)", () => {
-  it("is the boxes and what is for sale, apart from the collection", () => {
-    renderAt("/inventory");
-    expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
-    expect(screen.queryByRole("navigation", { name: "Collection sections" })).toBeNull();
-    const boxes = screen.getByRole("list", { name: "Your boxes" });
-    expect(within(boxes).getByRole("button", { name: "Show box, box, 0 cards for sale" })).toBeTruthy();
-    expect(within(boxes).queryByRole("button", { name: /^Main,|^Ohtani rainbow,/ })).toBeNull();
-    expect(screen.getByText("0 cards for sale in 1 box.")).toBeTruthy();
+describe("Inventory stays off on the real collection until it ships (NEO-359)", () => {
+  it("has no Inventory tab: tab=inventory opens My Cards", () => {
+    renderAt("/collection?tab=inventory");
+    const tabs = within(screen.getByRole("navigation", { name: "Collection sections" }));
+    expect(tabs.queryByRole("link", { name: "Inventory" })).toBeNull();
+    expect(tabs.getByRole("link", { name: "My Cards" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("list", { name: "Your boxes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New box" })).toBeNull();
   });
 
-  it("with no box yet, says nothing is for sale and how to start", () => {
-    const store = makeStore();
-    store.value.data.useContainers = () => CONTAINERS.filter((c) => c.kind !== "box");
-    renderAt("/inventory", store);
-    expect(screen.getByText("Nothing for sale yet.")).toBeTruthy();
-    expect(screen.getByText(/press Sell/)).toBeTruthy();
-    expect(screen.queryByRole("list", { name: "The whole stock" })).toBeNull();
-    expect(screen.getByRole("button", { name: "New box" })).toBeTruthy();
+  it("the shelf's Inventory long box leads to the Inventory page", () => {
+    renderAt("/collection?tab=binders");
+    expect(screen.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ }).getAttribute("href")).toBe("/inventory");
   });
 
-  it("New box makes a box, never a binder", async () => {
-    const { actions } = renderAt("/inventory");
-    fireEvent.click(screen.getByRole("button", { name: "New box" }));
-    const dialog = screen.getByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Box name"), { target: { value: "Dime box" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
-    await waitFor(() => expect(actions.createContainer).toHaveBeenCalledWith({ kind: "box", name: "Dime box" }));
+  it("a box or the whole stock on the URL just shows the shelf, and stays put", () => {
+    renderAt("/collection?tab=binders&b=box-show");
+    expect(screen.queryByRole("region", { name: "Show box, open" })).toBeNull();
+    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
+    expect(pageUrl()).toBe("/collection?tab=binders&b=box-show");
+    cleanup();
+    renderAt("/collection?tab=binders&sale=1");
+    expect(screen.queryByRole("heading", { level: 2, name: "For sale" })).toBeNull();
+    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
+    expect(pageUrl()).toBe("/collection?tab=binders&sale=1");
   });
 
-  it("the drawer's Sell puts a binder's copy in a box; its Move offers binders only", async () => {
-    const { actions } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+  it("the drawer has no Sell: a copy moves to another binder, and that is all", () => {
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
     fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
     const drawer = screen.getByRole("dialog");
+    expect(within(drawer).queryByRole("button", { name: /^Sell / })).toBeNull();
+    expect(within(drawer).queryByRole("button", { name: /off sale$/ })).toBeNull();
     fireEvent.click(within(drawer).getByRole("button", { name: "Move #1 Shohei Ohtani, Raw" }));
     const to = within(within(drawer).getByRole("form", { name: "Move Raw" })).getByRole("combobox", { name: "Move to" });
     expect(within(to).getAllByRole("option").map((o) => o.textContent)).toEqual(["Ohtani rainbow"]);
-    fireEvent.click(within(drawer).getByRole("button", { name: "Keep it here" }));
-
-    fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
-    const panel = within(drawer).getByRole("form", { name: "Sell Raw" });
-    expect(within(within(panel).getByRole("combobox", { name: "Into which box" })).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "Show box",
-    ]);
-    fireEvent.click(within(panel).getByRole("button", { name: "Put it up for sale" }));
-    await waitFor(() => expect(actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", undefined));
-    await waitFor(() =>
-      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "#1 Shohei Ohtani is up for sale in Show box.")).toBe(true),
-    );
   });
 });
 
