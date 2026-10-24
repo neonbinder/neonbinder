@@ -2493,6 +2493,7 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/sets-resync-already-loaded.spec.ts`
 - `tests/set-selector/topps-chrome-marketplace-read.spec.ts`
 - `tests/collection/add-edit-remove-copy.spec.ts` (NEO-358 — the collector's `/collection`: drills to Base, reads it, and writes ONLY the signed-in user's `collectionCopies` on one Base card, removing them all before it ends; see "The collection spec's card" below)
+- `tests/collection/binders-and-boxes.spec.ts` (NEO-359 — the collector's My Binders: makes a binder and a box, files copies on the FIRST two ordinary Base rows (same row choice as above), moves them between the two, wants the second, then deletes both containers and removes the copy; writes ONLY the signed-in user's `collectionContainers`, `collectionCopies` and `collectionWants`, never the set, its cards, players or teams)
 
 **Three flows on this set are NOT read-only, and the list used to say the first two were**
 (corrected NEO-260). Each is **sole writer of one datum on the anchor** —
@@ -2540,6 +2541,13 @@ card-deleting path is a parallel rebuild (`base-parallels-build-from-section`,
 which never touches Base) or a re-commit of a DIFFERENT set. The seed's reset
 runs before any spec, and the global reset clears `collectionCopies` before
 the cards (it is in the drain order ahead of `cardChecklist`).
+
+**NEO-359.** `tests/collection/binders-and-boxes.spec.ts` uses the same rule
+for the first TWO ordinary Base rows (it reads both names before writing, since
+a card with two lines drops out of the ordinary-row match). It puts copies on
+the first and a Want on the second, all per user, and removes both again. The
+same "a card with a collector's copy cannot be deleted" protection applies
+while its copy exists; the spec's copy lives only for the run.
 
 **Concurrency.** Copies are per user and each shard owns one account, so no
 two shards see each other's copies. The spec's search results and "every card

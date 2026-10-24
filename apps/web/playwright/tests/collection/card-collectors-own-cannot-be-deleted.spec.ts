@@ -127,7 +127,7 @@ test(
     await expect(checklist.getByRole("button", { name: `Have ${short}, Raw`, exact: true, pressed: true })).toBeVisible();
     // The toggle flips optimistically; the notice is the server's answer. The
     // set builder is only opened once the copy is really stored.
-    await expect(page.getByRole("status").filter({ hasText: `Added ${short} to your collection` })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: `Added ${short} to Main` })).toBeVisible();
 
     // --- The set builder refuses the delete ----------------------------------
     await drillToCustom(page, build);
