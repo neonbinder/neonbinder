@@ -3,8 +3,12 @@
 // previous view, and "Back to the tour" leaves it. Light by design: the demo
 // is hard-coded marketing data; its depth is covered by unit tests.
 import { test, expect, expectAccessible } from "../../support/fixtures";
+import type { Locator } from "@playwright/test";
 
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// A button's accessible name, read from its ARIA snapshot. The snapshot is
+// YAML, which writes an apostrophe as '' ("Artist''s Proof"); undo that.
+const buttonName = async (button: Locator) =>
+  (/button "([^"]+)"/.exec(await button.ariaSnapshot())?.[1] ?? "").replace(/''/g, "'");
 
 test(
   "Binder Tracking tour: open the demo binder, switch tabs, open a binder, Back, leave",
@@ -89,16 +93,16 @@ test(
     // The drawer: take a box card off sale. It leaves Inventory and joins the
     // collection (All my cards); selling it again takes it back out of there.
     const boxCard = open.getByRole("button", { name: /, for sale/ }).first();
-    const boxCardName = /button "([^"]+)"/.exec(await boxCard.ariaSnapshot())?.[1] ?? "";
+    const boxCardName = await buttonName(boxCard);
     // "<card label>[, N copies][, slab][, serial][, for sale]": the label is what comes first.
-    const label = boxCardName.split(/, \d+ copies|, for sale/)[0];
+    const label = boxCardName.split(/, \d+ copies|, serial |, slab|, for sale/)[0];
     const copiesTaken = Number(/, (\d+) copies/.exec(boxCardName)?.[1] ?? "1");
     expect(label, `a box card named like a card (read: ${boxCardName})`).toMatch(/#/);
     await boxCard.click();
     const drawer = page.getByRole("dialog");
     const takeOff = drawer.getByRole("button", { name: /^Take .*, off sale$/ }).first();
     // The line's own name ("#N Player, Raw ×3"), for the Sell button it becomes.
-    const line = /^Take (.*), off sale$/.exec(/button "([^"]+)"/.exec(await takeOff.ariaSnapshot())?.[1] ?? "")?.[1] ?? "";
+    const line = /^Take (.*), off sale$/.exec(await buttonName(takeOff))?.[1] ?? "";
     expect(line, "a Take off sale button naming its line").not.toBe("");
     await takeOff.click();
     const offForm = drawer.getByRole("form", { name: / off sale$/ });
@@ -127,7 +131,9 @@ test(
     await expect(page.getByRole("button", { name: /, for sale/ })).toHaveCount(0);
     // The card is among the pockets (the pile turns in pages: a bounded walk to its page).
     const pile = page.getByRole("region", { name: "All my cards, open", exact: true });
-    const pocket = pile.getByRole("button", { name: new RegExp(`^${escapeRegExp(label)}`) }).first();
+    const pocket = // A plain-string name (a substring match), not a RegExp: inside .or(), a
+    // RegExp holding an apostrophe ("Artist's Proof") breaks Playwright's selector parser.
+    pile.getByRole("button", { name: label }).first();
     const turn = page.getByRole("button", { name: /^Next pages?$/ });
     for (let i = 0; i < 12; i++) {
       await expect(pocket.or(turn).first()).toBeVisible();
@@ -139,7 +145,7 @@ test(
 
     // Sell it again from its pocket: the Sell panel, then it is gone from the pile.
     await pocket.click();
-    await drawer.getByRole("button", { name: new RegExp(`^Sell ${escapeRegExp(line)}`) }).first().click();
+    await drawer.getByRole("button", { name: `Sell ${line}` }).first().click();
     const sellForm = drawer.getByRole("form", { name: /^Sell / });
     await sellForm.getByRole("combobox", { name: "Into which box" }).selectOption({ label: "Show box" });
     await expectAccessible(page, { within: sellForm, label: "Collection demo, the drawer's Sell panel" });
