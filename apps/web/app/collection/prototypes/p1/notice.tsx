@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { XMarkIcon } from "@heroicons/react/20/solid";
 import { FOCUS } from "./ui";
 
@@ -18,6 +19,11 @@ export type Notify = (message: string, undo?: () => void) => void;
  *
  * `floating` is the page toast (bottom centre, above the content); inline is
  * the line at the top of the detail drawer, next to the form that caused it.
+ *
+ * The wrapper carries `data-notice-hold`: the collection page holds its
+ * timer while the pointer or the keyboard is on the line, so Undo is never
+ * snatched away mid-reach. Pressing Undo takes the button away; the keyboard
+ * moves on to Dismiss rather than falling to the page.
  */
 export default function NoticeLine({
   notice,
@@ -35,8 +41,9 @@ export default function NoticeLine({
         notice ? "" : "pointer-events-none"
       }`
     : "";
+  const dismissRef = useRef<HTMLButtonElement>(null);
   return (
-    <div className={shell}>
+    <div className={shell} data-notice-hold="">
       <div
         className={
           notice
@@ -50,6 +57,10 @@ export default function NoticeLine({
         {notice?.undo && (
           <button
             type="button"
+            ref={(el) => () => {
+              // Unmounting while focused (Undo was pressed): keep the keyboard on the line.
+              if (el && document.activeElement === el) requestAnimationFrame(() => dismissRef.current?.focus());
+            }}
             onClick={onUndo}
             className={`min-h-8 rounded px-2 py-1 text-sm font-semibold text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
           >
@@ -59,6 +70,7 @@ export default function NoticeLine({
         {notice && (
           <button
             type="button"
+            ref={dismissRef}
             onClick={onDismiss}
             aria-label="Dismiss message"
             className={`flex h-8 w-8 items-center justify-center rounded text-ink-3 hover:text-ink ${FOCUS}`}

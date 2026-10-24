@@ -1,13 +1,16 @@
 /**
- * NEO-350 — the consolidated collection page's store (`/collection`).
+ * NEO-350 / NEO-358 — the collection DEMO's reducer store.
  *
- * A permanent, hard-coded marketing demo: signed-in collectors see it at
- * `/collection` and visitors play with it on `/binder-tracking`. Fake data
- * only, seeded from the shared catalog and collector
+ * Hard-coded fake data only, seeded from the shared catalog and collector
  * (`../prototypes/_shared/`) and kept in sessionStorage: under
- * `nb-collection-final` in the app and `PUBLIC_STORAGE_KEY` in the public
- * demo, so the two never mix. Nothing reaches a server. The reference
- * prototypes (1-5) keep their own stores; nothing here changes theirs.
+ * `nb-collection-final` by default and `PUBLIC_STORAGE_KEY` in the public
+ * demo on `/binder-tracking`, so the two never mix. Nothing reaches a server.
+ *
+ * Since NEO-358 the page does not read this directly: `./data/demoStore`
+ * wraps it (`useDemoCollectionState`) behind the shared store contract
+ * (`./data/store`), and signed-in `/collection` runs on the Convex store
+ * instead. The demo-only views (My Binders, the Binder picker, the demo bar)
+ * still take this store, through `useDemoExtension().state`.
  *
  * ---------------------------------------------------------------------------
  * Props contract for the three tabs (My Cards, My Binders, Checklists)
@@ -721,7 +724,7 @@ function newId(prefix: string): string {
 // ---------------------------------------------------------------------------
 
 /** `storageKey`: where the state persists; the public demo passes its own. */
-export function useCollectionStore(storageKey: string = STORAGE_KEY): CollectionStore {
+export function useDemoCollectionState(storageKey: string = STORAGE_KEY): CollectionStore {
   const [state, dispatch] = useReducer(collectionReducer, storageKey, loadState);
 
   // Callbacks read the latest state through a ref so removeCopy can hand back

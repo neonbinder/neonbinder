@@ -2,9 +2,10 @@ import { useId, type FormEvent, type KeyboardEvent } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
+import type { Card as ModelCard } from "../../final/data/types";
+import { cardLabel as modelLabel } from "../../final/data/labels";
 import {
   cardLabel,
-  printRunLabel,
   type Binder,
   type Card,
   type Condition,
@@ -23,16 +24,23 @@ import {
  * Grader, grade and cert appear only for a graded copy; condition only for a
  * raw one. Serial number appears only when the card is numbered. The binder
  * list offers manual binders only: a smart binder fills itself from its rule.
+ *
+ * NEO-358: the real collection passes a view-model card, no binders (a copy
+ * has one home, Main, until binders ship) and `hideSaleFields` (price belongs
+ * to a listing, not the copy).
  */
 
 export interface CopyDetailsFormProps {
-  card: Card;
+  /** A prototype fixture card, or (NEO-358) a collection view-model card. */
+  card: Card | ModelCard;
   value: CopyDetails;
   onChange: (next: CopyDetails) => void;
   onSave: (value: CopyDetails) => void;
   onCancel: () => void;
-  /** Every binder; smart ones are filtered out here. */
-  binders: Binder[];
+  /** Every binder; smart ones are filtered out here. None: no binder choice. */
+  binders?: Binder[];
+  /** Leave out For sale and Ask price (the real collection keeps no price on a copy). */
+  hideSaleFields?: boolean;
   /** Primary button text. Default "Save copy". */
   saveLabel?: string;
   /** Heading above the fields; default "Copy details". `null` hides it. */
@@ -70,7 +78,8 @@ export default function CopyDetailsForm({
   onChange,
   onSave,
   onCancel,
-  binders,
+  binders = [],
+  hideSaleFields = false,
   saveLabel = "Save copy",
   heading = "Copy details",
   className = "",
@@ -79,7 +88,8 @@ export default function CopyDetailsForm({
   const quantityHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
 
-  const run = printRunLabel(card);
+  const run = card.printRun === null ? null : card.printRun === 1 ? "1/1" : `/${card.printRun}`;
+  const label = "setId" in card ? cardLabel(card) : modelLabel(card);
   const graded = value.graded !== undefined;
   const manualBinders = binders.filter((b) => b.kind === "manual");
   const quantityValid = Number.isInteger(value.quantity) && value.quantity >= 1;
@@ -112,7 +122,7 @@ export default function CopyDetailsForm({
       onSubmit={submit}
       onKeyDown={onKeyDown}
       aria-labelledby={heading ? headingId : undefined}
-      aria-label={heading ? undefined : `Details for ${cardLabel(card)}`}
+      aria-label={heading ? undefined : `Details for ${label}`}
       className={`rounded-lg border border-rule bg-sheet p-4 text-ink shadow-offset sm:p-5 ${className}`}
     >
       {heading && (
@@ -299,37 +309,39 @@ export default function CopyDetailsForm({
           />
         </div>
 
-        <div className="flex flex-wrap items-end gap-4 sm:col-span-2">
-          <label className={CHOICE}>
-            <input
-              type="checkbox"
-              role="switch"
-              className={CHECK}
-              checked={value.forSale}
-              onChange={(e) =>
-                set({
-                  forSale: e.target.checked,
-                  askPrice: e.target.checked ? value.askPrice : undefined,
-                })
-              }
-            />
-            For sale
-          </label>
-          {value.forSale && (
-            <div className="w-40">
-              <Input
-                label="Ask price"
-                type="number"
-                inputMode="decimal"
-                min={0}
-                step="0.01"
-                placeholder="0.00"
-                value={value.askPrice ?? ""}
-                onChange={(e) => set({ askPrice: parseMoney(e.target.value) })}
+        {!hideSaleFields && (
+          <div className="flex flex-wrap items-end gap-4 sm:col-span-2">
+            <label className={CHOICE}>
+              <input
+                type="checkbox"
+                role="switch"
+                className={CHECK}
+                checked={value.forSale}
+                onChange={(e) =>
+                  set({
+                    forSale: e.target.checked,
+                    askPrice: e.target.checked ? value.askPrice : undefined,
+                  })
+                }
               />
-            </div>
-          )}
-        </div>
+              For sale
+            </label>
+            {value.forSale && (
+              <div className="w-40">
+                <Input
+                  label="Ask price"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step="0.01"
+                  placeholder="0.00"
+                  value={value.askPrice ?? ""}
+                  onChange={(e) => set({ askPrice: parseMoney(e.target.value) })}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="mt-5 flex flex-wrap justify-end gap-3">

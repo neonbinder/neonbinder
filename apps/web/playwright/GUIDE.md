@@ -450,7 +450,7 @@ It works because test accounts are on System, so the app follows the OS.
 - **A page that cannot flip is checked in the mode it is in, and the result
   says so** (`note` in the attachment, an `axe-single-mode` annotation in the
   report): the page stayed on one mode when the OS changed (an explicit saved
-  theme, a ForceDark route, the collection demo's Light/Dark switch once
+  theme, a ForceDark route, the public collection demo's Light/Dark switch once
   flipped, i.e. the page is pinned; the probe waits the 7 s budget before it
   concludes that), or the page has no header banner to read the mode from
   (the public profile and sale pages). A single-mode result is a coverage
@@ -503,7 +503,7 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   `use.colorScheme: "dark"`, and the app follows the OS while a collector is on
   System (the default), so every spec sees the dark theme between axe checks.
   `expectAccessible` flips the OS itself and puts it back dark (above). Only
-  the theme specs (`profile/theme-setting`, `home/collection-demo-theme`,
+  the theme specs (`profile/theme-setting` and
   `home/binder-tracking-demo-theme`) otherwise call `page.emulateMedia` or
   change the saved theme, and each restores what it changed: System saved and
   the OS dark again, in a `finally` block (R7), so a later spec on the same

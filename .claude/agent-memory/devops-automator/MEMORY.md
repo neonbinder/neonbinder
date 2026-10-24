@@ -7,3 +7,4 @@
 - [Reference cloud run env ordered list diffing](reference_cloud_run_env_ordered_list_diffing.md) — google_cloud_run_service env blocks diff positionally — append new env vars at the end, and expect remove+recreate churn on adjacent blocks when the live order differs
 - [Reference convex management api](reference_convex_management_api.md) — Convex Management REST API — delete deployments, required token type, endpoint, and limitations of existing deploy keys
 - [Reference terraform gcs backend prefix required](reference_terraform_gcs_backend_prefix_required.md) — terraform init needs -backend-config="prefix=terraform/state/<env>" — a bare init reads an empty root prefix and the plan shows dozens of phantom "to add" resources
+- [Stale selectorSyncStatus breaks seed on reused deployments](seed-dev-stale-sync-status.md) — reset never drains it; clear via empty convex import

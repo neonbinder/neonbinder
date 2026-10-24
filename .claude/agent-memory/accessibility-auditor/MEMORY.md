@@ -46,3 +46,4 @@
 - [Teams on cards radio lines NEO-335](teams-on-cards-radio-lines-neo335.md) — unused loading flag, status unmounted at 0, Confirm autofocus hides questions, retired-control E2E strings
 - [Toggle chip Enter and streaming status NEO-330](toggle-chip-enter-and-streaming-status-neo330.md) — Enter stays a toggle (Ctrl+Enter saves); showToast is a persistent banner; ConfirmDialog children = one named group; streaming status chatter
 - [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy
+- [Collection store UI NEO-358](collection-store-ui-neo358.md) — collector page: focus loss on unmount, state-in-name toggles, label-in-name, stacked loading statuses

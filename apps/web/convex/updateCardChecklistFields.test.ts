@@ -16,6 +16,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { BLANK_LISTING_TITLE_REFUSAL } from "./selectorOptions";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -134,7 +135,10 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.listingDescription).toBe("Mint condition. Ships in a top loader.");
   });
 
-  test("clears fields via empty array / false / empty string", async () => {
+  test("clears fields via empty array / false / empty string (never the title)", async () => {
+    // NEO-358 — every field here still clears, except `listingTitle`: a card's
+    // title is what a collector searches, so a blank one is refused (see the
+    // NEO-358 block in the cap describe below). It is left out of the clear.
     const { asAdmin, variantTypeId, cardId } = await seed();
 
     // First set values, then clear them.
@@ -151,7 +155,6 @@ describe("updateCard structured fields (NEO-25)", () => {
       attributes: [],
       isRookie: false,
       isRelic: false,
-      listingTitle: "",
       listingDescription: "",
     });
 
@@ -163,7 +166,7 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.attributes).toEqual([]);
     expect(card.isRookie).toBe(false);
     expect(card.isRelic).toBe(false);
-    expect(card.listingTitle).toBe("");
+    expect(card.listingTitle).toBe("Some title");
     expect(card.listingDescription).toBe("");
   });
 
@@ -408,31 +411,53 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
     expect(cards.find((c) => c._id === cardId)!.cardVariation).toBe(longVariation);
   });
 
-  test("a whitespace-only title trims to empty and clears the field, same as sending \"\"", async () => {
-    // Trim happens BEFORE the field is stored, so "   " is not a 3-character
-    // title that happens to be invisible — it is the same write as "", which
-    // the panel already treats as "clear the title" (see the round-trip
-    // describe block above). Nothing about the cap logic should special-case
-    // whitespace: 0 <= 80 either way, so it is never the REJECTED path, only
-    // the "what gets stored" one.
+  test("NEO-358: a blank title is refused, and \"\" and whitespace-only are the same blank", async () => {
+    // Trim happens BEFORE anything else, so "   " is not a 3-character title
+    // that happens to be invisible — it is the same write as "". Both are
+    // refused (a collector searches the title), the stored title is kept,
+    // and the refusal is a ConvexError carrying the operator's sentence.
     const { asAdmin, variantTypeId, cardId } = await seed();
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: cardId,
       listingTitle: "A real title",
     });
 
-    await asAdmin.mutation(api.selectorOptions.updateCard, {
-      id: cardId,
-      listingTitle: "    ",
-    });
+    for (const blank of ["", "    "]) {
+      await expect(
+        asAdmin.mutation(api.selectorOptions.updateCard, {
+          id: cardId,
+          listingTitle: blank,
+        }),
+      ).rejects.toThrow(BLANK_LISTING_TITLE_REFUSAL);
+    }
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
       selectorOptionId: variantTypeId,
     });
-    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe("");
+    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe("A real title");
   });
 
-  test("clearing to whitespace-only clears listingTitleTruncated too — it is a changed title", async () => {
+  test("NEO-358: a refused blank title writes NOTHING, not even the other fields in the call", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "A real title",
+      cardVariation: "Before",
+    });
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: " ",
+        cardVariation: "After",
+      }),
+    ).rejects.toThrow(BLANK_LISTING_TITLE_REFUSAL);
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.cardVariation).toBe("Before");
+  });
+
+  test("NEO-358: a whitespace-only title keeps listingTitleTruncated — nothing was written", async () => {
     const { asAdmin, variantTypeId, cardId } = await seed();
     await asAdmin.run(async (ctx) => {
       await ctx.db.patch(cardId, {
@@ -441,17 +466,21 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
       });
     });
 
-    await asAdmin.mutation(api.selectorOptions.updateCard, {
-      id: cardId,
-      listingTitle: "   ",
-    });
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "   ",
+      }),
+    ).rejects.toThrow(BLANK_LISTING_TITLE_REFUSAL);
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
       selectorOptionId: variantTypeId,
     });
     const card = cards.find((c) => c._id === cardId)!;
-    expect(card.listingTitle).toBe("");
-    expect(card.listingTitleTruncated).toBeUndefined();
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome An Absurdly Long Player Full Name #17",
+    );
+    expect(card.listingTitleTruncated).toBe(true);
   });
 });
 

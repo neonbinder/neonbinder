@@ -44,6 +44,8 @@ import { sameNamePlayers } from "./players";
 // Called inside the handler only; `cardPlayerLinks.ts` imports this module
 // back (for `findSportForSelectorOption`), which is safe for the same reason.
 import { recentCardIdsForPlayer } from "./cardPlayerLinks";
+// NEO-358 — every `teamOnCardIds` write here keeps the team → cards index.
+import { syncCardTeamLinks } from "./cardTeamLinks";
 // NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
 // (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -275,6 +277,8 @@ export const backfillTeamToOnCardIds = internalMutation({
         team: undefined,
         lastUpdated: Date.now(),
       } as any);
+      // NEO-358 — the team → cards index follows the link.
+      await syncCardTeamLinks(ctx, row._id, [teamId]);
       processed += 1;
     }
 
@@ -888,6 +892,8 @@ export const applyBscTeamResolution = internalMutation({
           bscTeamName: undefined,
           lastUpdated: Date.now(),
         });
+        // NEO-358 — the team → cards index follows the card.
+        await syncCardTeamLinks(ctx, row._id, [wholeTeamId]);
         return { applied: true, unmatched: false };
       }
       // The whole string names a team NB holds, but not one this card can
@@ -987,6 +993,8 @@ export const applyBscTeamResolution = internalMutation({
       bscTeamName: undefined,
       lastUpdated: Date.now(),
     });
+    // NEO-358 — the team → cards index follows the card.
+    await syncCardTeamLinks(ctx, row._id, resolvedTeamIds);
 
     return { applied: true, unmatched: false };
   },

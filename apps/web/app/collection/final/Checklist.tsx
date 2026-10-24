@@ -1,154 +1,189 @@
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useId, useMemo, useRef, useState } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
-import {
-  cardsInSet,
-  getSet,
-  normalizeSearchText,
-  playerNames,
-  setLabel,
-  teamNames,
-  variantLabel,
-  type Card,
-  type CardId,
-  type VariantFilter,
-} from "../prototypes/_shared/data";
-import { parseRange } from "../prototypes/p1/range";
-import SleeveStrip from "../prototypes/p1/SleeveStrip";
-import { CHIP, CHIP_OFF, CHIP_ON, FOCUS, shortCardName } from "../prototypes/p1/ui";
-import CardRowGroup, { type RowActions } from "./CardRows";
-import type { CollectionStore, Notify } from "./store";
+import { CHIP, CHIP_OFF, CHIP_ON, FOCUS } from "../prototypes/p1/ui";
 import BinderPicker from "./BinderPicker";
+import CardRowGroup, { type RowActions } from "./CardRows";
+import ChipGroup from "./ChipGroup";
+import { checklistCount, haveLine, isComplete, totalKnown } from "./catalog/format";
+import { copiesByCard, fold, useHomeName, useScopedName } from "./catalog/home";
+import { SkeletonBars, SkeletonPips } from "./catalog/Skeleton";
 import { blockedMessage, pickFirstLabel, runPlan } from "./cards/model";
+import { parseRange } from "./cards/range";
+import { playerNames, setLabel, shortCardName, teamNames } from "./data/labels";
+import {
+  useBuildingSets,
+  useCapabilities,
+  useCollectionActions,
+  useCopiesInVariant,
+  useDemoExtension,
+  useSetSummary,
+  useVariantCards,
+  useVariantCompletion,
+} from "./data/store";
+import type { Card, CardId } from "./data/types";
+import { usePageApi } from "./pageApi";
 
 type Show = "all" | "have" | "need";
 
 /**
- * The checklist under the cascade (prototype 1's, consolidated): progress
- * strip, "Building this set", the "Adding to" binder, an in-list search with
- * All / Haves / Needs, "Mark a range as Have", and the rows. A card owned in
- * several line items shows one row per line.
+ * The checklist under the cascade: progress strip, "Building this set", an
+ * in-list search with All / Haves / Needs, "Mark a range as Have", and the
+ * rows. A card owned in several line items shows one row per line.
+ *
+ * One checklist's cards and copies (`useVariantCards`, `useCopiesInVariant`),
+ * never the whole set. Its heading shows at once; the rows show a skeleton
+ * until both reads are in.
+ *
+ * Live regions: the count line is one status, mounted from the start, that
+ * says "Dealing out the checklist…" and then the count (base cards, and
+ * "N with variations" on a second line; `checklistCount`); the range's preview
+ * is another, with an alert for text it cannot read. Marking a range puts
+ * the caret back in its box.
  */
 const Checklist = forwardRef<
   HTMLHeadingElement,
   {
     setId: string;
-    filter: VariantFilter;
-    store: CollectionStore;
+    variantId: string;
+    title: string;
     actions: RowActions;
-    notify: Notify;
     selectedCardId: string | null;
     /** Jumped here from search: scroll to this card's row and ring it. */
     highlightCardId: CardId | null;
   }
->(function Checklist(
-  { setId, filter, store, actions, notify, selectedCardId, highlightCardId },
-  headingRef,
-) {
-  const set = getSet(setId);
-  const cards = useMemo(() => cardsInSet(setId, filter), [setId, filter]);
-  const ownedIds = new Set(cards.filter((c) => store.ownedInScope(c.id) > 0).map((c) => c.id));
-  const completion = store.completionInScope(setId, filter);
-  const building = store.isBuilding(setId);
-  const title = `${setLabel(set)} ${variantLabel(filter.type === "Base" ? { type: "Base", name: null } : { type: filter.type, name: filter.name ?? null })}`;
-  const target = store.getBinder(store.targetBinderId);
-  /** The binder the counts and rows are narrowed to, when one is picked. */
-  const scoped = store.fileableBinders.find((b) => b.id === store.selectedBinderId);
+>(function Checklist({ setId, variantId, title, actions, selectedCardId, highlightCardId }, headingRef) {
+  const api = usePageApi();
+  const writes = useCollectionActions();
+  const capabilities = useCapabilities();
+  const demo = useDemoExtension();
+  const cards = useVariantCards(variantId);
+  const copies = useCopiesInVariant(variantId);
+  const completion = useVariantCompletion(variantId);
+  const building = useBuildingSets();
+  const summary = useSetSummary(setId);
+  const setRef = summary?.set ?? cards?.[0]?.set ?? null;
+  const isBuilding = building?.some((s) => s.id === setId) ?? false;
+  const into = useHomeName();
+  const scopedName = useScopedName();
+
+  const byCard = useMemo(() => copiesByCard(copies), [copies]);
+  const ownedIds = useMemo(() => new Set(byCard.keys()), [byCard]);
+  const list = useMemo(() => cards ?? [], [cards]);
 
   const [show, setShow] = useState<Show>("all");
   const [query, setQuery] = useState("");
   const [rangeText, setRangeText] = useState("");
   /** For numbers two cards share: which of them the collector means. */
   const [sharedPicks, setSharedPicks] = useState<Set<string>>(new Set());
+  const rangeRef = useRef<HTMLInputElement>(null);
+  const rangePreviewId = useId();
+  const rangeErrorId = useId();
 
-  const needle = normalizeSearchText(query).replace(/^#/, "");
-  const visible = cards.filter((c) => {
+  const needle = fold(query).replace(/^#/, "");
+  const visible = list.filter((c) => {
     const have = ownedIds.has(c.id);
     if (show === "have" && !have) return false;
     if (show === "need" && have) return false;
     if (!needle) return true;
-    const hay = normalizeSearchText(
-      `${c.cardNumber} ${playerNames(c)} ${teamNames(c)} ${c.variation ?? ""} ${c.features.join(" ")}`,
-    );
-    return needle.split(/\s+/).every((t) => hay.includes(t));
+    const hay = fold(`${c.cardNumber} ${playerNames(c)} ${teamNames(c)} ${c.cardVariation ?? ""} ${c.features.join(" ")}`);
+    return needle.split(" ").every((t) => hay.includes(t));
   });
+  // Base first, like the "Have 2 of 300" above it; variations on a second line.
+  const count =
+    cards && copies
+      ? checklistCount({
+          shownBase: visible.filter((c) => !c.isVariation).length,
+          shownAll: visible.length,
+          base: list.filter((c) => !c.isVariation).length,
+          all: list.length,
+        })
+      : null;
 
   // A card number is never unique: `parseRange` hands back every number two
   // cards share in `shared`. Stop and ask: until each one is picked (or taken
   // out with -N) the whole run is held, the same rule as My Cards' Quick add.
-  const range = rangeText.trim() ? parseRange(rangeText, cards) : null;
+  const range = rangeText.trim() ? parseRange(rangeText, list) : null;
   const plan = runPlan(range, sharedPicks, (id) => ownedIds.has(id));
   const { cards: rangeCards, toAdd, already: alreadyHave, blocked } = plan;
 
   const markRange = () => {
     if (blocked || toAdd.length === 0) return;
-    const added = toAdd.map((c) => store.addHave(c.id));
-    notify(
-      `Marked ${added.length} ${added.length === 1 ? "card" : "cards"} as Have, into ${target?.name ?? "Main"}`,
-      () => added.forEach((copy) => store.removeCopy(copy.id)),
+    const n = toAdd.length;
+    void api.run(
+      () => writes.addMany(toAdd),
+      () => `Marked ${n} ${n === 1 ? "card" : "cards"} as Have, into ${into}`,
     );
     setRangeText("");
     setSharedPicks(new Set());
+    // The button goes quiet once the box clears: keep the keyboard in the box.
+    rangeRef.current?.focus();
+  };
+
+  const toggleBuilding = () => {
+    if (!setRef) return;
+    const label = setLabel(setRef);
+    void api.run(
+      () => writes.setBuilding(setRef, !isBuilding),
+      (r) => (r.building ? `Building ${label}. Go get 'em.` : `Stopped building ${label}`),
+    );
   };
 
   // --- Jump from search: bring the row into view and put the caret on it ---
   const rowEls = useRef(new Map<CardId, HTMLLIElement>());
+  const ready = cards !== undefined;
+  const ringed = highlightCardId && list.some((c) => c.id === highlightCardId) ? highlightCardId : null;
   useEffect(() => {
-    if (!highlightCardId) return;
+    if (!ringed || !ready) return;
     const frame = requestAnimationFrame(() => {
-      const el = rowEls.current.get(highlightCardId);
+      const el = rowEls.current.get(ringed);
       if (!el) return;
       el.scrollIntoView({ block: "center" });
       el.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
-  }, [highlightCardId]);
+  }, [ringed, ready]);
 
-  const showButton = (value: Show, label: string) => (
-    <button
-      type="button"
-      aria-pressed={show === value}
-      onClick={() => setShow(value)}
-      className={`${CHIP} ${show === value ? CHIP_ON : CHIP_OFF}`}
-    >
-      {label}
-    </button>
-  );
+  const headingId = `checklist-${variantId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   return (
-    <section aria-labelledby={`checklist-${setId}`} className="space-y-4 rounded-lg bg-raised p-4 text-ink shadow-offset sm:p-6">
+    <section aria-labelledby={headingId} className="space-y-4 rounded-lg bg-raised p-4 text-ink shadow-offset sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-2">
-          <h3
-            id={`checklist-${setId}`}
-            ref={headingRef}
-            tabIndex={-1}
-            className="rounded-sm text-xl font-semibold focus-outline"
-          >
+          <h3 id={headingId} ref={headingRef} tabIndex={-1} className="rounded-sm text-xl font-semibold focus-outline">
             {title}
           </h3>
-          <p className="text-sm text-ink-2">
-            {scoped && <span className="text-neon-blue-text">In {scoped.name}: </span>}
-            Have <span className="font-semibold tabular-nums text-ink">{completion.owned}</span> of{" "}
-            <span className="tabular-nums">{completion.total}</span>
-            {completion.total > 0 && completion.owned === completion.total
-              ? " · Complete. Totally rad."
-              : ` · Need ${completion.total - completion.owned}`}
-          </p>
-          <SleeveStrip cards={cards} ownedIds={ownedIds} />
+          {completion ? (
+            <p className="text-sm text-ink-2">
+              {scopedName && <span className="text-neon-blue-text">In {scopedName}: </span>}
+              {totalKnown(completion) ? (
+                <>
+                  Have <span className="font-semibold tabular-nums text-ink">{completion.owned}</span> of{" "}
+                  <span className="tabular-nums">{completion.total}</span>
+                  {isComplete(completion)
+                    ? " · Complete. Totally rad."
+                    : ` · Need ${completion.total - completion.owned}`}
+                </>
+              ) : (
+                haveLine(completion)
+              )}
+            </p>
+          ) : (
+            <SkeletonBars rows={1} className="w-48" />
+          )}
+          {cards ? <SleeveStrip cards={cards} ownedIds={ownedIds} /> : <SkeletonPips />}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <BinderPicker store={store} />
+          {capabilities.scope && demo && <BinderPicker store={demo.state} />}
           <button
             type="button"
-            aria-pressed={building}
-            onClick={() => {
-              store.toggleBuilding(setId);
-              notify(building ? `Stopped building ${setLabel(set)}` : `Building ${setLabel(set)}. Go get 'em.`);
-            }}
-            className={`${CHIP} ${building ? CHIP_ON : CHIP_OFF}`}
+            aria-pressed={isBuilding}
+            disabled={!setRef || building === undefined}
+            onClick={toggleBuilding}
+            className={`${CHIP} ${isBuilding ? CHIP_ON : CHIP_OFF} disabled:cursor-wait disabled:opacity-60`}
           >
-            {building ? "✓ " : ""}Building this set
+            {isBuilding && <span aria-hidden="true">✓ </span>}
+            Building this set
           </button>
         </div>
       </div>
@@ -172,22 +207,33 @@ const Checklist = forwardRef<
               autoComplete="off"
             />
           </div>
-          <div role="group" aria-label="Show" className="flex gap-1.5 pb-1">
-            {showButton("all", "All")}
-            {showButton("have", "Haves")}
-            {showButton("need", "Needs")}
-          </div>
+          <ChipGroup
+            label="Show"
+            value={show}
+            options={[
+              { value: "all", label: "All" },
+              { value: "have", label: "Haves" },
+              { value: "need", label: "Needs" },
+            ]}
+            onChange={setShow}
+            className="flex gap-1.5 pb-1"
+            chipClass={(on) => `${CHIP} ${on ? CHIP_ON : CHIP_OFF}`}
+          />
         </div>
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-[12rem] flex-1">
               <Input
+                ref={rangeRef}
                 surface="dark"
                 label="Mark a range as Have"
                 placeholder="1-20, -12"
                 value={rangeText}
-                onChange={(e) => setRangeText(e.target.value)}
+                onChange={(e) => {
+                  setRangeText(e.target.value);
+                  setSharedPicks(new Set());
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -200,6 +246,8 @@ const Checklist = forwardRef<
                 }}
                 autoComplete="off"
                 spellCheck={false}
+                aria-invalid={range?.invalid || undefined}
+                aria-describedby={range?.invalid ? rangeErrorId : rangePreviewId}
               />
             </div>
             <NeonButton
@@ -212,17 +260,30 @@ const Checklist = forwardRef<
               {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Mark ${toAdd.length} as Have` : "Mark as Have")}
             </NeonButton>
           </div>
-          {range && (
-            <div className="space-y-2 text-sm text-ink-2">
-              <p>
-                {toAdd.length === 0 && rangeCards.length === 0
-                  ? "No cards picked yet."
-                  : `${toAdd.length} to add to ${target?.name ?? "Main"}`}
-                {alreadyHave > 0 && `, ${alreadyHave} already in your collection`}
-                {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
+          <div className="space-y-2 text-sm text-ink-2">
+            {range?.invalid && (
+              <p id={rangeErrorId} role="alert" className="text-neon-yellow-text">
+                Can&apos;t read that. Try numbers and runs like 1-20, -12.
               </p>
-              {blocked && <p className="text-neon-yellow-text">{blockedMessage(plan)}</p>}
-              {range.shared.map((s) => (
+            )}
+            {/* Always mounted, so each change to the range is read as it lands. */}
+            <div id={rangePreviewId} role="status" className={range && !range.invalid ? "space-y-2" : "sr-only"}>
+              {range && !range.invalid && (
+                <>
+                  <p>
+                    {toAdd.length === 0 && rangeCards.length === 0
+                      ? "No cards picked yet."
+                      : `${toAdd.length} to add to ${into}`}
+                    {alreadyHave > 0 && `, ${alreadyHave} already in your collection`}
+                    {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
+                  </p>
+                  {blocked && <p className="text-neon-yellow-text">{blockedMessage(plan)}</p>}
+                </>
+              )}
+            </div>
+            {range &&
+              !range.invalid &&
+              range.shared.map((s) => (
                 <div
                   key={s.number}
                   role="group"
@@ -253,41 +314,82 @@ const Checklist = forwardRef<
                   })}
                 </div>
               ))}
-            </div>
-          )}
+          </div>
         </div>
       </div>
 
-      <p role="status" className="text-xs tabular-nums text-ink-3">
-        {visible.length === cards.length ? `${cards.length} cards` : `${visible.length} of ${cards.length} cards`}
+      <p role="status" className={!count ? "sr-only" : "text-xs tabular-nums text-ink-3"}>
+        {!count ? (
+          "Dealing out the checklist…"
+        ) : (
+          <>
+            <span className="block">{count.base}</span>
+            {count.withVariations && (
+              <>
+                {/* Two lines on screen, one sentence to a reader. */}
+                <span className="sr-only">, </span>
+                <span className="block">{count.withVariations}</span>
+              </>
+            )}
+          </>
+        )}
       </p>
-      {visible.length === 0 ? (
-        <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
-          {show === "need" && !query ? "Nothing left to chase here. Set complete!" : "No cards match."}
-        </p>
+      {!cards || !copies ? (
+        <div aria-busy="true" className="space-y-2">
+          <SkeletonBars rows={6} />
+        </div>
       ) : (
-        <ul className="space-y-1.5">
-          {visible.map((card: Card) => (
-            <CardRowGroup
-              key={card.id}
-              card={card}
-              store={store}
-              actions={{
-                ...actions,
-                open: (c, copyId) => actions.open(c, copyId, visible),
-              }}
-              isSelected={card.id === selectedCardId}
-              highlighted={card.id === highlightCardId}
-              groupRef={(el) => {
-                if (el) rowEls.current.set(card.id, el);
-                else rowEls.current.delete(card.id);
-              }}
-            />
-          ))}
-        </ul>
+        <>
+          {visible.length === 0 ? (
+            <p className="rounded-md border border-dashed border-rule-strong px-3 py-2 text-sm text-ink-3">
+              {cards.length === 0
+                ? "No cards on this checklist yet."
+                : show === "need" && !query
+                  ? "Nothing left to chase here. Set complete!"
+                  : "No cards match."}
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {visible.map((card: Card) => (
+                <CardRowGroup
+                  key={card.id}
+                  card={card}
+                  copies={byCard.get(card.id) ?? []}
+                  actions={{ ...actions, open: (c, copyId) => actions.open(c, copyId, visible) }}
+                  isSelected={card.id === selectedCardId}
+                  highlighted={card.id === ringed}
+                  groupRef={(el) => {
+                    if (el) rowEls.current.set(card.id, el);
+                    else rowEls.current.delete(card.id);
+                  }}
+                />
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </section>
   );
 });
 
 export default Checklist;
+
+/**
+ * A checklist's progress as a row of sleeves, one per card, in checklist
+ * order: filled neon for a card you have, an empty pocket for one you need.
+ * Decorative: the "Have 12 of 51" beside it is the readable version.
+ */
+function SleeveStrip({ cards, ownedIds }: { cards: Card[]; ownedIds: Set<string> }) {
+  return (
+    <div aria-hidden="true" className="flex flex-wrap gap-1">
+      {cards.map((c) => (
+        <span
+          key={c.id}
+          className={`h-3.5 w-2.5 rounded-[2px] border ${
+            ownedIds.has(c.id) ? "border-neon-blue bg-neon-blue" : "border-control bg-transparent"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}

@@ -65,6 +65,7 @@ import {
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
+import { NEW_ROW_SUBTREE_COUNTS } from "./cardCounts";
 import { allocateSlots, initialSlots, slotIds } from "./platformSlots";
 import { deleteEmptySelectorOptionRow } from "./selectorOptions";
 import {
@@ -84,6 +85,7 @@ import {
   lossFieldNames,
   lossOnto,
   lossValidator,
+  moveBuildingSets,
   moveCards,
   moveGuestCrossListings,
   nameAfterPrefixes,
@@ -974,6 +976,7 @@ async function insertChildRow(
     sportlots: links.map((l) => ({ id: l.id, label: l.label })),
   });
   const id = await ctx.db.insert("selectorOptions", {
+    ...NEW_ROW_SUBTREE_COUNTS,
     level,
     value,
     platformData: alloc.platformData,
@@ -1256,6 +1259,13 @@ export const convertToInsert = mutation({
     }
     await moveCards(ctx, dest._id, moves, now);
     await moveGuestCrossListings(ctx, guestLinks, dest._id, now);
+    // NEO-358 — a collector building a set that ends here is building the
+    // target set now; moved before the trash icon's helper would sweep them.
+    for (const row of source.rows) {
+      if (row.level === "setName") {
+        await moveBuildingSets(ctx, row._id, targetSet._id, now);
+      }
+    }
 
     // ── end the emptied rows, child first, through the trash icon's helper ──
     for (const row of source.rows) {

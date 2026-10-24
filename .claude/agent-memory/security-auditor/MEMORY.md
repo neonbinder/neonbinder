@@ -78,3 +78,4 @@
 - [Patterns neo350 public demo and prefill](patterns_neo350_public_demo_and_prefill.md) — client-only demo on a public route: import-graph grep; URL prefill allowlisted at parse and interpolation; branch author email
 - [Patterns neo355 reverse OIDC tokeninfo](patterns_neo355_reverse_oidc_tokeninfo.md) — SA id token → Convex route: allowlist is the gate (aud is mintable), garbage-bearer amplification, 429→401, fail-open gate
 - [Patterns neo356 theme prepaint](patterns_neo356_theme_prepaint.md) — inline pre-paint script safe shape (compare-to-literal); apps/web has no CSP (hash needed if added); getUserProfile now app-wide
+- [Patterns neo358 collector rows pin catalog](patterns_neo358_collector_rows_pin_catalog.md) — user copies guarding catalog deletes/moves = signed-in freeze lever; owner-scoped shape that held; clamp JSON-cursor index

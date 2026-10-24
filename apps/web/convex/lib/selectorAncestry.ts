@@ -150,6 +150,32 @@ export async function findSetYearForSelectorOption(
 }
 
 /**
+ * NEO-358 — the `setName` row a selectorOption sits under (itself, when it IS
+ * one), or undefined.
+ *
+ * A collector's copy carries its card's set (`collectionCopies.setId`) so a
+ * set's completion is one indexed range. The walk is the same bounded one as
+ * the sport and year walks above; a row with no `setName` ancestor (a sport,
+ * year or brand row, an orphaned subtree, a cycle) is undefined, never a
+ * guess.
+ */
+export async function findSetForSelectorOption(
+  ctx: AncestryCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<Id<"selectorOptions"> | undefined> {
+  let cursor: Id<"selectorOptions"> | undefined = selectorOptionId;
+  let depth = 0;
+  while (cursor && depth < MAX_ANCESTOR_DEPTH) {
+    const node = await ctx.db.get(cursor);
+    if (!node) return undefined;
+    if (node.level === "setName") return node._id;
+    cursor = node.parentId;
+    depth += 1;
+  }
+  return undefined;
+}
+
+/**
  * What the sub-variant gate reads of a row: where it sits, and (for the
  * variant type) its title, which is its kind. Structural, like
  * `AncestryCtx`, so a query or a mutation ctx both pass.

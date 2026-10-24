@@ -138,6 +138,14 @@ const PRINT_RUN_MAX = 1_000_000;
 const PRINT_RUN_MESSAGE =
   "Print run must be a whole number between 1 and 1,000,000.";
 
+/**
+ * NEO-358 — the refusal for a cleared Card title. The same sentence as
+ * `selectorOptions.BLANK_LISTING_TITLE_REFUSAL`, which `updateCard` throws for
+ * any other client: the server is the rule, this saves the round trip.
+ */
+const BLANK_TITLE_MESSAGE =
+  "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
+
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
   selectorOptionId: Id<"selectorOptions">;
@@ -469,6 +477,16 @@ export default function CardDetailPanel({
         );
       }
       await commitField({ listingTitle: trimmed }, "Saved Card title");
+    },
+    // NEO-358 — a card's title is what a collector searches, so it is never
+    // stored blank (`updateCard` refuses one with the same sentence). A
+    // cleared field puts the stored title back and says why, rather than
+    // silently reverting as it did before.
+    onEmptyCommit: () => {
+      const stored = card.listingTitle ?? "";
+      if (titleInputRef.current) titleInputRef.current.value = stored;
+      setTitleLength(stored.length);
+      throw new Error(BLANK_TITLE_MESSAGE);
     },
   });
 

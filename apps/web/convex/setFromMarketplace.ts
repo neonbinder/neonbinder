@@ -2,6 +2,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
+import { NEW_ROW_SUBTREE_COUNTS } from "./cardCounts";
 import { initialSlots } from "./platformSlots";
 import {
   checkCustomSelectorValue,
@@ -408,6 +409,7 @@ export async function insertSetWithBaseFromSl(
     ...deriveOwnLevelFeatures("setName", value),
   };
   const setId = await ctx.db.insert("selectorOptions", {
+    ...NEW_ROW_SUBTREE_COUNTS,
     level: "setName",
     value,
     platformData: {},
@@ -428,6 +430,7 @@ export async function insertSetWithBaseFromSl(
     ...deriveOwnLevelFeatures("variantType", "Base"),
   };
   const baseId = await ctx.db.insert("selectorOptions", {
+    ...NEW_ROW_SUBTREE_COUNTS,
     level: "variantType",
     value: "Base",
     platformData: slots.platformData,

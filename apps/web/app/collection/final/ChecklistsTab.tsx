@@ -1,28 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { MagnifyingGlassIcon } from "@heroicons/react/20/solid";
 import { Input } from "@/components/primitives/Input";
-import { getSet, searchCards, type Card, type CardId } from "../prototypes/_shared/data";
-import Cascade from "../prototypes/p1/Cascade";
 import { DRILL_ROW_ATTR } from "../prototypes/p1/StaticColumn";
-import { drillTo, terminalFilter, type Drill } from "../prototypes/p1/drill";
 import { FOCUS } from "../prototypes/p1/ui";
-import CardRowGroup, { type RowActions } from "./CardRows";
+import { SearchHitRow, type RowActions } from "./CardRows";
+import Cascade from "./catalog/Cascade";
+import type { Drill } from "./catalog/drill";
+import EntityResults from "./catalog/EntityResults";
+import { useScopedName } from "./catalog/home";
+import { useSearchText } from "./catalog/search";
+import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
+import Suggestions from "./catalog/Suggestions";
+import type { DrillState } from "./catalog/useDrillState";
+import type { EntityParam } from "./checklistParams";
 import Checklist from "./Checklist";
+import { searchable, useCapabilities, useDemoExtension, useSearch } from "./data/store";
+import type { Card, CardId, Suggestion } from "./data/types";
 import { useSetScope } from "./mode";
 import RequestCardDialog from "./RequestCardDialog";
-import type { CollectionTabProps } from "./store";
 
 const FIRST_PAGE = 8;
 
 /**
- * Checklists: a free-text search on top ("96 contenders reggie white"), the
- * Set Builder's cascade underneath for browsing the long way, then the
- * checklist. A search result's click opens its checklist with the row ringed;
- * Have on any row adds straight to the "Adding to" binder.
+ * Checklists: a search on top ("96 contenders reggie white"), which offers
+ * players, teams and sets first and then the cards whose title holds every
+ * word; the Set Builder's cascade underneath for browsing the long way; then
+ * the checklist. A result's click opens its checklist with the row ringed.
+ *
+ * The drill (`drill`) is read and checked by the page (`useDrillState`),
+ * which also titles the tab; this view draws it.
  */
 export default function ChecklistsTab({
-  store,
-  notify,
   actions,
   query,
   onQuery,
@@ -32,11 +40,17 @@ export default function ChecklistsTab({
   onJump,
   highlightCardId,
   selectedCardId,
-}: CollectionTabProps & {
+  entity,
+  onPickSuggestion,
+  onFranchise,
+  onClearEntity,
+  missingCard,
+  arrivalRef,
+}: {
   actions: RowActions;
   query: string;
   onQuery: (q: string) => void;
-  drill: Drill;
+  drill: DrillState;
   /** Bumps when the drill is set from outside the cascade, to rebuild it. */
   cascadeKey: number;
   onDrill: (next: Drill) => void;
@@ -44,40 +58,85 @@ export default function ChecklistsTab({
   onJump: (card: Card) => void;
   highlightCardId: CardId | null;
   selectedCardId: CardId | null;
+  /** A picked player or team, whose cards show in place of the search results. */
+  entity: EntityParam | null;
+  onPickSuggestion: (s: Suggestion) => void;
+  onFranchise: (whole: boolean) => void;
+  onClearEntity: () => void;
+  /** A jump to a card the catalog no longer holds. */
+  missingCard: boolean;
+  /**
+   * Where the keyboard goes once the URL catches up: a picked player or team
+   * puts it on their cards' heading, "Back to the search" back in the box.
+   * Set by the page (a pick from My Cards lands here too); taken once.
+   */
+  arrivalRef: MutableRefObject<"entity" | "search" | null>;
 }) {
+  const capabilities = useCapabilities();
+  const demo = useDemoExtension();
   const setScope = useSetScope();
+  const scopedName = useScopedName();
   const [showAll, setShowAll] = useState(false);
   const [requesting, setRequesting] = useState(false);
-  const hits = query.trim() ? searchCards(query) : [];
-  const partial = hits.length > 0 && !hits[0].matchedAll;
+  const text = useSearchText(query);
+  const result = useSearch(text);
+  const typed = query.trim();
+  const hits = result?.cards ?? [];
   const shown = showAll ? hits : hits.slice(0, FIRST_PAGE);
-  const hitCards = hits.map((h) => h.card);
+  const canRequest = capabilities.cardRequests && !!demo;
 
   const checklistHeading = useRef<HTMLHeadingElement>(null);
+  const entityHeading = useRef<HTMLHeadingElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const entityKey = entity ? `${entity.kind}:${entity.id}` : "";
+  useEffect(() => {
+    const want = arrivalRef.current;
+    if (want === "entity" && entityKey) {
+      arrivalRef.current = null;
+      entityHeading.current?.focus();
+    } else if (want === "search" && !entityKey) {
+      arrivalRef.current = null;
+      searchInput.current?.focus();
+    }
+  }, [entityKey, arrivalRef]);
   const focusChecklist = useCallback(() => {
-    checklistHeading.current?.focus();
+    const heading = checklistHeading.current;
+    heading?.focus();
+    return !!heading;
   }, []);
 
   // A cascade rebuilt from outside (a deep link, Back or Forward, a search
   // jump) starts scrolled to its first column; on a narrow row that leaves
   // the open column out of sight. Show the deepest one, as a pick would.
   const browseRef = useRef<HTMLElement>(null);
+  const columnCount = drill.columns.length;
   useEffect(() => {
     const row = browseRef.current?.querySelector<HTMLElement>(`[${DRILL_ROW_ATTR}]`);
     if (row) row.scrollLeft = row.scrollWidth;
-  }, [cascadeKey]);
+  }, [cascadeKey, columnCount]);
 
-  const filter = terminalFilter(drill);
-  const scoped = store.fileableBinders.find((b) => b.id === store.selectedBinderId);
-  const askLink = (text: string) => (
+  const askLink = (label: string) => (
     <button
       type="button"
       onClick={() => setRequesting(true)}
       className={`rounded-sm text-neon-blue-text underline underline-offset-2 hover:text-ink ${FOCUS}`}
     >
-      {text}
+      {label}
     </button>
   );
+
+  // What the line under the box says. Short text is not searched yet.
+  let status = "";
+  if (entity) status = "";
+  else if (typed && !searchable(typed)) status = "Keep going: two letters and we're off.";
+  else if (searchable(typed) && (result === undefined || text !== typed)) status = "Flipping through the catalog…";
+  else if (searchable(typed) && hits.length === 0) status = `Nothing matches “${typed}”.`;
+  else if (hits.length > 0) {
+    status = result?.truncated
+      ? `The first ${hits.length} matches. Add a word to narrow it down.`
+      : `${hits.length} ${hits.length === 1 ? "card matches" : "cards match"}. Pick yours.`;
+  }
+  const settled = searchable(typed) && result !== undefined && text === typed;
 
   return (
     <div className="space-y-6">
@@ -89,6 +148,7 @@ export default function ChecklistsTab({
             className="pointer-events-none absolute left-3 top-[2.65rem] h-5 w-5 text-ink-3"
           />
           <Input
+            ref={searchInput}
             surface="dark"
             type="search"
             label="Search every card"
@@ -110,29 +170,54 @@ export default function ChecklistsTab({
           />
         </div>
         <p role="status" className="text-xs text-ink-3">
-          {!query.trim()
-            ? ""
-            : hits.length === 0
-              ? `Nothing matches “${query.trim()}”. Try a year, a set or a last name.`
-              : partial
-                ? `No card matches every word. Here are the ${hits.length} closest.`
-                : `${hits.length} ${hits.length === 1 ? "card matches" : "cards match"}. Pick yours.`}
+          {status}
         </p>
-        {query.trim() && hits.length === 0 ? (
-          <div className="max-w-2xl rounded-lg border border-dashed border-neon-blue/50 bg-raised p-4 shadow-offset text-sm text-ink-2">
-            <p className="font-semibold text-ink">Not in the binder yet.</p>
-            <p className="mt-1 text-ink-2">
-              {askLink("Ask us to add it")}. It&apos;s a demo, so your request stays right here with you.
-            </p>
+        {missingCard && (
+          <p className="max-w-2xl rounded-lg border border-dashed border-rule-strong p-3 text-sm text-ink-2">
+            That card is no longer in the catalog. Your copies of it are safe.
+          </p>
+        )}
+        {/* The status line above speaks for the search; the suggestions keep quiet. */}
+        {!entity && <Suggestions text={text} onPick={onPickSuggestion} silent />}
+
+        {entity ? (
+          <EntityResults
+            ref={entityHeading}
+            entity={entity}
+            actions={actions}
+            selectedCardId={selectedCardId}
+            onJump={onJump}
+            onFranchise={onFranchise}
+            onClear={onClearEntity}
+          />
+        ) : settled && hits.length === 0 ? (
+          <div className="max-w-2xl rounded-lg border border-dashed border-neon-blue/50 bg-raised p-4 text-sm text-ink-2 shadow-offset">
+            <p className="font-semibold text-ink">Not in the catalog yet.</p>
+            {canRequest ? (
+              <p className="mt-1 text-ink-2">
+                {askLink("Ask us to add it")}. It&apos;s a demo, so your request stays right here with you.
+              </p>
+            ) : (
+              <p className="mt-1 text-ink-2">
+                We&apos;re still filling the long boxes. Try a year, a set or a last name, or browse below.
+              </p>
+            )}
           </div>
         ) : (
-          <p className="text-xs text-ink-3">{askLink("Can't find it? Ask us to add it")}</p>
+          canRequest && <p className="text-xs text-ink-3">{askLink("Can't find it? Ask us to add it")}</p>
         )}
-        {shown.length > 0 && (
+
+        {!entity && searchable(typed) && !settled && result === undefined && (
+          <div aria-hidden="true" className="max-w-2xl">
+            <SkeletonBars rows={3} />
+          </div>
+        )}
+
+        {!entity && shown.length > 0 && (
           <>
-            {scoped && (
+            {scopedName && (
               <p className="text-xs text-ink-2">
-                Have, Want and Trade below are for <span className="text-neon-blue-text">{scoped.name}</span>.{" "}
+                Have, Want and Trade below are for <span className="text-neon-blue-text">{scopedName}</span>.{" "}
                 <button
                   type="button"
                   onClick={() => setScope("all")}
@@ -143,12 +228,11 @@ export default function ChecklistsTab({
               </p>
             )}
             <ul className="space-y-1.5 rounded-lg bg-raised p-3 shadow-offset sm:p-4">
-              {shown.map(({ card }) => (
-                <CardRowGroup
+              {shown.map((card) => (
+                <SearchHitRow
                   key={card.id}
                   card={card}
-                  store={store}
-                  actions={{ ...actions, open: (c, copyId) => actions.open(c, copyId, hitCards) }}
+                  actions={{ ...actions, open: (c, copyId) => actions.open(c, copyId, hits) }}
                   isSelected={card.id === selectedCardId}
                   showSet
                   onRowClick={() => onJump(card)}
@@ -170,40 +254,35 @@ export default function ChecklistsTab({
       </section>
 
       <section ref={browseRef} aria-label="Browse sets" className="space-y-4">
-        <p className="text-sm text-ink-2">
-          Or drill down: sport, year, brand, set, then base, an insert or a parallel.
-        </p>
+        <p className="text-sm text-ink-2">Or drill down: sport, year, brand, set, then base, an insert or a parallel.</p>
         <Cascade
           key={cascadeKey}
-          drill={drill}
+          state={drill}
           onDrill={onDrill}
-          completion={store.completionInScope}
           label="Sport, year, brand and set"
           onReachedChecklist={focusChecklist}
         />
-        {drill.set && filter && (
+        {drill.checklist?.variantId && drill.drill.set && (
           <Checklist
-            key={`${drill.set}|${filter.type}|${filter.name ?? ""}|${cascadeKey}`}
+            key={`${drill.checklist.variantId}|${cascadeKey}`}
             ref={checklistHeading}
-            setId={drill.set}
-            filter={filter}
-            store={store}
+            setId={drill.drill.set}
+            variantId={drill.checklist.variantId}
+            title={drill.checklistTitle ?? drill.checklist.name}
             actions={actions}
-            notify={notify}
             selectedCardId={selectedCardId}
             highlightCardId={highlightCardId}
           />
         )}
+        {drill.pending && !drill.checklist && drill.drill.type && (
+          <div aria-busy="true" className="rounded-lg bg-raised p-4 shadow-offset sm:p-6">
+            <SkeletonBars rows={5} />
+            <LoadingNote>Finding the checklist…</LoadingNote>
+          </div>
+        )}
       </section>
 
-      {requesting && (
-        <RequestCardDialog store={store} searched={query} onClose={() => setRequesting(false)} />
-      )}
+      {requesting && demo && <RequestCardDialog store={demo.state} searched={query} onClose={() => setRequesting(false)} />}
     </div>
   );
-}
-
-/** The drill that opens a card's own checklist. */
-export function drillToCard(card: Card): Drill {
-  return drillTo(getSet(card.setId), card.variantPath);
 }

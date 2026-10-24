@@ -30,3 +30,5 @@ read-only `.paginate` helper exported from the owner (`pagePlayerAliasRows`,
 `pagePlayerSportRows` in players.ts, `pageTeamAliasRows` in teams.ts) and
 still writes only through `sync*`. Never dodge the grep with a variable
 table name.
+
+**NEO-358 (2026-10-23):** `cardPlayerLinks.pin` works the same way: only the owner module may query the table. A new reader (e.g. a collector catalog) should go through a read helper exported from the owner module (`cardPlayerLinkPage` in `cardPlayerLinks.ts`, `playerAliasRowsByPrefix` in `players.ts`, `findTeamsByAliasPrefix` in `lib/teamRow.ts`) rather than widen the pin's allowlist.

@@ -1,22 +1,56 @@
 import { describe, expect, it } from "vitest";
-import { cardsInSet, emptyCopyDetails, type Card, type Copy } from "../../prototypes/_shared/data";
-import { parseRange } from "../../prototypes/p1/range";
-import { blockedMessage, pickFirstLabel, rangeSelection, runPlan, tilePress, wantedFirst } from "./model";
+import { emptyCopyDetails } from "../data/store";
+import type { Card, Copy } from "../data/types";
+import { blockedMessage, pickFirstLabel, rangeSelection, runPlan, tilePress, wallName, wantedFirst } from "./model";
+import { parseRange } from "./range";
 
-const CHROME = "2024-topps-chrome-baseball";
+const SET = {
+  id: "set-chrome",
+  name: "Topps Chrome",
+  season: "2024",
+  year: 2024,
+  brand: { id: "brand-topps", name: "Topps" },
+  sport: { id: "baseball", name: "Baseball" },
+};
+const BASE = {
+  id: "v-base",
+  kind: "base" as const,
+  name: null,
+  insertName: null,
+  printRun: null,
+  order: 0,
+  path: { typeId: "t-base", variantId: null, subVariantId: null },
+  finish: { kind: "standard" as const },
+};
+
+function card(n: number | string, variation: string | null = null): Card {
+  const id = `card-${n}${variation ? `-${variation.toLowerCase()}` : ""}`;
+  return {
+    id,
+    set: SET,
+    variant: BASE,
+    cardNumber: String(n),
+    players: [{ id: `p-${n}`, name: `Player ${n}` }],
+    teams: [],
+    printRun: null,
+    features: [],
+    cardVariation: variation,
+    isVariation: variation !== null,
+    sortOrder: Number.parseInt(String(n), 10),
+    finish: BASE.finish,
+  };
+}
+
+/** A base row where #13 is on two cards: the regular one and its Sliding image variation. */
+const ROW: Card[] = [card(1), card(2), card(3), card(4), card(5), card(13), card(13, "Sliding"), card(14)];
 
 function copy(id: string, cardId: string, quantity: number): Copy {
-  return { ...emptyCopyDetails(), id, cardId, quantity, binderIds: ["binder-main"] };
+  return { ...emptyCopyDetails(), id, cardId, quantity, variantId: BASE.id, setId: SET.id, homeId: "main" };
 }
 
 /** A number two cards share in one row (the regular card and its image variation). */
 function sharedNumber(): { row: Card[]; number: string } {
-  const row = cardsInSet(CHROME, { type: "Base" });
-  const counts = new Map<string, number>();
-  for (const c of row) counts.set(c.cardNumber, (counts.get(c.cardNumber) ?? 0) + 1);
-  const number = [...counts].find(([, n]) => n > 1)?.[0];
-  if (!number) throw new Error("fixture: expected a shared card number in the Chrome base row");
-  return { row, number };
+  return { row: ROW, number: "13" };
 }
 
 describe("tilePress", () => {
@@ -98,8 +132,7 @@ describe("runPlan (stop and ask)", () => {
   });
 
   it("counts owned cards as already had, not to add", () => {
-    const row = cardsInSet(CHROME, { type: "Base" });
-    const range = parseRange("1-3", row);
+    const range = parseRange("1-3", ROW);
     const owned = new Set([range.single[0].id]);
     const plan = runPlan(range, new Set(), (id) => owned.has(id));
     expect(plan.already).toBe(1);
@@ -109,9 +142,31 @@ describe("runPlan (stop and ask)", () => {
 
 describe("wantedFirst", () => {
   it("puts wanted cards first and keeps checklist order in each half", () => {
-    const row = cardsInSet(CHROME, { type: "Base" }).slice(0, 5);
+    const row = ROW.slice(0, 5);
     const wanted = new Set([row[3].id, row[1].id]);
     const out = wantedFirst(row, (id) => wanted.has(id));
     expect(out.map((c) => c.id)).toEqual([row[1], row[3], row[0], row[2], row[4]].map((c) => c.id));
+  });
+});
+
+describe("wallName", () => {
+  it("names the checklist, the number, a variation and the player", () => {
+    expect(wallName(card(4), "Reggie White")).toBe("Base #4 Reggie White");
+    expect(wallName(card(13, "Sliding"), "Elly De La Cruz")).toBe("Base #13 (Sliding) Elly De La Cruz");
+    expect(wallName(card(7), "")).toBe("Base #7");
+  });
+});
+
+describe("parseRange (moved to final/cards/range)", () => {
+  it("never guesses a shared number: both cards come back to ask about", () => {
+    const range = parseRange("12-14", ROW);
+    expect(range.single.map((c) => c.cardNumber)).toEqual(["14"]);
+    expect(range.shared).toEqual([{ number: "13", cards: [ROW[5], ROW[6]] }]);
+    expect(range.unknown).toEqual([]);
+  });
+
+  it("reports what is not on the checklist, and refuses text it cannot read", () => {
+    expect(parseRange("1, 99", ROW).unknown).toEqual(["99"]);
+    expect(parseRange("zzz", ROW).invalid).toBe(true);
   });
 });

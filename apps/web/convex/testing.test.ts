@@ -1,5 +1,6 @@
 // Unit tests for the `resetMyTestState` mutation. Verifies caller-scoped
-// deletes across publicProfiles / userProfiles / prizePool, the auth gate
+// deletes across publicProfiles / userProfiles / prizePool and (NEO-358) the
+// caller's collection tables, the auth gate
 // (must be signed in), and the production fail-closed gate (mutation throws
 // unless TESTING_RESET_SECRET is present on the deployment).
 
@@ -48,6 +49,51 @@ async function seedUser(
       createdAt: 0,
       updatedAt: 0,
     });
+    // NEO-358: one copy in a Main binder, and one set being built. The
+    // catalog rows they point at are shared reference data the reset never
+    // touches.
+    const setId = await ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value: `Set ${userId}`,
+      platformData: {},
+      lastUpdated: 0,
+    });
+    const variantId = await ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Base",
+      parentId: setId,
+      platformData: {},
+      lastUpdated: 0,
+    });
+    const cardId = await ctx.db.insert("cardChecklist", {
+      selectorOptionId: variantId,
+      cardNumber: "1",
+      cardName: "Card",
+      platformData: {},
+      sortOrder: 0,
+      lastUpdated: 0,
+    });
+    const homeId = await ctx.db.insert("collectionContainers", {
+      ownerId: userId,
+      kind: "binder",
+      system: "main",
+      name: "Main",
+      lastUpdated: 0,
+    });
+    await ctx.db.insert("collectionCopies", {
+      ownerId: userId,
+      cardId,
+      variantId,
+      setId,
+      homeId,
+      quantity: 1,
+      lastUpdated: 0,
+    });
+    await ctx.db.insert("collectionBuildingSets", {
+      ownerId: userId,
+      setId,
+      lastUpdated: 0,
+    });
   });
 }
 
@@ -58,6 +104,9 @@ async function countRows(
   publicProfiles: number;
   userProfiles: number;
   prizePool: number;
+  collectionCopies: number;
+  collectionContainers: number;
+  collectionBuildingSets: number;
 }> {
   return t.run(async (ctx) => {
     const pp = (await ctx.db.query("publicProfiles").collect()).filter(
@@ -69,16 +118,28 @@ async function countRows(
     const pz = (await ctx.db.query("prizePool").collect()).filter(
       (r) => r.userId === userId,
     );
+    const cc = (await ctx.db.query("collectionCopies").collect()).filter(
+      (r) => r.ownerId === userId,
+    );
+    const ct = (await ctx.db.query("collectionContainers").collect()).filter(
+      (r) => r.ownerId === userId,
+    );
+    const bs = (await ctx.db.query("collectionBuildingSets").collect()).filter(
+      (r) => r.ownerId === userId,
+    );
     return {
       publicProfiles: pp.length,
       userProfiles: up.length,
       prizePool: pz.length,
+      collectionCopies: cc.length,
+      collectionContainers: ct.length,
+      collectionBuildingSets: bs.length,
     };
   });
 }
 
 describe("resetMyTestState", () => {
-  test("deletes the caller's own rows across all three tables", async () => {
+  test("deletes the caller's own rows across every per-user table", async () => {
     const t = convexTest(schema, modules);
     await seedUser(t, USER_A);
 
@@ -90,11 +151,17 @@ describe("resetMyTestState", () => {
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
+      collectionCopies: 1,
+      collectionContainers: 1,
+      collectionBuildingSets: 1,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
       userProfiles: 0,
       prizePool: 0,
+      collectionCopies: 0,
+      collectionContainers: 0,
+      collectionBuildingSets: 0,
     });
   });
 
@@ -111,11 +178,17 @@ describe("resetMyTestState", () => {
       publicProfiles: 0,
       userProfiles: 0,
       prizePool: 0,
+      collectionCopies: 0,
+      collectionContainers: 0,
+      collectionBuildingSets: 0,
     });
     expect(await countRows(t, USER_B)).toEqual({
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
+      collectionCopies: 1,
+      collectionContainers: 1,
+      collectionBuildingSets: 1,
     });
   });
 
@@ -130,6 +203,9 @@ describe("resetMyTestState", () => {
       publicProfiles: 0,
       userProfiles: 0,
       prizePool: 0,
+      collectionCopies: 0,
+      collectionContainers: 0,
+      collectionBuildingSets: 0,
     });
   });
 
@@ -146,6 +222,9 @@ describe("resetMyTestState", () => {
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
+      collectionCopies: 1,
+      collectionContainers: 1,
+      collectionBuildingSets: 1,
     });
   });
 
@@ -164,6 +243,9 @@ describe("resetMyTestState", () => {
       publicProfiles: 1,
       userProfiles: 1,
       prizePool: 1,
+      collectionCopies: 1,
+      collectionContainers: 1,
+      collectionBuildingSets: 1,
     });
   });
 });

@@ -6,9 +6,11 @@ import {
   leadPlayer,
   leadTeam,
   playerInitials,
-  printRunLabel,
   type Card,
+  type Finish,
 } from "./data";
+import type { Card as ModelCard } from "../../final/data/types";
+import { cardLabel as modelLabel, playerInitials as initialsOf } from "../../final/data/labels";
 import "./card-face.css";
 
 /**
@@ -37,7 +39,14 @@ const WIDTH: Record<CardFaceSize, string> = {
 };
 
 export interface CardFaceProps {
-  card: Card;
+  /** A prototype fixture card. Pass this or `model`. */
+  card?: Card;
+  /**
+   * NEO-358: a card from the collection's view model (the real catalog or
+   * the demo store), drawn the same way. Its finish comes from its variant's
+   * title (`final/data/finish`); a team NB has no colours for draws in slate.
+   */
+  model?: ModelCard;
   /** sm 88px, md 144px, lg 240px, fill = the parent's width. Default md. */
   size?: CardFaceSize;
   /** "need" dims and desaturates the card and says "Need" on it. Default owned. */
@@ -60,8 +69,73 @@ const cq = (n: number) => `${n}cqw`;
 const GOLD_FRAME =
   "linear-gradient(135deg, #8a6a1c 0%, #f5d77a 28%, #b8902c 52%, #fff1b8 74%, #9c7a23 100%)";
 
-function frameBackground(card: Card, primary: string): string {
-  const { kind, tint } = card.finish;
+/** Everything the face draws, whichever kind of card it was handed. */
+interface Face {
+  label: string;
+  season: string;
+  setName: string;
+  cardNumber: string;
+  playerName: string;
+  initials: string;
+  teamName: string;
+  primary: string;
+  secondary: string;
+  printRun: number | null;
+  features: readonly string[];
+  variation: string | null;
+  /** The insert or parallel's name; null for Base. */
+  variantName: string | null;
+  finish: Finish;
+}
+
+/** A team NB has no livery for: slate frame, lighter slate band. */
+const NO_LIVERY = { primary: "#334155", secondary: "#94A3B8" };
+
+function faceOf(card: Card | undefined, model: ModelCard | undefined): Face {
+  if (model) {
+    const player = model.players[0];
+    const team = model.teams[0];
+    return {
+      label: modelLabel(model),
+      season: model.set.season,
+      setName: model.set.name,
+      cardNumber: model.cardNumber,
+      playerName: player?.nameOnCard ?? player?.name ?? "",
+      initials: player ? initialsOf(player.name) : "?",
+      teamName: team?.name ?? "",
+      primary: team?.primary ?? NO_LIVERY.primary,
+      secondary: team?.secondary ?? team?.primary ?? NO_LIVERY.secondary,
+      printRun: model.printRun,
+      features: model.features,
+      variation: model.cardVariation,
+      variantName: model.variant.kind === "base" ? null : model.variant.name,
+      finish: model.finish,
+    };
+  }
+  if (!card) throw new Error("CardFace: pass a card or a model");
+  const set = getSet(card.setId);
+  const player = leadPlayer(card);
+  const team = leadTeam(card);
+  return {
+    label: cardLabel(card),
+    season: set.season,
+    setName: set.name,
+    cardNumber: card.cardNumber,
+    playerName: player.name,
+    initials: playerInitials(player),
+    teamName: team.name,
+    primary: team.primary,
+    secondary: team.secondary,
+    printRun: card.printRun,
+    features: card.features,
+    variation: card.variation,
+    variantName: card.variantPath.type !== "Base" ? card.variantPath.name : null,
+    finish: card.finish,
+  };
+}
+
+function frameBackground(face: Face, primary: string): string {
+  const { kind, tint } = face.finish;
   if (kind === "gold" || kind === "superfractor") return GOLD_FRAME;
   if (kind === "foil" && tint) {
     return `linear-gradient(135deg, ${tint} 0%, #ffffff 30%, ${tint} 55%, #ffffff 80%, ${tint} 100%)`;
@@ -72,6 +146,7 @@ function frameBackground(card: Card, primary: string): string {
 
 export default function CardFace({
   card,
+  model,
   size = "md",
   state = "owned",
   empty = false,
@@ -79,21 +154,19 @@ export default function CardFace({
   label,
   className = "",
 }: CardFaceProps) {
-  const set = getSet(card.setId);
-  const player = leadPlayer(card);
-  const team = leadTeam(card);
-  const run = printRunLabel(card);
+  const face = faceOf(card, model);
+  const run = face.printRun === null ? null : face.printRun === 1 ? "1/1" : `/${face.printRun}`;
   const compact = size === "sm";
 
-  const baseName = label ?? cardLabel(card);
+  const baseName = label ?? face.label;
 
   if (empty) {
     return (
       <EmptySleeve
         size={size}
         label={`${baseName}, empty pocket`}
-        ghost={`#${card.cardNumber}`}
-        caption={compact ? undefined : player.name}
+        ghost={`#${face.cardNumber}`}
+        caption={compact ? undefined : face.playerName}
         className={className}
       />
     );
@@ -108,14 +181,14 @@ export default function CardFace({
     .filter(Boolean)
     .join(", ");
 
-  const primary = team.primary;
-  const secondary = team.secondary;
+  const primary = face.primary;
+  const secondary = face.secondary;
   const bandInk = inkOn(secondary);
   const initialsInk = inkOn(primary);
   const darkPhoto = initialsInk === "#FFFFFF";
   const stamp = serial ?? run;
-  const isOneOfOne = card.printRun === 1;
-  const finish = card.finish.kind;
+  const isOneOfOne = face.printRun === 1;
+  const finish = face.finish.kind;
 
   const rootStyle: CSSProperties = {
     width: WIDTH[size],
@@ -136,7 +209,7 @@ export default function CardFace({
         style={{
           padding: cq(3.5),
           borderRadius: cq(5),
-          background: frameBackground(card, primary),
+          background: frameBackground(face, primary),
           boxShadow: "0 1px 0 rgba(255,255,255,0.08) inset, 0 6px 18px rgba(0,0,0,0.45)",
           filter: need ? "grayscale(0.9) brightness(0.5)" : undefined,
         }}
@@ -172,7 +245,7 @@ export default function CardFace({
                   className="nb-card-ink min-w-0 flex-1 truncate font-bold"
                   style={{ fontSize: cq(6.5), lineHeight: 1.1, paddingTop: cq(1) }}
                 >
-                  {set.season} {set.name}
+                  {face.season} {face.setName}
                 </span>
               )}
               <span
@@ -185,7 +258,7 @@ export default function CardFace({
                   lineHeight: 1.15,
                 }}
               >
-                #{card.cardNumber}
+                #{face.cardNumber}
               </span>
             </div>
 
@@ -202,18 +275,18 @@ export default function CardFace({
                   : "0 0.04em 0 rgba(255,255,255,0.4)",
               }}
             >
-              {playerInitials(player)}
+              {face.initials}
             </span>
 
-            {card.features.includes("AU") && <Signature dark={darkPhoto} />}
-            {card.features.includes("Relic") && <RelicSwatch primary={primary} secondary={secondary} />}
+            {face.features.includes("AU") && <Signature dark={darkPhoto} />}
+            {face.features.includes("Relic") && <RelicSwatch primary={primary} secondary={secondary} />}
 
             <div
               className="absolute flex items-end"
               style={{ left: cq(4), bottom: cq(4), gap: cq(1.5) }}
             >
-              {card.features.includes("RC") && <Tag tone="rc">RC</Tag>}
-              {card.features.includes("SP") && !compact && <Tag tone="plain">SP</Tag>}
+              {face.features.includes("RC") && <Tag tone="rc">RC</Tag>}
+              {face.features.includes("SP") && !compact && <Tag tone="plain">SP</Tag>}
             </div>
 
             {stamp && (
@@ -252,18 +325,16 @@ export default function CardFace({
               className="block truncate font-bold"
               style={{ fontSize: cq(compact ? 11 : 9), lineHeight: 1.15 }}
             >
-              {player.name}
+              {face.playerName}
             </span>
             {!compact && (
               <span
                 className="block truncate"
                 style={{ fontSize: cq(6.2), lineHeight: 1.2, opacity: 0.85 }}
               >
-                {team.name}
-                {card.variation ? `, ${card.variation}` : ""}
-                {card.variantPath.type !== "Base" && card.variantPath.name
-                  ? `, ${card.variantPath.name}`
-                  : ""}
+                {face.teamName}
+                {face.variation ? `, ${face.variation}` : ""}
+                {face.variantName ? `, ${face.variantName}` : ""}
               </span>
             )}
           </div>
@@ -271,10 +342,10 @@ export default function CardFace({
           {/* Finishes sit over everything printed. */}
           {(finish === "refractor" || finish === "superfractor") && (
             <>
-              {card.finish.tint && (
+              {face.finish.tint && (
                 <div
                   className="absolute inset-0"
-                  style={{ background: card.finish.tint, mixBlendMode: "overlay", opacity: 0.4 }}
+                  style={{ background: face.finish.tint, mixBlendMode: "overlay", opacity: 0.4 }}
                 />
               )}
               <div className="nb-prism" />
