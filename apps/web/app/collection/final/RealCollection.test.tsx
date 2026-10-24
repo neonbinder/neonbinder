@@ -232,7 +232,7 @@ function makeStore({
     useBuildingSets: () => L([SET]),
     useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id))),
     useCopiesInVariant: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.variantId === id))),
-    useSummary: () => L({ copies: 2, cards: 2, exact: true }),
+    useSummary: () => L({ copies: 2, cards: 2, exact: true, offBuild: 0 }),
     useContainers: () => L(CONTAINERS),
     useContainerCopies: (id) =>
       id === null ? undefined : L({ copies: id === "main" ? [COPY_OHTANI, COPY_GOLD] : [], truncated: false }),
@@ -324,6 +324,53 @@ describe("My Cards on the real collection", () => {
     expect(tabs.getByRole("link", { name: "My Binders" })).toBeTruthy();
   });
 
+  it("counts Everything else exactly from the store, not from the page that has loaded", () => {
+    // 130 cards off every set build; the store has loaded only what was asked.
+    const OFF = { ...SET, id: "set-off", name: "Topps Heritage" };
+    const many = Array.from({ length: 130 }, (_, i) => ({ ...OHTANI, id: `c-off-${i}`, cardNumber: String(i + 1), set: OFF }));
+    const store = makeStore();
+    store.value.data.useSummary = () => ({ copies: 140, cards: 132, exact: true, offBuild: 130 });
+    store.value.data.useOwnedCards = (options) => {
+      const cards = many.slice(0, options?.limit ?? 200);
+      return {
+        cards,
+        copiesByCard: Object.fromEntries(cards.map((c) => [c.id, { quantity: 1, lines: 1 }])),
+        total: 132,
+        totalExact: true,
+        goneCardIds: [],
+        truncated: cards.length < 130,
+      };
+    };
+    renderAt("/collection", store);
+    const rail = screen.getByRole("navigation", { name: "Shelves and binders" });
+    expect(within(rail).getByRole("button", { name: /^Everything else/ }).textContent).toContain("130 cards off your set builds");
+    expect(statuses()).toContain("130 cards");
+    expect(screen.getByRole("list", { name: "Off the board, 130 cards" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show 36 more of 130" })).toBeTruthy();
+
+    // A filter narrows what has loaded: the count is then the loaded one.
+    fireEvent.click(screen.getByRole("button", { name: "Dupes only" }));
+    expect(statuses()).not.toContain("130 cards");
+  });
+
+  it("falls back to what has loaded when the store could not count Everything else", () => {
+    const OFF = { ...SET, id: "set-off", name: "Topps Heritage" };
+    const store = makeStore();
+    store.value.data.useSummary = () => ({ copies: 9_000, cards: 5_000, exact: false, offBuild: null });
+    store.value.data.useOwnedCards = () => ({
+      cards: [{ ...OHTANI, set: OFF }],
+      copiesByCard: { [OHTANI.id]: { quantity: 1, lines: 1 } },
+      total: 5_000,
+      totalExact: false,
+      goneCardIds: [],
+      truncated: true,
+    });
+    renderAt("/collection", store);
+    const rail = screen.getByRole("navigation", { name: "Shelves and binders" });
+    expect(within(rail).getByRole("button", { name: /^Everything else/ }).textContent).toContain("Cards off your set builds");
+    expect(statuses()).toContain("1+ cards");
+  });
+
   it("offers only homes to the Binder picker: never the Want List or Up for Trade", () => {
     renderAt("/collection");
     const picker = screen.getByRole("combobox", { name: "Binder" });
@@ -359,7 +406,7 @@ describe("My Cards on the real collection", () => {
     const many = Array.from({ length: 130 }, (_, i) => ({ ...OHTANI, id: `c-many-${i}`, cardNumber: String(i + 1) }));
     const store = makeStore({ capabilities: NO_BINDERS });
     const limits: number[] = [];
-    store.value.data.useSummary = () => ({ copies: 12_345, cards: 130, exact: true });
+    store.value.data.useSummary = () => ({ copies: 12_345, cards: 130, exact: true, offBuild: 130 });
     store.value.data.useOwnedCards = (options) => {
       const limit = options?.limit ?? 200;
       limits.push(limit);
@@ -388,7 +435,7 @@ describe("My Cards on the real collection", () => {
 
   it("reads a count the store could only take part of as a floor, never as the answer", () => {
     const store = makeStore({ capabilities: NO_BINDERS });
-    store.value.data.useSummary = () => ({ copies: 9_000, cards: 5_000, exact: false });
+    store.value.data.useSummary = () => ({ copies: 9_000, cards: 5_000, exact: false, offBuild: null });
     store.value.data.useOwnedCards = () => ({
       cards: [OHTANI],
       copiesByCard: { [OHTANI.id]: { quantity: 1, lines: 1 } },

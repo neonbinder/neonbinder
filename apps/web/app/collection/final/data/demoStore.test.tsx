@@ -14,12 +14,14 @@ import {
   useCopiesInVariant,
   useCopiesOf,
   useCopiesOfCards,
+  useBuildingSets,
   useDemoExtension,
   useDrill,
   useOwnedCards,
   useSearch,
   useSetPath,
   useSetSummary,
+  useSummary,
   useVariantCards,
   useTradeCopies,
   useVariantCompletion,
@@ -237,6 +239,29 @@ describe("everything I own", () => {
     });
     expect(result.current.owned!.cards[0].id).toBe(fresh.id);
     expect(result.current.owned!.copiesByCard[fresh.id]).toEqual({ quantity: 1, lines: 1 });
+  });
+
+  it("counts the cards off every set build exactly, and moves with a set marked or dropped", async () => {
+    const { result } = renderHook(
+      () => ({ actions: useCollectionActions(), summary: useSummary(), building: useBuildingSets() }),
+      { wrapper },
+    );
+    const offBuild = (buildingIds: ReadonlySet<string>) => {
+      const held = new Set(initialCollectionState().copies.filter((c) => c.quantity > 0).map((c) => c.cardId));
+      return [...held].filter((id) => {
+        const card = demoCard(id);
+        return !card || !buildingIds.has(card.set.id);
+      }).length;
+    };
+    const ids = () => new Set(result.current.building!.map((s) => s.id));
+    expect(result.current.summary!.offBuild).toBe(offBuild(ids()));
+    const held = demoCard(firstSeedCardId())!;
+    const was = ids().has(held.set.id);
+    await act(async () => {
+      await result.current.actions.setBuilding(held.set, !was);
+    });
+    expect(ids().has(held.set.id)).toBe(!was);
+    expect(result.current.summary!.offBuild).toBe(offBuild(ids()));
   });
 
   it("stops at the limit and says there is more", () => {

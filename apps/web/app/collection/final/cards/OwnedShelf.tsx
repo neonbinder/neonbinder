@@ -37,9 +37,12 @@ import { useMyCards } from "./context";
  * whatever the picker says. The rail is navigation: the shelf showing is
  * `aria-current`.
  *
- * "Show 36 more of 120" counts what has loaded, with a "+" while the store
- * holds more. The keyboard goes to the first card it adds, even when the
- * button goes away with the last page.
+ * "Show 36 more of 120": under All with no filter on, the total is the
+ * store's own count (the tally for "Every card I own", the cards off every
+ * set build for "Everything else"), not what has loaded. Anywhere else it
+ * counts what has loaded, with a "+" while the store holds more. The
+ * keyboard goes to the first card it adds, even when the button goes away
+ * with the last page.
  */
 
 /**
@@ -95,6 +98,11 @@ function itemsOfCopies(copies: readonly Copy[], cards: readonly (Card | null)[] 
     items.set(card.id, item);
   }
   return [...items.values()];
+}
+
+/** "1 card", "12,345 cards". */
+function cardsText(n: number): string {
+  return n === 1 ? "1 card" : `${n.toLocaleString("en-US")} cards`;
 }
 
 /** "12 cards", "1 card", "Not counted yet". */
@@ -210,7 +218,20 @@ export default function OwnedShelf() {
       : shelf === "all"
         ? `Every card I own${scopeNote}`
         : (picked?.name ?? "");
-  const total = `${shown.length}${more ? "+" : ""}`;
+  // The store's own count, when the grid is the whole shelf: All, no filter.
+  const unfiltered = !sport && !graded && !dupes && query.trim() === "";
+  const offBuild = !sourceId ? (summary?.offBuild ?? null) : null;
+  const known =
+    !sourceId && unfiltered && summary
+      ? shelf === "else"
+        ? offBuild
+        : shelf === "all" && summary.exact
+          ? summary.cards
+          : null
+      : null;
+  const total = known !== null ? known.toLocaleString("en-US") : `${shown.length}${more ? "+" : ""}`;
+  const single = known !== null ? known === 1 : shown.length === 1 && !more;
+  const left = known !== null ? known - visible.length : null;
   const allDetail = scoped
     ? `${countDetail(scoped.count)} in ${scoped.name}`
     : summary
@@ -233,7 +254,7 @@ export default function OwnedShelf() {
               active={shelf === "else"}
               onClick={() => pick("else")}
               name="Everything else"
-              detail={`Cards off your set builds${scopeNote}`}
+              detail={offBuild !== null ? `${cardsText(offBuild)} off your set builds` : `Cards off your set builds${scopeNote}`}
             />
             <RailItem active={shelf === "all"} onClick={() => pick("all")} name="Every card I own" detail={allDetail} />
             {homesAndPiles.length > 0 && (
@@ -273,7 +294,7 @@ export default function OwnedShelf() {
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-base font-bold text-ink">{title}</h3>
             <p className="text-sm text-ink-3" role="status">
-              {items === undefined ? "Counting…" : `${total} ${shown.length === 1 && !more ? "card" : "cards"}`}
+              {items === undefined ? "Counting…" : `${total} ${single ? "card" : "cards"}`}
             </p>
           </div>
           <ShelfNote container={picked} describeRule={demo?.describeRule} />
@@ -358,7 +379,8 @@ export default function OwnedShelf() {
               ))}
             </ul>
           )}
-          {(shown.length > visible.length || (more && visible.length === shown.length && shown.length > 0)) && (
+          {(shown.length > visible.length ||
+            (more && visible.length === shown.length && shown.length > 0 && (left === null || left > 0))) && (
             <button
               type="button"
               onClick={() => {
@@ -369,7 +391,9 @@ export default function OwnedShelf() {
             >
               {shown.length > visible.length
                 ? `Show ${Math.min(PAGE, shown.length - visible.length)} more of ${total}`
-                : "Show more"}
+                : left !== null
+                  ? `Show ${Math.min(PAGE, left)} more of ${total}`
+                  : "Show more"}
             </button>
           )}
         </div>

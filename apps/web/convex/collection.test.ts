@@ -12,6 +12,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import {
+  MAX_BUILDING_CARDS_RECOUNT_LINES,
   MAX_LINES_PER_CARD,
   MAX_OWNED_PAGE_LINES,
   MAX_TALLY_RECOUNT_LINES,
@@ -340,7 +341,15 @@ describe("reads", () => {
     expect(await me.query(api.collection.copiesInVariant, { variantId: "nope" })).toEqual([]);
 
     const summary = await me.query(api.collection.summary, {});
-    expect(summary).toEqual({ copies: 4, lines: 3, distinctCards: 3, buildingSets: 0, exact: true });
+    expect(summary).toEqual({
+      copies: 4,
+      lines: 3,
+      distinctCards: 3,
+      buildingSets: 0,
+      exact: true,
+      offBuildCards: 3,
+      offBuildExact: true,
+    });
     const owned = await me.query(api.collection.ownedCards, { paginationOpts: { numItems: 10, cursor: null } });
     expect(owned.page.map((c) => c.cardId).sort()).toEqual([fx.gooden1, fx.strawberry2, fx.gold1].sort());
   });
@@ -568,6 +577,186 @@ describe("the tally: every write moves it in the same transaction", () => {
     await me.mutation(api.collection.removeCopy, { copyId: added.copyId });
     expect(await storedTally(t, ME.subject)).toEqual({ copies: 1, lines: 1, cards: 1 });
   });
+});
+
+describe("everything else: distinct cards off every set build, exact", () => {
+  /** A card in the fixture's second set (1986 Topps Traded). */
+  async function tradedCard(t: T, fx: Awaited<ReturnType<typeof seedCollectionCatalog>>) {
+    return t.run(async (ctx) => {
+      const base = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: fx.set86Id,
+        platformData: {},
+        children: [],
+        cardCount: 1,
+        nonVariationCardCount: 1,
+        lastUpdated: 1,
+      });
+      await ctx.db.patch(fx.set86Id, { children: [base] });
+      return insertTestCard(ctx, {
+        selectorOptionId: base,
+        cardNumber: "7T",
+        cardName: "Card 7T",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1,
+      });
+    });
+  }
+
+  /** The caller's building rows: what each keeps, and the hand count of its set. */
+  async function buildingRows(t: T, ownerId: string) {
+    return t.run(async (ctx) => {
+      const rows = (await ctx.db.query("collectionBuildingSets").collect()).filter((r) => r.ownerId === ownerId);
+      const copies = (await ctx.db.query("collectionCopies").collect()).filter((r) => r.ownerId === ownerId);
+      return rows.map((r) => ({
+        setId: r.setId,
+        kept: r.cards,
+        truth: new Set(copies.filter((c) => c.setId === r.setId).map((c) => c.cardId)).size,
+      }));
+    });
+  }
+
+  /** Distinct cards held whose set is not one the owner builds, by hand. */
+  async function offBuildTruth(t: T, ownerId: string) {
+    const building = new Set((await buildingRows(t, ownerId)).map((r) => r.setId as string));
+    const rows = await copiesOwnedBy(t, ownerId);
+    return new Set(rows.filter((r) => !building.has(r.setId)).map((r) => r.cardId)).size;
+  }
+
+  async function check(t: T, me: ReturnType<T["withIdentity"]>, offBuild: number) {
+    expect(await offBuildTruth(t, ME.subject)).toBe(offBuild);
+    expect(await me.query(api.collection.summary, {})).toMatchObject({
+      offBuildCards: offBuild,
+      offBuildExact: true,
+    });
+    for (const row of await buildingRows(t, ME.subject)) expect(row.kept).toBe(row.truth);
+  }
+
+  test("adds, folds, second lines, moves, removes, restores and set builds all keep it exact", async () => {
+    const { t, fx, me, them } = await setup();
+    const traded = await tradedCard(t, fx);
+    await check(t, me, 0);
+
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: true });
+    await check(t, me, 0); // born counted: 0
+    const first = await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    await check(t, me, 0); // on the build
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1 }); // folds
+    await check(t, me, 0);
+    const graded = await me.mutation(api.collection.addLineItem, {
+      cardId: fx.gooden1,
+      details: { quantity: 1, grading: { grader: "PSA", grade: "10", cert: "9" } },
+    }); // a second line of a card already counted: still one card
+    await check(t, me, 0);
+    expect((await buildingRows(t, ME.subject))[0].kept).toBe(1);
+
+    await me.mutation(api.collection.addHave, { cardId: traded });
+    await check(t, me, 1); // off every build
+    await me.mutation(api.collection.addHaves, { cardIds: [fx.strawberry2, fx.gold1, fx.strawberry2, traded] });
+    await check(t, me, 1);
+    expect((await buildingRows(t, ME.subject))[0].kept).toBe(3);
+
+    // A move changes the home, never the card's set.
+    const { containerId: box } = await me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" });
+    const moved = await me.mutation(api.collection.moveCopy, { copyId: first.copyId, toHomeId: box, quantity: 1 });
+    await check(t, me, 1);
+    await me.mutation(api.collection.moveCopy, { copyId: moved.copyId, toHomeId: moved.from.homeId });
+    await check(t, me, 1);
+
+    // Removing a second line keeps the card; removing its last line loses it.
+    const removedGraded = await me.mutation(api.collection.removeCopy, { copyId: graded.copyId });
+    await check(t, me, 1);
+    await me.mutation(api.collection.restoreCopy, removedGraded.removed);
+    await check(t, me, 1);
+    const goldLine = (await copiesOwnedBy(t, ME.subject)).find((r) => r.cardId === fx.gold1)!;
+    const removedGold = await me.mutation(api.collection.removeCopy, { copyId: goldLine._id });
+    await check(t, me, 1);
+    expect((await buildingRows(t, ME.subject))[0].kept).toBe(2);
+    await me.mutation(api.collection.restoreCopy, removedGold.removed); // the card comes back
+    await check(t, me, 1);
+    expect((await buildingRows(t, ME.subject))[0].kept).toBe(3);
+
+    // Marking and dropping set builds.
+    await me.mutation(api.collection.setBuilding, { setId: fx.set86Id, building: true });
+    await check(t, me, 0);
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: false });
+    await check(t, me, 3);
+    await me.mutation(api.collection.setBuilding, { setId: fx.set86Id, building: false });
+    await check(t, me, 4);
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: true }); // counted at birth
+    await check(t, me, 1);
+    expect((await buildingRows(t, ME.subject))[0].kept).toBe(3);
+
+    // Another collector's writes never touch mine.
+    await them.mutation(api.collection.setBuilding, { setId: fx.setId, building: true });
+    await them.mutation(api.collection.addHaves, { cardIds: [fx.futureStar, traded] });
+    await check(t, me, 1);
+    expect((await buildingRows(t, THEM.subject))[0].kept).toBe(1);
+
+    // removeCopies loses several cards at once, in two sets.
+    const left = await copiesOwnedBy(t, ME.subject);
+    await me.mutation(api.collection.removeCopies, { copyIds: left.map((r) => r._id) });
+    await check(t, me, 0);
+    expect((await buildingRows(t, ME.subject))[0].kept).toBe(0);
+  });
+
+  test("a set build without a kept count is counted by hand, and the next write that touches it keeps one", async () => {
+    const { t, fx, me } = await setup();
+    const traded = await tradedCard(t, fx);
+    await me.mutation(api.collection.addHaves, { cardIds: [fx.gooden1, fx.strawberry2, traded] });
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: true });
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("collectionBuildingSets").collect())[0];
+      await ctx.db.patch(row._id, { cards: undefined }); // a NEO-358 row
+    });
+    expect(await me.query(api.collection.summary, {})).toMatchObject({ offBuildCards: 1, offBuildExact: true });
+    await me.mutation(api.collection.addHave, { cardId: fx.gold1 });
+    expect((await buildingRows(t, ME.subject))[0]).toMatchObject({ kept: 3, truth: 3 });
+    expect(await me.query(api.collection.summary, {})).toMatchObject({ offBuildCards: 1, offBuildExact: true });
+  });
+
+  test("a count that drifted below zero is counted again by hand", async () => {
+    const { t, fx, me } = await setup();
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: true });
+    const added = await me.mutation(api.collection.addHave, { cardId: fx.gooden1 });
+    await me.mutation(api.collection.addHave, { cardId: fx.strawberry2 });
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("collectionBuildingSets").collect())[0];
+      await ctx.db.patch(row._id, { cards: 0 });
+    });
+    await me.mutation(api.collection.removeCopy, { copyId: added.copyId });
+    expect((await buildingRows(t, ME.subject))[0]).toMatchObject({ kept: 1, truth: 1 });
+  });
+
+  test("a collector whose tally is counted by hand gets the count off the same read", async () => {
+    const { t, fx, me } = await setup();
+    const traded = await tradedCard(t, fx);
+    await me.mutation(api.collection.addHaves, { cardIds: [fx.gooden1, traded] });
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: true });
+    await t.run(async (ctx) => {
+      const main = (await ctx.db.query("collectionContainers").collect()).find((c) => c.system === "main")!;
+      await ctx.db.patch(main._id, { tally: undefined });
+      const row = (await ctx.db.query("collectionBuildingSets").collect())[0];
+      await ctx.db.patch(row._id, { cards: 99 }); // ignored: the lines themselves answer
+    });
+    expect(await me.query(api.collection.summary, {})).toMatchObject({
+      distinctCards: 2,
+      offBuildCards: 1,
+      offBuildExact: true,
+    });
+  });
+
+  test("a set build too big to count by hand reads as unknown, never a floor", async () => {
+    const { t, fx, me } = await setup();
+    // 26 cards x 200 lines in one set: past the hand count's read.
+    expect(26 * MAX_LINES_PER_CARD).toBeGreaterThan(MAX_BUILDING_CARDS_RECOUNT_LINES);
+    await insertManyOwned(t, fx, ME.subject, { cards: 26, linesPerCard: MAX_LINES_PER_CARD, keepTally: true });
+    await me.mutation(api.collection.setBuilding, { setId: fx.setId, building: true });
+    expect((await buildingRows(t, ME.subject))[0].kept).toBeUndefined();
+    expect(await me.query(api.collection.summary, {})).toMatchObject({ distinctCards: 26, offBuildExact: false });
+  }, 60_000);
 });
 
 describe("everything I own, paged", () => {

@@ -485,6 +485,12 @@ export interface CollectionSummary {
    * numbers are then a floor, and read as "5,000+", never as the answer.
    */
   exact: boolean;
+  /**
+   * Distinct cards not in any set the collector is building ("Everything
+   * else"). Null when the store could not count it exactly: unknown, never
+   * a floor.
+   */
+  offBuild: number | null;
 }
 
 /** One card the collector holds, as the owned-cards list counts it. */

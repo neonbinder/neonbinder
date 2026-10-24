@@ -623,15 +623,23 @@ export const DEMO_DATA: CollectionData = {
   },
 
   useSummary() {
-    const copies = useDemoState().state.copies;
-    return useMemo(
-      () => ({
+    const { copies, buildingSetIds } = useDemoState().state;
+    return useMemo(() => {
+      const building = new Set<string>(buildingSetIds);
+      const cards = new Set(copies.map((c) => c.cardId));
+      let offBuild = 0;
+      for (const id of cards) {
+        const card = demoCard(id);
+        // A card the fixture no longer holds is in no set build.
+        if (!card || !building.has(card.set.id)) offBuild += 1;
+      }
+      return {
         copies: copies.reduce((n, c) => n + c.quantity, 0),
-        cards: new Set(copies.map((c) => c.cardId)).size,
+        cards: cards.size,
         exact: true,
-      }),
-      [copies],
-    );
+        offBuild,
+      };
+    }, [copies, buildingSetIds]);
   },
 
   useContainers() {

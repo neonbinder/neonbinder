@@ -3562,6 +3562,18 @@ export default defineSchema({
   collectionBuildingSets: defineTable({
     ownerId: v.string(),
     setId: v.id("selectorOptions"),
+    /**
+     * NEO-359 — distinct cards the collector holds in this set (copies whose
+     * `setId` is this set), so "Everything else" (cards off every set build)
+     * is the tally's `cards` minus these, exact, without walking the pile.
+     * Counted when the set is marked (bounded), moved by every copy write
+     * that gains or loses a whole card in this set, and cleared when the
+     * catalog re-points copies into or out of the set (`moveCards`, a set
+     * conversion). ABSENT means "not counted": NEO-358 rows, a count too big
+     * to finish, or a cleared one. The next write that touches it recounts
+     * (bounded) and a read counts it by hand until then.
+     */
+    cards: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     .index("by_owner_and_set", ["ownerId", "setId"])

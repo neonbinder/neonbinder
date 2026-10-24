@@ -20,7 +20,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recountCards } from "./cardCounts";
-import { COPY_REPOINT_PAGE, MAX_COPIES_PER_MOVE, moveCards } from "./setShapeMove";
+import { COPY_REPOINT_PAGE, MAX_COPIES_PER_MOVE, moveBuildingSets, moveCards } from "./setShapeMove";
 import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
@@ -238,5 +238,96 @@ describe("moveCards and collectors' copies", () => {
       await t.mutation(internal.setShapeMove.repointMovedCardCopies, { ...args, index: 3 }),
     ).toEqual({ repointed: 0, done: true });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+  });
+});
+
+/**
+ * NEO-359 — a re-point moves cards between sets, so it changes how many of a
+ * collector's cards sit on each set build. The kept counts on the building
+ * rows it touches are cleared (counted by hand until the next write), and
+ * "Everything else" stays exact through the move and after the chain.
+ */
+describe("moveCards, set conversions and the cards on each set build", () => {
+  /** Give OWNER the tally a collector who added these copies would keep. */
+  const keepTally = (t: T, s: Seeded) =>
+    t.run(async (ctx) => {
+      const rows = (await ctx.db.query("collectionCopies").collect()).filter((r) => r.ownerId === OWNER);
+      await ctx.db.patch(s.home, {
+        tally: {
+          copies: rows.reduce((n, r) => n + r.quantity, 0),
+          lines: rows.length,
+          cards: new Set(rows.map((r) => r.cardId)).size,
+        },
+      });
+    });
+  const build = (t: T, setId: Id<"selectorOptions">, cards: number) =>
+    t.run((ctx) => ctx.db.insert("collectionBuildingSets", { ownerId: OWNER, setId, cards, lastUpdated: NOW }));
+  const kept = (t: T, id: Id<"collectionBuildingSets">) => t.run(async (ctx) => (await ctx.db.get(id))?.cards ?? null);
+  const offBuild = async (t: T) =>
+    (await t.withIdentity({ subject: OWNER }).query(api.collection.summary, {})) as {
+      offBuildCards: number;
+      offBuildExact: boolean;
+    };
+
+  test("a card moving onto a set build leaves Everything else, inline and through the chain", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await pile(t, s, s.a, MAX_COPIES_PER_MOVE + 3); // past the inline budget
+    await pile(t, s, s.b, 2);
+    await keepTally(t, s);
+    const onTo = await build(t, s.toSet, 0);
+    expect(await offBuild(t)).toMatchObject({ offBuildCards: 2, offBuildExact: true });
+
+    await move(t, s, [s.a]);
+    expect(await kept(t, onTo)).toBeNull(); // cleared, counted by hand
+    expect(await offBuild(t)).toMatchObject({ offBuildCards: 1, offBuildExact: true });
+
+    // The chain's re-points clear it too (a stale count kept in the window).
+    await t.run((ctx) => ctx.db.patch(onTo, { cards: 7 }));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await kept(t, onTo)).toBeNull();
+    expect(await offBuild(t)).toMatchObject({ offBuildCards: 1, offBuildExact: true });
+  });
+
+  test("a card moving off a set build joins Everything else; another owner's build is untouched", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await pile(t, s, s.a, 2);
+    await keepTally(t, s);
+    const onFrom = await build(t, s.fromSet, 1);
+    const theirs = await t.run((ctx) =>
+      ctx.db.insert("collectionBuildingSets", { ownerId: "someone_else", setId: s.fromSet, cards: 4, lastUpdated: NOW }),
+    );
+    expect(await offBuild(t)).toMatchObject({ offBuildCards: 0, offBuildExact: true });
+    await move(t, s, [s.a]);
+    expect(await kept(t, onFrom)).toBeNull();
+    expect(await kept(t, theirs)).toBe(4);
+    expect(await offBuild(t)).toMatchObject({ offBuildCards: 1, offBuildExact: true });
+  });
+
+  test("a set conversion carries the build to the target with its count cleared", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await pile(t, s, s.a, 1);
+    await keepTally(t, s);
+    const onFrom = await build(t, s.fromSet, 1);
+    await t.run((ctx) => moveBuildingSets(ctx, s.fromSet, s.toSet, NOW));
+    const row = await t.run((ctx) => ctx.db.get(onFrom));
+    expect(row).toMatchObject({ setId: s.toSet });
+    expect(row?.cards).toBeUndefined();
+    await move(t, s, [s.a]);
+    expect(await offBuild(t)).toMatchObject({ offBuildCards: 0, offBuildExact: true });
+
+    // An owner already building the target keeps that row, its count cleared too.
+    const t2 = convexTest(schema, modules);
+    const s2 = await seed(t2);
+    await pile(t2, s2, s2.a, 1);
+    await keepTally(t2, s2);
+    await build(t2, s2.fromSet, 1);
+    const onTarget = await build(t2, s2.toSet, 0);
+    await t2.run((ctx) => moveBuildingSets(ctx, s2.fromSet, s2.toSet, NOW));
+    expect(await kept(t2, onTarget)).toBeNull();
+    await move(t2, s2, [s2.a]);
+    expect(await offBuild(t2)).toMatchObject({ offBuildCards: 0, offBuildExact: true });
   });
 });

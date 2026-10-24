@@ -578,7 +578,15 @@ export const CONVEX_DATA: CollectionData = {
   useSummary() {
     const raw = useQuery(api.collection.summary, {});
     return useMemo(
-      () => (raw ? { copies: raw.copies, cards: raw.distinctCards, exact: raw.exact } : undefined),
+      () =>
+        raw
+          ? {
+              copies: raw.copies,
+              cards: raw.distinctCards,
+              exact: raw.exact,
+              offBuild: raw.offBuildExact ? raw.offBuildCards : null,
+            }
+          : undefined,
       [raw],
     );
   },

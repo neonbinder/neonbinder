@@ -16,6 +16,7 @@ import {
   useSearch,
   useSetCards,
   useSuggestions,
+  useSummary,
   useTradeCopies,
   useVariantCompletion,
   useWants,
@@ -385,6 +386,8 @@ describe("everything I own", () => {
     distinctCards,
     buildingSets: 0,
     exact,
+    offBuildCards: distinctCards,
+    offBuildExact: exact,
   });
   /** One server page: each card once, newest first, two copies on one line. */
   const page = (ids: string[]) => ids.map((cardId, i) => ({ cardId, quantity: 2, lines: 1, lastUpdated: 100 - i }));
@@ -460,6 +463,19 @@ describe("everything I own", () => {
     catalogAnswers();
     const { result } = renderHook(() => useOwnedCards({ limit: 1 }), { wrapper });
     expect(result.current).toMatchObject({ total: 5000, totalExact: false, truncated: true });
+  });
+
+  it("passes on the server's off-build count, and none when it could not count it exactly", () => {
+    loaded.set("collection:summary", { ...tally(9), offBuildCards: 4, offBuildExact: true });
+    expect(renderHook(() => useSummary(), { wrapper }).result.current).toEqual({
+      copies: 18,
+      cards: 9,
+      exact: true,
+      offBuild: 4,
+    });
+    cleanup();
+    loaded.set("collection:summary", { ...tally(9), offBuildCards: 4, offBuildExact: false });
+    expect(renderHook(() => useSummary(), { wrapper }).result.current).toMatchObject({ offBuild: null });
   });
 
   it("waits while the first page or the tally loads", () => {
