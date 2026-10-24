@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
@@ -92,11 +92,13 @@ describe("the public collection demo", () => {
     const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
     const scope = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
 
-    // My Cards, scoped to Up for Trade: the scope rides on the URL, but a
+    // My Cards, scoped to the slab case: the scope rides on the URL, but a
     // pick replaces the entry rather than adding a Back step.
     openTab("My Cards");
     expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
-    const trade = (within(scope()).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement).value;
+    // Only homes are offered, so the trade pile and the Want List are not here.
+    expect(within(scope()).queryByRole("option", { name: "Up for Trade" })).toBeNull();
+    const trade = (within(scope()).getByRole("option", { name: "Slab case" }) as HTMLOptionElement).value;
     fireEvent.change(scope(), { target: { value: trade } });
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
     expect(scope().value).toBe(trade);
@@ -115,14 +117,14 @@ describe("the public collection demo", () => {
 
     back();
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=binders&scope=${trade}`);
-    expect(screen.getByText("Up for Trade", { selector: "strong" })).toBeTruthy();
+    expect(screen.getByText("Slab case", { selector: "strong" })).toBeTruthy();
     back();
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey&scope=${trade}`);
     expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
     back();
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
     expect(scope().value).toBe(trade);
-    expect((within(scope()).getByRole("option", { selected: true }) as HTMLOptionElement).text).toBe("Up for Trade");
+    expect((within(scope()).getByRole("option", { selected: true }) as HTMLOptionElement).text).toBe("Slab case");
     back();
     expect(pageUrl()).toBe(DEMO_URL);
     expect(scope().value).toBe("all");
@@ -210,5 +212,27 @@ describe("the public collection demo", () => {
     renderDemo();
     expect(window.sessionStorage.getItem(PUBLIC_STORAGE_KEY)).not.toBeNull();
     expect(window.sessionStorage.getItem("nb-collection-final")).toBeNull();
+  });
+});
+
+describe("the public demo never touches Convex", () => {
+  // `convex/react` is mocked EMPTY above: any hook the demo reached for throws "No export is defined".
+  it("makes a box and moves a card into it on fixture data alone", async () => {
+    renderDemo();
+    openTab("My Binders");
+    fireEvent.click(screen.getByRole("button", { name: /New binder or box/ }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("radio", { name: /A box/ }));
+    fireEvent.change(within(dialog).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
+    expect(await screen.findByRole("region", { name: "Dime box, open" })).toBeTruthy();
+
+    const hunt = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
+    fireEvent.change(hunt, { target: { value: "jim kelly" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Move here: / }));
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Dime box\.$/.test(s.textContent ?? ""))).toBe(true),
+    );
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=/);
   });
 });

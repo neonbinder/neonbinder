@@ -128,11 +128,12 @@ describe("create", () => {
   test("refuses a rule (smart binders wait for NEO-362) and stores nothing", async () => {
     const s = await setup();
     await expect(
+      // `create` takes no `rule` until NEO-362: the argument validator refuses it.
       s.me.mutation(api.collectionContainers.create, {
         kind: "binder", name: "Smart",
         rule: { version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }] },
-      }),
-    ).rejects.toThrow(/Smart binders aren't ready/);
+      } as never),
+    ).rejects.toThrow();
     expect(await s.t.run(async (ctx) => ctx.db.query("collectionContainers").collect())).toEqual([]);
   });
 

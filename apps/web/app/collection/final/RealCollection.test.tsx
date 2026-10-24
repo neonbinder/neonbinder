@@ -5,12 +5,25 @@ import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "./FinalCollectionPage";
 import { cardLabel } from "./data/labels";
 import { CollectionStoreContext, completionOf, type CollectionActions, type CollectionData, type CollectionStoreValue } from "./data/store";
-import { NO_CAPABILITIES, type Card, type Copy, type DrillItem, type EntityPick, type SetRef, type Suggestion, type Variant } from "./data/types";
+import {
+  REAL_CAPABILITIES,
+  type Capabilities,
+  type Card,
+  type Container,
+  type Copy,
+  type DrillItem,
+  type EntityPick,
+  type SetRef,
+  type Suggestion,
+  type Variant,
+  type Want,
+} from "./data/types";
 
 /**
  * NEO-358 — signed-in `/collection` on a store shaped like the real one:
- * `kind: "convex"`, every capability off, reads that can be `undefined`, and
- * writes that resolve with an undo. The store here is hand-built over a tiny
+ * `kind: "convex"`, `REAL_CAPABILITIES` (binders and boxes, wants, trade and
+ * scope on; smart binders, share and card requests off), reads that can be
+ * `undefined`, and writes that resolve with an undo. The store here is hand-built over a tiny
  * catalog, so these tests pin what the views do with the contract
  * (`./data/store`), not how Convex answers. No test reaches a server.
  */
@@ -80,11 +93,22 @@ const COPY_OHTANI: Copy = {
   variantId: BASE.id,
   setId: SET.id,
   homeId: "main",
+  homeKind: "binder",
+  homeName: "Main",
+  upForTrade: false,
   quantity: 1,
   acquiredAt: "2026-10-01",
   notes: "",
 };
 const COPY_GOLD: Copy = { ...COPY_OHTANI, id: "copy-2", cardId: OHTANI_GOLD.id, variantId: GOLD.id };
+
+const CONTAINERS: Container[] = [
+  { id: "main", kind: "binder", system: "main", name: "Main", count: { copies: 2, lines: 2 } },
+  { id: "trade", kind: "binder", system: "trade", name: "Up for Trade", count: { copies: 0, lines: 0 } },
+  { id: "want", kind: "binder", system: "want", name: "Want List", count: { copies: 0, lines: 0 } },
+  { id: "binder-rainbow", kind: "binder", name: "Ohtani rainbow", count: { copies: 0, lines: 0 } },
+  { id: "box-show", kind: "box", name: "Show box", count: { copies: 0, lines: 0 } },
+];
 
 const item = (id: string, level: DrillItem["level"], name: string, extra: Partial<DrillItem> = {}): DrillItem => ({
   id,
@@ -129,7 +153,10 @@ interface Log {
 }
 
 /** The store under test. `loading`: every read stays `undefined`. */
-function makeStore({ loading = false }: { loading?: boolean } = {}) {
+function makeStore({
+  loading = false,
+  capabilities = REAL_CAPABILITIES,
+}: { loading?: boolean; capabilities?: Capabilities } = {}) {
   const log: Log = { variantCards: [], search: [], entity: [] };
   const undo = vi.fn(async () => {});
   const actions = {
@@ -140,7 +167,15 @@ function makeStore({ loading = false }: { loading?: boolean } = {}) {
     removeCopy: vi.fn(async (copy: Copy) => ({ removed: copy, undo })),
     restoreCopy: vi.fn(async (copy: Copy) => ({ copyId: copy.id, merged: false, undo })),
     setBuilding: vi.fn(async (_s: SetRef, building: boolean) => ({ building, undo })),
+    moveCopy: vi.fn(async (c: Copy) => ({ copyId: c.id, folded: false, split: false, undo })),
+    placeCopy: vi.fn(async (c: Copy) => ({ copyId: c.id, folded: false, split: false, undo })),
+    setTrade: vi.fn(async () => ({ undo })),
+    setWant: vi.fn(async (_cardId: string, _binderId: string | null, _on: boolean) => ({ changed: true, undo })),
+    createContainer: vi.fn(async () => ({ containerId: "new-container", undo })),
+    updateContainer: vi.fn(async () => ({ undo })),
+    deleteContainer: vi.fn(async () => ({ moved: 0 })),
   } satisfies CollectionActions;
+  const wants: Want[] = [];
   const L = <T,>(value: T): T | undefined => (loading ? undefined : value);
   const data: CollectionData = {
     useDrill: (level, parents) => {
@@ -171,6 +206,9 @@ function makeStore({ loading = false }: { loading?: boolean } = {}) {
     // Gold's size has not been counted yet: its total comes through as 0.
     useVariantCompletion: (id) =>
       id === null ? undefined : L(id === BASE.id ? completionOf({ owned: 1, total: 3 }) : completionOf({ owned: 1, total: 0 })),
+    useSetCompletion: (id) =>
+      id === null ? undefined : L({ ...completionOf({ owned: 1, total: 4 }, { owned: 2, total: 4 }), exact: true }),
+    useTeam: () => undefined,
     useCard: (id) => (id === null ? undefined : L(CARDS.find((c) => c.id === id) ?? null)),
     useCards: (ids) => (ids === null ? undefined : L(ids.map((id) => CARDS.find((c) => c.id === id) ?? null))),
     useSuggestions: (text) => (text.trim().length < 2 ? [] : L(SUGGESTIONS[text.trim().toLowerCase()] ?? [])),
@@ -195,6 +233,16 @@ function makeStore({ loading = false }: { loading?: boolean } = {}) {
     useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id))),
     useCopiesInVariant: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.variantId === id))),
     useSummary: () => L({ copies: 2, cards: 2, exact: true }),
+    useContainers: () => L(CONTAINERS),
+    useContainerCopies: (id) =>
+      id === null ? undefined : L({ copies: id === "main" ? [COPY_OHTANI, COPY_GOLD] : [], truncated: false }),
+    useTradeCopies: () => L({ copies: [], truncated: false }),
+    useWants: () => L(wants),
+    useCopiesOfCards: (ids) =>
+      ids === null
+        ? undefined
+        : L(Object.fromEntries(ids.map((id) => [id, [COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id)]))),
+    useSetCards: (id) => (id === null ? undefined : L({ cards: CARDS.filter((c) => c.set.id === id), truncated: false })),
     // Newest first: the Gold Refractor was the last Have.
     useOwnedCards: () =>
       L({
@@ -206,7 +254,7 @@ function makeStore({ loading = false }: { loading?: boolean } = {}) {
         truncated: false,
       }),
   };
-  const value: CollectionStoreValue = { kind: "convex", capabilities: NO_CAPABILITIES, data, actions };
+  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions };
   return { value, actions, undo, log };
 }
 
@@ -250,6 +298,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** A real collection with My Binders off: My Cards ends in the plain tally, no shelf. */
+const NO_BINDERS: Capabilities = { ...REAL_CAPABILITIES, binders: false };
+
 describe("My Cards on the real collection", () => {
   it("opens Base on the board and loads another checklist's cards only when asked", () => {
     const { log } = renderAt("/collection");
@@ -261,15 +312,38 @@ describe("My Cards on the real collection", () => {
     expect(log.variantCards).toContain(GOLD.id);
   });
 
-  it("shows the demo's binder shelf nowhere; a tally of the collection instead", () => {
+  it("shows the shelf of binders and boxes, My Binders and the Binder picker (the real capabilities)", () => {
     renderAt("/collection");
+    expect(screen.getByRole("heading", { level: 2, name: "Everything else I own" })).toBeTruthy();
+    const rail = screen.getByRole("navigation", { name: "Shelves and binders" });
+    expect(within(rail).getByRole("button", { name: /^Main/ })).toBeTruthy();
+    // A box is the sale table.
+    const box = within(rail).getByRole("button", { name: /Show box/ });
+    expect(box.textContent).toMatch(/for sale/);
+    const tabs = within(screen.getByRole("navigation", { name: "Collection sections" }));
+    expect(tabs.getByRole("link", { name: "My Binders" })).toBeTruthy();
+  });
+
+  it("offers only homes to the Binder picker: never the Want List or Up for Trade", () => {
+    renderAt("/collection");
+    const picker = screen.getByRole("combobox", { name: "Binder" });
+    expect(within(picker).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "All",
+      "Main",
+      "Ohtani rainbow",
+      "Show box (box)",
+    ]);
+  });
+
+  it("with binders off there is no shelf and no tab, only a tally of the collection", () => {
+    renderAt("/collection", makeStore({ capabilities: NO_BINDERS }));
     expect(screen.getByRole("heading", { level: 2, name: "Everything I own" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Shelves and binders" })).toBeNull();
-    expect(screen.queryByRole("combobox", { name: "Binder" })).toBeNull();
+    expect(within(screen.getByRole("navigation", { name: "Collection sections" })).queryByRole("link", { name: "My Binders" })).toBeNull();
   });
 
   it("lists every card I own under the tally, newest first, each opening the drawer", () => {
-    renderAt("/collection");
+    renderAt("/collection", makeStore({ capabilities: NO_BINDERS }));
     const list = screen.getByRole("list", { name: "Everything I own, 2 cards" });
     const cards = within(list).getAllByRole("button");
     expect(cards.map((b) => b.getAttribute("aria-label"))).toEqual([
@@ -283,7 +357,7 @@ describe("My Cards on the real collection", () => {
   it("pages a big collection: Show more counts the whole tally and hands the keyboard to the first card it adds", async () => {
     // 130 cards, far past one page; the store answers up to the limit asked.
     const many = Array.from({ length: 130 }, (_, i) => ({ ...OHTANI, id: `c-many-${i}`, cardNumber: String(i + 1) }));
-    const store = makeStore();
+    const store = makeStore({ capabilities: NO_BINDERS });
     const limits: number[] = [];
     store.value.data.useSummary = () => ({ copies: 12_345, cards: 130, exact: true });
     store.value.data.useOwnedCards = (options) => {
@@ -313,7 +387,7 @@ describe("My Cards on the real collection", () => {
   });
 
   it("reads a count the store could only take part of as a floor, never as the answer", () => {
-    const store = makeStore();
+    const store = makeStore({ capabilities: NO_BINDERS });
     store.value.data.useSummary = () => ({ copies: 9_000, cards: 5_000, exact: false });
     store.value.data.useOwnedCards = () => ({
       cards: [OHTANI],
@@ -384,17 +458,45 @@ describe("Checklists on the real collection", () => {
     expect(document.title).toBe("Checklists · 2024 Topps Chrome Gold Refractor · Collection");
   });
 
-  it("Have adds through the store and offers Undo; rows carry no Want or Trade", async () => {
+  it("Have adds through the store and offers Undo", async () => {
     const { actions, undo } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
     expect(screen.getByText(/Have/, { selector: "p" }).textContent).toContain("Have 1 of 3");
-    expect(screen.queryByRole("button", { name: /^Want / })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Trade / })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
     expect(actions.addHave).toHaveBeenCalledWith(JUDGE);
-    await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to your collection"));
+    await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("rows carry Want for every card and Trade only for a copy you hold", () => {
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    expect(screen.getByRole("button", { name: "Want #2 Aaron Judge" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Trade #2 / })).toBeNull();
+    expect(screen.getByRole("button", { name: "Trade #1 Shohei Ohtani, Raw" })).toBeTruthy();
+  });
+
+  it("with wants and trade off the rows carry neither", () => {
+    renderAt(
+      `/collection?tab=checklists&set=${SET.id}&type=vt-base`,
+      makeStore({ capabilities: { ...REAL_CAPABILITIES, wants: false, trade: false } }),
+    );
+    expect(screen.queryByRole("button", { name: /^Want / })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Trade / })).toBeNull();
+  });
+
+  it("Want files a plain want", async () => {
+    const { actions } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    fireEvent.click(screen.getByRole("button", { name: "Want #2 Aaron Judge" }));
+    expect(actions.setWant).toHaveBeenCalledWith(JUDGE.id, null, true);
+    await waitFor(() => expect(statuses().some((s) => s?.includes("is on your Want List"))).toBe(true));
+  });
+
+  it("Trade flags the line without moving it", async () => {
+    const { actions } = renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    fireEvent.click(screen.getByRole("button", { name: "Trade #1 Shohei Ohtani, Raw" }));
+    expect(actions.setTrade).toHaveBeenCalledWith(COPY_OHTANI, true);
+    expect(actions.moveCopy).not.toHaveBeenCalled();
   });
 
   it("says why a write was refused", async () => {
@@ -485,10 +587,11 @@ describe("the card drawer on the real collection", () => {
     expect(within(drawer).queryByRole("group", { name: "Binders" })).toBeNull();
     fireEvent.click(within(drawer).getByRole("button", { name: "Add to collection" }));
     expect(actions.addLineItem).toHaveBeenCalledTimes(1);
-    const [, details] = actions.addLineItem.mock.calls[0] as unknown as [Card, Copy];
+    const [, details] = actions.addLineItem.mock.calls[0] as unknown as [Card, Copy & { homeId?: string }];
     expect(details.quantity).toBe(1);
     expect(details.acquiredAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(details.demo).toBeUndefined();
+    expect(details).not.toHaveProperty("demo");
+    expect(details.homeId).toBe("main");
     await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2 Aaron Judge"))).toBe(true));
   });
 
@@ -503,7 +606,7 @@ describe("the card drawer on the real collection", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Remove #1 Shohei Ohtani, Raw" }));
     expect(actions.removeCopy).toHaveBeenCalledWith(COPY_OHTANI);
     await waitFor(() =>
-      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Removed #1 Shohei Ohtani, Raw")).toBe(true),
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Removed #1 Shohei Ohtani, Raw · Main")).toBe(true),
     );
   });
 });

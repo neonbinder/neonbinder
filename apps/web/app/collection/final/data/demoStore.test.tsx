@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { initialCollectionState } from "../store";
+import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID, TRADE_BINDER_ID } from "../store";
 import { DemoCollectionProvider, demoCard, demoVariantId, parseDemoVariantId } from "./demoStore";
 import { cardLabel, compareCards, variantLabel } from "./labels";
 import {
   useCard,
+  emptyCopyDetails,
   useCapabilities,
   useCollectionActions,
+  useContainerCopies,
+  useContainers,
   useCopiesInVariant,
   useCopiesOf,
+  useCopiesOfCards,
   useDemoExtension,
   useDrill,
   useOwnedCards,
@@ -17,7 +21,10 @@ import {
   useSetPath,
   useSetSummary,
   useVariantCards,
+  useTradeCopies,
   useVariantCompletion,
+  useWants,
+  ScopeProvider,
 } from "./store";
 
 /**
@@ -43,10 +50,11 @@ afterEach(() => {
 });
 
 describe("reading the fixture through the contract", () => {
-  it("turns every capability on and exposes the demo's own store", () => {
+  it("turns every capability on and exposes the demo's own extension", () => {
     const { result } = renderHook(() => ({ caps: useCapabilities(), demo: useDemoExtension() }), { wrapper });
     expect(Object.values(result.current.caps).every(Boolean)).toBe(true);
-    expect(result.current.demo?.state.state.binders.length).toBeGreaterThan(0);
+    expect(result.current.demo?.browseSets.length).toBeGreaterThan(0);
+    expect(result.current.demo).not.toHaveProperty("state");
   });
 
   it("round-trips a variant id", () => {
@@ -144,7 +152,9 @@ describe("writing through the contract", () => {
     expect(result.current.completion!.ownedAll).toBe(before.ownedAll + 1);
     const copy = result.current.inVariant!.find((c) => c.cardId === need.id)!;
     expect(copy).toMatchObject({ quantity: 1, variantId: GOLD, setId: CHROME, notes: "" });
-    expect(copy.demo?.binderIds.length).toBeGreaterThan(0);
+    // A new copy lands in one home (Main when nothing is scoped), not on the trade pile.
+    expect(copy).toMatchObject({ homeKind: "binder", homeName: "Main", upForTrade: false });
+    expect(copy).not.toHaveProperty("demo");
 
     await act(undo);
     expect(result.current.completion).toEqual(before);
@@ -213,10 +223,10 @@ describe("writing through the contract", () => {
 describe("everything I own", () => {
   it("lists every held card once, the newest Have first, with its count", async () => {
     const { result } = renderHook(
-      () => ({ actions: useCollectionActions(), owned: useOwnedCards(), demo: useDemoExtension(), cards: useVariantCards(GOLD) }),
+      () => ({ actions: useCollectionActions(), owned: useOwnedCards(), cards: useVariantCards(GOLD) }),
       { wrapper },
     );
-    const seed = result.current.demo!.state.state.copies;
+    const seed = initialCollectionState().copies;
     const distinct = new Set(seed.filter((c) => c.quantity > 0).map((c) => c.cardId));
     expect(result.current.owned!.total).toBe(distinct.size);
     expect(new Set(result.current.owned!.cards.map((c) => c.id)).size).toBe(result.current.owned!.cards.length);
@@ -240,3 +250,236 @@ describe("everything I own", () => {
 function firstSeedCardId(): string {
   return initialCollectionState().copies[0].cardId;
 }
+
+const SLAB = "binder-slab-case";
+const CONTENDERS = "binder-contenders-96";
+
+/** Hooks the move tests share: every copy of one card, the containers, the trade pile and wants. */
+function useMoveRig(cardId: string) {
+  return {
+    actions: useCollectionActions(),
+    copies: useCopiesOf(cardId),
+    containers: useContainers(),
+    trade: useTradeCopies(),
+    wants: useWants(),
+  };
+}
+
+describe("moving a copy through the contract", () => {
+  const cardId = () => initialCollectionState().copies[0].cardId;
+
+  it("moves the whole line to a box: one row, one home, for sale", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies![0];
+    await act(async () => {
+      const moved = await result.current.actions.moveCopy(copy, SHOW_BOX_ID);
+      expect(moved).toMatchObject({ folded: false, split: false });
+    });
+    const after = result.current.copies!.filter((c) => c.id === copy.id);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ homeId: SHOW_BOX_ID, homeKind: "box" });
+  });
+
+  it("splits a quantity: the source keeps the rest and the part lands as a new line", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const seeded = result.current.copies!;
+    const copy = seeded[0];
+    // Make a stack of four to split from.
+    await act(async () => {
+      await result.current.actions.updateCopy(seeded[0], { quantity: 4 });
+    });
+    const stack = result.current.copies!.find((c) => c.id === copy.id)!;
+    await act(async () => {
+      const moved = await result.current.actions.moveCopy(stack, SLAB, { quantity: 3 });
+      expect(moved.split).toBe(true);
+    });
+    expect(result.current.copies!.find((c) => c.id === copy.id)).toMatchObject({ quantity: 1, homeId: stack.homeId });
+    expect(result.current.copies!.find((c) => c.homeId === SLAB && c.id !== copy.id)).toMatchObject({ quantity: 3 });
+  });
+
+  it("undoing a split puts the quantity back into one line", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    await act(async () => {
+      await result.current.actions.updateCopy(result.current.copies![0], { quantity: 4 });
+    });
+    const stack = result.current.copies![0];
+    const before = result.current.copies!.length;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.moveCopy(stack, SLAB, { quantity: 3 })).undo;
+    });
+    expect(result.current.copies!.length).toBe(before + 1);
+    await act(undo);
+    expect(result.current.copies!.length).toBe(before);
+    expect(result.current.copies!.find((c) => c.id === stack.id)?.quantity).toBe(4);
+  });
+
+  it("folds into an identical line in the destination and the undo splits it back out", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    const copy = result.current.copies![0];
+    // Park a twin in the slab case, then move the original in.
+    let twinId = "";
+    await act(async () => {
+      const r = await result.current.actions.addLineItem(demoCard(copy.cardId)!, {
+        ...emptyCopyDetails(),
+        condition: copy.condition,
+        graded: copy.graded,
+        serialNumber: copy.serialNumber,
+        costBasis: copy.costBasis,
+        location: copy.location,
+        notes: copy.notes,
+        quantity: 1,
+        homeId: SLAB,
+      });
+      twinId = r.copyId;
+    });
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      const moved = await result.current.actions.moveCopy(copy, SLAB);
+      expect(moved).toMatchObject({ folded: true, copyId: twinId });
+      undo = moved.undo;
+    });
+    expect(result.current.copies!.some((c) => c.id === copy.id)).toBe(false);
+    await act(undo);
+    expect(result.current.copies!.some((c) => c.homeId === SLAB && c.quantity === 1)).toBe(true);
+    expect(result.current.copies!.reduce((n, c) => n + c.quantity, 0)).toBe(
+      initialCollectionState().copies.filter((c) => c.cardId === copy.cardId).reduce((n, c) => n + c.quantity, 0) + 1,
+    );
+  });
+
+  it("rejects a move into the Want List with words to show", async () => {
+    const { result } = renderHook(() => useMoveRig(cardId()), { wrapper });
+    await expect(result.current.actions.moveCopy(result.current.copies![0], "binder-want")).rejects.toThrow(/Want List/);
+  });
+
+  it("placeCopy puts a box line in a row and its undo sends it back unsorted", async () => {
+    const unsorted = initialCollectionState().copies.find((c) => c.homeId === SHOW_BOX_ID && c.slot === undefined)!;
+    const { result: boxRes } = renderHook(() => ({ actions: useCollectionActions(), box: useContainerCopies(SHOW_BOX_ID) }), {
+      wrapper,
+    });
+    const line = boxRes.current.box!.copies.find((c) => c.id === unsorted.id)!;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await boxRes.current.actions.placeCopy(line, 2)).undo;
+    });
+    expect(boxRes.current.box!.copies.find((c) => c.id === unsorted.id)?.slot).toBe(2);
+    await act(undo);
+    expect(boxRes.current.box!.copies.find((c) => c.id === unsorted.id)?.slot).toBeUndefined();
+  });
+});
+
+describe("Up for Trade is a flag, not a home", () => {
+  it("setTrade lists the copy on the trade pile without moving it, and the undo clears it", async () => {
+    const seed = initialCollectionState().copies.find((c) => !c.upForTrade && c.homeId === SLAB) ?? initialCollectionState().copies.find((c) => !c.upForTrade)!;
+    const { result } = renderHook(() => useMoveRig(seed.cardId), { wrapper });
+    const copy = result.current.copies!.find((c) => c.id === seed.id)!;
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      undo = (await result.current.actions.setTrade(copy, true)).undo;
+    });
+    expect(result.current.trade!.copies.map((c) => c.id)).toContain(copy.id);
+    expect(result.current.copies!.find((c) => c.id === copy.id)).toMatchObject({ upForTrade: true, homeId: copy.homeId });
+    await act(undo);
+    expect(result.current.trade!.copies.map((c) => c.id)).not.toContain(copy.id);
+  });
+
+  it("the trade container's contents are exactly the flagged copies", () => {
+    const { result } = renderHook(() => ({ containers: useContainers(), trade: useTradeCopies(), pile: useContainerCopies(TRADE_BINDER_ID) }), {
+      wrapper,
+    });
+    const flagged = initialCollectionState().copies.filter((c) => c.upForTrade).map((c) => c.id).sort();
+    expect(result.current.trade!.copies.map((c) => c.id).sort()).toEqual(flagged);
+    expect(result.current.pile!.copies.map((c) => c.id).sort()).toEqual(flagged);
+    expect(result.current.containers!.find((c) => c.id === TRADE_BINDER_ID)?.count?.lines).toBe(flagged.length);
+  });
+});
+
+describe("wants are one per card", () => {
+  it("wanting a card for another binder moves its want, and the undo puts the old one back", async () => {
+    const { result } = renderHook(() => useMoveRig("x"), { wrapper });
+    const before = result.current.wants![0];
+    let undo: () => Promise<void> = async () => {};
+    await act(async () => {
+      const r = await result.current.actions.setWant(before.cardId, SLAB, true);
+      expect(r.changed).toBe(true);
+      undo = r.undo;
+    });
+    expect(result.current.wants!.filter((w) => w.cardId === before.cardId)).toEqual([{ cardId: before.cardId, binderId: SLAB }]);
+    await act(undo);
+    expect(result.current.wants!.filter((w) => w.cardId === before.cardId)).toEqual([before]);
+  });
+
+  it("reports no change when asked for the want it already is", async () => {
+    const { result } = renderHook(() => useMoveRig("x"), { wrapper });
+    const w = result.current.wants![0];
+    await act(async () => {
+      expect((await result.current.actions.setWant(w.cardId, w.binderId, true)).changed).toBe(false);
+    });
+  });
+});
+
+describe("scope files into the scoped home", () => {
+  const scoped = (scope: string) =>
+    ({ children }: { children: ReactNode }) => (
+      <DemoCollectionProvider storageKey="nb-collection-demo-store-test">
+        <ScopeProvider value={scope}>{children}</ScopeProvider>
+      </DemoCollectionProvider>
+    );
+
+  it("a Have with a binder scoped lands in that binder", async () => {
+    const { result } = renderHook(
+      () => ({ actions: useCollectionActions(), cards: useVariantCards(GOLD), inVariant: useCopiesInVariant(GOLD) }),
+      { wrapper: scoped(SLAB) },
+    );
+    const need = result.current.cards![0];
+    await act(async () => {
+      await result.current.actions.addHave(need, SLAB);
+    });
+    expect(result.current.inVariant!.find((c) => c.cardId === need.id)).toMatchObject({ homeId: SLAB });
+  });
+
+  it("a scoped read lists only that home's copies and counts only them", () => {
+    const { result } = renderHook(
+      () => ({ inVariant: useCopiesInVariant(demoVariantId("1996-playoff-contenders", { type: "Base", name: null })) }),
+      { wrapper: scoped(MAIN_BINDER_ID) },
+    );
+    expect(result.current.inVariant!.every((c) => c.homeId === MAIN_BINDER_ID)).toBe(true);
+  });
+});
+
+describe("containers through the contract", () => {
+  it("creates a box, lists it with a zero count, and deleting it re-homes its copies to Main", async () => {
+    const { result } = renderHook(
+      () => ({ actions: useCollectionActions(), containers: useContainers(), box: useContainerCopies(SHOW_BOX_ID) }),
+      { wrapper },
+    );
+    await act(async () => {
+      await result.current.actions.createContainer({ kind: "box", name: "Dime box" });
+    });
+    const dime = result.current.containers!.find((c) => c.name === "Dime box")!;
+    expect(dime).toMatchObject({ kind: "box", count: { copies: 0, lines: 0 } });
+
+    const show = result.current.containers!.find((c) => c.id === SHOW_BOX_ID)!;
+    let moved = -1;
+    await act(async () => {
+      moved = (await result.current.actions.deleteContainer(show)).moved;
+    });
+    expect(moved).toBe(show.count!.lines);
+    expect(result.current.containers!.some((c) => c.id === SHOW_BOX_ID)).toBe(false);
+    const main = result.current.containers!.find((c) => c.id === MAIN_BINDER_ID)!;
+    expect(main.count!.lines).toBeGreaterThanOrEqual(moved);
+  });
+
+  it("counts a binder's copies and lines", () => {
+    const { result } = renderHook(() => ({ containers: useContainers(), pockets: useContainerCopies(CONTENDERS) }), { wrapper });
+    const c = result.current.containers!.find((x) => x.id === CONTENDERS)!;
+    expect(c.count!.lines).toBe(result.current.pockets!.copies.length);
+  });
+
+  it("reads many cards' copies in one call, an empty list for a card nobody holds", () => {
+    const held = initialCollectionState().copies[0].cardId;
+    const { result } = renderHook(() => useCopiesOfCards([held, "card-nope"]), { wrapper });
+    expect(result.current![held].length).toBeGreaterThan(0);
+    expect(result.current!["card-nope"]).toEqual([]);
+  });
+});

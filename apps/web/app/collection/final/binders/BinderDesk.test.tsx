@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import BinderDesk from "./BinderDesk";
-import type { PageModel } from "../../prototypes/p2/model";
+import type { PageModel } from "./model";
 
 /**
  * The phone layout (`wide` false) turns the page on a swipe. A swipe must be

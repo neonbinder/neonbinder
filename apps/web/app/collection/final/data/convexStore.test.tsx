@@ -3,15 +3,24 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { ConvexCollectionProvider, __test } from "./convexStore";
 import {
+  ScopeProvider,
   useCapabilities,
   useCollectionActions,
+  useContainerCopies,
+  useContainers,
+  useCopiesInVariant,
+  useCopiesOf,
+  useCopiesOfCards,
   useDemoExtension,
   useOwnedCards,
   useSearch,
+  useSetCards,
   useSuggestions,
+  useTradeCopies,
   useVariantCompletion,
+  useWants,
 } from "./store";
-import type { Card, Copy } from "./types";
+import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
 
 /**
  * NEO-358 — the Convex store: how the server's shapes become the view model,
@@ -29,6 +38,35 @@ const loaded = vi.hoisted(() => new Map<string, unknown>());
  * `loadMore`, and records what each `loadMore` asked for.
  */
 const paged = vi.hoisted(() => ({ pages: new Map<string, unknown[][]>(), loadMore: [] as number[] }));
+/**
+ * The client's optimistic layer, faithfully small: `withOptimisticUpdate`
+ * runs the store's updater against `local.data` BEFORE the mutation is sent
+ * and restores the snapshot if the mutation rejects (as Convex does). Seed
+ * `local.data` through `local.set`, read it back through `local.get`.
+ */
+const local = vi.hoisted(() => ({
+  data: new Map<string, { name: string; args: unknown; value: unknown }>(),
+  failures: new Map<string, string>(),
+  key(name: string, args: unknown) {
+    return `${name}|${JSON.stringify(args)}`;
+  },
+  set(name: string, args: unknown, value: unknown) {
+    this.data.set(this.key(name, args), { name, args, value });
+  },
+  get(name: string, args: unknown) {
+    return this.data.get(this.key(name, args))?.value;
+  },
+  all(name: string) {
+    return [...this.data.values()].filter((q) => q.name === name);
+  },
+  snapshot() {
+    return new Map(this.data);
+  },
+  clear() {
+    this.data.clear();
+    this.failures.clear();
+  },
+}));
 
 vi.mock("convex/react", async () => {
   const { getFunctionName: nameOf } = await import("convex/server");
@@ -67,21 +105,39 @@ vi.mock("convex/react", async () => {
       ),
     useMutation: (ref: Parameters<typeof nameOf>[0]) => {
       const name = nameOf(ref);
-      const fn = Object.assign(
-        async (args: unknown) => {
-          calls.list.push({ name, args });
-          return calls.answers.get(name) ?? null;
+      const send = async (args: unknown) => {
+        calls.list.push({ name, args });
+        const failure = local.failures.get(name);
+        if (failure) throw new Error(failure);
+        const answer = calls.answers.get(name);
+        return (typeof answer === "function" ? answer(args) : answer) ?? null;
+      };
+      const store = {
+        getQuery: (query: Parameters<typeof nameOf>[0], args: unknown) => local.get(nameOf(query), args),
+        getAllQueries: (query: Parameters<typeof nameOf>[0]) =>
+          local.all(nameOf(query)).map(({ args, value }) => ({ args, value })),
+        setQuery: (query: Parameters<typeof nameOf>[0], args: unknown, value: unknown) =>
+          local.set(nameOf(query), args, value),
+      };
+      return Object.assign(send, {
+        withOptimisticUpdate: (update: (s: typeof store, args: unknown) => void) => async (args: unknown) => {
+          const before = local.snapshot();
+          update(store, args);
+          try {
+            return await send(args);
+          } catch (error) {
+            local.data = before;
+            throw error;
+          }
         },
-        { withOptimisticUpdate: () => fn },
-      );
-      return fn;
+      });
     },
   };
 });
 
 const wrapper = ({ children }: { children: ReactNode }) => <ConvexCollectionProvider>{children}</ConvexCollectionProvider>;
 
-const { toVariantRef, toCopy, toRawDetails, fromRawDetails, toDrillItem, foldsInto } = __test;
+const { toVariantRef, toCopy, toRawDetails, fromRawDetails, toDrillItem, foldsInto, toContainer, toWant } = __test;
 
 const node = (id: string, name: string) => ({ _id: id, name }) as never;
 
@@ -106,6 +162,8 @@ const COPY: Copy = {
   variantId: "base1",
   setId: "set1",
   homeId: "home1",
+  homeKind: "binder",
+  upForTrade: false,
   quantity: 2,
   condition: "Mint",
   costBasis: 1.25,
@@ -120,6 +178,7 @@ beforeEach(() => {
   loaded.clear();
   paged.pages.clear();
   paged.loadMore.length = 0;
+  local.clear();
 });
 afterEach(cleanup);
 
@@ -186,6 +245,8 @@ describe("copies between the view and the server", () => {
       variantId: "v",
       setId: "s",
       homeId: "h",
+      homeKind: "binder",
+      upForTrade: false,
       quantity: 3,
       graded: { grader: "PSA", grade: "10" },
       costBasis: 19.99,
@@ -194,18 +255,60 @@ describe("copies between the view and the server", () => {
     });
   });
 
-  it("writes dollars as whole cents, blank text as absent, and never the demo's extras", () => {
+  it("names a copy's home and kind from the shelf, so a box reads as for sale", () => {
+    const homes = new Map([
+      ["box1", { kind: "box" as const, name: "Show box" }],
+      ["home1", { kind: "binder" as const, name: "Main" }],
+    ]);
+    const raw = { _id: "c", cardId: "k", variantId: "v", setId: "s", homeId: "box1", quantity: 1, slot: 2, upForTrade: true, lastUpdated: 1 };
+    expect(toCopy(raw as never, homes)).toMatchObject({ homeKind: "box", homeName: "Show box", slot: 2, upForTrade: true });
+    expect(toCopy({ ...raw, homeId: "home1" } as never, homes)).toMatchObject({ homeKind: "binder", homeName: "Main" });
+  });
+
+  it("falls back to a binder with no name while the shelf is loading", () => {
+    const raw = { _id: "c", cardId: "k", variantId: "v", setId: "s", homeId: "h", quantity: 1, lastUpdated: 1 };
+    const copy = toCopy(raw as never);
+    expect(copy.homeKind).toBe("binder");
+    expect(copy).not.toHaveProperty("homeName");
+  });
+
+  it("writes dollars as whole cents and blank text as absent", () => {
     const out = toRawDetails(
-      { quantity: 1, costBasis: 0.1 + 0.2, acquiredAt: "2026-10-23", notes: "   ", location: " ", serialNumber: "", demo: { binderIds: ["b"], forSale: true } },
+      { quantity: 1, costBasis: 0.1 + 0.2, acquiredAt: "2026-10-23", notes: "   ", location: " ", serialNumber: "" },
       "home1",
     );
     expect(out).toEqual({ quantity: 1, costCents: 30, acquiredOn: "2026-10-23", homeId: "home1" });
-    expect(fromRawDetails(out)).toEqual({ quantity: 1, costBasis: 0.3, acquiredAt: "2026-10-23", notes: "" });
+    expect(fromRawDetails(out)).toEqual({ quantity: 1, costBasis: 0.3, acquiredAt: "2026-10-23", notes: "", homeId: "home1" });
+  });
+
+  it("carries the pocket or row and the trade flag out and back, and writes a cleared flag as absent", () => {
+    const out = toRawDetails({ quantity: 1, acquiredAt: "2026-10-23", notes: "", slot: 4, upForTrade: true }, "home1");
+    expect(out).toMatchObject({ slot: 4, upForTrade: true, homeId: "home1" });
+    expect(fromRawDetails(out)).toMatchObject({ slot: 4, upForTrade: true });
+    expect(toRawDetails({ quantity: 1, acquiredAt: "", notes: "", upForTrade: false }, "home1")).not.toHaveProperty("upForTrade");
+  });
+
+  it("reads a shelf row with its count, or null when the server has not counted it", () => {
+    expect(toContainer({ _id: "b", kind: "box", name: "Show box", count: { copies: 7, lines: 3 } } as never)).toEqual({
+      id: "b",
+      kind: "box",
+      name: "Show box",
+      count: { copies: 7, lines: 3 },
+    });
+    expect(toContainer({ _id: "m", kind: "binder", system: "main", name: "Main" } as never)).toMatchObject({ system: "main", count: null });
+  });
+
+  it("reads a want with no binder as unscoped", () => {
+    expect(toWant({ cardId: "k" } as never)).toEqual({ cardId: "k", binderId: null });
+    expect(toWant({ cardId: "k", binderId: "b" } as never)).toEqual({ cardId: "k", binderId: "b" });
   });
 
   it("folds like the server: identical details only, never a cert or a serial", () => {
     const row = { quantity: 1, acquiredOn: "2026-10-23", homeId: "h" } as never;
     expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23" } as never)).toBe(true);
+    expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23", homeId: "other" } as never)).toBe(false);
+    expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23", slot: 3 } as never)).toBe(false);
+    expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23", upForTrade: true } as never)).toBe(false);
     expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-22" } as never)).toBe(false);
     expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23", serialNumber: "3/50" } as never)).toBe(false);
     expect(foldsInto({ ...(row as object), grading: { grader: "PSA", grade: "10", cert: "1" } } as never, row)).toBe(false);
@@ -213,16 +316,26 @@ describe("copies between the view and the server", () => {
 });
 
 describe("the real store's capabilities and reads", () => {
-  it("is all off, with no demo extension", () => {
+  it("turns on binders, wants, trade and scope, and leaves the demo-only features off", () => {
     const { result } = renderHook(() => ({ caps: useCapabilities(), demo: useDemoExtension() }), { wrapper });
-    expect(Object.values(result.current.caps).some(Boolean)).toBe(false);
+    expect(result.current.caps).toEqual(REAL_CAPABILITIES);
+    expect(result.current.caps).toMatchObject({
+      binders: true,
+      wants: true,
+      trade: true,
+      scope: true,
+      smartBinders: false,
+      share: false,
+      cardRequests: false,
+      demoChrome: false,
+    });
     expect(result.current.demo).toBeUndefined();
   });
 
   it("never asks the server about text too short to search", () => {
     const { result } = renderHook(() => ({ s: useSearch(" o "), g: useSuggestions("o") }), { wrapper });
     expect(result.current).toEqual({ s: { cards: [], truncated: false }, g: [] });
-    expect(queried.filter((q) => q.args !== "skip")).toEqual([]);
+    expect(queried.filter((q) => q.name.startsWith("collectionCatalog:") && q.args !== "skip")).toEqual([]);
   });
 
   it("trims what it searches, and asks for the server's page", () => {
@@ -363,14 +476,16 @@ describe("everything I own", () => {
 
 describe("every write's undo is the inverse write", () => {
   const actions = () => renderHook(() => useCollectionActions(), { wrapper }).result.current;
+  /** The mutations a write sent, without the shelf's one-time ensureSystem on mount. */
+  const writes = () => calls.list.filter((c) => c.name !== "collectionContainers:ensureSystem");
 
   it("Have, inserted: the undo removes that copy", async () => {
     calls.answers.set("collection:addHave", { copyId: "new1", merged: false });
     const a = actions();
     const result = await a.addHave(CARD);
-    expect(calls.list[0]).toEqual({ name: "collection:addHave", args: { cardId: "card1", acquiredOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) } });
+    expect(writes()[0]).toEqual({ name: "collection:addHave", args: { cardId: "card1", acquiredOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) } });
     await act(result.undo);
-    expect(calls.list[1]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
+    expect(writes()[1]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
   });
 
   it("Have, folded into a stack: the undo puts the stack back as it was", async () => {
@@ -379,14 +494,14 @@ describe("every write's undo is the inverse write", () => {
     const result = await actions().addHave(CARD);
     expect(result.merged).toBe(true);
     await act(result.undo);
-    expect(calls.list[1]).toEqual({ name: "collection:updateCopy", args: { copyId: "stack1", details: previous } });
+    expect(writes()[1]).toEqual({ name: "collection:updateCopy", args: { copyId: "stack1", details: previous } });
   });
 
   it("an edit sends the whole copy (the server replaces details) and undoes to the server's previous", async () => {
     const previous = { quantity: 2, condition: "Mint", costCents: 125, acquiredOn: "2026-10-01", homeId: "home1" };
     calls.answers.set("collection:updateCopy", { previous });
     const result = await actions().updateCopy(COPY, { notes: "From the card show" });
-    expect(calls.list[0]).toEqual({
+    expect(writes()[0]).toEqual({
       name: "collection:updateCopy",
       args: {
         copyId: "copy1",
@@ -394,7 +509,7 @@ describe("every write's undo is the inverse write", () => {
       },
     });
     await act(result.undo);
-    expect(calls.list[1]).toEqual({ name: "collection:updateCopy", args: { copyId: "copy1", details: previous } });
+    expect(writes()[1]).toEqual({ name: "collection:updateCopy", args: { copyId: "copy1", details: previous } });
   });
 
   it("a removal's undo restores what the server removed", async () => {
@@ -403,7 +518,7 @@ describe("every write's undo is the inverse write", () => {
     const result = await actions().removeCopy(COPY);
     expect(result.removed).toBe(COPY);
     await act(result.undo);
-    expect(calls.list[1]).toEqual({ name: "collection:restoreCopy", args: removed });
+    expect(writes()[1]).toEqual({ name: "collection:restoreCopy", args: removed });
   });
 
   it("a batch of haves: the undo removes the new copies and unstacks the folded ones", async () => {
@@ -416,7 +531,7 @@ describe("every write's undo is the inverse write", () => {
     const result = await actions().addMany([CARD, other]);
     expect(result.copyIds).toEqual(["n1", "s2"]);
     await act(result.undo);
-    expect(calls.list.slice(1)).toEqual([
+    expect(writes().slice(1)).toEqual([
       { name: "collection:removeCopies", args: { copyIds: ["n1"] } },
       { name: "collection:updateCopy", args: { copyId: "s2", details: previous } },
     ]);
@@ -426,7 +541,7 @@ describe("every write's undo is the inverse write", () => {
     calls.answers.set("collection:setBuilding", { changed: true });
     const result = await actions().setBuilding(CARD.set, true);
     await act(result.undo);
-    expect(calls.list).toEqual([
+    expect(writes()).toEqual([
       { name: "collection:setBuilding", args: { setId: "set1", building: true } },
       { name: "collection:setBuilding", args: { setId: "set1", building: false } },
     ]);
@@ -435,6 +550,495 @@ describe("every write's undo is the inverse write", () => {
     calls.answers.set("collection:setBuilding", { changed: false });
     const again = await actions().setBuilding(CARD.set, true);
     await act(again.undo);
-    expect(calls.list).toHaveLength(1);
+    expect(writes()).toHaveLength(1);
+  });
+});
+
+describe("the shelf is made once per mount", () => {
+  it("asks the server to ensure the system containers, one time, however often it re-renders", () => {
+    const { rerender } = renderHook(() => useCollectionActions(), { wrapper });
+    rerender();
+    rerender();
+    expect(calls.list.filter((c) => c.name === "collectionContainers:ensureSystem")).toEqual([
+      { name: "collectionContainers:ensureSystem", args: {} },
+    ]);
+  });
+
+  it("carries on when ensureSystem is refused: the first real write shows the words", async () => {
+    local.failures.set("collectionContainers:ensureSystem", "no thanks");
+    const { result } = renderHook(() => useCollectionActions(), { wrapper });
+    calls.answers.set("collection:addHave", { copyId: "n", merged: false });
+    await expect(result.current.addHave(CARD)).resolves.toMatchObject({ copyId: "n" });
+  });
+});
+
+describe("the scope narrows reads and files adds", () => {
+  const scoped = (scope: string) =>
+    ({ children }: { children: ReactNode }) => (
+      <ConvexCollectionProvider>
+        <ScopeProvider value={scope}>{children}</ScopeProvider>
+      </ConvexCollectionProvider>
+    );
+
+  it("asks for the picked home's copies and counts, and for everything under All", () => {
+    renderHook(() => ({ a: useCopiesInVariant("v1"), b: useVariantCompletion("v1") }), { wrapper: scoped("box1") });
+    expect(queried).toContainEqual({ name: "collection:copiesInVariant", args: { variantId: "v1", homeId: "box1" } });
+    expect(queried).toContainEqual({ name: "collection:variantCompletion", args: { variantId: "v1", homeId: "box1" } });
+    queried.length = 0;
+    renderHook(() => ({ a: useCopiesInVariant("v1"), b: useVariantCompletion("v1") }), { wrapper: scoped("all") });
+    expect(queried).toContainEqual({ name: "collection:copiesInVariant", args: { variantId: "v1" } });
+    expect(queried).toContainEqual({ name: "collection:variantCompletion", args: { variantId: "v1" } });
+  });
+
+  it("leaves the drawer's copies of one card unscoped: it lists every home", () => {
+    renderHook(() => useCopiesOf("card1"), { wrapper: scoped("box1") });
+    expect(queried).toContainEqual({ name: "collection:copiesOf", args: { cardId: "card1" } });
+  });
+
+  it("a Have with a home scoped sends that home; an explicit home wins", async () => {
+    calls.answers.set("collection:addHave", { copyId: "n", merged: false });
+    const { result } = renderHook(() => useCollectionActions(), { wrapper: scoped("box1") });
+    await result.current.addHave(CARD);
+    await result.current.addHave(CARD, "binder9");
+    const adds = calls.list.filter((c) => c.name === "collection:addHave").map((c) => (c.args as { homeId?: string }).homeId);
+    expect(adds).toEqual(["box1", "binder9"]);
+  });
+
+  it("a Have under All names no home, so the server files it in Main", async () => {
+    calls.answers.set("collection:addHave", { copyId: "n", merged: false });
+    const { result } = renderHook(() => useCollectionActions(), { wrapper: scoped("all") });
+    await result.current.addHave(CARD);
+    expect(calls.list.find((c) => c.name === "collection:addHave")?.args).not.toHaveProperty("homeId");
+  });
+
+  it("a batch of haves with a home scoped sends it once for the batch", async () => {
+    calls.answers.set("collection:addHaves", []);
+    const { result } = renderHook(() => useCollectionActions(), { wrapper: scoped("box1") });
+    await result.current.addMany([CARD]);
+    expect(calls.list.find((c) => c.name === "collection:addHaves")?.args).toMatchObject({ homeId: "box1" });
+  });
+});
+
+describe("the shelf, wants and the new paged reads", () => {
+  it("hydrates the shelf, system containers first as the server lists them, with counts", () => {
+    loaded.set("collectionContainers:list", [
+      { _id: "m", kind: "binder", system: "main", name: "Main", count: { copies: 5, lines: 2 } },
+      { _id: "b", kind: "box", name: "Show box", count: { copies: 1, lines: 1 } },
+    ]);
+    const { result } = renderHook(() => useContainers(), { wrapper });
+    expect(result.current!.map((c) => [c.id, c.kind, c.count])).toEqual([
+      ["m", "binder", { copies: 5, lines: 2 }],
+      ["b", "box", { copies: 1, lines: 1 }],
+    ]);
+  });
+
+  it("names a container's copies' home and kind from the shelf", () => {
+    loaded.set("collectionContainers:list", [{ _id: "b", kind: "box", name: "Show box", count: { copies: 1, lines: 1 } }]);
+    loaded.set("collection:copiesOf", [{ _id: "c", cardId: "card1", variantId: "v", setId: "s", homeId: "b", quantity: 1, lastUpdated: 1 }]);
+    const { result } = renderHook(() => useCopiesOf("card1"), { wrapper });
+    expect(result.current![0]).toMatchObject({ homeKind: "box", homeName: "Show box" });
+  });
+
+  it("reads the trade pile through tradeCopies, not copiesInContainer", () => {
+    loaded.set("collectionContainers:list", [{ _id: "t", kind: "binder", system: "trade", name: "Up for Trade", count: { copies: 1, lines: 1 } }]);
+    paged.pages.set("collection:tradeCopies", [[{ _id: "c", cardId: "card1", variantId: "v", setId: "s", homeId: "m", quantity: 1, upForTrade: true, lastUpdated: 1 }]]);
+    const { result } = renderHook(() => useContainerCopies("t"), { wrapper });
+    expect(result.current!.copies.map((c) => c.id)).toEqual(["c"]);
+    expect(queried.some((q) => q.name === "collection:copiesInContainer" && q.args !== "skip")).toBe(false);
+  });
+
+  it("gives the Want List no copies", () => {
+    loaded.set("collectionContainers:list", [{ _id: "w", kind: "binder", system: "want", name: "Want List", count: { copies: 2, lines: 2 } }]);
+    const { result } = renderHook(() => useContainerCopies("w"), { wrapper });
+    expect(result.current).toEqual({ copies: [], truncated: false });
+  });
+
+  it("lists a binder's copies by pocket, the unslotted last", () => {
+    loaded.set("collectionContainers:list", [{ _id: "bin", kind: "binder", name: "Contenders", count: { copies: 3, lines: 3 } }]);
+    const row = (id: string, slot?: number) => ({ _id: id, cardId: id, variantId: "v", setId: "s", homeId: "bin", quantity: 1, lastUpdated: 1, ...(slot === undefined ? {} : { slot }) });
+    paged.pages.set("collection:copiesInContainer", [[row("c", undefined), row("a", 4), row("b", 1)]]);
+    const { result } = renderHook(() => useContainerCopies("bin", { limit: 3 }), { wrapper });
+    expect(result.current!.copies.map((c) => c.id)).toEqual(["b", "a", "c"]);
+    expect(result.current!.truncated).toBe(false);
+  });
+
+  it("says there are more when the server holds more than the limit", () => {
+    loaded.set("collectionContainers:list", [{ _id: "bin", kind: "binder", name: "Contenders", count: { copies: 3, lines: 3 } }]);
+    const row = (id: string) => ({ _id: id, cardId: id, variantId: "v", setId: "s", homeId: "bin", quantity: 1, lastUpdated: 1 });
+    paged.pages.set("collection:copiesInContainer", [[row("a"), row("b"), row("c")]]);
+    const { result } = renderHook(() => useContainerCopies("bin", { limit: 2 }), { wrapper });
+    expect(result.current!.copies).toHaveLength(2);
+    expect(result.current!.truncated).toBe(true);
+  });
+
+  it("waits for the shelf before choosing a read", () => {
+    const { result } = renderHook(() => useContainerCopies("bin"), { wrapper });
+    expect(result.current).toBeUndefined();
+  });
+
+  it("hydrates wants", () => {
+    loaded.set("collectionWants:list", [{ cardId: "k1" }, { cardId: "k2", binderId: "b" }]);
+    const { result } = renderHook(() => useWants(), { wrapper });
+    expect(result.current).toEqual([
+      { cardId: "k1", binderId: null },
+      { cardId: "k2", binderId: "b" },
+    ]);
+  });
+
+  it("reads trade copies as a page", () => {
+    paged.pages.set("collection:tradeCopies", [[{ _id: "c", cardId: "k", variantId: "v", setId: "s", homeId: "m", quantity: 2, upForTrade: true, lastUpdated: 1 }]]);
+    const { result } = renderHook(() => useTradeCopies(), { wrapper });
+    expect(result.current).toMatchObject({ truncated: false, copies: [{ id: "c", upForTrade: true }] });
+  });
+
+  it("asks for many cards' copies in groups of 50 and keys the answer by card, empty for none held", () => {
+    const ids = Array.from({ length: 120 }, (_, i) => `k${i}`);
+    const asked: number[] = [];
+    loaded.set("collection:copiesOfMany", ({ cardIds }: { cardIds: string[] }) => {
+      asked.push(cardIds.length);
+      return cardIds
+        .filter((id) => id === "k0")
+        .map((id) => ({ cardId: id, copies: [{ _id: "c", cardId: id, variantId: "v", setId: "s", homeId: "m", quantity: 1, lastUpdated: 1 }] }));
+    });
+    const { result } = renderHook(() => useCopiesOfCards(ids), { wrapper });
+    expect(asked).toEqual([50, 50, 20]);
+    expect(result.current!.k0).toHaveLength(1);
+    expect(result.current!.k1).toEqual([]);
+  });
+
+  it("pages a whole set's cards from cardsInSet", () => {
+    queried.length = 0;
+    renderHook(() => useSetCards("set1"), { wrapper });
+    expect(queried).toContainEqual(expect.objectContaining({ name: "collection:cardsInSet", args: { setId: "set1" } }));
+  });
+});
+
+describe("writes: moves, trade, wants and containers", () => {
+  const writes = () => calls.list.filter((c) => c.name !== "collectionContainers:ensureSystem");
+  const actions = () => renderHook(() => useCollectionActions(), { wrapper }).result.current;
+  const MOVE_BACK = { copyId: "copy1", folded: false, split: false, from: { homeId: "home1", quantity: 2 } };
+
+  it("moveCopy sends the destination, quantity and row, and its undo is the inverse move", async () => {
+    calls.answers.set("collection:moveCopy", { ...MOVE_BACK, from: { homeId: "home1", slot: 4, quantity: 1 } });
+    const result = await actions().moveCopy(COPY, "box1", { quantity: 1, slot: 2 });
+    expect(writes()[0]).toEqual({ name: "collection:moveCopy", args: { copyId: "copy1", toHomeId: "box1", quantity: 1, slot: 2 } });
+    await act(result.undo);
+    expect(writes()[1]).toEqual({
+      name: "collection:moveCopy",
+      args: { copyId: "copy1", toHomeId: "home1", quantity: 1, slot: 4 },
+    });
+  });
+
+  it("a move of the whole line names no quantity", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1");
+    expect(writes()[0].args).toEqual({ copyId: "copy1", toHomeId: "box1" });
+  });
+
+  it("reports the server's fold and split", async () => {
+    calls.answers.set("collection:moveCopy", { ...MOVE_BACK, copyId: "twin", folded: true, split: true });
+    const r = await actions().moveCopy(COPY, "box1", { quantity: 1 });
+    expect(r).toMatchObject({ copyId: "twin", folded: true, split: true });
+  });
+
+  it("placeCopy sends the row, null to take it out, and its undo goes back to the previous row", async () => {
+    calls.answers.set("collection:placeCopy", { ...MOVE_BACK, from: { homeId: "home1", slot: 1, quantity: 2 } });
+    const r = await actions().placeCopy(COPY, null);
+    expect(writes()[0]).toEqual({ name: "collection:placeCopy", args: { copyId: "copy1", slot: null } });
+    await act(r.undo);
+    expect(writes()[1]).toEqual({ name: "collection:moveCopy", args: { copyId: "copy1", toHomeId: "home1", quantity: 2, slot: 1 } });
+  });
+
+  it("setTrade's undo sets the flag the server said it had", async () => {
+    calls.answers.set("collection:setTrade", { previous: false });
+    const r = await actions().setTrade(COPY, true);
+    await act(r.undo);
+    expect(writes()).toEqual([
+      { name: "collection:setTrade", args: { copyId: "copy1", on: true } },
+      { name: "collection:setTrade", args: { copyId: "copy1", on: false } },
+    ]);
+  });
+
+  it("an edit that tries to change the home is refused before it is sent", async () => {
+    await expect(actions().updateCopy(COPY, { homeId: "elsewhere" })).rejects.toThrow(/Move the card/);
+    expect(writes()).toEqual([]);
+  });
+
+  it("setWant undoes to the want it replaced, or to none", async () => {
+    loaded.set("collectionWants:list", [{ cardId: "card1", binderId: "b1" }]);
+    calls.answers.set("collectionWants:set", { changed: true });
+    const a = actions();
+    const moved = await a.setWant("card1", "b2", true);
+    await act(moved.undo);
+    expect(writes()[1]).toEqual({ name: "collectionWants:set", args: { cardId: "card1", on: true, binderId: "b1" } });
+
+    calls.list.length = 0;
+    const fresh = await a.setWant("card9", null, true);
+    await act(fresh.undo);
+    expect(writes()[1]).toEqual({ name: "collectionWants:set", args: { cardId: "card9", on: false } });
+  });
+
+  it("setWant's undo does nothing when nothing changed", async () => {
+    calls.answers.set("collectionWants:set", { changed: false });
+    const r = await actions().setWant("card1", null, true);
+    await act(r.undo);
+    expect(writes()).toHaveLength(1);
+  });
+
+  it("refuses a smart binder with words, until the server can store a rule", async () => {
+    await expect(
+      actions().createContainer({ kind: "binder", name: "Rainbow", rule: { all: [] } as never }),
+    ).rejects.toThrow(/Smart binders aren't here yet/);
+    expect(writes()).toEqual([]);
+  });
+
+  it("creates a box and the undo removes it again", async () => {
+    calls.answers.set("collectionContainers:create", { containerId: "newbox" });
+    const r = await actions().createContainer({ kind: "box", name: "Dime box" });
+    expect(r.containerId).toBe("newbox");
+    expect(writes()[0]).toEqual({ name: "collectionContainers:create", args: { kind: "box", name: "Dime box" } });
+    await act(r.undo);
+    expect(writes()[1]).toEqual({ name: "collectionContainers:remove", args: { containerId: "newbox" } });
+  });
+
+  it("an update's undo sends the old name, description and label back", async () => {
+    const container = { id: "b1", kind: "binder" as const, name: "Old", description: "d", count: null };
+    const r = await actions().updateContainer(container, { name: "New", label: null });
+    await act(r.undo);
+    expect(writes()[0].args).toEqual({ containerId: "b1", name: "New", label: null });
+    expect(writes()[1].args).toEqual({ containerId: "b1", name: "Old", label: null });
+  });
+
+  it("delete empties the container in rounds until nothing remains, then removes it", async () => {
+    const answers = [{ moved: 200, remaining: 30 }, { moved: 30, remaining: 0 }];
+    let round = 0;
+    calls.answers.set("collectionContainers:empty", () => answers[round++]);
+    const { result } = renderHook(() => useCollectionActions(), { wrapper });
+    const r = await result.current.deleteContainer({ id: "b1", kind: "binder", name: "Old", count: null });
+    expect(r.moved).toBe(230);
+    expect(writes().map((c) => c.name)).toEqual([
+      "collectionContainers:empty",
+      "collectionContainers:empty",
+      "collectionContainers:remove",
+    ]);
+  });
+});
+
+describe("optimistic updates: a copy is never shown in two places", () => {
+  const MAIN = "home1";
+  const BOX = "box1";
+  const base = (over: Record<string, unknown> = {}) => ({
+    _id: "copy1",
+    cardId: "card1",
+    variantId: "base1",
+    setId: "set1",
+    homeId: MAIN,
+    quantity: 3,
+    acquiredOn: "2026-10-01",
+    lastUpdated: 1,
+    ...over,
+  });
+  const page = (rows: unknown[]) => ({ page: rows, isDone: true });
+  const opts = { numItems: 100, cursor: null };
+
+  /** Seeds every loaded list the move could reach: the card, the checklist at three scopes, both homes, the trade pile and the shelf. */
+  function seed(rows: unknown[] = [base()], boxRows: unknown[] = []) {
+    const inMain = rows.filter((r) => (r as { homeId: string }).homeId === MAIN);
+    local.set("collection:copiesOf", { cardId: "card1" }, [...rows, ...boxRows]);
+    local.set("collection:copiesInVariant", { variantId: "base1" }, [...rows, ...boxRows]);
+    local.set("collection:copiesInVariant", { variantId: "base1", homeId: MAIN }, inMain);
+    local.set("collection:copiesInVariant", { variantId: "base1", homeId: BOX }, boxRows);
+    local.set("collection:variantCompletion", { variantId: "base1" }, { owned: 1, total: 330, ownedAll: 1, totalAll: 335 });
+    local.set("collection:variantCompletion", { variantId: "base1", homeId: MAIN }, { owned: 1, total: 330, ownedAll: 1, totalAll: 335 });
+    local.set("collection:variantCompletion", { variantId: "base1", homeId: BOX }, { owned: 0, total: 330, ownedAll: 0, totalAll: 335 });
+    local.set("collection:copiesInContainer", { containerId: MAIN, paginationOpts: opts }, page(inMain));
+    local.set("collection:copiesInContainer", { containerId: BOX, paginationOpts: opts }, page(boxRows));
+    local.set("collection:tradeCopies", { paginationOpts: opts }, page([]));
+    local.set("collectionContainers:list", {}, [
+      { _id: MAIN, kind: "binder", system: "main", name: "Main", count: { copies: 3, lines: 1 } },
+      { _id: BOX, kind: "box", name: "Show box", count: { copies: boxRows.length, lines: boxRows.length } },
+      { _id: "trade", kind: "binder", system: "trade", name: "Up for Trade", count: { copies: 0, lines: 0 } },
+      { _id: "want", kind: "binder", system: "want", name: "Want List", count: { copies: 1, lines: 1 } },
+    ]);
+  }
+  const rowsIn = (name: string, containerId: string) =>
+    (local.get(name, { containerId, paginationOpts: opts }) as { page: { _id: string; quantity: number }[] }).page;
+  const copiesOf = () => local.get("collection:copiesOf", { cardId: "card1" }) as { _id: string; homeId: string; quantity: number; slot?: number; upForTrade?: boolean }[];
+  const count = (id: string) =>
+    (local.get("collectionContainers:list", {}) as { _id: string; count: { copies: number; lines: number } }[]).find((c) => c._id === id)!.count;
+  const completion = (homeId?: string) =>
+    local.get("collection:variantCompletion", { variantId: "base1", ...(homeId ? { homeId } : {}) }) as { owned: number; ownedAll: number };
+  const move = COPY_AT(MAIN);
+
+  function COPY_AT(homeId: string): Copy {
+    return { ...COPY, id: "copy1", homeId, quantity: 3, acquiredAt: "2026-10-01", notes: "", condition: undefined, costBasis: undefined };
+  }
+  const actions = () => renderHook(() => useCollectionActions(), { wrapper }).result.current;
+  const answer = (over: object = {}) =>
+    calls.answers.set("collection:moveCopy", { copyId: "copy1", folded: false, split: false, from: { homeId: MAIN, quantity: 3 }, ...over });
+
+  it("moves the whole line: it leaves Main's list and joins the box's in the same update", async () => {
+    seed();
+    answer();
+    await actions().moveCopy(move, BOX);
+    expect(rowsIn("collection:copiesInContainer", MAIN)).toEqual([]);
+    expect(rowsIn("collection:copiesInContainer", BOX).map((r) => r._id)).toEqual(["copy1"]);
+    expect(copiesOf().filter((r) => r._id === "copy1")).toHaveLength(1);
+    expect(copiesOf()[0].homeId).toBe(BOX);
+  });
+
+  it("moves the checklist's scoped lists and counts with it, and leaves the All count alone", async () => {
+    seed();
+    answer();
+    await actions().moveCopy(move, BOX);
+    expect((local.get("collection:copiesInVariant", { variantId: "base1", homeId: MAIN }) as unknown[]).length).toBe(0);
+    expect((local.get("collection:copiesInVariant", { variantId: "base1", homeId: BOX }) as unknown[]).length).toBe(1);
+    expect(completion(MAIN).owned).toBe(0);
+    expect(completion(BOX).owned).toBe(1);
+    expect(completion()).toMatchObject({ owned: 1, ownedAll: 1 });
+  });
+
+  it("moves the shelf's counts: Main loses the copies and the line, the box gains them", async () => {
+    seed();
+    answer();
+    await actions().moveCopy(move, BOX);
+    expect(count(MAIN)).toEqual({ copies: 0, lines: 0 });
+    expect(count(BOX)).toEqual({ copies: 3, lines: 1 });
+    expect(count("want")).toEqual({ copies: 1, lines: 1 });
+  });
+
+  it("splits a quantity: the source keeps the rest in Main and a new line lands in the box", async () => {
+    seed();
+    answer({ copyId: "new", split: true, from: { homeId: MAIN, quantity: 2 } });
+    await actions().moveCopy(move, BOX, { quantity: 2 });
+    expect(rowsIn("collection:copiesInContainer", MAIN)).toEqual([expect.objectContaining({ _id: "copy1", quantity: 1 })]);
+    const boxRows = rowsIn("collection:copiesInContainer", BOX);
+    expect(boxRows).toHaveLength(1);
+    expect(boxRows[0].quantity).toBe(2);
+    expect(boxRows[0]._id).not.toBe("copy1");
+    expect(count(MAIN)).toEqual({ copies: 1, lines: 1 });
+    expect(count(BOX)).toEqual({ copies: 2, lines: 1 });
+    // The card is still held in Main, so Main's checklist count does not drop.
+    expect(completion(MAIN).owned).toBe(1);
+  });
+
+  it("folds into an identical line already in the box: one line, the quantities add", async () => {
+    const twin = base({ _id: "twin", homeId: BOX, quantity: 1 });
+    seed([base()], [twin]);
+    answer({ copyId: "twin", folded: true });
+    await actions().moveCopy(move, BOX);
+    expect(copiesOf().map((r) => [r._id, r.quantity])).toEqual([["twin", 4]]);
+    expect(rowsIn("collection:copiesInContainer", MAIN)).toEqual([]);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([expect.objectContaining({ _id: "twin", quantity: 4 })]);
+    expect(count(BOX)).toEqual({ copies: 4, lines: 1 });
+  });
+
+  it("does not fold into a box line that differs only by its row", async () => {
+    const other = base({ _id: "other", homeId: BOX, quantity: 1, slot: 2 });
+    seed([base()], [other]);
+    answer();
+    await actions().moveCopy(move, BOX);
+    expect(copiesOf().map((r) => r._id).sort()).toEqual(["copy1", "other"]);
+  });
+
+  it("lands at the row asked for", async () => {
+    seed();
+    answer();
+    await actions().moveCopy(move, BOX, { slot: 3 });
+    expect(copiesOf()[0]).toMatchObject({ homeId: BOX, slot: 3 });
+  });
+
+  it("placeCopy re-rows the line in its own home and clears the row with null", async () => {
+    seed([base({ homeId: BOX, slot: 1 })]);
+    calls.answers.set("collection:placeCopy", { copyId: "copy1", folded: false, split: false, from: { homeId: BOX, slot: 1, quantity: 3 } });
+    await actions().placeCopy({ ...move, homeId: BOX, slot: 1 }, 4);
+    expect(copiesOf()[0]).toMatchObject({ homeId: BOX, slot: 4 });
+    await actions().placeCopy({ ...move, homeId: BOX, slot: 4 }, null);
+    expect(copiesOf()[0]).not.toHaveProperty("slot");
+  });
+
+  it("rolls the whole move back when the server refuses it, restoring every list", async () => {
+    seed();
+    const before = local.snapshot();
+    local.failures.set("collection:moveCopy", "That pocket already holds a card.");
+    await expect(actions().moveCopy(move, BOX)).rejects.toThrow(/pocket already holds/);
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+    expect(rowsIn("collection:copiesInContainer", MAIN).map((r) => r._id)).toEqual(["copy1"]);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([]);
+    expect(count(MAIN)).toEqual({ copies: 3, lines: 1 });
+  });
+
+  it("setTrade flags the line without moving it: it joins the trade pile and stays in its home", async () => {
+    seed();
+    calls.answers.set("collection:setTrade", { previous: false });
+    await actions().setTrade(move, true);
+    expect(rowsIn("collection:copiesInContainer", MAIN).map((r) => r._id)).toEqual(["copy1"]);
+    expect((local.get("collection:tradeCopies", { paginationOpts: opts }) as { page: { _id: string }[] }).page.map((r) => r._id)).toEqual(["copy1"]);
+    expect(copiesOf()[0]).toMatchObject({ homeId: MAIN, upForTrade: true });
+    expect(count("trade")).toEqual({ copies: 3, lines: 1 });
+    expect(count(MAIN)).toEqual({ copies: 3, lines: 1 });
+  });
+
+  it("unflagging takes the line off the trade pile", async () => {
+    seed([base({ upForTrade: true })]);
+    local.set("collection:tradeCopies", { paginationOpts: opts }, page([base({ upForTrade: true })]));
+    calls.answers.set("collection:setTrade", { previous: true });
+    await actions().setTrade({ ...move, upForTrade: true }, false);
+    expect((local.get("collection:tradeCopies", { paginationOpts: opts }) as { page: unknown[] }).page).toEqual([]);
+    expect(copiesOf()[0]).not.toHaveProperty("upForTrade");
+  });
+
+  it("rolls a trade flag back when the write fails", async () => {
+    seed();
+    const before = local.snapshot();
+    local.failures.set("collection:setTrade", "Not now.");
+    await expect(actions().setTrade(move, true)).rejects.toThrow("Not now.");
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+  });
+
+  it("a new Have lands in the scoped box's list and the checklist count; a failed one is rolled back", async () => {
+    seed([], []);
+    local.set("collection:copiesOf", { cardId: "card1" }, []);
+    local.set("collection:copiesInVariant", { variantId: "base1", homeId: BOX }, []);
+    calls.answers.set("collection:addHave", { copyId: "n", merged: false });
+    await actions().addHave(CARD, BOX);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toHaveLength(1);
+    expect(completion(BOX).owned).toBe(1);
+    expect(count(BOX)).toEqual({ copies: 1, lines: 1 });
+
+    const after = local.snapshot();
+    local.failures.set("collection:addHave", "Nope");
+    await expect(actions().addHave({ ...CARD, id: "card1" }, BOX)).rejects.toThrow("Nope");
+    expect([...local.data.entries()]).toEqual([...after.entries()]);
+  });
+
+  it("a removal drops the line from every list and the shelf count", async () => {
+    seed();
+    calls.answers.set("collection:removeCopy", { removed: { cardId: "card1", details: { quantity: 3, homeId: MAIN } } });
+    await actions().removeCopy(move);
+    expect(rowsIn("collection:copiesInContainer", MAIN)).toEqual([]);
+    expect(count(MAIN)).toEqual({ copies: 0, lines: 0 });
+    expect(completion().owned).toBe(0);
+  });
+
+  it("a want moves the Want List count, and a removed container leaves the shelf", async () => {
+    local.set("collectionWants:list", {}, [{ cardId: "card1" }]);
+    local.set("collectionContainers:list", {}, [
+      { _id: "want", kind: "binder", system: "want", name: "Want List", count: { copies: 1, lines: 1 } },
+      { _id: "b1", kind: "binder", name: "Old", count: { copies: 0, lines: 0 } },
+    ]);
+    calls.answers.set("collectionWants:set", { changed: true });
+    await actions().setWant("card2", null, true);
+    expect((local.get("collectionWants:list", {}) as unknown[]).length).toBe(2);
+    expect(count("want")).toEqual({ copies: 2, lines: 2 });
+    calls.answers.set("collectionContainers:empty", { moved: 0, remaining: 0 });
+    await actions().deleteContainer({ id: "b1", kind: "binder", name: "Old", count: null });
+    expect((local.get("collectionContainers:list", {}) as { _id: string }[]).map((c) => c._id)).toEqual(["want"]);
+  });
+
+  it("renames a container on the shelf at once", async () => {
+    local.set("collectionContainers:list", {}, [{ _id: "b1", kind: "binder", name: "Old", count: { copies: 0, lines: 0 } }]);
+    await actions().updateContainer({ id: "b1", kind: "binder", name: "Old", count: null }, { name: " New " });
+    expect((local.get("collectionContainers:list", {}) as { name: string }[])[0].name).toBe("New");
   });
 });

@@ -109,16 +109,15 @@ describe("My Binders", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
-  it("a want for a binder opens the add form with that binder ticked, not Main", () => {
+  it("a want for a binder opens the add form living in that binder, not Main", () => {
     renderBinders("/collection?tab=binders&b=binder-want");
     fireEvent.click(screen.getByRole("button", { name: /^Next pages?$/ }));
     expect(screen.getByRole("group", { name: /^Page 2, For Ohtani rainbow/ })).toBeTruthy();
     act(() => {
       fireEvent.click(screen.getAllByRole("button", { name: /, need\. Add it$/ })[0]);
     });
-    const dialog = screen.getByRole("dialog");
-    expect((within(dialog).getByRole("checkbox", { name: "Ohtani rainbow" }) as HTMLInputElement).checked).toBe(true);
-    expect((within(dialog).getByRole("checkbox", { name: "Main" }) as HTMLInputElement).checked).toBe(false);
+    const home = within(screen.getByRole("dialog")).getByRole("combobox", { name: "Where it lives" }) as HTMLSelectElement;
+    expect(home.value).toBe("binder-ohtani-rainbow");
   });
 
   it("an unscoped want still opens the add form on Main", () => {
@@ -126,28 +125,42 @@ describe("My Binders", () => {
     act(() => {
       fireEvent.click(screen.getAllByRole("button", { name: /, need\. Add it$/ })[0]);
     });
-    const dialog = screen.getByRole("dialog");
-    expect((within(dialog).getByRole("checkbox", { name: "Main" }) as HTMLInputElement).checked).toBe(true);
+    const home = within(screen.getByRole("dialog")).getByRole("combobox", { name: "Where it lives" }) as HTMLSelectElement;
+    expect(home.value).toBe("binder-main");
   });
 
-  it("while the Want List is open, the hunt adds a want, never a filed copy", () => {
+  it("while the Want List is open, the hunt adds a want, never a filed copy", async () => {
     renderBinders("/collection?tab=binders&b=binder-want");
     const search = screen.getByRole("searchbox", { name: "Hunt for a card you want" });
     fireEvent.change(search, { target: { value: "96 contenders reggie white" } });
     const want = screen.getAllByRole("button", { name: /^Want / })[0];
     fireEvent.click(want);
-    expect(
-      screen.getAllByRole("status").some((s) => /is on your Want List/.test(s.textContent ?? "")),
-    ).toBe(true);
+    // Writes are async: the line speaks once the store answers.
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => /is on your Want List/.test(s.textContent ?? ""))).toBe(true),
+    );
+    expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
   it("Enter in the hunt asks when two cards fit instead of taking the first", () => {
     renderBinders("/collection?tab=binders&all=1");
     const search = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
-    fireEvent.change(search, { target: { value: "1" } });
+    // A card number is not unique: #13 is in many sets and parallels.
+    fireEvent.change(search, { target: { value: "13" } });
     fireEvent.keyDown(search, { key: "Enter" });
     expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(true);
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
+  });
+
+  it("a single character is below the search minimum: the hunt says nothing and guesses nothing", () => {
+    renderBinders("/collection?tab=binders&all=1");
+    const search = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
+    fireEvent.change(search, { target: { value: "1" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(false);
+    expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
+    expect(screen.queryByRole("list", { name: "In your binders" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Not in your binders yet" })).toBeNull();
   });
 
   it("Share shows a human-readable link at the neutral @you handle, and says it is an example", () => {
@@ -204,28 +217,33 @@ describe("the hunt tray", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
-  it("Move here moves your one copy into the open binder, naming both, with Undo", () => {
+  it("Move here moves your one copy into the open binder's next pocket, naming both, and Undo puts it back in its own", async () => {
     renderBinders("/collection?tab=binders&b=binder-slab-case");
     fireEvent.change(hunt(), { target: { value: "jim kelly" } });
     fireEvent.click(screen.getByRole("button", { name: /^Move here: 1996 Playoff Contenders #12 Jim Kelly/ }));
-    expect(statusSays(/^Moved #12 Jim Kelly from '96 Contenders to Slab case\.$/)).toBe(true);
-    expect(screen.getByRole("button", { name: "Find #12 Jim Kelly in Slab case" })).toBeTruthy();
+    await waitFor(() => expect(statusSays(/^Moved #12 Jim Kelly from '96 Contenders to Slab case, page 1, pocket 1\.$/)).toBe(true));
+    expect(screen.getByRole("button", { name: "Find #12 Jim Kelly in Slab case, page 1, pocket 1" })).toBeTruthy();
+    // It left its old pocket: one home, never two.
+    expect(screen.queryByRole("button", { name: /^Find #12 Jim Kelly in '96 Contenders/ })).toBeNull();
     // Nothing left to move here, so only Add another is offered.
     expect(screen.queryByRole("button", { name: /^Move here: .*#12 Jim Kelly/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    expect(screen.getByRole("button", { name: "Find #12 Jim Kelly in '96 Contenders, page 2, pocket 3" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Find #12 Jim Kelly in '96 Contenders, page 2, pocket 3" })).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: /^Find #12 Jim Kelly in Slab case/ })).toBeNull();
   });
 
-  it("with more than one copy, Move here asks which", () => {
+  it("with more than one copy, Move here asks which", async () => {
     renderBinders("/collection?tab=binders&b=binder-slab-case");
     fireEvent.change(hunt(), { target: { value: "96 contenders favre" } });
     fireEvent.click(screen.getByRole("button", { name: /^Move here: 1996 Playoff Contenders #1 Brett Favre/ }));
     const which = screen.getByRole("group", { name: "Which #1 Brett Favre moves to Slab case?" });
     const choices = within(which).getAllByRole("button", { name: /^Move .* to Slab case$/ });
     expect(choices).toHaveLength(2);
-    fireEvent.click(within(which).getByRole("button", { name: /Up for Trade to Slab case$/ }));
-    expect(statusSays(/^Moved #1 Brett Favre from Up for Trade to Slab case\.$/)).toBe(true);
+    fireEvent.click(choices[1]);
+    await waitFor(() => expect(statusSays(/^Moved #1 Brett Favre from .+ to Slab case, page 1, pocket \d+\.$/)).toBe(true));
   });
 
   it("Add another still adds a new copy", () => {
@@ -239,8 +257,13 @@ describe("the hunt tray", () => {
 describe("spine labels", () => {
   it("keeps every spine's accessible name plain text", () => {
     renderBinders();
-    expect(screen.getByRole("button", { name: "Red Wings, smart binder, 12 have, 8 need" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Slab case, 4 cards" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Red Wings, smart binder, \d+ cards?$/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Slab case, \d+ cards?$/ })).toBeTruthy();
+    // A box says what it is and how many are for sale.
+    expect(screen.getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ })).toBeTruthy();
+    // The system containers read by role.
+    expect(screen.getByRole("button", { name: /^Up for Trade, \d+ cards? up for trade$/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Want List, \d+ cards? wanted$/ })).toBeTruthy();
   });
 
   it("Edit label saves the collector's colours, and a faint pair letters in white on the shelf", () => {
@@ -473,20 +496,23 @@ describe("the views on the URL (app mode)", () => {
     const search = () => screen.getByRole("status", { name: "Page search" }).textContent;
     const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
     const picker = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
-    const trade = (within(picker()).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement).value;
+    // Only homes are offered: a binder, a box or Main. Never the Want List or Up for Trade.
+    expect(within(picker()).queryByRole("option", { name: "Up for Trade" })).toBeNull();
+    expect(within(picker()).queryByRole("option", { name: "Want List" })).toBeNull();
+    const slab = (within(picker()).getByRole("option", { name: "Slab case" }) as HTMLOptionElement).value;
 
-    fireEvent.change(picker(), { target: { value: trade } });
-    expect(search()).toBe(`?tab=cards&scope=${trade}`);
+    fireEvent.change(picker(), { target: { value: slab } });
+    expect(search()).toBe(`?tab=cards&scope=${slab}`);
     fireEvent.click(within(screen.getByRole("navigation", { name: "Collection sections" })).getByRole("link", { name: "My Binders" }));
-    expect(search()).toBe(`?tab=binders&scope=${trade}`);
+    expect(search()).toBe(`?tab=binders&scope=${slab}`);
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
     expect(search()).toBe("?tab=binders&b=binder-contenders-96&scope=binder-contenders-96");
 
     back();
-    expect(screen.getByText("Up for Trade", { selector: "strong" })).toBeTruthy();
+    expect(screen.getByText("Slab case", { selector: "strong" })).toBeTruthy();
     back();
-    expect(search()).toBe(`?tab=cards&scope=${trade}`);
-    expect(picker().value).toBe(trade);
+    expect(search()).toBe(`?tab=cards&scope=${slab}`);
+    expect(picker().value).toBe(slab);
   });
 });
 
@@ -545,3 +571,96 @@ describe("one open-binder view for binders and browsed sets", () => {
   });
 });
 
+
+describe("boxes and binders you make", () => {
+  const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+
+  it("makes a box from the shelf, and opens it, scoped to itself", async () => {
+    renderBinders();
+    fireEvent.click(screen.getByRole("button", { name: /New binder or box/ }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("radio", { name: /A box/ }));
+    fireEvent.change(within(dialog).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
+    await waitFor(() => expect(statusSays(/^Dime box is on the shelf\. Hunt for a card below and drop it in a row\.$/)).toBe(true));
+    expect(await screen.findByRole("region", { name: "Dime box, open" })).toBeTruthy();
+    expect(screen.getByText("Checklists and My Cards are looking through Dime box.")).toBeTruthy();
+  });
+
+  it("refuses a nameless one with words, and makes nothing", () => {
+    renderBinders();
+    fireEvent.click(screen.getByRole("button", { name: /New binder or box/ }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
+    expect(within(dialog).getByText("Give the binder a name.")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /, open$/ })).toBeNull();
+  });
+
+  it("deleting a box with cards in it sends them to Main and says it can't be undone", async () => {
+    renderBinders("/collection?tab=binders&b=box-show");
+    fireEvent.click(screen.getByRole("button", { name: "Rename or delete Show box" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete this box" }));
+    expect(screen.getByRole("heading", { name: "Delete Show box?" })).toBeTruthy();
+    expect(screen.getByText(/go back to Main\. You can't undo this\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete it" }));
+    await waitFor(() => expect(statusSays(/^Show box is off the shelf\. Its \d+ cards? went? back to Main\.$|^Show box is off the shelf\. Its \d+ cards go back to Main\.$/)).toBe(true));
+    expect(screen.queryByRole("button", { name: /^Show box, box,/ })).toBeNull();
+  });
+
+  it("'Keep it' backs out of the delete confirm without deleting", () => {
+    renderBinders("/collection?tab=binders&b=box-show");
+    fireEvent.click(screen.getByRole("button", { name: "Rename or delete Show box" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete this box" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(screen.getByRole("heading", { name: "Rename or delete Show box" })).toBeTruthy();
+  });
+
+  it("offers no rename or delete on a system container", () => {
+    renderBinders("/collection?tab=binders&b=binder-main");
+    expect(screen.queryByRole("button", { name: /^Rename or delete/ })).toBeNull();
+    // Its label can still be set.
+    expect(screen.getAllByRole("button", { name: "Edit label for Main" }).length).toBeGreaterThan(0);
+  });
+});
+
+describe("Up for Trade is a flag: the pile lists flagged copies where they live", () => {
+  const hunt = () => screen.getByRole("searchbox", { name: "Hunt for a card to trade" });
+  const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+
+  it("flagging from the trade tray says the copy stays where it lives", async () => {
+    renderBinders("/collection?tab=binders&b=binder-trade-bait");
+    fireEvent.change(hunt(), { target: { value: "jim kelly" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Put .*#12 Jim Kelly.* up for trade$/ }));
+    await waitFor(() => expect(statusSays(/^#12 Jim Kelly is up for trade\. It stays in '96 Contenders\.$/)).toBe(true));
+  });
+});
+
+describe("the scope files new cards into the scoped home", () => {
+  it("a Have on a checklist row under a scoped box lands in that box, and the status names it", async () => {
+    renderBinders("/collection?tab=checklists&set=2024-topps-chrome-baseball&type=Base&scope=box-show");
+    const have = screen.getAllByRole("button", { name: /^Have #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
+    fireEvent.click(have);
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => /^Added .+ to Show box$/.test(s.textContent ?? ""))).toBe(true),
+    );
+  });
+
+  it("under All it lands in Main", async () => {
+    renderBinders("/collection?tab=checklists&set=2024-topps-chrome-baseball&type=Base");
+    const have = screen.getAllByRole("button", { name: /^Have #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
+    fireEvent.click(have);
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => /^Added .+ to Main$/.test(s.textContent ?? ""))).toBe(true),
+    );
+  });
+
+  it("Want under a scope is for that home, and under All is a plain want; one per card", async () => {
+    renderBinders("/collection?tab=checklists&set=2024-topps-chrome-baseball&type=Base&scope=binder-slab-case");
+    const want = screen.getAllByRole("button", { name: /^Want #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
+    fireEvent.click(want);
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => /is on your Want List for Slab case$/.test(s.textContent ?? ""))).toBe(true),
+    );
+    expect(want.getAttribute("aria-pressed")).toBe("true");
+  });
+});

@@ -84,14 +84,14 @@ describe("Take it for a spin", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Take it for a spin" })).toBeTruthy();
   });
 
-  // Jason's walk: My Cards scoped to Up for Trade, the 1996-97 Upper Deck
+  // Jason's walk: My Cards scoped to the slab case, the 1996-97 Upper Deck
   // wall, My Binders, All Reggie White.
   async function walkDeep() {
     const tabs = () => screen.getByRole("navigation", { name: "Collection sections" });
     await screen.findByRole("region", { name: "About this demo" });
     fireEvent.click(within(tabs()).getByRole("link", { name: "My Cards" }));
     const scope = screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
-    const trade = within(scope).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement;
+    const trade = within(scope).getByRole("option", { name: "Slab case" }) as HTMLOptionElement;
     fireEvent.change(scope, { target: { value: trade.value } });
     fireEvent.click(screen.getByRole("link", { name: "1996-97 Upper Deck" }));
     fireEvent.click(within(tabs()).getByRole("link", { name: "My Binders" }));
@@ -114,7 +114,7 @@ describe("Take it for a spin", () => {
     back();
     expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=cards&scope=[\w-]+$/);
     const picked = screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
-    expect(picked.options[picked.selectedIndex].text).toBe("Up for Trade");
+    expect(picked.options[picked.selectedIndex].text).toBe("Slab case");
     back();
     expect(pageUrl()).toBe("/binder-tracking?demo=on");
     expect(screen.getByRole("region", { name: "About this demo" })).toBeTruthy();

@@ -2163,6 +2163,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["collectionCatalog.search", (t) => t.query(api.collectionCatalog.search, { q: "Gooden" })],
     ["collectionCatalog.cardsByPlayer", (t) => t.query(api.collectionCatalog.cardsByPlayer, { playerId: NOT_AN_ID })],
     ["collectionCatalog.cardsByTeam", (t) => t.query(api.collectionCatalog.cardsByTeam, { teamId: NOT_AN_ID })],
+    ["collectionCatalog.team", (t) => t.query(api.collectionCatalog.team, { teamId: NOT_AN_ID })],
     ["collection.summary", (t) => t.query(api.collection.summary, {})],
     [
       "collection.ownedCards",
@@ -2293,4 +2294,13 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     expect(after.copies.map((c) => c.quantity)).toEqual([1]);
     expect(after.building).toEqual([]);
   });
+
+  // NEO-359 — the deleted-card want sweep's continuation is never callable by a client.
+  test.each([["collectionWants.ts", "sweepWantsOfDeletedCard", "internalMutation"]])(
+    "%s :: %s is declared %s",
+    (file, fn, kind) => {
+      const src = readFileSync(join(__dirname, file), "utf8");
+      expect(src).toContain(`export const ${fn} = ${kind}({`);
+    },
+  );
 });
