@@ -33,7 +33,6 @@ import type * as backfillBrandPrefixAndUnknownName from "../backfillBrandPrefixA
 import type * as backfillBrandUnknownRole from "../backfillBrandUnknownRole.js";
 import type * as backfillBscAttributeFeatures from "../backfillBscAttributeFeatures.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
-import type * as backfillCardSearchFields from "../backfillCardSearchFields.js";
 import type * as backfillKnownBrands from "../backfillKnownBrands.js";
 import type * as backfillPromotedParallelFacet from "../backfillPromotedParallelFacet.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
@@ -182,7 +181,6 @@ declare const fullApi: ApiFromModules<{
   backfillBrandUnknownRole: typeof backfillBrandUnknownRole;
   backfillBscAttributeFeatures: typeof backfillBscAttributeFeatures;
   backfillCardFeatures: typeof backfillCardFeatures;
-  backfillCardSearchFields: typeof backfillCardSearchFields;
   backfillKnownBrands: typeof backfillKnownBrands;
   backfillPromotedParallelFacet: typeof backfillPromotedParallelFacet;
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;

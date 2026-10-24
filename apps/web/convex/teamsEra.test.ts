@@ -31,6 +31,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -770,7 +771,7 @@ describe("the card-linking paths narrow by the set's year", () => {
     team: string,
   ): Promise<Id<"cardChecklist">> =>
     t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: setId,
         cardNumber: "1",
         cardName: "Dale Hawerchuk",
@@ -837,7 +838,7 @@ describe("the card-linking paths narrow by the set's year", () => {
       }),
     );
     const cardId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: setId,
         cardNumber: "1",
         cardName: "Dale Hawerchuk",

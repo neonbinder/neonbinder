@@ -13,6 +13,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { REPORT_PAGE_SIZE, REPORT_SAMPLE_LIMIT } from "./backfillVariantTypeRole";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -45,10 +46,18 @@ describe("reportBaseAnomalies", () => {
     types: Array<{ value: string; cards?: number }>,
   ): Promise<{ setId: Id<"selectorOptions">; typeIds: Array<Id<"selectorOptions">> }> {
     return t.run(async (ctx) => {
+      // NEO-363 — a card cannot exist without a sport above it.
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        lastUpdated: SENTINEL,
+      });
       const setId = await ctx.db.insert("selectorOptions", {
         level: "setName",
         value,
         platformData: {},
+        parentId: sportId,
         children: [],
         lastUpdated: SENTINEL,
       });
@@ -64,7 +73,7 @@ describe("reportBaseAnomalies", () => {
         });
         typeIds.push(typeId);
         for (let i = 0; i < (type.cards ?? 0); i++) {
-          await ctx.db.insert("cardChecklist", {
+          await insertTestCard(ctx, {
             selectorOptionId: typeId,
             cardNumber: String(i + 1),
             cardName: `Card ${i + 1}`,

@@ -19,6 +19,7 @@ import {
   TEAM_SUGGESTION_MAX_PLAYERS,
   TEAM_SUGGESTION_MAX_TEAM_NAMES,
 } from "./cardChecklist";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -240,7 +241,7 @@ describe("teamSuggestionsForPreview — stints that can never be offered", () =>
     const s = await seed(t);
     const p = await player(t, s.sportId, "Stored Cross");
     await t.run(async (ctx) => {
-      const cardId = await ctx.db.insert("cardChecklist", {
+      const cardId = await insertTestCard(ctx, {
         selectorOptionId: s.insertId,
         cardNumber: "1",
         cardName: "Card",

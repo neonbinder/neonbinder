@@ -135,7 +135,8 @@ export const catalogCardFields = {
   /** Set on a variation: the regular card it is a variation of. */
   variationOfCardId: v.optional(v.id("cardChecklist")),
   features: v.array(cardFeatureValidator),
-  listingTitle: v.optional(v.string()),
+  /** NEO-363 — required on every card, never blank. */
+  listingTitle: v.string(),
   players: v.array(cardPlayerValidator),
   teams: v.array(cardTeamValidator),
 };
@@ -329,7 +330,7 @@ export class CatalogReader {
         ? { variationOfCardId: card.variationOfCardId }
         : {}),
       features: cardFeatures(card),
-      ...(card.listingTitle ? { listingTitle: card.listingTitle } : {}),
+      listingTitle: card.listingTitle,
       players,
       teams,
     };

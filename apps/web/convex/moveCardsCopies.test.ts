@@ -21,6 +21,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recountCards } from "./cardCounts";
 import { COPY_REPOINT_PAGE, MAX_COPIES_PER_MOVE, moveCards } from "./setShapeMove";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -67,7 +68,7 @@ async function seed(t: T) {
       lastUpdated: NOW,
     });
     const card = (cardNumber: string) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: fromBase,
         cardNumber,
         cardName: `Card ${cardNumber}`,
@@ -206,7 +207,7 @@ describe("moveCards and collectors' copies", () => {
     // The card moved to toBase by some other path; its copies still say fromBase.
     await t.run((ctx) => ctx.db.patch(s.a, { selectorOptionId: s.toBase }));
     const gone = await t.run(async (ctx) => {
-      const id = await ctx.db.insert("cardChecklist", {
+      const id = await insertTestCard(ctx, {
         selectorOptionId: s.fromBase,
         cardNumber: "9",
         cardName: "Card 9",

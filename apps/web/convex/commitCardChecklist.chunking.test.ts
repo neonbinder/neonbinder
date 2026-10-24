@@ -46,6 +46,7 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { compareCardNumbers } from "../lib/cards/card-number";
 import { drainScheduled, cancelScheduled } from "../lib/testing/drain-scheduled";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -655,7 +656,7 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
       const ids: Array<Id<"cardChecklist">> = [];
       for (let i = 0; i < count; i++) {
         ids.push(
-          await ctx.db.insert("cardChecklist", {
+          await insertTestCard(ctx, {
             selectorOptionId,
             cardNumber: String(i + 1),
             cardName: `Card ${i + 1}`,

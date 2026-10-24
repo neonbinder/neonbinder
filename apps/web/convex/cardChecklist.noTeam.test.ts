@@ -26,6 +26,8 @@ import { normalizePlayerName } from "./players";
 import { deriveCardAttention, MAX_CARD_TEAMS } from "./features/cardAttention";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
+import { NO_CARD_SPORT_REFUSAL } from "./cardRowCreate";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -106,11 +108,14 @@ async function insertCard(
     teamOnCardIds?: Array<Id<"teams">>;
     teamNoneConfirmedAt?: number;
     teamNoneConfirmedByUserId?: string;
+    /** NEO-363 — the sport stamped at birth, for a chain that lost it since. */
+    sportId?: Id<"selectorOptions">;
   } = {},
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
+      ...(opts.sportId ? { sportId: opts.sportId } : {}),
       cardNumber: opts.cardNumber ?? "327",
       cardName: "American League Leaders ERA",
       platformData: {},
@@ -1409,14 +1414,18 @@ describe("addCustomCard — teamOnCardIds edge shapes", () => {
     expect(deriveCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
   });
 
-  test("addCustomCard and updateCard agree: a card whose ancestor chain has no sport accepts ANY team id", async () => {
+  test("a chain with no sport: addCustomCard refuses the card (NEO-363); updateCard on a card already there accepts ANY team id", async () => {
     // `resolveTeamOnCardIdsForWrite`'s sport check is skipped entirely when
     // `findSportForSelectorOption` can't resolve a sport for the card's own
     // ancestor chain (an orphaned/corrupted tree) — see the comment on that
     // function: "an orphaned ancestor chain must not turn an otherwise-valid
-    // team edit into a hard failure." Both write paths share the helper, so
-    // this pins that they give the SAME answer rather than merely asserting
-    // it once.
+    // team edit into a hard failure."
+    //
+    // NEO-363: a NEW card needs a sport (`cardChecklist.sportId` is
+    // required), so `addCustomCard` refuses one under such a chain before the
+    // team check matters. A card that already exists was born with its sport
+    // and keeps it; editing its teams after the chain broke behaves as
+    // before.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     // A leaf with NO parentId at all: findSportForSelectorOption walks up,
@@ -1443,19 +1452,35 @@ describe("addCustomCard — teamOnCardIds edge shapes", () => {
     );
     const lakers = await insertTeam(t, basketballSportId, "Los Angeles Lakers");
 
-    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
-      selectorOptionId: orphanLeafId,
-      cardNumber: "514",
-      cardName: "Orphan Chain Card",
-      teamOnCardIds: [lakers],
-    });
-    const addRow = await getCard(t, cardId);
-    expect(addRow!.teamOnCardIds).toEqual([lakers]);
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: orphanLeafId,
+        cardNumber: "514",
+        cardName: "Orphan Chain Card",
+        teamOnCardIds: [lakers],
+      }),
+    ).rejects.toThrow(NO_CARD_SPORT_REFUSAL);
+    const written = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", orphanLeafId))
+        .collect(),
+    );
+    expect(written).toEqual([]);
 
-    // updateCard on a SEPARATE card under the same orphan leaf gives the
-    // identical answer.
+    // updateCard on a card under the same orphan leaf, born with its sport.
+    const baseballSportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
     const secondCardId = await insertCard(t, orphanLeafId, {
       cardNumber: "515",
+      sportId: baseballSportId,
     });
     await asAdmin.mutation(api.selectorOptions.updateCard, {
       id: secondCardId,

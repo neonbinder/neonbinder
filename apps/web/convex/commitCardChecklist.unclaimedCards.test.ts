@@ -22,6 +22,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -222,7 +223,7 @@ describe("pending names on an unclaimed card are still resolved", () => {
         sportId,
         lastUpdated: Date.now(),
       });
-      await ctx.db.insert("cardChecklist", {
+      await insertTestCard(ctx, {
         selectorOptionId: leafId,
         cardNumber: "9001",
         cardName: "Hand Added",
@@ -268,7 +269,7 @@ describe("the `deletedRowIds` guard — an operator-deleted ref-less card is not
     // "9001" and its target sortOrder (index 1, after "1") differs from its
     // current 0 — so it is due a patch by the sortOrder pass.
     const handAddedId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: leafId,
         cardNumber: "9001",
         cardName: "Hand Added",
@@ -306,7 +307,7 @@ describe("the `deletedRowIds` guard — an operator-deleted ref-less card is not
       });
     });
     const handAddedId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: leafId,
         cardNumber: "9001",
         cardName: "Hand Added",

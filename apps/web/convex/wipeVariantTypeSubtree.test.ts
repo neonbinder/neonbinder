@@ -33,6 +33,7 @@ import {
   WIPED_TABLES,
   resolveTimeBudgetMs,
 } from "./wipeVariantTypeSubtree";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -102,7 +103,7 @@ async function seed(t: T): Promise<Fixture> {
       cardNumber: string,
       extra: Record<string, unknown> = {},
     ): Promise<Card> =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId,
         cardNumber,
         cardName: `Card ${cardNumber}`,
@@ -797,7 +798,7 @@ describe("NEO-304: armed run", () => {
     // A Base card claiming to vary a subtree card: an invariant break, and
     // deleting its parent would leave it dangling.
     const stray = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: f.baseVt,
         cardNumber: "CP-3b",
         cardName: "Stray",
@@ -1113,7 +1114,7 @@ describe("NEO-304 security audit conditions", () => {
     const t = convexTest(schema, modules);
     const f = await seed(t);
     const grandchild = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: f.insA,
         cardNumber: "CP-1c",
         cardName: "Nested",

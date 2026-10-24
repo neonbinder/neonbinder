@@ -30,6 +30,7 @@ import {
 } from "./features/cardAttention";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { NO_CARD_SPORT_REFUSAL } from "./cardRowCreate";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -378,11 +379,11 @@ describe("addCustomCard — playerIds validation", () => {
     expect(row!.playerIds).toEqual([judge]);
   });
 
-  test("a card whose ancestor chain has no sport accepts ANY player id", async () => {
-    // Documented behaviour, not a bug, and identical to the team side:
-    // `findSportForSelectorOption` returns nothing for an orphaned chain, and
-    // an unresolvable sport must not turn an otherwise-valid write into a hard
-    // failure. Pinned so a future change to that skip is a deliberate one.
+  test("a card whose ancestor chain has no sport is refused, whatever its players (NEO-363)", async () => {
+    // `findSportForSelectorOption` returns nothing for an orphaned chain.
+    // Before NEO-363 the card was written anyway, with any player id. Now
+    // `cardChecklist.sportId` is required, so the card is refused with a
+    // message and nothing is written.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const orphanLeafId = await t.run(async (ctx) =>
@@ -397,15 +398,21 @@ describe("addCustomCard — playerIds validation", () => {
     const basketballSportId = await insertOtherSport(t, "Basketball");
     const lebron = await insertPlayer(t, basketballSportId, "LeBron James");
 
-    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
-      selectorOptionId: orphanLeafId,
-      cardNumber: "616",
-      cardName: "No Sport Anywhere",
-      playerIds: [lebron],
-    });
-
-    const row = await getCard(t, cardId);
-    expect(row!.playerIds).toEqual([lebron]);
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: orphanLeafId,
+        cardNumber: "616",
+        cardName: "No Sport Anywhere",
+        playerIds: [lebron],
+      }),
+    ).rejects.toThrow(NO_CARD_SPORT_REFUSAL);
+    const written = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", orphanLeafId))
+        .collect(),
+    );
+    expect(written).toEqual([]);
   });
 });
 

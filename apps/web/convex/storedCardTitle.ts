@@ -1,10 +1,10 @@
 /**
  * NEO-358 — what the generator WOULD title a STORED card today.
  *
- * The body of `selectorOptions.previewListingTitle`, extracted unchanged so
- * the armed `backfillCardSearchFields` fills a missing `listingTitle` with
- * exactly the title Regenerate would offer the operator. One implementation:
- * a backfilled title and a regenerated one cannot disagree.
+ * The body of `selectorOptions.previewListingTitle` (Regenerate), extracted
+ * unchanged so the NEO-358 backfill filled a missing `listingTitle` with
+ * exactly the title Regenerate would offer the operator. That backfill ran
+ * and was retired in NEO-363; Regenerate is the one caller now.
  *
  * Read-only. Players and teams are deduped and bounded before any read
  * (`MAX_CARD_PLAYERS` / `MAX_CARD_TEAMS`, what the write paths enforce); a

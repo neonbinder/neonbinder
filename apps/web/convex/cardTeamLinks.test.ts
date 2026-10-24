@@ -1,6 +1,7 @@
 /**
- * NEO-358 — `cardTeamLinks`, the team → cards index, and the armed
- * `backfillCardSearchFields`.
+ * NEO-358 — `cardTeamLinks`, the team → cards index. (The armed
+ * `backfillCardSearchFields` that was tested here ran and was retired in
+ * NEO-363, when `listingTitle` and `sportId` became required.)
  *
  * The index is derived from `cardChecklist.teamOnCardIds`; these cases drive
  * the real writers (`addCustomCard`, `updateCard`, the commit chunk's insert
@@ -16,6 +17,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { planCardTeamLinks } from "./cardTeamLinks";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -150,7 +152,7 @@ describe("every teamOnCardIds writer keeps the index", () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const existing = await t.run((ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "2",
         cardName: "Card 2",
@@ -195,7 +197,7 @@ describe("every teamOnCardIds writer keeps the index", () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const card = await t.run((ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "3",
         cardName: "Card 3",
@@ -222,7 +224,7 @@ describe("backfillCardTeamLinks", () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const card = await t.run((ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "1",
         cardName: "Card 1",
@@ -253,95 +255,5 @@ describe("backfillCardTeamLinks", () => {
       confirm: "BACKFILL",
     });
     expect(again).toMatchObject({ cardsChanged: 0, rowsInserted: 0, rowsDeleted: 0 });
-  });
-});
-
-describe("backfillCardSearchFields", () => {
-  test("fills a missing or blank title with Regenerate's title, and a missing sport; never touches a title that is there", async () => {
-    const t = convexTest(schema, modules);
-    const s = await seed(t);
-    const ids = await t.run(async (ctx) => {
-      const card = (cardNumber: string, extra: Record<string, unknown>) =>
-        ctx.db.insert("cardChecklist", {
-          selectorOptionId: s.base,
-          cardNumber,
-          cardName: `Card ${cardNumber}`,
-          platformData: {},
-          sortOrder: 1,
-          lastUpdated: NOW,
-          ...extra,
-        });
-      return {
-        absent: await card("1", {}),
-        blank: await card("2", { listingTitle: "   " }),
-        kept: await card("3", { listingTitle: "Operator's own words" }),
-        done: await card("4", { listingTitle: "Fine", sportId: s.sport }),
-      };
-    });
-    const preview = await t
-      .withIdentity(ADMIN)
-      .query(api.selectorOptions.previewListingTitle, { cardId: ids.absent });
-
-    const dry = await t.action(internal.backfillCardSearchFields.backfillCardSearchFields, {});
-    expect(dry).toMatchObject({
-      armed: false,
-      complete: true,
-      scanned: 4,
-      titlesFilled: 2,
-      sportFilled: 3,
-      noSport: 0,
-    });
-
-    vi.stubEnv("ALLOW_CARD_SEARCH_FIELDS_BACKFILL", "1");
-    const armed = await t.action(internal.backfillCardSearchFields.backfillCardSearchFields, {
-      confirm: "BACKFILL",
-    });
-    expect(armed).toMatchObject({ armed: true, titlesFilled: 2, sportFilled: 3 });
-    const rows = await t.run(async (ctx) => ({
-      absent: (await ctx.db.get(ids.absent))!,
-      blank: (await ctx.db.get(ids.blank))!,
-      kept: (await ctx.db.get(ids.kept))!,
-      done: (await ctx.db.get(ids.done))!,
-    }));
-    expect(rows.absent.listingTitle).toBe(preview.title);
-    expect(rows.blank.listingTitle?.trim().length).toBeGreaterThan(0);
-    expect(rows.kept.listingTitle).toBe("Operator's own words");
-    expect(rows.done.lastUpdated).toBe(NOW);
-    for (const row of Object.values(rows)) expect(row.sportId).toBe(s.sport);
-
-    const again = await t.action(internal.backfillCardSearchFields.backfillCardSearchFields, {
-      confirm: "BACKFILL",
-    });
-    expect(again).toMatchObject({ titlesFilled: 0, sportFilled: 0 });
-  });
-
-  test("a card whose chain reaches no sport is counted, not guessed", async () => {
-    const t = convexTest(schema, modules);
-    const orphan = await t.run(async (ctx) => {
-      const vt = await ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: NOW,
-      });
-      return ctx.db.insert("cardChecklist", {
-        selectorOptionId: vt,
-        cardNumber: "1",
-        cardName: "Card 1",
-        listingTitle: "Card 1",
-        platformData: {},
-        sortOrder: 1,
-        lastUpdated: NOW,
-      });
-    });
-    vi.stubEnv("ALLOW_CARD_SEARCH_FIELDS_BACKFILL", "1");
-    const result = await t.action(internal.backfillCardSearchFields.backfillCardSearchFields, {
-      confirm: "BACKFILL",
-    });
-    expect(result).toMatchObject({ noSport: 1, sportFilled: 0 });
-    expect(
-      await t.run(async (ctx) => (await ctx.db.get(orphan))!.sportId ?? null),
-    ).toBeNull();
   });
 });

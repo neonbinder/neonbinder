@@ -29,6 +29,7 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { commitTeamHint } from "./selectorOptions";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { insertTestCard } from "../lib/testing/card-row";
 
 beforeEach(() => {
   // Nothing here may reach BSC. A throwing stub, the suite's convention: the
@@ -583,7 +584,7 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
     const raw = Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) => `T${i}`).join(", ");
 
     const backgroundId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: leafId,
         cardNumber: "BG",
         cardName: "Card BG",
@@ -618,7 +619,7 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
 
     // The background path, on a card already saved: neither part is a team.
     const backgroundId = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: leafId,
         cardNumber: "BG",
         cardName: "Card BG",

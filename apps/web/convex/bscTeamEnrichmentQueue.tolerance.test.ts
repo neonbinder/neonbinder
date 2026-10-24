@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { BSC_TEAM_CHECK_MAX_PASSES } from "./adapters/buysportscards";
+import { insertTestCard } from "../lib/testing/card-row";
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
@@ -112,7 +113,7 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
     });
 
     const cardA = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Card 1",
@@ -122,7 +123,7 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
       }),
     );
     const cardB = await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "2",
         cardName: "Card 2",

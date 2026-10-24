@@ -23,6 +23,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { stripNbCardNumberPrefix } from "./baseMatchProbe";
 import { SL_PROBE_ID_PATTERN, checkProbeIds, isProbeId } from "./lib/baseMatchProbe";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -172,7 +173,7 @@ async function addCards(t: T, optionId: Id<"selectorOptions">, cards: CardSeed[]
     const ids: Id<"cardChecklist">[] = [];
     for (const { bsc, sl, cardName, ...rest } of cards) {
       ids.push(
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: optionId,
           cardName: cardName ?? `Card ${rest.cardNumber}`,
           lastUpdated: 1,
@@ -388,7 +389,7 @@ describe("getBaseSignatureForVariantType: cards", () => {
     const { base, parallel } = await seedTree(t);
     await t.run(async (ctx) => {
       for (let i = 1; i <= 5001; i++) {
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: base,
           cardNumber: String(i),
           cardName: "x",
@@ -407,7 +408,7 @@ describe("getBaseSignatureForVariantType: cards", () => {
     const { base, parallel } = await seedTree(t);
     await t.run(async (ctx) => {
       for (let i = 1; i <= 5000; i++) {
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: base,
           cardNumber: String(i),
           cardName: "x",
