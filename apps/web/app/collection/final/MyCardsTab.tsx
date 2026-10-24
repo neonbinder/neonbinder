@@ -11,7 +11,7 @@ import OwnedShelf, { CollectionTally } from "./cards/OwnedShelf";
 import Scoreboard from "./cards/Scoreboard";
 import Wall from "./cards/Wall";
 import { playerNames } from "./data/labels";
-import { useCapabilities, useCollectionActions, useDemoExtension } from "./data/store";
+import { isWantedIn, useCapabilities, useCollectionActions, useContainers, useScope, useWants } from "./data/store";
 import type { Card, SetId } from "./data/types";
 import { lineSummary } from "./lineItems";
 import { useCollectionParams } from "./mode";
@@ -26,8 +26,8 @@ import "./cards/cards.css";
  * lit when you have the card. "Sets I'm building" is the collector's own
  * pick (the set picker, or Stop building on a wall), never guessed.
  *
- * In the demo, the binder picker narrows every count and light to one
- * binder, Have files into it, and the shelf below lists binders.
+ * The binder picker narrows every count and light to one binder or box,
+ * Have files into it, and the shelf below lists binders and boxes.
  *
  * Where you are inside the tab rides on the URL next to `?tab=cards`:
  * `&set=<id>` is a set's wall, `&view=needs[&for=<id>]` the need list.
@@ -36,7 +36,6 @@ export default function MyCardsTab() {
   const page = usePageApi();
   const writes = useCollectionActions();
   const capabilities = useCapabilities();
-  const demo = useDemoExtension();
   const [params, setParams] = useCollectionParams();
   const into = useHomeName();
   const scopedName = useScopedName();
@@ -66,8 +65,10 @@ export default function MyCardsTab() {
     [setParam, setParams],
   );
 
-  const wants = capabilities.wants ? demo?.state : undefined;
-  const binders = demo?.state.state.binders;
+  const scope = useScope();
+  const allWants = useWants();
+  const wants = capabilities.wants ? allWants : undefined;
+  const binders = useContainers();
 
   const api: MyCardsApi = useMemo(() => {
     const label = (card: Card) => wallName(card, playerNames(card));
@@ -88,7 +89,7 @@ export default function MyCardsTab() {
       addOne,
       into,
       scopedName,
-      isWanted: (cardId) => wants?.isWanted(cardId) ?? false,
+      isWanted: (cardId) => isWantedIn(wants, cardId, scope),
       toggleHave: (card, copies, list) => {
         const press = tilePress(copies);
         if (press.kind === "add") return addOne(card);
@@ -114,7 +115,7 @@ export default function MyCardsTab() {
       },
       go,
     };
-  }, [page, writes, into, scopedName, wants, binders, setParams, go]);
+  }, [page, writes, into, scopedName, wants, scope, binders, setParams, go]);
 
   return (
     <MyCardsContext.Provider value={api}>
@@ -122,7 +123,7 @@ export default function MyCardsTab() {
         <div className="flex flex-wrap items-end justify-between gap-3">
           <p className="text-sm text-ink-2">Every set you&apos;re chasing, lit up like a scoreboard.</p>
           <div className="flex flex-wrap items-center gap-3">
-            {capabilities.scope && demo && <BinderPicker store={demo.state} />}
+            {capabilities.scope && <BinderPicker />}
             <button type="button" onClick={() => go("needs")} className={QUIET_BUTTON}>
               <ListBulletIcon aria-hidden="true" className="size-4" />
               Need list
@@ -144,7 +145,7 @@ export default function MyCardsTab() {
           {view === "home" && (
             <>
               <Scoreboard returnTo={moved ? cameFrom : null} />
-              {capabilities.binders && demo ? <OwnedShelf /> : <CollectionTally />}
+              {capabilities.binders ? <OwnedShelf /> : <CollectionTally />}
             </>
           )}
         </div>

@@ -16,7 +16,6 @@ import {
   useCapabilities,
   useCollectionActions,
   useCopiesInVariant,
-  useDemoExtension,
   useSetSummary,
   useVariantCards,
   useVariantCompletion,
@@ -56,7 +55,6 @@ const Checklist = forwardRef<
   const api = usePageApi();
   const writes = useCollectionActions();
   const capabilities = useCapabilities();
-  const demo = useDemoExtension();
   const cards = useVariantCards(variantId);
   const copies = useCopiesInVariant(variantId);
   const completion = useVariantCompletion(variantId);
@@ -174,7 +172,7 @@ const Checklist = forwardRef<
           {cards ? <SleeveStrip cards={cards} ownedIds={ownedIds} /> : <SkeletonPips />}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {capabilities.scope && demo && <BinderPicker store={demo.state} />}
+          {capabilities.scope && <BinderPicker />}
           <button
             type="button"
             aria-pressed={isBuilding}

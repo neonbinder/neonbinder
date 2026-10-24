@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useNavigationType } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
@@ -29,10 +29,15 @@ import {
   useCard,
   useCollectionActions,
   useCollectionStore,
+  useContainers,
+  useScope,
   useSetPath,
+  useWants,
+  wantToggle,
   writeErrorMessage,
 } from "./data/store";
-import type { Capabilities, Card, CardId, CopyId, Suggestion, Undo } from "./data/types";
+import type { Capabilities, Card, CardId, Container, CopyId, Scope, Suggestion, Undo, Want } from "./data/types";
+import { useHomeName, useScopedName } from "./catalog/home";
 import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
 import { lineSummary } from "./lineItems";
 import MyBindersTab from "./MyBindersTab";
@@ -57,9 +62,9 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * `/binder-tracking`. One page, two stores (see `./data/store`):
  *
  * - `/collection` (`../page.tsx`) mounts it inside `ConvexCollectionProvider`:
- *   the real catalog and the collector's own copies, with every capability
- *   that has not shipped yet switched off (no My Binders tab, no Binder
- *   picker, no wants or trade, no demo bar).
+ *   the real catalog and the collector's own copies, binders and boxes,
+ *   wants and trade (NEO-359), with what has not shipped yet switched off
+ *   (smart binders, share links, card requests, the demo bar).
  * - The public demo (`./PublicCollectionDemo`) mounts it inside
  *   `DemoCollectionProvider`: fixture data, every capability on. It never
  *   reaches Convex or Clerk. Mounted with no provider at all (a unit test),
@@ -68,8 +73,12 @@ import type { CollectionTab, GoToTabParams } from "./store";
  * Tabs on `?tab=` (My Cards, My Binders when the store has binders,
  * Checklists), drawn like the admin section strip, sharing one status line
  * with Undo and one right-side card drawer opened through `openCard`.
- * My Cards and Checklists read the store's hooks; My Binders, which only the
- * demo has, reads the demo's own store (`useDemoExtension`).
+ * Every tab reads the store's hooks, so the demo and the real collection
+ * run the same views.
+ *
+ * The scope (the "Binder: [All ▾]" pick, `scope=` on the URL) is read here
+ * against the shelf and put in `ViewScopeProvider`, where both stores and
+ * every view read it.
  *
  * `mode` (see `./mode`) is WHERE the page runs, not which store: `"app"`
  * (default) is the signed-in binder shell, `"public"` the marketing page with
@@ -124,7 +133,7 @@ interface DrawerExtras {
   listIds: CardId[];
   seed?: Card;
   copyId?: CopyId;
-  /** Demo: the binder the add form ticks instead of the page's target. */
+  /** The home the add form picks instead of the page's scope. */
   binderId?: string;
   key: number;
 }
@@ -159,7 +168,7 @@ export default function FinalCollectionPage({ mode = "app", keepParams, onExit }
 function CollectionPage({ onExit }: { onExit?: () => void }) {
   const isPublic = useCollectionMode().mode === "public";
   const { capabilities, demo } = useCollectionStore();
-  const writes = useCollectionActions();
+  const containers = useContainers();
   const tabs = tabsFor(capabilities);
   const [params, setParams] = useCollectionParams();
   const replaceParams = useReplaceParams();
@@ -242,19 +251,17 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     detail = titleSet ?? (params.get("view") === "needs" ? "Take it to the show" : null);
   } else if (tab === "binders") {
     const b = params.get("b");
-    detail =
-      demo?.state.state.binders.find((x) => x.id === b)?.name ?? titleSet ?? (params.get("all") ? "All my cards" : null);
+    detail = containers?.find((x) => x.id === b)?.name ?? titleSet ?? (params.get("all") ? "All my cards" : null);
   } else {
     detail = drillState.title;
   }
   const label = TABS.find((t) => t.key === tab)?.label ?? "Collection";
   useDocumentTitle(`${detail ? `${label} · ${detail}` : label} · ${isPublic ? "Collection demo" : "Collection"}`);
 
-  // The Binder picker's scope comes from the URL; the demo store follows it
-  // in this same render, so the two never disagree on screen. A store with
-  // no binder scope always counts everything.
-  const scope = capabilities.scope && demo ? scopeFromParams(params, demo.state.state.binders) : "all";
-  if (demo && demo.state.selectedBinderId !== scope) demo.state.setSelectedBinder(scope);
+  // The Binder picker's scope comes from the URL, checked against the shelf
+  // (an unknown id, or one that is not a home, reads as All). A store with no
+  // binder scope always counts everything.
+  const scope: Scope = capabilities.scope ? scopeFromParams(params, containers) : "all";
 
   // --- Status line -----------------------------------------------------------
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -462,10 +469,132 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
 
   const pageApi: PageApi = { openCard, goToChecklists, openSuggestion: pickSuggestion, notify, run };
 
-  // --- What a row's controls do ---------------------------------------------
-  const into = demo ? (demo.state.getBinder(demo.state.targetBinderId)?.name ?? "Main") : "your collection";
-  const binders = demo?.state.state.binders;
-  const scopedName = demo?.state.fileableBinders.find((b) => b.id === demo.state.selectedBinderId)?.name;
+  const resetDemo = () => {
+    demo?.reset();
+    notify("Back to the starting stack.");
+  };
+
+  return (
+    <PageApiContext.Provider value={pageApi}>
+      <ViewScopeProvider value={scope}>
+        <ScopedRows containers={containers} openCard={openCard} run={run}>
+          {(actions) => (
+            <div className="text-ink">
+              <div className="space-y-4">
+                {capabilities.demoChrome && demo && <DemoBar onReset={resetDemo} onExit={onExit} />}
+                <h1 className="text-2xl font-bold">Collection</h1>
+
+                <nav aria-label="Collection sections" className="border-b border-rule">
+                  <ul className="flex flex-wrap gap-x-6 gap-y-2">
+                    {tabs.map((t) => {
+                      const active = t.key === tab;
+                      return (
+                        <li key={t.key}>
+                          <ParamLink
+                            // Checklists opens where you left it.
+                            search={t.key === "checklists" ? checklistsSearch() : { tab: t.key }}
+                            onClick={settleQuery}
+                            aria-current={active ? "page" : undefined}
+                            className={
+                              "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
+                              (active
+                                ? "border-selection text-neon-blue-text"
+                                : "border-transparent text-ink-3 hover:border-control hover:text-ink")
+                            }
+                          >
+                            {t.label}
+                          </ParamLink>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </nav>
+
+                {tab === "cards" && <MyCardsTab />}
+                {tab === "binders" && capabilities.binders && (
+                  // My Binders' pack tray is pinned to the bottom, where the floating
+                  // toast would sit on its search box, so the tray shows the notice.
+                  <MyBindersTab
+                    openCard={openCard}
+                    goToTab={goToTab}
+                    notify={notify}
+                    notice={notice}
+                    onUndo={undo}
+                    onDismissNotice={() => setNotice(null)}
+                  />
+                )}
+                {tab === "checklists" && (
+                  <ChecklistsTab
+                    actions={actions}
+                    query={query}
+                    onQuery={setQuery}
+                    drill={drillState}
+                    cascadeKey={cascadeKey}
+                    onDrill={drillInto}
+                    onJump={jumpTo}
+                    highlightCardId={highlightCardId}
+                    selectedCardId={drawer?.cardId ?? null}
+                    entity={entity}
+                    onPickSuggestion={pickSuggestion}
+                    onFranchise={setFranchise}
+                    onClearEntity={clearEntity}
+                    missingCard={jumpCard === null}
+                    arrivalRef={arrival}
+                  />
+                )}
+              </div>
+
+              {isPublic && capabilities.demoChrome && <DemoRail onExit={onExit} />}
+
+              {!drawer && tab !== "binders" && (
+                <NoticeLine notice={notice} onUndo={undo} onDismiss={() => setNotice(null)} floating />
+              )}
+              {drawer && (
+                <CardDrawer
+                  cardId={drawer.cardId}
+                  seed={drawer.seed}
+                  mode={drawer.mode}
+                  focusCopyId={drawer.copyId}
+                  addBinderId={drawer.binderId}
+                  openKey={drawer.key}
+                  notice={notice}
+                  onUndo={undo}
+                  onDismissNotice={() => setNotice(null)}
+                  onClose={closeDrawer}
+                  onPrev={step(-1)}
+                  onNext={step(1)}
+                  position={drawer.listIds.length > 1 ? { index: drawerIndex, total: drawer.listIds.length } : null}
+                />
+              )}
+            </div>
+          )}
+        </ScopedRows>
+      </ViewScopeProvider>
+    </PageApiContext.Provider>
+  );
+}
+
+/**
+ * What a row's controls do, built inside the page's scope so a Have files
+ * into the scoped binder or box (`useCollectionActions` reads the scope) and
+ * a Want is for it.
+ */
+function ScopedRows({
+  containers,
+  openCard,
+  run,
+  children,
+}: {
+  containers: Container[] | undefined;
+  openCard: PageApi["openCard"];
+  run: PageApi["run"];
+  children: (actions: RowActions) => ReactNode;
+}) {
+  const writes = useCollectionActions();
+  const into = useHomeName();
+  const scopedName = useScopedName();
+  const scope = useScope();
+  const wants = useWants();
   const actions: RowActions = {
     have: (card) => {
       void run(
@@ -476,129 +605,33 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     removeLine: (card, copy) => {
       void run(
         () => writes.removeCopy(copy),
-        (r) => `Removed ${shortCardName(card)}, ${lineSummary(r.removed, binders)}`,
+        (r) => `Removed ${shortCardName(card)}, ${lineSummary(r.removed, containers)}`,
       );
     },
     addAnother: (card) => openCard(card.id, { mode: "add", seed: card }),
     toggleWant: (card) => {
-      if (!demo) return;
-      const wanted = demo.state.isWanted(card.id);
-      const undoWant = demo.state.toggleWant(card.id);
+      const t = wantToggle(wants ?? NO_WANTS, card.id, scope);
       const name = shortCardName(card);
-      const forScope = scopedName ? ` for ${scopedName}` : "";
-      notify(wanted ? `${name} is off your Want List${forScope}` : `${name} is on your Want List${forScope}`, undoWant);
+      const forScope = t.binderId && scopedName ? ` for ${scopedName}` : "";
+      void run(
+        () => writes.setWant(t.cardId, t.binderId, t.on),
+        () => (t.on ? `${name} is on your Want List${forScope}` : `${name} is off your Want List`),
+      );
     },
     toggleTrade: (card, copy) => {
-      if (!demo) return;
-      const on = !(copy.demo?.binderIds.includes(demo.state.tradeBinderId) ?? false);
-      demo.state.setUpForTrade(copy.id, on);
+      const on = !copy.upForTrade;
       const name = shortCardName(card);
-      notify(on ? `${name} is up for trade` : `${name} is off the trade pile`, () => demo.state.setUpForTrade(copy.id, !on));
+      void run(
+        () => writes.setTrade(copy, on),
+        () => (on ? `${name} is up for trade` : `${name} is off the trade pile`),
+      );
     },
     open: (card, copyId, list) => openCard(card.id, { copyId, list: list?.map((c) => c.id), seed: card }),
   };
-
-  const resetDemo = () => {
-    demo?.reset();
-    notify("Back to the starting stack.");
-  };
-
-  return (
-    <PageApiContext.Provider value={pageApi}>
-      <ViewScopeProvider value={scope}>
-        <div className="text-ink">
-          <div className="space-y-4">
-            {capabilities.demoChrome && demo && <DemoBar onReset={resetDemo} onExit={onExit} />}
-            <h1 className="text-2xl font-bold">Collection</h1>
-
-            <nav aria-label="Collection sections" className="border-b border-rule">
-              <ul className="flex flex-wrap gap-x-6 gap-y-2">
-                {tabs.map((t) => {
-                  const active = t.key === tab;
-                  return (
-                    <li key={t.key}>
-                      <ParamLink
-                        // Checklists opens where you left it.
-                        search={t.key === "checklists" ? checklistsSearch() : { tab: t.key }}
-                        onClick={settleQuery}
-                        aria-current={active ? "page" : undefined}
-                        className={
-                          "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
-                          (active
-                            ? "border-selection text-neon-blue-text"
-                            : "border-transparent text-ink-3 hover:border-control hover:text-ink")
-                        }
-                      >
-                        {t.label}
-                      </ParamLink>
-                    </li>
-                  );
-                })}
-              </ul>
-            </nav>
-
-            {tab === "cards" && <MyCardsTab />}
-            {tab === "binders" && capabilities.binders && demo && (
-              // My Binders' pack tray is pinned to the bottom, where the floating
-              // toast would sit on its search box, so the tray shows the notice.
-              <MyBindersTab
-                store={demo.state}
-                openCard={openCard}
-                goToTab={goToTab}
-                notify={notify}
-                notice={notice}
-                onUndo={undo}
-                onDismissNotice={() => setNotice(null)}
-              />
-            )}
-            {tab === "checklists" && (
-              <ChecklistsTab
-                actions={actions}
-                query={query}
-                onQuery={setQuery}
-                drill={drillState}
-                cascadeKey={cascadeKey}
-                onDrill={drillInto}
-                onJump={jumpTo}
-                highlightCardId={highlightCardId}
-                selectedCardId={drawer?.cardId ?? null}
-                entity={entity}
-                onPickSuggestion={pickSuggestion}
-                onFranchise={setFranchise}
-                onClearEntity={clearEntity}
-                missingCard={jumpCard === null}
-                arrivalRef={arrival}
-              />
-            )}
-          </div>
-
-          {isPublic && capabilities.demoChrome && <DemoRail onExit={onExit} />}
-
-          {!drawer && tab !== "binders" && (
-            <NoticeLine notice={notice} onUndo={undo} onDismiss={() => setNotice(null)} floating />
-          )}
-          {drawer && (
-            <CardDrawer
-              cardId={drawer.cardId}
-              seed={drawer.seed}
-              mode={drawer.mode}
-              focusCopyId={drawer.copyId}
-              addBinderId={drawer.binderId}
-              openKey={drawer.key}
-              notice={notice}
-              onUndo={undo}
-              onDismissNotice={() => setNotice(null)}
-              onClose={closeDrawer}
-              onPrev={step(-1)}
-              onNext={step(1)}
-              position={drawer.listIds.length > 1 ? { index: drawerIndex, total: drawer.listIds.length } : null}
-            />
-          )}
-        </div>
-      </ViewScopeProvider>
-    </PageApiContext.Provider>
-  );
+  return <>{children(actions)}</>;
 }
+
+const NO_WANTS: readonly Want[] = [];
 
 /** Marks a status line whose timer waits while it is pointed at or focused (`../prototypes/p1/notice`, the pack tray). */
 const NOTICE_HOLD_ATTR = "data-notice-hold";
