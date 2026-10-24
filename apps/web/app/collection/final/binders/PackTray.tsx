@@ -7,6 +7,7 @@ import CardFace from "../../prototypes/_shared/CardFace";
 import type { Notice } from "../../prototypes/p1/notice";
 import { cardCaption, cardNumberLine } from "../captions";
 import { cardLabel } from "../data/labels";
+import { isForSale } from "../data/store";
 import type { Card, CardId, Container, ContainerId, Copy } from "../data/types";
 import { lineNames } from "../lineItems";
 import { cardDragId } from "./dnd";
@@ -50,6 +51,12 @@ import {
  * Modes, by what is open: `file` (anything you can file into), `want` (the
  * Want List: the tray adds wants, never a copy), `trade` (Up for Trade: the
  * tray flags one of your copies, which stays where it lives).
+ *
+ * `copiesByCard` is what the page lets the tray see. In `trade` mode that is
+ * box copies too (trade spans collection and inventory, NEO-359), so the
+ * owned group reads "In your binders and boxes" when there are boxes, a box
+ * place says "In Show box, for sale", and the which-copy chooser names a box
+ * copy ", for sale".
  */
 
 export interface SlotTarget {
@@ -202,6 +209,9 @@ export default function PackTray(props: PackTrayProps) {
   const tradeMode = mode === "trade";
   const mineOf = (cardId: CardId) => (copiesByCard?.[cardId] ?? []).filter((c) => c.quantity > 0);
   const owned = (cardId: CardId) => mineOf(cardId).length > 0;
+  // On the trade pile the tray sees box copies too: say so wherever it names where yours are.
+  const withBoxes = tradeMode && containers.some((c) => c.kind === "box" && !c.rule);
+  const yours = withBoxes ? "your binders and boxes" : "your binders";
 
   /** Add a new copy (or, on the Want List, want it). */
   const add = (card: Card) => {
@@ -232,7 +242,7 @@ export default function PackTray(props: PackTrayProps) {
       const card = typed.card;
       if (tradeMode) {
         if (owned(card.id)) return choose(card, "trade");
-        onSay(`${shortName(card)} isn't in your binders, so it can't go up for trade yet.`);
+        onSay(`${shortName(card)} isn't in ${withBoxes ? "your binders or boxes" : "your binders"}, so it can't go up for trade yet.`);
         return;
       }
       if (wantMode || !owned(card.id)) return add(card);
@@ -268,7 +278,7 @@ export default function PackTray(props: PackTrayProps) {
       summary =
         mine.length === 0
           ? `None of these are yours yet. Only cards you own can go up for trade.${more}`
-          : `${mine.length} in your binders. Press Up for trade on the one you'd swap.${more}`;
+          : `${mine.length} in ${yours}. Press Up for trade on the one you'd swap.${more}`;
     else if (mine.length === 0)
       summary = `None in your binders yet. ${others.length} in the catalog: drag one into a pocket, or press Slot in.${more}`;
     else
@@ -285,6 +295,8 @@ export default function PackTray(props: PackTrayProps) {
       : tradeableCopies(mineOf(choosing.card.id))
     : [];
   const choosingNames = lineNames(choosingCopies);
+  // Flagging from the trade pile can pick a copy in a box: its choice says it is for sale.
+  const choosingForSale = choosingCopies.map((c) => choosing?.verb === "trade" && isForSale(c));
   const choosingLabel = choosing
     ? choosing.verb === "move"
       ? `Which ${shortName(choosing.card)} moves to ${moveTo?.name ?? "here"}?`
@@ -376,7 +388,9 @@ export default function PackTray(props: PackTrayProps) {
                     aria-label={
                       choosing.verb === "move"
                         ? `Move ${choosingNames[i]} to ${moveTo?.name ?? "here"}`
-                        : `Put ${choosingNames[i]} up for trade`
+                        : choosingForSale[i]
+                          ? `Put ${choosingNames[i]}, the one for sale, up for trade`
+                          : `Put ${choosingNames[i]} up for trade`
                     }
                     onClick={() => {
                       if (choosing.verb === "move") onMove(choosing.card, copy);
@@ -386,6 +400,7 @@ export default function PackTray(props: PackTrayProps) {
                     className={CHOICE}
                   >
                     {choosingNames[i]}
+                    {choosingForSale[i] && ", for sale"}
                   </button>
                 ))}
                 <NeverMind onClick={() => closeChooser(true)} />
@@ -402,7 +417,7 @@ export default function PackTray(props: PackTrayProps) {
               {mine.length > 0 && (
                 <>
                   <h3 id={ownedHeadingId} className="mt-1 text-sm font-bold text-ink">
-                    In your binders
+                    {withBoxes ? "In your binders and boxes" : "In your binders"}
                   </h3>
                   <ul className="nb-owned-results" aria-labelledby={ownedHeadingId}>
                     {mine.slice(0, TRAY_LIMIT).map((card) => {

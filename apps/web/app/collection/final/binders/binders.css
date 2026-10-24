@@ -297,6 +297,20 @@
   }
 }
 
+/* ------------------------------------------------- the for-sale sticker */
+
+/*
+ * The "For sale" price sticker on a box copy (the Up for Trade pile only,
+ * NEO-359). p2 hangs it at the top right, where a graded copy's slab label
+ * and the card-number corner already sit and a phone-width pocket runs them
+ * together. Here it rides the right edge halfway down, over the photo's
+ * initials: clear of the slab (top), the serial stamp and RC tag (bottom of
+ * the photo), the copies count (bottom left) and the nameplate. Same size.
+ */
+.p2-tag.nb-sale-tag {
+  top: 40%;
+}
+
 /* ------------------------------------------------ the pocket a hunt found */
 
 /* Pink, so it never reads as the blue "filling this pocket" ring: two quick

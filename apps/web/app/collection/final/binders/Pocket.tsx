@@ -28,7 +28,8 @@ import NeonButton from "@/components/modules/NeonButton";
  * `saleTag` (the Up for Trade pile only, the one collection view that lists
  * box copies): a copy whose home is a box wears the yellow "For sale" price
  * sticker, so a trade pile mixing binder and box copies shows which is
- * inventory. The pocket's name already ends ", for sale", so the sticker is
+ * inventory. It rides the right edge halfway down (`nb-sale-tag` in
+ * binders.css), clear of the slab label, the serial stamp and the count. The pocket's name already ends ", for sale", so the sticker is
  * hidden from assistive tech.
  *
  * Every pocket holding a card raises an identity slip on hover or focus
@@ -131,7 +132,7 @@ export default function Pocket({
           </span>
         )}
         {sale && (
-          <span aria-hidden="true" className="p2-tag">
+          <span aria-hidden="true" className="p2-tag nb-sale-tag">
             For sale
           </span>
         )}

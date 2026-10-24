@@ -5,6 +5,7 @@ import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "./FinalCollectionPage";
 import { demoCard } from "./data/demoStore";
 import { cardLabel, shortCardName } from "./data/labels";
+import { shortName as trayName } from "./binders/model";
 import { initialCollectionState, SHOW_BOX_ID } from "./store";
 
 // NEO-356: the demo bar's theme switch asks Clerk who is looking (signed in here).
@@ -695,6 +696,8 @@ describe("Up for Trade is a flag: the pile lists flagged copies where they live"
     expect(boxPocket.getAttribute("aria-label")).toMatch(/, for sale, up for trade$/);
     const tag = within(boxPocket).getByText("For sale");
     expect(tag.getAttribute("aria-hidden")).toBe("true");
+    // Hung halfway down the right edge, clear of a slab label (binders.css).
+    expect(tag.classList.contains("nb-sale-tag")).toBe(true);
     const binderPocket = within(pile).getByRole("button", { name: startsWith(cardLabel(binderCard)) });
     expect(binderPocket.getAttribute("aria-label")).not.toMatch(/for sale/);
     expect(within(binderPocket).queryByText("For sale")).toBeNull();
@@ -708,6 +711,67 @@ describe("Up for Trade is a flag: the pile lists flagged copies where they live"
     expect(screen.queryByText("For sale")).toBeNull();
     const held = initialCollectionState().copies.some((c) => c.cardId === boxCard.id && c.homeId !== SHOW_BOX_ID);
     if (!held) expect(screen.queryAllByRole("button", { name: startsWith(cardLabel(boxCard)) })).toHaveLength(0);
+  });
+
+  /** A seed card held once, only in the Show box, and not up for trade. */
+  function boxOnly() {
+    const seed = initialCollectionState().copies;
+    const copy = seed.find(
+      (c) => c.homeId === SHOW_BOX_ID && !c.upForTrade && seed.filter((o) => o.cardId === c.cardId).length === 1,
+    )!;
+    return demoCard(copy.cardId)!;
+  }
+  const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  it("the trade tray lists a copy in a box, marked for sale, and flags it where it lives", async () => {
+    const card = boxOnly();
+    const short = shortCardName(card);
+    renderBinders("/collection?tab=binders&b=binder-trade-bait");
+    fireEvent.change(hunt(), { target: { value: `${card.set.name} ${card.players[0].name}` } });
+    const mine = await screen.findByRole("list", { name: "In your binders and boxes" });
+    const find = within(mine).getByRole("button", { name: new RegExp(`^Find ${escapeRe(trayName(card))} in Show box.*, for sale$`) });
+    expect(find.textContent).toMatch(/^In Show box.*, for sale$/);
+    fireEvent.click(within(mine).getByRole("button", { name: `Put ${cardLabel(card)} up for trade` }));
+    await waitFor(() => expect(statusSays(new RegExp(`^${escapeRe(short)} is up for trade\\. It stays in Show box\\.$`))).toBe(true));
+    // On the pile, wearing its sticker.
+    const pile = screen.getByRole("region", { name: "Up for Trade, open" });
+    await waitFor(() =>
+      expect(within(pile).getByRole("button", { name: new RegExp(`^${escapeRe(cardLabel(card))}.*, for sale, up for trade$`) })).toBeTruthy(),
+    );
+  });
+
+  it("the trade tray's which-copy chooser names a box copy for sale", async () => {
+    // A card with an unflagged copy in a binder and another in the Show box.
+    const seed = initialCollectionState().copies;
+    const boxed = seed.find(
+      (c) =>
+        c.homeId === SHOW_BOX_ID &&
+        !c.upForTrade &&
+        seed.some((o) => o.cardId === c.cardId && o.homeId !== SHOW_BOX_ID && !o.upForTrade),
+    )!;
+    const card = demoCard(boxed.cardId)!;
+    renderBinders("/collection?tab=binders&b=binder-trade-bait");
+    fireEvent.change(hunt(), { target: { value: `${card.set.name} ${card.players[0].name}` } });
+    const mine = await screen.findByRole("list", { name: "In your binders and boxes" });
+    fireEvent.click(within(mine).getByRole("button", { name: `Put ${cardLabel(card)} up for trade` }));
+    const chooser = screen.getByRole("group", { name: `Which ${trayName(card)} goes up for trade?` });
+    const picks = within(chooser).getAllByRole("button", { name: /^Put .* up for trade$/ });
+    const forSale = picks.filter((b) => /, the one for sale, up for trade$/.test(b.getAttribute("aria-label") ?? ""));
+    expect(forSale.length).toBe(seed.filter((c) => c.cardId === card.id && c.homeId === SHOW_BOX_ID && !c.upForTrade).length);
+    for (const b of forSale) expect(b.textContent).toMatch(/, for sale$/);
+    expect(picks.length).toBeGreaterThan(forSale.length);
+  });
+
+  it("a binder's hunt still never lists a copy in a box: that card reads as not in your binders", async () => {
+    const card = boxOnly();
+    renderBinders("/collection?tab=binders&b=binder-slab-case");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), {
+      target: { value: `${card.set.name} ${card.players[0].name}` },
+    });
+    const catalog = await screen.findByRole("list", { name: "Not in your binders yet" });
+    expect(within(catalog).getByRole("button", { name: new RegExp(`^Slot in ${escapeRe(cardLabel(card))}`) })).toBeTruthy();
+    expect(screen.queryAllByRole("button", { name: /in Show box|, for sale$/ })).toHaveLength(0);
+    expect(screen.queryByRole("list", { name: "In your binders and boxes" })).toBeNull();
   });
 
   it("flagging from the trade tray says the copy stays where it lives", async () => {

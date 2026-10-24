@@ -557,7 +557,11 @@ export function isForSale(copy: Pick<Copy, "homeKind">): boolean {
 // crosses both, because trade spans collection and inventory. A copy flagged
 // up for trade shows there wherever it lives, binder or box, and the pile's
 // spine counts it; a box copy's pocket wears a "For sale" tag so it reads as
-// inventory. The pile is the only collection view that includes box copies.
+// inventory. The pile's hunt tray ("Hunt for a card to trade") lists box
+// copies too, each place marked "for sale", so one can be flagged from there.
+// The pile and its tray are the only collection views that include box
+// copies; the other My Binders hunts (a binder, All my cards, the Want List)
+// still hide them.
 //
 // The rule lives here, once. Both stores apply it to their collection reads
 // (`useCopiesInVariant`, `useVariantCompletion`, `useSetCompletion`,
@@ -565,7 +569,8 @@ export function isForSale(copy: Pick<Copy, "homeKind">): boolean {
 // `useContainerCopies`), and never to the trade pile's (`useTradeCopies`
 // and its `useContainerCopies`); a view that reads every home (`useCopiesOf`,
 // `useCopiesOfCards`) for a collection screen passes the answer through
-// `collectionCopies` / `collectionCopiesIn` / `collectionCopiesOfCards`.
+// `collectionCopies` / `collectionCopiesIn` / `collectionCopiesOfCards`,
+// except the trade pile's hunt tray, which takes `useCopiesOfCards` as is.
 
 /** True when a copy may show on a collection screen: its home is a binder, not a box. */
 export function inCollection(copy: Pick<Copy, "homeKind">): boolean {

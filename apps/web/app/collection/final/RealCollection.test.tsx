@@ -156,7 +156,13 @@ interface Log {
 function makeStore({
   loading = false,
   capabilities = REAL_CAPABILITIES,
-}: { loading?: boolean; capabilities?: Capabilities } = {}) {
+  boxCopies = [],
+}: {
+  loading?: boolean;
+  capabilities?: Capabilities;
+  /** Copies in a box: only the every-home read (`useCopiesOfCards`) lists them, as on Convex. */
+  boxCopies?: Copy[];
+} = {}) {
   const log: Log = { variantCards: [], search: [], entity: [] };
   const undo = vi.fn(async () => {});
   const actions = {
@@ -241,7 +247,7 @@ function makeStore({
     useCopiesOfCards: (ids) =>
       ids === null
         ? undefined
-        : L(Object.fromEntries(ids.map((id) => [id, [COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id)]))),
+        : L(Object.fromEntries(ids.map((id) => [id, [COPY_OHTANI, COPY_GOLD, ...boxCopies].filter((c) => c.cardId === id)]))),
     useSetCards: (id) => (id === null ? undefined : L({ cards: CARDS.filter((c) => c.set.id === id), truncated: false })),
     // Newest first: the Gold Refractor was the last Have.
     useOwnedCards: () =>
@@ -649,6 +655,47 @@ describe("the card drawer on the real collection", () => {
     await waitFor(() =>
       expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Removed #1 Shohei Ohtani, Raw · Main")).toBe(true),
     );
+  });
+});
+
+describe("the Up for Trade pile's hunt on the real collection spans binders and boxes (NEO-359)", () => {
+  const BOX_JUDGE: Copy = { ...COPY_OHTANI, id: "copy-box-judge", cardId: JUDGE.id, homeId: "box-show", homeKind: "box", homeName: "Show box" };
+  const BOX_OHTANI: Copy = { ...COPY_OHTANI, id: "copy-box-ohtani", homeId: "box-show", homeKind: "box", homeName: "Show box" };
+  const huntFor = async (box: string, text: string) => {
+    fireEvent.change(screen.getByRole("searchbox", { name: box }), { target: { value: text } });
+    await waitFor(() => expect(screen.getAllByRole("status").some((s) => /^\d+ (in|card)|^None/.test(s.textContent ?? ""))).toBe(true));
+  };
+
+  it("lists a copy in a box, marked for sale, and flags it where it lives", async () => {
+    const store = renderAt("/collection?tab=binders&b=trade", makeStore({ boxCopies: [BOX_JUDGE] }));
+    await huntFor("Hunt for a card to trade", "judge");
+    const mine = screen.getByRole("list", { name: "In your binders and boxes" });
+    const find = within(mine).getByRole("button", { name: "Find #2 Aaron Judge in Show box, for sale" });
+    expect(find.textContent).toBe("In Show box, for sale");
+    fireEvent.click(within(mine).getByRole("button", { name: `Put ${cardLabel(JUDGE)} up for trade` }));
+    await waitFor(() => expect(store.actions.setTrade).toHaveBeenCalledWith(BOX_JUDGE, true));
+  });
+
+  it("asks which copy when a card lives in a binder and a box, naming the box's for sale", async () => {
+    const store = renderAt("/collection?tab=binders&b=trade", makeStore({ boxCopies: [BOX_OHTANI] }));
+    await huntFor("Hunt for a card to trade", "ohtani");
+    const mine = screen.getByRole("list", { name: "In your binders and boxes" });
+    fireEvent.click(within(mine).getByRole("button", { name: `Put ${cardLabel(OHTANI)} up for trade` }));
+    const chooser = screen.getByRole("group", { name: "Which #1 Shohei Ohtani goes up for trade?" });
+    const sale = within(chooser).getByRole("button", { name: /, the one for sale, up for trade$/ });
+    expect(sale.textContent).toMatch(/Show box, for sale$/);
+    expect(within(chooser).getAllByRole("button", { name: /^Put .* up for trade$/ })).toHaveLength(2);
+    fireEvent.click(sale);
+    await waitFor(() => expect(store.actions.setTrade).toHaveBeenCalledWith(BOX_OHTANI, true));
+  });
+
+  it("a binder's hunt still hides the box copy: the card reads as not in your binders", async () => {
+    renderAt("/collection?tab=binders&b=binder-rainbow", makeStore({ boxCopies: [BOX_JUDGE] }));
+    await huntFor("Hunt for one of your cards", "judge");
+    expect(screen.getByRole("list", { name: "Not in your binders yet" })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "In your binders" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "In your binders and boxes" })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /in Show box|, for sale$/ })).toHaveLength(0);
   });
 });
 

@@ -585,14 +585,15 @@ export default function MyBindersTab({
   const allHits = searchable(settled) ? search?.cards : NO_CARDS;
   const trayHits = useMemo(() => allHits?.slice(0, TRAY_COPIES), [allHits]);
   const trayIds = useMemo(() => trayHits?.map((c) => c.id) ?? null, [trayHits]);
-  // The hunt tray on Inventory moves box copies too; in My Binders it never
-  // lists a box (a card for sale is Inventory's, NEO-359).
+  // The hunt tray on Inventory moves box copies too, and on the Up for Trade
+  // pile it flags them (trade spans collection and inventory). Every other
+  // My Binders hunt never lists a box (a card for sale is Inventory's, NEO-359).
   const huntCopies = useCopiesOfCards(
     trayIds && trayIds.length ? trayIds : null,
   );
   const trayCopies = useMemo(
-    () => (inventory ? huntCopies : collectionCopiesOfCards(huntCopies)),
-    [inventory, huntCopies],
+    () => (inventory || isTrade ? huntCopies : collectionCopiesOfCards(huntCopies)),
+    [inventory, isTrade, huntCopies],
   );
   const trayTruncated =
     !!search?.truncated || (allHits?.length ?? 0) > TRAY_COPIES;
