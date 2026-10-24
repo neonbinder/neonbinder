@@ -4,6 +4,8 @@
 // is hard-coded marketing data; its depth is covered by unit tests.
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 test(
   "Binder Tracking tour: open the demo binder, switch tabs, open a binder, Back, leave",
   { tag: ["@smoke", "@home"] },
@@ -49,6 +51,12 @@ test(
     // until the real Inventory ships); no box stands among the binders.
     const special = page.getByRole("list", { name: "Special places" });
     await expect(binders.getByRole("button", { name: /, box, / })).toHaveCount(0);
+    // Copies in a box never count on a collection screen: read All my cards now,
+    // and it moves only when a card leaves or enters a box below.
+    const allSpine = special.getByRole("button", { name: /^All my cards, [\d,]+ cards?$/ });
+    await expect(allSpine).toBeVisible();
+    const allBase = Number(/All my cards, ([\d,]+) card/.exec(await allSpine.ariaSnapshot())?.[1]?.replace(/,/g, ""));
+    expect(allBase, "All my cards reads a count").toBeGreaterThanOrEqual(0);
     const door = special.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ });
     await expect(door).toBeVisible();
     await door.click();
@@ -78,31 +86,79 @@ test(
     await expect(page.getByRole("group", { name: "Not sorted into a row yet", exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, an open box" });
 
-    // The drawer: take a box card off sale, sell it back into the Show box, take it off again.
-    await open.getByRole("button", { name: /, for sale/ }).first().click();
+    // The drawer: take a box card off sale. It leaves Inventory and joins the
+    // collection (All my cards); selling it again takes it back out of there.
+    const boxCard = open.getByRole("button", { name: /, for sale/ }).first();
+    const boxCardName = /button "([^"]+)"/.exec(await boxCard.ariaSnapshot())?.[1] ?? "";
+    // "<card label>[, N copies][, slab][, serial][, for sale]": the label is what comes first.
+    const label = boxCardName.split(/, \d+ copies|, for sale/)[0];
+    const copiesTaken = Number(/, (\d+) copies/.exec(boxCardName)?.[1] ?? "1");
+    expect(label, `a box card named like a card (read: ${boxCardName})`).toMatch(/#/);
+    await boxCard.click();
     const drawer = page.getByRole("dialog");
     const takeOff = drawer.getByRole("button", { name: /^Take .*, off sale$/ }).first();
+    // The line's own name ("#N Player, Raw ×3"), for the Sell button it becomes.
+    const line = /^Take (.*), off sale$/.exec(/button "([^"]+)"/.exec(await takeOff.ariaSnapshot())?.[1] ?? "")?.[1] ?? "";
+    expect(line, "a Take off sale button naming its line").not.toBe("");
     await takeOff.click();
     const offForm = drawer.getByRole("form", { name: / off sale$/ });
     await expect(offForm.getByRole("combobox", { name: "Back into" })).toBeVisible();
     await offForm.getByRole("button", { name: /^Take (it|\d+) off sale$/ }).click();
     await expect(drawer.getByRole("status").filter({ hasText: /^Took .* off sale\./ })).toBeVisible();
+    // The drawer rides on the URL: closing it is a Back step onto the open box.
+    await drawer.getByRole("button", { name: "Close card detail" }).click();
+    await expect(drawer).toBeHidden();
+    await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
 
-    await drawer.getByRole("button", { name: /^Sell / }).first().click();
+    // My Binders: All my cards now counts the card, and shows it, with no sale
+    // chip, no sale tag and no sale pocket anywhere.
+    await tabs.getByRole("link", { name: "My Binders" }).click();
+    await expect(page).toHaveURL(/[?&]tab=binders/);
+    const allNow = special.getByRole("button", { name: `All my cards, ${allBase + copiesTaken} ${allBase + copiesTaken === 1 ? "card" : "cards"}`, exact: true });
+    await expect(allNow).toBeVisible();
+    await allNow.click();
+    await expect(page).toHaveURL(/[?&]all=1/);
+    await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
+    await expect(page.getByText("Every card in your binders, one pocket per copy.").first()).toBeVisible();
+    const only = page.getByRole("group", { name: "Only show", exact: true });
+    await expect(only.getByRole("button", { name: "Graded" })).toBeVisible();
+    await expect(only.getByRole("button", { name: "Rookies" })).toBeVisible();
+    await expect(only.getByRole("button", { name: /for sale/i })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /, for sale/ })).toHaveCount(0);
+    // The card is among the pockets (the pile turns in pages: a bounded walk to its page).
+    const pile = page.getByRole("region", { name: "All my cards, open", exact: true });
+    const pocket = pile.getByRole("button", { name: new RegExp(`^${escapeRegExp(label)}`) }).first();
+    const turn = page.getByRole("button", { name: /^Next pages?$/ });
+    for (let i = 0; i < 12; i++) {
+      await expect(pocket.or(turn).first()).toBeVisible();
+      if (await pocket.isVisible()) break;
+      await turn.click();
+    }
+    await expect(pocket).toBeVisible();
+    await expectAccessible(page, { label: "Collection demo, All my cards without a for-sale card" });
+
+    // Sell it again from its pocket: the Sell panel, then it is gone from the pile.
+    await pocket.click();
+    await drawer.getByRole("button", { name: new RegExp(`^Sell ${escapeRegExp(line)}`) }).first().click();
     const sellForm = drawer.getByRole("form", { name: /^Sell / });
     await sellForm.getByRole("combobox", { name: "Into which box" }).selectOption({ label: "Show box" });
     await expectAccessible(page, { within: sellForm, label: "Collection demo, the drawer's Sell panel" });
     await sellForm.getByRole("button", { name: /^Put (it|\d+) up for sale$/ }).click();
     await expect(drawer.getByRole("status").filter({ hasText: /up for sale in Show box/ })).toBeVisible();
     await expect(drawer.getByText(/For sale · Show box/).first()).toBeVisible();
-
-    await drawer.getByRole("button", { name: /^Take .*, off sale$/ }).first().click();
-    await drawer.getByRole("form", { name: / off sale$/ }).getByRole("button", { name: /^Take (it|\d+) off sale$/ }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: /^Took .* off sale\./ })).toBeVisible();
-
-    // The drawer rides on the URL: closing it is a Back step onto the open box.
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
+    await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
+    await expect(pocket).toHaveCount(0);
+
+    // Back to the shelf: All my cards is back to where it started.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=binders/);
+    await expect(page).not.toHaveURL(/[?&]all=1/);
+    await expect(allSpine).toBeVisible();
+    await expect(special.getByRole("button", { name: `All my cards, ${allBase} ${allBase === 1 ? "card" : "cards"}`, exact: true })).toBeVisible();
+    // Back again: the open box, then the Inventory shelf.
+    await page.goBack();
     await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
     await page.goBack();
     await expect(page).not.toHaveURL(/[?&]b=/);
