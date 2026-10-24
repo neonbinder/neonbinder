@@ -54,6 +54,11 @@ export const resetMyTestState = mutation({
     publicProfiles: v.number(),
     userProfiles: v.number(),
     prizePool: v.number(),
+    // NEO-358: the caller's collection (copies before the containers they
+    // live in).
+    collectionCopies: v.number(),
+    collectionContainers: v.number(),
+    collectionBuildingSets: v.number(),
   }),
   handler: async (ctx) => {
     // Fail closed in production: the enabling flag is unset there.
@@ -90,10 +95,39 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
+    // NEO-358 — the caller's collection. Copies first: every copy names a
+    // container as its home, so the containers go after them.
+    const collectionCopies = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_and_card", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of collectionCopies) {
+      await ctx.db.delete(row._id);
+    }
+
+    const collectionContainers = await ctx.db
+      .query("collectionContainers")
+      .withIndex("by_owner_and_system", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of collectionContainers) {
+      await ctx.db.delete(row._id);
+    }
+
+    const collectionBuildingSets = await ctx.db
+      .query("collectionBuildingSets")
+      .withIndex("by_owner_and_set", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of collectionBuildingSets) {
+      await ctx.db.delete(row._id);
+    }
+
     return {
       publicProfiles: publicProfiles.length,
       userProfiles: userProfiles.length,
       prizePool: prizePool.length,
+      collectionCopies: collectionCopies.length,
+      collectionContainers: collectionContainers.length,
+      collectionBuildingSets: collectionBuildingSets.length,
     };
   },
 });

@@ -177,6 +177,47 @@ export async function recentCardIdsForPlayer(
   return rows.map((row) => row.cardChecklistId);
 }
 
+/**
+ * NEO-358 — one page of a player's links across every sport, in index order
+ * (the card's sport, then when the link was made), for the collector's
+ * "every card of this player" list (`collectionCatalog.cardsByPlayer`).
+ *
+ * A READ that lives here for the same reason as `recentCardIdsForPlayer`:
+ * this module stays the one place outside `players.ts` that queries the
+ * index. `after` is the last row of the previous page (its sport and
+ * `_creationTime`); null starts at the beginning. Returns up to `limit` rows.
+ */
+export async function cardPlayerLinkPage(
+  ctx: Pick<QueryCtx, "db">,
+  playerId: Id<"players">,
+  after: { sportId: Id<"selectorOptions">; creationTime: number } | null,
+  limit: number,
+): Promise<Array<Doc<"cardPlayerLinks">>> {
+  if (!after) {
+    return await ctx.db
+      .query("cardPlayerLinks")
+      .withIndex("by_player_and_sport", (q) => q.eq("playerId", playerId))
+      .take(limit);
+  }
+  const rest = await ctx.db
+    .query("cardPlayerLinks")
+    .withIndex("by_player_and_sport", (q) =>
+      q
+        .eq("playerId", playerId)
+        .eq("sportId", after.sportId)
+        .gt("_creationTime", after.creationTime),
+    )
+    .take(limit);
+  if (rest.length >= limit) return rest;
+  const next = await ctx.db
+    .query("cardPlayerLinks")
+    .withIndex("by_player_and_sport", (q) =>
+      q.eq("playerId", playerId).gt("sportId", after.sportId),
+    )
+    .take(limit - rest.length);
+  return rest.concat(next);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // The backfill
 // ───────────────────────────────────────────────────────────────────────────

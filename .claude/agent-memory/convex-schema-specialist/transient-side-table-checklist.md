@@ -46,3 +46,8 @@ count blocks were again what failed first.
 
 **How to apply:** any plan that adds a side table keyed on `selectorOptions`
 lists all five in its migration steps. Related: [[staging-tables-scope-per-operator]].
+
+**NEO-358 (2026-10-23), two more places.**
+- `apps/web/scripts/reference-seed/cli.mjs` `SELECTOR_DEPENDANT_TABLES`: any table that holds a `selectorOptions` id belongs here (`cli.test.mjs` checks it), so a reference-seed load knows what it would orphan.
+- **Per-user tables** (keyed on the Clerk subject, e.g. collector copies) also join `resetMyTestState` in `convex/testing.ts`, not only the global drain. Keep them out of `REFERENCE_SEED_TABLES`.
+See [[per-card-derived-state-hook-points]].

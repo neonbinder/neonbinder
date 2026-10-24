@@ -49,3 +49,5 @@ Related: [[vercel-build-runs-convex-typecheck]] — the Vercel build DOES run th
 Convex typecheck (`convex/tsconfig.json`, which excludes `*.test.ts`), so
 codegen-pending errors in non-test Convex modules will fail that build. They must be
 resolved before push, not left for CI to find.
+
+**NEO-358 (2026-10-23):** to typecheck client code against a module codegen hasn't listed yet, a temporary shim using `ApiFromModules<{ collection: typeof import("../convex/collection") }>` gives real types for a one-off `tsc` run; delete the shim afterwards. When a deployment is configured, `npx convex codegen --typecheck disable` from `apps/web` regenerates `api.d.ts` properly.

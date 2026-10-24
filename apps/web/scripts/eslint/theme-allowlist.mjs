@@ -41,14 +41,10 @@ export const SHARED_PROTOTYPE_FILES = [
   "app/collection/prototypes/_shared/search.ts",
   "app/collection/prototypes/_shared/types.ts",
   "app/collection/prototypes/_shared/usePrototypeStore.ts",
-  "app/collection/prototypes/p1/Cascade.tsx",
-  "app/collection/prototypes/p1/ChecklistRow.tsx",
   "app/collection/prototypes/p1/Overlay.tsx",
-  "app/collection/prototypes/p1/SleeveStrip.tsx",
   "app/collection/prototypes/p1/StaticColumn.tsx",
   "app/collection/prototypes/p1/drill.ts",
   "app/collection/prototypes/p1/notice.tsx",
-  "app/collection/prototypes/p1/range.ts",
   "app/collection/prototypes/p1/ui.ts",
   "app/collection/prototypes/p2/Modal.tsx",
   "app/collection/prototypes/p2/hooks.ts",
@@ -57,7 +53,6 @@ export const SHARED_PROTOTYPE_FILES = [
   "app/collection/prototypes/p3/Dialog.tsx",
   "app/collection/prototypes/p3/classes.ts",
   "app/collection/prototypes/p3/hooks.ts",
-  "app/collection/prototypes/p3/wallModel.ts",
 ];
 
 const SHARED_SET = new Set(SHARED_PROTOTYPE_FILES);

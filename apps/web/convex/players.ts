@@ -584,6 +584,27 @@ export async function pagePlayerAliasRows(
   return await ctx.db.query("playerAliases").paginate({ cursor, numItems });
 }
 
+/**
+ * NEO-358 — `playerAliases` rows whose key STARTS WITH `keyPrefix` (exact
+ * matches included), across every sport, READ-ONLY, for the collector's
+ * player suggestions ("Doc Gooden" offers Dwight Gooden). Here rather than in
+ * `convex/collectionCatalog.ts` for the same reason as `pagePlayerAliasRows`.
+ * `keyPrefix` is a `normalizePlayerName` key; one indexed range, capped.
+ */
+export async function playerAliasRowsByPrefix(
+  ctx: Pick<QueryCtx, "db">,
+  keyPrefix: string,
+  limit: number,
+): Promise<Array<Doc<"playerAliases">>> {
+  if (!keyPrefix) return [];
+  return await ctx.db
+    .query("playerAliases")
+    .withIndex("by_alias_normalized_and_sport_id", (q) =>
+      q.gte("aliasNormalized", keyPrefix).lt("aliasNormalized", `${keyPrefix}\uffff`),
+    )
+    .take(limit);
+}
+
 /** NEO-322 — see `pagePlayerAliasRows`. */
 export async function pagePlayerSportRows(
   ctx: QueryCtx | MutationCtx,

@@ -931,6 +931,15 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetTeamAliasesBatch",
     "resetFranchisesBatch",
     "resetLeaguesBatch",
+    // NEO-306 / NEO-358 — in the loop, and pinned here so none can turn public
+    // unnoticed: the pending SL set reviews, the sync notices, the derived
+    // team index, and every collector's copies, binders and building sets.
+    "resetSlSetReviewsBatch",
+    "resetSelectorSyncStatusBatch",
+    "resetCardTeamLinksBatch",
+    "resetCollectionCopiesBatch",
+    "resetCollectionContainersBatch",
+    "resetCollectionBuildingSetsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —
     // a CLI run has no identity, so one would refuse every legitimate call
@@ -2125,5 +2134,116 @@ describe("NEO-356: the theme preference write requires a signed-in caller, and t
     await t.withIdentity(SIGNED_IN).mutation(api.userProfile.setThemePreference, { theme: "light" });
     expect(await t.withIdentity(SIGNED_IN).query(api.userProfile.getThemePreference, {})).toBe("light");
     expect(await t.query(api.userProfile.getThemePreference, {})).toBeNull();
+  });
+});
+
+/**
+ * NEO-358 — the real collection. Every catalog read and every collection
+ * function is public (the signed-in `/collection` calls them) and SIGNED-IN,
+ * never admin: the catalog is shared reference data every collector browses,
+ * and a collector's copies are their own (`collection.ts` scopes every read
+ * and write to the caller; `collection.test.ts` covers the ownership
+ * refusals). This pins the gate both ways: an anonymous caller is refused,
+ * and a signed-in NON-admin gets through.
+ */
+describe("NEO-358: the collection and its catalog reads require a signed-in caller, not an admin", () => {
+  const NOT_AN_ID = "not-an-id";
+  const SIGNED_IN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]
+  > = [
+    ["collectionCatalog.drill", (t) => t.query(api.collectionCatalog.drill, {})],
+    ["collectionCatalog.setPath", (t) => t.query(api.collectionCatalog.setPath, { setId: NOT_AN_ID })],
+    ["collectionCatalog.setSummary", (t) => t.query(api.collectionCatalog.setSummary, { setId: NOT_AN_ID })],
+    ["collectionCatalog.variantCards", (t) => t.query(api.collectionCatalog.variantCards, { variantId: NOT_AN_ID })],
+    ["collectionCatalog.card", (t) => t.query(api.collectionCatalog.card, { cardId: NOT_AN_ID })],
+    ["collectionCatalog.cards", (t) => t.query(api.collectionCatalog.cards, { cardIds: [] })],
+    ["collectionCatalog.suggest", (t) => t.query(api.collectionCatalog.suggest, { q: "Gooden" })],
+    ["collectionCatalog.search", (t) => t.query(api.collectionCatalog.search, { q: "Gooden" })],
+    ["collectionCatalog.cardsByPlayer", (t) => t.query(api.collectionCatalog.cardsByPlayer, { playerId: NOT_AN_ID })],
+    ["collectionCatalog.cardsByTeam", (t) => t.query(api.collectionCatalog.cardsByTeam, { teamId: NOT_AN_ID })],
+    ["collection.summary", (t) => t.query(api.collection.summary, {})],
+    [
+      "collection.ownedCards",
+      (t) => t.query(api.collection.ownedCards, { paginationOpts: { numItems: 10, cursor: null } }),
+    ],
+    ["collection.copiesOf", (t) => t.query(api.collection.copiesOf, { cardId: NOT_AN_ID })],
+    ["collection.copiesInVariant", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID })],
+    ["collection.variantCompletion", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID })],
+    ["collection.setCompletion", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID })],
+    ["collection.buildingSets", (t) => t.query(api.collection.buildingSets, {})],
+    ["collection.addHaves", (t) => t.mutation(api.collection.addHaves, { cardIds: [] })],
+    ["collection.removeCopies", (t) => t.mutation(api.collection.removeCopies, { copyIds: [] })],
+  ];
+
+  test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(SIGNED_IN_GATED)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+
+  // The writes that need a real row to get past their argument validators are
+  // pinned anonymously here against seeded ids; their signed-in behaviour,
+  // including every ownership refusal, is collection.test.ts's.
+  test("the id-taking collection writes reject an anonymous caller and write nothing", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Topps Chrome",
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const cardId = await ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      });
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "binder",
+        system: "main",
+        name: "Main",
+        lastUpdated: 0,
+      });
+      const copyId = await ctx.db.insert("collectionCopies", {
+        ownerId: "someone",
+        cardId,
+        variantId,
+        setId,
+        homeId,
+        quantity: 1,
+        lastUpdated: 0,
+      });
+      return { setId, cardId, copyId };
+    });
+    const calls = [
+      () => t.mutation(api.collection.addHave, { cardId: ids.cardId }),
+      () => t.mutation(api.collection.addLineItem, { cardId: ids.cardId, details: { quantity: 1 } }),
+      () => t.mutation(api.collection.updateCopy, { copyId: ids.copyId, details: { quantity: 2 } }),
+      () => t.mutation(api.collection.removeCopy, { copyId: ids.copyId }),
+      () => t.mutation(api.collection.restoreCopy, { cardId: ids.cardId, details: { quantity: 1 } }),
+      () => t.mutation(api.collection.setBuilding, { setId: ids.setId, building: true }),
+    ];
+    for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
+    const after = await t.run(async (ctx) => ({
+      copies: await ctx.db.query("collectionCopies").collect(),
+      building: await ctx.db.query("collectionBuildingSets").collect(),
+    }));
+    expect(after.copies.map((c) => c.quantity)).toEqual([1]);
+    expect(after.building).toEqual([]);
   });
 });

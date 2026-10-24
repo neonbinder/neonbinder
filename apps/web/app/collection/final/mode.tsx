@@ -12,11 +12,10 @@ import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from 
 import type { BinderSelection, CollectionBinder } from "./store";
 
 /**
- * NEO-350 — where the collection demo is running, and what that changes.
- *
- * The same page ships twice, and it is a demo both times: the cards are
- * fake, share links use a neutral `@you` handle (`DEMO_HANDLE`) and say they
- * are examples, a card request stays on the page, and a demo bar says so.
+ * NEO-350 / NEO-358 — where the collection page is running, and what that
+ * changes. Which STORE it runs on is a separate question (`./data/store`):
+ * signed-in `/collection` is the real collection on the Convex store, the
+ * public demo is fixture data on the demo store.
  *
  * - `"app"`: `/collection`, inside the signed-in binder shell. Links go to
  *   the real tools; "Print label" opens the Print Shop in a new tab, so the
@@ -42,8 +41,10 @@ import type { BinderSelection, CollectionBinder } from "./store";
  * `ParamLink`), each Checklists drill step included. In-view tweaks replace
  * the current entry instead (`useReplaceParams`): the search box's `q` as
  * you type, a jump that only rings another row of the checklist on screen,
- * the binder-scope picker. Page turns, filters and the card drawer stay in
- * local state and touch no URL. Public mode also keeps its own params on
+ * the binder-scope picker. Page turns and filters stay in local state and
+ * touch no URL. The card drawer opens ON a view: `detail=<cardId>` (and
+ * `mode=add`), pushed (`usePushParams`) so Back closes it, its ↑ ↓ replacing
+ * the card in place (`./drawerParams`). Public mode also keeps its own params on
  * every view URL (`keepParams`, the marketing page's `demo=on`) and counts
  * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
  * tour" can return to the entry the visitor came from in one step.
@@ -56,7 +57,7 @@ import type { BinderSelection, CollectionBinder } from "./store";
  * unknown or deleted binder id reads as All, and an unknown id anywhere else
  * falls back the same quiet way: to the deepest level that still makes sense.
  *
- * Both modes are hard-coded data and never reach Convex or Clerk.
+ * Public mode is always the demo store and never reaches Convex or Clerk.
  */
 
 export type CollectionMode = "app" | "public";
@@ -245,6 +246,30 @@ export function useReplaceParams(): (update: (params: URLSearchParams) => void) 
       void navigate({ search }, { replace: true, state: latestRef.current.state });
     },
     [navigate, latestRef],
+  );
+}
+
+/**
+ * Opens something ON the current view (the card drawer): `update` edits a
+ * copy of the newest URL the page has asked for, and the result is PUSHED, so
+ * Back steps out of it to the view underneath. The mode's kept params and the
+ * scope carry on as for any view change; `state` rides on the new entry next
+ * to the demo's depth count.
+ */
+export function usePushParams(): (update: (params: URLSearchParams) => void, state?: Record<string, unknown>) => void {
+  const navigate = useNavigate();
+  const target = useViewTarget();
+  const latestRef = useLatestEntry();
+  return useCallback(
+    (update, extra) => {
+      const next = new URLSearchParams(latestRef.current.search);
+      update(next);
+      const t = target(next);
+      const state = extra ? { ...((t.state ?? {}) as object), ...extra } : t.state;
+      latestRef.current = { search: t.search, state, scope: t.scope };
+      void navigate({ search: t.search }, { state });
+    },
+    [navigate, target, latestRef],
   );
 }
 

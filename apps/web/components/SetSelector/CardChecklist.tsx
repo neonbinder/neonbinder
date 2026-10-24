@@ -7,6 +7,7 @@ import type { GenericId } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardChecklistItem from "./CardChecklistItem";
 import { compareCardNumbers } from "@/lib/cards/card-number";
+import { keptCollectedNote } from "@/lib/collection/collectors";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
@@ -893,6 +894,11 @@ export default function CardChecklist({
       setSyncNotice(text === null ? null : { text, tone });
     },
     [setSyncNotice],
+  );
+  /** NEO-358 — a row's delete or unlink the server refused, said here. */
+  const onRowDeleteFailed = useCallback(
+    (message: string) => setSyncMessage(message, "error"),
+    [setSyncMessage],
   );
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form's TEXT fields are UNCONTROLLED (refs, read at
@@ -2120,6 +2126,17 @@ export default function CardChecklist({
       const notes: string[] = [];
       if (result.operatorDeleted) {
         notes.push(`Deleted ${result.operatorDeleted}.`);
+      }
+      // NEO-358 — a delete the server refused because a collector owns a copy.
+      // It says how many collectors are in the way (a floor, "5+", when the
+      // server's bounded count could not see them all).
+      if (result.collectedDeleteSkipped) {
+        notes.push(
+          keptCollectedNote(result.collectedDeleteSkipped, {
+            collectors: result.collectedDeleteCollectors ?? 1,
+            atLeast: result.collectedDeleteCollectorsAtLeast === true,
+          }),
+        );
       }
       if (result.staleDecisions) {
         notes.push(
@@ -3542,6 +3559,11 @@ export default function CardChecklist({
                   isVariation={row.isVariation}
                   isExpanded={row.expanded}
                   parentCardNumber={row.parentCardNumber}
+                  // NEO-358: a refused delete ("Hold up! 3 collectors have
+                  // this card…") is said in the notice banner, the
+                  // checklist's one live region for results, as an alert.
+                  // The row puts focus back on its own Del control.
+                  onDeleteFailed={onRowDeleteFailed}
                   // NEO-343: withdrawn while searching — every match is
                   // already listed open (see `displayRows`), so a toggle
                   // would change nothing.

@@ -37,3 +37,6 @@
 - [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
 - [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label
+- [E2E seed carries no cards](reference_e2e_seed_carries_no_cards.md) — bundle is 8 reference tables; preview cards come from setup.spec through insertCardRow, so derived fields need no backfill
+- [Pin tests need a bypass plant](reference_pin_tests_need_a_bypass_plant.md) — *.pin tests scan source; a planted throw leaves them green, plant a forbidden call instead
+- [convex-test t.run rejects undefined](reference_convex_test_t_run_rejects_undefined.md) — an array holding undefined throws; map to null

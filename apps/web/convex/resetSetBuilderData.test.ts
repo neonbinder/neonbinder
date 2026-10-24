@@ -199,6 +199,62 @@ async function seedEveryDrainedTable(
       });
     }
 
+    // cardTeamLinks: 9 (NEO-358) — the derived team → cards index. Hand
+    // inserted: the reset drains the table, it does not care how rows got there.
+    for (let i = 0; i < 9; i += 1) {
+      await ctx.db.insert("cardTeamLinks", {
+        cardChecklistId: cardIds[i % cardIds.length],
+        teamId,
+      });
+    }
+
+    // collectionCopies: 10, collectionContainers: 1 and
+    // collectionBuildingSets: 11 (NEO-358) — a collector's copies, the binder
+    // they live in, and "Sets I'm building". The global reset drains all three.
+    const homeId = await ctx.db.insert("collectionContainers", {
+      ownerId: "collector_1",
+      kind: "binder",
+      system: "main",
+      name: "Main",
+      lastUpdated: NOW,
+    });
+    for (let i = 0; i < 10; i += 1) {
+      await ctx.db.insert("collectionCopies", {
+        ownerId: "collector_1",
+        cardId: cardIds[i % cardIds.length],
+        variantId,
+        setId: sportId,
+        homeId,
+        quantity: 1,
+        lastUpdated: NOW,
+      });
+    }
+    for (let i = 0; i < 11; i += 1) {
+      await ctx.db.insert("collectionBuildingSets", {
+        ownerId: `collector_${i}`,
+        setId: sportId,
+        lastUpdated: NOW,
+      });
+    }
+
+    // selectorSyncStatus: 3 (NEO-358) — transient per-column sync notices: a
+    // root (sport) column's failure, which is exactly the one that survived a
+    // dev reset before this table was drained, and two under the sport.
+    await ctx.db.insert("selectorSyncStatus", {
+      level: "sport",
+      status: "error",
+      message: "SportLots could not be reached",
+      updatedAt: NOW,
+    });
+    for (const level of ["year", "manufacturer"] as const) {
+      await ctx.db.insert("selectorSyncStatus", {
+        level,
+        parentId: sportId,
+        status: "done",
+        updatedAt: NOW,
+      });
+    }
+
     // slSetReviews: 2 (NEO-306) — pending SportLots set reviews. The ids
     // only need to be selectorOptions ids for the delete loop.
     for (const label of ["Gold", "Blue"]) {
@@ -223,6 +279,15 @@ const runReset = (t: ReturnType<typeof convexTest>) =>
 async function tableCounts(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ({
     slSetReviews: (await ctx.db.query("slSetReviews").collect()).length,
+    selectorSyncStatus: (await ctx.db.query("selectorSyncStatus").collect())
+      .length,
+    collectionCopies: (await ctx.db.query("collectionCopies").collect()).length,
+    collectionContainers: (await ctx.db.query("collectionContainers").collect())
+      .length,
+    collectionBuildingSets: (
+      await ctx.db.query("collectionBuildingSets").collect()
+    ).length,
+    cardTeamLinks: (await ctx.db.query("cardTeamLinks").collect()).length,
     selectorOptions: (await ctx.db.query("selectorOptions").collect()).length,
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
     cardCrossListings: (await ctx.db.query("cardCrossListings").collect())
@@ -254,6 +319,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     // guard at all, so assert the data is still there rather than just the throw.
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
+      selectorSyncStatus: 3,
+      collectionCopies: 10,
+      collectionContainers: 1,
+      collectionBuildingSets: 11,
+      cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -278,6 +348,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
+      selectorSyncStatus: 3,
+      collectionCopies: 10,
+      collectionContainers: 1,
+      collectionBuildingSets: 11,
+      cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -299,8 +374,13 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(result).toEqual({
       slSetReviewsDeleted: 2,
+      selectorSyncStatusDeleted: 3,
+      collectionCopiesDeleted: 10,
+      collectionContainersDeleted: 1,
+      collectionBuildingSetsDeleted: 11,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
+      cardTeamLinksDeleted: 9,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
@@ -317,6 +397,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 0,
+      selectorSyncStatus: 0,
+      collectionCopies: 0,
+      collectionContainers: 0,
+      collectionBuildingSets: 0,
+      cardTeamLinks: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
@@ -338,6 +423,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
    */
   test.each([
     ["resetSlSetReviewsBatch", "slSetReviews"],
+    ["resetSelectorSyncStatusBatch", "selectorSyncStatus"],
+    ["resetCollectionCopiesBatch", "collectionCopies"],
+    ["resetCollectionContainersBatch", "collectionContainers"],
+    ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
+    ["resetCardTeamLinksBatch", "cardTeamLinks"],
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
@@ -364,6 +454,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
       expect(await tableCounts(t)).toEqual({
         slSetReviews: 2,
+        selectorSyncStatus: 3,
+        collectionCopies: 10,
+        collectionContainers: 1,
+        collectionBuildingSets: 11,
+        cardTeamLinks: 9,
         selectorOptions: 3,
         cardChecklist: 5,
         cardCrossListings: 6,
@@ -385,8 +480,13 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await runReset(t)).toEqual({
       slSetReviewsDeleted: 0,
+      selectorSyncStatusDeleted: 0,
+      collectionCopiesDeleted: 0,
+      collectionContainersDeleted: 0,
+      collectionBuildingSetsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
+      cardTeamLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
@@ -448,8 +548,13 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     let complete = false;
     const totals = {
       slSetReviewsDeleted: 0,
+      selectorSyncStatusDeleted: 0,
+      collectionCopiesDeleted: 0,
+      collectionContainersDeleted: 0,
+      collectionBuildingSetsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
+      cardTeamLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
@@ -478,8 +583,13 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // double-counts or skips a table.
     expect(totals).toEqual({
       slSetReviewsDeleted: 2,
+      selectorSyncStatusDeleted: 3,
+      collectionCopiesDeleted: 10,
+      collectionContainersDeleted: 1,
+      collectionBuildingSetsDeleted: 11,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
+      cardTeamLinksDeleted: 9,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
@@ -494,6 +604,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     });
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 0,
+      selectorSyncStatus: 0,
+      collectionCopies: 0,
+      collectionContainers: 0,
+      collectionBuildingSets: 0,
+      cardTeamLinks: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
@@ -518,6 +633,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
 
     expect(await tableCounts(t)).toEqual({
       slSetReviews: 2,
+      selectorSyncStatus: 3,
+      collectionCopies: 10,
+      collectionContainers: 1,
+      collectionBuildingSets: 11,
+      cardTeamLinks: 9,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -886,6 +1006,11 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
   ] as const;
   const DEPENDANTS = [
     "slSetReviews",
+    // NEO-358 — sync notices name a selector row (parentId).
+    "selectorSyncStatus",
+    // NEO-358 — a collector's copies and building sets hold selectorOptions ids.
+    "collectionCopies",
+    "collectionBuildingSets",
     "cardPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
@@ -973,8 +1098,13 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
       slSetReviewsDeleted: 2,
+      selectorSyncStatusDeleted: 3,
+      collectionCopiesDeleted: 10,
+      collectionContainersDeleted: 1,
+      collectionBuildingSetsDeleted: 11,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
+      cardTeamLinksDeleted: 9,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
@@ -1040,10 +1170,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     }
 
     expect(results.at(-1)!.complete).toBe(true);
-    // 6 dependants hold rows, so it takes at most 6 passes, never the 14 the
-    // unscoped reset needs; a loop still counting skipped tables would not
-    // finish early here.
-    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length);
+    // Every dependant holds rows, plus `cardTeamLinks` and
+    // `collectionContainers` (NEO-358: drained in both scopes, but neither
+    // holds a selectorOptions id, so neither is a dependant), so it takes at
+    // most that many passes, never the 18 the unscoped reset needs; a loop
+    // still counting skipped tables would not finish early here.
+    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length + 2);
   });
 
   test("scope \"all\" drains every table, exactly like omitting scope", async () => {

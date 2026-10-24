@@ -1,63 +1,51 @@
-import { useEffect, useRef, useState } from "react";
-import { ChevronLeftIcon, PrinterIcon } from "@heroicons/react/24/outline";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { ChevronDownIcon, ChevronLeftIcon, PrinterIcon } from "@heroicons/react/24/outline";
 import { StarIcon } from "@heroicons/react/20/solid";
-import {
-  getCard,
-  getSet,
-  leadTeam,
-  playerNames,
-  setLabel,
-  teamTextColor,
-  todayIso,
-  variantLabel,
-  type SetId,
-} from "../../prototypes/_shared/data";
+import NeonButton from "@/components/modules/NeonButton";
 import Chip from "../../prototypes/p3/Chip";
 import { FOCUS, PRIMARY_BUTTON, QUIET_BUTTON } from "../../prototypes/p3/classes";
-import { printRunText, variantFilterOf, variantKey } from "../../prototypes/p3/wallModel";
 import { useLiverySurface } from "../../prototypes/p1/ui";
+import { isComplete, totalKnown } from "../catalog/format";
+import { copiesByCard } from "../catalog/home";
+import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
+import { playerNames, setLabel, teamTextColor, variantLabel } from "../data/labels";
+import {
+  todayIso,
+  useBuildingSets,
+  useCollectionStore,
+  useCopiesInVariant,
+  useSetSummary,
+  useVariantCards,
+  useVariantCompletion,
+} from "../data/store";
+import type { SetRef, Variant } from "../data/types";
 import { useMyCards } from "./context";
 import { wantedFirst } from "./model";
-import NeonButton from "@/components/modules/NeonButton";
+import { baseOf } from "./Scoreboard";
 
 /**
- * NEO-350 — "Take it to the show": what's missing from the sets on the board,
- * compact enough for a phone and printable on one sheet. Cards on your Want
- * List lead each row, starred. At the show, "Got it" lights the card up on
- * the wall and files it in the target binder (with Undo).
+ * NEO-350 / NEO-358 — "Take it to the show": what's missing from the sets on
+ * the board, compact enough for a phone and printable on one sheet. Each set
+ * lists its checklists; Base is open, the rest say how many you need and
+ * open on request ("Open every checklist" opens them all before you print).
+ * At the show, "Got it" lights the card up on the wall (with Undo).
  */
-export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; focusOnMount: boolean }) {
+export default function NeedList({ onlySet, focusOnMount }: { onlySet?: string; focusOnMount: boolean }) {
   const api = useMyCards();
-  const page = useLiverySurface("surface");
-  const { store, scopedName } = api;
-  const building = store.state.buildingSetIds;
-  const [chosen, setChosen] = useState<SetId[]>(() => (onlySet ? [onlySet] : building));
+  const building = useBuildingSets();
   const heading = useRef<HTMLHeadingElement>(null);
   const listRoot = useRef<HTMLDivElement>(null);
+  const [chosen, setChosen] = useState<string[] | null>(onlySet ? [onlySet] : null);
+  const [openAll, setOpenAll] = useState(false);
 
   useEffect(() => {
     if (focusOnMount) heading.current?.focus();
   }, [focusOnMount]);
 
-  const sets = building.filter((id) => chosen.includes(id));
-  const missingIn = (id: SetId) => store.completionInScope(id).missing;
-  const total = sets.reduce((n, id) => n + missingIn(id).length, 0);
-  const wantedCount = sets.reduce((n, id) => n + missingIn(id).filter((c) => store.isWanted(c.id)).length, 0);
-
-  function gotIt(cardId: string) {
-    // Keep the keyboard where it was: the next "Got it" button, else the heading.
-    const buttons = [...(listRoot.current?.querySelectorAll<HTMLButtonElement>("button[data-need]") ?? [])];
-    const i = buttons.findIndex((b) => b.dataset.need === cardId);
-    const next = buttons[i + 1] ?? buttons[i - 1];
-    const nextKey = next?.dataset.need;
-    api.addOne(getCard(cardId));
-    requestAnimationFrame(() => {
-      const el = nextKey
-        ? listRoot.current?.querySelector<HTMLButtonElement>(`button[data-need="${CSS.escape(nextKey)}"]`)
-        : null;
-      (el ?? heading.current)?.focus();
-    });
-  }
+  const onBoard = building ?? [];
+  const sets = onBoard.filter((s) => chosen === null || chosen.includes(s.id));
+  // A need list for a set not on the board still works: it lists just that one.
+  const extra = onlySet && building && !onBoard.some((s) => s.id === onlySet) ? onlySet : null;
 
   return (
     <section aria-labelledby="mc-needs-heading">
@@ -72,133 +60,70 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
 
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2
-            id="mc-needs-heading"
-            ref={heading}
-            tabIndex={-1}
-            className="text-2xl font-bold text-ink focus:outline-none"
-          >
+          <h2 id="mc-needs-heading" ref={heading} tabIndex={-1} className="text-2xl font-bold text-ink focus:outline-none">
             Take it to the show
           </h2>
           <p className="mt-1 text-sm text-ink-2">
-            {total} {total === 1 ? "card" : "cards"} to hunt
-            {scopedName ? ` for ${scopedName}` : ""}
-            {wantedCount > 0 && (
-              <>
-                , {wantedCount} starred <StarIcon aria-hidden="true" className="inline size-3.5 text-neon-yellow-text" /> from
-                your Want List
-              </>
-            )}
-            . Print it, or keep this page open on your phone and hit “Got it” at the table.
+            Every card you still need{api.scopedName ? ` for ${api.scopedName}` : ""}. Print it, or keep this page open on
+            your phone and hit “Got it” at the table.
           </p>
         </div>
-        <button type="button" onClick={() => window.print()} className={PRIMARY_BUTTON}>
-          <PrinterIcon aria-hidden="true" className="size-4" />
-          Print it
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" aria-pressed={openAll} onClick={() => setOpenAll(!openAll)} className={QUIET_BUTTON}>
+            Open every checklist
+          </button>
+          <button type="button" onClick={() => window.print()} className={PRIMARY_BUTTON}>
+            <PrinterIcon aria-hidden="true" className="size-4" />
+            Print it
+          </button>
+        </div>
       </div>
 
-      {building.length > 1 && (
+      {onBoard.length > 1 && (
         <div role="group" aria-label="Sets on this list" className="mt-4 flex flex-wrap gap-1.5">
-          {building.map((id) => (
-            <Chip
-              key={id}
-              pressed={chosen.includes(id)}
-              onClick={() =>
-                setChosen((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
-              }
-            >
-              {setLabel(getSet(id))}
-            </Chip>
-          ))}
+          {onBoard.map((s) => {
+            const on = chosen === null || chosen.includes(s.id);
+            return (
+              <Chip
+                key={s.id}
+                pressed={on}
+                onClick={() =>
+                  setChosen((prev) => {
+                    const now = prev ?? onBoard.map((x) => x.id);
+                    return now.includes(s.id) ? now.filter((x) => x !== s.id) : [...now, s.id];
+                  })
+                }
+              >
+                {setLabel(s)}
+              </Chip>
+            );
+          })}
         </div>
       )}
 
       <div ref={listRoot} data-mc-print className="mt-5">
         <p className="hidden text-sm print:block">
-          Need list{scopedName ? ` for ${scopedName}` : ""}, printed {todayIso()}. ★ is on your Want List. Tick them
-          off as you go.
+          Need list{api.scopedName ? ` for ${api.scopedName}` : ""}, printed {todayIso()}. Tick them off as you go.
         </p>
-        {sets.length === 0 && (
+        {building === undefined ? (
+          <div aria-busy="true">
+            <SkeletonBars rows={6} />
+            <LoadingNote>Pulling your need list…</LoadingNote>
+          </div>
+        ) : sets.length === 0 && !extra ? (
           <p className="rounded-lg border border-dashed border-rule-strong p-6 text-center text-sm text-ink-2">
-            {building.length === 0
+            {onBoard.length === 0
               ? "No sets on the board yet. Start building one and its needs land here."
               : "Pick a set above to see what you still need."}
           </p>
+        ) : (
+          <>
+            {sets.map((s) => (
+              <SetNeeds key={s.id} setId={s.id} known={s} openAll={openAll} listRoot={listRoot} heading={heading} />
+            ))}
+            {extra && <SetNeeds setId={extra} openAll={openAll} listRoot={listRoot} heading={heading} />}
+          </>
         )}
-        {sets.map((id) => {
-          const set = getSet(id);
-          const whole = store.completionInScope(id);
-          return (
-            <section key={id} aria-label={setLabel(set)} className="mb-6 break-inside-avoid-page">
-              <h3 className="border-b border-rule-strong pb-1 text-lg font-bold text-ink">
-                {setLabel(set)}{" "}
-                <span className="text-sm font-normal text-ink-3">
-                  need {whole.missing.length} of {whole.total}
-                </span>
-              </h3>
-              {whole.missing.length === 0 && (
-                <p className="mt-2 text-sm text-neon-green-text">Every card on this checklist is in hand. Radical!</p>
-              )}
-              {set.variants.map((v) => {
-                const missing = wantedFirst(
-                  store.completionInScope(id, variantFilterOf(v)).missing,
-                  store.isWanted,
-                );
-                if (missing.length === 0) return null;
-                const run = printRunText(v);
-                return (
-                  <div key={variantKey(v)} className="mt-3">
-                    <h4 className="text-sm font-bold text-ink-2">
-                      {variantLabel(v.path)}
-                      {run && ` ${run}`} <span className="font-normal text-ink-3">({missing.length})</span>
-                    </h4>
-                    <ul className="mc-print-columns mt-1 sm:columns-2 lg:columns-3">
-                      {missing.map((c) => {
-                        const wanted = store.isWanted(c.id);
-                        return (
-                          <li
-                            key={c.id}
-                            className="flex min-h-11 break-inside-avoid items-center gap-2 border-b border-rule py-0.5 text-sm sm:min-h-8 print:min-h-0 print:border-b-0"
-                          >
-                            <span aria-hidden="true" className="hidden size-3 shrink-0 border print:inline-block" />
-                            <span className="flex w-12 shrink-0 items-center gap-0.5 font-bold tabular-nums text-ink">
-                              {wanted ? (
-                                <StarIcon aria-hidden="true" className="size-3.5 shrink-0 text-neon-yellow-text" />
-                              ) : (
-                                <span aria-hidden="true" className="size-3.5 shrink-0" />
-                              )}
-                              #{c.cardNumber}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-ink-2">
-                              {wanted && <span className="sr-only">On your Want List: </span>}
-                              {playerNames(c)}
-                              {c.variation ? ` (${c.variation})` : ""}{" "}
-                              <span style={{ color: teamTextColor(leadTeam(c), page) }}>{leadTeam(c).name}</span>
-                            </span>
-                            <NeonButton
-                              type="button"
-                              outline
-                              size="1"
-                              data-need={c.id}
-                              aria-label={`Got it: ${variantLabel(v.path)} #${c.cardNumber} ${playerNames(c)}${
-                                c.variation ? `, ${c.variation} variation` : ""
-                              }`}
-                              onClick={() => gotIt(c.id)}
-                              className="mc-noprint min-h-11 sm:min-h-7"
-                            >
-                              Got it
-                            </NeonButton>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                );
-              })}
-            </section>
-          );
-        })}
       </div>
 
       <div className="mc-noprint mt-2">
@@ -207,5 +132,156 @@ export default function NeedList({ onlySet, focusOnMount }: { onlySet?: SetId; f
         </button>
       </div>
     </section>
+  );
+}
+
+function SetNeeds({
+  setId,
+  known,
+  openAll,
+  listRoot,
+  heading,
+}: {
+  setId: string;
+  known?: SetRef;
+  openAll: boolean;
+  listRoot: RefObject<HTMLDivElement | null>;
+  heading: RefObject<HTMLHeadingElement | null>;
+}) {
+  const summary = useSetSummary(setId);
+  const set = summary?.set ?? known;
+  const base = summary ? baseOf(summary.variants) : null;
+  const label = set ? setLabel(set) : "This set";
+  if (summary === null) {
+    return <p className="mb-6 text-sm text-ink-3">{label} is no longer in the catalog.</p>;
+  }
+  return (
+    <section aria-label={label} className="mb-6 break-inside-avoid-page">
+      <h3 className="border-b border-rule-strong pb-1 text-lg font-bold text-ink">{label}</h3>
+      {summary === undefined ? (
+        <SkeletonBars rows={3} className="mt-2" />
+      ) : (
+        summary.variants.map((v) => (
+          <VariantNeeds
+            key={v.id}
+            variant={v}
+            setText={label}
+            startOpen={v.id === base?.id || openAll}
+            listRoot={listRoot}
+            heading={heading}
+          />
+        ))
+      )}
+    </section>
+  );
+}
+
+function VariantNeeds({
+  variant,
+  setText,
+  startOpen,
+  listRoot,
+  heading,
+}: {
+  variant: Variant;
+  setText: string;
+  startOpen: boolean;
+  listRoot: RefObject<HTMLDivElement | null>;
+  heading: RefObject<HTMLHeadingElement | null>;
+}) {
+  const api = useMyCards();
+  const page = useLiverySurface("surface");
+  const { kind } = useCollectionStore();
+  const [opened, setOpened] = useState(false);
+  const open = startOpen || opened || kind === "demo";
+  const completion = useVariantCompletion(variant.id);
+  const cards = useVariantCards(open ? variant.id : null);
+  const copies = useCopiesInVariant(open ? variant.id : null);
+  const owned = useMemo(() => copiesByCard(copies), [copies]);
+  const name = variantLabel(variant);
+  const run = variant.printRun === null ? null : variant.printRun === 1 ? "1/1" : `/${variant.printRun}`;
+  const missing = cards && copies ? wantedFirst(cards.filter((c) => !owned.has(c.id)), api.isWanted) : null;
+  const need = missing?.length ?? (completion && totalKnown(completion) ? completion.total - completion.owned : null);
+
+  if (completion && isComplete(completion) && (!missing || missing.length === 0)) return null;
+  if (missing && missing.length === 0) return null;
+
+  function gotIt(cardId: string) {
+    const card = missing?.find((c) => c.id === cardId);
+    if (!card) return;
+    // Keep the keyboard where it was: the next "Got it" button, else the heading.
+    const buttons = [...(listRoot.current?.querySelectorAll<HTMLButtonElement>("button[data-need]") ?? [])];
+    const i = buttons.findIndex((b) => b.dataset.need === cardId);
+    const nextKey = (buttons[i + 1] ?? buttons[i - 1])?.dataset.need;
+    api.addOne(card);
+    requestAnimationFrame(() => {
+      const el = nextKey ? listRoot.current?.querySelector<HTMLButtonElement>(`button[data-need="${CSS.escape(nextKey)}"]`) : null;
+      (el ?? heading.current)?.focus();
+    });
+  }
+
+  return (
+    <div className="mt-3">
+      <h4 className="flex flex-wrap items-center gap-2 text-sm font-bold text-ink-2">
+        <span>
+          {name}
+          {run && ` ${run}`} {need !== null && <span className="font-normal text-ink-3">(need {need})</span>}
+        </span>
+        {!open && (
+          <button
+            type="button"
+            aria-expanded={false}
+            aria-label={`Show what you need from ${setText} ${name}`}
+            onClick={() => setOpened(true)}
+            className={`mc-noprint inline-flex min-h-11 items-center gap-1 rounded-md px-1.5 text-xs font-normal text-ink-3 hover:text-neon-blue-text sm:min-h-8 ${FOCUS}`}
+          >
+            <ChevronDownIcon aria-hidden="true" className="size-3.5" />
+            Show them
+          </button>
+        )}
+      </h4>
+      {open && !missing && <SkeletonBars rows={2} className="mt-1" />}
+      {missing && (
+        <ul className="mc-print-columns mt-1 sm:columns-2 lg:columns-3">
+          {missing.map((c) => {
+            const wanted = api.isWanted(c.id);
+            const team = c.teams[0];
+            return (
+              <li
+                key={c.id}
+                className="flex min-h-11 break-inside-avoid items-center gap-2 border-b border-rule py-0.5 text-sm sm:min-h-8 print:min-h-0 print:border-b-0"
+              >
+                <span aria-hidden="true" className="hidden size-3 shrink-0 border print:inline-block" />
+                <span className="flex w-12 shrink-0 items-center gap-0.5 font-bold tabular-nums text-ink">
+                  {wanted ? (
+                    <StarIcon aria-hidden="true" className="size-3.5 shrink-0 text-neon-yellow-text" />
+                  ) : (
+                    <span aria-hidden="true" className="size-3.5 shrink-0" />
+                  )}
+                  #{c.cardNumber}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-ink-2">
+                  {wanted && <span className="sr-only">On your Want List: </span>}
+                  {playerNames(c)}
+                  {c.cardVariation ? ` (${c.cardVariation})` : ""}{" "}
+                  {team && <span style={{ color: teamTextColor(team, page) }}>{team.name}</span>}
+                </span>
+                <NeonButton
+                  type="button"
+                  outline
+                  size="1"
+                  data-need={c.id}
+                  aria-label={`Got it: ${name} #${c.cardNumber} ${playerNames(c)}${c.cardVariation ? `, ${c.cardVariation} variation` : ""}`}
+                  onClick={() => gotIt(c.id)}
+                  className="mc-noprint min-h-11 sm:min-h-7"
+                >
+                  Got it
+                </NeonButton>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }

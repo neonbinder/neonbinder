@@ -89,6 +89,7 @@
 - [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
 - [Action blind insert is invisible to OCC](reference_action_blind_insert_is_invisible_to_occ.md) — re-check status + read the range inside the write; repro the interleave by driving the action steps by hand
+- [Ancestor rollups make the sport row hot](reference_ancestor_rollups_make_the_sport_row_hot.md) — subtree counts patch sport/year/brand per card write: cross-set OCC + query fan-out; ledger hint/move mechanics
 - [ReconciliationModal lists unstable per render](reference_reconciliation_modal_lists_are_unstable_per_render.md) — default `[]` props → new list identity each render; key setState effects on content or the modal loops silently
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
@@ -142,3 +143,8 @@
 - [Printed output is a srcdoc capture](reference_printed_output_is_srcdoc_capture.md) — prove print unchanged by hooking the print iframe srcdoc / QR popup, not page screenshots
 - [App-wide useQuery needs its own boundary](reference_app_wide_usequery_needs_its_own_boundary.md) — a failing/missing Convex function throws in render; boundary + Sentry once
 - [Radix button box beats Tailwind](reference_radix_button_box_beats_tailwind.md) — on NeonButton, Tailwind display/height/padding/radius classes lose to Radix; use min-h, `contents` wrappers, asChild, inline style
+- [rAF focus request clears by identity](reference_raf_focus_request_clear_by_identity.md) — functional clear or a stale frame drops a newer move; happy-dom blur() fires no focusout
+- [Write tool turns unicode escapes into chars](reference_write_tool_turns_unicode_escapes_into_chars.md) — a written `￿` can land as the literal char; grep and fix
+- [Compiler memo lost by a derived JSX map](reference_compiler_memo_lost_by_derived_jsx_map.md) — preserve-manual-memoization: drop the manual memo, never disable the rule
+- [Collection views test on a hand-built store](reference_collection_views_test_on_a_hand_built_store.md) — RealCollection.test.tsx fakes the store; add each new hook to it
+- [convex-test scale walks cost per range read](reference_convex_test_scale_walks_cost_per_range_read.md) — paged walk over 5k distinct keys ~26s; use few keys x many rows

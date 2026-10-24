@@ -1,4 +1,5 @@
 import { FOCUS } from "../prototypes/p1/ui";
+import { useCapabilities } from "./data/store";
 import { useSetScope } from "./mode";
 import type { CollectionStore } from "./store";
 
@@ -13,9 +14,13 @@ import type { CollectionStore } from "./store";
  * Sticky, so every tab sees the same choice. It lives on the page URL
  * (`scope=`, see `./mode`): a pick replaces the current history entry, and
  * the store follows the URL.
+ *
+ * Only a store with binders scopes (NEO-358): elsewhere it renders nothing.
  */
 export default function BinderPicker({ store }: { store: CollectionStore }) {
   const setScope = useSetScope();
+  const { scope } = useCapabilities();
+  if (!scope) return null;
   const options = store.state.binders.filter((b) => b.kind === "manual");
   return (
     <label className="flex items-center gap-2 text-sm">

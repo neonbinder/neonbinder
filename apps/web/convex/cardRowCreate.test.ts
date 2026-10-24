@@ -19,6 +19,10 @@ import {
   type CardRowSetContext,
 } from "./cardRowCreate";
 import type { Id } from "./_generated/dataModel";
+import { createCardCountLedger } from "./cardCounts";
+
+/** NEO-358 — `insertCardRow` asks every card's sport now (`sportId`). */
+const NO_SPORT = { sport: async () => undefined };
 
 const modules = (
   import.meta as unknown as {
@@ -309,6 +313,8 @@ describe("insertCardRow — keepSku (NEO-312 R2)", () => {
         ctx,
         baseCard({ selectorOptionId, keepSku: "NB-BB-OLD-SKU" }),
         baseSet({ sportSkuCode: "BB" }),
+        NO_SPORT,
+        createCardCountLedger(),
       ),
     );
     const row = await t.run(async (ctx) => ctx.db.get(cardId));
@@ -319,10 +325,10 @@ describe("insertCardRow — keepSku (NEO-312 R2)", () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
     const id1 = await t.run(async (ctx) =>
-      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "1" }), baseSet({ sportSkuCode: "BB" })),
+      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "1" }), baseSet({ sportSkuCode: "BB" }), NO_SPORT, createCardCountLedger()),
     );
     const id2 = await t.run(async (ctx) =>
-      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "2" }), baseSet({ sportSkuCode: "BB" })),
+      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "2" }), baseSet({ sportSkuCode: "BB" }), NO_SPORT, createCardCountLedger()),
     );
     const [row1, row2] = await t.run(async (ctx) => [
       await ctx.db.get(id1),
@@ -404,6 +410,8 @@ describe("insertCardRow — insert-then-patch, no imageUrls, no enrichment sched
         ctx,
         baseCard({ selectorOptionId }),
         baseSet({ sportSkuCode: "BB" }),
+        NO_SPORT,
+        createCardCountLedger(),
       ),
     );
     const row = await t.run(async (ctx) => ctx.db.get(cardId));
@@ -417,7 +425,7 @@ describe("insertCardRow — insert-then-patch, no imageUrls, no enrichment sched
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
     await t.run(async (ctx) =>
-      insertCardRow(ctx, baseCard({ selectorOptionId }), baseSet()),
+      insertCardRow(ctx, baseCard({ selectorOptionId }), baseSet(), NO_SPORT, createCardCountLedger()),
     );
     const scheduled = await t.run(async (ctx) =>
       ctx.db.system.query("_scheduled_functions").collect(),

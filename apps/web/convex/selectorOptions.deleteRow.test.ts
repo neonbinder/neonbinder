@@ -71,7 +71,8 @@ type HoldKind =
   | "players"
   | "teams"
   | "leagues"
-  | "review";
+  | "review"
+  | "collectors";
 
 type Hold = {
   kind: HoldKind;
@@ -462,6 +463,71 @@ describe("deleteSelectorOption — empty row", () => {
         (await ctx.db.query("entityReviewSkips").collect()).length,
       ),
     ).toBe(0);
+  });
+
+  // NEO-358 — "Sets I'm building" entries are swept with an empty set, up to
+  // the same cap; past it the delete refuses with a `collectors` holding.
+  async function buildingEntries(
+    t: ReturnType<typeof convexTest>,
+    setId: Id<"selectorOptions">,
+    n: number,
+  ) {
+    await t.run(async (ctx) => {
+      for (let i = 0; i < n; i++) {
+        await ctx.db.insert("collectionBuildingSets", {
+          ownerId: `collector_${i}`,
+          setId,
+          lastUpdated: SENTINEL_LAST_UPDATED,
+        });
+      }
+    });
+  }
+  const buildingCount = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("collectionBuildingSets").collect()).length);
+
+  test("NEO-358: refuses with a collectors holding when more collectors build the set than the cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const setId = await insertRow(t, "setName", "Topps Chrome");
+    await buildingEntries(t, setId, TRANSIENT_DELETE_CAP + 1);
+
+    const holdings = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: setId },
+    );
+    expect(holdings.holds).toEqual([
+      { kind: "collectors", count: TRANSIENT_DELETE_CAP + 1, examples: [] },
+    ]);
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
+    );
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    expect(holdFor(error.data, "collectors")?.count).toBe(TRANSIENT_DELETE_CAP + 1);
+    // Nothing written: the set and every entry are still there.
+    expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
+    expect(await buildingCount(t)).toBe(TRANSIENT_DELETE_CAP + 1);
+  });
+
+  test("NEO-358: sweeps the collectors' building entries at the cap without refusing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const setId = await insertRow(t, "setName", "Topps Chrome");
+    const otherSetId = await insertRow(t, "setName", "Topps Finest");
+    await buildingEntries(t, setId, TRANSIENT_DELETE_CAP);
+    await buildingEntries(t, otherSetId, 1);
+
+    const holdings = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: setId },
+    );
+    expect(holdings.holds).toEqual([]);
+    const result = await asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
+      id: setId,
+    });
+    expect(result.deleted).toBe(true);
+    // Only the deleted set's entries went; another set's entry stays.
+    expect(await buildingCount(t)).toBe(1);
   });
 
   test("an empty SYNCED row is deletable and reports syncedBack", async () => {

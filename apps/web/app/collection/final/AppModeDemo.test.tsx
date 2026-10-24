@@ -2,29 +2,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
+import CollectionPage from "../page";
 import FinalCollectionPage from "./FinalCollectionPage";
 
 // NEO-356: the demo bar's theme switch asks Clerk who is looking (signed in here).
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
 
 /**
- * NEO-350 — `/collection` for a signed-in collector is the same hard-coded
- * demo as the public one, and says so: the demo bar marks it as sample data
- * (with Reset, minus the public demo's exits), and a card request never
- * promises a review that does not happen.
+ * NEO-358 — the Convex client, standing in for a signed-in collector whose
+ * reads are still loading. Every query answers `undefined`; every mutation is
+ * a spy that carries `withOptimisticUpdate`. No test here reaches a server.
  */
+vi.mock("convex/react", () => {
+  const mutation = () => {
+    const fn = Object.assign(vi.fn(async () => null), {
+      withOptimisticUpdate: () => fn,
+    });
+    return fn;
+  };
+  return {
+    useQuery: () => undefined,
+    useQueries: () => ({}),
+    usePaginatedQuery: () => ({ results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} }),
+    useMutation: () => mutation(),
+  };
+});
 
-function renderApp(start = "/collection") {
+function renderAt(start: string, element = <CollectionPage />) {
   return render(
     <Theme>
       <MemoryRouter initialEntries={[start]}>
         <Routes>
-          <Route path="/collection" element={<FinalCollectionPage />} />
+          <Route path="/collection" element={element} />
         </Routes>
       </MemoryRouter>
     </Theme>,
   );
 }
+
+const sections = () => screen.getByRole("navigation", { name: "Collection sections" });
 
 beforeEach(() => {
   window.sessionStorage.clear();
@@ -34,32 +50,57 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
-describe("the signed-in collection is marked as a demo", () => {
+describe("signed-in /collection runs on the real collection", () => {
+  it("shows My Cards and Checklists, and none of the demo's unbuilt parts", () => {
+    renderAt("/collection");
+    const tabs = within(sections()).getAllByRole("link").map((l) => l.textContent);
+    expect(tabs).toEqual(["My Cards", "Checklists"]);
+    expect(screen.queryByRole("region", { name: "About this demo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset demo data" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Demo theme" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Binder" })).toBeNull();
+    expect(document.title).toBe("My Cards · Collection");
+  });
+
+  it("opens My Cards for a My Binders link", () => {
+    renderAt("/collection?tab=binders&b=binder-main");
+    expect(within(sections()).getByRole("link", { name: "My Cards" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("link", { name: "My Binders" })).toBeNull();
+  });
+});
+
+/**
+ * The demo store mounted in app mode: what a unit test gets from
+ * `<FinalCollectionPage />` with no provider. Production never shows this
+ * (the demo is public-only), but the app-mode copy paths stay covered.
+ */
+describe("the demo store in app mode", () => {
   it("shows the demo bar with Reset, and no sign-up or tour exits", () => {
-    renderApp();
+    renderAt("/collection", <FinalCollectionPage />);
     const bar = screen.getByRole("region", { name: "About this demo" });
     expect(within(bar).getByText("Demo binder")).toBeTruthy();
-    expect(within(bar).getByText("Sample cards, real buttons. Play away: none of it touches your account.")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Reset demo data" })).toHaveLength(1);
-    expect(within(bar).getByRole("button", { name: "Reset demo data" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Sign up free" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Back to the tour" })).toBeNull();
     expect(screen.queryByRole("complementary", { name: "Leave the demo" })).toBeNull();
     // An ordinary page of the app: the bar does not grab focus.
     expect(document.activeElement).not.toBe(bar);
     expect(bar.hasAttribute("tabindex")).toBe(false);
+    expect(within(sections()).getAllByRole("link").map((l) => l.textContent)).toEqual([
+      "My Cards",
+      "My Binders",
+      "Checklists",
+    ]);
   });
 
   it("Reset in the bar puts the starting stack back", () => {
-    renderApp("/collection?tab=binders");
+    renderAt("/collection?tab=binders", <FinalCollectionPage />);
     fireEvent.click(screen.getByRole("button", { name: "Reset demo data" }));
     expect(screen.getAllByRole("status").some((s) => s.textContent === "Back to the starting stack.")).toBe(true);
   });
-});
 
-describe("asking for a card in the signed-in demo", () => {
-  it("says the request stays on the page, never that an admin will review it", () => {
-    renderApp("/collection?tab=checklists");
+  it("a card request says it stays on the page, never that an admin will review it", () => {
+    renderAt("/collection?tab=checklists", <FinalCollectionPage />);
     fireEvent.click(screen.getByRole("button", { name: "Can't find it? Ask us to add it" }));
     const dialog = screen.getByRole("dialog", { name: "Ask us to add a card" });
     expect(

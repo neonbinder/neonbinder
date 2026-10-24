@@ -168,6 +168,40 @@ describe("check", () => {
     expect(checkFiles(g).problems).toHaveProperty("unexpected table cardChecklist");
   });
 
+  // NEO-358 — the collection reads fields derived when a card is written
+  // (`cardChecklist.sportId` / `listingTitle`, the variant rows' card counts,
+  // `cardTeamLinks`, `cardPlayerLinks`). None of them can travel in a bundle:
+  // the preview's cards are built by the Playwright setup project through the
+  // writers that derive them (convex/e2eSeedDerivedFields.test.ts), so the
+  // import has nothing to transform and the preview needs no backfill.
+  test("NEO-358: no card, no derived table and no derived field travels in a bundle", () => {
+    const DERIVED_TABLES = [
+      "cardChecklist",
+      "cardTeamLinks",
+      "cardPlayerLinks",
+      "collectionCopies",
+      "collectionContainers",
+      "collectionBuildingSets",
+    ];
+    const entries = [...bundleFiles.keys()];
+    for (const table of DERIVED_TABLES) {
+      expect(BUNDLE_TABLES).not.toContain(table);
+      expect(entries.some((e) => e.startsWith(`${table}/`))).toBe(false);
+      const f = clone(bundleFiles);
+      f.set(`${table}/documents.jsonl`, "");
+      expect(checkFiles(f).problems).toHaveProperty(`unexpected table ${table}`);
+    }
+    // The only selectorOptions rows are sports, which hold no cards: no
+    // count, title or card sport is carried for an import to get wrong.
+    for (const t of BUNDLE_TABLES) {
+      for (const r of rowsOf(bundleFiles, t)) {
+        for (const field of ["cardCount", "nonVariationCardCount", "listingTitle"]) {
+          expect(r).not.toHaveProperty(field);
+        }
+      }
+    }
+  });
+
   test("rejects more dangling references than the manifest recorded", () => {
     const f = clone(bundleFiles);
     const m = JSON.parse(f.get("manifest.json"));

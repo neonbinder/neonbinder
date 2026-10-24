@@ -71,7 +71,7 @@ const pick = (column: string, option: RegExp) =>
   fireEvent.click(within(screen.getByRole("listbox", { name: column })).getByRole("option", { name: option }));
 const checklistHeading = (name: string) => screen.queryByRole("heading", { level: 3, name });
 /** Any checklist on screen: each one has its Show chips. */
-const anyChecklist = () => screen.queryByRole("group", { name: "Show" });
+const anyChecklist = () => screen.queryByRole("radiogroup", { name: "Show" });
 
 beforeEach(() => {
   window.sessionStorage.clear();
@@ -206,6 +206,8 @@ describe("the Checklists drill on the URL", () => {
   });
 });
 
+// "In the app" below mounts the page with no store provider, so it runs on
+// the demo store in app mode (NEO-358): the URL scheme is the same either way.
 describe("the tab title names the view", () => {
   it("in the public demo", () => {
     renderDemo([`${DEMO}&tab=binders&b=binder-main`]);
