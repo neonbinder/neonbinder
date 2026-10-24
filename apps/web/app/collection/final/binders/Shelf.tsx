@@ -13,10 +13,9 @@ import {
   useContainers,
   useDemoExtension,
   useScope,
-  useSetSummary,
+  useSetCompletion,
   useSuggestions,
   useSummary,
-  useVariantCompletion,
 } from "../data/store";
 import type { Container, ContainerCount, SetRef } from "../data/types";
 import { useCollectionMode } from "../mode";
@@ -602,7 +601,7 @@ function BuildingShelf({ onOpen }: { onOpen: (view: ViewKey) => void }) {
   );
 }
 
-/** A clear binder for a set: its name, and how much of its Base you have. */
+/** A clear binder for a set: its name, and how much of the whole set you have. */
 function SetSpine({
   setId,
   name,
@@ -614,10 +613,9 @@ function SetSpine({
   index: number;
   onOpen: (view: ViewKey) => void;
 }) {
-  const summary = useSetSummary(setId);
-  const base = summary?.variants.find((v) => v.kind === "base") ?? null;
-  const completion = useVariantCompletion(base?.id ?? null);
-  const have = completion ? `You have ${completion.owned} of ${completion.total}` : null;
+  const completion = useSetCompletion(setId);
+  const owned = completion ? `${completion.owned}${completion.exact ? "" : "+"}` : null;
+  const have = completion ? `You have ${owned} of ${completion.total}` : null;
   return (
     // Catalog spines are whole sets (never an insert or a parallel), so the
     // slip is the season and set name.
@@ -632,7 +630,7 @@ function SetSpine({
       >
         <span className="p2-spine-label" style={{ "--stripe": "#00C2FF" } as CSSProperties}>
           <span className="p2-spine-name">{name}</span>
-          <span className="p2-spine-count">{completion ? `${completion.owned}/${completion.total}` : "…"}</span>
+          <span className="p2-spine-count">{completion ? `${owned}/${completion.total}` : "…"}</span>
         </span>
       </button>
     </IdTooltip>

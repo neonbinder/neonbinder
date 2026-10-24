@@ -5,7 +5,7 @@
  */
 
 import { useMemo } from "react";
-import { useCards, useContainerCopies, useEntityCards } from "../data/store";
+import { useCards, useContainerCopies, useEntityCards, useTeam } from "../data/store";
 import type { Card, CardId, Container, Suggestion, TeamId } from "../data/types";
 import { ruleTeamId, teamColorsOf, teamsOnCards, type LabelHints, type TeamColors } from "./label";
 import type { CardsById } from "./model";
@@ -28,34 +28,23 @@ export function useCardMap(cardIds: readonly CardId[] | null): CardsById | undef
 }
 
 /**
- * A team's colours, as NB has them on the cards it is printed on. `null`
- * when no card shows the team (or NB has no colours for it), `undefined`
- * while loading.
+ * A team's colours, read off its own row (so a team no card shows still has
+ * them). `null` when NB has no colours for it (or it left the catalog),
+ * `undefined` while loading.
  */
 export function useTeamColors(teamId: TeamId | null): TeamColors | null | undefined {
-  const pick = useMemo(() => (teamId ? { kind: "team" as const, id: teamId, wholeFranchise: false } : null), [teamId]);
-  const result = useEntityCards(pick);
+  const team = useTeam(teamId);
   return useMemo(() => {
     if (!teamId) return null;
-    if (!result) return undefined;
-    for (const card of result.cards) {
-      const team = card.teams.find((t) => t.id === teamId);
-      const colors = team ? teamColorsOf(team) : null;
-      if (colors) return colors;
-    }
-    return null;
-  }, [teamId, result]);
+    if (team === undefined) return undefined;
+    return team ? teamColorsOf(team) : null;
+  }, [teamId, team]);
 }
 
-/**
- * The colours a team suggestion carries, when the store sends them. The
- * shared `Suggestion` has no livery yet (a requested store change); until it
- * does, this answers null and the caller reads `useTeamColors` instead.
- */
+/** The colours a team suggestion carries, when NB has both. */
 export function suggestionColors(s: Suggestion): { primary: string; secondary: string } | null {
-  if (s.kind !== "team") return null;
-  const { primary, secondary } = s as { primary?: unknown; secondary?: unknown };
-  return typeof primary === "string" && typeof secondary === "string" ? { primary, secondary } : null;
+  if (s.kind !== "team" || !s.primary || !s.secondary) return null;
+  return { primary: s.primary, secondary: s.secondary };
 }
 
 /**

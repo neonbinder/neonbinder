@@ -50,6 +50,7 @@ import {
   slotRefOf,
   soleCopyId,
   stackPages,
+  orderWants,
   wantPages,
   type CardsById,
   type LayoutMode,
@@ -214,7 +215,16 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   const wantIds = useMemo(() => (isWant && wants ? wants.map((w) => w.cardId) : null), [isWant, wants]);
   const listCardIds = useMemo(() => (listCopies ? listCopies.map((c) => c.cardId) : null), [listCopies]);
   const cards = useCardMap(isWant ? wantIds : listId ? listCardIds : null);
-  const wantCopies = useCopiesOfCards(wantIds);
+  // The Want List pages like a set: every want's card is read (for the
+  // order), but copies only for the wants on screen, `limit` at a time.
+  const orderedWants = useMemo(
+    () => (isWant && wants && containers && cards ? orderWants(wants, containers, cards) : null),
+    [isWant, wants, containers, cards],
+  );
+  const shownWants = useMemo(() => orderedWants?.slice(0, limit) ?? null, [orderedWants, limit]);
+  const shownWantIds = useMemo(() => shownWants?.map((w) => w.cardId) ?? null, [shownWants]);
+  const wantCopies = useCopiesOfCards(shownWantIds && shownWantIds.length ? shownWantIds : null);
+  const wantsTruncated = !!orderedWants && !!shownWants && orderedWants.length > shownWants.length;
 
   // A binder whose numbered pockets follow a checklist: Need sleeves for the gaps.
   const pocketVariant =
@@ -247,8 +257,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     loading = !allPile;
     truncated = !!allPile?.truncated;
   } else if (isWant) {
-    if (wants && cards && containers) pages = wantPages({ wants, containers, cards, copiesByCard: wantCopies });
+    if (shownWants && cards && containers) pages = wantPages({ wants: shownWants, containers, cards, copiesByCard: wantCopies });
     loading = !wants || !cards;
+    truncated = wantsTruncated;
   } else if (container && !isBox) {
     if (listCopies && cards) {
       if (isSmart) pages = mode === "pockets" ? cardPages(listCopies, cards) : stackPages(listCopies, cards);
@@ -269,7 +280,8 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     const next = Math.max(0, Math.min(to, steps - 1));
     setStepState({ view: viewId, at: next });
     // A browsed set pages in from the store as the collector nears the end.
-    if (view?.kind === "set" && truncated && next >= steps - 2) more();
+    // So does the Want List.
+    if ((view?.kind === "set" || isWant) && truncated && next >= steps - 2) more();
   };
 
   // -- the cover --------------------------------------------------------------
@@ -287,9 +299,15 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   } else if (view?.kind === "all") {
     tally.cards = allPile ? allPile.total : null;
   } else if (isWant && wants) {
-    const landed = wantCopies ? wants.filter((w) => (wantCopies[w.cardId] ?? []).some((c) => c.quantity > 0)).length : null;
+    // Landed / still needed only once every want's copies are in (a long
+    // list pages in; until then, unknown, never a guess from one page).
+    const all = shownWants && !wantsTruncated ? shownWants : null;
+    const landed =
+      all && (wantCopies || all.length === 0)
+        ? all.filter((w) => (wantCopies?.[w.cardId] ?? []).some((c) => c.quantity > 0)).length
+        : null;
     tally.have = landed;
-    tally.need = landed === null ? null : wants.length - landed;
+    tally.need = landed === null || !all ? null : all.length - landed;
     tally.cards = wants.length;
   } else if (container) {
     tally.cards = container.count?.copies ?? null;
@@ -689,17 +707,24 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   };
 
   // -- containers -----------------------------------------------------------------
-  const createContainer = async (input: NewContainer) => {
-    const result = await run(
-      () => actions.createContainer(input),
-      () =>
+  // The New and Edit dialogs wait on their write: each resolves with null
+  // once it landed (and the dialog is closed), or with why it was refused,
+  // which the dialog says itself.
+  const createContainer = async (input: NewContainer): Promise<string | null> => {
+    try {
+      const result = await actions.createContainer(input);
+      notify(
         input.rule
           ? `${input.name} is on the shelf. It fills itself.`
           : `${input.name} is on the shelf. Hunt for a card below and ${input.kind === "box" ? "drop it in a row" : "start slotting"}.`,
-    );
-    if (!result) return;
-    setDialog(null);
-    goTo({ kind: "binder", binderId: result.containerId }, input.rule ? "all" : result.containerId);
+        result.undo,
+      );
+      setDialog(null);
+      goTo({ kind: "binder", binderId: result.containerId }, input.rule ? "all" : result.containerId);
+      return null;
+    } catch (error) {
+      return writeErrorMessage(error);
+    }
   };
 
   const saveLabel = (next: ContainerLabel | null) => {
@@ -712,18 +737,21 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
     );
   };
 
-  const saveContainer = (patch: ContainerPatch) => {
-    if (!container) return;
+  const saveContainer = async (patch: ContainerPatch): Promise<string | null> => {
+    if (!container) return null;
     const c = container;
-    setDialog(null);
-    void run(
-      () => actions.updateContainer(c, patch),
-      () => (patch.name ? `${c.name} is now ${patch.name}.` : `Saved ${c.name}.`),
-    );
+    try {
+      const result = await actions.updateContainer(c, patch);
+      setDialog(null);
+      notify(patch.name ? `${c.name} is now ${patch.name}.` : `Saved ${c.name}.`, result.undo);
+      return null;
+    } catch (error) {
+      return writeErrorMessage(error);
+    }
   };
 
-  const deleteContainer = async () => {
-    if (!container) return;
+  const deleteContainer = async (): Promise<string | null> => {
+    if (!container) return null;
     const c = container;
     try {
       const { moved } = await actions.deleteContainer(c);
@@ -734,8 +762,9 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
           ? `${c.name} is off the shelf.`
           : `${c.name} is off the shelf. ${moved === 1 ? "Its card went" : `Its ${moved} cards went`} back to Main.`,
       );
+      return null;
     } catch (error) {
-      notify(writeErrorMessage(error));
+      return writeErrorMessage(error);
     }
   };
 
@@ -750,7 +779,7 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
   const trayMode = isWant ? "want" : isTrade ? "trade" : "file";
 
   return (
-    <div ref={rootRef} className="scroll-mt-4">
+    <div ref={rootRef} className="nb-tray-clear scroll-mt-4" onFocus={(e) => keepClearOfTray(e.target)}>
       {view?.kind === "all" && <OwnedPileLoader limit={limit} onData={setAllPile} />}
       <DndContext
         sensors={sensors}
@@ -876,7 +905,7 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
         </DragOverlay>
       </DndContext>
 
-      {dialog === "new" && <NewBinderDialog onCreate={(input) => void createContainer(input)} onClose={() => setDialog(null)} />}
+      {dialog === "new" && <NewBinderDialog onCreate={createContainer} onClose={() => setDialog(null)} />}
       {dialog === "label" && container && (
         <LabelEditorDialog binder={container} onSave={saveLabel} onClose={() => setDialog(null)} />
       )}
@@ -884,12 +913,29 @@ export default function MyBindersTab({ openCard, goToTab, notify, notice, onUndo
         <EditContainerDialog
           container={container}
           onSave={saveContainer}
-          onDelete={() => void deleteContainer()}
+          onDelete={deleteContainer}
           onClose={() => setDialog(null)}
         />
       )}
     </div>
   );
+}
+
+/**
+ * WCAG 2.4.11: the pack tray is pinned over the bottom of the page, and a
+ * control it covers still counts as on screen, so the browser never scrolls
+ * to it. When the keyboard lands on one, scroll it up clear of the tray (its
+ * height is `--nb-tray-h`, which PackTray publishes).
+ */
+function keepClearOfTray(target: EventTarget) {
+  // The tray's own controls, and a dialog's (it sits over the tray), are left alone.
+  if (!(target instanceof HTMLElement) || target.closest(".p2-pack, [role='dialog'], [role='alertdialog']")) return;
+  const tray = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--nb-tray-h")) || 0;
+  if (tray <= 0) return;
+  const rect = target.getBoundingClientRect();
+  const limit = window.innerHeight - tray - 16;
+  // Never scroll a control taller than the room above the tray off its top.
+  if (rect.bottom > limit && rect.top > 0) window.scrollBy({ top: Math.min(rect.bottom - limit, rect.top) });
 }
 
 /**

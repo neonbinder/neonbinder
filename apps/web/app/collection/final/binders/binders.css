@@ -472,3 +472,21 @@
 [data-theme="light"] .nb-longbox-box {
   box-shadow: 0 0 0 1px #8a8170, 0 6px 12px -6px rgb(0 0 0 / 0.35);
 }
+
+/* ------------------------------------------- clear of the pinned pack tray */
+
+/*
+ * The pack tray is fixed over the bottom of the page and publishes its height
+ * as --nb-tray-h (PackTray.tsx). A pocket, a box card or a row picker the
+ * keyboard lands on scrolls clear of it (WCAG 2.4.11), and the page ends
+ * above it so the last row can be reached.
+ */
+.p2-sleeve,
+.p2-sleeve button,
+.nb-box-face,
+.nb-box-row-pick {
+  scroll-margin-bottom: calc(var(--nb-tray-h, 0px) + 16px);
+}
+.nb-tray-clear {
+  padding-bottom: calc(var(--nb-tray-h, 0px) + 16px);
+}

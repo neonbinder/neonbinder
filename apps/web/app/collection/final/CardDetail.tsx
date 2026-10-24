@@ -513,11 +513,14 @@ export function CopyList({
         setLanded(null);
         return;
       }
-      if (!landedHere) return;
       setLanded(null);
+      // The keyboard fell with the line: onto the line the cards are now, or,
+      // when that line is not in this list (it moved out of what the list
+      // shows), onto the list's heading, never left on the page body.
       const root = sectionRef.current;
       const id = CSS.escape(landed);
-      (root?.querySelector<HTMLElement>(`[data-copy-move="${id}"]`) ?? headingRef.current)?.focus();
+      const target = landedHere ? root?.querySelector<HTMLElement>(`[data-copy-move="${id}"]`) : null;
+      (target ?? headingRef.current)?.focus();
     });
     return () => cancelAnimationFrame(frame);
   }, [landed, landedHere]);
@@ -742,7 +745,8 @@ function MovePanel({
         <button type="button" onClick={onCancel} className={QUIET_BUTTON}>
           Keep it here
         </button>
-        <NeonButton type="submit" variant="secondary" size="1" disabled={!valid || !to}>
+        {/* aria-disabled, not disabled: the button stays focusable and says why it waits (submit refuses it). */}
+        <NeonButton type="submit" variant="secondary" size="1" aria-disabled={!valid || !to || undefined}>
           {stack && valid ? `Move ${quantity}` : "Move it"}
         </NeonButton>
       </div>

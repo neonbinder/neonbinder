@@ -77,6 +77,7 @@ import type {
   Capabilities,
   Card,
   CardId,
+  CardTeam,
   CollectionSummary,
   Completion,
   Container,
@@ -103,8 +104,10 @@ import type {
   SetId,
   SetPath,
   SetRef,
+  SetCompletion,
   SetSummary,
   Suggestion,
+  TeamId,
   UpdateResult,
   VariantId,
   Want,
@@ -140,12 +143,20 @@ export interface CollectionData {
   useVariantCards(variantId: VariantId | null): Card[] | undefined;
   /** How much of a checklist the collector has (in the demo, inside the picked binder). */
   useVariantCompletion(variantId: VariantId | null): Completion | undefined;
+  /**
+   * How much of a whole set the collector has, every checklist together (in
+   * the view scope). The totals are the set summary's; while the summary or
+   * the counts load, `undefined`.
+   */
+  useSetCompletion(setId: SetId | null): SetCompletion | undefined;
   /** One card. `null`: no longer in the catalog. */
   useCard(cardId: CardId | null): Card | null | undefined;
   /** Several cards, aligned with `cardIds`; `null` where one is no longer in the catalog. */
   useCards(cardIds: readonly CardId[] | null): (Card | null)[] | undefined;
   /** Players (name or alias), teams and sets matching the text, best first. */
   useSuggestions(text: string): Suggestion[] | undefined;
+  /** One team, with its livery when NB has it. `null`: not in the catalog. */
+  useTeam(teamId: TeamId | null): CardTeam | null | undefined;
   /** Cards whose title matches the text: every word, quoted phrases verbatim. */
   useSearch(text: string, options?: SearchOptions): SearchResult | undefined;
   /** The cards of a picked player, or of a team printed on the card (optionally its whole franchise). */
@@ -183,7 +194,8 @@ export interface CollectionData {
   /**
    * The collector's copies of each card asked for (the hunt tray), keyed by
    * card id; a card held nowhere maps to `[]`. Keep the list short: the
-   * Convex store asks in chunks of 50.
+   * Convex store asks in chunks of 50, and lists at most ten line items of a
+   * card (enough to say "you have it, here"; `useCopiesOf` has them all).
    */
   useCopiesOfCards(cardIds: readonly CardId[] | null): Record<CardId, Copy[]> | undefined;
   /**
@@ -382,6 +394,9 @@ export function useVariantCards(variantId: VariantId | null): Card[] | undefined
 export function useVariantCompletion(variantId: VariantId | null): Completion | undefined {
   return useCollectionStore().data.useVariantCompletion(variantId);
 }
+export function useSetCompletion(setId: SetId | null): SetCompletion | undefined {
+  return useCollectionStore().data.useSetCompletion(setId);
+}
 export function useCard(cardId: CardId | null): Card | null | undefined {
   return useCollectionStore().data.useCard(cardId);
 }
@@ -390,6 +405,9 @@ export function useCards(cardIds: readonly CardId[] | null): (Card | null)[] | u
 }
 export function useSuggestions(text: string): Suggestion[] | undefined {
   return useCollectionStore().data.useSuggestions(text);
+}
+export function useTeam(teamId: TeamId | null): CardTeam | null | undefined {
+  return useCollectionStore().data.useTeam(teamId);
 }
 export function useSearch(text: string, options?: SearchOptions): SearchResult | undefined {
   return useCollectionStore().data.useSearch(text, options);

@@ -71,8 +71,8 @@ interface Item {
   count: number;
   /** A sortable "when": the newest acquired date, or the store's recency rank. */
   added: string;
-  /** Null when the source does not say (the owned-cards list carries no grades). */
-  graded: boolean | null;
+  /** Any of its copies is graded (a slab). */
+  graded: boolean;
 }
 
 /** Copies (one container's) as one item per card, cards looked up by id. */
@@ -145,7 +145,7 @@ export default function OwnedShelf() {
         count: owned.copiesByCard[card.id]?.quantity ?? 1,
         // Most recently touched first: the rank sorts the same way a date does.
         added: String(n - i).padStart(8, "0"),
-        graded: null,
+        graded: owned.copiesByCard[card.id]?.graded === true,
       }));
     }
     if (!list) return undefined;
@@ -169,11 +169,10 @@ export default function OwnedShelf() {
     if (sport && !out.has(sport)) out.set(sport, sport);
     return [...out.entries()].sort((a, b) => a[1].localeCompare(b[1]));
   }, [items, sport]);
-  const gradesKnown = (items ?? []).every((it) => it.graded !== null);
 
   const shown = (items ?? [])
     .filter((it) => !sport || it.card.set.sport.id === sport)
-    .filter((it) => !graded || it.graded === true)
+    .filter((it) => !graded || it.graded)
     .filter((it) => !dupes || it.count > 1)
     .filter((it) => !matchIds || matchIds.has(it.card.id))
     .sort((a, b) => {
@@ -312,11 +311,9 @@ export default function OwnedShelf() {
             </label>
           </div>
           <div role="group" aria-label="Only show" className="mt-3 flex flex-wrap gap-1.5">
-            {gradesKnown && (
-              <Chip pressed={graded} onClick={() => setGraded(!graded)}>
-                Slabs only
-              </Chip>
-            )}
+            <Chip pressed={graded} onClick={() => setGraded(!graded)}>
+              Slabs only
+            </Chip>
             <Chip pressed={dupes} onClick={() => setDupes(!dupes)}>
               Dupes only
             </Chip>
@@ -555,7 +552,7 @@ export function CollectionTally() {
           {owned.cards.map((card) => (
             <ShelfCard
               key={card.id}
-              item={{ card, count: owned.copiesByCard[card.id]?.quantity ?? 1, added: "", graded: null }}
+              item={{ card, count: owned.copiesByCard[card.id]?.quantity ?? 1, added: "", graded: owned.copiesByCard[card.id]?.graded === true }}
               tabIndex={roving.tabIndexFor(card.id)}
               onOpen={() => openCard(card.id, { list: ids, seed: card })}
             />

@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Autocomplete } from "@/components/primitives/Autocomplete";
 import { Input } from "@/components/primitives/Input";
 import { spineFontById, spineFontFamilyCss } from "@/lib/print/spine-fonts";
@@ -25,6 +25,11 @@ import NeonButton from "@/components/modules/NeonButton";
  *
  * The label follows what it is (black vinyl for a binder, masking tape for a
  * box, the rule's team for a smart binder) until the collector styles it.
+ *
+ * A submit that misses something puts the keyboard on the first field to
+ * fix. The create waits in the dialog: while it is out, "Put it on the
+ * shelf" says busy and ignores presses (`aria-disabled`, focus stays), and a
+ * refusal is said here, tied to that button. On success the caller closes it.
  */
 
 type Kind = "binder" | "box" | "smart";
@@ -47,10 +52,17 @@ export default function NewBinderDialog({
   onCreate,
   onClose,
 }: {
-  onCreate: (input: NewContainer) => void;
+  /** Resolves with null when it is on the shelf (the caller closes the dialog), or why it was refused. */
+  onCreate: (input: NewContainer) => Promise<string | null>;
   onClose: () => void;
 }) {
   const titleId = useId();
+  const errorId = useId();
+  const formRef = useRef<HTMLFormElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** Bumped by a submit that missed something: focus goes to the first field to fix. */
+  const [missed, setMissed] = useState(0);
   const { smartBinders } = useCapabilities();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Kind>("binder");
@@ -83,14 +95,24 @@ export default function NewBinderDialog({
   const noun = kind === "box" ? "box" : "binder";
   const ruleMissing = smart && !rule;
 
-  function submit(e: FormEvent) {
+  useEffect(() => {
+    if (missed === 0) return;
+    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [missed]);
+
+  async function submit(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
     setTried(true);
-    if (!trimmed || ruleMissing) return;
+    if (!trimmed || ruleMissing) {
+      setMissed((n) => n + 1);
+      return;
+    }
     const valid = custom ? validLabel(custom) : undefined;
     if (valid === null) {
       setStyling(true);
       setLabelError(true);
+      setMissed((n) => n + 1);
       return;
     }
     // A pick that IS the default stores nothing, so the label keeps
@@ -99,12 +121,16 @@ export default function NewBinderDialog({
     const input: NewContainer = { kind: containerKind, name: trimmed };
     if (label) input.label = label;
     if (rule) input.rule = rule;
-    onCreate(input);
+    setError(null);
+    setBusy(true);
+    const refused = await onCreate(input);
+    setBusy(false);
+    if (refused) setError(refused);
   }
 
   return (
     <Modal labelledBy={titleId} onClose={onClose} className="max-w-lg">
-      <form onSubmit={submit} className="p-5" noValidate>
+      <form ref={formRef} onSubmit={(e) => void submit(e)} className="p-5" noValidate>
         <h2 id={titleId} className="text-xl font-bold text-ink">
           New binder or box
         </h2>
@@ -244,11 +270,20 @@ export default function NewBinderDialog({
           </p>
         </section>
 
+        <p id={errorId} role="alert" className="mt-4 text-sm text-neon-pink-text empty:hidden">
+          {error ?? ""}
+        </p>
         <div className="mt-6 flex flex-wrap justify-end gap-3">
           <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
             Cancel
           </NeonButton>
-          <NeonButton type="submit" className="min-h-10">
+          <NeonButton
+            type="submit"
+            aria-disabled={busy ? true : undefined}
+            aria-busy={busy ? true : undefined}
+            aria-describedby={error && !busy ? errorId : undefined}
+            className="min-h-10"
+          >
             Put it on the shelf
           </NeonButton>
         </div>
@@ -275,6 +310,7 @@ function EntityPicker<T extends PlayerSuggestion | TeamSuggestion>({
   nameOf: (s: T) => string;
   error?: string;
 }) {
+  const errorId = useId();
   const [q, setQ] = useState(picked ? nameOf(picked) : "");
   const settled = useSearchText(q);
   const suggestions = useSuggestions(settled);
@@ -305,8 +341,10 @@ function EntityPicker<T extends PlayerSuggestion | TeamSuggestion>({
         hideWhenEmpty={!searchable(q)}
         inputGeometryClassName="px-3 py-2 text-base"
         selectedKey={picked?.id}
+        describedBy={error ? errorId : undefined}
+        invalid={!!error}
       />
-      <p role="alert" className="mt-1 text-sm text-notice-warn-ink empty:hidden">
+      <p id={errorId} role="alert" className="mt-1 text-sm text-notice-warn-ink empty:hidden">
         {error ?? ""}
       </p>
     </div>

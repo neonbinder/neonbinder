@@ -246,8 +246,9 @@ export const ensureSystem = mutation({
 
 /**
  * A new binder or box, empty and counted. At most `MAX_CONTAINERS` per
- * collector. `rule` (a smart binder) is refused until NEO-362 ships the
- * evaluator, so no row pins its shape early.
+ * collector. It takes no `rule` (a smart binder) until NEO-362 ships the
+ * evaluator: the argument validator refuses one, so no row pins its shape
+ * early.
  */
 export const create = mutation({
   args: {
@@ -255,14 +256,10 @@ export const create = mutation({
     name: v.string(),
     description: v.optional(v.string()),
     label: v.optional(collectionLabelValidator),
-    rule: v.optional(collectionRuleValidator),
   },
   returns: v.object({ containerId: v.id("collectionContainers") }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    if (args.rule !== undefined) {
-      refuse(COLLECTION_ERRORS.invalid, "Smart binders aren't ready yet. Make a regular binder and file cards into it.");
-    }
     const name = cleanName(args.name);
     const description = cleanText(args.description, MAX_CONTAINER_DESCRIPTION_CHARS, "description");
     const label = args.label ? cleanLabel(args.label) : undefined;
@@ -345,7 +342,9 @@ export const update = mutation({
  * their pockets and rows cleared, each folding into an identical line already
  * in Main (the trade flag travels with it). The client loops it until
  * `remaining` is 0, then calls `remove`. `moved` is physical cards (quantities
- * summed); `remaining` is the line items still in it (0 when empty). No undo.
+ * summed); `remaining` is the line items still in it (0 when empty): exact
+ * up to `EMPTY_BATCH`, past that the container's kept count (at least
+ * `EMPTY_BATCH + 1`). No undo.
  * Refuses a system container.
  */
 export const empty = mutation({
@@ -407,13 +406,16 @@ export const empty = mutation({
     }
     await moveTally(ctx, ownerId, { copies: 0, lines: linesDelta, cards: 0 });
     await moveCounts(ctx, ownerId, changes);
+    // What is left, counted off the rows (this transaction's writes
+    // included), up to one more batch. Past that the kept count says how
+    // many, never fewer than the rows just seen.
     const left = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", row._id))
-      .first();
-    if (!left) return { moved, remaining: 0 };
+      .take(EMPTY_BATCH + 1);
+    if (left.length <= EMPTY_BATCH) return { moved, remaining: left.length };
     const fresh = await ctx.db.get(row._id);
-    return { moved, remaining: Math.max(1, fresh?.count?.lines ?? 1) };
+    return { moved, remaining: Math.max(left.length, fresh?.count?.lines ?? 0) };
   },
 });
 

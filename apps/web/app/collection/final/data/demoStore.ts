@@ -89,6 +89,7 @@ import {
   type Card,
   type CardFeature,
   type CardId,
+  type CardTeam,
   type Completion,
   type Container,
   type ContainerCopies,
@@ -98,6 +99,7 @@ import {
   type OwnedCards,
   type DrillLevel,
   type DrillParents,
+  type SetCompletion,
   type SetPath,
   type SetRef,
   type SetSummary,
@@ -408,7 +410,7 @@ function suggestionsFor(text: string): Suggestion[] {
   const teams: Suggestion[] = fixtureTeams
     .filter((t) => normalize(`${t.location} ${t.name}`).includes(q))
     .slice(0, SUGGESTION_LIMIT)
-    .map((t) => ({ kind: "team", id: t.id, name: t.name, location: t.location }));
+    .map((t) => ({ kind: "team", id: t.id, name: t.name, location: t.location, primary: t.primary, secondary: t.secondary }));
   const sets: Suggestion[] = fixtureSets
     .filter((s) => normalize(`${setLabel(s)} ${getBrand(s.brandId).name}`).includes(q))
     .slice(0, SUGGESTION_LIMIT)
@@ -478,6 +480,29 @@ export const DEMO_DATA: CollectionData = {
     );
   },
 
+  useSetCompletion(setId) {
+    const state = useDemoState().state;
+    const scope = useScope();
+    return useMemo((): SetCompletion | undefined => {
+      if (setId === null) return undefined;
+      const set = fixtureSet(setId);
+      const scoped = inScope(state, scope);
+      const sum = { owned: 0, total: 0, ownedAll: 0, totalAll: 0 };
+      for (const sv of set?.variants ?? []) {
+        const c = completionIn(demoVariantId(set!.id, sv.path), scoped);
+        if (!c) continue;
+        sum.owned += c.owned;
+        sum.total += c.total;
+        sum.ownedAll += c.ownedAll;
+        sum.totalAll += c.totalAll;
+      }
+      return {
+        ...completionOf({ owned: sum.owned, total: sum.total }, { owned: sum.ownedAll, total: sum.totalAll }),
+        exact: true,
+      };
+    }, [setId, state, scope]);
+  },
+
   useCard(cardId) {
     return cardId === null ? undefined : demoCard(cardId);
   },
@@ -489,6 +514,14 @@ export const DEMO_DATA: CollectionData = {
 
   useSuggestions(text) {
     return useMemo(() => (searchable(text) ? suggestionsFor(text) : []), [text]);
+  },
+
+  useTeam(teamId) {
+    return useMemo((): CardTeam | null | undefined => {
+      if (teamId === null) return undefined;
+      const t = fixtureTeams.find((team) => team.id === teamId);
+      return t ? { id: t.id, name: t.name, location: t.location, primary: t.primary, secondary: t.secondary } : null;
+    }, [teamId]);
   },
 
   useSearch(text, options) {
@@ -560,8 +593,9 @@ export const DEMO_DATA: CollectionData = {
         if (count) {
           count.quantity += copy.quantity;
           count.lines += 1;
+          if (copy.graded) count.graded = true;
         } else {
-          held.set(copy.cardId, { quantity: copy.quantity, lines: 1 });
+          held.set(copy.cardId, { quantity: copy.quantity, lines: 1, ...(copy.graded ? { graded: true } : {}) });
           order.push(copy.cardId);
         }
       }

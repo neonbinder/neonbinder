@@ -85,7 +85,7 @@ function BoxSection({
           outline
           size="1"
           onClick={onOpenBox}
-          aria-label={`Open ${box.name}`}
+          aria-label={`Open the box, ${box.name}`}
           className="ml-auto min-h-8 max-sm:min-h-11"
         >
           Open the box

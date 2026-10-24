@@ -8,7 +8,7 @@ import { useSearchText } from "../catalog/search";
 import { searchable, useSuggestions } from "../data/store";
 import type { ContainerLabel, Suggestion } from "../data/types";
 import { useCollectionMode } from "../mode";
-import { suggestionColors, useTeamColors } from "./hooks";
+import { suggestionColors } from "./hooks";
 import { shelfColors, smallestLetteringPx, teamColorsOn, validLabel, type TeamColors, type TeamPick } from "./label";
 import PrintShopLink from "./PrintShopLink";
 import SpineLabel, { SpineFontFaces } from "./SpineLabel";
@@ -182,8 +182,8 @@ export default function LabelDesigner({
 
 /**
  * "Start from a team's colors": type a team, pick it, and its colours land
- * on the label. The colours are NB's own, read off the cards the team is
- * printed on; a team NB has no colours for says so and changes nothing.
+ * on the label. The colours are NB's own, carried on the team suggestion;
+ * a team NB has no colours for says so and changes nothing.
  */
 function TeamColorsPicker({ draft, onChange }: { draft: ContainerLabel; onChange: (next: ContainerLabel) => void }) {
   const [q, setQ] = useState("");
@@ -191,9 +191,7 @@ function TeamColorsPicker({ draft, onChange }: { draft: ContainerLabel; onChange
   const suggestions = useSuggestions(settled);
   const teams = (suggestions ?? []).filter((s): s is TeamSuggestion => s.kind === "team");
   const [picked, setPicked] = useState<TeamSuggestion | null>(null);
-  const direct = picked ? suggestionColors(picked) : null;
-  const read = useTeamColors(picked && !direct ? picked.id : null);
-  const colors = direct ?? read;
+  const colors = picked ? suggestionColors(picked) : null;
 
   // Apply the picked team once its colours are in, then never again for it:
   // a later edit of a colour by hand must stick.

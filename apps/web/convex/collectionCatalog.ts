@@ -26,6 +26,7 @@ import {
   catalogCardValidator,
   catalogCardWithPathValidator,
   catalogLevelValidator,
+  cardTeamValidator,
   kindRank,
   pathNodeValidator,
   setRefValidator,
@@ -466,6 +467,31 @@ export const card = query({
     const row = await ctx.db.get(id);
     if (!row) return null;
     return await new CatalogReader(ctx).cardWithPath(row);
+  },
+});
+
+/**
+ * NEO-359 — one team, by id: its nickname, where it is from, and its livery
+ * when NB has it (the same shape a card's team carries). A smart binder that
+ * names a team wears its colours even when no card shows the team. NB fields
+ * only. Null when it is gone or the id is bad.
+ */
+export const team = query({
+  args: { teamId: v.string() },
+  returns: v.union(cardTeamValidator, v.null()),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    const id = ctx.db.normalizeId("teams", args.teamId);
+    if (!id) return null;
+    const row = await ctx.db.get(id);
+    if (!row) return null;
+    return {
+      _id: row._id,
+      name: row.name,
+      ...(row.location ? { location: row.location } : {}),
+      ...(row.colors?.primary ? { primaryColor: row.colors.primary } : {}),
+      ...(row.colors?.secondary ? { secondaryColor: row.colors.secondary } : {}),
+    };
   },
 });
 

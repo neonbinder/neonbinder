@@ -12,6 +12,11 @@ import NeonButton from "@/components/modules/NeonButton";
  * Deleting is a second step inside the dialog, and it says what happens:
  * the cards go back to Main (out of their pockets or rows, trade flags kept)
  * and there is no undo, because the store keeps none.
+ *
+ * Both writes wait in the dialog: while one is out its buttons say busy and
+ * ignore presses (`aria-disabled`, never native `disabled`, so focus stays
+ * put), and a refusal is said inside the dialog, tied to the button that
+ * asked. On success the caller closes it.
  */
 
 export default function EditContainerDialog({
@@ -21,11 +26,17 @@ export default function EditContainerDialog({
   onClose,
 }: {
   container: Container;
-  onSave: (patch: ContainerPatch) => void;
-  onDelete: () => void;
+  /** Resolves with null when saved (the caller closes the dialog), or why it was refused. */
+  onSave: (patch: ContainerPatch) => Promise<string | null>;
+  /** Resolves with null when deleted (the caller closes the dialog), or why it was refused. */
+  onDelete: () => Promise<string | null>;
   onClose: () => void;
 }) {
   const titleId = useId();
+  const confirmId = useId();
+  const errorId = useId();
+  const [busy, setBusy] = useState<"save" | "delete" | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState(container.name);
   const [description, setDescription] = useState(container.description ?? "");
   const [tried, setTried] = useState(false);
@@ -44,16 +55,42 @@ export default function EditContainerDialog({
     wasConfirming.current = confirming;
   }, [confirming]);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
     setTried(true);
     if (!trimmed) return;
     const patch: ContainerPatch = {};
     if (trimmed !== container.name) patch.name = trimmed;
     if (description.trim() !== (container.description ?? "")) patch.description = description.trim();
     if (Object.keys(patch).length === 0) return onClose();
-    onSave(patch);
+    setError(null);
+    setBusy("save");
+    const refused = await onSave(patch);
+    setBusy(null);
+    if (refused) setError(refused);
   }
+
+  async function remove() {
+    if (busy) return;
+    setError(null);
+    setBusy("delete");
+    const refused = await onDelete();
+    setBusy(null);
+    if (refused) setError(refused);
+  }
+
+  const errorLine = (
+    <p id={errorId} role="alert" className="mt-3 text-sm text-neon-pink-text empty:hidden">
+      {error ?? ""}
+    </p>
+  );
+  /** A button that waits on a write: says busy, ignores presses, keeps focus. */
+  const waiting = (which: "save" | "delete") => ({
+    "aria-disabled": busy ? true : undefined,
+    "aria-busy": busy === which ? true : undefined,
+    "aria-describedby": error && busy === null ? errorId : undefined,
+  });
 
   const goes =
     n === null
@@ -78,20 +115,31 @@ export default function EditContainerDialog({
           <h2 id={titleId} className="text-xl font-bold text-ink">
             Delete {container.name}?
           </h2>
-          <p className="mt-2 text-ink-2">
+          <p id={confirmId} className="mt-2 text-ink-2">
             {goes} You can&apos;t undo this.
           </p>
+          {errorLine}
           <div className="mt-6 flex flex-wrap justify-end gap-3">
-            <NeonButton ref={keepRef} type="button" variant="secondary" outline onClick={() => setConfirming(false)} className="min-h-10">
+            <NeonButton
+              ref={keepRef}
+              type="button"
+              variant="secondary"
+              outline
+              aria-describedby={confirmId}
+              onClick={() => {
+                if (!busy) setConfirming(false);
+              }}
+              className="min-h-10"
+            >
               Keep it
             </NeonButton>
-            <NeonButton type="button" variant="negative" onClick={onDelete} className="min-h-10">
+            <NeonButton type="button" variant="negative" onClick={() => void remove()} {...waiting("delete")} className="min-h-10">
               Yes, delete it
             </NeonButton>
           </div>
         </div>
       ) : (
-        <form onSubmit={submit} className="p-5" noValidate>
+        <form onSubmit={(e) => void submit(e)} className="p-5" noValidate>
           <h2 id={titleId} className="text-xl font-bold text-ink">
             Rename or delete {container.name}
           </h2>
@@ -116,7 +164,12 @@ export default function EditContainerDialog({
               type="button"
               variant="negative"
               outline
-              onClick={() => setConfirming(true)}
+              onClick={() => {
+                if (busy) return;
+                setError(null);
+                setConfirming(true);
+              }}
+              aria-disabled={busy ? true : undefined}
               className="min-h-10"
             >
               Delete this {noun}
@@ -125,11 +178,12 @@ export default function EditContainerDialog({
               <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
                 Cancel
               </NeonButton>
-              <NeonButton type="submit" className="min-h-10">
+              <NeonButton type="submit" {...waiting("save")} className="min-h-10">
                 Save
               </NeonButton>
             </div>
           </div>
+          {errorLine}
         </form>
       )}
     </Modal>

@@ -67,6 +67,7 @@ import {
 import {
   REAL_CAPABILITIES,
   type Card,
+  type CardTeam,
   type Container,
   type ContainerCopies,
   type ContainerPatch,
@@ -76,6 +77,7 @@ import {
   type DrillLevel,
   type HeldCount,
   type OwnedCards,
+  type SetCompletion,
   type SetRef,
   type SetSummary,
   type Suggestion,
@@ -446,6 +448,26 @@ export const CONVEX_DATA: CollectionData = {
     }, [raw]);
   },
 
+  useSetCompletion(setId) {
+    const homeId = useScopedHome();
+    // The owned counts come in one read of the set's copies; the totals are
+    // the set summary's (the same numbers the browse header shows).
+    const summary = CONVEX_DATA.useSetSummary(setId);
+    const raw = useQuery(
+      api.collection.setCompletion,
+      setId ? { setId, ...(homeId ? { homeId } : {}) } : "skip",
+    );
+    return useMemo((): SetCompletion | undefined => {
+      if (setId === null || summary === undefined || raw === undefined) return undefined;
+      const total = summary?.totalCards ?? 0;
+      const totalAll = summary?.totalCardsAll ?? 0;
+      return {
+        ...completionOf({ owned: raw.owned, total }, { owned: raw.ownedAll, total: totalAll }),
+        exact: !raw.truncated,
+      };
+    }, [setId, summary, raw]);
+  },
+
   useCard(cardId) {
     const raw = useQuery(api.collectionCatalog.card, cardId ? { cardId } : "skip");
     return useMemo(() => (raw === undefined ? undefined : toCardWithPath(raw)), [raw]);
@@ -482,6 +504,21 @@ export const CONVEX_DATA: CollectionData = {
       if (raw === undefined) return undefined;
       return suggestionsFrom(raw);
     }, [q, raw]);
+  },
+
+  useTeam(teamId) {
+    const raw = useQuery(api.collectionCatalog.team, teamId ? { teamId } : "skip");
+    return useMemo((): CardTeam | null | undefined => {
+      if (teamId === null || raw === undefined) return undefined;
+      if (raw === null) return null;
+      return {
+        id: raw._id,
+        name: raw.name,
+        location: raw.location ?? "",
+        ...(raw.primaryColor ? { primary: raw.primaryColor } : {}),
+        ...(raw.secondaryColor ? { secondary: raw.secondaryColor } : {}),
+      };
+    }, [teamId, raw]);
   },
 
   useSearch(text, options) {
@@ -591,7 +628,11 @@ export const CONVEX_DATA: CollectionData = {
           return;
         }
         cards.push(card);
-        copiesByCard[id] = { quantity: held[i].quantity, lines: held[i].lines };
+        copiesByCard[id] = {
+          quantity: held[i].quantity,
+          lines: held[i].lines,
+          ...(held[i].graded ? { graded: true } : {}),
+        };
       });
       return {
         cards,
@@ -779,6 +820,8 @@ function suggestionsFrom(raw: RawSuggest): Suggestion[] {
         name: t.name,
         location: t.location ?? "",
         ...(t.franchise ? { franchise: { id: t.franchise._id, name: t.franchise.name } } : {}),
+        ...(t.primaryColor ? { primary: t.primaryColor } : {}),
+        ...(t.secondaryColor ? { secondary: t.secondaryColor } : {}),
       }),
     ),
     ...raw.sets.map(

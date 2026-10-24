@@ -22,7 +22,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { requireSignedIn } from "./auth";
 import { COLLECTION_ERRORS, MAX_WANTS, moveSystemCount, refuse } from "./collection";
-import { sweepCardWants } from "./cardRowDelete";
+import { sweepCardWants, WANT_SWEEP_CONTINUATION_BATCH } from "./cardRowDelete";
 import { internal } from "./_generated/api";
 
 /** A want as the Want List reads it. */
@@ -33,18 +33,19 @@ export const wantValidator = v.object({
   lastUpdated: v.number(),
 });
 
-/** How many wants the caller holds: the shelf row's count when kept, else counted (bounded). */
-async function wantCount(ctx: MutationCtx, ownerId: string): Promise<number> {
-  const row = await ctx.db
-    .query("collectionContainers")
-    .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", "want"))
-    .first();
-  if (row?.count) return row.count.lines;
+/**
+ * Whether the caller already holds `MAX_WANTS` wants. Counted off the wants
+ * themselves (a bounded read, at most `MAX_WANTS` rows, cheap at the cap),
+ * never off the Want List shelf row's `count`: a count that drifted low must
+ * not let a collector past the cap, and one that drifted high must not refuse
+ * a want under it.
+ */
+async function atWantCap(ctx: MutationCtx, ownerId: string): Promise<boolean> {
   const wants = await ctx.db
     .query("collectionWants")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId))
     .take(MAX_WANTS);
-  return wants.length;
+  return wants.length >= MAX_WANTS;
 }
 
 /** The caller's wants, oldest card id order (the index), at most `MAX_WANTS`. */
@@ -111,7 +112,7 @@ export const set = mutation({
     if (!card) {
       refuse(COLLECTION_ERRORS.notFound, "That card isn't in the catalog anymore.");
     }
-    if ((await wantCount(ctx, ownerId)) >= MAX_WANTS) {
+    if (await atWantCap(ctx, ownerId)) {
       refuse(
         COLLECTION_ERRORS.limit,
         `Your Want List is full at ${MAX_WANTS.toLocaleString("en-US")} cards. Cross a few off first.`,
@@ -131,13 +132,18 @@ export const set = mutation({
 /**
  * Internal: the continuation of `removeCardRow`'s want sweep, for a deleted
  * card on more Want Lists than one transaction removes
- * (`cardRowDelete.WANT_SWEEP_BATCH`). Reschedules itself until none are left.
+ * (`cardRowDelete.WANT_SWEEP_BATCH`), `WANT_SWEEP_CONTINUATION_BATCH` a run.
+ * Reschedules itself until none are left.
  */
 export const sweepWantsOfDeletedCard = internalMutation({
   args: { cardId: v.id("cardChecklist") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const swept = await sweepCardWants(ctx, args.cardId as Id<"cardChecklist">);
+    const swept = await sweepCardWants(
+      ctx,
+      args.cardId as Id<"cardChecklist">,
+      WANT_SWEEP_CONTINUATION_BATCH,
+    );
     if (swept.hasMore) {
       await ctx.scheduler.runAfter(0, internal.collectionWants.sweepWantsOfDeletedCard, {
         cardId: args.cardId,

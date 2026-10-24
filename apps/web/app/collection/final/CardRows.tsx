@@ -277,10 +277,17 @@ export default function CardRowGroup({
     <>
       <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
-        <div className="text-sm sm:truncate">
-          <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
-          {summary && <span className="text-neon-blue-text"> · {summary}</span>}
-          {forSale && <ForSaleBadge />}
+        {/* The For sale badge sits outside the truncated text, so a long name never cuts it off. */}
+        <div className="flex min-w-0 items-baseline text-sm">
+          <span className="min-w-0 sm:truncate">
+            <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
+            {summary && <span className="text-neon-blue-text"> · {summary}</span>}
+          </span>
+          {forSale && (
+            <span className="shrink-0">
+              <ForSaleBadge />
+            </span>
+          )}
         </div>
         <div className="min-h-[1rem] truncate text-xs text-ink-3">
           {team && (

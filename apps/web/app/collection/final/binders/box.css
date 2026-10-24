@@ -234,13 +234,23 @@ button.nb-longbox {
 .nb-box-face:focus-visible > :first-child {
   transform: translateY(-6px);
 }
-.nb-box-face:focus-visible {
-  outline: 3px solid #00c2ff;
-  outline-offset: 1px;
-}
+/*
+ * Rings on the kraft keep their colours in both themes, like the kraft: a
+ * neon ring alone washes out on it (cyan and pink are under 2:1 there). So
+ * each ring is two-tone, a dark band that holds on the kraft and a light or
+ * neon band that holds on the dark table. Found (a hunt landed here) is pink
+ * over the ink; focus is the ink over white. Focus is declared last so it
+ * wins on a found card the keyboard is on.
+ */
 .nb-box-face[data-found="true"] {
   outline: 3px solid #ff2e9a;
-  outline-offset: 1px;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--kraft-ink);
+}
+.nb-box-face:focus-visible {
+  outline: 3px solid var(--kraft-ink);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #fff;
 }
 .nb-box-qty {
   position: absolute;
@@ -267,8 +277,9 @@ button.nb-longbox {
   font-weight: 600;
 }
 .nb-box-row-pick:focus-visible {
-  outline: 3px solid #00c2ff;
-  outline-offset: 1px;
+  outline: 3px solid var(--kraft-ink);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #fff;
 }
 @media (max-width: 639px) {
   .nb-box-row {

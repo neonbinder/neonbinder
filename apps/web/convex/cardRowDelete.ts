@@ -55,13 +55,18 @@ export const COLLECTOR_COUNT_LINES = 100;
 
 /**
  * NEO-359 — wants of one deleted card removed in the deleting transaction.
- * Past it the rest go in a scheduled continuation, so a card on many Want
- * Lists never blows a page delete's budget.
+ * Kept small (each costs ~3 operations) so a page delete's cost does not grow
+ * with how widely a card is wanted: the page deleters without op accounting
+ * (`parallelChecklistBuild`, `selectorOptions`) stay safe. Past it the rest
+ * go in a scheduled continuation (`WANT_SWEEP_CONTINUATION_BATCH` a run).
  */
-export const WANT_SWEEP_BATCH = 50;
+export const WANT_SWEEP_BATCH = 5;
+
+/** NEO-359 — wants one scheduled continuation (`sweepWantsOfDeletedCard`) removes per run. */
+export const WANT_SWEEP_CONTINUATION_BATCH = 200;
 
 /**
- * NEO-359 — delete up to `WANT_SWEEP_BATCH` wants of `cardId` (the card is
+ * NEO-359 — delete up to `limit` (default `WANT_SWEEP_BATCH`) wants of `cardId` (the card is
  * gone, or going, in this transaction), moving each owner's Want List count
  * down by one. A Want row without a stored count stays uncounted (its next
  * read or write counts it); one that would go below zero is cleared to
@@ -70,13 +75,14 @@ export const WANT_SWEEP_BATCH = 50;
 export async function sweepCardWants(
   ctx: MutationCtx,
   cardId: Id<"cardChecklist">,
+  limit: number = WANT_SWEEP_BATCH,
 ): Promise<{ wantIds: Array<Id<"collectionWants">>; hasMore: boolean }> {
   const wants = await ctx.db
     .query("collectionWants")
     .withIndex("by_card", (q) => q.eq("cardId", cardId))
-    .take(WANT_SWEEP_BATCH + 1);
-  const hasMore = wants.length > WANT_SWEEP_BATCH;
-  const batch = hasMore ? wants.slice(0, WANT_SWEEP_BATCH) : wants;
+    .take(limit + 1);
+  const hasMore = wants.length > limit;
+  const batch = hasMore ? wants.slice(0, limit) : wants;
   for (const want of batch) {
     await ctx.db.delete(want._id);
     const wantRow = await ctx.db
@@ -211,6 +217,8 @@ export type RemovedCardRow = {
   teamLinkIds: Array<Id<"cardTeamLinks">>;
   /** NEO-359 — the wants deleted in this transaction (a continuation may sweep more). */
   wantIds: Array<Id<"collectionWants">>;
+  /** NEO-359 — true when more wants were left to the scheduled continuation. */
+  wantSweepScheduled: boolean;
 };
 
 /**
@@ -252,5 +260,11 @@ export async function removeCardRow(
   //    caller ends the emptied row before it flushes.
   ledger.removeCard(card);
   await ledger.rememberChain(ctx, card.selectorOptionId);
-  return { crossListingIds, playerLinkIds, teamLinkIds, wantIds: wants.wantIds };
+  return {
+    crossListingIds,
+    playerLinkIds,
+    teamLinkIds,
+    wantIds: wants.wantIds,
+    wantSweepScheduled: wants.hasMore,
+  };
 }

@@ -58,23 +58,30 @@ interface BoxDeskProps {
   draggingId: string | null;
 }
 
+/** How a move was asked for: the row picker keeps focus on a picker, Alt+arrows on the card. */
+type Via = "select" | "keys";
+
 export default function BoxDesk({ box, copies, cards, truncated, onMore, onOpen, onPlace, found, draggingId }: BoxDeskProps) {
   const { rows, unsorted } = boxRows(copies, cards);
-  const [focusId, setFocusId] = useState<CopyId | null>(null);
+  const [focusTo, setFocusTo] = useState<{ id: CopyId; via: Via } | null>(null);
+  /** Said when an Alt+arrow hop has nowhere to go. */
+  const [said, setSaid] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
 
   // After a move the card is drawn in another row (a new element), so focus
   // follows it there by id: the line it moved into, which can be a twin it
-  // folded into.
+  // folded into. A move made with the row picker lands on the moved card's
+  // picker (the control the collector was using); a hop, on the card.
   useEffect(() => {
-    if (!focusId) return;
-    const el = rootRef.current?.querySelector<HTMLElement>(`[data-box-copy="${CSS.escape(focusId)}"]`);
+    if (!focusTo) return;
+    const attr = focusTo.via === "select" ? "data-box-pick" : "data-box-copy";
+    const el = rootRef.current?.querySelector<HTMLElement>(`[${attr}="${CSS.escape(focusTo.id)}"]`);
     if (el) {
       el.focus({ preventScroll: true });
       el.scrollIntoView({ block: "nearest" });
-      setFocusId(null);
+      setFocusTo(null);
     }
-  }, [focusId, copies]);
+  }, [focusTo, copies]);
 
   useEffect(() => {
     if (!found) return;
@@ -83,9 +90,10 @@ export default function BoxDesk({ box, copies, cards, truncated, onMore, onOpen,
     el?.scrollIntoView({ block: "nearest" });
   }, [found]);
 
-  const place = (copy: Copy, row: number | null) => {
+  const place = (copy: Copy, row: number | null, via: Via) => {
+    setSaid("");
     void onPlace(copy, row).then((id) => {
-      if (id) setFocusId(id);
+      if (id) setFocusTo({ id, via });
     });
   };
 
@@ -112,13 +120,23 @@ export default function BoxDesk({ box, copies, cards, truncated, onMore, onOpen,
         found={found === copy.id}
         lifted={draggingId === copyDragId(copy.id)}
         onOpen={() => onOpen(card, copy)}
-        onPlace={(row) => place(copy, row)}
+        onPlace={(row, via) => place(copy, row, via)}
+        onStuck={(dir) =>
+          setSaid(
+            dir < 0
+              ? `${names.get(copy.id) ?? shortName(card)} is already in ${rowName(0)}, the front of the box.`
+              : `${names.get(copy.id) ?? shortName(card)} is already on the table. Alt+Up files it into ${rowName(BOX_ROWS - 1)}.`,
+          )
+        }
       />
     );
   };
 
   return (
     <div ref={rootRef}>
+      <p role="status" className="sr-only">
+        {said}
+      </p>
       <div role="region" aria-label={`${box.name}, open`} className="nb-box">
         {rows.map((list, row) => (
           <BoxRow key={row} boxId={box.id} row={row} count={list.reduce((n, c) => n + c.quantity, 0)}>
@@ -204,6 +222,7 @@ function BoxCard({
   lifted,
   onOpen,
   onPlace,
+  onStuck,
 }: {
   copy: Copy;
   card: Card;
@@ -211,7 +230,9 @@ function BoxCard({
   found: boolean;
   lifted: boolean;
   onOpen: () => void;
-  onPlace: (row: number | null) => void;
+  onPlace: (row: number | null, via: Via) => void;
+  /** An Alt+arrow hop past the front (-1) or the back (1): nowhere to go. */
+  onStuck: (dir: -1 | 1) => void;
 }) {
   const { setNodeRef, setActivatorNodeRef, listeners } = useDraggable({
     id: copyDragId(copy.id),
@@ -228,8 +249,10 @@ function BoxCard({
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
     e.preventDefault();
-    const to = hop(copy.slot, e.key === "ArrowUp" ? -1 : 1);
-    if (to !== undefined) onPlace(to);
+    const dir = e.key === "ArrowUp" ? -1 : 1;
+    const to = hop(copy.slot, dir);
+    if (to !== undefined) onPlace(to, "keys");
+    else onStuck(dir);
   };
 
   return (
@@ -260,9 +283,10 @@ function BoxCard({
       </IdTooltip>
       <select
         aria-label={`Row for ${name}`}
+        data-box-pick={copy.id}
         className="nb-box-row-pick"
         value={row === null ? "" : String(row)}
-        onChange={(e) => onPlace(e.target.value === "" ? null : Number(e.target.value))}
+        onChange={(e) => onPlace(e.target.value === "" ? null : Number(e.target.value), "select")}
       >
         {Array.from({ length: BOX_ROWS }, (_, r) => (
           <option key={r} value={r}>

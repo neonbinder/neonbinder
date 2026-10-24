@@ -275,7 +275,8 @@ const LIST_CHILDREN_GROUP = 100;
  * System operations one deleting mutation may spend before it ends its page.
  * A card costs ~8 through `removeCardRow` (variation-children read, collector
  * guard, cross-listing, variation, player-index, team-index and (NEO-359)
- * want reads, the delete) plus one per junction, index and want row; ~700
+ * want reads, the delete) plus one per junction and index row, three per want
+ * swept (at most `WANT_SWEEP_BATCH`) and one for a scheduled sweep; ~700
  * leaves room under the ~900
  * comfortable line for the fixed reads (target, ancestors, membership, the
  * page's collector pre-check and the counts flush).
@@ -1161,11 +1162,16 @@ export const wipeCardsPage = internalMutation({
       deletedTeamLinks.push(...removed.teamLinkIds);
       deleted.add(card._id);
       deletedCards.push(card._id);
+      // 8: the fixed reads and the delete, the want-index read included;
+      // each want swept costs 3 (its delete, its owner's Want List read and
+      // patch); scheduling the continuation costs 1.
       ops +=
-        7 +
+        8 +
         removed.crossListingIds.length +
         removed.playerLinkIds.length +
-        removed.teamLinkIds.length;
+        removed.teamLinkIds.length +
+        3 * removed.wantIds.length +
+        (removed.wantSweepScheduled ? 1 : 0);
     };
 
     let stoppedEarly = false;

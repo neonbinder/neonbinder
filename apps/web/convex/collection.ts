@@ -114,6 +114,14 @@ export const MAX_CONTAINER_RECOUNT_LINES = 5000;
 export const MAX_CONTAINER_PAGE = 200;
 /** NEO-359 — cards `copiesOfMany` takes per call (the card hunt). */
 export const MAX_COPIES_OF_MANY = 50;
+/**
+ * NEO-359 — line items `copiesOfMany` reads per card. A line can carry ~8 KB
+ * (a 2,000-character note at worst-case UTF-8, plus its other text), so 50
+ * cards x 10 lines stays near 4 MB, well under a query's read-bytes limit.
+ * The hunt asks "do I have it, and where": ten lines answer that; a card's
+ * full list is `copiesOf`.
+ */
+export const MAX_COPIES_OF_MANY_LINES_PER_CARD = 10;
 /** NEO-359 — cards one `cardsInSet` page returns. */
 export const MAX_SET_CARDS_PAGE = 200;
 /** NEO-359 — rows in a box: slots 0 to `BOX_ROWS - 1`. */
@@ -1027,6 +1035,8 @@ export const ownedCardValidator = v.object({
   lines: v.number(),
   /** When the card's newest line was last touched. */
   lastUpdated: v.number(),
+  /** NEO-359: true when any line of the card is graded (a slab): "Slabs only". */
+  graded: v.boolean(),
 });
 
 /**
@@ -1067,12 +1077,17 @@ export const ownedCards = query({
         .take(MAX_LINES_PER_CARD);
       if (lines.some((other) => newerLine(other, line))) continue;
       let quantity = 0;
-      for (const other of lines) quantity += other.quantity;
+      let graded = false;
+      for (const other of lines) {
+        quantity += other.quantity;
+        if (other.grading) graded = true;
+      }
       page.push({
         cardId: line.cardId,
         quantity,
         lines: lines.length,
         lastUpdated: line.lastUpdated,
+        graded,
       });
     }
     return { ...result, page };
@@ -1354,7 +1369,8 @@ export const tradeCopies = query({
 /**
  * NEO-359 — the caller's line items of up to `MAX_COPIES_OF_MANY` cards at
  * once (the card hunt: "which of these do I have, and where?"), aligned with
- * `cardIds`. A bad id reads as no copies.
+ * `cardIds`, at most `MAX_COPIES_OF_MANY_LINES_PER_CARD` lines each (oldest
+ * first). A bad id reads as no copies.
  */
 export const copiesOfMany = query({
   args: { cardIds: v.array(v.string()) },
@@ -1371,7 +1387,7 @@ export const copiesOfMany = query({
         ? await ctx.db
             .query("collectionCopies")
             .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
-            .take(MAX_LINES_PER_CARD)
+            .take(MAX_COPIES_OF_MANY_LINES_PER_CARD)
         : [];
       out.push({ cardId: raw, copies: rows.map(copyOut) });
     }

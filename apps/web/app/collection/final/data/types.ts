@@ -459,6 +459,21 @@ export interface Completion {
   percentAll: number;
 }
 
+/**
+ * How much of a whole set the collector has: every checklist of the set
+ * (Base, inserts, parallels) counted together, against the set summary's
+ * `totalCards` / `totalCardsAll`. Honours the view scope like
+ * `useVariantCompletion`.
+ */
+export interface SetCompletion extends Completion {
+  /**
+   * False when the store could count only part of the set's copies (a very
+   * large holding): `owned` is then a floor, to read as "N+", never as the
+   * answer.
+   */
+  exact: boolean;
+}
+
 /** The whole collection at a glance. */
 export interface CollectionSummary {
   /** Physical cards: quantities summed. */
@@ -478,6 +493,8 @@ export interface HeldCount {
   quantity: number;
   /** Line items (a stack of identical copies is one). */
   lines: number;
+  /** True when any of its copies is graded (a slab); absent when none is. */
+  graded?: boolean;
 }
 
 /** "Everything I own": the collector's cards, most recently touched first. */
@@ -521,6 +538,9 @@ export type Suggestion =
       location: string;
       /** Set when the team belongs to a franchise: offer "include the whole franchise". */
       franchise?: NamedRef;
+      /** Livery, `#rrggbb`, when NB has it (the label designer's team colours). */
+      primary?: string;
+      secondary?: string;
     }
   | {
       kind: "set";

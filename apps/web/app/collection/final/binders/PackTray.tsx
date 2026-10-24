@@ -154,6 +154,25 @@ export default function PackTray(props: PackTrayProps) {
   const chooserRef = useRef<HTMLDivElement>(null);
   const ownedHeadingId = useId();
   const catalogHeadingId = useId();
+  const trayRef = useRef<HTMLElement>(null);
+
+  // The tray is pinned over the bottom of the page: publish its height, so a
+  // focused pocket, box card or row picker scrolls clear of it
+  // (`scroll-margin-bottom` in binders.css / box.css) and the page ends above it.
+  useEffect(() => {
+    const el = trayRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const publish = () => root.style.setProperty("--nb-tray-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    publish();
+    if (typeof ResizeObserver === "undefined") return () => root.style.removeProperty("--nb-tray-h");
+    const watch = new ResizeObserver(publish);
+    watch.observe(el);
+    return () => {
+      watch.disconnect();
+      root.style.removeProperty("--nb-tray-h");
+    };
+  }, []);
 
   useEffect(() => {
     if (slotting || choosing) chooserRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -267,7 +286,7 @@ export default function PackTray(props: PackTrayProps) {
     : "";
 
   return (
-    <section aria-label="Card hunt" className="pointer-events-none fixed inset-x-0 bottom-0 z-30 lg:right-[170px]">
+    <section ref={trayRef} aria-label="Card hunt" className="pointer-events-none fixed inset-x-0 bottom-0 z-30 lg:right-[170px]">
       <div className="pointer-events-auto mx-auto max-w-6xl px-2 sm:px-6">
         <div className="p2-pack px-3 pb-[max(env(safe-area-inset-bottom),10px)] pt-3 sm:px-4">
           {/* data-notice-hold: the page holds the line's timer while it is pointed at or focused. */}
@@ -368,9 +387,12 @@ export default function PackTray(props: PackTrayProps) {
             </div>
           )}
 
+          {/* The hunt's own polite line, apart from the notice: always mounted so each new summary is read. */}
+          <p role="status" className={trimmed ? "mb-1 text-xs text-ink-2" : "sr-only"}>
+            {summary}
+          </p>
           {trimmed && (
             <div className="nb-hunt-results mb-2">
-              <p className="mb-1 text-xs text-ink-2">{summary}</p>
               {mine.length > 0 && (
                 <>
                   <h3 id={ownedHeadingId} className="mt-1 text-sm font-bold text-ink">
@@ -600,7 +622,7 @@ function OwnedCard({
               size="1"
               onClick={onAdd}
               disabled={wanted}
-              aria-label={wanted ? `${label} is on your Want List` : `Want ${label}`}
+              aria-label={wanted ? `Wanted: ${label}, on your Want List` : `Want it: ${label}`}
               className={ACT}
             >
               {wanted ? "Wanted" : "Want it"}
@@ -613,7 +635,7 @@ function OwnedCard({
               size="1"
               onClick={onTrade}
               disabled={!canTrade}
-              aria-label={canTrade ? `Put ${label} up for trade` : `${label} is already up for trade`}
+              aria-label={canTrade ? `Put ${label} up for trade` : `On the pile: ${label} is up for trade`}
               className={ACT}
             >
               {canTrade ? "Up for trade" : "On the pile"}
@@ -668,7 +690,7 @@ function TrayCard({
   buttonRef: (el: HTMLButtonElement | null) => void;
 }) {
   const label = cardLabel(card);
-  const name = verb === "Want it" ? `Want ${label}` : verb === "Put here" ? `Put here: ${label}` : `Slot in ${label}`;
+  const name = verb === "Want it" ? `Want it: ${label}` : verb === "Put here" ? `Put here: ${label}` : `Slot in ${label}`;
   return (
     <li className="flex w-[88px] flex-none flex-col items-center gap-1">
       <DragFace card={card} name={`${label}, need`} lifted={lifted} disabled={false} />
@@ -682,7 +704,7 @@ function TrayCard({
         size="1"
         onClick={onAct}
         disabled={wanted}
-        aria-label={wanted ? `${label} is on your Want List` : name}
+        aria-label={wanted ? `Wanted: ${label}, on your Want List` : name}
         className="min-h-7 w-full max-sm:min-h-11"
       >
         {wanted ? "Wanted" : verb}

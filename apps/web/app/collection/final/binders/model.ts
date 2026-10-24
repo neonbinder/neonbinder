@@ -429,6 +429,21 @@ export function wantSection(binderId: ContainerId | null, nameOf: (id: Container
 }
 
 /**
+ * The Want List in the order it opens in (see `wantPages`): plain wants
+ * first, then one group per binder or box in shelf order, cards in checklist
+ * order. A want whose card is not loaded (or left the catalog) is left out.
+ * A prefix of this list pages the same as the whole, so the view can hydrate
+ * copies for only the wants on screen.
+ */
+export function orderWants(wants: readonly Want[], containers: readonly Container[], cards: CardsById): Want[] {
+  const order = new Map(containers.map((c, i) => [c.id, i]));
+  const groupOf = (w: Want) => (w.binderId !== null && order.has(w.binderId) ? order.get(w.binderId)! : -1);
+  return wants
+    .filter((w) => cards.has(w.cardId))
+    .sort((a, b) => groupOf(a) - groupOf(b) || compareCards(cards.get(a.cardId)!, cards.get(b.cardId)!));
+}
+
+/**
  * The Want List, opened: plain wants first, then one group per binder or box
  * in shelf order, each starting a fresh page like a new section of a real
  * binder, cards in checklist order. A want you have since landed shows the
