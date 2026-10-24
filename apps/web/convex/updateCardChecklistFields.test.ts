@@ -18,6 +18,7 @@ import schema from "./schema";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import { BLANK_LISTING_TITLE_REFUSAL } from "./selectorOptions";
 import type { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -82,10 +83,11 @@ async function seed() {
       lastUpdated: Date.now(),
     });
 
-    const cardId = await ctx.db.insert("cardChecklist", {
+    const cardId = await insertTestCard(ctx, {
       selectorOptionId: variantTypeId,
       cardNumber: "17",
       cardName: "Original Name",
+      listingTitle: "Original Title #17",
       teamOnCardIds: [teamA],
       platformData: {},
       sortOrder: 0,
@@ -187,8 +189,9 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.printRun).toBe(25);
     expect(card.cardName).toBe("Original Name");
     expect(card.teamOnCardIds).toEqual([teamA]);
-    // Fields never set stay undefined (no accidental writes).
-    expect(card.listingTitle).toBeUndefined();
+    // The title (required, NEO-363) is untouched; fields never set stay
+    // undefined (no accidental writes).
+    expect(card.listingTitle).toBe("Original Title #17");
     expect(card.autographType).toBeUndefined();
   });
 });

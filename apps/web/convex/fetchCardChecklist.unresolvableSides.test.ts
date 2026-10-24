@@ -31,6 +31,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "./marketplaceResolvability";
+import { insertTestCard } from "../lib/testing/card-row";
 
 /**
  * Credentials are not under test — hand the BSC adapter a token so the NEO-252
@@ -106,7 +107,7 @@ async function seedCustomCardWithPendingPlayer(
   playerName: string,
 ) {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       cardNumber: "1",
       cardName: "Hand Added Card",

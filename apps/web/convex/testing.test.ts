@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -52,9 +53,17 @@ async function seedUser(
     // NEO-358: one copy in a Main binder, and one set being built. The
     // catalog rows they point at are shared reference data the reset never
     // touches.
+    // NEO-363 — a card cannot exist without a sport above it.
+    const sportId = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: `Sport ${userId}`,
+      platformData: {},
+      lastUpdated: 0,
+    });
     const setId = await ctx.db.insert("selectorOptions", {
       level: "setName",
       value: `Set ${userId}`,
+      parentId: sportId,
       platformData: {},
       lastUpdated: 0,
     });
@@ -65,7 +74,7 @@ async function seedUser(
       platformData: {},
       lastUpdated: 0,
     });
-    const cardId = await ctx.db.insert("cardChecklist", {
+    const cardId = await insertTestCard(ctx, {
       selectorOptionId: variantId,
       cardNumber: "1",
       cardName: "Card",

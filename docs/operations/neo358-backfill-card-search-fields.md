@@ -1,45 +1,53 @@
 # NEO-358 — backfill the collector's catalog fields
 
-The real `/collection` reads four things off the catalog that older rows do
-not carry. Each has its own armed backfill, in the NEO-214 shape: a **dry run
-by default**, a typed `confirm`, and a deployment flag of its own. Run all
-four after the NEO-358 deploy, in this order, on every deployment that holds
-real cards (prod; a preview is reseeded and needs none). The subtree counts
-are summed from the card counts, so they go **last**, after the card counts
-report `"complete": true`.
+The real `/collection` reads four things off the catalog that older rows did
+not carry. Each had its own armed backfill, in the NEO-214 shape: a **dry run
+by default**, a typed `confirm`, and a deployment flag of its own. The three
+that remain run in this order on every deployment that holds real cards
+(prod; a preview is reseeded and needs none). The subtree counts are summed
+from the card counts, so they go **last**, after the card counts report
+`"complete": true`.
+
+**Card search fields: ran and retired (NEO-363).** The first backfill filled
+`cardChecklist.listingTitle` (absent or blank) and `cardChecklist.sportId`.
+After it ran on prod, a dry run found no card missing either field, and
+NEO-363 made both fields **required** in the schema and deleted the function
+(`backfillCardSearchFields`) and its flag (`ALLOW_CARD_SEARCH_FIELDS_BACKFILL`).
+There is nothing left to run for them. A deployment that still held a card
+without either field would refuse the NEO-363 schema push; that card is fixed
+by hand, not by reviving the backfill.
 
 | Backfill | Fills | Flag | Command |
 |---|---|---|---|
-| card search fields | `cardChecklist.listingTitle` (absent or blank) and `cardChecklist.sportId` | `ALLOW_CARD_SEARCH_FIELDS_BACKFILL` | `backfillCardSearchFields:backfillCardSearchFields` |
 | team links | `cardTeamLinks`, from each card's `teamOnCardIds` | `ALLOW_CARD_TEAM_LINKS_BACKFILL` | `cardTeamLinks:backfillCardTeamLinks` |
 | card counts | `selectorOptions.cardCount` and `nonVariationCardCount` on every variant type, insert and parallel | `ALLOW_CARD_COUNT_BACKFILL` | `cardCounts:backfillVariantCardCounts` |
 | subtree counts | `selectorOptions.subtreeCardCount` and `subtreeNonVariationCardCount` on every row, sport down to parallel | `ALLOW_SUBTREE_CARD_COUNT_BACKFILL` | `cardCounts:backfillSubtreeCardCounts` |
 
-All four are idempotent: a second run reports zeros. All four are internal
+All three are idempotent: a second run reports zeros. All three are internal
 functions, so **no `--identity`** (it hides internal functions from
 `convex run`; the deploy credential is the gate, see the NEO-214 doc).
 
 ## Running one
 
-The same three steps for each; shown for the search fields.
+The same three steps for each; shown for the team links.
 
 ```bash
 cd apps/web
 
 # 1. Dry run. Writes nothing, needs no arming, reports what an armed run would do.
-npx convex run --prod backfillCardSearchFields:backfillCardSearchFields '{}'
+npx convex run --prod cardTeamLinks:backfillCardTeamLinks '{}'
 
 # 2. Arm, run for real, disarm.
-npx convex env set --prod ALLOW_CARD_SEARCH_FIELDS_BACKFILL 1
-npx convex run --prod backfillCardSearchFields:backfillCardSearchFields '{"confirm":"BACKFILL"}'
-npx convex env remove --prod ALLOW_CARD_SEARCH_FIELDS_BACKFILL
+npx convex env set --prod ALLOW_CARD_TEAM_LINKS_BACKFILL 1
+npx convex run --prod cardTeamLinks:backfillCardTeamLinks '{"confirm":"BACKFILL"}'
+npx convex env remove --prod ALLOW_CARD_TEAM_LINKS_BACKFILL
 ```
 
 Each call works for about 2.5 minutes and then returns `"complete": false` with
 a `cursor`. Re-run with that cursor until it prints `"complete": true`:
 
 ```bash
-npx convex run --prod backfillCardSearchFields:backfillCardSearchFields \
+npx convex run --prod cardTeamLinks:backfillCardTeamLinks \
   '{"confirm":"BACKFILL","cursor":"<cursor from the last run>"}'
 ```
 
@@ -48,19 +56,6 @@ An armed `confirm` on an unarmed deployment is **reported**, not thrown: the
 the counts are still the dry run's.
 
 ## Reading the results
-
-**Card search fields** — `{ scanned, titlesFilled, sportFilled, noSport }`
-
-- `titlesFilled`: cards whose title was absent or blank, now carrying the title
-  the card detail panel's Regenerate would offer (one implementation,
-  `storedCardTitle.titleForStoredCard`). A title that is already there is never
-  touched: it may be an operator's.
-- `sportFilled`: cards given the sport at the root of their selector chain.
-- `noSport`: cards whose chain reaches no sport row. Left alone and counted
-  every time; each is orphaned data for an operator to look at.
-
-The next PR makes `listingTitle` required. Do not merge it until this backfill
-reports `titlesFilled: 0` on a dry run against prod.
 
 **Team links** — `{ scanned, cardsChanged, rowsInserted, rowsDeleted }`
 
@@ -114,9 +109,12 @@ by hand").
 
 ## What keeps them right afterwards
 
-- `sportId` is stamped at insert (`insertCardRow`, `addCustomCard`) and never
-  changes.
-- `listingTitle` can no longer be saved blank (`updateCard` refuses it).
+- `sportId` and `listingTitle` are required by the schema (NEO-363).
+  `sportId` is stamped at insert (`insertCardRow`, `addCustomCard`), which
+  refuse a card with no sport above it, and never changes.
+- `listingTitle` is generated at insert (it always ends in the card number,
+  so it is never blank) and can never be saved blank afterwards (`updateCard`
+  refuses it).
 - `cardTeamLinks` is kept by `syncCardTeamLinks` at every `teamOnCardIds`
   write, and removed by `removeCardRow` with each card.
 - The counts are kept by a per-mutation `CardCountLedger` at every card

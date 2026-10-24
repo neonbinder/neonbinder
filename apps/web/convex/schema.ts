@@ -1235,10 +1235,17 @@ export default defineSchema({
     // NEO-25: marketplace-agnostic listing title & description, authored once
     // and reused by every marketplace adapter (eBay/SportLots/BSC/MySlabs/
     // MyCardPost) so a listing doesn't recompute the title each time. NOT
-    // eBay-specific. Manually edited today in the card detail panel; an
-    // auto-generator (composed from the card's resolved features) is a
-    // separate follow-up ticket. Optional + additive — absent on legacy rows.
-    listingTitle: v.optional(v.string()),
+    // eBay-specific.
+    //
+    // NEO-363: REQUIRED, and never blank (Jason: a card's title is required).
+    // It is what a collector searches (`search_listing_title` below). Every
+    // insert writes one: `insertCardRow` and `addCustomCard` generate it
+    // (`assessListingTitle` always ends in `#<cardNumber>`, so it cannot come
+    // out empty) unless the operator's own pre-save title rides on the card.
+    // After insert only `updateCard` writes it, and it refuses a blank one
+    // (`BLANK_LISTING_TITLE_REFUSAL`). The NEO-358 backfill filled every
+    // older row before this flipped.
+    listingTitle: v.string(),
     listingDescription: v.optional(v.string()),
     // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
     // players) did not fit inside eBay's 80-character cap at creation time, so
@@ -1324,11 +1331,12 @@ export default defineSchema({
      * only ever moves between rows under one brand, so its sport is fixed.
      *
      * Writers: `insertCardRow` (convex/cardRowCreate.ts) and `addCustomCard`.
-     * Rows written before this field are filled by the armed
-     * `backfillCardSearchFields`. Optional permanently — a reader that needs
-     * the sport and finds it absent walks the ancestry instead.
+     * NEO-363: REQUIRED. Both writers refuse a card whose row has no sport
+     * above it (`requireCardSport`) rather than insert one the sport filter
+     * cannot find. The NEO-358 backfill filled every older row before this
+     * flipped.
      */
-    sportId: v.optional(v.id("selectorOptions")),
+    sportId: v.id("selectorOptions"),
     sortOrder: v.number(),
     lastUpdated: v.number(),
   })

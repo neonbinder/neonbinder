@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -79,7 +80,7 @@ describe("updateCard with teamOnCardIds patch", () => {
         lastUpdated: Date.now(),
       });
 
-      const cardId = await ctx.db.insert("cardChecklist", {
+      const cardId = await insertTestCard(ctx, {
         selectorOptionId: variantTypeId,
         cardNumber: "1",
         cardName: "Test Card",
@@ -151,9 +152,7 @@ describe("updateCard with teamOnCardIds patch", () => {
         children: [],
         lastUpdated: Date.now(),
       });
-      const cardId: Id<"cardChecklist"> = await ctx.db.insert(
-        "cardChecklist",
-        {
+      const cardId: Id<"cardChecklist"> = await insertTestCard(ctx, {
           selectorOptionId: variantTypeId,
           cardNumber: "1",
           cardName: "Stale",

@@ -23,11 +23,12 @@
  * It writes no `imageUrls` (a scan belongs to the physical card an operator
  * photographed, not to a checklist entry) and queues no enrichment. Its only
  * read is the caller's lazy `sport()`, for the NEO-313 player index and the
- * NEO-358 `sportId` stamp. `autographType` is folded into
+ * NEO-358 `sportId` stamp (required since NEO-363). `autographType` is folded into
  * `features.autographed` and is not stored (NEO-217).
  */
 
 import type { WithoutSystemFields } from "convex/server";
+import { ConvexError } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -145,8 +146,19 @@ export type NewCardRow = {
   listingTitleKept?: string;
 };
 
+/**
+ * NEO-363 — everything a card row is born with except its `sportId`, which
+ * `insertCardRow` adds from the caller's `sport()` (or refuses). Typed as the
+ * stored row minus that one field, so a required field the build forgets is a
+ * type error rather than a schema failure at insert.
+ */
+export type BuiltCardRowFields = Omit<
+  WithoutSystemFields<Doc<"cardChecklist">>,
+  "sportId"
+>;
+
 export type BuiltCardRow = {
-  row: WithoutSystemFields<Doc<"cardChecklist">>;
+  row: BuiltCardRowFields;
   /** Everything `generateSku` needs except the random suffix. */
   sku: {
     skuCode?: string;
@@ -213,7 +225,7 @@ export function buildCardRowForInsert(
     card.listingTitleKept !== listingTitle.title;
 
   const carried = card.carried ?? {};
-  const row: WithoutSystemFields<Doc<"cardChecklist">> = {
+  const row: BuiltCardRowFields = {
     selectorOptionId: card.selectorOptionId,
     cardNumber: card.cardNumber,
     cardName: card.cardName,
@@ -234,6 +246,9 @@ export function buildCardRowForInsert(
     cardVariation: storedCardVariation(card.cardVariation),
     platformData: card.platformData,
     ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+    // NEO-363 — required and never blank: the generated title always ends in
+    // `#<cardNumber>` (`assessListingTitle`'s guarantee 2), and a blank
+    // operator answer falls through to it.
     listingTitle: operatorTitle || listingTitle.title,
     listingDescription: generateListingDescription(listingInputs),
     // NEO-101: only when the core was actually cut (see schema.ts), and
@@ -291,11 +306,31 @@ export function buildCardRowForInsert(
  * How a new card's player index is kept (NEO-313). `sport` is the CARD's
  * sport, the root of its selector chain; a caller can cache it across a whole
  * page (the commit chunk's `cardSport`). NEO-358 asks it for every card, to
- * stamp `cardChecklist.sportId`.
+ * stamp `cardChecklist.sportId`; NEO-363 refuses the insert when it has no
+ * answer (`requireCardSport`).
  */
 export type CardRowIndexing = {
   sport: () => Promise<Id<"selectorOptions"> | undefined>;
 };
+
+/**
+ * NEO-363 — the refusal when a card's row has no sport above it. The walk
+ * (`findSportForSelectorOption`) comes back empty only for a broken chain: an
+ * ancestor that no longer exists, or one more than 16 levels deep. Neither is
+ * something a card should be saved under, and `cardChecklist.sportId` is
+ * required, so the write stops here with a message instead of failing the
+ * schema check.
+ */
+export const NO_CARD_SPORT_REFUSAL =
+  "Couldn't find the sport this card's set sits under, so the card wasn't saved.";
+
+/** The card's sport, or the `NO_CARD_SPORT_REFUSAL` error. */
+export function requireCardSport(
+  sportId: Id<"selectorOptions"> | undefined,
+): Id<"selectorOptions"> {
+  if (!sportId) throw new ConvexError(NO_CARD_SPORT_REFUSAL);
+  return sportId;
+}
 
 /**
  * Insert a new card row, keep its derived player index (NEO-313), then patch
@@ -317,6 +352,9 @@ export type CardRowIndexing = {
  * (set here, once, never changed), its `cardTeamLinks` rows (`fresh: true`,
  * only when it carries teams), and +1 on its row's counts in the caller's
  * `ledger`. The ledger is REQUIRED: the caller flushes it once, last.
+ *
+ * NEO-363: `sportId` is required on the row, so a card with no sport above it
+ * is refused before anything is written (`requireCardSport`).
  */
 export async function insertCardRow(
   ctx: MutationCtx,
@@ -325,11 +363,13 @@ export async function insertCardRow(
   indexing: CardRowIndexing,
   ledger: CardCountLedger,
 ): Promise<Id<"cardChecklist">> {
+  const sportId = requireCardSport(await indexing.sport());
   const built = buildCardRowForInsert(card, set, Date.now());
-  const sportId = await indexing.sport();
+  // The insert below is typed against the schema, so leaving `sportId` (or
+  // any required field the build forgot) off this object is a type error.
   const row = {
     ...built.row,
-    ...(sportId ? { sportId } : {}),
+    sportId,
     // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
     // so a label or a listing that already names it still does.
     ...(card.keepSku ? { sku: card.keepSku } : {}),

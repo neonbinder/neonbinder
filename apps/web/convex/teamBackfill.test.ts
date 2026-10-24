@@ -24,6 +24,7 @@ import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -89,7 +90,7 @@ async function insertLegacyCard(
   opts?: { teamOnCardIds?: Array<Id<"teams">> },
 ): Promise<Id<"cardChecklist">> {
   return t.run(async (ctx) => {
-    return ctx.db.insert("cardChecklist", {
+    return insertTestCard(ctx, {
       selectorOptionId: variantTypeId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
@@ -223,13 +224,21 @@ describe("backfillTeamToOnCardIds", () => {
       }),
     );
 
+    // NEO-363 — the card was born with a sport (it is required); its chain
+    // lost the sport afterwards, which is what the walk sees.
     await t.run(async (ctx) =>
-      ctx.db.insert("cardChecklist", {
+      insertTestCard(ctx, {
         selectorOptionId: orphanedOptId,
         cardNumber: "1",
         cardName: "Orphan",
         team: "Some Team",
         platformData: {},
+        sportId: await ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Baseball",
+          platformData: {},
+          lastUpdated: Date.now(),
+        }),
         sortOrder: 0,
         lastUpdated: Date.now(),
       } as any),

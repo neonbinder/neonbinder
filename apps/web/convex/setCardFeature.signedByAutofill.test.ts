@@ -29,6 +29,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -93,7 +94,7 @@ async function seedCard(t: ReturnType<typeof convexTest>, opts: SeedOpts = {}) {
       : insertedPlayerIds;
 
     const hasPlayerNames = (opts.playerNames?.length ?? 0) > 0;
-    const cardId = await ctx.db.insert("cardChecklist", {
+    const cardId = await insertTestCard(ctx, {
       selectorOptionId: variantTypeId,
       cardNumber: "1",
       cardName: "Test Card",

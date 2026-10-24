@@ -15,13 +15,17 @@ import {
   buildCardRowForInsert,
   insertCardRow,
   copyFeaturesForParallel,
+  NO_CARD_SPORT_REFUSAL,
   type NewCardRow,
   type CardRowSetContext,
 } from "./cardRowCreate";
 import type { Id } from "./_generated/dataModel";
 import { createCardCountLedger } from "./cardCounts";
 
-/** NEO-358 — `insertCardRow` asks every card's sport now (`sportId`). */
+/**
+ * NEO-358 — `insertCardRow` asks every card's sport (`sportId`); NEO-363
+ * refuses a card with none.
+ */
 const NO_SPORT = { sport: async () => undefined };
 
 const modules = (
@@ -282,6 +286,25 @@ describe("buildCardRowForInsert — listing text and sortOrder", () => {
     expect(built.row.listingDescription).toBeTruthy();
   });
 
+  test("NEO-363: the title is never blank, even for a card with nothing else to say", () => {
+    const built = buildCardRowForInsert(
+      baseCard({ cardNumber: "", cardName: "", playerNames: [] }),
+      { sportValue: "" },
+      1_700_000_000_000,
+    );
+    expect(built.row.listingTitle.trim().length).toBeGreaterThan(0);
+  });
+
+  test("NEO-363: a blank operator title falls back to the generated one", () => {
+    const generated = buildCardRowForInsert(baseCard(), baseSet(), 1_700_000_000_000);
+    const answered = buildCardRowForInsert(
+      baseCard({ listingTitle: "   " }),
+      baseSet(),
+      1_700_000_000_000,
+    );
+    expect(answered.row.listingTitle).toBe(generated.row.listingTitle);
+  });
+
   test("sortOrder and lastUpdated come from the caller and the clock, respectively", () => {
     const built = buildCardRowForInsert(baseCard({ sortOrder: 42 }), baseSet(), 1_700_000_000_000);
     expect(built.row.sortOrder).toBe(42);
@@ -307,13 +330,13 @@ describe("buildCardRowForInsert — listing text and sortOrder", () => {
 describe("insertCardRow — keepSku (NEO-312 R2)", () => {
   test("a keepSku is written verbatim instead of generating a fresh SKU", async () => {
     const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSelectorOption(t);
+    const { selectorOptionId, indexing } = await seedSelectorOption(t);
     const cardId = await t.run(async (ctx) =>
       insertCardRow(
         ctx,
         baseCard({ selectorOptionId, keepSku: "NB-BB-OLD-SKU" }),
         baseSet({ sportSkuCode: "BB" }),
-        NO_SPORT,
+        indexing,
         createCardCountLedger(),
       ),
     );
@@ -323,12 +346,12 @@ describe("insertCardRow — keepSku (NEO-312 R2)", () => {
 
   test("with no keepSku, a fresh SKU is generated for each insert", async () => {
     const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSelectorOption(t);
+    const { selectorOptionId, indexing } = await seedSelectorOption(t);
     const id1 = await t.run(async (ctx) =>
-      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "1" }), baseSet({ sportSkuCode: "BB" }), NO_SPORT, createCardCountLedger()),
+      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "1" }), baseSet({ sportSkuCode: "BB" }), indexing, createCardCountLedger()),
     );
     const id2 = await t.run(async (ctx) =>
-      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "2" }), baseSet({ sportSkuCode: "BB" }), NO_SPORT, createCardCountLedger()),
+      insertCardRow(ctx, baseCard({ selectorOptionId, cardNumber: "2" }), baseSet({ sportSkuCode: "BB" }), indexing, createCardCountLedger()),
     );
     const [row1, row2] = await t.run(async (ctx) => [
       await ctx.db.get(id1),
@@ -387,30 +410,47 @@ describe("copyFeaturesForParallel", () => {
   });
 });
 
-async function seedSelectorOption(
-  t: ReturnType<typeof convexTest>,
-): Promise<Id<"selectorOptions">> {
-  return t.run(async (ctx) =>
-    ctx.db.insert("selectorOptions", {
-      level: "insert",
-      value: "Refractor",
+/**
+ * An insert row under a sport, and the `CardRowIndexing` that answers with
+ * that sport (what the commit chunk's `cardSport` would walk to).
+ */
+async function seedSelectorOption(t: ReturnType<typeof convexTest>): Promise<{
+  selectorOptionId: Id<"selectorOptions">;
+  sportId: Id<"selectorOptions">;
+  indexing: { sport: () => Promise<Id<"selectorOptions">> };
+}> {
+  const ids = await t.run(async (ctx) => {
+    const sportId = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
       platformData: {},
       children: [],
       lastUpdated: 1_700_000_000_000,
-    }),
-  );
+    });
+    const selectorOptionId = await ctx.db.insert("selectorOptions", {
+      level: "insert",
+      value: "Refractor",
+      parentId: sportId,
+      platformData: {},
+      children: [],
+      lastUpdated: 1_700_000_000_000,
+    });
+    return { selectorOptionId, sportId };
+  });
+  // Built outside `t.run`, whose result must be plain data.
+  return { ...ids, indexing: { sport: async () => ids.sportId } };
 }
 
 describe("insertCardRow — insert-then-patch, no imageUrls, no enrichment scheduled", () => {
   test("inserts a row with no imageUrls and then patches in a SKU", async () => {
     const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSelectorOption(t);
+    const { selectorOptionId, indexing } = await seedSelectorOption(t);
     const cardId = await t.run(async (ctx) =>
       insertCardRow(
         ctx,
         baseCard({ selectorOptionId }),
         baseSet({ sportSkuCode: "BB" }),
-        NO_SPORT,
+        indexing,
         createCardCountLedger(),
       ),
     );
@@ -421,11 +461,33 @@ describe("insertCardRow — insert-then-patch, no imageUrls, no enrichment sched
     expect(row?.sku).toMatch(/^NB-BB-/);
   });
 
+  test("NEO-363: stamps the card's sport", async () => {
+    const t = convexTest(schema, modules);
+    const { selectorOptionId, sportId, indexing } = await seedSelectorOption(t);
+    const cardId = await t.run(async (ctx) =>
+      insertCardRow(ctx, baseCard({ selectorOptionId }), baseSet(), indexing, createCardCountLedger()),
+    );
+    const row = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(row?.sportId).toBe(sportId);
+  });
+
+  test("NEO-363: refuses a card with no sport above it and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { selectorOptionId } = await seedSelectorOption(t);
+    await expect(
+      t.run(async (ctx) =>
+        insertCardRow(ctx, baseCard({ selectorOptionId }), baseSet(), NO_SPORT, createCardCountLedger()),
+      ),
+    ).rejects.toThrow(NO_CARD_SPORT_REFUSAL);
+    const cards = await t.run(async (ctx) => ctx.db.query("cardChecklist").collect());
+    expect(cards).toEqual([]);
+  });
+
   test("queues no scheduled function (no team enrichment) for a plain insert", async () => {
     const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSelectorOption(t);
+    const { selectorOptionId, indexing } = await seedSelectorOption(t);
     await t.run(async (ctx) =>
-      insertCardRow(ctx, baseCard({ selectorOptionId }), baseSet(), NO_SPORT, createCardCountLedger()),
+      insertCardRow(ctx, baseCard({ selectorOptionId }), baseSet(), indexing, createCardCountLedger()),
     );
     const scheduled = await t.run(async (ctx) =>
       ctx.db.system.query("_scheduled_functions").collect(),

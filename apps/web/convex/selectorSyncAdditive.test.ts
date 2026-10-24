@@ -29,6 +29,7 @@ import {
   MAX_SUBTREE_WALK_INSERTS,
   loadSyncHoldersElsewhere,
 } from "./selectorSyncStore";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -599,12 +600,20 @@ describe("storeReconciledOptions is additive", () => {
     const parentId = await insertParent(t);
     const id = await seedVariant(t, parentId);
     await t.run(async (ctx) => {
-      await ctx.db.insert("cardChecklist", {
+      await insertTestCard(ctx, {
         selectorOptionId: id,
         cardNumber: "1",
         cardName: "Someone",
         sortOrder: 0,
         platformData: {},
+        // NEO-363 — required on a card. This fixture's chain stops at a
+        // manufacturer, and the reconcile under test never reads it.
+        sportId: await ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Baseball",
+          platformData: {},
+          lastUpdated: SENTINEL,
+        }),
         lastUpdated: SENTINEL,
       });
     });

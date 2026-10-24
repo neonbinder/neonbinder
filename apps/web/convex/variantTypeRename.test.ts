@@ -34,6 +34,7 @@ import {
   sameWordSiblingMessage,
   variantTypeKind,
 } from "./variantRole";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -91,7 +92,7 @@ const variantType = (t: T, setId: RowId, value: string, extra: Partial<Row> = {}
 
 const addCard = (t: T, selectorOptionId: RowId) =>
   t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       cardNumber: "1",
       cardName: "Aaron Judge",

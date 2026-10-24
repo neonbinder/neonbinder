@@ -26,6 +26,7 @@ import {
   pickBaseVariantType,
   snapshotForCopies,
 } from "./parallelChecklistBuild";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -188,7 +189,7 @@ async function addCard(
   card: Partial<Doc<"cardChecklist">> & { cardNumber: string; cardName: string },
 ) {
   return t.run(async (ctx) =>
-    ctx.db.insert("cardChecklist", {
+    insertTestCard(ctx, {
       selectorOptionId,
       platformData: {},
       sortOrder: 0,

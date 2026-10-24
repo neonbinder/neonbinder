@@ -35,6 +35,7 @@ import {
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { MAX_VARIANT_TYPES_PER_SET } from "./setShapeMove";
 import { teamRowFields } from "./lib/teamRow";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (
   import.meta as unknown as {
@@ -235,7 +236,7 @@ async function addCards(t: T, rowId: RowId, cards: CardSpec[]): Promise<Id<"card
     const ids: Id<"cardChecklist">[] = [];
     for (const [i, c] of cards.entries()) {
       ids.push(
-        await ctx.db.insert("cardChecklist", {
+        await insertTestCard(ctx, {
           selectorOptionId: rowId,
           cardNumber: c.n,
           cardName: c.name ?? `Player ${c.n}`,
