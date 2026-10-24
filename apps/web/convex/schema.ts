@@ -557,8 +557,8 @@ export const selectorOptionFields = {
    * card insert, delete and move adds a delta and flushes once at the end of
    * the transaction. ABSENT means "never counted" — the ledger recounts in
    * place on its first write, and the armed backfill
-   * (`backfillVariantCardCounts`) fills the rest. A set's total is the sum
-   * over its card-bearing rows, never cached on the set row.
+   * (`backfillVariantCardCounts`) fills the rest. A set's total (and every
+   * other row's) is `subtreeCardCount` below.
    *
    * NB data only: no adapter or sync reads or writes it.
    */
@@ -574,6 +574,37 @@ export const selectorOptionFields = {
    * absent under the same rule (never counted; the ledger recounts in place).
    */
   nonVariationCardCount: v.optional(v.number()),
+  /**
+   * NEO-358 (Jason, 2026-10-24) — the cards homed on this row OR on any row
+   * beneath it: `cardCount` of this row plus `subtreeCardCount` of every
+   * child. Kept on EVERY level, sport down to parallel, so each step of the
+   * collector's drill knows whether anything sits below it and an exact zero
+   * can be hidden. Not shown above the checklist levels.
+   *
+   * Kept by the same `CardCountLedger` flush as the two counts above: each
+   * card delta lands on its row and on every ancestor up the `parentId`
+   * chain, one read and one patch per row per flush; a writer that moves a
+   * row under a new parent (`ledger.moveSubtree`) moves its subtree count
+   * with it. A new row is born with both subtree counts at 0
+   * (`NEW_ROW_SUBTREE_COUNTS`).
+   *
+   * ABSENT means UNKNOWN: a row written before this field, or one the ledger
+   * cleared because the stored value had drifted (it would have gone
+   * negative) or a row of unknown size moved under it. An unknown count is
+   * never hidden, never recounted inside a mutation, and never written
+   * partially; the armed backfill (`backfillSubtreeCardCounts`) fills it
+   * bottom-up from the stored own counts.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  subtreeCardCount: v.optional(v.number()),
+  /**
+   * NEO-358 — the same subtree count WITHOUT variations: the sum of
+   * `nonVariationCardCount` over this row and every row beneath it. Kept and
+   * absent under exactly the rule of `subtreeCardCount`, always written
+   * together with it.
+   */
+  subtreeNonVariationCardCount: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 

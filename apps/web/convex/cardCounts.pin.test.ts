@@ -12,7 +12,11 @@
  *  - the one card move (`moveCards`) moves the counts with the cards;
  *  - every `variationOfCardId` patch records the change;
  *  - and every function that does any of these either FLUSHES its ledger or
- *    takes one as a parameter (a helper whose caller flushes).
+ *    takes one as a parameter (a helper whose caller flushes);
+ *  - the subtree counts (Jason, 2026-10-24): the card delete remembers its
+ *    row's chain before the row can go, every selector-row RE-PARENT moves
+ *    the row's subtree count through a flushed ledger, and every selector-row
+ *    INSERT is born with `NEW_ROW_SUBTREE_COUNTS`.
  *
  * The one exemption is the E2E reset drain (`resetCardChecklistBatch`), which
  * drains the selector rows the counts live on too.
@@ -113,6 +117,9 @@ describe("NEO-358: card inserts, deletes and moves keep the counts", () => {
     const fn = src.slice(src.indexOf("export async function removeCardRow"));
     expect(fn).toMatch(/ledger: CardCountLedger,\n\): Promise<RemovedCardRow>/);
     expect(fn).toContain("ledger.removeCard(card)");
+    // NEO-358 — the row's chain is learned while it exists, so a caller that
+    // ends the emptied row before flushing still moves the counts above it.
+    expect(fn).toContain("await ledger.rememberChain(ctx, card.selectorOptionId)");
     // Promoting a deleted parent's variations moves the base count too.
     expect(fn).toContain("orphanVariationsOf(ctx, card._id, ledger)");
   });
@@ -202,6 +209,56 @@ describe("NEO-358: card inserts, deletes and moves keep the counts", () => {
     const src = read("cardRowCreate.ts");
     expect(src).toContain("ledger.addCard(row)");
     expect(src).toMatch(/const row = \{\s*\.\.\.built\.row,/);
+  });
+
+  test("every selector-row re-parent moves its subtree count and flushes", () => {
+    // A row moved under a new parent takes every card beneath it along: the
+    // old ancestors lose them, the new ones gain them. A `parentId` written
+    // without `moveSubtree` leaves both chains wrong.
+    const offenders: string[] = [];
+    const seen: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const src = readFileSync(file, "utf8");
+      for (const call of dbCalls(src, "patch")) {
+        // The key `parentId:`, not a value named `parentId`.
+        if (!/[{,]\s*parentId\s*:/.test(call.text)) continue;
+        const fn = enclosing(src, call.at);
+        seen.push(`${rel(file)}:${fn.name}`);
+        const after = src.slice(call.at, call.at + call.text.length + 400);
+        if (!/\.moveSubtree\(ctx, /.test(after) || !/\.flush\(ctx\)/.test(fn.body)) {
+          offenders.push(`${rel(file)}:${fn.name}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(new Set(seen)).toEqual(
+      new Set([
+        "brandRehome.ts:rehomeSetRowsToBrand",
+        "selectorOptions.ts:applyParallelGroupings",
+      ]),
+    );
+    expect(seen.length).toBe(4);
+  });
+
+  test("every selector-row insert is born with known-empty subtree counts", () => {
+    // A row born without them reads as UNKNOWN, so it is never hidden however
+    // empty it is, until the backfill reaches it.
+    const offenders: string[] = [];
+    const seen: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const src = readFileSync(file, "utf8");
+      for (const ins of dbCalls(src, "insert")) {
+        if (!/^ctx\.db\.insert\(\s*"selectorOptions"/.test(ins.text)) continue;
+        const fn = enclosing(src, ins.at);
+        seen.push(`${rel(file)}:${fn.name}`);
+        if (!/^ctx\.db\.insert\(\s*"selectorOptions",\s*\{\s*\.\.\.NEW_ROW_SUBTREE_COUNTS,/.test(ins.text)) {
+          offenders.push(`${rel(file)}:${fn.name}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    // The population this rule saw, so a silently-empty grep fails.
+    expect(seen.length).toBe(10);
   });
 
   test("the reset drain is the only card delete outside removeCardRow", () => {

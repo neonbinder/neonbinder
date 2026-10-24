@@ -5,13 +5,16 @@
  * checklist, card hydration, suggestions (player alias, team, set), the free
  * text search's terms-vs-phrase rule, player and team (franchise) card lists,
  * and the NB-only guarantee: no result carries a marketplace or `isCustom` /
- * `sku` key even though every fixture row has them.
+ * `sku` key even though every fixture row has them. Also (Jason, 2026-10-24)
+ * that a row KNOWN to hold no cards beneath it is hidden from the drill, the
+ * set summary and set suggestions, while an uncounted row is shown.
  */
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
 const modules = (import.meta as unknown as {
@@ -428,5 +431,92 @@ describe("a player's and a team's cards", () => {
       continueCursor: null,
       franchise: null,
     });
+  });
+});
+
+describe("NEO-358: a row known to hold no cards is hidden; an uncounted one is shown", () => {
+  type Ctx = Awaited<ReturnType<typeof setup>>;
+  /** Store a row's subtree counts (null: clear them, i.e. unknown). */
+  const setSubtree = (t: Ctx["t"], id: Id<"selectorOptions">, all: number | null, base = all) =>
+    t.run((ctx) =>
+      ctx.db.patch(id, {
+        subtreeCardCount: all ?? undefined,
+        subtreeNonVariationCardCount: base ?? undefined,
+      }),
+    );
+
+  test("drill: an exact zero is left out on every level; unknown stays, with hasCards null", async () => {
+    const { t, as, fx } = await setup();
+    // 1986 is counted and empty; 2024 has never been counted.
+    await setSubtree(t, fx.year1986Id, 0);
+    const years = await as.query(api.collectionCatalog.drill, { level: "year", parentId: fx.sportId });
+    expect(years.items.map((i) => [i.name, i.hasCards])).toEqual([["2024", null]]);
+
+    await setSubtree(t, fx.yearId, 5, 4);
+    const counted = await as.query(api.collectionCatalog.drill, { level: "year", parentId: fx.sportId });
+    expect(counted.items.map((i) => [i.name, i.hasCards])).toEqual([["2024", true]]);
+
+    // Variant types: the empty Parallels type goes; the Inserts container
+    // (no cards of its own) stays because a card sits beneath it.
+    await setSubtree(t, fx.insertsTypeId, 1);
+    await setSubtree(t, fx.parallelsTypeId, 0);
+    const types = await as.query(api.collectionCatalog.drill, { parentId: fx.setId });
+    expect(types.items.map((i) => [i.name, i.hasCards])).toEqual([
+      ["Base", true],
+      ["Inserts", true],
+    ]);
+  });
+
+  test("drill: a row whose own count holds cards is never hidden, whatever its subtree count says", async () => {
+    const { t, as, fx } = await setup();
+    // Base stores cardCount 3; a (drifted) subtree zero must not hide it.
+    await setSubtree(t, fx.baseId, 0);
+    const types = await as.query(api.collectionCatalog.drill, { parentId: fx.setId });
+    expect(types.items.map((i) => i.name)).toContain("Base");
+  });
+
+  test("setSummary: zero rows go, a carded container stays, and the set's own totals are read", async () => {
+    const { t, as, fx } = await setup();
+    // Two rows born empty and counted: a variant type and an insert.
+    const empty = await t.run(async (ctx) => {
+      const counted = { cardCount: 0, nonVariationCardCount: 0, subtreeCardCount: 0, subtreeNonVariationCardCount: 0 };
+      const type = await ctx.db.insert("selectorOptions", {
+        level: "variantType", value: "Short Prints", parentId: fx.setId,
+        platformData: {}, children: [], lastUpdated: 1, ...counted,
+      });
+      const insert = await ctx.db.insert("selectorOptions", {
+        level: "insert", value: "Rookie Debut", parentId: fx.insertsTypeId,
+        platformData: {}, children: [], lastUpdated: 1, ...counted,
+      });
+      return { type, insert };
+    });
+    // The Parallels type holds no cards of its own; its child does.
+    await setSubtree(t, fx.parallelsTypeId, 1);
+    const summary = await as.query(api.collectionCatalog.setSummary, { setId: fx.setId });
+    const names = summary!.variants.map((r) => r.name);
+    expect(names).toEqual(["Base", "Inserts", "Future Stars", "Parallels", "Gold Refractor"]);
+    expect(names).not.toContain("Short Prints");
+    expect(names).not.toContain("Rookie Debut");
+    // Uncounted set: the totals are the sum of the rows listed.
+    expect([summary!.totalCards, summary!.totalBaseCards]).toEqual([5, 4]);
+
+    // Counted set: its stored subtree counts ARE the totals.
+    await setSubtree(t, fx.setId, 40, 30);
+    const fromSet = await as.query(api.collectionCatalog.setSummary, { setId: fx.setId });
+    expect([fromSet!.totalCards, fromSet!.totalBaseCards]).toEqual([40, 30]);
+
+    // And the drill leaves the same two out.
+    const types = await as.query(api.collectionCatalog.drill, { parentId: fx.setId });
+    expect(types.items.map((i) => i.name)).not.toContain("Short Prints");
+    const inserts = await as.query(api.collectionCatalog.drill, { level: "insert", parentId: fx.insertsTypeId });
+    expect(inserts.items.map((i) => i.name)).toEqual(["Future Stars"]);
+    void empty;
+  });
+
+  test("suggest: a set known to be empty is not offered; an uncounted one is", async () => {
+    const { t, as, fx } = await setup();
+    await setSubtree(t, fx.set86Id, 0);
+    const sets = await as.query(api.collectionCatalog.suggest, { q: "Topps" });
+    expect(sets.sets.map((s) => s._id)).toEqual([fx.setId]);
   });
 });

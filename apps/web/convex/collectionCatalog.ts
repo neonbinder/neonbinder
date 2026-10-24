@@ -115,6 +115,29 @@ function sortColumn(rows: Row[]): Row[] {
 
 const CARD_BEARING = new Set(["variantType", "insert", "parallel"]);
 
+/**
+ * NEO-358 (Jason, 2026-10-24) — whether any card sits on `row` or beneath it,
+ * from its stored subtree count: true, false, or null when that count is
+ * unknown (never counted yet). A row whose OWN count says it holds cards is
+ * true whatever the subtree count says, so a drifted subtree count can never
+ * hide a checklist that has cards.
+ */
+export function rowHasCards(
+  row: Pick<Row, "cardCount" | "subtreeCardCount">,
+): boolean | null {
+  if (typeof row.cardCount === "number" && row.cardCount > 0) return true;
+  if (typeof row.subtreeCardCount !== "number") return null;
+  return row.subtreeCardCount > 0;
+}
+
+/**
+ * Hidden from the collector: a row KNOWN to have no cards on it or beneath
+ * it. An unknown count is shown, never hidden.
+ */
+export function hiddenAsEmpty(row: Pick<Row, "cardCount" | "subtreeCardCount">): boolean {
+  return rowHasCards(row) === false;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // The drill (sport → year → brand → set → variant type → insert/parallel)
 // ───────────────────────────────────────────────────────────────────────────
@@ -131,6 +154,11 @@ const drillItemValidator = v.object({
   cardCount: v.union(v.number(), v.null()),
   /** The same, regular (non-variation) cards only: the default "of M". */
   baseCardCount: v.union(v.number(), v.null()),
+  /**
+   * Whether any card sits on this row or beneath it; null when not counted
+   * yet. Never false in a drill reply: a row known to be empty is left out.
+   */
+  hasCards: v.union(v.boolean(), v.null()),
 });
 
 /**
@@ -138,6 +166,11 @@ const drillItemValidator = v.object({
  * when there is none). Pass `level` to read one level under the parent (a
  * Parallels type holds `insert`-level rows; an insert holds `parallel`-level
  * sub-variants); omit it to read every child.
+ *
+ * NEO-358 — a row KNOWN to have no cards on it or anywhere beneath it (its
+ * stored `subtreeCardCount` is exactly 0) is left out, on every level: a
+ * collector never drills into nothing. A row whose count is unknown is kept.
+ * `truncated` is judged before that filter, on the rows read.
  */
 export const drill = query({
   args: {
@@ -177,6 +210,7 @@ export const drill = query({
     const budget = { left: COUNT_FALLBACK_BUDGET };
     const items = [];
     for (const row of sortColumn(rows.slice(0, MAX_DRILL_ITEMS))) {
+      if (hiddenAsEmpty(row)) continue;
       const totals = CARD_BEARING.has(row.level)
         ? await cardTotals(ctx, row, budget)
         : { all: null, base: null };
@@ -188,6 +222,7 @@ export const drill = query({
         childCount: row.children?.length ?? 0,
         cardCount: totals.all,
         baseCardCount: totals.base,
+        hasCards: rowHasCards(row),
       });
     }
     return { items, truncated };
@@ -232,9 +267,17 @@ const setVariantValidator = v.object({
 /**
  * A set and every row inside it that can carry cards, in checklist order:
  * each variant type (Base first), then its inserts by name, each followed by
- * its sub-variants. `totalCards` / `totalBaseCards` sum every row's
- * `cardCount` / `baseCardCount` (null when any is unknown). Container rows (an "Inserts" type with no cards of its own) are
- * listed with their count so the caller decides what to show.
+ * its sub-variants. Container rows (an "Inserts" type with no cards of its
+ * own) are listed with their count so the caller decides what to show.
+ *
+ * NEO-358 — a row KNOWN to have no cards on it or beneath it (stored
+ * `subtreeCardCount` exactly 0) is left out; an unknown one is kept, and so
+ * is a container whose children hold cards. Its rows beneath are still read,
+ * each judged on its own count.
+ *
+ * `totalCards` / `totalBaseCards`: the set's stored subtree counts when it
+ * has them; otherwise the sum of every row's `cardCount` / `baseCardCount`
+ * (null when any is unknown).
  */
 export const setSummary = query({
   args: { setId: v.string() },
@@ -270,6 +313,7 @@ export const setSummary = query({
       variantType: Row,
       insert: Row | null,
     ) => {
+      if (hiddenAsEmpty(row)) return true;
       if (variants.length >= MAX_SET_VARIANTS) {
         truncated = true;
         return false;
@@ -327,6 +371,15 @@ export const setSummary = query({
           if (!(await push(sub, insert._id, type, insert))) break outer;
         }
       }
+    }
+    // The set's own subtree counts are every card in it, read once; the sum
+    // above is the fallback for a set not counted yet.
+    if (
+      typeof setRow.subtreeCardCount === "number" &&
+      typeof setRow.subtreeNonVariationCardCount === "number"
+    ) {
+      total = setRow.subtreeCardCount;
+      totalBase = setRow.subtreeNonVariationCardCount;
     }
     return { set, variants, totalCards: total, totalBaseCards: totalBase, truncated };
   },
@@ -549,6 +602,8 @@ async function suggestSets(ctx: Ctx, text: string, reader: CatalogReader) {
   const out: SetRef[] = [];
   for (const row of hits) {
     if (out.length >= SUGGEST_LIMIT) break;
+    // NEO-358 — a set known to hold no cards is never offered.
+    if (hiddenAsEmpty(row)) continue;
     const ref = await reader.setRef(row._id);
     if (!ref) continue;
     const haystack = [ref.manufacturer?.name ?? "", ref.name, ref.sport?.name ?? ""]
@@ -572,7 +627,8 @@ async function suggestSets(ctx: Ctx, text: string, reader: CatalogReader) {
 /**
  * What the typed text could name, before any card search: players (by name or
  * alias, so "Doc Gooden" offers Dwight Gooden), teams (by name or alias), and
- * sets ("2024 Topps Chrome"). Empty under `MIN_QUERY_CHARS`.
+ * sets ("2024 Topps Chrome"; NEO-358: never a set known to hold no cards).
+ * Empty under `MIN_QUERY_CHARS`.
  */
 export const suggest = query({
   args: { q: v.string() },

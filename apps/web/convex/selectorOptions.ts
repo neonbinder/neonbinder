@@ -240,7 +240,7 @@ import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
 import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
-import { createCardCountLedger } from "./cardCounts";
+import { NEW_ROW_SUBTREE_COUNTS, createCardCountLedger } from "./cardCounts";
 import { titleForStoredCard } from "./storedCardTitle";
 import {
   MAX_TEAM_ALIASES,
@@ -2683,6 +2683,7 @@ export const storeSelectorOptions = mutation({
         ...(level === "manufacturer" ? { setNamePrefix: insertValue } : {}),
       };
       const id = await ctx.db.insert("selectorOptions", {
+        ...NEW_ROW_SUBTREE_COUNTS,
         level,
         value: insertValue,
         platformData: alloc.platformData,
@@ -3350,6 +3351,7 @@ export const addCustomSelectorOption = mutation({
     }
 
     const id = await ctx.db.insert("selectorOptions", {
+      ...NEW_ROW_SUBTREE_COUNTS,
       level,
       value,
       platformData: slots?.platformData ?? {},
@@ -7866,6 +7868,10 @@ export const applyParallelGroupings = mutation({
     // leaves tags alone — `variantName` is what the level rule answers at
     // `insert` anyway, so the tagged and untagged row resolve identically.
     const variantTypeChildren = await getChildren(args.variantTypeId);
+    // NEO-358 — every row moved below takes its subtree card count with it:
+    // off the old parent, onto the new one (the variant type above both nets
+    // to zero). Flushed once, after the last move.
+    const countLedger = createCardCountLedger();
     for (const {
       sourceId,
       targetId,
@@ -7877,6 +7883,8 @@ export const applyParallelGroupings = mutation({
         ...(platformFacets !== undefined ? { platformFacets } : {}),
         lastUpdated: now,
       });
+      // Validated above: a promoted source is an insert under this type.
+      await countLedger.moveSubtree(ctx, sourceId, args.variantTypeId, targetId);
       variantTypeChildren.delete(sourceId);
       const targetChildren = await getChildren(targetId);
       targetChildren.add(sourceId);
@@ -7892,6 +7900,7 @@ export const applyParallelGroupings = mutation({
         parentId: args.variantTypeId,
         lastUpdated: now,
       });
+      await countLedger.moveSubtree(ctx, parallelId, oldParentId, args.variantTypeId);
       const oldParentChildren = await getChildren(oldParentId);
       oldParentChildren.delete(parallelId);
       variantTypeChildren.add(parallelId);
@@ -7907,6 +7916,7 @@ export const applyParallelGroupings = mutation({
         parentId: newParentId,
         lastUpdated: now,
       });
+      await countLedger.moveSubtree(ctx, parallelId, oldParentId, newParentId);
       const oldChildren = await getChildren(oldParentId);
       oldChildren.delete(parallelId);
       const newChildren = await getChildren(newParentId);
@@ -7917,6 +7927,7 @@ export const applyParallelGroupings = mutation({
     for (const [id, set] of childrenMap) {
       await ctx.db.patch(id, { children: Array.from(set), lastUpdated: now });
     }
+    await countLedger.flush(ctx);
 
     return {
       success: true,
@@ -11355,6 +11366,7 @@ export const ensureBrandUnknownRow = internalMutation({
       : undefined;
     const parentTeamIds = inheritedTeamIds(year);
     const id = await ctx.db.insert("selectorOptions", {
+      ...NEW_ROW_SUBTREE_COUNTS,
       level: "manufacturer",
       value: BRAND_UNKNOWN_VALUE,
       platformData: alloc?.platformData ?? {},

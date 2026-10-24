@@ -70,6 +70,7 @@ import {
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
+import { NEW_ROW_SUBTREE_COUNTS } from "./cardCounts";
 import {
   allocateSlots,
   detachSlot,
@@ -741,6 +742,7 @@ export const convertSetToParallel = mutation({
         sportlots: links.map((l) => ({ id: l.id, label: l.label })),
       });
       const destId = await ctx.db.insert("selectorOptions", {
+        ...NEW_ROW_SUBTREE_COUNTS,
         level: "insert",
         value: check.name,
         platformData: alloc.platformData,

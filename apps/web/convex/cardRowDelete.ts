@@ -13,7 +13,8 @@
  *   4. its derived player index rows (NEO-313, `cardPlayerLinks`);
  *   5. its derived team index rows (NEO-358, `cardTeamLinks`);
  *   6. the row itself;
- *   7. its row's card counts go down (`CardCountLedger`; the caller flushes).
+ *   7. its row's card counts go down, and the subtree counts of every row
+ *      above it (`CardCountLedger`; the caller flushes).
  *
  * Callers that delete a PAGE of cards ask `collectedCardIds` for the whole page
  * BEFORE deleting any of it, and refuse, skip or block from that answer: the
@@ -189,7 +190,10 @@ export async function removeCardRow(
   const teamLinkIds = await deleteCardTeamLinks(ctx, card._id);
   // 6. the card
   await ctx.db.delete(card._id);
-  // 7. its row's count
+  // 7. its row's count, and (NEO-358) its row's chain remembered while the
+  //    row still exists, so the subtree counts above it still move if the
+  //    caller ends the emptied row before it flushes.
   ledger.removeCard(card);
+  await ledger.rememberChain(ctx, card.selectorOptionId);
   return { crossListingIds, playerLinkIds, teamLinkIds };
 }
