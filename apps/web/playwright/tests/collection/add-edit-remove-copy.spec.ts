@@ -40,7 +40,7 @@ test(
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
     await expect(tabs.getByRole("link", { name: "My Cards", exact: true })).toBeVisible();
     await expect(tabs.getByRole("link", { name: "Checklists", exact: true })).toBeVisible();
-    // My Binders is part of the real collection (NEO-359; binders-and-boxes
+    // My Binders is part of the real collection (NEO-359; binders-move-fold-trade-want
     // proves it), and the demo's own chrome is gone.
     await expect(tabs.getByRole("link", { name: "My Binders", exact: true })).toBeVisible();
     await expect(page.getByRole("radiogroup", { name: "Demo theme" })).toHaveCount(0);

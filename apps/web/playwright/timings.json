@@ -16,7 +16,7 @@
     "auth/sign-in.spec.ts": 2,
     "auth/sign-out.spec.ts": 5,
     "collection/add-edit-remove-copy.spec.ts": 20,
-    "collection/binders-and-boxes.spec.ts": 40,
+    "collection/binders-move-fold-trade-want.spec.ts": 40,
     "collection/card-collectors-own-cannot-be-deleted.spec.ts": 24,
     "dashboard/view-collection.spec.ts": 3,
     "home/ai-identification.spec.ts": 2,
