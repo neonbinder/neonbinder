@@ -9,7 +9,8 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
-import type { BinderSelection, CollectionBinder } from "./store";
+import { ScopeProvider, useScope } from "./data/store";
+import { isHome, type Container, type Scope } from "./data/types";
 
 /**
  * NEO-350 / NEO-358 — where the collection page is running, and what that
@@ -49,12 +50,14 @@ import type { BinderSelection, CollectionBinder } from "./store";
  * how deep into the demo each entry is (`DemoHistoryState`), so "Back to the
  * tour" can return to the entry the visitor came from in one step.
  *
- * The Binder picker's scope rides there too, as `scope=<binderId>` (left off
- * for All), and the URL is its one source: the page reads it
- * (`scopeFromParams`) and the store's `selectedBinderId` follows. Picking a
+ * The Binder picker's scope rides there too, as `scope=<containerId>` (left
+ * off for All), and the URL is its one source: the page reads it
+ * (`scopeFromParams`, against `useContainers()`) and hands it down in
+ * `ViewScopeProvider`, where both stores read it (`useScope`). Picking a
  * scope replaces the current entry (`useSetScope`); every view change carries
  * the scope of the moment on, so Back restores the scope each view had. An
- * unknown or deleted binder id reads as All, and an unknown id anywhere else
+ * unknown or deleted id, or one that is not a home (the Want List, the Up for
+ * Trade pile, a smart binder), reads as All, and an unknown id anywhere else
  * falls back the same quiet way: to the deepest level that still makes sense.
  *
  * Public mode is always the demo store and never reaches Convex or Clerk.
@@ -155,7 +158,7 @@ interface LatestEntry {
   search: string;
   state: unknown;
   /** The scope to carry on: set while a navigation of ours is still pending. */
-  scope?: BinderSelection;
+  scope?: Scope;
 }
 const LatestEntryContext = createContext<MutableRefObject<LatestEntry> | null>(null);
 
@@ -169,33 +172,38 @@ export function useCollectionMode(): CollectionModeValue {
   return useContext(CollectionModeContext);
 }
 
-/** The scope param: a binder id, or absent for All. */
+/** The scope param: a binder or box id, or absent for All. */
 export const SCOPE_PARAM = "scope";
 
-/** A binder the picker can scope to (the store refuses anything else). */
-function scopable(binders: CollectionBinder[], id: string): boolean {
-  return binders.some((b) => b.id === id && b.kind === "manual");
+/** A container the picker can scope to: a home (the stores refuse anything else). */
+function scopable(containers: readonly Container[], id: string): boolean {
+  return isHome(containers.find((c) => c.id === id));
 }
 
 /**
- * The scope a URL stands for. `scope=` names it; an unknown or deleted id is
- * All. With no `scope` on the URL, an open binder (`tab=binders&b=…`, as a
- * shared link has it) scopes the page the way opening it does: a binder that
- * holds copies scopes to itself, a smart binder to All.
+ * The scope a URL stands for. `scope=` names it; an unknown, deleted or
+ * non-home id is All. With no `scope` on the URL, an open binder or box
+ * (`tab=binders&b=…`, as a shared link has it) scopes the page the way
+ * opening it does: a home scopes to itself, anything else to All. While the
+ * shelf is still loading (`containers` undefined) the scope reads as All.
  */
-export function scopeFromParams(params: URLSearchParams, binders: CollectionBinder[]): BinderSelection {
+export function scopeFromParams(params: URLSearchParams, containers: readonly Container[] | undefined): Scope {
+  if (!containers) return "all";
   const id = params.get(SCOPE_PARAM);
-  if (id !== null) return scopable(binders, id) ? id : "all";
+  if (id !== null) return scopable(containers, id) ? id : "all";
   const open = params.get("tab") === "binders" ? params.get("b") : null;
-  return open && scopable(binders, open) ? open : "all";
+  return open && scopable(containers, open) ? open : "all";
 }
 
-/** The page's scope as its URL has it, for view links to carry on. */
-const ViewScopeContext = createContext<BinderSelection>("all");
-export const ViewScopeProvider = ViewScopeContext.Provider;
+/**
+ * The page's scope as its URL has it: view links carry it on, and both
+ * stores read it (`useScope` in `./data/store`). The page wraps its views in
+ * this with `value={scopeFromParams(params, containers)}`.
+ */
+export const ViewScopeProvider = ScopeProvider;
 
 /** Writes a scope into a view's params: the id, or nothing for All. */
-function putScope(params: URLSearchParams, scope: BinderSelection) {
+function putScope(params: URLSearchParams, scope: Scope) {
   if (scope === "all") params.delete(SCOPE_PARAM);
   else params.set(SCOPE_PARAM, scope);
 }
@@ -207,7 +215,7 @@ function putScope(params: URLSearchParams, scope: BinderSelection) {
  */
 function useViewTarget() {
   const { mode, keepParams } = useCollectionMode();
-  const scope = useContext(ViewScopeContext);
+  const scope = useScope();
   const latestRef = useLatestEntry();
   return useCallback(
     (next: ParamsInit) => {
@@ -277,7 +285,7 @@ export function usePushParams(): (update: (params: URLSearchParams) => void, sta
  * The Binder picker's setter: the same view at another scope, replacing the
  * current entry (`useReplaceParams`), so a scope change is never a Back step.
  */
-export function useSetScope(): (scope: BinderSelection) => void {
+export function useSetScope(): (scope: Scope) => void {
   const replace = useReplaceParams();
   const latestRef = useLatestEntry();
   return useCallback(

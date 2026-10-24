@@ -14,9 +14,14 @@
  * `variant=Gold+Refractor`), so a shared demo link from before NEO-358 still
  * opens the same view.
  *
- * The binder scope applies here as it always has: with a binder picked,
- * `useCopiesInVariant` and `useVariantCompletion` count only that binder,
- * while `useCopiesOf` lists every copy (the drawer shows each with its home).
+ * The scope (`useScope`, from the page URL) applies here as on Convex: with
+ * a binder or box picked, `useCopiesInVariant`, `useVariantCompletion` and
+ * the drill's "have N of M" count only that home, while `useCopiesOf` lists
+ * every copy (the drawer shows each with its home).
+ *
+ * Writes go through the reducer's pure ops (`../store` `demoOps`), so a
+ * refusal (a taken pocket, the Want List as a home) rejects with the same
+ * kind of words the server sends.
  */
 
 import { createContext, createElement, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
@@ -24,18 +29,21 @@ import {
   brands,
   cards as fixtureCards,
   cardsInSet,
+  describeRule as describeFixtureRule,
+  evaluateRule,
   getBrand,
   getPlayer,
   getSport,
   getTeam,
   players as fixturePlayers,
   searchCards,
+  setCompletion as fixtureSetCompletion,
   sets as fixtureSets,
+  setsInOrder,
   teams as fixtureTeams,
   type Card as FixtureCard,
   type CardSet as FixtureSet,
   type Copy as FixtureCopy,
-  type CopyDetails as FixtureCopyDetails,
   type VariantFilter,
   type VariantPath,
   type VariantType,
@@ -50,31 +58,41 @@ import {
   type ColumnItem,
 } from "../../prototypes/p1/drill";
 import {
-  MAIN_BINDER_ID,
+  demoOps,
+  fixtureRule,
   PUBLIC_STORAGE_KEY,
-  TRADE_BINDER_ID,
   useDemoCollectionState,
-  type CollectionBinder,
+  type CollectionState,
   type CollectionStore as DemoState,
+  type DemoContainer,
+  type DemoCopy,
 } from "../store";
 import { compareCards, setLabel } from "./labels";
 import {
+  bySlot,
   CollectionStoreContext,
   completionOf,
+  CONTAINER_COPIES_DEFAULT_LIMIT,
+  emptyCopyDetails,
   OWNED_CARDS_DEFAULT_LIMIT,
   searchable,
+  SET_CARDS_DEFAULT_LIMIT,
+  useScope,
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type DemoExtension,
 } from "./store";
 import {
   ALL_CAPABILITIES,
+  isHome,
   type Card,
   type CardFeature,
   type CardId,
   type Completion,
+  type Container,
+  type ContainerCopies,
   type Copy,
-  type CopyDetails,
   type DrillItem,
   type HeldCount,
   type OwnedCards,
@@ -88,6 +106,7 @@ import {
   type VariantId,
   type VariantKind,
   type VariantRef,
+  type Scope,
 } from "./types";
 
 export { PUBLIC_STORAGE_KEY };
@@ -209,68 +228,82 @@ function fixtureSet(id: string): FixtureSet | undefined {
 // Copies: the reducer's copy <-> the view model's
 // ---------------------------------------------------------------------------
 
-function homeOf(binderIds: string[]): string {
-  return binderIds.find((id) => id !== TRADE_BINDER_ID) ?? binderIds[0] ?? MAIN_BINDER_ID;
-}
+/** View copies keyed on the reducer's (immutable) copy objects, per container list. */
+const copyCache = new WeakMap<DemoContainer[], WeakMap<DemoCopy, Copy | null>>();
 
-/** View copies keyed on the reducer's (immutable) copy objects, per binder list. */
-const copyCache = new WeakMap<CollectionBinder[], WeakMap<FixtureCopy, Copy | null>>();
-
-function toViewCopy(copy: FixtureCopy, binders: CollectionBinder[]): Copy | null {
-  let byCopy = copyCache.get(binders);
+function toViewCopy(copy: DemoCopy, containers: DemoContainer[]): Copy | null {
+  let byCopy = copyCache.get(containers);
   if (!byCopy) {
     byCopy = new WeakMap();
-    copyCache.set(binders, byCopy);
+    copyCache.set(containers, byCopy);
   }
   const cached = byCopy.get(copy);
   if (cached !== undefined) return cached;
   const card = demoCard(copy.cardId);
-  const { binderIds, forSale, askPrice, id, cardId, ...details } = copy;
-  const homeId = homeOf(binderIds);
+  const home = containers.find((c) => c.id === copy.homeId);
   const view: Copy | null = card
     ? {
-        ...details,
-        id,
-        cardId,
+        ...copy,
         variantId: card.variant.id,
         setId: card.set.id,
-        homeId,
-        homeName: binders.find((b) => b.id === homeId)?.name,
-        demo: { binderIds, forSale, ...(askPrice === undefined ? {} : { askPrice }) },
+        homeKind: home?.kind ?? "binder",
+        ...(home ? { homeName: home.name } : {}),
+        upForTrade: !!copy.upForTrade,
       }
     : null;
   byCopy.set(copy, view);
   return view;
 }
 
-function toViewCopies(copies: FixtureCopy[], binders: CollectionBinder[]): Copy[] {
-  return copies.map((c) => toViewCopy(c, binders)).filter((c): c is Copy => c !== null);
+function toViewCopies(copies: readonly DemoCopy[], containers: DemoContainer[]): Copy[] {
+  return copies.map((c) => toViewCopy(c, containers)).filter((c): c is Copy => c !== null);
 }
 
-/** View details → the reducer's, filing into `binderIds` when the details do not say. */
-function toFixtureDetails(details: CopyDetails, binderIds: string[]): FixtureCopyDetails {
-  const { demo, ...rest } = details;
-  return {
-    ...rest,
-    binderIds: demo?.binderIds ?? binderIds,
-    forSale: demo?.forSale ?? false,
-    ...(demo?.askPrice === undefined ? {} : { askPrice: demo.askPrice }),
-  };
+/** A view copy as the reducer stores it. */
+function toDemoCopy(copy: Copy): DemoCopy {
+  const { variantId: _v, setId: _s, homeName: _n, homeKind: _k, ...stored } = copy;
+  return stored;
 }
 
-function toFixturePatch(patch: Partial<CopyDetails>): Partial<FixtureCopyDetails> {
-  const { demo, ...rest } = patch;
-  if (!demo) return rest;
-  return { ...rest, binderIds: demo.binderIds, forSale: demo.forSale, askPrice: demo.askPrice };
+/** The copies a scope looks through: one home's, or all of them. */
+function inScope(state: CollectionState, scope: Scope): DemoCopy[] {
+  if (scope === "all") return state.copies;
+  const home = state.containers.find((c) => c.id === scope);
+  return isHome(home) ? state.copies.filter((c) => c.homeId === scope) : state.copies;
 }
 
-/** The fields of a copy a patch touches, as they are now: the patch that undoes it. */
-function inverseOf(copy: Copy, patch: Partial<CopyDetails>): Partial<CopyDetails> {
-  const out: Partial<CopyDetails> = {};
-  for (const key of Object.keys(patch) as (keyof CopyDetails)[]) {
-    (out as Record<string, unknown>)[key] = copy[key];
+/** The copies a container lists (see `useContainerCopies`), in slot order. */
+function containerCopies(state: CollectionState, id: string): DemoCopy[] {
+  const container = state.containers.find((c) => c.id === id);
+  if (!container || container.system === "want") return [];
+  if (container.system === "trade") return state.copies.filter((c) => c.upForTrade);
+  if (container.rule) {
+    const rule = fixtureRule(container.rule);
+    return state.copies.filter((c) => {
+      const card = fixtureCards.find((f) => f.id === c.cardId);
+      return !!card && evaluateRule(rule, card);
+    });
   }
-  return out;
+  return bySlot(state.copies.filter((c) => c.homeId === id));
+}
+
+function countOf(copies: readonly DemoCopy[]) {
+  return { copies: copies.reduce((n, c) => n + c.quantity, 0), lines: copies.length };
+}
+
+function containersOf(state: CollectionState): Container[] {
+  return state.containers.map((c) => ({
+    ...c,
+    count:
+      c.system === "want"
+        ? { copies: state.wants.length, lines: state.wants.length }
+        : countOf(containerCopies(state, c.id)),
+  }));
+}
+
+function page(copies: DemoCopy[], containers: DemoContainer[], limit: number | undefined): ContainerCopies {
+  const n = Math.max(1, Math.floor(limit ?? CONTAINER_COPIES_DEFAULT_LIMIT));
+  return { copies: toViewCopies(copies.slice(0, n), containers), truncated: copies.length > n };
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +318,7 @@ function useDemoState(): DemoState {
   return state;
 }
 
-function completionIn(variantId: VariantId, copies: FixtureCopy[]): Completion | undefined {
+function completionIn(variantId: VariantId, copies: readonly DemoCopy[]): Completion | undefined {
   const list = demoIndex().variantCards.get(variantId);
   if (!list) return undefined;
   const owned = new Set(copies.filter((c) => c.quantity > 0).map((c) => c.cardId));
@@ -305,12 +338,13 @@ function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem
   return { id: item.id, level, name: item.name, description: item.description, hasChildren: true, ...extra };
 }
 
-function drillColumn(level: DrillLevel, parents: DrillParents, state: DemoState): DrillItem[] {
+function drillColumn(level: DrillLevel, parents: DrillParents, scoped: readonly DemoCopy[]): DrillItem[] {
   // NEO-358: the drill's "300 base cards" / "have 2 of 30" read base cards
   // only, the same pair as the checklist's "Have 2 of 300"; the shared
   // prototype completion counts image variations in.
   const completion = (setId: string, variant?: VariantFilter) => {
-    const c = state.completionInScope(setId, variant);
+    // The prototype's completion reads only `cardId` and `quantity`.
+    const c = fixtureSetCompletion(setId, variant, scoped as unknown as FixtureCopy[]);
     const total = cardsInSet(setId, variant).filter((card) => card.variation === null).length;
     const missing = c.missing.filter((card) => card.variation === null);
     const owned = total - missing.length;
@@ -389,11 +423,12 @@ function parentsKey(parents: DrillParents): string {
 
 export const DEMO_DATA: CollectionData = {
   useDrill(level, parents) {
-    const state = useDemoState();
+    const state = useDemoState().state;
+    const scope = useScope();
     const key = parentsKey(parents);
     return useMemo(
-      () => (level ? drillColumn(level, JSON.parse(key) as DrillParents, state) : undefined),
-      [level, key, state],
+      () => (level ? drillColumn(level, JSON.parse(key) as DrillParents, inScope(state, scope)) : undefined),
+      [level, key, state, scope],
     );
   },
 
@@ -432,10 +467,14 @@ export const DEMO_DATA: CollectionData = {
   },
 
   useVariantCompletion(variantId) {
-    const state = useDemoState();
+    const state = useDemoState().state;
+    const scope = useScope();
     return useMemo(
-      () => (variantId === null ? undefined : (completionIn(variantId, state.scopedCopies) ?? completionOf({ owned: 0, total: 0 }))),
-      [variantId, state.scopedCopies],
+      () =>
+        variantId === null
+          ? undefined
+          : (completionIn(variantId, inScope(state, scope)) ?? completionOf({ owned: 0, total: 0 })),
+      [variantId, state, scope],
     );
   },
 
@@ -489,23 +528,21 @@ export const DEMO_DATA: CollectionData = {
   },
 
   useCopiesOf(cardId) {
-    const state = useDemoState();
-    const { copies, binders } = state.state;
+    const { copies, containers } = useDemoState().state;
     return useMemo(
-      () => (cardId === null ? undefined : toViewCopies(copies.filter((c) => c.cardId === cardId), binders)),
-      [cardId, copies, binders],
+      () => (cardId === null ? undefined : toViewCopies(copies.filter((c) => c.cardId === cardId), containers)),
+      [cardId, copies, containers],
     );
   },
 
   useCopiesInVariant(variantId) {
-    const state = useDemoState();
-    const scoped = state.scopedCopies;
-    const binders = state.state.binders;
+    const state = useDemoState().state;
+    const scope = useScope();
     return useMemo(() => {
       if (variantId === null) return undefined;
       const inVariant = new Set((demoIndex().variantCards.get(variantId) ?? []).map((c) => c.id));
-      return toViewCopies(scoped.filter((c) => inVariant.has(c.cardId)), binders);
-    }, [variantId, scoped, binders]);
+      return toViewCopies(inScope(state, scope).filter((c) => inVariant.has(c.cardId)), state.containers);
+    }, [variantId, state, scope]);
   },
 
   useOwnedCards(options) {
@@ -562,6 +599,62 @@ export const DEMO_DATA: CollectionData = {
       [copies],
     );
   },
+
+  useContainers() {
+    const state = useDemoState().state;
+    return useMemo(() => containersOf(state), [state]);
+  },
+
+  useContainerCopies(containerId, options) {
+    const state = useDemoState().state;
+    const limit = options?.limit;
+    return useMemo(
+      () => (containerId === null ? undefined : page(containerCopies(state, containerId), state.containers, limit)),
+      [containerId, state, limit],
+    );
+  },
+
+  useTradeCopies(options) {
+    const state = useDemoState().state;
+    const limit = options?.limit;
+    return useMemo(
+      () => page(state.copies.filter((c) => c.upForTrade), state.containers, limit),
+      [state, limit],
+    );
+  },
+
+  useWants() {
+    return useDemoState().state.wants;
+  },
+
+  useCopiesOfCards(cardIds) {
+    const { copies, containers } = useDemoState().state;
+    const key = cardIds ? cardIds.join("\n") : null;
+    return useMemo(() => {
+      if (key === null) return undefined;
+      const out: Record<string, Copy[]> = {};
+      for (const id of key === "" ? [] : key.split("\n")) out[id] = [];
+      for (const copy of copies) {
+        const list = out[copy.cardId];
+        if (!list) continue;
+        const view = toViewCopy(copy, containers);
+        if (view) list.push(view);
+      }
+      return out;
+    }, [key, copies, containers]);
+  },
+
+  useSetCards(setId, options) {
+    const limit = Math.max(1, Math.floor(options?.limit ?? SET_CARDS_DEFAULT_LIMIT));
+    return useMemo(() => {
+      if (setId === null) return undefined;
+      const set = fixtureSet(setId);
+      if (!set) return { cards: [], truncated: false };
+      const idx = demoIndex();
+      const all = set.variants.flatMap((sv) => idx.variantCards.get(demoVariantId(set.id, sv.path)) ?? []);
+      return { cards: all.slice(0, limit), truncated: all.length > limit };
+    }, [setId, limit]);
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -569,100 +662,156 @@ export const DEMO_DATA: CollectionData = {
 // ---------------------------------------------------------------------------
 
 function demoActions(stateRef: { current: DemoState }): CollectionActions {
-  const live = () => stateRef.current;
-  const viewCopy = (id: string): Copy | null => {
-    const s = live();
-    const raw = s.state.copies.find((c) => c.id === id);
-    return raw ? toViewCopy(raw, s.state.binders) : null;
+  const run: DemoState["run"] = (op) => stateRef.current.run(op);
+
+  /** The undo of an add: the folded row back to what it was, or the new row gone. */
+  const undoAdd = (r: { copyId: string; merged: boolean; previous?: { quantity: number; acquiredAt: string } }) => async () => {
+    if (r.merged && r.previous) {
+      const previous = r.previous;
+      run((s) => demoOps.updateCopy(s, r.copyId, previous));
+    } else {
+      run((s) => demoOps.removeCopy(s, r.copyId));
+    }
+  };
+
+  /** The undo of a move or a placement: the same cards back where they were. */
+  const undoMove = (r: { copyId: string; from: { homeId: string; slot?: number; quantity: number } }) => async () => {
+    run((s) => demoOps.moveCopy(s, r.copyId, r.from.homeId, r.from.quantity, r.from.slot));
   };
 
   const actions: CollectionActions = {
-    async addHave(card) {
-      const copy = live().addHave(card.id);
-      return {
-        copyId: copy.id,
-        merged: false,
-        undo: async () => {
-          live().removeCopy(copy.id);
-        },
-      };
+    async addHave(card, homeId) {
+      const r = run((s) => demoOps.addLine(s, card.id, { ...emptyCopyDetails(), ...(homeId ? { homeId } : {}) }));
+      return { copyId: r.copyId, merged: r.merged, undo: undoAdd(r) };
     },
 
-    async addMany(cards) {
-      const added = cards.map((c) => live().addHave(c.id));
+    async addMany(cards, homeId) {
+      const results = cards.map((c) =>
+        run((s) => demoOps.addLine(s, c.id, { ...emptyCopyDetails(), ...(homeId ? { homeId } : {}) })),
+      );
       return {
-        copyIds: added.map((c) => c.id),
+        copyIds: results.map((r) => r.copyId),
         undo: async () => {
-          for (const c of added) live().removeCopy(c.id);
+          for (const r of [...results].reverse()) await undoAdd(r)();
         },
       };
     },
 
     async addLineItem(card, details) {
-      const s = live();
-      const result = s.addLineItem(card.id, toFixtureDetails(details, [s.targetBinderId]));
-      return {
-        copyId: result.copy.id,
-        merged: result.merged,
-        undo: async () => result.undo(),
-      };
+      const r = run((s) => demoOps.addLine(s, card.id, details));
+      return { copyId: r.copyId, merged: r.merged, undo: undoAdd(r) };
     },
 
     async updateCopy(copy, patch) {
-      const before = viewCopy(copy.id) ?? copy;
-      live().updateCopy(copy.id, toFixturePatch(patch));
-      const back = inverseOf(before, patch);
+      const previous = run((s) => demoOps.updateCopy(s, copy.id, patch));
       return {
         undo: async () => {
-          live().updateCopy(copy.id, toFixturePatch(back));
+          run((s) => demoOps.updateCopy(s, copy.id, previous));
         },
       };
     },
 
     async removeCopy(copy) {
-      const removed = live().removeCopy(copy.id);
-      if (!removed) throw new Error("That copy is already gone.");
-      const view = toViewCopy(removed, live().state.binders) ?? copy;
+      const { removed, index } = run((s) => demoOps.removeCopy(s, copy.id));
+      const view = toViewCopy(removed, stateRef.current.state.containers) ?? copy;
       return {
         removed: view,
         undo: async () => {
-          live().restoreCopy(removed);
+          run((s) => demoOps.restoreCopy(s, removed, index));
         },
       };
     },
 
     async restoreCopy(copy) {
-      const { id, cardId, demo, variantId: _v, setId: _s, homeId, homeName: _h, ...details } = copy;
-      const fixture: FixtureCopy = {
-        ...details,
-        id,
-        cardId,
-        binderIds: demo?.binderIds ?? [homeId],
-        forSale: demo?.forSale ?? false,
-        ...(demo?.askPrice === undefined ? {} : { askPrice: demo.askPrice }),
-      };
-      live().restoreCopy(fixture);
+      const stored = toDemoCopy(copy);
+      const copyId = run((s) => demoOps.restoreCopy(s, stored));
       return {
-        copyId: id,
+        copyId,
         merged: false,
         undo: async () => {
-          live().removeCopy(id);
+          run((s) => demoOps.removeCopy(s, copyId));
         },
       };
     },
 
     async setBuilding(set, building) {
-      const toggle = () => live().toggleBuilding(set.id);
-      if (live().isBuilding(set.id) !== building) toggle();
+      const changed = run((s) => demoOps.setBuilding(s, set.id, building));
       return {
         building,
         undo: async () => {
-          if (live().isBuilding(set.id) === building) toggle();
+          if (changed) run((s) => demoOps.setBuilding(s, set.id, !building));
         },
       };
     },
+
+    async moveCopy(copy, toHomeId, options) {
+      const r = run((s) => demoOps.moveCopy(s, copy.id, toHomeId, options?.quantity, options?.slot));
+      return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(r) };
+    },
+
+    async placeCopy(copy, slot) {
+      const r = run((s) => demoOps.placeCopy(s, copy.id, slot));
+      return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(r) };
+    },
+
+    async setTrade(copy, on) {
+      const previous = run((s) => demoOps.setTrade(s, copy.id, on));
+      return {
+        undo: async () => {
+          run((s) => demoOps.setTrade(s, copy.id, previous));
+        },
+      };
+    },
+
+    async setWant(cardId, binderId, on) {
+      const before = stateRef.current.state.wants.find((w) => w.cardId === cardId);
+      const changed = run((s) => demoOps.setWant(s, cardId, binderId, on));
+      return {
+        changed,
+        undo: async () => {
+          if (!changed) return;
+          run((s) =>
+            before ? demoOps.setWant(s, cardId, before.binderId, true) : demoOps.setWant(s, cardId, null, false),
+          );
+        },
+      };
+    },
+
+    async createContainer(input) {
+      const containerId = run((s) => demoOps.createContainer(s, input));
+      return {
+        containerId,
+        undo: async () => {
+          if (stateRef.current.state.copies.some((c) => c.homeId === containerId)) {
+            throw new Error("It has cards in it now. Delete it from its own menu.");
+          }
+          run((s) => demoOps.deleteContainer(s, containerId));
+        },
+      };
+    },
+
+    async updateContainer(container, patch) {
+      const back = run((s) => demoOps.updateContainer(s, container.id, patch));
+      return {
+        undo: async () => {
+          run((s) => demoOps.updateContainer(s, container.id, back));
+        },
+      };
+    },
+
+    async deleteContainer(container) {
+      const moved = run((s) => demoOps.deleteContainer(s, container.id));
+      return { moved };
+    },
   };
   return actions;
+}
+
+let browseSetsCache: SetRef[] | null = null;
+/** The Browse shelf's sets, in shelf order (sport, year, name). */
+function browseSets(): SetRef[] {
+  browseSetsCache ??= setsInOrder().map((s) => demoIndex().setRefs.get(s.id)!);
+  return browseSetsCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -682,15 +831,21 @@ export function DemoCollectionProvider({ storageKey, children }: { storageKey?: 
     stateRef.current = state;
   }, [state]);
   const actions = useMemo(() => demoActions(stateRef), []);
-  const value = useMemo<CollectionStoreValue>(
+  const demo = useMemo<DemoExtension>(
     () => ({
-      kind: "demo",
-      capabilities: ALL_CAPABILITIES,
-      data: DEMO_DATA,
-      actions,
-      demo: { state, reset: state.reset },
+      cardRequests: state.cardRequests,
+      requestCard: state.requestCard,
+      browseSets: browseSets(),
+      browseFilter: state.browseFilter,
+      setBrowseFilter: state.setBrowseFilter,
+      describeRule: (rule) => describeFixtureRule(fixtureRule(rule)),
+      reset: state.reset,
     }),
-    [actions, state],
+    [state.cardRequests, state.requestCard, state.browseFilter, state.setBrowseFilter, state.reset],
+  );
+  const value = useMemo<CollectionStoreValue>(
+    () => ({ kind: "demo", capabilities: ALL_CAPABILITIES, data: DEMO_DATA, actions, demo }),
+    [actions, demo],
   );
   return createElement(
     CollectionStoreContext.Provider,

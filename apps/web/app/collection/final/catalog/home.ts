@@ -1,21 +1,25 @@
-import { useDemoExtension } from "../data/store";
-import type { Copy } from "../data/types";
+import { systemContainer, useContainers, useScope } from "../data/store";
+import { isHome, type Copy } from "../data/types";
 
 /**
- * Where a new Have lands, as a notice says it: the demo's target binder
- * ("Main", "Ohtani rainbow"), or the real collection.
+ * Where a new Have lands, as a notice says it: the scoped binder or box
+ * ("Ohtani rainbow", "Show box"), else Main.
  */
 export function useHomeName(): string {
-  const demo = useDemoExtension();
-  if (!demo) return "your collection";
-  return demo.state.getBinder(demo.state.targetBinderId)?.name ?? "Main";
+  const containers = useContainers();
+  const scope = useScope();
+  const scoped = scope === "all" ? undefined : containers?.find((c) => c.id === scope);
+  if (scoped && isHome(scoped)) return scoped.name;
+  return systemContainer(containers, "main")?.name ?? "Main";
 }
 
-/** The binder the demo narrows counts to, when one is picked. */
+/** The binder or box the page narrows counts to, when one is picked. */
 export function useScopedName(): string | null {
-  const demo = useDemoExtension();
-  if (!demo) return null;
-  return demo.state.fileableBinders.find((b) => b.id === demo.state.selectedBinderId)?.name ?? null;
+  const containers = useContainers();
+  const scope = useScope();
+  if (scope === "all") return null;
+  const scoped = containers?.find((c) => c.id === scope);
+  return scoped && isHome(scoped) ? scoped.name : null;
 }
 
 /** Copies grouped by card, in the order they came. */
