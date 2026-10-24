@@ -4,9 +4,10 @@
  * What is actually at risk here is not "does it render text" — it is the two
  * properties that make the printed paper match the screen:
  *
- *  1. **Physical dimensions in inches.** The print document sets
- *     `@page { size: 6in 4in }`; if the label element itself is not also 6in ×
- *     4in the label prints scaled or spills onto a second page. These assert
+ *  1. **Physical dimensions in inches.** The print document turns a 6in × 4in
+ *     box onto a portrait `@page { size: 4in 6in }` (lib/print/print-html.ts,
+ *     `printedPage`); if the label element itself is not also 6in × 4in it
+ *     prints scaled, clipped or spills onto a second page. These assert
  *     the literal inch values rather than pixels, because inches are what
  *     survive into the print document.
  *  2. **Styles are inline, not classes.** Printing serializes `outerHTML` into

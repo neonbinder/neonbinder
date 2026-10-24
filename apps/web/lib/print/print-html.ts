@@ -36,7 +36,56 @@ export interface PrintHtmlDocumentOptions {
   bodyHtml: string;
   /** CSS for the print document. Nothing from the app's stylesheet is inherited. */
   css: string;
+  /**
+   * The page as the content is laid out: a 6×4 shipping label is
+   * `{ widthIn: 6, heightIn: 4 }`. A landscape page is handed to the printer
+   * portrait with the content turned onto it; see {@link printedPage}.
+   */
   page: PrintPageSize;
+}
+
+/** A requested page as it reaches the printer; see {@link printedPage}. */
+export interface PrintedPage {
+  /** `@page` width, in inches: the paper as the printer feeds it. */
+  widthIn: number;
+  /** `@page` height, in inches. */
+  heightIn: number;
+  /** True when the content is turned 90deg clockwise onto the paper. */
+  rotated: boolean;
+}
+
+/**
+ * How a requested page reaches the printer.
+ *
+ * ## Why a landscape page is printed portrait, rotated
+ * A label printer feeds its 4×6 stock short edge first, so the paper is a
+ * portrait 4in × 6in page whatever the label's layout. Until Firefox 158 a
+ * landscape `@page { size: 6in 4in }` was turned onto that stock by the
+ * browser or the driver; since 158.0.1 (macOS) it no longer is, and the label
+ * prints portrait on the stock while the print preview still looks right. A
+ * carrier's 4×6 PDF label is laid out the same way, as a portrait page. So the
+ * document asks for the page the paper actually is, and turns the content
+ * itself:
+ *
+ *  - `@page` is the portrait page (`size: 4in 6in`).
+ *  - A page box of that size, `position: relative; overflow: hidden`.
+ *  - The content in a box at its own landscape size, absolutely placed at
+ *    `top: 0; left: <page width>`, rotated 90deg clockwise about its top-left
+ *    corner. That swings it down and left onto the page box exactly. This is
+ *    the geometry proven on a label printer; do not "simplify" it to a
+ *    centred rotation without paper to test on.
+ *
+ * Decided by shape, not by caller, because every landscape page this app
+ * prints is a label on 4×6 roll stock, and a caller that had to opt in would
+ * print a wasted label the day one forgot. Portrait pages (Letter and A4
+ * sheets) pass through untouched. A square page is not landscape and is not
+ * turned.
+ */
+export function printedPage(page: PrintPageSize): PrintedPage {
+  if (page.widthIn > page.heightIn) {
+    return { widthIn: page.heightIn, heightIn: page.widthIn, rotated: true };
+  }
+  return { widthIn: page.widthIn, heightIn: page.heightIn, rotated: false };
 }
 
 /**
@@ -129,16 +178,49 @@ export function imageBodyHtml(options: ImageBodyHtmlOptions): string {
  */
 export function buildDocument(options: PrintHtmlDocumentOptions): string {
   const { title, bodyHtml, css, page } = options;
+  const paper = printedPage(page);
+  // Rotated pages only (see printedPage). The page and body are pinned to the
+  // paper and clipped, so a page rounded a hair larger never spills a blank
+  // second label off the roll. Caller CSS comes after this and may still set
+  // colours on html/body; it must not set their size.
+  const rotationCss = paper.rotated
+    ? `
+      html, body {
+        width: ${paper.widthIn}in;
+        height: ${paper.heightIn}in;
+        overflow: hidden;
+      }
+      .nb-print-paper {
+        position: relative;
+        width: ${paper.widthIn}in;
+        height: ${paper.heightIn}in;
+        overflow: hidden;
+      }
+      .nb-print-turned {
+        position: absolute;
+        top: 0;
+        left: ${paper.widthIn}in;
+        width: ${page.widthIn}in;
+        height: ${page.heightIn}in;
+        transform-origin: top left;
+        transform: rotate(90deg);
+      }`
+    : "";
+  const body = paper.rotated
+    ? `<div class="nb-print-paper"><div class="nb-print-turned">${bodyHtml}</div></div>`
+    : bodyHtml;
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <title>${escapeHtml(title)}</title>
     <style>
-      /* Exact physical page. The zero margin is what stops the browser adding
-         its own half-inch and scaling the label down to fit inside it. */
+      /* Exact physical page, as the printer feeds it (portrait for a
+         landscape label; see printedPage). The zero margin is what stops the
+         browser adding its own half-inch and scaling the label down to fit
+         inside it. */
       @page {
-        size: ${page.widthIn}in ${page.heightIn}in;
+        size: ${paper.widthIn}in ${paper.heightIn}in;
         margin: 0;
       }
       :root {
@@ -154,11 +236,11 @@ export function buildDocument(options: PrintHtmlDocumentOptions): string {
       * {
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
-      }
+      }${rotationCss}
 ${css}
     </style>
   </head>
-  <body>${bodyHtml}</body>
+  <body>${body}</body>
 </html>`;
 }
 

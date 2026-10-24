@@ -5,52 +5,27 @@
 // Needs no setup: the page reads nothing from Convex (no return address), so
 // the worker's own account is enough and the spec writes nothing (R7).
 //
-// HOW THE PRINT IS PROVED, and why it is allowed. The print document lives in
-// a hidden, aria-hidden iframe the user never sees, and the only thing that
-// ever shows it is the browser's print dialog, which cannot be asserted and
-// would hang the run. So the proof is taken where the browser takes it: an
-// init script replaces `window.print` in every frame, and the replacement
-// reports what the browser WOULD have been given to print (the document's
-// `@page` rule, the page background, the size of the painted slab) as a
-// console line. Nothing is located: no selector, id or DOM structure is read
-// by the spec. The spec locates only by role and name; the stub is an
-// environment substitute for a native dialog (like a stubbed download), and
-// the assertion is on the print output itself.
+// HOW THE PRINT IS PROVED, and why it is allowed: see support/print-capture.ts.
+// In short, an init script replaces `window.print` in every frame and reports
+// what the browser WOULD have been given to print; nothing is located by
+// selector, id or test id, and the page itself is driven by role and name.
+//
+// The page is the portrait 4in x 6in paper a label printer feeds (Firefox 158
+// stopped turning a landscape page onto 4x6 stock, NEO-365), with the 6in x 4in
+// black slab turned 90deg clockwise to fill it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-
-const PRINT_REPORT = "[e2e-print] ";
+import {
+  capturePrint,
+  expectRotatedFourBySixPage,
+  stubPrintDialog,
+} from "../../support/print-capture";
 
 test(
   "Blackout Label — open it from the Print Shop nav, see the true-size slab, print a black 4x6 page",
   { tag: ["@smoke", "@labels"] },
   async ({ page, signIn }) => {
     // Replace the native print dialog in every frame, before any page script.
-    // The report goes out as a console line; no page state is read by the spec.
-    await page.addInitScript((prefix) => {
-      window.print = () => {
-        const pageRules: string[] = [];
-        for (const sheet of Array.from(document.styleSheets)) {
-          for (const rule of Array.from(sheet.cssRules)) {
-            if (rule instanceof CSSPageRule) pageRules.push(rule.cssText.replace(/\s+/g, " "));
-          }
-        }
-        const slab = document.body.firstElementChild?.getBoundingClientRect();
-        console.log(
-          prefix +
-            JSON.stringify({
-              inFrame: window !== window.top,
-              pageRules,
-              pageBackground: getComputedStyle(document.documentElement).backgroundColor,
-              bodyBackground: getComputedStyle(document.body).backgroundColor,
-              slabWidth: slab?.width,
-              slabHeight: slab?.height,
-              slabBackground: document.body.firstElementChild
-                ? getComputedStyle(document.body.firstElementChild).backgroundColor
-                : null,
-            }),
-        );
-      };
-    }, PRINT_REPORT);
+    await stubPrintDialog(page);
 
     // Enter on the neighbouring tool, so the nav click is what proves the route.
     await signIn("/print/shipping");
@@ -86,35 +61,19 @@ test(
     await expect(slab).toHaveCSS("height", "384px");
     await expectAccessible(page, { label: "Blackout Label" });
 
-    // Print: arm the listener first, then click. A real dialog never opens.
-    const printed = page.waitForEvent("console", {
-      predicate: (message) => message.text().startsWith(PRINT_REPORT),
-      timeout: 7_000,
-    });
-    await page.getByRole("button", { name: "Print Blackout Label" }).click();
-    const report = JSON.parse((await printed).text().slice(PRINT_REPORT.length)) as {
-      inFrame: boolean;
-      pageRules: string[];
-      pageBackground: string;
-      bodyBackground: string;
-      slabWidth: number;
-      slabHeight: number;
-      slabBackground: string | null;
-    };
+    // Print: the capture arms its listener first, then clicks. A real dialog never opens.
+    const report = await capturePrint(page, () =>
+      page.getByRole("button", { name: "Print Blackout Label" }).click(),
+    );
 
-    // It is the print document that was printed, never the app page itself.
-    expect(report.inFrame).toBe(true);
-    // A 4x6 label fed landscape (6in x 4in), the same page as the Shipping
-    // label, with no margin so the black reaches every edge.
-    expect(report.pageRules).toHaveLength(1);
-    expect(report.pageRules[0]).toMatch(/size: 6in 4in/);
-    expect(report.pageRules[0]).toMatch(/margin: 0(px)?;/);
+    // A portrait 4in x 6in page, the slab turned onto it, no margin.
+    expectRotatedFourBySixPage(report);
     // Black, edge to edge: the page, the body and the slab itself.
     expect(report.pageBackground).toBe("rgb(0, 0, 0)");
     expect(report.bodyBackground).toBe("rgb(0, 0, 0)");
-    expect(report.slabBackground).toBe("rgb(0, 0, 0)");
-    expect(report.slabWidth).toBe(576);
-    expect(report.slabHeight).toBe(384);
+    expect(report.content?.background).toBe("rgb(0, 0, 0)");
+    expect(report.content?.layoutWidth).toBe(576);
+    expect(report.content?.layoutHeight).toBe(384);
 
     // The page is still there and printable again.
     await expect(page.getByRole("button", { name: "Print Blackout Label" })).toBeVisible();

@@ -19,6 +19,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   buildDocument,
   imageBodyHtml,
+  printedPage,
   waitForImages,
   type ImageBearingDocument,
   type PrintableImage,
@@ -237,5 +238,110 @@ describe("buildDocument", () => {
     const rule = doc.match(/html, body \{[^}]*\}/)?.[0] ?? "";
     expect(rule).toContain("background: #fff;");
     expect(rule).toContain("color: #000;");
+  });
+});
+
+// NEO-365: since Firefox 158 a landscape `@page` is no longer turned onto the
+// label printer's portrait 4×6 stock, so a landscape page is emitted portrait
+// with the content rotated onto it. The geometry pinned here is the one proven
+// on a label printer; changing any of it needs paper, not just a green test.
+describe("printedPage", () => {
+  test("turns a landscape page onto portrait paper", () => {
+    expect(printedPage({ widthIn: 6, heightIn: 4 })).toEqual({
+      widthIn: 4,
+      heightIn: 6,
+      rotated: true,
+    });
+  });
+
+  test("passes a portrait page through untouched", () => {
+    expect(printedPage({ widthIn: 8.5, heightIn: 11 })).toEqual({
+      widthIn: 8.5,
+      heightIn: 11,
+      rotated: false,
+    });
+  });
+
+  test("does not turn a square page", () => {
+    expect(printedPage({ widthIn: 4, heightIn: 4 }).rotated).toBe(false);
+  });
+});
+
+/** The body of a built document, between the tags. */
+function bodyOf(doc: string): string {
+  return doc.match(/<body>([\s\S]*)<\/body>/)?.[1] ?? "";
+}
+
+/** The declarations of the first rule for `selector`, whitespace collapsed. */
+function ruleFor(doc: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rule = doc.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  return rule.replace(/\s+/g, " ").trim();
+}
+
+describe("buildDocument on a landscape 6×4 label page (NEO-365)", () => {
+  const label = '<div style="width:6in;height:4in">To: Ken Griffey Jr.</div>';
+  const doc = buildDocument({
+    title: "Label",
+    bodyHtml: label,
+    css: ".caller { color: #000; }",
+    page: { widthIn: 6, heightIn: 4 },
+  });
+
+  test("asks the printer for the portrait 4×6 page the stock really is", () => {
+    expect(ruleFor(doc, "@page")).toBe("size: 4in 6in; margin: 0;");
+    expect(doc).not.toContain("size: 6in 4in");
+  });
+
+  test("wraps the label in a 4×6 page box with a rotated 6×4 box inside", () => {
+    expect(bodyOf(doc)).toBe(
+      `<div class="nb-print-paper"><div class="nb-print-turned">${label}</div></div>`,
+    );
+  });
+
+  test("the page box is the paper, relative and clipped", () => {
+    expect(ruleFor(doc, ".nb-print-paper")).toBe(
+      "position: relative; width: 4in; height: 6in; overflow: hidden;",
+    );
+  });
+
+  test("the label box is 6×4, placed at the page's right edge and turned 90deg clockwise about its top-left", () => {
+    expect(ruleFor(doc, ".nb-print-turned")).toBe(
+      "position: absolute; top: 0; left: 4in; width: 6in; height: 4in; " +
+        "transform-origin: top left; transform: rotate(90deg);",
+    );
+  });
+
+  test("pins html and body to the paper so rounding cannot spill a second label", () => {
+    const sized = doc.match(/html, body \{[^}]*width:[^}]*\}/)?.[0] ?? "";
+    expect(sized.replace(/\s+/g, " ")).toContain(
+      "width: 4in; height: 6in; overflow: hidden;",
+    );
+  });
+
+  test("caller CSS still lands after the helper's own rules", () => {
+    expect(doc.indexOf(".caller")).toBeGreaterThan(
+      doc.indexOf(".nb-print-turned {"),
+    );
+  });
+});
+
+describe("buildDocument on a portrait page", () => {
+  const bodyHtml = "<section>Spine labels</section>";
+  const doc = buildDocument({
+    title: "Sheet",
+    bodyHtml,
+    css: "",
+    page: { widthIn: 8.5, heightIn: 11 },
+  });
+
+  test("keeps the requested page size", () => {
+    expect(ruleFor(doc, "@page")).toBe("size: 8.5in 11in; margin: 0;");
+  });
+
+  test("leaves the body exactly as given, with no rotation", () => {
+    expect(bodyOf(doc)).toBe(bodyHtml);
+    expect(doc).not.toContain("nb-print-");
+    expect(doc).not.toContain("rotate(");
   });
 });
