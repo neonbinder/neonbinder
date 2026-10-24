@@ -128,7 +128,7 @@
 - [Print-only region needs the :has() prefix](reference_print_only_region_has_specificity.md) — visible rule must match hide rule weight; fullPage print-emulated shots go blank
 - [Parallel builders share the scratchpad](reference_parallel_builders_share_the_scratchpad.md) — per-agent subdir for scripts/shots; own Vite port; check root for stray folders
 - [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word
-- [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — hand-rolled modal portals to body lose Radix tokens; nest <Theme hasBackground={false}>
+- [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — createPortal(body) loses Radix tokens (NeonButton padding 0): prop-less nested <Theme> in the portal, never portal into the root Theme
 - [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
