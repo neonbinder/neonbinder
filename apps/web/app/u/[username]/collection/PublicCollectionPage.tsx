@@ -53,7 +53,7 @@ function Shell({ username, children }: { username: string; children: ReactNode }
   const name = profile?.displayName ?? profile?.username ?? username;
   return (
     <div data-theme="dark" className="min-h-screen bg-surface text-ink">
-      <header className="border-b border-rule px-4 py-3">
+      <header className="border-b border-rule bg-surface px-4 py-3">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
           {profile ? (
             <Link to={`/u/${profile.username}`} className="flex min-h-10 items-center gap-2 font-semibold focus-outline">
