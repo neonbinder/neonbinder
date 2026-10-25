@@ -374,7 +374,10 @@ test(
     await expect(spineOf(binderB, 2)).toBeVisible();
 
     // --- Move the pair back: it re-folds; Undo splits it again --------------
+    // The trip through the Inventory page left the collection page, so Checklists
+    // starts over (as from any other page): drill back to the Base.
     await toChecklists();
+    await drillToCollectorBase(page);
     await lookThroughEverything();
     await checklist.getByRole("button", { name: `Details for ${one.short}, Raw ×2`, exact: true }).click();
     await expect(lines(2)).toBeVisible();
