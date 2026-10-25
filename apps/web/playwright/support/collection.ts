@@ -112,6 +112,26 @@ export async function goViaShell(page: Page, isMobile: boolean, name: "Collectio
   }
 }
 
+/**
+ * My Boxes' headline, the whole stock for sale (every box, Unsorted
+ * included): "N cards for sale in K boxes." or, with none, "Nothing for sale
+ * yet.". My Boxes has no long box to count it (the Inventory tab is the list),
+ * so this is the number to measure against.
+ */
+export function myBoxesStock(page: Page, cards: number): Locator {
+  if (cards === 0) return page.getByText("Nothing for sale yet.", { exact: true });
+  const words = cardsWord(cards).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return page.getByText(new RegExp(`^${words} for sale in \\d+ box(?:es)?\\.$`));
+}
+
+/** The count off My Boxes' headline (`myBoxesStock`), read once it has settled. */
+export async function forSaleOnMyBoxes(page: Page): Promise<number> {
+  const headline = page.getByText(/^(?:[\d,]+ cards? for sale in \d+ box(?:es)?|Nothing for sale yet)\.$/);
+  await expect(headline).toBeVisible();
+  const text = (await headline.textContent()) ?? "";
+  return /^Nothing/.test(text) ? 0 : numberOf(/^([\d,]+)/.exec(text)?.[1]);
+}
+
 /** The Inventory page's tab strip ("Inventory sections"). */
 export function inventoryTabs(page: Page): Locator {
   return page.getByRole("navigation", { name: "Inventory sections" });

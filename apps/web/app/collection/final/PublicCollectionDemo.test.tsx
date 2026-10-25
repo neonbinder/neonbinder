@@ -323,11 +323,13 @@ describe("the demo's inventory side (NEO-364), on fixture data alone", () => {
     expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
   });
 
-  it("stands Unsorted and the Show box on the box shelf; a box is a Back step", () => {
+  it("stands the Show box on the box shelf and Unsorted in Special places; a box is a Back step", () => {
     renderDemo(vi.fn(), ["/binder-tracking?demo=on&side=inventory&tab=boxes"]);
     expect(document.title).toBe("My Boxes · Inventory demo");
     const boxes = screen.getByRole("list", { name: "Your boxes" });
-    expect(within(boxes).getByRole("button", { name: /^Unsorted, box, 0 cards for sale$/ })).toBeTruthy();
+    expect(within(boxes).queryByRole("button", { name: /^Unsorted,/ })).toBeNull();
+    const special = screen.getByRole("list", { name: "Special places" });
+    expect(within(special).getByRole("button", { name: /^Unsorted, box, 0 cards for sale$/ })).toBeTruthy();
     fireEvent.click(within(boxes).getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ }));
     expect(pageUrl()).toBe("/binder-tracking?demo=on&side=inventory&tab=boxes&b=box-show");
     expect(screen.getByRole("region", { name: "Show box, open" })).toBeTruthy();

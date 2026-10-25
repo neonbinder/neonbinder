@@ -26,12 +26,13 @@ import type { Locator } from "@playwright/test";
 import {
   backToBoxes,
   cardsWord,
-  countOf,
   createBox,
   deleteOpenBox,
   drillToCollectorBase,
+  forSaleOnMyBoxes,
   goViaShell,
   inventoryTabs,
+  myBoxesStock,
   nameOf,
   openListFilters,
   quantityField,
@@ -68,13 +69,9 @@ test(
     await page.goForward();
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
 
-    // --- A box of my own; the long box's count to measure against ---------------------------
+    // --- A box of my own; My Boxes' headline count to measure against ----------------------
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
-    const longBoxRe = /^Everything for sale, ([\d,]+) cards? for sale$/;
-    const forSaleBase = await countOf(
-      page.getByRole("list", { name: "Special places" }).getByRole("link", { name: longBoxRe }),
-      longBoxRe,
-    );
+    const forSaleBase = await forSaleOnMyBoxes(page);
     await createBox(page, boxName);
     await backToBoxes(page);
 
@@ -306,11 +303,6 @@ test(
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
     await deleteOpenBox(page, boxName);
     await expect(page.getByRole("status").filter({ hasText: `${boxName} is off the shelf.` })).toBeVisible();
-    await expect(
-      page.getByRole("list", { name: "Special places" }).getByRole("link", {
-        name: `Everything for sale, ${cardsWord(forSaleBase)} for sale`,
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expect(myBoxesStock(page, forSaleBase)).toBeVisible();
   },
 );

@@ -108,21 +108,23 @@ test(
     await expect(stock.getByRole("button", { name: /^×3 .*Steve Yzerman.*, in Show box$/ })).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, the Inventory list" });
 
-    // Tab 2, My Boxes: Unsorted first, the Show box, New box; Up for Trade drawn as a box.
+    // Tab 2, My Boxes: the Show box and New box on the shelf; Special places holds
+    // Unsorted first, then Up for Trade drawn as a box. No long box: the Inventory
+    // tab is already the whole stock in one list.
     await invTabs.getByRole("link", { name: "My Boxes" }).click();
     await expect(page).toHaveURL(/[?&]tab=boxes/);
     const boxes = page.getByRole("list", { name: "Your boxes" });
     await expect(boxes).toBeVisible();
-    await expect(boxes.getByRole("button")).toHaveCount(3);
-    await expect(boxes.getByRole("button").first()).toHaveAccessibleName(/^Unsorted, box, \d+ cards? for sale$/);
+    await expect(boxes.getByRole("button")).toHaveCount(2);
     const showBox = boxes.getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ });
     await expect(showBox).toBeVisible();
     await expect(boxes.getByRole("button", { name: "New box", exact: true })).toBeVisible();
     await expect(page.getByText(/^\d+ cards? for sale in \d+ box(?:es)?\.$/)).toBeVisible();
     const places = page.getByRole("list", { name: "Special places" });
+    await expect(places.getByRole("button")).toHaveCount(2);
+    await expect(places.getByRole("button").first()).toHaveAccessibleName(/^Unsorted, box, \d+ cards? for sale$/);
     await expect(places.getByRole("button", { name: /^Up for Trade, box, \d+ cards? up for trade$/ })).toBeVisible();
-    const wholeStock = places.getByRole("link", { name: /^Everything for sale, \d+ cards? for sale$/ });
-    await expect(wholeStock).toBeVisible();
+    await expect(places.getByRole("link")).toHaveCount(0);
     await expectAccessible(page, { label: "Collection demo, the My Boxes shelf" });
 
     // Open the Show box: five rows, and the strip of cards not sorted into a row yet.

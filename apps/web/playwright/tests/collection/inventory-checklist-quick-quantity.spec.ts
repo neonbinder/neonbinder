@@ -52,10 +52,12 @@ test(
     const tabs = inventoryTabs(page);
     await expect(tabs.getByRole("link", { name: "My Boxes", exact: true })).toHaveAttribute("aria-current", "page");
     const boxes = page.getByRole("list", { name: "Your boxes" });
+    // Unsorted is a special place on My Boxes, not one of the collector's own boxes.
+    const places = page.getByRole("list", { name: "Special places" });
     const unsortedRe = /^Unsorted, box, ([\d,]+) cards? for sale$/;
-    const unsortedBase = await countOf(boxes.getByRole("button", { name: unsortedRe }), unsortedRe);
+    const unsortedBase = await countOf(places.getByRole("button", { name: unsortedRe }), unsortedRe);
     const unsorted = (cards: number) =>
-      boxes.getByRole("button", { name: `Unsorted, box, ${cardsWord(cards)} for sale`, exact: true });
+      places.getByRole("button", { name: `Unsorted, box, ${cardsWord(cards)} for sale`, exact: true });
     const boxSpine = (cards: number) =>
       boxes.getByRole("button", { name: `${boxName}, box, ${cardsWord(cards)} for sale`, exact: true });
     await createBox(page, boxName);

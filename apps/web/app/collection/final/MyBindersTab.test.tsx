@@ -983,7 +983,7 @@ describe("My Boxes (NEO-364)", () => {
   const search = () => screen.getByLabelText("Page search").textContent;
   const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
 
-  it("is a tab of its own: the boxes only, Unsorted first, and no Binder picker", () => {
+  it("is a tab of its own: the collector's boxes, Unsorted and Up for Trade as special places, and no Binder picker", () => {
     renderBinders("/inventory");
     fireEvent.click(within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", { name: "My Boxes" }));
     expect(search()).toBe("?tab=boxes");
@@ -991,17 +991,21 @@ describe("My Boxes (NEO-364)", () => {
     expect(screen.queryByRole("combobox", { name: "Binder" })).toBeNull();
     const boxes = screen.getByRole("list", { name: "Your boxes" });
     expect(within(boxes).getAllByRole("button").map((b) => b.getAttribute("aria-label")?.split(",")[0] ?? b.textContent)).toEqual([
-      "Unsorted",
       "Show box",
       "New box",
     ]);
     expect(within(boxes).queryByRole("button", { name: /^Main,|^'96 Contenders,/ })).toBeNull();
-    // Up for Trade stands as a box, beside the long box that leads to the list.
+    // Unsorted first, then Up for Trade, both drawn as boxes. No long box: the
+    // Inventory tab is already the whole stock in one list.
     const special = screen.getByRole("list", { name: "Special places" });
+    expect(within(special).getAllByRole("button").map((b) => b.getAttribute("aria-label")?.split(",")[0])).toEqual([
+      "Unsorted",
+      "Up for Trade",
+    ]);
+    expect(within(special).getByRole("button", { name: /^Unsorted, box, \d+ cards? for sale$/ })).toBeTruthy();
     expect(within(special).getByRole("button", { name: /^Up for Trade, box, / })).toBeTruthy();
-    expect(within(special).getByRole("link", { name: /^Everything for sale, \d+ cards? for sale$/ }).getAttribute("href")).toBe(
-      "/inventory?tab=cards",
-    );
+    expect(within(special).queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("link", { name: /^Everything for sale,/ })).toBeNull();
     // Only the boxes the stock sits in: the seed's Unsorted is empty.
     expect(screen.getByText(/^\d+ cards? for sale in 1 box\.$/)).toBeTruthy();
     back();
@@ -1021,9 +1025,21 @@ describe("My Boxes (NEO-364)", () => {
     expect(screen.getByRole("list", { name: "Your boxes" })).toBeTruthy();
   });
 
-  it("the long box leads to the Inventory list, a Back step", () => {
+  it("Unsorted opens from Special places, a Back step", () => {
     renderBinders("/inventory?tab=boxes");
-    fireEvent.click(screen.getByRole("link", { name: /^Everything for sale, \d+ cards? for sale$/ }));
+    const special = screen.getByRole("list", { name: "Special places" });
+    fireEvent.click(within(special).getByRole("button", { name: /^Unsorted, box, \d+ cards? for sale$/ }));
+    expect(search()).toMatch(/^\?tab=boxes&b=[\w-]+$/);
+    expect(screen.getByRole("region", { name: "Unsorted, open" })).toBeTruthy();
+    back();
+    expect(search()).toBe("?tab=boxes");
+    expect(screen.getByRole("list", { name: "Special places" })).toBeTruthy();
+  });
+
+  it("the Inventory tab, not a long box, is the way to the whole stock in one list", () => {
+    renderBinders("/inventory?tab=boxes");
+    expect(screen.getByText("Open a box to sort it into rows. Want the whole stock in one list? Hit the Inventory tab.")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", { name: "Inventory" }));
     expect(search()).toBe("?tab=cards");
     expect(screen.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
     back();

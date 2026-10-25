@@ -9,11 +9,13 @@
 // Collection = Binders, Inventory = Boxes (Jason: "Inventory is things for sale
 // and My Collection is things that are for your collection. They should not mix
 // on the screens"). So the spec reads the collection's headline, Main and
-// long-box counts and the inventory's Unsorted, Up for Trade and long-box counts
-// FIRST and asserts every later number as a delta from them: a sale moves a copy
-// from one side's count to the other's, nothing else moves. Unsorted is the
-// inventory's own Main: it stands first on My Boxes, never on the collection's
-// shelf, and a deleted box's copies land there.
+// long-box counts and the inventory's Unsorted, Up for Trade and headline stock
+// counts FIRST and asserts every later number as a delta from them: a sale moves
+// a copy from one side's count to the other's, nothing else moves. Unsorted is
+// the inventory's own Main: it stands first in My Boxes' Special places (never
+// among the collector's own boxes, never on the collection's shelf), and a
+// deleted box's copies land there. My Boxes has no long box: the Inventory tab
+// is the whole stock in one list, and the headline counts it.
 //
 // R7/R7a: writes only the signed-in user's own rows (`collectionContainers`,
 // `collectionCopies`; the bootstrap reset clears the account) on one card of the
@@ -31,8 +33,10 @@ import {
   createBox,
   deleteOpenBox,
   drillToCollectorBase,
+  forSaleOnMyBoxes,
   goViaShell,
   inventoryTabs,
+  myBoxesStock,
   numberOf,
   ordinaryBaseRows,
   shortNameOf,
@@ -99,20 +103,21 @@ test(
     await page.goForward();
     await expect(page).toHaveURL(/\/inventory\?tab=cards/);
 
-    // --- My Boxes: Unsorted first, Up for Trade drawn as a box -----------------
+    // --- My Boxes: the collector's own boxes; Unsorted first in Special places, then Up for Trade as a box
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=boxes/);
     const boxes = page.getByRole("list", { name: "Your boxes" });
     const places = page.getByRole("list", { name: "Special places" });
     const unsortedRe = /^Unsorted, box, ([\d,]+) cards? for sale$/;
-    const unsortedSpine = boxes.getByRole("button", { name: unsortedRe });
-    await expect(boxes.getByRole("button").first()).toHaveAccessibleName(unsortedRe);
+    const unsortedSpine = places.getByRole("button", { name: unsortedRe });
+    await expect(places.getByRole("button").first()).toHaveAccessibleName(unsortedRe);
+    await expect(boxes.getByRole("button", { name: /^Unsorted,/ })).toHaveCount(0);
+    // No long box on the inventory side: the Inventory tab is the list.
+    await expect(places.getByRole("link")).toHaveCount(0);
     const unsortedBase = await countOf(unsortedSpine, unsortedRe);
     const tradeRe = /^Up for Trade, box, ([\d,]+) cards? up for trade$/;
     const tradeBase = await countOf(places.getByRole("button", { name: tradeRe }), tradeRe);
-    const longBoxRe = /^Everything for sale, ([\d,]+) cards? for sale$/;
-    const longBox = places.getByRole("link", { name: longBoxRe });
-    expect(await countOf(longBox, longBoxRe), "the long box counts the same stock as the collection's door").toBe(forSaleBase);
+    expect(await forSaleOnMyBoxes(page), "My Boxes' headline counts the same stock as the collection's door").toBe(forSaleBase);
     await expectAccessible(page, { label: "My Boxes, Unsorted and the special places" });
 
     // --- A box of my own -------------------------------------------------------
@@ -183,7 +188,7 @@ test(
     await expect(drawer).toBeHidden();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
 
-    // --- The collection counts one copy more; the long box counts two -----------
+    // --- The collection counts one copy more; the door counts two ---------------
     await collectionTabs.getByRole("link", { name: "My Binders", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(headline(1)).toBeVisible();
@@ -195,9 +200,9 @@ test(
     await expect(page).toHaveURL(/\/inventory\?tab=cards/);
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(boxSpine(2)).toBeVisible();
-    await expect(boxes.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase)} for sale`, exact: true })).toBeVisible();
+    await expect(places.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase)} for sale`, exact: true })).toBeVisible();
     await expect(places.getByRole("button", { name: `Up for Trade, box, ${cardsWord(tradeBase)} up for trade`, exact: true })).toBeVisible();
-    await expect(places.getByRole("link", { name: `Everything for sale, ${cardsWord(forSaleBase + 2)} for sale`, exact: true })).toBeVisible();
+    await expect(myBoxesStock(page, forSaleBase + 2)).toBeVisible();
 
     // --- Open the box: the card stands in it; file it into Row 2 ----------------
     await boxSpine(2).click();
@@ -272,7 +277,7 @@ test(
       page.getByRole("status").filter({ hasText: `${boxName} is off the shelf. Its card went into Unsorted, still for sale.` }),
     ).toBeVisible();
     await expect(boxes.getByRole("button", { name: new RegExp(`^${escapeRegExp(boxName)},`) })).toHaveCount(0);
-    await expect(boxes.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase + 1)} for sale`, exact: true })).toBeVisible();
+    await expect(places.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase + 1)} for sale`, exact: true })).toBeVisible();
     // The URL no longer names the deleted box, and one Back does not return to it.
     await expect(page).toHaveURL(/[?&]tab=boxes/);
     await page.goBack();
@@ -308,7 +313,7 @@ test(
 
     // Everything is back where it started, on both sides.
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
-    await expect(boxes.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase)} for sale`, exact: true })).toBeVisible();
+    await expect(places.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase)} for sale`, exact: true })).toBeVisible();
     await goViaShell(page, isMobile, "Collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await collectionTabs.getByRole("link", { name: "My Binders", exact: true }).click();

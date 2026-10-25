@@ -113,6 +113,32 @@
   bottom: -2px;
 }
 
+/* "New box": the same box end, lid and handle slot, drawn as a dashed
+   outline of the box still to be made (the binder shelf's "New binder" is a
+   dashed spine). The plus and the words sit where the tape would. */
+.nb-boxspine--new {
+  --new-line: #64748b;
+}
+.nb-boxspine--new .nb-boxspine-lid,
+.nb-boxspine--new .nb-boxspine-end,
+.nb-boxspine--new .nb-boxspine-handle {
+  background: transparent;
+  box-shadow: none;
+  border: 2px dashed var(--new-line);
+}
+.nb-boxspine--new .nb-boxspine-end {
+  border-top: 0;
+  padding-top: 12px;
+}
+.nb-boxspine-new-mark {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 /* The Inventory long box is a button on the real collection: no chrome of its own. */
 button.nb-longbox {
   padding: 0;
@@ -330,6 +356,9 @@ button.nb-longbox {
   box-shadow: none;
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+[data-theme="light"] .nb-boxspine--new {
+  --new-line: var(--control);
 }
 [data-theme="light"] .nb-box {
   box-shadow:
