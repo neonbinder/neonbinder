@@ -371,9 +371,8 @@ export default function QuantityRow({
               e.stopPropagation();
               addOne();
             }}
-            // `!`: Radix's unlayered reset outranks a plain utility on its button.
             // Square, and the field's height: 44px on a phone, 36px from sm up.
-            className="min-h-11! min-w-11! shrink-0 sm:min-h-9! sm:min-w-9!"
+            className="min-h-11 min-w-11 shrink-0 sm:min-h-9 sm:min-w-9"
           >
             <PlusIcon aria-hidden="true" className="h-4 w-4" />
           </NeonButton>

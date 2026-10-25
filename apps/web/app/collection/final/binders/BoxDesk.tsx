@@ -156,7 +156,7 @@ export default function BoxDesk({ box, copies, cards, truncated, onMore, onOpen,
         {unsorted.map(item)}
       </Unsorted>
       {truncated && (
-        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10! max-sm:min-h-11!">
+        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10 max-sm:min-h-11">
           Dig deeper into {box.name}
         </NeonButton>
       )}
@@ -395,7 +395,7 @@ export function TradeBox({ pile, copies, cards, homes, truncated, onMore, onOpen
         </div>
       </div>
       {truncated && (
-        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10! max-sm:min-h-11!">
+        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10 max-sm:min-h-11">
           Dig deeper into {pile.name}
         </NeonButton>
       )}

@@ -114,9 +114,8 @@ function AddButton({ label, onAdd }: { label: string; onAdd: () => void }) {
       aria-label={label}
       title="Add another copy"
       onClick={stop(onAdd)}
-      // `!`: Radix's unlayered reset outranks a plain utility on its button.
       // The widths are SLOT_ADD's, so the column lines up with the empty slots.
-      className="w-11! min-h-11! sm:w-[4.25rem]! sm:min-h-8!"
+      className="w-11 min-h-11 sm:w-[4.25rem] sm:min-h-8"
     >
       <PlusIcon aria-hidden="true" className="h-3.5 w-3.5" />
       <span className="max-sm:hidden">Add</span>

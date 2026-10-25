@@ -325,7 +325,7 @@ export default function PackTray(props: PackTrayProps) {
               {notice?.message ?? ""}
             </p>
             {notice?.undo && (
-              <NeonButton type="button" variant="secondary" onClick={onUndo} className="max-sm:min-h-11!">
+              <NeonButton type="button" variant="secondary" onClick={onUndo} className="max-sm:min-h-11">
                 Undo
               </NeonButton>
             )}
@@ -346,7 +346,7 @@ export default function PackTray(props: PackTrayProps) {
               <p className="min-w-0 flex-1 basis-56 text-sm text-ink">
                 Filling {aimedAt}. Hunt for a card, then press Move here or Put here.
               </p>
-              <NeonButton type="button" variant="secondary" outline onClick={onCancelAim} className="max-sm:min-h-11!">
+              <NeonButton type="button" variant="secondary" outline onClick={onCancelAim} className="max-sm:min-h-11">
                 Stop filling
               </NeonButton>
             </div>
@@ -575,7 +575,7 @@ function DragFace({ card, name, lifted, disabled }: { card: Card; name: string; 
   );
 }
 
-const ACT = "min-h-7! max-sm:min-h-11!";
+const ACT = "min-h-7 max-sm:min-h-11";
 
 /** An owned card: where every copy lives, and Move here / Add another (or Up for trade). */
 function OwnedCard({
@@ -742,7 +742,7 @@ function TrayCard({
         onClick={onAct}
         disabled={wanted}
         aria-label={wanted ? `Wanted: ${label}, on your Want List` : name}
-        className="min-h-7! w-full! max-sm:min-h-11!"
+        className="min-h-7 w-full max-sm:min-h-11"
       >
         {wanted ? "Wanted" : verb}
       </NeonButton>

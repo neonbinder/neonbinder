@@ -89,22 +89,15 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
         >
           Reset demo data
         </button>
-        {/* `lg:hidden` rides on a `contents` wrapper: Radix's button display
-            is unlayered CSS, so a Tailwind `hidden` on the button itself
-            would lose to it. */}
         {isPublic && (
-          <span className="contents lg:hidden">
-            <NeonButton asChild className="min-h-10! max-sm:min-h-11!">
-              <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
-            </NeonButton>
-          </span>
+          <NeonButton asChild className="min-h-10 max-sm:min-h-11 lg:hidden">
+            <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
+          </NeonButton>
         )}
         {isPublic && onExit && (
-          <span className="contents lg:hidden">
-            <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10! max-sm:min-h-11!">
-              {EXIT}
-            </NeonButton>
-          </span>
+          <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10 max-sm:min-h-11 lg:hidden">
+            {EXIT}
+          </NeonButton>
         )}
       </div>
     </section>

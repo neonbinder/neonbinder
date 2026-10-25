@@ -256,8 +256,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
               variant="primary"
               disabled={blocked || toAdd.length === 0 || !box}
               onClick={addRange}
-              // `!`: Radix's unlayered reset outranks a plain utility on its button.
-              className={`${FOCUS} max-sm:min-h-11!`}
+              className={`${FOCUS} max-sm:min-h-11`}
             >
               {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Add ${toAdd.length} to ${boxName}` : `Add to ${boxName}`)}
             </NeonButton>

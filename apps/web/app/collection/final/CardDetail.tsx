@@ -932,14 +932,13 @@ export function MovePanel({
         <button type="button" onClick={onCancel} className={`${QUIET_BUTTON} max-sm:min-h-11`}>
           {words.keep}
         </button>
-        {/* aria-disabled, not disabled: the button stays focusable and says why it waits (submit refuses it).
-            `!`: Radix's unlayered reset outranks a plain utility on its button. */}
+        {/* aria-disabled, not disabled: the button stays focusable and says why it waits (submit refuses it). */}
         <NeonButton
           type="submit"
           variant="secondary"
           size="1"
           aria-disabled={!valid || !to || undefined}
-          className="max-sm:min-h-11!"
+          className="max-sm:min-h-11"
         >
           {words.go(stack && valid ? quantity : null)}
         </NeonButton>
