@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  type MouseEvent as ReactMouseEvent,
   type MutableRefObject,
   type Ref,
   type ReactNode,
@@ -193,7 +194,16 @@ export function CollectionModeProvider({
   );
 }
 
-/** The newest history entry the page has asked for, committed or not. */
+/**
+ * The newest history entry the page has asked for, committed or not.
+ *
+ * Read it only from an event handler, never while rendering: after a Back
+ * (a POP) the router renders the entry it went back to BEFORE the layout
+ * effect above catches this up, so a render reading it would build on the
+ * entry the visitor just left (NEO-364: the demo's door then counted one
+ * level too deep, and "Back to the tour" overshot history and did nothing).
+ * A render builds on `useLocation()` instead (`entryOf`).
+ */
 interface LatestEntry {
   search: string;
   state: unknown;
@@ -201,6 +211,60 @@ interface LatestEntry {
   scope?: Scope;
 }
 const LatestEntryContext = createContext<MutableRefObject<LatestEntry> | null>(null);
+
+/** The committed entry, as a render sees it. */
+function entryOf(location: { search: string; state: unknown }): LatestEntry {
+  return { search: location.search, state: location.state };
+}
+
+/**
+ * The history state a view pushed from `state` carries in the demo: the way
+ * in (`demoFrom`) and one level deeper. Nothing else rides on: what the
+ * entry underneath has of its own (the card drawer's `drawer`) stays there.
+ */
+export function deeperDemoState(state: unknown): DemoHistoryState {
+  const current = (state ?? {}) as DemoHistoryState;
+  const next: DemoHistoryState = { demoDepth: (current.demoDepth ?? 0) + 1 };
+  if (current.demoFrom !== undefined) next.demoFrom = current.demoFrom;
+  return next;
+}
+
+/** Two searches name the same view. */
+function sameSearch(a: string, b: string): boolean {
+  return new URLSearchParams(a).toString() === new URLSearchParams(b).toString();
+}
+
+/** A click the router follows: the browser keeps modified clicks and other targets. */
+function isPlainClick(e: ReactMouseEvent<HTMLAnchorElement>, target: string | undefined): boolean {
+  return (
+    !e.defaultPrevented &&
+    e.button === 0 &&
+    (!target || target === "_self") &&
+    !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+  );
+}
+
+/**
+ * Follows a view link from its click: builds the target on the newest entry
+ * (`build`), pushes it, and records where the page is headed. A link to the
+ * view already showing replaces its entry and keeps that entry's state, as
+ * a router link does, so it is never a Back step and never counts deeper.
+ */
+function useFollowLink() {
+  const navigate = useNavigate();
+  const latestRef = useLatestEntry();
+  return useCallback(
+    (build: (from: LatestEntry) => { to: To; search: string; state: unknown; scope?: Scope }) => {
+      const from = latestRef.current;
+      const t = build(from);
+      const replace = sameSearch(t.search, from.search);
+      const state = replace ? from.state : t.state;
+      latestRef.current = { search: t.search, state, scope: replace ? from.scope : t.scope };
+      void navigate(t.to, { replace, state });
+    },
+    [navigate, latestRef],
+  );
+}
 
 function useLatestEntry(): MutableRefObject<LatestEntry> {
   const ref = useContext(LatestEntryContext);
@@ -281,26 +345,24 @@ function putScope(params: URLSearchParams, scope: Scope) {
 /**
  * Where a view link or a view change goes: the next view's search (with the
  * mode's kept params and the scope of the moment, unless `next` sets its
- * own: `"all"` for All) and, in the demo, the history state one level deeper.
+ * own: `"all"` for All) and, in the demo, the history state one level deeper
+ * than `from`, the entry it is pushed on top of (`deeperDemoState`).
  */
 function useViewTarget() {
   const { mode, keepParams } = useCollectionMode();
   const scope = useScope();
-  const latestRef = useLatestEntry();
   return useCallback(
-    (next: ParamsInit) => {
+    (next: ParamsInit, from: LatestEntry) => {
       const params = new URLSearchParams(keepParams);
       const view = new URLSearchParams(next);
       view.forEach((value, key) => params.set(key, value));
-      const carried = view.get(SCOPE_PARAM) ?? latestRef.current.scope ?? scope;
+      const carried = view.get(SCOPE_PARAM) ?? from.scope ?? scope;
       putScope(params, carried);
       const search = `?${params.toString()}`;
       if (mode !== "public") return { search, state: undefined, scope: carried };
-      const current = (latestRef.current.state ?? {}) as DemoHistoryState;
-      const state: DemoHistoryState = { ...current, demoDepth: (current.demoDepth ?? 0) + 1 };
-      return { search, state, scope: carried };
+      return { search, state: deeperDemoState(from.state), scope: carried };
     },
-    [mode, keepParams, scope, latestRef],
+    [mode, keepParams, scope],
   );
 }
 
@@ -342,7 +404,7 @@ export function usePushParams(): (update: (params: URLSearchParams) => void, sta
     (update, extra) => {
       const next = new URLSearchParams(latestRef.current.search);
       update(next);
-      const t = target(next);
+      const t = target(next, latestRef.current);
       const state = extra ? { ...((t.state ?? {}) as object), ...extra } : t.state;
       latestRef.current = { search: t.search, state, scope: t.scope };
       void navigate({ search: t.search }, { state });
@@ -379,7 +441,7 @@ export function useCollectionParams(): [URLSearchParams, SetParams] {
   const latestRef = useLatestEntry();
   const setParams = useCallback<SetParams>(
     (next) => {
-      const { search, state, scope } = target(next);
+      const { search, state, scope } = target(next, latestRef.current);
       latestRef.current = { search, state, scope };
       void navigate({ search }, { state });
     },
@@ -388,24 +450,34 @@ export function useCollectionParams(): [URLSearchParams, SetParams] {
   return [params, setParams];
 }
 
-/** A link to another view of the collection page (`?tab=…`): a router link that pushes. */
+/**
+ * A link to another view of the collection page (`?tab=…`): a router link
+ * that pushes. Its href is built on the entry on screen; a plain click
+ * builds the push again on the newest entry (`useFollowLink`), so a link
+ * rendered by a Back, or clicked while another push is landing, still counts
+ * from the entry the visitor is really on.
+ */
 export function ParamLink({
   search,
   onClick,
   ...rest
 }: Omit<LinkProps, "to" | "state"> & { search: ParamsInit; ref?: Ref<HTMLAnchorElement> }) {
-  const target = useViewTarget()(search);
-  const latestRef = useLatestEntry();
+  const location = useLocation();
+  const target = useViewTarget();
+  const follow = useFollowLink();
+  const shown = target(search, entryOf(location));
   return (
     <Link
-      to={{ search: target.search }}
-      state={target.state}
+      to={{ search: shown.search }}
+      state={shown.state}
       onClick={(e) => {
         onClick?.(e);
-        // A plain click navigates here; record it as where the page is headed.
-        if (!e.defaultPrevented && e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
-          latestRef.current = target;
-        }
+        if (!isPlainClick(e, rest.target)) return;
+        e.preventDefault();
+        follow((from) => {
+          const t = target(search, from);
+          return { ...t, to: { search: t.search } };
+        });
       }}
       {...rest}
     />
@@ -417,31 +489,33 @@ export function ParamLink({
  * (`/collection` or `/inventory`) with the view's params, or, in the demo,
  * the same page with the kept params, `side=inventory` for the inventory
  * (never written for the collection), and the view's. A push counts one
- * deeper in the demo; a replace keeps the entry's history state. The scope
- * is never carried across: each side starts at All.
+ * deeper than `from`, the entry it leaves; a replace keeps `from`'s history
+ * state. The scope is never carried across: each side starts at All.
  */
 function useSideTarget() {
   const { mode, baseParams } = useCollectionMode();
-  const latestRef = useLatestEntry();
   return useCallback(
-    (side: Side, next: ParamsInit, how: "push" | "replace"): { to: To; search: string; state: unknown } => {
+    (
+      side: Side,
+      next: ParamsInit,
+      how: "push" | "replace",
+      from: LatestEntry,
+    ): { to: To; search: string; state: unknown; scope: Scope } => {
       const view = new URLSearchParams(next);
       view.delete(SIDE_PARAM);
       if (mode !== "public") {
         const q = view.toString();
         const search = q ? `?${q}` : "";
-        return { to: { pathname: SIDE_PATHS[side], search }, search, state: undefined };
+        return { to: { pathname: SIDE_PATHS[side], search }, search, state: undefined, scope: "all" };
       }
       const params = new URLSearchParams(baseParams);
       if (side === "inventory") params.set(SIDE_PARAM, "inventory");
       view.forEach((value, key) => params.set(key, value));
       const search = `?${params.toString()}`;
-      const current = (latestRef.current.state ?? {}) as DemoHistoryState;
-      const state =
-        how === "replace" ? latestRef.current.state : ({ ...current, demoDepth: (current.demoDepth ?? 0) + 1 } satisfies DemoHistoryState);
-      return { to: { search }, search, state };
+      const state = how === "replace" ? from.state : deeperDemoState(from.state);
+      return { to: { search }, search, state, scope: "all" };
     },
-    [mode, baseParams, latestRef],
+    [mode, baseParams],
   );
 }
 
@@ -458,10 +532,10 @@ export function useGoToSide(): (side: Side, next: ParamsInit, options?: { replac
   return useCallback(
     (side, next, options) => {
       const replace = options?.replace === true;
-      const t = target(side, next, replace ? "replace" : "push");
+      const t = target(side, next, replace ? "replace" : "push", latestRef.current);
       // Same page in the demo: record where it is headed. The app's other
       // route mounts a page of its own.
-      if (mode === "public") latestRef.current = { search: t.search, state: t.state };
+      if (mode === "public") latestRef.current = { search: t.search, state: t.state, scope: t.scope };
       void navigate(t.to, { replace, state: t.state });
     },
     [navigate, target, latestRef, mode],
@@ -482,26 +556,35 @@ export function takeSideArrival(side: Side): boolean {
   return true;
 }
 
-/** A link to a view on a side (`useSideTarget`): the demo's side switch, the long box's door to the Inventory list. */
+/**
+ * A link to a view on a side (`useSideTarget`): the demo's side switch, the
+ * long box's door to the Inventory list. In the demo, as with `ParamLink`,
+ * the href is built on the entry on screen and a plain click builds the push
+ * again on the newest entry. The app's link goes to another route, which
+ * carries no history state, so the router follows it as it is.
+ */
 export function SideLink({
   side,
   search,
   onClick,
   ...rest
 }: Omit<LinkProps, "to" | "state"> & { side: Side; search?: ParamsInit; ref?: Ref<HTMLAnchorElement> }) {
-  const t = useSideTarget()(side, search ?? {}, "push");
-  const latestRef = useLatestEntry();
+  const location = useLocation();
+  const target = useSideTarget();
+  const follow = useFollowLink();
   const { mode } = useCollectionMode();
+  const shown = target(side, search ?? {}, "push", entryOf(location));
   return (
     <Link
-      to={t.to}
-      state={t.state}
+      to={shown.to}
+      state={shown.state}
       onClick={(e) => {
         onClick?.(e);
-        if (!e.defaultPrevented && e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
-          arrivingSide = side;
-          if (mode === "public") latestRef.current = { search: t.search, state: t.state };
-        }
+        if (!isPlainClick(e, rest.target)) return;
+        arrivingSide = side;
+        if (mode !== "public") return;
+        e.preventDefault();
+        follow((from) => target(side, search ?? {}, "push", from));
       }}
       {...rest}
     />

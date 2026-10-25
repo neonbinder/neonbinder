@@ -25,11 +25,16 @@ function LocationProbe() {
   return <output aria-label="Page URL">{pathname + search}</output>;
 }
 
-function renderTour(start = "/binder-tracking") {
+/**
+ * `before`: entries in history ahead of the tour, so a "Back to the tour"
+ * that goes back too far lands there rather than being clamped to the tour.
+ */
+function renderTour(start = "/binder-tracking", before: string[] = []) {
   render(
     <Theme>
-      <MemoryRouter initialEntries={[start]}>
+      <MemoryRouter initialEntries={[...before, start]} initialIndex={before.length}>
         <Routes>
+          <Route path="/came-from" element={<LocationProbe />} />
           <Route
             path="/binder-tracking"
             element={
@@ -183,6 +188,28 @@ describe("Take it for a spin", () => {
       expect(pageUrl()).toBe("/binder-tracking?demo=on");
       back();
       await waitFor(() => expect(pageUrl()).toBe("/binder-tracking"));
+    });
+
+    // NEO-364: a door rendered by a Back used to count from the entry Back
+    // left, one level too deep, so Back to the tour overshot history and the
+    // browser ignored it.
+    it("Back to the tour exits in one step after push, push, Back, push", async () => {
+      renderTour("/binder-tracking", ["/came-from"]);
+      fireEvent.click(screen.getByRole("link", { name: "Open the demo binder" }));
+      await screen.findByRole("region", { name: "About this demo" });
+      const tabs = () => screen.getByRole("navigation", { name: "Collection sections" });
+      fireEvent.click(within(tabs()).getByRole("link", { name: "My Binders" }));
+      fireEvent.click(screen.getByRole("button", { name: /^All Reggie White,/ }));
+      expect(screen.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+      expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("link", { name: /^Inventory, / }));
+      expect(pageUrl()).toBe("/binder-tracking?demo=on&side=inventory&tab=cards");
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Back to the tour" })[0]);
+      await waitFor(() => expect(pageUrl()).toBe("/binder-tracking"));
+      expect(screen.getByRole("heading", { level: 2, name: "Take it for a spin" })).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole("link", { name: "Open the demo binder" }));
     });
 
     it("a shared inventory link opens straight into it, and Back to the tour replaces it", async () => {

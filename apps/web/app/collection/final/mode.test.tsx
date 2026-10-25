@@ -2,7 +2,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import type { ReactNode } from "react";
-import { CollectionModeProvider, SideLink, sideOf, useCollectionSide, useGoToSide, takeSideArrival, type DemoHistoryState } from "./mode";
+import {
+  CollectionModeProvider,
+  ParamLink,
+  SideLink,
+  deeperDemoState,
+  sideOf,
+  takeSideArrival,
+  useCollectionParams,
+  useCollectionSide,
+  useGoToSide,
+  usePushParams,
+  type DemoHistoryState,
+} from "./mode";
 import type { Side } from "./data/types";
 
 /**
@@ -47,6 +59,8 @@ function Where() {
       <output aria-label="where">{pathname + search}</output>
       <output aria-label="side">{side}</output>
       <output aria-label="depth">{String((state as DemoHistoryState | null)?.demoDepth ?? "none")}</output>
+      <output aria-label="from">{String((state as DemoHistoryState | null)?.demoFrom ?? "none")}</output>
+      <output aria-label="drawer">{String((state as { drawer?: boolean } | null)?.drawer ?? "none")}</output>
       <button type="button" onClick={() => void navigate(-1)}>
         Back
       </button>
@@ -54,7 +68,9 @@ function Where() {
   );
 }
 
-function wrap(children: ReactNode, start: string, mode: "app" | "public" = "app", paths = ["/collection", "/inventory", "/binder-tracking"]) {
+type Start = string | { pathname: string; search: string; state: unknown };
+
+function wrap(children: ReactNode, start: Start, mode: "app" | "public" = "app", paths = ["/collection", "/inventory", "/binder-tracking"]) {
   render(
     <MemoryRouter initialEntries={[start]}>
       <Routes>
@@ -77,6 +93,8 @@ function wrap(children: ReactNode, start: string, mode: "app" | "public" = "app"
 const at = () => screen.getByLabelText("where").textContent;
 const sideNow = () => screen.getByLabelText("side").textContent;
 const depth = () => screen.getByLabelText("depth").textContent;
+const from = () => screen.getByLabelText("from").textContent;
+const drawerFlag = () => screen.getByLabelText("drawer").textContent;
 
 describe("useCollectionSide", () => {
   it("is the route's side in the app", () => {
@@ -201,5 +219,127 @@ describe("useGoToSide", () => {
     wrap(<Go />, "/binder-tracking?demo=on", "public");
     fireEvent.click(screen.getByRole("button", { name: "redirect" }));
     expect(depth()).toBe("1");
+  });
+});
+
+describe("deeperDemoState", () => {
+  it("counts one deeper and keeps the way in", () => {
+    expect(deeperDemoState({ demoFrom: "tour" })).toEqual({ demoFrom: "tour", demoDepth: 1 });
+    expect(deeperDemoState({ demoFrom: "tour", demoDepth: 3 })).toEqual({ demoFrom: "tour", demoDepth: 4 });
+    expect(deeperDemoState(null)).toEqual({ demoDepth: 1 });
+  });
+
+  it("never carries the entry's own state (the drawer's flag) onto the new one", () => {
+    expect(deeperDemoState({ demoFrom: "tour", demoDepth: 2, drawer: true })).toEqual({ demoFrom: "tour", demoDepth: 3 });
+  });
+});
+
+/**
+ * NEO-364 — a view link rendered by a Back must count from the entry Back
+ * landed on, not the one it left, or "Back to the tour" overshoots history.
+ */
+describe("demo depth across a Back", () => {
+  const tour = { pathname: "/binder-tracking", search: "?demo=on", state: { demoFrom: "tour" } };
+
+  function Views() {
+    const push = usePushParams();
+    const [, setParams] = useCollectionParams();
+    return (
+      <>
+        <ParamLink search={{ tab: "binders" }}>binders</ParamLink>
+        <ParamLink search={{ tab: "binders", b: "main" }}>open main</ParamLink>
+        <ParamLink search={{ tab: "cards" }}>cards</ParamLink>
+        <SideLink side="inventory" search={{ tab: "cards" }}>
+          door
+        </SideLink>
+        <button type="button" onClick={() => push((p) => p.set("detail", "card-1"), { drawer: true })}>
+          open card
+        </button>
+        <button type="button" onClick={() => setParams({ tab: "checklists" })}>
+          checklists
+        </button>
+      </>
+    );
+  }
+  const click = (name: string) => fireEvent.click(screen.getByRole("link", { name }));
+  const press = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+
+  it("a view link pushed after a Back lands one deeper than the entry Back landed on", () => {
+    wrap(<Views />, tour, "public");
+    click("binders");
+    click("open main");
+    expect(depth()).toBe("2");
+    press("Back");
+    expect(at()).toBe("/binder-tracking?demo=on&tab=binders");
+    expect(depth()).toBe("1");
+    click("cards");
+    expect(at()).toBe("/binder-tracking?demo=on&tab=cards");
+    expect(depth()).toBe("2");
+    expect(from()).toBe("tour");
+  });
+
+  it("the side door after a Back lands one deeper than the entry Back landed on", () => {
+    wrap(<Views />, tour, "public");
+    click("binders");
+    click("open main");
+    press("Back");
+    click("door");
+    expect(at()).toBe("/binder-tracking?demo=on&side=inventory&tab=cards");
+    expect(depth()).toBe("2");
+    expect(from()).toBe("tour");
+  });
+
+  it("push, push, Back, push: going back depth + 1 entries reaches the tour entry", () => {
+    wrap(<Views />, tour, "public");
+    click("binders");
+    press("checklists");
+    press("Back");
+    click("door");
+    expect(depth()).toBe("2");
+    // What "Back to the tour" does: back past every view the demo pushed.
+    for (let i = 0; i < 2; i++) press("Back");
+    expect(at()).toBe("/binder-tracking?demo=on");
+    expect(depth()).toBe("none");
+    expect(from()).toBe("tour");
+  });
+
+  it("a link to the view on screen replaces it and keeps its depth", () => {
+    wrap(<Views />, tour, "public");
+    click("binders");
+    click("binders");
+    expect(at()).toBe("/binder-tracking?demo=on&tab=binders");
+    expect(depth()).toBe("1");
+    press("Back");
+    expect(at()).toBe("/binder-tracking?demo=on");
+  });
+
+  it("the card drawer's flag stays on the drawer's entry, never on a view pushed from it", () => {
+    wrap(<Views />, tour, "public");
+    click("binders");
+    press("open card");
+    expect(at()).toBe("/binder-tracking?demo=on&tab=binders&detail=card-1");
+    expect(drawerFlag()).toBe("true");
+    expect(depth()).toBe("2");
+    click("cards");
+    expect(drawerFlag()).toBe("none");
+    expect(depth()).toBe("3");
+    press("checklists");
+    expect(drawerFlag()).toBe("none");
+    click("door");
+    expect(drawerFlag()).toBe("none");
+    expect(depth()).toBe("5");
+  });
+
+  it("in the app a view link carries no history state", () => {
+    wrap(<Views />, "/collection?tab=cards");
+    click("binders");
+    expect(at()).toBe("/collection?tab=binders");
+    expect(depth()).toBe("none");
+  });
+
+  it("a modified click is left to the browser", () => {
+    wrap(<Views />, tour, "public");
+    fireEvent.click(screen.getByRole("link", { name: "binders" }), { metaKey: true });
+    expect(at()).toBe("/binder-tracking?demo=on");
   });
 });
