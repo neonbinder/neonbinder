@@ -663,14 +663,13 @@ describe("boxes and binders you make", () => {
     expect(unsorted).toBeTruthy();
   });
 
-  // BUG (reported, NEO-364): the delete confirm (`binders/EditContainerDialog.tsx`, `goes`) still says a
-  // deleted box's cards "go back to Main", but they land in Unsorted. `it.fails` pins it; when the copy
-  // is fixed this goes red and the `.fails` comes off.
-  it.fails("the delete confirm for a box says its cards go to Unsorted", () => {
+  // NEO-364: the delete confirm (`binders/EditContainerDialog.tsx`, `goes`) says where a box's cards land,
+  // in the status line's words: into Unsorted, still for sale (a binder's still go back to Main).
+  it("the delete confirm for a box says its cards go to Unsorted", () => {
     renderBinders("/inventory?tab=boxes&b=box-show");
     fireEvent.click(screen.getByRole("button", { name: "Rename or delete Show box" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete this box" }));
-    expect(screen.getByText(/go to Unsorted\./)).toBeTruthy();
+    expect(screen.getByText(/go(es)? into Unsorted, still for sale\./)).toBeTruthy();
   });
 
   it("'Keep it' backs out of the delete confirm without deleting", () => {

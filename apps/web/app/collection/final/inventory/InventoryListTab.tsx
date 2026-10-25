@@ -387,7 +387,11 @@ function useFocusFirstNew(ids: readonly string[], focusKey: (key: string) => voi
   return setFrom;
 }
 
-/** A rail stop, drawn as a box: its name, what it holds, and a Trade tag on the trade pile. */
+/**
+ * A rail stop, drawn as a box: its name, what it holds, and a Trade tag on
+ * the trade pile. Its name reads "Unsorted, 3 cards" / "Up for Trade, Trade
+ * bait in your boxes" (the tag is hidden from it).
+ */
 function RailItem({
   active,
   onClick,
@@ -422,11 +426,13 @@ function RailItem({
           <span className="flex w-full items-center gap-1.5 text-sm font-bold">
             <span className="truncate">{name}</span>
             {tag === "trade" && (
-              <span className="rounded border border-neon-green-text px-1 text-[0.625rem] font-bold text-neon-green-text">
+              <span aria-hidden="true" className="rounded border border-neon-green-text px-1 text-[0.625rem] font-bold text-neon-green-text">
                 Trade
               </span>
             )}
           </span>
+          {/* Read as "Name, what it holds": the Trade badge is decoration (the name says it). */}
+          <span className="sr-only">, </span>
           <span className="line-clamp-2 text-xs text-ink-3">{detail}</span>
         </span>
       </button>
