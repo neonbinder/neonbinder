@@ -123,7 +123,7 @@ import {
   type NewContainer,
   type Scope,
 } from "./data/types";
-import { useCollectionParams, useGoToSide } from "./mode";
+import { useCollectionParams, useGoToSide, useReplaceParams, useSetScope } from "./mode";
 import { usePageApi, type OpenCardOptions } from "./pageApi";
 import type { GoToTabParams } from "./store";
 
@@ -224,6 +224,8 @@ export default function MyBindersTab({
 
   // -- what is open ---------------------------------------------------------
   const [params, setParams] = useCollectionParams();
+  const replaceParams = useReplaceParams();
+  const setScope = useSetScope();
   const b = params.get("b");
   const s = params.get("set");
   let view: ViewKey | null = null;
@@ -1083,7 +1085,15 @@ export default function MyBindersTab({
     try {
       const { moved } = await actions.deleteContainer(c);
       setDialog(null);
-      goTo(null, "all");
+      setAimed(null);
+      setFound(null);
+      setFoundCopy(null);
+      setPending(null);
+      // Back to the shelf IN PLACE of the deleted one's entry: a pushed
+      // shelf would leave Back on a URL naming a container that is gone
+      // (it draws the shelf again, so Back would seem to do nothing).
+      replaceParams((p) => p.delete("b"));
+      setScope("all");
       notify(
         moved === 0
           ? `${c.name} is off the shelf.`
@@ -1256,6 +1266,7 @@ export default function MyBindersTab({
         {(!inventory || isBox || isTradeBox) && (
           <PackTray
             mode={trayMode}
+            side={surface}
             query={query}
             onQuery={setQuery}
             hits={trimmed ? trayHits : NO_CARDS}

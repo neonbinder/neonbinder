@@ -456,7 +456,9 @@ describe("containers", () => {
     const s0 = initialCollectionState();
     const inside = inHome(s0, SHOW_BOX_ID);
     const { state, result } = demoOps.deleteContainer(s0, SHOW_BOX_ID);
-    expect(result).toBe(inside.length);
+    // Cards, not line items (NEO-364 F3): the box's stack of three counts three.
+    expect(result).toBe(inside.reduce((n, c) => n + c.quantity, 0));
+    expect(result).toBeGreaterThan(inside.length);
     for (const c of inside) {
       expect(copyIn(state, c.id)).toMatchObject({ homeId: UNSORTED_BOX_ID });
       expect(copyIn(state, c.id).slot).toBeUndefined();

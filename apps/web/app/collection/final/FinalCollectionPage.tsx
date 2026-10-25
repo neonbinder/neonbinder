@@ -821,7 +821,9 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                     openCard={openCard}
                     goToTab={goToTab}
                     notify={notify}
-                    notice={notice}
+                    // While the card drawer is open it carries the status
+                    // line; the desk's copy would say it a second time.
+                    notice={drawer ? null : notice}
                     onUndo={undo}
                     onDismissNotice={() => setNotice(null)}
                   />

@@ -75,6 +75,18 @@ function fromForm(v: FormValue): CopyDetails {
   };
 }
 
+/**
+ * The drawer's headline count, split on the hard line: "2 in binders · 3 for
+ * sale", or just the part that applies ("2 in binders", "3 for sale").
+ */
+function ownedText(kept: number, forSale: number): string {
+  const parts = [
+    kept > 0 ? `${kept.toLocaleString("en-US")} in binders` : null,
+    forSale > 0 ? `${forSale.toLocaleString("en-US")} for sale` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 /** The homes as "Where it lives" and "Move to" offer them. */
 function formHomes(homes: readonly Container[]): FormHome[] {
   return homes.map((h) => ({ id: h.id, name: h.name, kind: h.kind }));
@@ -130,6 +142,10 @@ export default function CardDetail({
   const copies = useCopiesOf(card.id);
   const lines = copies ?? [];
   const owned = lines.reduce((n, c) => n + c.quantity, 0);
+  // The hard line (NEO-364): what you keep (binders) and what's for sale
+  // (boxes) are counted apart, never as one pile.
+  const forSale = lines.reduce((n, c) => n + (c.homeKind === "box" ? c.quantity : 0), 0);
+  const kept = owned - forSale;
   const team = card.teams[0];
   const panel = useLiverySurface("raised");
   const run = printRunLabel(card);
@@ -301,7 +317,13 @@ export default function CardDetail({
         <div className="min-w-0 space-y-2 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-base font-semibold text-ink">
-              {copies === undefined ? "Counting your copies…" : owned > 0 ? `You have ${owned}` : "Need it"}
+              {copies === undefined
+                ? "Counting your copies…"
+                : owned === 0
+                  ? "Need it"
+                  : capabilities.binders
+                    ? ownedText(kept, forSale)
+                    : `You have ${owned}`}
               <span className="sr-only">.</span>
             </p>
             {capabilities.wants && (
@@ -468,6 +490,37 @@ function shiftHomes(copy: Copy, homes: readonly Container[], shift: Shift): Cont
     const box = h.kind === "box";
     return shift === "move" ? box === inBox : shift === "sell" ? box : !box;
   });
+}
+
+/**
+ * Where Take off sale starts: the binder already holding the most copies of
+ * this card (copies never record the binder they left), else Main, else the
+ * first binder offered. `lines` is every line of the card; `to` the binders
+ * the panel offers.
+ */
+function unsellDefault(lines: readonly Copy[], to: readonly Container[]): ContainerId | undefined {
+  const held = new Map<string, number>();
+  for (const c of lines) {
+    if (c.homeKind === "box" || !c.homeId) continue;
+    held.set(c.homeId, (held.get(c.homeId) ?? 0) + c.quantity);
+  }
+  let best: Container | undefined;
+  for (const h of to) {
+    const n = held.get(h.id) ?? 0;
+    if (n > 0 && (!best || n > (held.get(best.id) ?? 0))) best = h;
+  }
+  return (best ?? to.find((h) => h.system === "main") ?? to[0])?.id;
+}
+
+/**
+ * Whether a line's free-text location only names one of the collector's
+ * binders or boxes ("Slab case"). Where it lives is the home tag's to say:
+ * after a Sell or Take off sale moved it, that text names the place it left,
+ * so the line stops showing it (the copy's own field keeps it, to edit).
+ */
+function locationNamesAHome(location: string | undefined, homes: readonly NamedBinder[] | undefined): boolean {
+  const said = location?.trim().toLocaleLowerCase();
+  return !!said && !!homes?.some((h) => h.name.trim().toLocaleLowerCase() === said);
 }
 
 /**
@@ -654,7 +707,7 @@ export function CopyList({
                     {[
                       copy.acquiredAt ? `Added ${shortDate(copy.acquiredAt)}` : null,
                       copy.costBasis !== undefined ? `paid $${copy.costBasis.toFixed(2)}` : null,
-                      copy.location ?? null,
+                      copy.location && !locationNamesAHome(copy.location, binders) ? copy.location : null,
                       copy.notes ? `“${copy.notes}”` : null,
                     ]
                       .filter(Boolean)
@@ -715,6 +768,9 @@ export function CopyList({
                     line={names[i]}
                     shift={moving.shift}
                     homes={shiftHomes(copy, shelf, moving.shift)}
+                    defaultTo={
+                      moving.shift === "unsell" ? unsellDefault(lines, shiftHomes(copy, shelf, "unsell")) : undefined
+                    }
                     onMove={(to, quantity) => submitMove(copy, moving.shift, to, quantity)}
                     onCancel={() => closeMove(copy.id, moving.shift)}
                   />
@@ -767,6 +823,7 @@ function MovePanel({
   line,
   shift,
   homes,
+  defaultTo,
   onMove,
   onCancel,
 }: {
@@ -775,13 +832,17 @@ function MovePanel({
   line: string;
   shift: Shift;
   homes: readonly Container[];
+  /** The home picked to start (Take off sale's `unsellDefault`); else the first offered. */
+  defaultTo?: ContainerId;
   onMove: (toHomeId: ContainerId, quantity: number) => void;
   onCancel: () => void;
 }) {
   const selectId = useId();
   const helpId = useId();
   const words = SHIFT_WORDS[shift];
-  const [to, setTo] = useState<ContainerId>(homes[0]?.id ?? "");
+  const [to, setTo] = useState<ContainerId>(
+    (defaultTo && homes.some((h) => h.id === defaultTo) ? defaultTo : homes[0]?.id) ?? "",
+  );
   const [quantity, setQuantity] = useState<number>(copy.quantity);
   const stack = copy.quantity > 1;
   const valid = Number.isInteger(quantity) && quantity >= 1 && quantity <= copy.quantity;

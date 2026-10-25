@@ -451,6 +451,8 @@ export function InventoryShelf({ onOpen, onNewBox }: { onOpen: (view: ViewKey) =
   const trade = systemContainer(containers, "trade");
   const forSale = forSaleCount(containers);
   const saleText = forSale === null ? "Counting what's for sale" : `${cardCount(forSale)} for sale`;
+  // The boxes the stock sits in: an empty one (Unsorted, often) holds none of it.
+  const holding = boxes.filter((c) => (c.count?.copies ?? 0) > 0).length;
 
   return (
     <div>
@@ -471,7 +473,7 @@ export function InventoryShelf({ onOpen, onNewBox }: { onOpen: (view: ViewKey) =
       ) : (
         <>
           <p className="neon-header nb-glow-title text-[1.7rem] leading-tight text-ink sm:text-[2.1rem]">
-            {saleText} in {boxes.length} {boxes.length === 1 ? "box" : "boxes"}.
+            {forSale === null ? `${saleText}…` : `${saleText} in ${holding} ${holding === 1 ? "box" : "boxes"}.`}
           </p>
           <p className="mt-2 max-w-2xl text-ink-2">
             Open a box to sort it into rows, or pull the long box for the whole stock in one list.

@@ -751,7 +751,8 @@ export const demoOps = {
     let moved = 0;
     const copies = shelf.state.copies.map((c) => {
       if (c.homeId !== id) return c;
-      moved += 1;
+      // Cards, not line items: a stack of three is three cards on their way.
+      moved += c.quantity;
       return clean({ ...c, homeId: to, slot: undefined }) as DemoCopy;
     });
     const wants = shelf.state.wants.map((w) => (w.binderId === id ? { ...w, binderId: null } : w));

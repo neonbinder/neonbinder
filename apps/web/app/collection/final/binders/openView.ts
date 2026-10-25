@@ -106,7 +106,9 @@ export function openView(input: OpenInput): OpenView {
       ? "All my cards"
       : (container?.name ?? "Binder");
   let share: ShareTarget | null = null;
-  if (canShare) share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
+  // The inventory has no public face yet (NEO-360 decides it): no Share on a
+  // box, Unsorted, or Up for Trade drawn as a box.
+  if (canShare && side !== "inventory") share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
   return {
     key: viewKey(view),
     title,
