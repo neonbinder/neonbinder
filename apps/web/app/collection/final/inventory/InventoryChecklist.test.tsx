@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import FinalCollectionPage from "../FinalCollectionPage";
+import { comparePlayerNames } from "../playerName";
 
 /**
  * NEO-364 (D8-D12) — the inventory's Checklists on the demo store: the
@@ -89,7 +90,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(first, { target: { value: "3" } });
     fireEvent.blur(first);
     await flush();
-    await waitFor(() => expect(says(/^Boxed 3 more #\S+ .+\. 3 in Unsorted\.$/)).toBe(true));
+    await waitFor(() => expect(says(/^Boxed 3 more of #\S+ .+\. 3 in Unsorted\.$/)).toBe(true));
     expect(qty()[0].value).toBe("3");
     expect(Number(before.exec(line().textContent!)![1])).toBe(owned0 + 1);
   });
@@ -100,11 +101,11 @@ describe("the inventory's checklist", () => {
     fireEvent.change(a, { target: { value: "3" } });
     fireEvent.blur(a);
     await flush();
-    await waitFor(() => expect(says(/^Boxed 3 more /)).toBe(true));
+    await waitFor(() => expect(says(/^Boxed 3 more of /)).toBe(true));
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
     await flush();
-    expect(says(/^Boxed 3 more /)).toBe(true);
+    expect(says(/^Boxed 3 more of /)).toBe(true);
     expect(says(/Nothing changed/)).toBe(false);
     expect(b.value).toBe("0");
     fireEvent.click(screen.getAllByRole("button", { name: "Undo" })[0]);
@@ -127,7 +128,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(a, { target: { value: "3" } });
     fireEvent.blur(a);
     await flush();
-    await waitFor(() => expect(says(/^Boxed 3 more /)).toBe(true));
+    await waitFor(() => expect(says(/^Boxed 3 more of /)).toBe(true));
     fireEvent.click(screen.getAllByRole("button", { name: /^Dismiss/ })[0]);
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
@@ -171,9 +172,11 @@ describe("the inventory's checklist", () => {
     const byNumber = numbers();
     expect([...byNumber].sort()).toEqual([...all].sort());
     fireEvent.change(sort, { target: { value: "player" } });
-    const players = qty().map((el) => el.closest("li")!.textContent!);
     expect(numbers()).toHaveLength(all.length);
-    expect(players.length).toBe(all.length);
+    // Filed by last name, then first, as a collector sorts a box.
+    const firstPlayers = qty().map((el) => /Quantity of #\S+ (.+) in /.exec(el.getAttribute("aria-label") ?? "")![1].split(/ \/ |, /)[0]);
+    expect(new Set(firstPlayers).size).toBeGreaterThan(1);
+    expect(firstPlayers).toEqual([...firstPlayers].sort(comparePlayerNames));
     fireEvent.change(sort, { target: { value: "team" } });
     expect(numbers()).toHaveLength(all.length);
     fireEvent.change(sort, { target: { value: "checklist" } });
@@ -217,6 +220,27 @@ describe("the inventory's checklist", () => {
     expect(screen.getByText(/Not on this checklist: 99999/)).toBeTruthy();
     fireEvent.keyDown(range, { key: "Escape" });
     expect((range as HTMLInputElement).value).toBe("");
+  });
+
+  it("Add a range reads \"skip 12\" as taking a number back out, and says so in the placeholder", () => {
+    renderChecklist();
+    const range = screen.getByRole("textbox", { name: "Add a range to Unsorted" }) as HTMLInputElement;
+    expect(range.placeholder).toBe("1-20, skip 12");
+    fireEvent.change(range, { target: { value: "1-3, skip 2" } });
+    expect(screen.getByRole("button", { name: /^Add 2 to Unsorted$/ })).toBeTruthy();
+    fireEvent.change(range, { target: { value: "1-3, -2" } });
+    expect(screen.getByRole("button", { name: /^Add 2 to Unsorted$/ })).toBeTruthy();
+    fireEvent.change(range, { target: { value: "1, skip 99999" } });
+    expect(screen.getByText(/Not on this checklist: skip 99999/)).toBeTruthy();
+  });
+
+  it("names the target box under the checklist's heading, and follows a new pick", () => {
+    renderChecklist();
+    const heading = screen.getByRole("heading", { level: 3 });
+    const section = heading.closest("section")!;
+    expect(within(section).getByText("Adding to", { exact: false }).textContent).toBe("Adding to Unsorted");
+    fireEvent.change(adding(), { target: { value: "box-show" } });
+    expect(within(section).getByText("Adding to", { exact: false }).textContent).toBe("Adding to Show box");
   });
 
   it("a range into a box already holding some says how many get one more", async () => {

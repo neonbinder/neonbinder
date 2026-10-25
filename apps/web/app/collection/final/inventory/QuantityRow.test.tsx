@@ -163,11 +163,25 @@ describe("the field's number", () => {
     expect(field().value).toBe("0");
   });
 
-  it("shows the card's other lines beside it, read-only, and never counts them", () => {
+  it("shows the card's other lines after it, read-only, and never counts them", () => {
     setup([{ card: ELLY, copies: [line({ quantity: 1 }), line({ id: "slab", quantity: 1, graded: { grader: "PSA", grade: "9" } })] }]);
     expect(field().value).toBe("1");
-    expect(screen.getByText("+1 more: PSA 9")).toBeTruthy();
-    expect(field().getAttribute("aria-describedby")).toBeTruthy();
+    const others = screen.getByText("also here: PSA 9");
+    // After the number in reading order, so "0 · also here: PSA 9" never reads as a contradiction.
+    expect(field().compareDocumentPosition(others) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(field().getAttribute("aria-describedby")?.split(" ")).toContain(others.id);
+  });
+
+  it("a card with only a graded or noted copy in the box reads 0, with that copy named after it", () => {
+    setup([{ card: ELLY, copies: [line({ id: "slab", quantity: 1, graded: { grader: "PSA", grade: "9" } }), line({ id: "nm", condition: "Near Mint" })] }]);
+    expect(field().value).toBe("0");
+    expect(screen.getByText("also here: PSA 9, Raw Near Mint ×2")).toBeTruthy();
+  });
+
+  it("with every copy plain, says nothing after the field and describes it by nothing", () => {
+    setup();
+    expect(screen.queryByText(/also here/)).toBeNull();
+    expect(field().getAttribute("aria-describedby")).toBeNull();
   });
 
   it("waits, read-only and empty, until the shelf and the copies are in", () => {
@@ -181,10 +195,10 @@ describe("the field's number", () => {
     expect(field().readOnly).toBe(true);
   });
 
-  it("takes digits only, three at most", () => {
+  it("takes digits only, four at most (one past the cap, so 1000 is never cut to 100)", () => {
     setup();
-    type(field(), "1a2b3c4");
-    expect(field().value).toBe("123");
+    type(field(), "1a2b3c4d5");
+    expect(field().value).toBe("1234");
   });
 
   it("is a numeric field with a Next key on a phone", () => {
@@ -210,7 +224,7 @@ describe("committing", () => {
     type(field(), "5");
     fireEvent.blur(field());
     await flush();
-    expect(rig.api.notify).toHaveBeenCalledWith("Boxed 3 more #12 Elly De La Cruz. 5 in Unsorted.", undo);
+    expect(rig.api.notify).toHaveBeenCalledWith("Boxed 3 more of #12 Elly De La Cruz. 5 in Unsorted.", undo);
     expect(screen.getByText("Saved")).toBeTruthy();
   });
 
@@ -219,7 +233,7 @@ describe("committing", () => {
     type(field(), "0");
     fireEvent.blur(field());
     await flush();
-    expect(rig.api.notify).toHaveBeenCalledWith("Pulled 2 #12 Elly De La Cruz from Unsorted. 0 left.", expect.any(Function));
+    expect(rig.api.notify).toHaveBeenCalledWith("Pulled 2 of #12 Elly De La Cruz from Unsorted. 0 left.", expect.any(Function));
   });
 
   it("the same number writes nothing and says nothing", async () => {
@@ -253,12 +267,24 @@ describe("committing", () => {
     expect(rig.api.inform).toHaveBeenCalledWith(BLANK_MESSAGE);
   });
 
-  it("a number past the cap commits as the cap", async () => {
+  it("a number past the cap is refused in the server's words: nothing written, the number put back", async () => {
     const rig = setup();
-    type(field(), "9999");
-    expect(field().value).toBe("999");
+    type(field(), "1000");
+    expect(field().value).toBe("1000");
     fireEvent.blur(field());
     await flush();
+    expect(rig.setBoxQuantity).not.toHaveBeenCalled();
+    expect(field().value).toBe("2");
+    expect(screen.getByText("Didn't save: Quantity is a whole number from 0 to 999. Back to 2.")).toBeTruthy();
+    expect(field().getAttribute("aria-invalid")).toBe("true");
+    expect(rig.api.notify).toHaveBeenCalledTimes(1);
+    expect(rig.api.notify).toHaveBeenCalledWith("#12 Elly De La Cruz didn't change. Quantity is a whole number from 0 to 999.");
+    // The cap itself still writes.
+    type(field(), "999");
+    expect(field().getAttribute("aria-invalid")).toBeNull();
+    fireEvent.blur(field());
+    await flush();
+    expect(rig.setBoxQuantity).toHaveBeenCalledTimes(1);
     expect(rig.setBoxQuantity.mock.calls[0][2]).toBe(999);
   });
 
@@ -487,8 +513,8 @@ describe("the row's other controls", () => {
 describe("the status line's words", () => {
   const unsorted = { name: "Unsorted" };
   it("says a raise, a lowering and no change", () => {
-    expect(quantityMessage("#1 A", unsorted, { before: 0, after: 3 })).toBe("Boxed 3 more #1 A. 3 in Unsorted.");
-    expect(quantityMessage("#1 A", unsorted, { before: 5, after: 2 })).toBe("Pulled 3 #1 A from Unsorted. 2 left.");
+    expect(quantityMessage("#1 A", unsorted, { before: 0, after: 3 })).toBe("Boxed 3 more of #1 A. 3 in Unsorted.");
+    expect(quantityMessage("#1 A", unsorted, { before: 5, after: 2 })).toBe("Pulled 3 of #1 A from Unsorted. 2 left.");
     expect(quantityMessage("#1 A", unsorted, { before: 2, after: 2 })).toBe("#1 A stays at 2 in Unsorted.");
   });
 });

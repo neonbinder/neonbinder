@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ArchiveBoxIcon } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { CHIP, CHIP_OFF, CHIP_ON, FOCUS, LABEL, SELECT, compareNumbers } from "../../prototypes/p1/ui";
@@ -13,8 +14,10 @@ import { playerNames, shortCardName, teamNames } from "../data/labels";
 import { useCollectionActions, useCopiesInVariant, useVariantCards, useVariantCompletion } from "../data/store";
 import type { Card, CardId } from "../data/types";
 import { usePageApi } from "../pageApi";
+import { comparePlayerNames } from "../playerName";
 import QuantityRow from "./QuantityRow";
 import { useQuickEntry } from "./QuickEntry";
+import { rangeWords } from "./targetBox";
 import { QUICK_ENTRY_HINT_ID } from "./TargetBoxPicker";
 
 type Show = "all" | "in" | "out";
@@ -31,7 +34,11 @@ type Sort = "checklist" | "number" | "player" | "team";
  *
  * The controls: the in-list search (as the collection's), All / In <box> /
  * Not in <box>, Sort by (checklist order, number, player, team), and
- * "Add a range to <box>", one copy of each card the range names.
+ * "Add a range to <box>", one copy of each card the range names ("1-20,
+ * skip 12": `rangeWords` reads "skip" as the range reader's "-").
+ *
+ * The heading's subline names the target box too, so it is in sight beside
+ * the checklist's name as well as on the sticky "Adding to" bar.
  *
  * Box copies only (the hard line): the rows, the "in stock" line and the
  * sleeve strip read `useCopiesInVariant` / `useVariantCompletion` on the
@@ -83,10 +90,12 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
       : [...filtered].sort((a, b) => {
           const byNumber = compareNumbers(a.cardNumber, b.cardNumber);
           if (sort === "number") return byNumber;
-          const key = (c: Card) => (sort === "player" ? playerNames(c) : teamNames(c));
-          const ka = key(a);
-          const kb = key(b);
-          // Cards with no name known go last, in number order.
+          // Players file by last name, then first (the card's first player;
+          // the unnamed go last), as a collector's boxes are sorted.
+          if (sort === "player") return comparePlayerNames(a.players[0]?.name, b.players[0]?.name) || byNumber;
+          const ka = teamNames(a);
+          const kb = teamNames(b);
+          // Cards with no team known go last, in number order.
           if (!ka !== !kb) return ka ? -1 : 1;
           return ka.localeCompare(kb) || byNumber;
         });
@@ -102,7 +111,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
 
   // "Add a range": one copy of every card it names, whether or not the box
   // already holds some. A shared number still stops and asks.
-  const range = rangeText.trim() ? parseRange(rangeText, list) : null;
+  const range = rangeText.trim() ? parseRange(rangeWords(rangeText), list) : null;
   const plan = runPlan(range, sharedPicks, () => false);
   const { cards: rangeCards, toAdd, blocked } = plan;
   const alreadyHere = toAdd.filter((c) => inBoxIds.has(c.id)).length;
@@ -143,6 +152,14 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
         <h3 id={headingId} ref={headingRef} tabIndex={-1} className="rounded-sm text-xl font-semibold focus-outline">
           {title}
         </h3>
+        {box && (
+          <p className="flex items-center gap-1.5 text-sm text-ink-2">
+            <ArchiveBoxIcon aria-hidden="true" className="h-4 w-4 shrink-0 text-neon-yellow-text" />
+            <span>
+              Adding to <span className="font-semibold text-ink">{box.name}</span>
+            </span>
+          </p>
+        )}
         {completion ? (
           <p className="text-sm text-ink-2">
             {totalKnown(completion) ? (
@@ -210,7 +227,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
                 ref={rangeRef}
                 surface="dark"
                 label={`Add a range to ${boxName}`}
-                placeholder="1-20, -12"
+                placeholder="1-20, skip 12"
                 value={rangeText}
                 onChange={(e) => {
                   setRangeText(e.target.value);
@@ -245,7 +262,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
           <div className="space-y-2 text-sm text-ink-2">
             {range?.invalid && (
               <p id={rangeErrorId} role="alert" className="text-neon-yellow-text">
-                Can&apos;t read that. Try numbers and runs like 1-20, -12.
+                Can&apos;t read that. Try numbers and runs like 1-20, skip 12.
               </p>
             )}
             <div id={rangePreviewId} role="status" className={range && !range.invalid ? "space-y-2" : "sr-only"}>
@@ -256,7 +273,8 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
                       ? "No cards picked yet."
                       : `One each of ${toAdd.length} ${toAdd.length === 1 ? "card" : "cards"} into ${boxName}`}
                     {alreadyHere > 0 && `. ${alreadyHere} already in there get one more`}
-                    {range.unknown.length > 0 && `. Not on this checklist: ${range.unknown.join(", ")}`}
+                    {range.unknown.length > 0 &&
+                      `. Not on this checklist: ${range.unknown.map((u) => (u.startsWith("-") ? `skip ${u.slice(1)}` : u)).join(", ")}`}
                   </p>
                   {blocked && <p className="text-neon-yellow-text">{blockedMessage(plan)}</p>}
                 </>

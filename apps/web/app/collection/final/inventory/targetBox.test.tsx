@@ -7,6 +7,10 @@ import {
   MAX_BOX_QUANTITY,
   otherLines,
   parseQuantity,
+  QUANTITY_FIELD_DIGITS,
+  QUANTITY_RANGE_MESSAGE,
+  quantityInRange,
+  rangeWords,
   plainQuantity,
   readStoredTargetBox,
   resolveTargetBox,
@@ -92,7 +96,7 @@ describe("the quantity (D9)", () => {
   });
 });
 
-describe("the other lines, read-only beside the field", () => {
+describe("the other lines, read-only after the field", () => {
   it("is null when every copy there is plain", () => {
     expect(otherLines([copy(), copy({ id: "b", quantity: 4 })])).toBeNull();
     expect(otherLines([])).toBeNull();
@@ -104,14 +108,14 @@ describe("the other lines, read-only beside the field", () => {
       copy({ id: "b", condition: "Mint", quantity: 2 }),
       copy({ id: "plain", quantity: 7 }),
     ];
-    expect(otherLines(lines)).toEqual({ count: 3, text: "+3 more: PSA 9, Raw Mint ×2" });
+    expect(otherLines(lines)).toEqual({ count: 3, text: "also here: PSA 9, Raw Mint ×2" });
   });
 
   it("says a serial, a trade flag and bare notes", () => {
-    expect(otherLines([copy({ serialNumber: "23/50" })])!.text).toBe("+1 more: Raw 23/50");
-    expect(otherLines([copy({ upForTrade: true })])!.text).toBe("+1 more: Raw for trade");
-    expect(otherLines([copy({ notes: "ding" })])!.text).toBe("+1 more: Raw with notes");
-    expect(otherLines([copy({ graded: { grader: "BGS", grade: "" } })])!.text).toBe("+1 more: BGS ?");
+    expect(otherLines([copy({ serialNumber: "23/50" })])!.text).toBe("also here: Raw 23/50");
+    expect(otherLines([copy({ upForTrade: true })])!.text).toBe("also here: Raw for trade");
+    expect(otherLines([copy({ notes: "ding" })])!.text).toBe("also here: Raw with notes");
+    expect(otherLines([copy({ graded: { grader: "BGS", grade: "" } })])!.text).toBe("also here: BGS ?");
   });
 });
 
@@ -129,10 +133,35 @@ describe("what a typed value commits as", () => {
     expect(parseQuantity(text)).toBeNull();
   });
 
-  it("caps at the most a line holds", () => {
+  it("never caps: a count past the most a line holds reads as typed, for the row to refuse", () => {
     expect(parseQuantity("999")).toBe(MAX_BOX_QUANTITY);
-    expect(parseQuantity("1000")).toBe(MAX_BOX_QUANTITY);
-    expect(parseQuantity("99999999999")).toBe(MAX_BOX_QUANTITY);
+    expect(parseQuantity("1000")).toBe(1000);
+  });
+
+  it("fits a box line from 0 to the cap, and nothing else", () => {
+    expect(quantityInRange(0)).toBe(true);
+    expect(quantityInRange(MAX_BOX_QUANTITY)).toBe(true);
+    expect(quantityInRange(MAX_BOX_QUANTITY + 1)).toBe(false);
+    expect(quantityInRange(-1)).toBe(false);
+    expect(quantityInRange(1.5)).toBe(false);
+  });
+
+  it("refuses in the server's words, and the field takes one digit past the cap", () => {
+    expect(QUANTITY_RANGE_MESSAGE).toBe("Quantity is a whole number from 0 to 999.");
+    expect(QUANTITY_FIELD_DIGITS).toBe(4);
+  });
+});
+
+describe("Add a range's words", () => {
+  it.each([
+    ["1-20, skip 12", "1-20, -12"],
+    ["1-20 skip 12 skip 15-17", "1-20 -12 -15-17"],
+    ["1-20, Skip #12", "1-20, -#12"],
+    ["skip12", "-12"],
+    ["1-20, -12", "1-20, -12"],
+    ["13b, GJ1", "13b, GJ1"],
+  ])("reads %j as %j", (text, words) => {
+    expect(rangeWords(text)).toBe(words);
   });
 });
 

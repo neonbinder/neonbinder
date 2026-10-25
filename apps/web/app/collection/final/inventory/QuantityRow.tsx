@@ -9,7 +9,15 @@ import type { Card, Container, Copy, CopyId, QuantityResult } from "../data/type
 import { usePageApi } from "../pageApi";
 import { FeatureBadges } from "./badges";
 import { useQuickEntry } from "./QuickEntry";
-import { linesInBox, otherLines, parseQuantity, plainQuantity } from "./targetBox";
+import {
+  linesInBox,
+  otherLines,
+  parseQuantity,
+  plainQuantity,
+  QUANTITY_FIELD_DIGITS,
+  QUANTITY_RANGE_MESSAGE,
+  quantityInRange,
+} from "./targetBox";
 
 /** Marks a row's quantity field, so Enter can find the next row's. */
 const FIELD_ATTR = "data-qty-field";
@@ -23,8 +31,8 @@ type Status = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind
 
 /** What the status line says once a quantity lands. */
 export function quantityMessage(name: string, box: Pick<Container, "name">, r: Pick<QuantityResult, "before" | "after">): string {
-  if (r.after > r.before) return `Boxed ${r.after - r.before} more ${name}. ${r.after} in ${box.name}.`;
-  if (r.after < r.before) return `Pulled ${r.before - r.after} ${name} from ${box.name}. ${r.after} left.`;
+  if (r.after > r.before) return `Boxed ${r.after - r.before} more of ${name}. ${r.after} in ${box.name}.`;
+  if (r.after < r.before) return `Pulled ${r.before - r.after} of ${name} from ${box.name}. ${r.after} left.`;
   return `${name} stays at ${r.after} in ${box.name}.`;
 }
 
@@ -58,8 +66,10 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * The field is how many PLAIN copies of the card sit in the target box (raw,
  * nothing noted, not up for trade). Leaving it writes the new number in one
  * go (`setBoxQuantity`), through the page's commit queue, so Tab never waits
- * on a write. Beside it: the card's other lines in that box, read-only
- * ("+2 more: PSA 9, Raw Mint"), and Details for everything else.
+ * on a write. After it: the card's other lines in that box, read-only
+ * ("also here: PSA 9, Raw Mint"), and Details for everything else. They sit
+ * after the number so a 0 beside a graded copy reads as "no plain copies",
+ * not as a contradiction.
  *
  * Keyboard: the field is the row's only Tab stop, so Tab walks field to
  * field. → at the end of the field reaches Details (and Checklist on a search
@@ -68,7 +78,8 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * Ctrl/⌘+Z with nothing typed takes back the page's last change (the status
  * line's Undo); once something is typed it is the field's own text undo.
  * Left blank, the field puts its number back and the status line says so
- * (unless it is still offering an Undo: that stays).
+ * (unless it is still offering an Undo: that stays). A count past 999 is
+ * refused on the spot, in the server's words, and never cut down to fit.
  *
  * Saving shows on the row: a dot while the write is on its way, a check
  * when it lands, or the server's reason and the old number back when it is
@@ -136,6 +147,13 @@ export default function QuantityRow({
       // offers the last count's Undo, which an aside never replaces.
       setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
       if (quantity === null) api.inform(BLANK_MESSAGE);
+      return;
+    }
+    if (!quantityInRange(quantity)) {
+      // Past the cap: refused here, as the server would, with nothing written.
+      setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
+      setStatus({ kind: "error", message: QUANTITY_RANGE_MESSAGE });
+      api.notify(`${shortCardName(card)} didn't change. ${QUANTITY_RANGE_MESSAGE}`);
       return;
     }
     const mine = ++seq.current;
@@ -249,11 +267,6 @@ export default function QuantityRow({
           </div>
         </div>
         <FeatureBadges card={card} />
-        {others && (
-          <span id={othersId} className="max-w-[14rem] text-right text-xs text-ink-2 max-sm:order-last max-sm:basis-full">
-            {others.text}
-          </span>
-        )}
         <span className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           <Input
             ref={field}
@@ -274,7 +287,7 @@ export default function QuantityRow({
             onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => {
               if (!box) return;
-              setDraft({ text: e.target.value.replace(/\D/g, "").slice(0, 3), boxId: box.id });
+              setDraft({ text: e.target.value.replace(/\D/g, "").slice(0, QUANTITY_FIELD_DIGITS), boxId: box.id });
               if (status.kind !== "saving") setStatus({ kind: "idle" });
             }}
             onBlur={commit}
@@ -284,6 +297,18 @@ export default function QuantityRow({
             }`}
           />
           <SaveMark status={status} />
+        </span>
+        {/* After the number, never before it: "0 · also here: PSA 9" reads as
+            "no plain copies, and a graded one", where "PSA 9 · 0" read as a
+            contradiction. From sm up the slot is on every row, so the fields
+            and Details stay in one column down the list. */}
+        <span
+          id={others ? othersId : undefined}
+          className={`text-xs text-ink-2 max-sm:order-last max-sm:basis-full max-sm:text-right sm:w-40 sm:shrink-0 ${
+            others ? "" : "max-sm:hidden"
+          }`}
+        >
+          {others?.text}
         </span>
         <span className="flex shrink-0 gap-1">
           {onOpenChecklist && (

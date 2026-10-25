@@ -13,8 +13,8 @@
  * The quantity (D9): how many PLAIN copies of the card sit in the box. A
  * plain line is raw (no grade), with no condition, serial, cost, location or
  * notes, and not up for trade; its pocket or row and its acquired date do
- * not matter. Everything else the card has in the box is read-only beside
- * the field ("+2 more: PSA 9, Raw Mint") and never touched by it.
+ * not matter. Everything else the card has in the box is read-only after
+ * the field ("also here: PSA 9, Raw Mint") and never touched by it.
  */
 
 import { boxesOf, systemContainer } from "../data/store";
@@ -29,6 +29,12 @@ export const TARGET_BOX_PARAM = "box";
  * import the server's; the server refuses past it anyway).
  */
 export const MAX_BOX_QUANTITY = 999;
+
+/** Why a count past the cap is refused: the server's own words. */
+export const QUANTITY_RANGE_MESSAGE = `Quantity is a whole number from 0 to ${MAX_BOX_QUANTITY}.`;
+
+/** How many digits the field takes: one past the cap, so 1000 is refused, never cut to 100. */
+export const QUANTITY_FIELD_DIGITS = String(MAX_BOX_QUANTITY).length + 1;
 
 /** The demo's key: one visitor, no account. */
 export const DEMO_TARGET_BOX_KEY = "nb.demo.targetBox";
@@ -122,24 +128,40 @@ function otherLineText(copy: Copy): string {
 }
 
 /**
- * The card's other lines in the box, read-only beside the field: how many
- * copies and what they are. `null` when every copy there is plain.
+ * The card's other lines in the box, read-only after the field: how many
+ * copies and what they are ("also here: PSA 9, Raw Mint"), never counted by
+ * it. `null` when every copy there is plain.
  */
 export function otherLines(lines: readonly Copy[]): { count: number; text: string } | null {
   const others = lines.filter((c) => !isPlainLine(c));
   if (others.length === 0) return null;
   const count = others.reduce((n, c) => n + c.quantity, 0);
-  return { count, text: `+${count} more: ${others.map(otherLineText).join(", ")}` };
+  return { count, text: `also here: ${others.map(otherLineText).join(", ")}` };
 }
 
 /**
- * What a typed value commits as: a whole number from 0 to the cap, or
- * `null` (blank or unreadable: the field goes back to what it was).
+ * What a typed value reads as: a whole number, or `null` (blank or
+ * unreadable: the field goes back to what it was). Never capped here: a
+ * count past `MAX_BOX_QUANTITY` is refused by the row, not cut down.
  */
 export function parseQuantity(text: string): number | null {
   const trimmed = text.trim();
   if (!/^\d+$/.test(trimmed)) return null;
-  return Math.min(Number(trimmed), MAX_BOX_QUANTITY);
+  return Number(trimmed);
+}
+
+/** True when a count fits a box line (0 to the cap). */
+export function quantityInRange(quantity: number): boolean {
+  return Number.isInteger(quantity) && quantity >= 0 && quantity <= MAX_BOX_QUANTITY;
+}
+
+/**
+ * "Add a range" text in the words the range reader knows: "skip 12" is
+ * "-12" ("1-20, skip 12, skip 15-17"), so nobody has to type what reads as
+ * a negative number. Each "skip" takes back the one number or run after it.
+ */
+export function rangeWords(text: string): string {
+  return text.replace(/\bskip\s*(?=#?\w)/gi, "-");
 }
 
 // ---------------------------------------------------------------------------
