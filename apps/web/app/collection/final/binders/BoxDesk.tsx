@@ -348,7 +348,8 @@ export function TradeBox({ pile, copies, cards, homes, truncated, onMore, onOpen
 
   return (
     <div ref={rootRef}>
-      <div role="region" aria-label={`${pile.name}, open`} className="nb-box nb-box--pile">
+      {/* One named group, with the count: a region around it would only say the pile's name twice. */}
+      <div className="nb-box nb-box--pile">
         <div className="nb-box-well" role="group" aria-label={`${pile.name}, ${total} ${total === 1 ? "card" : "cards"}`}>
           {shown.length === 0 ? (
             <p className="nb-box-empty">Nothing up for trade yet. Hunt for a card below and put it on the pile.</p>

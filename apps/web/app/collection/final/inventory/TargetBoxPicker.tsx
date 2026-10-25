@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ArchiveBoxIcon } from "@heroicons/react/24/outline";
 import { FOCUS } from "../../prototypes/p1/ui";
 import { useQuickEntry } from "./QuickEntry";
@@ -11,7 +12,17 @@ import { useQuickEntry } from "./QuickEntry";
  * box names), like the collection's Binder picker. Unsorted comes first,
  * then the collector's boxes as made. A pick replaces `box=` on the URL (an
  * in-view tweak, never a Back step) and is kept on this device for next time.
+ *
+ * The hint under it says what the keys do, and describes the quantity list
+ * (`QUICK_ENTRY_HINT_ID`), so a screen reader hears it on the way in.
  */
+/** The hint's id: the quantity list below points at it with `aria-describedby`. */
+export const QUICK_ENTRY_HINT_ID = "nb-quick-entry-hint";
+
+function Key({ children }: { children: ReactNode }) {
+  return <kbd className="rounded border border-control bg-field px-1 font-sans text-[0.6875rem] text-ink-2">{children}</kbd>;
+}
+
 export default function TargetBoxPicker() {
   const { box, boxes, setBox } = useQuickEntry();
   return (
@@ -36,7 +47,11 @@ export default function TargetBoxPicker() {
           ))}
         </select>
       </label>
-      <p className="text-xs text-ink-3">Each number below is how many raw copies sit in this box. Type it, tab on.</p>
+      <p id={QUICK_ENTRY_HINT_ID} className="text-xs text-ink-3">
+        Each number below is how many raw copies sit in this box. Type it, tab on. <Key>→</Key> opens Details,{" "}
+        <Key>Enter</Key> hops to the next row, <Key>Esc</Key> puts the number back, <Key>Ctrl/⌘+Z</Key> undoes the
+        last count.
+      </p>
     </div>
   );
 }

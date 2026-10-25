@@ -75,6 +75,7 @@ import {
   ParamLink,
   scopeFromParams,
   SIDE_PARAM,
+  takeSideArrival,
   useCollectionMode,
   useCollectionParams,
   useCollectionSide,
@@ -197,6 +198,12 @@ function runUndo(undo: () => unknown, onDone: () => void, onError: (error: unkno
   if (pending instanceof Promise) pending.then(onDone, onError);
   else onDone();
 }
+
+/** Room kept under a field the keyboard reaches while the floating status line is up. */
+const NOTICE_CLEARANCE = "6rem";
+
+/** What Ctrl/⌘+Z says when the status line has no Undo to give. */
+const NOTHING_TO_UNDO = "Nothing to undo.";
 
 /** What an undo that the server refused says on the status line. */
 function undoFailed(error: unknown): string {
@@ -490,6 +497,12 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
       },
     );
   };
+  /** Ctrl/⌘+Z from quick entry: the line's Undo, or a word that there is none. */
+  const undoLast = () => {
+    if (undoing.current) return;
+    if (notice?.undo) undo();
+    else notify(NOTHING_TO_UNDO);
+  };
   const run = async <T extends { undo: Undo }>(
     write: () => Promise<T>,
     message: (result: T) => string,
@@ -706,11 +719,32 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
     else setParams({ tab: next });
   };
 
+  // The floating status line sits over the bottom of the page: while it is
+  // up, keep a field the keyboard lands on clear of it (WCAG 2.4.11).
+  const floatingNotice = notice !== null && !drawer && !desk;
+  useEffect(() => {
+    if (!floatingNotice) return;
+    const root = document.documentElement;
+    const before = root.style.scrollPaddingBottom;
+    root.style.scrollPaddingBottom = NOTICE_CLEARANCE;
+    return () => {
+      root.style.scrollPaddingBottom = before;
+    };
+  }, [floatingNotice]);
+
+  // Arriving from the other side (a side link, the demo's switch): the
+  // keyboard starts on this side's heading, not wherever the link was.
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (takeSideArrival(side)) heading.current?.focus({ preventScroll: true });
+  }, [side]);
+
   const pageApi: PageApi = {
     openCard,
     goToChecklists,
     openSuggestion: pickSuggestion,
     notify,
+    undoLast,
     run,
   };
 
@@ -729,7 +763,9 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                 {capabilities.demoChrome && demo && (
                   <DemoBar onReset={resetDemo} onExit={onExit} />
                 )}
-                <h1 className="text-2xl font-bold">{SIDE_TITLE[side]}</h1>
+                <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
+                  {SIDE_TITLE[side]}
+                </h1>
 
                 <nav
                   aria-label={`${SIDE_TITLE[side]} sections`}

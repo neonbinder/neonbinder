@@ -468,6 +468,20 @@ export function useGoToSide(): (side: Side, next: ParamsInit, options?: { replac
   );
 }
 
+/**
+ * The side a side link is on its way to, so that side's page can put the
+ * keyboard on its heading when it arrives (`takeSideArrival`). Only a link
+ * the collector follows sets it; a redirect to the other side does not.
+ */
+let arrivingSide: Side | null = null;
+
+/** True once, on the side a side link just headed for. */
+export function takeSideArrival(side: Side): boolean {
+  if (arrivingSide !== side) return false;
+  arrivingSide = null;
+  return true;
+}
+
 /** A link to a view on a side (`useSideTarget`): the demo's side switch, the long box's door to the Inventory list. */
 export function SideLink({
   side,
@@ -484,13 +498,9 @@ export function SideLink({
       state={t.state}
       onClick={(e) => {
         onClick?.(e);
-        if (
-          mode === "public" &&
-          !e.defaultPrevented &&
-          e.button === 0 &&
-          !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-        ) {
-          latestRef.current = { search: t.search, state: t.state };
+        if (!e.defaultPrevented && e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
+          arrivingSide = side;
+          if (mode === "public") latestRef.current = { search: t.search, state: t.state };
         }
       }}
       {...rest}

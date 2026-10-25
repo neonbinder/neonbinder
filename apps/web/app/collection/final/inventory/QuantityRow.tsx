@@ -16,6 +16,9 @@ const FIELD_ATTR = "data-qty-field";
 /** Marks a row's other controls (Checklist, Details), reached with ← →. */
 const ROW_CONTROL_ATTR = "data-qty-control";
 
+/** What the status line says when a field is left blank: the number went back. */
+export const BLANK_MESSAGE = "Nothing changed. Type 0 to clear it.";
+
 type Status = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
 /** What the status line says once a quantity lands. */
@@ -62,6 +65,9 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * field. → at the end of the field reaches Details (and Checklist on a search
  * hit), ← comes back. Enter commits and moves to the next row's field,
  * Shift+Enter to the one above; Escape puts back what was there, in place.
+ * Ctrl/⌘+Z with nothing typed takes back the page's last change (the status
+ * line's Undo); once something is typed it is the field's own text undo.
+ * Left blank, the field puts its number back and the status line says so.
  *
  * Saving shows on the row: a dot while the write is on its way, a check
  * when it lands, or the server's reason and the old number back when it is
@@ -123,8 +129,11 @@ export default function QuantityRow({
     const base = pending.current > 0 && lastSent.current !== null ? lastSent.current : count;
     const quantity = parseQuantity(shownDraft);
     if (quantity === null || quantity === base) {
-      // Blank, unreadable or unchanged: nothing to write.
+      // Blank, unreadable or unchanged: nothing to write. The number goes
+      // back, and a blank one says so on the status line (the row's own
+      // text stays quiet, so it is announced once).
       setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
+      if (quantity === null) api.notify(BLANK_MESSAGE);
       return;
     }
     const mine = ++seq.current;
@@ -166,6 +175,17 @@ export default function QuantityRow({
     } else if (e.key === "Escape" && shownDraft !== null) {
       e.preventDefault();
       setDraft(null);
+    } else if (
+      shownDraft === null &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.shiftKey &&
+      !e.altKey &&
+      e.key.toLowerCase() === "z"
+    ) {
+      // Nothing typed here yet: Ctrl/⌘+Z takes back the last count, as the
+      // status line's Undo does. While typing it stays the field's own undo.
+      e.preventDefault();
+      api.undoLast();
     } else if (e.key === "ArrowRight" && !e.shiftKey && el.selectionEnd === el.value.length) {
       // At the end of the field, or with all of it selected (as it is on arrival).
       const controls = rowControls(el);
@@ -241,6 +261,7 @@ export default function QuantityRow({
             aria-label={label}
             aria-describedby={describedBy || undefined}
             aria-invalid={status.kind === "error" || undefined}
+            aria-keyshortcuts="Control+Z Meta+Z ArrowRight"
             inputMode="numeric"
             pattern="[0-9]*"
             enterKeyHint="next"
@@ -271,7 +292,7 @@ export default function QuantityRow({
               onKeyDown={onControlKey}
               onClick={stop(onOpenChecklist)}
               aria-label={`Open the checklist for ${cardLabel(card)}`}
-              className={QUIET_BUTTON}
+              className={`${QUIET_BUTTON} max-sm:min-h-11`}
             >
               Checklist
             </button>
@@ -283,7 +304,7 @@ export default function QuantityRow({
             onKeyDown={onControlKey}
             onClick={stop(() => onOpen(lines[0]?.id))}
             aria-label={`Details for ${name}`}
-            className={QUIET_BUTTON}
+            className={`${QUIET_BUTTON} max-sm:min-h-11`}
           >
             Details
           </button>

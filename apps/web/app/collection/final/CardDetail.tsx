@@ -692,7 +692,7 @@ export function CopyList({
                     className={QUIET_BUTTON}
                     data-copy-sell={copy.id}
                     aria-label={
-                      copy.homeKind === "box" ? `Take ${name}, ${names[i]}, off sale` : `Sell ${name}, ${names[i]}`
+                      copy.homeKind === "box" ? `Take off sale, ${name}, ${names[i]}` : `Sell ${name}, ${names[i]}`
                     }
                     aria-expanded={movingOn(copy) !== null && movingOn(copy) !== "move"}
                     onClick={() => toggle(copy, copy.homeKind === "box" ? "unsell" : "sell")}

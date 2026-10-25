@@ -362,14 +362,18 @@ button.nb-longbox {
   gap: 10px 8px;
 }
 /* Where a traded card really lives, on a strip of tape under it. */
+/*
+ * The text is sized in rem so it follows the reader's own font size (a px
+ * size ignores it); the width stays the card's, and a long name wraps.
+ */
 .nb-box-where {
   max-width: 76px;
-  padding: 1px 5px;
+  padding: 0.0625rem 0.3125rem;
   border-radius: 2px;
   background: var(--kraft-hi);
   color: var(--kraft-ink);
   box-shadow: 0 0 0 1px var(--kraft-edge);
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   font-weight: 700;
   line-height: 1.35;
   text-align: center;

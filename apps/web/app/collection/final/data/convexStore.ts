@@ -1307,9 +1307,12 @@ function applyChange(local: OptimisticLocalStore, change: Change) {
  * answer) after the change: the card's item rebuilt from its box rows. With
  * `whole` (the card's every row after the change, from a loaded `copiesOf`)
  * the item is counted afresh; otherwise the change's box rows are added and
- * taken off the item as it was (its graded and trade marks only ever gain
- * there; the server's answer settles them). An item at 0 leaves the list;
- * the list stays newest first.
+ * taken off the item as it was. On that path the graded and trade marks are
+ * settled from the card's box rows the other loaded lists hold: exactly when
+ * they account for every line, else a mark the change took off (a slab
+ * removed, a copy unflagged) clears unless a row in hand still carries it.
+ * The server's answer settles anything the client could not see. An item at
+ * 0 leaves the list; the list stays newest first.
  */
 function patchInventory(local: OptimisticLocalStore, change: Change, whole: readonly RawCopy[] | undefined) {
   const shelf = local.getQuery(api.collectionContainers.list, {});
@@ -1320,6 +1323,10 @@ function patchInventory(local: OptimisticLocalStore, change: Change, whole: read
   const now = change.after.filter(inBox);
   if (was.length === 0 && now.length === 0) return;
   const cardId = change.cardId as RawInventoryItem["cardId"];
+  /** The card's box rows after the change, as far as the loaded lists know them. */
+  let inHand: RawCopy[] | undefined;
+  const known = () =>
+    (inHand ??= patchRows(cardRows(local, cardId), change, () => true, true).filter((r) => inBox(r) && r.quantity > 0));
   for (const { args, value } of local.getAllQueries(api.collectionInventory.inventoryCards)) {
     if (!value) continue;
     const old = value.items.find((i) => i.cardId === cardId);
@@ -1345,6 +1352,7 @@ function patchInventory(local: OptimisticLocalStore, change: Change, whole: read
     } else {
       for (const r of was) add(r, -1);
       for (const r of now) add(r, 1);
+      settleMarks(item, known(), was, now);
     }
     item.boxes = item.boxes
       .filter((b) => b.quantity > 0)
@@ -1353,6 +1361,27 @@ function patchInventory(local: OptimisticLocalStore, change: Change, whole: read
     const items =
       item.quantity > 0 && item.lines > 0 ? [...rest, item].sort((a, b) => b.lastUpdated - a.lastUpdated) : rest;
     local.setQuery(api.collectionInventory.inventoryCards, args, { ...value, items });
+  }
+}
+
+const MARKS = {
+  graded: (r: RawCopy) => r.grading !== undefined,
+  upForTrade: (r: RawCopy) => r.upForTrade === true,
+} as const;
+
+/**
+ * An Inventory item's graded and trade marks after a delta (`patchInventory`
+ * without the card's whole rows). `known`: its box rows the loaded lists
+ * hold. When they are every line the item has, the marks are read off them;
+ * otherwise a mark the change took away (a `was` row carried it, no `now`
+ * row does) clears unless a known row still carries it.
+ */
+function settleMarks(item: RawInventoryItem, known: readonly RawCopy[], was: readonly RawCopy[], now: readonly RawCopy[]) {
+  const complete = known.length >= item.lines;
+  for (const key of Object.keys(MARKS) as (keyof typeof MARKS)[]) {
+    const has = MARKS[key];
+    if (complete) item[key] = known.some(has);
+    else if (was.some(has) && !now.some((r) => r.quantity > 0 && has(r)) && !known.some(has)) item[key] = false;
   }
 }
 

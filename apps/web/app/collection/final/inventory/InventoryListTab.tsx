@@ -11,7 +11,7 @@ import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
 import { cardLabel, compareCards, playerNames, setAndVariant, teamNames } from "../data/labels";
 import { boxesOf, systemContainer, useContainers, useInventoryCards, useSearch } from "../data/store";
 import type { Container, ContainerCount, InventoryCards, InventoryItem } from "../data/types";
-import { useReplaceParams } from "../mode";
+import { usePushParams } from "../mode";
 import { usePageApi } from "../pageApi";
 import { TARGET_BOX_PARAM } from "./targetBox";
 
@@ -21,9 +21,9 @@ import { TARGET_BOX_PARAM } from "./targetBox";
  * box, with how many and which boxes it sits in.
  *
  * The rail: All boxes, Unsorted, Up for Trade (drawn as a box, box copies
- * only), then the collector's boxes as made. A rail pick is `box=<id>` on
- * the URL, replacing the entry (an in-view tweak, so Back is never a chore);
- * an unknown id reads as All boxes. Sort, the sport filter, the Only show
+ * only), then the collector's boxes as made. A rail pick opens that box's
+ * list: `box=<id>` on the URL, pushed, so Back steps back through the boxes
+ * one at a time; an unknown id reads as All boxes. Sort, the sport filter, the Only show
  * chips and the search are local state, as on My Cards' shelf.
  *
  * Hard line: every count and item here is a box copy (`useInventoryCards`),
@@ -56,17 +56,16 @@ function countDetail(count: ContainerCount | null): string {
   return count ? cardsText(count.copies) : "Not counted yet";
 }
 
-/** The cards that `useInventoryCards` could not find in the catalog (B3 adds `goneCardIds`). */
+/** The cards that `useInventoryCards` could not find in the catalog. */
 function goneCount(inv: InventoryCards | undefined): number {
-  const gone = (inv as (InventoryCards & { goneCardIds?: readonly string[] }) | undefined)?.goneCardIds;
-  return gone?.length ?? 0;
+  return inv?.goneCardIds.length ?? 0;
 }
 
 export default function InventoryListTab() {
   const api = usePageApi();
   const containers = useContainers();
   const [params] = useSearchParams();
-  const replaceParams = useReplaceParams();
+  const pushParams = usePushParams();
 
   const boxes = useMemo(() => boxesOf(containers), [containers]);
   const trade = systemContainer(containers, "trade");
@@ -142,7 +141,9 @@ export default function InventoryListTab() {
 
   const pick = (id: string | null) => {
     setLimit(PAGE);
-    replaceParams((p) => {
+    // Already on it: a second entry for the same view would be a Back chore.
+    if (id === railParam) return;
+    pushParams((p) => {
       if (id) p.set(TARGET_BOX_PARAM, id);
       else p.delete(TARGET_BOX_PARAM);
     });
@@ -421,7 +422,7 @@ function RailItem({
           <span className="flex w-full items-center gap-1.5 text-sm font-bold">
             <span className="truncate">{name}</span>
             {tag === "trade" && (
-              <span className="rounded border border-neon-green-text px-1 text-[10px] font-bold text-neon-green-text">
+              <span className="rounded border border-neon-green-text px-1 text-[0.625rem] font-bold text-neon-green-text">
                 Trade
               </span>
             )}
@@ -459,7 +460,8 @@ function ItemRow({
       : places.map((p) => `${p.quantity} in ${p.name}`).join(", ");
   const players = playerNames(card);
   const teams = teamNames(card);
-  const label = `${cardLabel(card)}, ${quantity} for sale, ${where}${item.graded ? ", slabbed" : ""}${
+  // Read the way it looks: the "×N" tag first, then the card, then its tags.
+  const label = `×${quantity} ${cardLabel(card)}, ${where}${item.graded ? ", slab" : ""}${
     item.upForTrade ? ", up for trade" : ""
   }`;
   return (
@@ -469,6 +471,7 @@ function ItemRow({
         data-rove={card.id}
         tabIndex={tabIndex}
         aria-label={label}
+        aria-haspopup="dialog"
         onClick={onOpen}
         className={`flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-list-hover-raised ${FOCUS} max-sm:flex-wrap`}
       >

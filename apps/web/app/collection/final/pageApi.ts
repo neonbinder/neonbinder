@@ -41,6 +41,12 @@ export interface PageApi {
   openSuggestion: (s: Suggestion) => void;
   notify: Notify;
   /**
+   * Takes back the last change, as the status line's Undo does (the
+   * keyboard's Ctrl/⌘+Z in quick entry). With nothing to take back it says
+   * so; while an undo is running it does nothing.
+   */
+  undoLast: () => void;
+  /**
    * Runs a store write: on success says `message(result)` with an Undo, on a
    * refusal says why (`writeErrorMessage`). Resolves with the result, or null
    * when it was refused.

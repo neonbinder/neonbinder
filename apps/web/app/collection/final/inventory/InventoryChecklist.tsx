@@ -15,6 +15,7 @@ import type { Card, CardId } from "../data/types";
 import { usePageApi } from "../pageApi";
 import QuantityRow from "./QuantityRow";
 import { useQuickEntry } from "./QuickEntry";
+import { QUICK_ENTRY_HINT_ID } from "./TargetBoxPicker";
 
 type Show = "all" | "in" | "out";
 type Sort = "checklist" | "number" | "player" | "team";
@@ -328,7 +329,12 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
                 : "No cards match."}
         </p>
       ) : (
-        <ul data-qty-list="" aria-label={`Quantities in ${boxName}`} className="space-y-1.5">
+        <ul
+          data-qty-list=""
+          aria-label={`Quantities in ${boxName}`}
+          aria-describedby={QUICK_ENTRY_HINT_ID}
+          className="space-y-1.5"
+        >
           {visible.map((card) => (
             <QuantityRow
               key={card.id}
