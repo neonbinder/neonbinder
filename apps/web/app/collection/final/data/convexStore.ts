@@ -62,7 +62,7 @@ import type {
   SetRef as RawSetRef,
   VariantRef as RawVariantRef,
 } from "@/convex/lib/catalogView";
-import { OPTIMISTIC_ID_PREFIX } from "../lineKeys";
+import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import {
   bySlot,
@@ -900,6 +900,91 @@ function optimisticId(): RawCopy["_id"] {
   return `${OPTIMISTIC_ID_PREFIX}${optimisticSeq}` as RawCopy["_id"];
 }
 
+/** The ids each write's optimistic update drew, by the write's args object and the line's place in it. */
+const drawnIds = new WeakMap<object, Map<number, RawCopy["_id"]>>();
+
+/**
+ * The placeholder id for line `n` of the write sent with `args`. Convex runs a
+ * pending write's optimistic update again every time the server answers
+ * anything, always with the same args object: the same line must come back
+ * with the same id each time, and the action that sent it must be able to
+ * find which ids it drew (`drawnBy`).
+ */
+function optimisticIdFor(args: object, n = 0): RawCopy["_id"] {
+  let ids = drawnIds.get(args);
+  if (!ids) {
+    ids = new Map();
+    drawnIds.set(args, ids);
+  }
+  let id = ids.get(n);
+  if (!id) {
+    id = optimisticId();
+    ids.set(n, id);
+  }
+  return id;
+}
+
+/** The placeholder ids a write's optimistic update drew, by line. */
+function drawnBy(args: object): ReadonlyMap<number, RawCopy["_id"]> {
+  return drawnIds.get(args) ?? new Map();
+}
+
+/** What a write on a line that never got its real id says. */
+export const UNSAVED_LINE_MESSAGE = "That line didn't save, so there's nothing to change. Give it another go.";
+
+/**
+ * Each placeholder id's real one, once the write that drew it answers (`null`
+ * when it was refused: the line went with it). Ids are unique for the page's
+ * life, so one map serves every store.
+ */
+const landing = new Map<string, Promise<RawCopy["_id"] | null>>();
+
+/**
+ * A write that may draw lines ahead of the server: sends it, then records,
+ * for each placeholder its optimistic update drew, the server's id for that
+ * line (`realId`, from the write's answer and the line's place in it).
+ */
+function landsAs<A extends object, R>(
+  send: (args: A) => Promise<R>,
+  realId: (result: R, n: number, args: A) => RawCopy["_id"] | undefined,
+): (args: A) => Promise<R> {
+  return (args) => {
+    const call = send(args);
+    for (const [n, id] of drawnBy(args)) {
+      landing.set(
+        id,
+        call.then(
+          (result) => {
+            // An answer in a shape we cannot read leaves the line unsaved, never a stray rejection.
+            try {
+              return realId(result, n, args) ?? null;
+            } catch {
+              return null;
+            }
+          },
+          () => null,
+        ),
+      );
+    }
+    return call;
+  };
+}
+
+/**
+ * The line as the server knows it. A line drawn ahead of the server (an add,
+ * a split, an undo's re-split) has a placeholder id the server would refuse:
+ * a write on it waits for the write that drew it, then goes to the real id.
+ * Typically a few milliseconds; the collector sees the result as usual.
+ * Callers await it only for a placeholder, so a write on a real line still
+ * draws its optimistic update in the same tick it was asked for.
+ */
+async function landedCopy(copy: Copy): Promise<Copy> {
+  if (!isOptimisticId(copy.id)) return copy;
+  const real = await (landing.get(copy.id) ?? null);
+  if (!real) throw new Error(UNSAVED_LINE_MESSAGE);
+  return { ...copy, id: real };
+}
+
 /**
  * A write's effect on ONE card's rows: those it touches as they are now, and
  * as they will be. A row in `before` but not in `after` is gone; a row only
@@ -1098,7 +1183,14 @@ function foldsInto(row: RawCopy, next: RawDetails): boolean {
 }
 
 /** An add (`fold: false` for a restore, which the server always inserts as its own row). */
-function applyAdd(local: OptimisticLocalStore, cardId: string, place: CardPlace | undefined, details: RawDetails, fold = true) {
+function applyAdd(
+  local: OptimisticLocalStore,
+  cardId: string,
+  place: CardPlace | undefined,
+  details: RawDetails,
+  fold = true,
+  draw: () => RawCopy["_id"] = optimisticId,
+) {
   if (!place) return;
   const homeId = (details.homeId ?? mainId(local)) as RawCopy["homeId"] | undefined;
   const next = { ...details, ...(homeId ? { homeId } : {}) };
@@ -1111,7 +1203,7 @@ function applyAdd(local: OptimisticLocalStore, cardId: string, place: CardPlace 
     change.after = [
       {
         ...next,
-        _id: optimisticId(),
+        _id: draw(),
         cardId: cardId as RawCopy["cardId"],
         variantId: place.variantId as RawCopy["variantId"],
         setId: place.setId as RawCopy["setId"],
@@ -1149,6 +1241,7 @@ function applyMove(
   toHomeId: string | undefined,
   quantity: number | undefined,
   slot: number | undefined,
+  draw: () => RawCopy["_id"] = optimisticId,
 ) {
   const source = rowOf(local, copyId, known);
   if (!source || !known) return;
@@ -1167,7 +1260,7 @@ function applyMove(
     after: twin
       ? [...rest, { ...twin, quantity: twin.quantity + moving }]
       : split
-        ? [...rest, { ...landed, _id: optimisticId() }]
+        ? [...rest, { ...landed, _id: draw() }]
         : [landed],
   };
   applyChange(local, change);
@@ -1215,29 +1308,43 @@ function useConvexActions(): CollectionActions {
 
   // `withOptimisticUpdate` hands back a new function each call: build them
   // once per mutation so the actions object stays put across renders.
-  const m = useMemo(
-    () => ({
+  const m = useMemo(() => {
+    const drawing = {
       addHave: addHaveBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), {
-          quantity: 1,
-          ...(args.acquiredOn ? { acquiredOn: args.acquiredOn } : {}),
-          ...(args.homeId ? { homeId: args.homeId } : {}),
-        }),
-      ),
-      addHaves: addHavesBase.withOptimisticUpdate((local, args) => {
-        for (const cardId of args.cardIds) {
-          applyAdd(local, cardId, cards.current.get(cardId), {
+        applyAdd(
+          local,
+          args.cardId,
+          cards.current.get(args.cardId),
+          {
             quantity: 1,
             ...(args.acquiredOn ? { acquiredOn: args.acquiredOn } : {}),
             ...(args.homeId ? { homeId: args.homeId } : {}),
-          });
-        }
+          },
+          true,
+          () => optimisticIdFor(args),
+        ),
+      ),
+      addHaves: addHavesBase.withOptimisticUpdate((local, args) => {
+        args.cardIds.forEach((cardId, i) =>
+          applyAdd(
+            local,
+            cardId,
+            cards.current.get(cardId),
+            {
+              quantity: 1,
+              ...(args.acquiredOn ? { acquiredOn: args.acquiredOn } : {}),
+              ...(args.homeId ? { homeId: args.homeId } : {}),
+            },
+            true,
+            () => optimisticIdFor(args, i),
+          ),
+        );
       }),
       addLineItem: addLineItemBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details),
+        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, true, () => optimisticIdFor(args)),
       ),
       restoreCopy: restoreCopyBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, false),
+        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, false, () => optimisticIdFor(args)),
       ),
       updateCopy: updateCopyBase.withOptimisticUpdate((local, args) =>
         applyRewrite(local, args.copyId, copies.current.get(args.copyId), (r) => ({
@@ -1257,10 +1364,14 @@ function useConvexActions(): CollectionActions {
         for (const copyId of args.copyIds) applyRemove(local, copyId, copies.current.get(copyId));
       }),
       moveCopy: moveCopyBase.withOptimisticUpdate((local, args) =>
-        applyMove(local, args.copyId, copies.current.get(args.copyId), args.toHomeId, args.quantity, args.slot),
+        applyMove(local, args.copyId, copies.current.get(args.copyId), args.toHomeId, args.quantity, args.slot, () =>
+          optimisticIdFor(args),
+        ),
       ),
       placeCopy: placeCopyBase.withOptimisticUpdate((local, args) =>
-        applyMove(local, args.copyId, copies.current.get(args.copyId), undefined, undefined, args.slot ?? undefined),
+        applyMove(local, args.copyId, copies.current.get(args.copyId), undefined, undefined, args.slot ?? undefined, () =>
+          optimisticIdFor(args),
+        ),
       ),
       setTrade: setTradeBase.withOptimisticUpdate((local, args) =>
         applyRewrite(local, args.copyId, copies.current.get(args.copyId), (r) => {
@@ -1319,23 +1430,36 @@ function useConvexActions(): CollectionActions {
         const shelf = local.getQuery(api.collectionContainers.list, {});
         if (shelf) local.setQuery(api.collectionContainers.list, {}, shelf.filter((c) => c._id !== args.containerId));
       }),
-    }),
-    [
-      addHaveBase,
-      addHavesBase,
-      addLineItemBase,
-      restoreCopyBase,
-      updateCopyBase,
-      removeCopyBase,
-      removeCopiesBase,
-      moveCopyBase,
-      placeCopyBase,
-      setTradeBase,
-      setWantBase,
-      updateContainerBase,
-      removeContainerBase,
-    ],
-  );
+    };
+    // The writes whose optimistic update can draw a line: each placeholder
+    // learns its real id from the answer (`landedCopy`).
+    return {
+      ...drawing,
+      addHave: landsAs(drawing.addHave, (r) => r.copyId),
+      addHaves: landsAs(drawing.addHaves, (r, n, args) =>
+        r[n]?.cardId === args.cardIds[n] ? r[n].copyId : r.find((x) => x.cardId === args.cardIds[n])?.copyId,
+      ),
+      addLineItem: landsAs(drawing.addLineItem, (r) => r.copyId),
+      restoreCopy: landsAs(drawing.restoreCopy, (r) => r.copyId),
+      // A split's drawn line is the part that moved: the line the server says the cards are now.
+      moveCopy: landsAs(drawing.moveCopy, (r) => r.copyId),
+      placeCopy: landsAs(drawing.placeCopy, (r) => r.copyId),
+    };
+  }, [
+    addHaveBase,
+    addHavesBase,
+    addLineItemBase,
+    restoreCopyBase,
+    updateCopyBase,
+    removeCopyBase,
+    removeCopiesBase,
+    moveCopyBase,
+    placeCopyBase,
+    setTradeBase,
+    setWantBase,
+    updateContainerBase,
+    removeContainerBase,
+  ]);
 
   return useMemo<CollectionActions>(() => {
     const placeCard = (card: Card) => {
@@ -1441,10 +1565,11 @@ function useConvexActions(): CollectionActions {
         return { copyId: result.copyId, merged: result.merged, undo: undoAdd(card, details.homeId, result) };
       },
 
-      async updateCopy(copy, patch) {
-        if (patch.homeId !== undefined && patch.homeId !== copy.homeId) {
+      async updateCopy(drawn, patch) {
+        if (patch.homeId !== undefined && patch.homeId !== drawn.homeId) {
           throw new Error("Move the card to change where it lives.");
         }
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         know(copy);
         const merged: CopyDetails = { ...copy, ...patch };
         const { previous } = await m.updateCopy({ copyId: asCopy(copy.id), details: toRawDetails(merged, copy.homeId) });
@@ -1456,7 +1581,8 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async removeCopy(copy) {
+      async removeCopy(drawn) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         know(copy);
         const { removed } = await m.removeCopy({ copyId: asCopy(copy.id) });
         return {
@@ -1499,7 +1625,8 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async moveCopy(copy, toHomeId, options) {
+      async moveCopy(drawn, toHomeId, options) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         know(copy);
         const r = await m.moveCopy({
           copyId: asCopy(copy.id),
@@ -1510,7 +1637,8 @@ function useConvexActions(): CollectionActions {
         return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(copy, toHomeId, options?.slot, r) };
       },
 
-      async placeCopy(copy, slot) {
+      async placeCopy(drawn, slot) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         know(copy);
         const r = await m.placeCopy({ copyId: asCopy(copy.id), slot });
         return {
@@ -1521,7 +1649,8 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async setTrade(copy, on) {
+      async setTrade(drawn, on) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         know(copy);
         const { previous } = await m.setTrade({ copyId: asCopy(copy.id), on });
         return {
@@ -1651,4 +1780,5 @@ export const __test = {
   applyChange,
   applyMove,
   applyAdd,
+  optimisticIdFor,
 };

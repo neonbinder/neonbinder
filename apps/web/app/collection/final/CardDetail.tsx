@@ -156,24 +156,26 @@ export default function CardDetail({
     : capabilities.inventory && boxHomes.some((h) => h.id === defaultHome)
       ? boxHomes
       : binderHomes;
-  const [editing, setEditing] = useState<{ id: string; value: FormValue; trade: boolean } | null>(null);
+  /** The line whose form is open, by its line key (`CopyList`), so it lives through the store's id swap. */
+  const [editing, setEditing] = useState<{ key: string; value: FormValue; trade: boolean } | null>(null);
 
   const addRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /**
    * Where the keyboard goes once the copy's form closes or opens: back to its
-   * Edit button, or into the form's first field.
+   * Edit button, or into the form's first field. By line key, like `editing`:
+   * a save that waited for the line's real id still finds it.
    */
-  const [refocus, setRefocus] = useState<{ copyId: CopyId; into: "edit" | "form" } | null>(null);
+  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" } | null>(null);
   useEffect(() => {
     if (!refocus) return;
     const frame = requestAnimationFrame(() => {
       const root = rootRef.current;
-      const id = CSS.escape(refocus.copyId);
+      const line = `[data-copy-line="${CSS.escape(refocus.key)}"]`;
       const target =
         refocus.into === "edit"
-          ? root?.querySelector<HTMLElement>(`[data-copy-edit="${id}"]`)
-          : root?.querySelector<HTMLElement>(`[data-copy-editor="${id}"] input, [data-copy-editor="${id}"] select`);
+          ? root?.querySelector<HTMLElement>(`${line} [data-copy-edit]`)
+          : root?.querySelector<HTMLElement>(`${line} input, ${line} select`);
       target?.focus();
       // Only this move: a newer one asked for meanwhile still runs.
       setRefocus((current) => (current === refocus ? null : current));
@@ -224,7 +226,7 @@ export default function CardDetail({
       });
   };
 
-  const save = (copy: Copy, value: FormValue, trade: boolean) => {
+  const save = (copy: Copy, value: FormValue, trade: boolean, key: string) => {
     const patch: Partial<CopyDetails> = {
       ...fromForm(value),
       ...(capabilities.trade ? { upForTrade: trade } : {}),
@@ -237,7 +239,7 @@ export default function CardDetail({
       .then((r) => {
         if (r) {
           setEditing(null);
-          setRefocus({ copyId: copy.id, into: "edit" });
+          setRefocus({ key, into: "edit" });
         }
       });
   };
@@ -369,11 +371,11 @@ export default function CardDetail({
             <CopyDetailsForm
               card={card}
               value={editing.value}
-              onChange={(value) => setEditing({ ...editing, id: copy.id, value })}
-              onSave={(value) => save(copy, value, editing.trade)}
+              onChange={(value) => setEditing({ ...editing, value })}
+              onSave={(value) => save(copy, value, editing.trade, editing.key)}
               onCancel={() => {
                 setEditing(null);
-                setRefocus({ copyId: copy.id, into: "edit" });
+                setRefocus({ key: editing.key, into: "edit" });
               }}
               hideSaleFields
               hideBinders
@@ -384,9 +386,9 @@ export default function CardDetail({
             />
           )
         }
-        onEdit={(copy) => {
-          setEditing({ id: copy.id, value: toForm(copy), trade: copy.upForTrade });
-          setRefocus({ copyId: copy.id, into: "form" });
+        onEdit={(copy, key) => {
+          setEditing({ key, value: toForm(copy), trade: copy.upForTrade });
+          setRefocus({ key, into: "form" });
         }}
         onRemove={remove}
         showTrade={capabilities.trade}
@@ -502,7 +504,8 @@ export function CopyList({
   binders?: readonly NamedBinder[];
   focusCopyId?: CopyId;
   copyRefs?: RefObject<Map<CopyId, HTMLLIElement>>;
-  editing?: { id: string } | null;
+  /** The line whose form is open, by the line key `onEdit` handed over. */
+  editing?: { key: string } | null;
   renderEditor?: (copy: Copy, index: number) => ReactNode;
   /** Copies flagged Up for trade wear a tag (capability `trade`). */
   showTrade?: boolean;
@@ -512,7 +515,8 @@ export function CopyList({
   homes?: readonly Container[];
   /** Moves `quantity` of the line; resolves `null` when the server refused. */
   onMove?: (copy: Copy, toHomeId: ContainerId, quantity: number) => Promise<MoveResult | null>;
-  onEdit?: (copy: Copy) => void;
+  /** Opens a line's form; `key` is the line's key, which `editing` names it by. */
+  onEdit?: (copy: Copy, key: string) => void;
   onRemove: (copy: Copy) => void;
 }) {
   const lines = copies ?? [];
@@ -616,13 +620,14 @@ export function CopyList({
       ) : (
         <ul className="divide-y divide-rule rounded-md border border-rule">
           {lines.map((copy, i) =>
-            editing?.id === copy.id && renderEditor ? (
-              <li key={keyOf(copy)} className="p-2" data-copy-editor={copy.id}>
+            editing?.key === keyOf(copy) && renderEditor ? (
+              <li key={keyOf(copy)} className="p-2" data-copy-editor={copy.id} data-copy-line={keyOf(copy)}>
                 {renderEditor(copy, i)}
               </li>
             ) : (
               <li
                 key={keyOf(copy)}
+                data-copy-line={keyOf(copy)}
                 ref={(el) => {
                   if (!copyRefs) return;
                   if (el) copyRefs.current.set(copy.id, el);
@@ -655,7 +660,7 @@ export function CopyList({
                     className={QUIET_BUTTON}
                     data-copy-edit={copy.id}
                     aria-label={`Edit ${name}, ${names[i]}`}
-                    onClick={() => onEdit(copy)}
+                    onClick={() => onEdit(copy, keyOf(copy))}
                   >
                     Edit
                   </button>

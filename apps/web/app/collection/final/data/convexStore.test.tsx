@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { ConvexCollectionProvider, __test } from "./convexStore";
+import { ConvexCollectionProvider, UNSAVED_LINE_MESSAGE, __test } from "./convexStore";
+import { isOptimisticId } from "../lineKeys";
 import {
   collectionCopiesIn,
   collectionCopiesOfCards,
@@ -570,6 +571,102 @@ describe("every write's undo is the inverse write", () => {
     const again = await actions().setBuilding(CARD.set, true);
     await act(again.undo);
     expect(writes()).toHaveLength(1);
+  });
+});
+
+describe("a write on a line drawn ahead of the server waits for its real id", () => {
+  const actions = () => renderHook(() => useCollectionActions(), { wrapper }).result.current;
+  const writes = () => calls.list.filter((c) => c.name !== "collectionContainers:ensureSystem");
+  const RAW = {
+    _id: "copy1",
+    cardId: "card1",
+    variantId: "base1",
+    setId: "set1",
+    homeId: "home1",
+    quantity: 2,
+    condition: "Mint",
+    costCents: 125,
+    acquiredOn: "2026-10-01",
+    lastUpdated: 1,
+  };
+  const IN_VARIANT = { variantId: "base1" };
+  /** Splits one of the stack of two off to home2; the split's answer waits for `land`. */
+  function splitOne() {
+    local.set("collection:copiesInVariant", IN_VARIANT, [RAW]);
+    let land!: (r: unknown) => void;
+    let refuse!: (e: Error) => void;
+    const answer = new Promise((resolve, reject) => {
+      land = resolve;
+      refuse = reject;
+    });
+    calls.answers.set("collection:moveCopy", (args: { copyId: string }) =>
+      args.copyId === "copy1" ? answer : { copyId: "copy-home3", folded: false, split: false, from: { homeId: "home2", quantity: 1 } },
+    );
+    const a = actions();
+    const first = a.moveCopy(COPY, "home2", { quantity: 1 });
+    const rows = local.get("collection:copiesInVariant", IN_VARIANT) as (typeof RAW)[];
+    const drawn = rows.find((r) => r._id !== "copy1")!;
+    return { a, first, drawn, land, refuse };
+  }
+
+  it("draws the split under a placeholder, holds a Move on it until the split answers, then moves the real line", async () => {
+    const { a, first, drawn, land } = splitOne();
+    expect(isOptimisticId(drawn._id)).toBe(true);
+    expect(drawn).toMatchObject({ homeId: "home2", quantity: 1 });
+
+    const second = a.moveCopy({ ...COPY, id: drawn._id, homeId: "home2", quantity: 1 }, "home3");
+    await act(async () => {});
+    // Nothing went to the server with the placeholder.
+    expect(writes().map((w) => (w.args as { copyId: string }).copyId)).toEqual(["copy1"]);
+
+    land({ copyId: "copy-real", folded: false, split: true, from: { homeId: "home1", quantity: 1 } });
+    await act(async () => {
+      await first;
+      await second;
+    });
+    expect(writes()[1]).toEqual({ name: "collection:moveCopy", args: { copyId: "copy-real", toHomeId: "home3" } });
+    expect(writes().some((w) => isOptimisticId(String((w.args as { copyId?: string }).copyId ?? "")))).toBe(false);
+  });
+
+  it("every copy write resolves the placeholder the same way: edit, remove, trade, place", async () => {
+    const { a, first, drawn, land } = splitOne();
+    const line: Copy = { ...COPY, id: drawn._id, homeId: "home2", quantity: 1 };
+    calls.answers.set("collection:updateCopy", { previous: { quantity: 1, homeId: "home2" } });
+    calls.answers.set("collection:setTrade", { previous: false });
+    calls.answers.set("collection:placeCopy", { copyId: "copy-real", folded: false, split: false, from: { homeId: "home2", quantity: 1 } });
+    calls.answers.set("collection:removeCopy", { removed: { cardId: "card1", details: { quantity: 1, homeId: "home2" } } });
+    const held = [a.updateCopy(line, { notes: "Show pickup" }), a.setTrade(line, true), a.placeCopy(line, 4), a.removeCopy(line)];
+    await act(async () => {});
+    expect(writes()).toHaveLength(1);
+    land({ copyId: "copy-real", folded: false, split: true, from: { homeId: "home1", quantity: 1 } });
+    await act(async () => {
+      await first;
+      await Promise.all(held);
+    });
+    expect(writes().slice(1).map((w) => [w.name, (w.args as { copyId: string }).copyId])).toEqual([
+      ["collection:updateCopy", "copy-real"],
+      ["collection:setTrade", "copy-real"],
+      ["collection:placeCopy", "copy-real"],
+      ["collection:removeCopy", "copy-real"],
+    ]);
+  });
+
+  it("when the write that drew the line is refused, a write on it sends nothing and says so in plain words", async () => {
+    const { a, first, drawn, refuse } = splitOne();
+    const trade = a.setTrade({ ...COPY, id: drawn._id, homeId: "home2", quantity: 1 }, true);
+    refuse(new Error("refused"));
+    await expect(first).rejects.toThrow("refused");
+    await expect(trade).rejects.toThrow(UNSAVED_LINE_MESSAGE);
+    expect(writes().map((w) => w.name)).toEqual(["collection:moveCopy"]);
+  });
+
+  it("gives a write's drawn line the same placeholder every time Convex replays its optimistic update", () => {
+    const { optimisticIdFor } = __test;
+    const args = { copyId: "copy1" };
+    const id = optimisticIdFor(args);
+    expect(optimisticIdFor(args)).toBe(id);
+    expect(optimisticIdFor(args, 1)).not.toBe(id);
+    expect(optimisticIdFor({ copyId: "copy1" })).not.toBe(id);
   });
 });
 

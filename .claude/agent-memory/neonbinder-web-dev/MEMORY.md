@@ -151,5 +151,5 @@
 - [Card fixtures insert through insertTestCard](reference_card_fixtures_insert_through_insert_test_card.md) — required listingTitle/sportId; raw test inserts fail at runtime; t.run drops closures
 - [No timeout binary empties a grep gate](reference_no_timeout_binary_empties_a_grep_gate.md) — `timeout` is missing on macOS; `timeout … tsc | grep` is a false green; tee to a file, check line count
 - [Keep counts per scope, not global](reference_keep_counts_per_scope_not_global.md) — admin-invalidated count on the per-set row (clear + bounded recount), never one owner-wide counter
-- [Optimistic id swap remounts id-keyed rows](reference_optimistic_id_swap_remounts_id_keyed_rows.md) — key line rows/panels via final/lineKeys useLineKeys; post a write's status only after it resolves
+- [Optimistic id swap remounts id-keyed rows](reference_optimistic_id_swap_remounts_id_keyed_rows.md) — key rows via useLineKeys; ids replay per args (optimisticIdFor); writes await landedCopy
 - [Scroll on focus swallows mouse clicks](reference_scroll_on_focus_swallows_mouse_clicks.md) — focus fires between mousedown/mouseup; gate scroll-on-focus on :focus-visible (binders/trayClear)

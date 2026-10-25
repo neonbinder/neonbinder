@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { Input } from "@/components/primitives/Input";
 import { CopyList } from "./CardDetail";
 import type { Container, Copy } from "./data/types";
 import { carryLineKeys, NO_LINE_KEYS, OPTIMISTIC_ID_PREFIX } from "./lineKeys";
@@ -117,5 +119,37 @@ describe("CopyList through the id swap", () => {
     const still = region().getByRole("form", { name: "Move Raw" });
     expect(still).toBe(panel);
     expect((within(still).getByRole("combobox", { name: "Move to" }) as HTMLSelectElement).value).toBe("binder-pc");
+  });
+
+  it("an Edit form open on a drawn line stays open, with what was typed, when the server's id arrives", () => {
+    /** The drawer's part: it holds which line's form is open, by the key CopyList hands it. */
+    function Editing({ copies }: { copies: Copy[] }) {
+      const [editing, setEditing] = useState<{ key: string } | null>(null);
+      return (
+        <MemoryRouter>
+          <CopyList
+            name="#1 Shohei Ohtani"
+            copies={copies}
+            names={copies.map((c) => (c.homeId === "main" ? "Raw ×2" : "Raw"))}
+            editing={editing}
+            renderEditor={(copy) => <Input label={`Notes for ${copy.homeName}`} defaultValue="" />}
+            onEdit={(_copy, key) => setEditing({ key })}
+            onRemove={() => {}}
+          />
+        </MemoryRouter>
+      );
+    }
+    const { rerender } = render(<Editing copies={[LINE, DRAWN]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit #1 Shohei Ohtani, Raw" }));
+    const notes = screen.getByRole("textbox", { name: "Notes for Ohtani rainbow" }) as HTMLInputElement;
+    fireEvent.change(notes, { target: { value: "From the card show" } });
+
+    act(() => rerender(<Editing copies={[LINE, LANDED]} />));
+
+    const still = screen.getByRole("textbox", { name: "Notes for Ohtani rainbow" }) as HTMLInputElement;
+    expect(still).toBe(notes);
+    expect(still.isConnected).toBe(true);
+    expect(still.value).toBe("From the card show");
+    expect(still.closest("li")?.getAttribute("data-copy-editor")).toBe("copy-9");
   });
 });
