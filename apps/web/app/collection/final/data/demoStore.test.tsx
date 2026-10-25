@@ -637,7 +637,8 @@ describe("containers through the contract", () => {
     await act(async () => {
       moved = (await result.current.actions.deleteContainer(show)).moved;
     });
-    expect(moved).toBe(show.count!.lines);
+    // Cards, not line items: what the delete notice counts.
+    expect(moved).toBe(show.count!.copies);
     expect(result.current.containers!.some((c) => c.id === SHOW_BOX_ID)).toBe(false);
     const main = result.current.containers!.find((c) => c.id === MAIN_BINDER_ID)!;
     expect(main.count!.lines).toBeGreaterThanOrEqual(moved);
@@ -673,7 +674,7 @@ describe("the inventory side (NEO-364)", () => {
     expect(items.map((i) => i.card.id).sort()).toEqual([...heldInBoxes].sort());
     const entry = items.find((i) => i.card.id === boxCardId)!;
     expect(entry.quantity).toBe(inShow.filter((c) => c.cardId === boxCardId).reduce((n, c) => n + c.quantity, 0));
-    expect(entry.boxes).toEqual([{ boxId: SHOW_BOX_ID, quantity: entry.quantity }]);
+    expect(entry.boxes).toEqual([{ boxId: SHOW_BOX_ID, quantity: entry.quantity, gradedQuantity: entry.gradedQuantity }]);
     expect(result.current).toMatchObject({ goneCardIds: [], truncated: false });
   });
 

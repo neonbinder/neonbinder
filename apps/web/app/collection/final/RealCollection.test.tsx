@@ -260,11 +260,13 @@ function makeStore({
           quantity: mine.reduce((n, c) => n + c.quantity, 0),
           lines: mine.length,
           graded: mine.some((c) => !!c.graded),
+          gradedQuantity: mine.reduce((n, c) => n + (c.graded ? c.quantity : 0), 0),
           upForTrade: mine.some((c) => c.upForTrade),
           lastUpdated: 1,
           boxes: [...new Set(mine.map((c) => c.homeId))].map((boxId) => ({
             boxId,
             quantity: mine.filter((c) => c.homeId === boxId).reduce((n, c) => n + c.quantity, 0),
+            gradedQuantity: mine.filter((c) => c.homeId === boxId).reduce((n, c) => n + (c.graded ? c.quantity : 0), 0),
           })),
         };
       });

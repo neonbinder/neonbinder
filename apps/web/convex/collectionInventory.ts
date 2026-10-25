@@ -133,12 +133,16 @@ export const inventoryCardValidator = v.object({
   lines: v.number(),
   /** True when any box line of the card is graded (a slab). */
   graded: v.boolean(),
+  /** Physical copies over the card's graded box lines (slabs): "Slabs only" counts these. */
+  gradedQuantity: v.number(),
   /** True when any box line of the card is flagged Up for Trade. */
   upForTrade: v.boolean(),
   /** The newest `lastUpdated` of the card's box lines ("Added"). */
   lastUpdated: v.number(),
-  /** Every box it sits in (Unsorted included), in shelf order, with its copies there. */
-  boxes: v.array(v.object({ boxId: v.id("collectionContainers"), quantity: v.number() })),
+  /** Every box it sits in (Unsorted included), in shelf order, with its copies (and slabs) there. */
+  boxes: v.array(
+    v.object({ boxId: v.id("collectionContainers"), quantity: v.number(), gradedQuantity: v.number() }),
+  ),
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -503,18 +507,23 @@ export const inventoryCards = query({
             quantity: 0,
             lines: 0,
             graded: false,
+            gradedQuantity: 0,
             upForTrade: false,
             lastUpdated: 0,
             boxes: [],
           } satisfies Entry);
         entry.quantity += row.quantity;
         entry.lines += 1;
+        const slabs = row.grading ? row.quantity : 0;
         if (row.grading) entry.graded = true;
+        entry.gradedQuantity += slabs;
         if (row.upForTrade === true) entry.upForTrade = true;
         if (row.lastUpdated > entry.lastUpdated) entry.lastUpdated = row.lastUpdated;
         const inBox = entry.boxes.find((b) => b.boxId === box._id);
-        if (inBox) inBox.quantity += row.quantity;
-        else entry.boxes.push({ boxId: box._id, quantity: row.quantity });
+        if (inBox) {
+          inBox.quantity += row.quantity;
+          inBox.gradedQuantity += slabs;
+        } else entry.boxes.push({ boxId: box._id, quantity: row.quantity, gradedQuantity: slabs });
         byCard.set(row.cardId, entry);
       }
       if (truncated) break;

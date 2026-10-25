@@ -389,18 +389,23 @@ function inventoryCardsOf(state: CollectionState, limit: number, boxId: string |
       quantity: 0,
       lines: 0,
       graded: false,
+      gradedQuantity: 0,
       upForTrade: false,
       lastUpdated: 0,
       boxes: [] as InventoryBoxCount[],
     };
+    const slabs = copy.graded ? copy.quantity : 0;
     item.quantity += copy.quantity;
     item.lines += 1;
+    item.gradedQuantity += slabs;
     if (copy.graded) item.graded = true;
     if (copy.upForTrade) item.upForTrade = true;
     item.lastUpdated = Math.max(item.lastUpdated, at);
     const box = item.boxes.find((b) => b.boxId === copy.homeId);
-    if (box) box.quantity += copy.quantity;
-    else item.boxes.push({ boxId: copy.homeId, quantity: copy.quantity });
+    if (box) {
+      box.quantity += copy.quantity;
+      box.gradedQuantity += slabs;
+    } else item.boxes.push({ boxId: copy.homeId, quantity: copy.quantity, gradedQuantity: slabs });
     held.set(copy.cardId, item);
   }
   const ranked = [...held.entries()].sort(([, a], [, b]) => b.lastUpdated - a.lastUpdated);

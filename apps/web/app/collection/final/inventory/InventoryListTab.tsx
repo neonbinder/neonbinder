@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { ArchiveBoxIcon } from "@heroicons/react/24/outline";
-import { ArrowsRightLeftIcon } from "@heroicons/react/20/solid";
+import { AdjustmentsHorizontalIcon, ArchiveBoxIcon, BookOpenIcon } from "@heroicons/react/24/outline";
+import { ArrowsRightLeftIcon, ChevronDownIcon } from "@heroicons/react/20/solid";
 import { Input } from "@/components/primitives/Input";
 import Chip from "../../prototypes/p3/Chip";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT } from "../../prototypes/p3/classes";
@@ -9,10 +9,19 @@ import { useRoving } from "../../prototypes/p3/hooks";
 import { compareNumbers } from "../../prototypes/p1/ui";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
 import { cardLabel, compareCards, playerNames, setAndVariant, teamNames } from "../data/labels";
-import { boxesOf, systemContainer, useContainers, useInventoryCards, useSearch } from "../data/store";
-import type { Container, ContainerCount, InventoryCards, InventoryItem } from "../data/types";
+import {
+  boxesOf,
+  systemContainer,
+  useCards,
+  useContainerCopies,
+  useContainers,
+  useInventoryCards,
+  useSearch,
+} from "../data/store";
+import type { Card, Container, ContainerCount, ContainerKind, Copy, InventoryCards, InventoryItem } from "../data/types";
 import { usePushParams } from "../mode";
 import { usePageApi } from "../pageApi";
+import { comparePlayerNames } from "../playerName";
 import { TARGET_BOX_PARAM } from "./targetBox";
 
 /**
@@ -20,15 +29,23 @@ import { TARGET_BOX_PARAM } from "./targetBox";
  * everything the collector has for sale, one item per card across every
  * box, with how many and which boxes it sits in.
  *
- * The rail: All boxes, Unsorted, Up for Trade (drawn as a box, box copies
- * only), then the collector's boxes as made. A rail pick opens that box's
- * list: `box=<id>` on the URL, pushed, so Back steps back through the boxes
- * one at a time; an unknown id reads as All boxes. Sort, the sport filter, the Only show
- * chips and the search are local state, as on My Cards' shelf.
+ * The rail: All boxes, Unsorted, Up for Trade, then the collector's boxes as
+ * made. A rail pick opens that stop's list: `box=<id>` on the URL, pushed, so
+ * Back steps back through the boxes one at a time; an unknown id reads as All
+ * boxes. Sort, the sport filter, the Only show chips and the search are local
+ * state, as on My Cards' shelf. On a phone they fold behind a Filters button
+ * so the first card is on screen.
  *
  * Hard line: every count and item here is a box copy (`useInventoryCards`),
- * never a binder copy. The headline ("42 cards for sale in 3 boxes") is the
- * boxes' own counts off the shelf, so it does not wait for the list.
+ * never a binder copy, with one exception: Up for Trade is one query across
+ * both sides (Jason: trade "is a query against both"), so its stop lists the
+ * whole trade pile, a binder's copies tagged "In <binder>". The headline
+ * ("42 cards for sale in 3 boxes") is the boxes' own counts off the shelf, so
+ * it does not wait for the list; it counts only boxes that hold a card.
+ *
+ * Slabs only counts and tags the graded copies alone: a PSA 9 and two raw in
+ * one box read ×1, Slab. Without it, an item that mixes the two says how many
+ * of its copies are slabs.
  *
  * The store reads a bounded number of box lines in one go: when it stops
  * short (`truncated`) the list says so and points at the rail, which reads
@@ -40,6 +57,27 @@ type Sort = "set" | "number" | "player" | "team" | "added" | "box";
 const PAGE = 50;
 /** Cards asked of the store at least: filters may hide much of what loads. */
 const FETCH_FLOOR = 200;
+
+/** Where some of a card sits: a box, or (on the trade pile only) a binder. */
+interface Place {
+  id: string;
+  name: string;
+  kind: ContainerKind;
+  quantity: number;
+  /** Of `quantity`, the graded copies (slabs). */
+  slabs: number;
+}
+
+/** One card on the list, from either source, before Slabs only narrows it. */
+interface Row {
+  card: Card;
+  quantity: number;
+  slabs: number;
+  upForTrade: boolean;
+  /** Ms since epoch, for Newest first. */
+  added: number;
+  places: Place[];
+}
 
 /** "1 card", "12 cards". */
 function cardsText(n: number): string {
@@ -59,6 +97,84 @@ function countDetail(count: ContainerCount | null): string {
 /** The cards that `useInventoryCards` could not find in the catalog. */
 function goneCount(inv: InventoryCards | undefined): number {
   return inv?.goneCardIds.length ?? 0;
+}
+
+/** A box item as a list row. */
+function rowOfItem(it: InventoryItem, boxName: ReadonlyMap<string, string>): Row {
+  return {
+    card: it.card,
+    quantity: it.quantity,
+    slabs: it.gradedQuantity,
+    upForTrade: it.upForTrade,
+    added: it.lastUpdated,
+    places: it.boxes
+      .filter((b) => b.quantity > 0)
+      .map((b) => ({
+        id: b.boxId,
+        name: boxName.get(b.boxId) ?? "A box",
+        kind: "box" as const,
+        quantity: b.quantity,
+        slabs: b.gradedQuantity,
+      })),
+  };
+}
+
+/**
+ * The trade pile as list rows: one per card, every flagged copy of it
+ * together, in a binder or a box. Cards still loading are left out until
+ * they land; cards the catalog dropped are counted in `gone`.
+ */
+function rowsOfTrade(
+  copies: readonly Copy[],
+  cardIds: readonly string[],
+  cards: readonly (Card | null)[],
+  names: ReadonlyMap<string, Container>,
+): { rows: Row[]; gone: number } {
+  const byId = new Map<string, Card | null>(cardIds.map((id, i) => [id, cards[i] ?? null]));
+  const rows = new Map<string, Row>();
+  const gone = new Set<string>();
+  copies.forEach((copy, i) => {
+    if (copy.quantity <= 0) return;
+    const card = byId.get(copy.cardId);
+    if (!card) {
+      if (card === null) gone.add(copy.cardId);
+      return;
+    }
+    const day = Date.parse(copy.acquiredAt);
+    const added = (Number.isFinite(day) ? day : 0) + i;
+    const slabs = copy.graded ? copy.quantity : 0;
+    const row = rows.get(card.id) ?? { card, quantity: 0, slabs: 0, upForTrade: true, added: 0, places: [] };
+    row.quantity += copy.quantity;
+    row.slabs += slabs;
+    row.added = Math.max(row.added, added);
+    const home = names.get(copy.homeId);
+    const kind: ContainerKind = home?.kind ?? copy.homeKind;
+    const place = row.places.find((p) => p.id === copy.homeId);
+    if (place) {
+      place.quantity += copy.quantity;
+      place.slabs += slabs;
+    } else {
+      row.places.push({
+        id: copy.homeId,
+        name: home?.name ?? copy.homeName ?? (kind === "box" ? "A box" : "A binder"),
+        kind,
+        quantity: copy.quantity,
+        slabs,
+      });
+    }
+    rows.set(card.id, row);
+  });
+  return { rows: [...rows.values()], gone: gone.size };
+}
+
+/** Slabs only: the row counted by its graded copies alone, or null when it has none. */
+function slabsOf(row: Row): Row | null {
+  if (row.slabs <= 0) return null;
+  return {
+    ...row,
+    quantity: row.slabs,
+    places: row.places.filter((p) => p.slabs > 0).map((p) => ({ ...p, quantity: p.slabs })),
+  };
 }
 
 export default function InventoryListTab() {
@@ -81,11 +197,20 @@ export default function InventoryListTab() {
   const [forTrade, setForTrade] = useState(false);
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersId = useId();
   const list = useRef<HTMLUListElement>(null);
 
   const fetchLimit = Math.max(FETCH_FLOOR, limit * 2);
   const inv = useInventoryCards({ limit: fetchLimit, ...(pickedBox ? { boxId: pickedBox.id } : {}) });
-  const items = inv?.items;
+  // The trade pile: binder and box copies alike, read only while its stop is open.
+  const tradePile = useContainerCopies(onTrade && trade ? trade.id : null, { limit: fetchLimit });
+  const tradeCardIds = useMemo(
+    () => (tradePile ? [...new Set(tradePile.copies.map((c) => c.cardId))] : null),
+    [tradePile],
+  );
+  const tradeCards = useCards(tradeCardIds);
+
   const found = useSearch(query);
   const matchIds = useMemo(
     () => (query.trim() && found ? new Set(found.cards.map((c) => c.id)) : null),
@@ -94,47 +219,64 @@ export default function InventoryListTab() {
 
   const boxOrder = useMemo(() => new Map(boxes.map((b, i) => [b.id, i])), [boxes]);
   const boxName = useMemo(() => new Map(boxes.map((b) => [b.id, b.name])), [boxes]);
-  const firstBox = (it: InventoryItem) =>
-    Math.min(...it.boxes.map((b) => boxOrder.get(b.boxId) ?? Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
+  const byId = useMemo(() => new Map((containers ?? []).map((c) => [c.id, c])), [containers]);
+
+  const tradeRows = useMemo(
+    () =>
+      onTrade && tradePile && tradeCardIds && tradeCards
+        ? rowsOfTrade(tradePile.copies, tradeCardIds, tradeCards, byId)
+        : undefined,
+    [onTrade, tradePile, tradeCardIds, tradeCards, byId],
+  );
+  const boxRows = useMemo(() => inv?.items.map((it) => rowOfItem(it, boxName)), [inv, boxName]);
+  const rows: Row[] | undefined = onTrade ? tradeRows?.rows : boxRows;
+
+  // Binders sort after every box; a box by its place on the shelf.
+  const firstPlace = (row: Row) =>
+    Math.min(
+      ...row.places.map((p) => (p.kind === "box" ? (boxOrder.get(p.id) ?? boxes.length) : boxes.length + 1)),
+      Number.MAX_SAFE_INTEGER,
+    );
 
   const sports = useMemo(() => {
     const out = new Map<string, string>();
-    for (const it of items ?? []) out.set(it.card.set.sport.id, it.card.set.sport.name);
+    for (const row of rows ?? []) out.set(row.card.set.sport.id, row.card.set.sport.name);
     if (sport && !out.has(sport)) out.set(sport, sport);
     return [...out.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-  }, [items, sport]);
+  }, [rows, sport]);
 
-  const shown = (items ?? [])
-    .filter((it) => !onTrade || it.upForTrade)
-    .filter((it) => !sport || it.card.set.sport.id === sport)
-    .filter((it) => !graded || it.graded)
-    .filter((it) => !dupes || it.quantity > 1)
-    .filter((it) => !forTrade || it.upForTrade)
-    .filter((it) => !matchIds || matchIds.has(it.card.id))
+  const shown = (rows ?? [])
+    .map((row) => (graded ? slabsOf(row) : row))
+    .filter((row): row is Row => row !== null)
+    .filter((row) => !sport || row.card.set.sport.id === sport)
+    .filter((row) => !dupes || row.quantity > 1)
+    .filter((row) => onTrade || !forTrade || row.upForTrade)
+    .filter((row) => !matchIds || matchIds.has(row.card.id))
     .sort((a, b) => {
       switch (sort) {
         case "number":
           return compareNumbers(a.card.cardNumber, b.card.cardNumber) || compareCards(a.card, b.card);
         case "player":
-          return (a.card.players[0]?.name ?? "").localeCompare(b.card.players[0]?.name ?? "") || compareCards(a.card, b.card);
+          return comparePlayerNames(a.card.players[0]?.name, b.card.players[0]?.name) || compareCards(a.card, b.card);
         case "team":
           return (a.card.teams[0]?.name ?? "").localeCompare(b.card.teams[0]?.name ?? "") || compareCards(a.card, b.card);
         case "added":
-          return b.lastUpdated - a.lastUpdated || compareCards(a.card, b.card);
+          return b.added - a.added || compareCards(a.card, b.card);
         case "box":
-          return firstBox(a) - firstBox(b) || compareCards(a.card, b.card);
+          return firstPlace(a) - firstPlace(b) || compareCards(a.card, b.card);
         default:
           return compareCards(a.card, b.card);
       }
     });
   const visible = shown.slice(0, limit);
-  const visibleIds = visible.map((it) => it.card.id);
+  const visibleIds = visible.map((row) => row.card.id);
   const roving = useRoving(list, visibleIds);
   const focusFirstNew = useFocusFirstNew(visibleIds, roving.focusKey);
-  const fetchedAll = !items || items.length < fetchLimit;
+  const fetchedAll = onTrade ? !tradePile?.truncated : !inv || inv.items.length < fetchLimit;
   const canShowMore = shown.length > visible.length || (!fetchedAll && visible.length === shown.length && shown.length > 0);
 
   // The headline: the boxes' own counts (Unsorted included), off the shelf.
+  // Only a box holding a card counts as one.
   const counted = containers !== undefined && boxes.every((b) => b.count !== null);
   const forSale = boxes.reduce((n, b) => n + (b.count?.copies ?? 0), 0);
   const boxesHolding = boxes.filter((b) => (b.count?.copies ?? 0) > 0).length;
@@ -150,20 +292,23 @@ export default function InventoryListTab() {
   };
 
   const title = picked ? picked.name : "Every box";
-  const copiesShown = shown.reduce((n, it) => n + it.quantity, 0);
+  const copiesShown = shown.reduce((n, row) => n + row.quantity, 0);
   const tally =
-    items === undefined
+    rows === undefined
       ? "Counting…"
       : shown.length === 0
         ? "No cards"
         : copiesShown === shown.length
           ? cardsText(copiesShown)
           : `${cardsText(copiesShown)}, ${shown.length.toLocaleString("en-US")} different`;
-  const filtered = !!sport || graded || dupes || forTrade || query.trim() !== "";
-  const gone = goneCount(inv);
+  // What the Filters button counts on a phone: everything that narrows the list.
+  const activeFilters = [query.trim() !== "", !!sport, graded, dupes, !onTrade && forTrade].filter(Boolean).length;
+  const filtered = activeFilters > 0;
+  const gone = onTrade ? (tradeRows?.gone ?? 0) : goneCount(inv);
+  const truncated = onTrade ? !!tradePile?.truncated : !!inv?.truncated;
 
   return (
-    <section aria-labelledby="inv-list-heading" className="space-y-4">
+    <section aria-labelledby="inv-list-heading" className="min-w-0 space-y-4">
       <div>
         <h2 id="inv-list-heading" className="text-xl font-bold text-ink">
           Everything for sale
@@ -185,9 +330,10 @@ export default function InventoryListTab() {
         )}
       </div>
 
-      <div className="flex flex-col gap-4 lg:flex-row">
+      <div className="flex min-w-0 flex-col gap-4 lg:flex-row">
         <nav aria-label="Boxes" className="relative min-w-0 lg:w-56 lg:shrink-0">
-          <ul className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
+          {/* Positioned, so the stops' screen-reader separators scroll with it instead of widening the page. */}
+          <ul className="relative flex max-w-full gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
             <RailItem
               active={!picked}
               onClick={() => pick(null)}
@@ -207,7 +353,7 @@ export default function InventoryListTab() {
                 active={onTrade}
                 onClick={() => pick(trade.id)}
                 name={trade.name}
-                detail="Trade bait in your boxes"
+                detail={countDetail(trade.count)}
                 tag="trade"
               />
             )}
@@ -234,68 +380,95 @@ export default function InventoryListTab() {
           </div>
           {picked?.description && <p className="mt-1 text-sm text-ink-2">{picked.description}</p>}
           {onTrade && (
-            <p className="mt-1 text-sm text-ink-2">Box cards you&apos;d swap. Trade bait in a binder stays on the collection side.</p>
+            <p className="mt-1 text-sm text-ink-2">Everything you&apos;d swap, from your binders and your boxes.</p>
           )}
 
-          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
-            <Input
-              label="Filter these cards"
-              placeholder="griffey refractor"
-              autoComplete="off"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setLimit(PAGE);
-              }}
-            />
-            <label className="block">
-              <span className={LABEL}>Sort by</span>
-              <select className={`${SELECT} w-full`} value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
-                <option value="set">Set and number</option>
-                <option value="number">Card number</option>
-                <option value="player">Player</option>
-                <option value="team">Team</option>
-                <option value="added">Newest first</option>
-                <option value="box">Box</option>
-              </select>
-            </label>
-            <label className="block">
-              <span className={LABEL}>Sport</span>
-              <select className={`${SELECT} w-full`} value={sport} onChange={(e) => setSport(e.target.value)}>
-                <option value="">Every sport</option>
-                {sports.map(([id, name]) => (
-                  <option key={id} value={id}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div role="group" aria-label="Only show" className="mt-3 flex flex-wrap gap-1.5">
-            <Chip pressed={graded} onClick={() => setGraded(!graded)}>
-              Slabs only
-            </Chip>
-            <Chip pressed={dupes} onClick={() => setDupes(!dupes)}>
-              Dupes only
-            </Chip>
-            {!onTrade && (
-              <Chip pressed={forTrade} onClick={() => setForTrade(!forTrade)}>
-                Up for trade
-              </Chip>
+          {/* Phone only: the filters fold away so the first card is on screen. */}
+          <button
+            type="button"
+            aria-expanded={filtersOpen}
+            aria-controls={filtersId}
+            aria-label={activeFilters > 0 ? `Filters, ${activeFilters} on` : "Filters"}
+            onClick={() => setFiltersOpen(!filtersOpen)}
+            className={`mt-3 inline-flex min-h-11 items-center gap-2 rounded-md border border-control px-3 text-sm font-bold text-ink hover:border-neon-blue-text sm:hidden ${FOCUS}`}
+          >
+            <AdjustmentsHorizontalIcon aria-hidden="true" className="h-4 w-4 text-neon-blue-text" />
+            Filters
+            {activeFilters > 0 && (
+              <span
+                aria-hidden="true"
+                className="inline-flex min-w-5 justify-center rounded-full bg-neon-blue px-1.5 text-xs tabular-nums text-on-neon-blue"
+              >
+                {activeFilters}
+              </span>
             )}
+            <ChevronDownIcon
+              aria-hidden="true"
+              className={`h-4 w-4 text-ink-3 transition-transform motion-reduce:transition-none ${filtersOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+
+          <div id={filtersId} className={filtersOpen ? "" : "max-sm:hidden"}>
+            <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+              <Input
+                label="Filter these cards"
+                placeholder="griffey refractor"
+                autoComplete="off"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setLimit(PAGE);
+                }}
+              />
+              <label className="block">
+                <span className={LABEL}>Sort by</span>
+                <select className={`${SELECT} w-full`} value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+                  <option value="set">Set and number</option>
+                  <option value="number">Card number</option>
+                  <option value="player">Player</option>
+                  <option value="team">Team</option>
+                  <option value="added">Newest first</option>
+                  <option value="box">Box</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className={LABEL}>Sport</span>
+                <select className={`${SELECT} w-full`} value={sport} onChange={(e) => setSport(e.target.value)}>
+                  <option value="">Every sport</option>
+                  {sports.map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div role="group" aria-label="Only show" className="mt-3 flex flex-wrap gap-1.5">
+              <Chip pressed={graded} onClick={() => setGraded(!graded)}>
+                Slabs only
+              </Chip>
+              <Chip pressed={dupes} onClick={() => setDupes(!dupes)}>
+                Dupes only
+              </Chip>
+              {!onTrade && (
+                <Chip pressed={forTrade} onClick={() => setForTrade(!forTrade)}>
+                  Up for trade
+                </Chip>
+              )}
+            </div>
           </div>
 
-          {items === undefined ? (
+          {rows === undefined ? (
             <div aria-busy="true" className="mt-4">
               <SkeletonBars rows={4} />
-              <LoadingNote>Flipping through the boxes…</LoadingNote>
+              <LoadingNote>{onTrade ? "Rounding up the trade bait…" : "Flipping through the boxes…"}</LoadingNote>
             </div>
           ) : visible.length === 0 ? (
             <div className="mt-6 rounded-lg border border-dashed border-rule-strong p-6 text-center text-sm text-ink-2">
-              {items.length > 0 && filtered ? (
+              {rows.length > 0 && filtered ? (
                 "Nothing here matches. Loosen a filter."
               ) : onTrade ? (
-                "No box cards up for trade. Flag one from its Details."
+                "Nothing up for trade yet. Flag a card from its Details."
               ) : picked ? (
                 "Empty box. Fill it from Checklists, or Sell a card into it from its Details."
               ) : (
@@ -315,16 +488,17 @@ export default function InventoryListTab() {
               onFocus={roving.onFocus}
               className="mt-4 divide-y divide-rule overflow-hidden rounded-lg border border-rule-strong bg-raised shadow-offset"
             >
-              {visible.map((it) => (
+              {visible.map((row) => (
                 <ItemRow
-                  key={it.card.id}
-                  item={it}
-                  boxName={boxName}
-                  tabIndex={roving.tabIndexFor(it.card.id)}
+                  key={row.card.id}
+                  row={row}
+                  slabsOnly={graded}
+                  showTrade={!onTrade}
+                  tabIndex={roving.tabIndexFor(row.card.id)}
                   onOpen={() =>
-                    api.openCard(it.card.id, {
+                    api.openCard(row.card.id, {
                       list: visibleIds,
-                      seed: it.card,
+                      seed: row.card,
                       ...(pickedBox ? { binderId: pickedBox.id } : {}),
                     })
                   }
@@ -333,18 +507,24 @@ export default function InventoryListTab() {
             </ul>
           )}
 
-          {inv?.truncated && (
+          {truncated && (
             <p className="mt-3 text-sm text-ink-3">
-              {pickedBox
-                ? "That's a lot of cardboard. This list stops short of the whole box; Show more digs deeper."
-                : "That's a lot of cardboard. This list stops short of every box; pick one on the rail to see all of it."}
+              {onTrade
+                ? "That's a lot of trade bait. This list stops short of the whole pile; Show more digs deeper."
+                : pickedBox
+                  ? "That's a lot of cardboard. This list stops short of the whole box; Show more digs deeper."
+                  : "That's a lot of cardboard. This list stops short of every box; pick one on the rail to see all of it."}
             </p>
           )}
           {gone > 0 && (
             <p className="mt-3 text-sm text-ink-3">
-              {gone === 1
-                ? "1 card in your boxes isn't in the catalog anymore. It still counts in its box."
-                : `${gone} cards in your boxes aren't in the catalog anymore. They still count in their boxes.`}
+              {onTrade
+                ? gone === 1
+                  ? "1 card up for trade isn't in the catalog anymore. It still counts on the pile."
+                  : `${gone} cards up for trade aren't in the catalog anymore. They still count on the pile.`
+                : gone === 1
+                  ? "1 card in your boxes isn't in the catalog anymore. It still counts in its box."
+                  : `${gone} cards in your boxes aren't in the catalog anymore. They still count in their boxes.`}
             </p>
           )}
           {canShowMore && (
@@ -389,8 +569,8 @@ function useFocusFirstNew(ids: readonly string[], focusKey: (key: string) => voi
 
 /**
  * A rail stop, drawn as a box: its name, what it holds, and a Trade tag on
- * the trade pile. Its name reads "Unsorted, 3 cards" / "Up for Trade, Trade
- * bait in your boxes" (the tag is hidden from it).
+ * the trade pile. Its name reads "Unsorted, 3 cards" / "Up for Trade, 4
+ * cards" (the tag is hidden from it).
  */
 function RailItem({
   active,
@@ -411,7 +591,7 @@ function RailItem({
         type="button"
         aria-current={active ? "true" : undefined}
         onClick={onClick}
-        className={`flex min-h-11 w-48 items-start gap-2 rounded-md border border-b-4 px-3 py-2 text-left lg:w-full ${FOCUS} ${
+        className={`relative flex min-h-11 w-48 items-start gap-2 rounded-md border border-b-4 px-3 py-2 text-left lg:w-full ${FOCUS} ${
           active
             ? "border-neon-yellow-text bg-neon-yellow/10 text-ink shadow-[0_0_12px_2px_rgb(255_230_0/calc(0.2*var(--glow)))]"
             : "border-rule text-ink-2 hover:border-control"
@@ -441,34 +621,49 @@ function RailItem({
 }
 
 /**
- * One card for sale: how many (the yellow tag), what it is, and every box it
- * sits in. The whole row is one button that opens the card's Details; the
- * list is one Tab stop and ↑ ↓ walk it.
+ * The slab tag a row wears, or null: "Slab" / "Slabs" when every copy it
+ * counts is graded (always so under Slabs only), "1 slab" / "2 slabs" when
+ * it mixes slabs and raw.
+ */
+function slabTag(row: Row, slabsOnly: boolean): string | null {
+  if (row.slabs <= 0) return null;
+  if (slabsOnly || row.slabs >= row.quantity) return row.quantity === 1 ? "Slab" : "Slabs";
+  return `${row.slabs} ${row.slabs === 1 ? "slab" : "slabs"}`;
+}
+
+/**
+ * One card for sale (or, on the trade pile, up for trade): how many (the
+ * yellow tag), what it is, and every place it sits. The whole row is one
+ * button that opens the card's Details; the list is one Tab stop and ↑ ↓
+ * walk it.
  */
 function ItemRow({
-  item,
-  boxName,
+  row,
+  slabsOnly,
+  showTrade,
   tabIndex,
   onOpen,
 }: {
-  item: InventoryItem;
-  boxName: ReadonlyMap<string, string>;
+  row: Row;
+  slabsOnly: boolean;
+  /** Tag a copy up for trade (off on the trade pile itself, where every copy is). */
+  showTrade: boolean;
   tabIndex: number;
   onOpen: () => void;
 }) {
-  const { card, quantity } = item;
-  const places = item.boxes
-    .filter((b) => b.quantity > 0)
-    .map((b) => ({ id: b.boxId, name: boxName.get(b.boxId) ?? "A box", quantity: b.quantity }));
+  const { card, quantity, places } = row;
+  const said = (p: Place) => (p.kind === "binder" ? `In ${p.name}` : p.name);
   const where =
     places.length === 1
       ? `in ${places[0].name}`
       : places.map((p) => `${p.quantity} in ${p.name}`).join(", ");
+  const slab = slabTag(row, slabsOnly);
+  const trade = showTrade && row.upForTrade;
   const players = playerNames(card);
   const teams = teamNames(card);
   // Read the way it looks: the "×N" tag first, then the card, then its tags.
-  const label = `×${quantity} ${cardLabel(card)}, ${where}${item.graded ? ", slab" : ""}${
-    item.upForTrade ? ", up for trade" : ""
+  const label = `×${quantity} ${cardLabel(card)}, ${where}${slab ? `, ${slab.toLowerCase()}` : ""}${
+    trade ? ", up for trade" : ""
   }`;
   return (
     <li>
@@ -498,14 +693,16 @@ function ItemRow({
           </span>
         </span>
         <span aria-hidden="true" className="flex shrink-0 flex-wrap justify-end gap-1 max-sm:basis-full max-sm:justify-start max-sm:pl-[3.25rem]">
-          {item.graded && <span className="rounded border border-control px-1 text-xs text-ink-2">Slab</span>}
-          {item.upForTrade && (
-            <span className="rounded border border-neon-green-text px-1 text-xs text-neon-green-text">Up for trade</span>
-          )}
+          {slab && <span className="rounded border border-control px-1 text-xs text-ink-2">{slab}</span>}
+          {trade && <span className="rounded border border-neon-green-text px-1 text-xs text-neon-green-text">Up for trade</span>}
           {places.map((p) => (
             <span key={p.id} className="inline-flex items-center gap-1 rounded border border-rule-strong px-1.5 text-xs text-ink-2">
-              <ArchiveBoxIcon className="h-3 w-3 text-neon-yellow-text" />
-              {p.name}
+              {p.kind === "binder" ? (
+                <BookOpenIcon className="h-3 w-3 text-neon-blue-text" />
+              ) : (
+                <ArchiveBoxIcon className="h-3 w-3 text-neon-yellow-text" />
+              )}
+              {said(p)}
               {places.length > 1 || p.quantity !== quantity ? <span className="tabular-nums text-ink-3">×{p.quantity}</span> : null}
             </span>
           ))}

@@ -6,7 +6,8 @@ import type { ReactNode } from "react";
 import FinalCollectionPage from "../FinalCollectionPage";
 import { DemoCollectionProvider } from "../data/demoStore";
 import { CollectionStoreContext, useCollectionStore } from "../data/store";
-import type { InventoryCards } from "../data/types";
+import type { ContainerCopies, InventoryCards, InventoryItem } from "../data/types";
+import { comparePlayerNames } from "../playerName";
 
 /**
  * NEO-364 (D13) — the Inventory list on the demo store: the rail, sort,
@@ -28,17 +29,27 @@ function Probe() {
   );
 }
 
-/** The demo store with the Inventory list's answer replaced by `change(real answer)`. */
-function Changed({ change, children }: { change: (inv: InventoryCards) => InventoryCards; children: ReactNode }) {
+type Change = (inv: InventoryCards) => InventoryCards;
+type TradeChange = (pile: ContainerCopies) => ContainerCopies;
+
+/** The demo store with the Inventory list's answer (and the trade pile's) replaced by `change(real answer)`. */
+function Changed({ change, trade, children }: { change?: Change; trade?: TradeChange; children: ReactNode }) {
   const base = useCollectionStore();
-  const data = { ...base.data, useInventoryCards: (o?: Parameters<typeof base.data.useInventoryCards>[0]) => {
-    const inv = base.data.useInventoryCards(o);
-    return inv ? change(inv) : inv;
-  } };
+  const data = {
+    ...base.data,
+    useInventoryCards: (o?: Parameters<typeof base.data.useInventoryCards>[0]) => {
+      const inv = base.data.useInventoryCards(o);
+      return inv && change ? change(inv) : inv;
+    },
+    useContainerCopies: (id: Parameters<typeof base.data.useContainerCopies>[0], o?: Parameters<typeof base.data.useContainerCopies>[1]) => {
+      const pile = base.data.useContainerCopies(id, o);
+      return pile && trade && id === "binder-trade-bait" ? trade(pile) : pile;
+    },
+  };
   return <CollectionStoreContext.Provider value={{ ...base, data }}>{children}</CollectionStoreContext.Provider>;
 }
 
-function renderList(start = "/inventory", change?: (inv: InventoryCards) => InventoryCards) {
+function renderList(start = "/inventory", change?: Change, trade?: TradeChange) {
   const page = (
     <>
       <FinalCollectionPage surface="inventory" />
@@ -52,7 +63,15 @@ function renderList(start = "/inventory", change?: (inv: InventoryCards) => Inve
           <Route
             path="/inventory"
             element={
-              <DemoCollectionProvider>{change ? <Changed change={change}>{page}</Changed> : page}</DemoCollectionProvider>
+              <DemoCollectionProvider>
+                {change || trade ? (
+                  <Changed change={change} trade={trade}>
+                    {page}
+                  </Changed>
+                ) : (
+                  page
+                )}
+              </DemoCollectionProvider>
             }
           />
         </Routes>
@@ -107,7 +126,7 @@ describe("the Inventory list", () => {
       const stops: [RegExp, number][] = [
         [/^All boxes\s*,\s*5 cards$/, 0],
         [/^Unsorted\s*,\s*0 cards$/, 1],
-        [/^Up for Trade\s*,\s*Trade bait in your boxes$/, 2],
+        [/^Up for Trade\s*,\s*\d+ cards?$/, 2],
         [/^Show box\s*,\s*5 cards$/, 3],
       ];
       for (const [name, i] of stops) expect(rail().getByRole("button", { name })).toBe(buttons[i]);
@@ -150,20 +169,37 @@ describe("the Inventory list", () => {
       expect(hasItems()).toBe(false);
     });
 
-    it("Up for Trade lists box cards up for trade only, hides its own chip, and says binder trade bait stays away", () => {
+    it("Up for Trade lists the whole trade pile, binder copies too (tagged In <binder>), and hides its own chip", () => {
       renderList("/inventory?tab=cards&box=binder-trade-bait");
-      expect(screen.getByText(/Trade bait in a binder stays on the collection side/)).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 3, name: "Up for Trade" })).toBeTruthy();
+      expect(screen.getByText("Everything you'd swap, from your binders and your boxes.")).toBeTruthy();
+      expect(screen.queryByText(/stays on the collection side/)).toBeNull();
       expect(within(screen.getByRole("group", { name: "Only show" })).queryByRole("button", { name: "Up for trade" })).toBeNull();
-      expect(screen.getByText("No box cards up for trade. Flag one from its Details.")).toBeTruthy();
+      const labels = items();
+      expect(labels.length).toBeGreaterThan(0);
+      // The seed's trade bait lives in binders, never for sale: each says where.
+      expect(labels.every((l) => /, (\d+ )?in [^,]+/.test(l))).toBe(true);
+      expect(screen.getAllByText(/^In /).length).toBeGreaterThan(0);
+      // The rail's count is the pile's: the same cards the list tallies.
+      const copies = labels.reduce((n, l) => n + Number(/^×(\d+)/.exec(l)![1]), 0);
+      expect(rail().getByRole("button", { name: /^Up for Trade/ }).textContent).toMatch(new RegExp(`${copies} cards?$`));
+    });
+
+    it("Up for Trade with nothing flagged says how to flag one", () => {
+      renderList("/inventory?tab=cards&box=binder-trade-bait", undefined, (pile) => ({ ...pile, copies: [] }));
+      expect(screen.getByText("Nothing up for trade yet. Flag a card from its Details.")).toBeTruthy();
     });
   });
 
   describe("sort, filters and search", () => {
-    it("sorts by player A to Z", () => {
+    it("sorts by player last name, then first", () => {
       renderList();
       sortBy("player");
       const sorted = names(items());
-      expect(sorted).toEqual([...sorted].sort((a, b) => a.localeCompare(b)));
+      expect(sorted).toEqual([...sorted].sort(comparePlayerNames));
+      // Caleb Williams files under W, after Paul Skenes, not before him.
+      expect(sorted.indexOf("Paul Skenes")).toBeGreaterThanOrEqual(0);
+      expect(sorted.indexOf("Paul Skenes")).toBeLessThan(sorted.indexOf("Caleb Williams"));
     });
 
     it("sorts by card number, team, newest and box without losing an item", () => {
@@ -208,6 +244,57 @@ describe("the Inventory list", () => {
       else expect(screen.getByText("Nothing here matches. Loosen a filter.")).toBeTruthy();
     });
 
+    describe("Slabs only counts the slabs alone", () => {
+      /** Yzerman's ×3 in the Show box made 1 PSA 9 + 2 raw. */
+      const oneSlab: Change = (inv) => ({
+        ...inv,
+        items: inv.items.map((it): InventoryItem =>
+          /Yzerman/.test(it.card.players[0]?.name ?? "")
+            ? { ...it, graded: true, gradedQuantity: 1, boxes: it.boxes.map((b) => ({ ...b, gradedQuantity: 1 })) }
+            : { ...it, graded: false, gradedQuantity: 0, boxes: it.boxes.map((b) => ({ ...b, gradedQuantity: 0 })) },
+        ),
+      });
+
+      it("without the filter, an item mixing a slab and raw copies says how many are slabs", () => {
+        renderList("/inventory", oneSlab);
+        const yzerman = items().find((l) => /Yzerman/.test(l))!;
+        expect(yzerman).toMatch(/^×3 .*, in Show box, 1 slab$/);
+        expect(screen.getByText("1 slab")).toBeTruthy();
+      });
+
+      it("with it, a PSA 9 + 2 raw in one box reads ×1, Slab, and the tally says 1 card", () => {
+        renderList("/inventory", oneSlab);
+        fireEvent.click(chip("Slabs only"));
+        expect(items()).toHaveLength(1);
+        expect(items()[0]).toMatch(/^×1 .*Yzerman.*, in Show box, slab$/);
+        expect(screen.getByText("Slab")).toBeTruthy();
+        expect(screen.getByRole("list", { name: "Every box, 1 card" })).toBeTruthy();
+      });
+
+      it("an item that is all slabs keeps its count and reads Slabs", () => {
+        renderList("/inventory", (inv) => ({
+          ...inv,
+          items: inv.items.map((it) => ({
+            ...it,
+            graded: true,
+            gradedQuantity: it.quantity,
+            boxes: it.boxes.map((b) => ({ ...b, gradedQuantity: b.quantity })),
+          })),
+        }));
+        expect(items().find((l) => /Yzerman/.test(l))).toMatch(/^×3 .*, slabs$/);
+        fireEvent.click(chip("Slabs only"));
+        expect(items()).toHaveLength(3);
+        expect(screen.getByRole("list", { name: "Every box, 5 cards, 3 different" })).toBeTruthy();
+      });
+
+      it("Dupes only under Slabs only counts the slabs, so a lone slab beside raw copies drops out", () => {
+        renderList("/inventory", oneSlab);
+        fireEvent.click(chip("Slabs only"));
+        fireEvent.click(chip("Dupes only"));
+        expect(screen.getByText("Nothing here matches. Loosen a filter.")).toBeTruthy();
+      });
+    });
+
     it("the filter box narrows to the cards the search finds", () => {
       renderList();
       filter("skenes");
@@ -225,10 +312,45 @@ describe("the Inventory list", () => {
     });
   });
 
+  describe("the Filters button (phones fold the filters behind it)", () => {
+    const button = () => screen.getByRole("button", { name: /^Filters/ });
+
+    it("is collapsed to start, controls the filters, and opens and closes them", () => {
+      renderList();
+      expect(button().getAttribute("aria-expanded")).toBe("false");
+      const panel = document.getElementById(button().getAttribute("aria-controls")!)!;
+      expect(within(panel).getByRole("textbox", { name: "Filter these cards" })).toBeTruthy();
+      expect(within(panel).getByRole("combobox", { name: "Sort by" })).toBeTruthy();
+      expect(within(panel).getByRole("group", { name: "Only show" })).toBeTruthy();
+      expect(panel.className).toMatch(/max-sm:hidden/);
+      fireEvent.click(button());
+      expect(button().getAttribute("aria-expanded")).toBe("true");
+      expect(panel.className).not.toMatch(/max-sm:hidden/);
+      fireEvent.click(button());
+      expect(button().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("counts the filters that are on, and never the sort", () => {
+      renderList();
+      expect(button().getAttribute("aria-expanded")).toBe("false");
+      expect(screen.getByRole("button", { name: "Filters" })).toBeTruthy();
+      sortBy("player");
+      expect(screen.getByRole("button", { name: "Filters" })).toBeTruthy();
+      fireEvent.click(chip("Dupes only"));
+      filter("yzerman");
+      expect(screen.getByRole("button", { name: "Filters, 2 on" })).toBeTruthy();
+    });
+  });
+
   describe("a list the store cut short, and a card the catalog dropped", () => {
     it("says the list stops short of every box and points at the rail", () => {
       renderList("/inventory", (inv) => ({ ...inv, truncated: true }));
       expect(screen.getByText(/stops short of every box; pick one on the rail/)).toBeTruthy();
+    });
+
+    it("on the trade pile it says Show more digs deeper", () => {
+      renderList("/inventory?tab=cards&box=binder-trade-bait", undefined, (pile) => ({ ...pile, truncated: true }));
+      expect(screen.getByText(/stops short of the whole pile; Show more digs deeper/)).toBeTruthy();
     });
 
     it("on one box it says Show more digs deeper", () => {

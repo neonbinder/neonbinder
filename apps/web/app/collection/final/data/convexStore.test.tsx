@@ -1329,7 +1329,7 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
     _id: id, cardNumber: id.slice(1), cardName: "", sortOrder: Number(id.slice(1)), variantId: "base1", features: [], players: [], teams: [], set: SET, variant: VARIANT,
   });
   const item = (cardId: string, over: object = {}) => ({
-    cardId, quantity: 2, lines: 1, graded: false, upForTrade: false, lastUpdated: 100, boxes: [{ boxId: UNSORTED, quantity: 2 }], ...over,
+    cardId, quantity: 2, lines: 1, graded: false, gradedQuantity: 0, upForTrade: false, lastUpdated: 100, boxes: [{ boxId: UNSORTED, quantity: 2, gradedQuantity: 0 }], ...over,
   });
   const hydrate = () =>
     loaded.set("collectionCatalog:cards", ({ cardIds }: { cardIds: string[] }) => cardIds.map((id) => (id === "gone" ? null : catalogCard(id))));
@@ -1340,11 +1340,11 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
   describe("useInventoryCards", () => {
     it("reads every box at once and hydrates the cards, newest first, with the boxes each sits in", () => {
       loaded.set("collectionContainers:list", SHELF);
-      loaded.set("collectionInventory:inventoryCards", { items: [item("k2"), item("k1", { upForTrade: true, graded: true })], goneCardIds: [], truncated: false });
+      loaded.set("collectionInventory:inventoryCards", { items: [item("k2"), item("k1", { upForTrade: true, graded: true, gradedQuantity: 1, boxes: [{ boxId: UNSORTED, quantity: 2, gradedQuantity: 1 }] })], goneCardIds: [], truncated: false });
       hydrate();
       const { result } = renderHook(() => useInventoryCards(), { wrapper });
       expect(result.current!.items.map((i) => i.card.id)).toEqual(["k2", "k1"]);
-      expect(result.current!.items[1]).toMatchObject({ quantity: 2, lines: 1, graded: true, upForTrade: true, boxes: [{ boxId: UNSORTED, quantity: 2 }] });
+      expect(result.current!.items[1]).toMatchObject({ quantity: 2, lines: 1, graded: true, gradedQuantity: 1, upForTrade: true, boxes: [{ boxId: UNSORTED, quantity: 2, gradedQuantity: 1 }] });
       expect(result.current).toMatchObject({ goneCardIds: [], truncated: false });
       expect(queried.filter((q) => q.name === "collectionInventory:inventoryCards").map((q) => q.args)).toContainEqual({});
     });
@@ -1373,7 +1373,7 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       hydrate();
       const { result } = renderHook(() => useInventoryCards({ boxId: BOX }), { wrapper });
       expect(result.current!.items.map((i) => [i.card.id, i.quantity, i.lines])).toEqual([["k1", 3, 2], ["k2", 1, 1]]);
-      expect(result.current!.items[0].boxes).toEqual([{ boxId: BOX, quantity: 3 }]);
+      expect(result.current!.items[0].boxes).toEqual([{ boxId: BOX, quantity: 3, gradedQuantity: 0 }]);
       expect(queried.filter((q) => q.name === "collectionInventory:inventoryCards").every((q) => q.args === "skip")).toBe(true);
     });
 
@@ -1477,7 +1477,7 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       expect((local.get("collection:copiesInContainer", { containerId: UNSORTED, paginationOpts: opts }) as { page: unknown[] }).page).toHaveLength(1);
       expect(local.get("collection:copiesInVariant", { variantId: "base1", side: "inventory" })).toHaveLength(1);
       expect(local.get("collection:copiesInVariant", { variantId: "base1", side: "collection" })).toHaveLength(0);
-      expect(inventory()).toEqual([expect.objectContaining({ cardId: "k1", quantity: 3, lines: 1, boxes: [{ boxId: UNSORTED, quantity: 3 }] })]);
+      expect(inventory()).toEqual([expect.objectContaining({ cardId: "k1", quantity: 3, lines: 1, gradedQuantity: 0, boxes: [{ boxId: UNSORTED, quantity: 3, gradedQuantity: 0 }] })]);
       expect(shelfCount(UNSORTED)).toEqual({ copies: 3, lines: 1 });
       expect(shelfCount("main")).toEqual({ copies: 0, lines: 0 });
     });
@@ -1581,7 +1581,10 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
 
     describe("patchInventory", () => {
       const change = (before: unknown[], after: unknown[]) => ({ cardId: "k1", variantId: "base1", isVariation: false, before, after }) as never;
-      const listed = (over: object = {}) => item("k1", { quantity: 3, lines: 2, boxes: [{ boxId: UNSORTED, quantity: 3 }], ...over });
+      const listed = (over: object = {}) => item("k1", { quantity: 3, lines: 2, boxes: [{ boxId: UNSORTED, quantity: 3, gradedQuantity: 0 }], ...over });
+      /** The listed item holding one slab among its 3 copies in Unsorted. */
+      const slabbed = (over: object = {}) =>
+        listed({ graded: true, gradedQuantity: 1, boxes: [{ boxId: UNSORTED, quantity: 3, gradedQuantity: 1 }], ...over });
 
       it("adds a new box line to the card's item and moves it to the front, newest first", async () => {
         local.set("collectionContainers:list", {}, SHELF);
@@ -1608,7 +1611,7 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
 
       it("counts the item afresh from the card's whole loaded rows, so its graded and trade marks clear with the line", async () => {
         local.set("collectionContainers:list", {}, SHELF);
-        local.set("collectionInventory:inventoryCards", {}, { items: [listed({ graded: true, upForTrade: true })], goneCardIds: [], truncated: false });
+        local.set("collectionInventory:inventoryCards", {}, { items: [slabbed({ upForTrade: true })], goneCardIds: [], truncated: false });
         const slab = row("slab", UNSORTED, { quantity: 1, grading: { grader: "PSA", grade: "9" }, upForTrade: true });
         const plain = row("p", UNSORTED, { quantity: 2 });
         patchInventory(await store(), change([slab], []), [plain] as never);
@@ -1617,10 +1620,19 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
 
       it("a graded line removed by a change with no whole rows loaded clears the item's graded mark", async () => {
         local.set("collectionContainers:list", {}, SHELF);
-        local.set("collectionInventory:inventoryCards", {}, { items: [listed({ graded: true })], goneCardIds: [], truncated: false });
+        local.set("collectionInventory:inventoryCards", {}, { items: [slabbed()], goneCardIds: [], truncated: false });
         const slab = row("slab", UNSORTED, { quantity: 1, grading: { grader: "PSA", grade: "9" } });
         patchInventory(await store(), change([slab], []), undefined);
         expect((inventory()[0] as unknown as { graded: boolean }).graded).toBe(false);
+        expect(inventory()[0]).toMatchObject({ gradedQuantity: 0, boxes: [{ boxId: UNSORTED, quantity: 2, gradedQuantity: 0 }] });
+      });
+
+      it("counts slabs apart from raw copies: a PSA 9 added beside 2 raw makes 1 slab of 3, in that box and overall", async () => {
+        local.set("collectionContainers:list", {}, SHELF);
+        local.set("collectionInventory:inventoryCards", {}, { items: [item("k1", { lastUpdated: 10 })], goneCardIds: [], truncated: false });
+        const slab = row("slab", UNSORTED, { quantity: 1, grading: { grader: "PSA", grade: "9" }, lastUpdated: 20 });
+        patchInventory(await store(), change([], [slab]), undefined);
+        expect(inventory()[0]).toMatchObject({ quantity: 3, graded: true, gradedQuantity: 1, boxes: [{ boxId: UNSORTED, quantity: 3, gradedQuantity: 1 }] });
       });
     });
   });

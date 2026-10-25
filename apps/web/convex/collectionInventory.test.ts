@@ -503,14 +503,37 @@ describe("inventoryCards", () => {
     expect(r.goneCardIds).toEqual([]);
     expect(r.items).toHaveLength(2);
     const g = r.items.find((i) => i.cardId === s.fx.gooden1)!;
-    expect(g).toMatchObject({ quantity: 10, lines: 4, graded: true, upForTrade: true });
+    expect(g).toMatchObject({ quantity: 10, lines: 4, graded: true, gradedQuantity: 1, upForTrade: true });
     expect(g.boxes).toEqual([
-      { boxId: s.sys.unsortedId, quantity: 4 },
-      { boxId: s.boxA, quantity: 4 },
-      { boxId: s.boxB, quantity: 2 },
+      { boxId: s.sys.unsortedId, quantity: 4, gradedQuantity: 0 },
+      { boxId: s.boxA, quantity: 4, gradedQuantity: 1 },
+      { boxId: s.boxB, quantity: 2, gradedQuantity: 0 },
     ]);
     const st = r.items.find((i) => i.cardId === s.fx.strawberry2)!;
-    expect(st).toMatchObject({ quantity: 1, lines: 1, graded: false, upForTrade: false, boxes: [{ boxId: s.boxB, quantity: 1 }] });
+    expect(st).toMatchObject({
+      quantity: 1,
+      lines: 1,
+      graded: false,
+      gradedQuantity: 0,
+      upForTrade: false,
+      boxes: [{ boxId: s.boxB, quantity: 1, gradedQuantity: 0 }],
+    });
+  });
+
+  test("counts slabs apart from raw copies: 1 PSA 9 + 2 raw in one box is gradedQuantity 1, there and overall", async () => {
+    const s = await setup();
+    await add(s, s.fx.gooden1, { homeId: s.boxA, quantity: 1, grading: { grader: "PSA", grade: "9" } });
+    await add(s, s.fx.gooden1, { homeId: s.boxA, quantity: 2 });
+    await add(s, s.fx.gooden1, { homeId: s.boxB, quantity: 1, grading: { grader: "BGS", grade: "9.5" } });
+    await add(s, s.fx.gooden1, { homeId: s.binder, quantity: 1, grading: { grader: "SGC", grade: "10" } });
+    const r = await s.me.query(api.collectionInventory.inventoryCards, {});
+    const g = r.items.find((i) => i.cardId === s.fx.gooden1)!;
+    // The binder slab is collection, never counted here.
+    expect(g).toMatchObject({ quantity: 4, lines: 3, graded: true, gradedQuantity: 2 });
+    expect(g.boxes).toEqual([
+      { boxId: s.boxA, quantity: 3, gradedQuantity: 1 },
+      { boxId: s.boxB, quantity: 1, gradedQuantity: 1 },
+    ]);
   });
 
   test("items are newest first by the card's newest box line", async () => {
@@ -538,7 +561,7 @@ describe("inventoryCards", () => {
     const r = await s.me.query(api.collectionInventory.inventoryCards, {});
     expect(r.items.map((i) => i.cardId)).toEqual([s.fx.gooden1]);
     expect(r.items[0]).toMatchObject({ quantity: 2, lines: 1, upForTrade: false });
-    expect(r.items[0].boxes).toEqual([{ boxId: s.boxA, quantity: 2 }]);
+    expect(r.items[0].boxes).toEqual([{ boxId: s.boxA, quantity: 2, gradedQuantity: 0 }]);
   });
 
   test("is empty for a collector with no boxes, and never shows another collector's lines", async () => {

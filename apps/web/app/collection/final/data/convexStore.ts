@@ -728,9 +728,10 @@ export const CONVEX_DATA: CollectionData = {
           quantity: item.quantity,
           lines: item.lines,
           graded: item.graded,
+          gradedQuantity: item.gradedQuantity,
           upForTrade: item.upForTrade,
           lastUpdated: item.lastUpdated,
-          boxes: item.boxes.map((b) => ({ boxId: b.boxId, quantity: b.quantity })),
+          boxes: item.boxes.map((b) => ({ boxId: b.boxId, quantity: b.quantity, gradedQuantity: b.gradedQuantity })),
         });
       }
       return { items, goneCardIds, truncated: raw.truncated || raw.items.length > limit };
@@ -912,13 +913,17 @@ function boxItems(rows: readonly RawCopy[], boxId: string): RawInventoryItem[] {
       quantity: 0,
       lines: 0,
       graded: false,
+      gradedQuantity: 0,
       upForTrade: false,
       lastUpdated: 0,
-      boxes: [{ boxId: row.homeId, quantity: 0 }],
+      boxes: [{ boxId: row.homeId, quantity: 0, gradedQuantity: 0 }],
     };
+    const slabs = row.grading ? row.quantity : 0;
     item.quantity += row.quantity;
     item.lines += 1;
     item.boxes[0].quantity += row.quantity;
+    item.boxes[0].gradedQuantity += slabs;
+    item.gradedQuantity += slabs;
     if (row.grading) item.graded = true;
     if (row.upForTrade === true) item.upForTrade = true;
     if (row.lastUpdated > item.lastUpdated) item.lastUpdated = row.lastUpdated;
@@ -1331,16 +1336,21 @@ function patchInventory(local: OptimisticLocalStore, change: Change, whole: read
     if (!value) continue;
     const old = value.items.find((i) => i.cardId === cardId);
     const item: RawInventoryItem = whole
-      ? { cardId, quantity: 0, lines: 0, graded: false, upForTrade: false, lastUpdated: 0, boxes: [] }
+      ? { cardId, quantity: 0, lines: 0, graded: false, gradedQuantity: 0, upForTrade: false, lastUpdated: 0, boxes: [] }
       : old
         ? { ...old, boxes: old.boxes.map((b) => ({ ...b })) }
-        : { cardId, quantity: 0, lines: 0, graded: false, upForTrade: false, lastUpdated: 0, boxes: [] };
+        : { cardId, quantity: 0, lines: 0, graded: false, gradedQuantity: 0, upForTrade: false, lastUpdated: 0, boxes: [] };
     const add = (r: RawCopy, sign: 1 | -1) => {
+      // Slabs are counted, not marked: a delta keeps the count exact.
+      const slabs = r.grading ? r.quantity : 0;
       item.quantity += sign * r.quantity;
+      item.gradedQuantity += sign * slabs;
       item.lines += sign;
       const box = item.boxes.find((b) => b.boxId === r.homeId);
-      if (box) box.quantity += sign * r.quantity;
-      else if (sign > 0) item.boxes.push({ boxId: r.homeId, quantity: r.quantity });
+      if (box) {
+        box.quantity += sign * r.quantity;
+        box.gradedQuantity += sign * slabs;
+      } else if (sign > 0) item.boxes.push({ boxId: r.homeId, quantity: r.quantity, gradedQuantity: slabs });
       if (sign > 0) {
         if (r.grading) item.graded = true;
         if (r.upForTrade === true) item.upForTrade = true;
@@ -1354,6 +1364,10 @@ function patchInventory(local: OptimisticLocalStore, change: Change, whole: read
       for (const r of now) add(r, 1);
       settleMarks(item, known(), was, now);
     }
+    // The slab count is exact on both paths, so the mark follows it.
+    item.gradedQuantity = Math.max(0, item.gradedQuantity);
+    for (const b of item.boxes) b.gradedQuantity = Math.max(0, Math.min(b.gradedQuantity, b.quantity));
+    item.graded = item.gradedQuantity > 0;
     item.boxes = item.boxes
       .filter((b) => b.quantity > 0)
       .sort((a, b) => (order.get(a.boxId) ?? 0) - (order.get(b.boxId) ?? 0));

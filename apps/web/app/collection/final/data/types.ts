@@ -534,6 +534,8 @@ export interface InventoryBoxCount {
   boxId: ContainerId;
   /** Physical copies of the card in this box: quantities summed. */
   quantity: number;
+  /** Of those, the graded ones (slabs): what "Slabs only" counts. */
+  gradedQuantity: number;
 }
 
 /** One card on the Inventory list: every line of it in every box, together. */
@@ -545,6 +547,8 @@ export interface InventoryItem {
   lines: number;
   /** True when any of its box copies is graded (a slab). */
   graded: boolean;
+  /** Its graded box copies (slabs), quantities summed: what "Slabs only" counts and tags. */
+  gradedQuantity: number;
   /** True when any of its box copies is flagged Up for Trade. */
   upForTrade: boolean;
   /** The newest `lastUpdated` (ms since epoch) of the card's box lines: the list's "Added" sort. */

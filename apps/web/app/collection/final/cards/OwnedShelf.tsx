@@ -7,6 +7,7 @@ import { useRoving } from "../../prototypes/p3/hooks";
 import { cardCaption } from "../captions";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
 import { cardLabel, compareCards } from "../data/labels";
+import { comparePlayerNames } from "../playerName";
 import {
   CONTAINER_COPIES_DEFAULT_LIMIT,
   OWNED_CARDS_DEFAULT_LIMIT,
@@ -191,7 +192,7 @@ export default function OwnedShelf() {
     .sort((a, b) => {
       switch (sort) {
         case "player":
-          return (a.card.players[0]?.name ?? "").localeCompare(b.card.players[0]?.name ?? "") || compareCards(a.card, b.card);
+          return comparePlayerNames(a.card.players[0]?.name, b.card.players[0]?.name) || compareCards(a.card, b.card);
         case "team":
           return (a.card.teams[0]?.name ?? "").localeCompare(b.card.teams[0]?.name ?? "") || compareCards(a.card, b.card);
         case "added":
