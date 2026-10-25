@@ -2494,6 +2494,9 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/topps-chrome-marketplace-read.spec.ts`
 - `tests/collection/add-edit-remove-copy.spec.ts` (NEO-358 — the collector's `/collection`: drills to Base, reads it, and writes ONLY the signed-in user's `collectionCopies` on one Base card, removing them all before it ends; see "The collection spec's card" below)
 - `tests/collection/binders-move-fold-trade-want.spec.ts` (NEO-359 — the collector's My Binders: makes two binders, files copies on the FIRST THREE ordinary Base rows (same row choice as above), moves them between the binders, wants one, then deletes both binders and removes the copies; writes ONLY the signed-in user's `collectionContainers`, `collectionCopies` and `collectionWants`, never the set, its cards, players or teams)
+- `tests/collection/inventory-boxes-sell-take-off-sale.spec.ts` (NEO-364 — the collector's My Boxes: files three copies of the FIRST ordinary Base row in Main, makes a box, sells two into it from the drawer, files the box's card into Row 2, takes one off sale, deletes the box (its copy drops into Unsorted) and removes the rest; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`, never the set, its cards, players or teams)
+- `tests/collection/inventory-checklist-quick-quantity.spec.ts` (NEO-364 — the inventory's Checklists: types counts on the FIRST TWO rows of the Base checklist into Unsorted and into a minted box (quick entry), lowers them, Undoes, then types everything back to 0 and deletes the box; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`)
+- `tests/collection/inventory-list-filter-sort-search.spec.ts` (NEO-364 — the Inventory list: stocks the FIRST THREE rows of the Base checklist through quick entry (two in Unsorted, one in a minted box), flags one Up for trade, narrows/sorts/searches the list, reads the collection's "Every card I own" count before and after (the hard line), then removes the three lines and deletes the box; writes ONLY the signed-in user's `collectionContainers` and `collectionCopies`)
 
 **Three flows on this set are NOT read-only, and the list used to say the first two were**
 (corrected NEO-260). Each is **sole writer of one datum on the anchor** —
@@ -2546,10 +2549,20 @@ the cards (it is in the drain order ahead of `cardChecklist`).
 for the first THREE ordinary Base rows (it reads the names before writing, since
 a card with two lines drops out of the ordinary-row match). It puts copies on
 the first, a slotted copy (undone at once) on the third and a Want on the second,
-all per user, and removes them again. There are no boxes in the real collection
-(inventory is a demo-only tab until NEO-364), so it writes only binders. The
-same "a card with a collector's copy cannot be deleted" protection applies
-while its copy exists; the spec's copy lives only for the run.
+all per user, and removes them again. It writes only binders (the collection has
+no box; the inventory's boxes are NEO-364's three specs below). The same "a card
+with a collector's copy cannot be deleted" protection applies while its copy
+exists; the spec's copy lives only for the run.
+
+**NEO-364.** The three `tests/collection/inventory-*.spec.ts` specs put BOX copies
+(`collectionCopies` whose home is a box, per user) on the first rows of the Base
+checklist: `inventory-boxes-sell-take-off-sale` on the first ordinary row (3
+copies, sold into a minted box, then removed), `inventory-checklist-quick-quantity`
+on the first two checklist rows (typed to 0 before it ends) and
+`inventory-list-filter-sort-search` on the first three (removed through the
+drawer). Every box they make is minted from `env.ATTEMPT_TOKEN` (`Sale…`, `Qty…`,
+`Lst…`) and deleted before the spec ends. The same copy-protection and
+concurrency notes apply: copies are per user, each shard owns one account.
 
 **Concurrency.** Copies are per user and each shard owns one account, so no
 two shards see each other's copies. The spec's search results and "every card

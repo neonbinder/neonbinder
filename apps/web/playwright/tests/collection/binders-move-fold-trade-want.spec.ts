@@ -10,12 +10,14 @@
 // The spec ends by deleting the first binder (its cards go back to Main) and
 // the second, so the shelf is back to where it started.
 //
-// Collection and inventory are separate screens (NEO-359, Jason: "Inventory is
-// things for sale and My Collection is things that are for your collection"),
-// so the real collection has no box and no Sell: the spec asserts both are
-// absent, and that the Inventory door leads to the `/inventory` page (a coming-
-// soon page; real inventory is NEO-364). The demo's Inventory tab, with boxes
-// and Sell, is proved by home/binder-tracking-demo.
+// Collection and inventory are separate screens (NEO-359, NEO-364; Jason:
+// "Inventory is things for sale and My Collection is things that are for your
+// collection. They should not mix on the screens"): the shelf holds binders
+// only, so no box stands on it and Unsorted, the inventory's catch-all, never
+// does; the Add form offers binders and no box; a binder line offers Sell (the
+// one way across, into a box) and never Take off sale; and the shelf's long box
+// is a link to the real `/inventory` list. The boxes themselves (Sell, Take off
+// sale, Unsorted) are proved by collection/inventory-boxes-sell-take-off-sale.
 //
 // The signed-in page is the REAL collection (Convex, per user). Moves are driven
 // with the drawer's Move form and the tray's buttons, never by dragging.
@@ -105,16 +107,21 @@ test(
     };
     await expect(headline({})).toBeVisible();
 
-    // Collection and inventory do not mix: no box on this screen, and the
-    // Inventory door is a plain link to the `/inventory` page.
+    // Collection and inventory do not mix: no box on this screen (Unsorted, the
+    // inventory's catch-all, included), and the Inventory door is a plain link
+    // to the `/inventory` list.
     await expect(shelf.getByRole("button", { name: /, box, / })).toHaveCount(0);
+    await expect(shelf.getByRole("button", { name: /^Unsorted/ })).toHaveCount(0);
+    await expect(special.getByRole("button", { name: /^Unsorted/ })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /boxes/i })).toHaveCount(0);
     await expectAccessible(page, { label: "My Binders, the system spines" });
     const door = special.getByRole("link", { name: /^Inventory, / });
     await expect(door).toBeVisible();
     await door.click();
-    await expect(page).toHaveURL(/\/inventory$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Your Inventory" })).toBeVisible();
+    await expect(page).toHaveURL(/\/inventory\?tab=cards/);
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
+    await expectAccessible(page, { label: "Inventory list, reached from the collection's long box" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(headline({})).toBeVisible();
@@ -203,9 +210,11 @@ test(
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     const addForm = drawer.getByRole("form", { name: "Add a copy", exact: true });
     const where = addForm.getByRole("combobox", { name: "Where it lives" });
-    // Binders only: no box to file a copy in.
+    // Binders only: no box to file a copy in, and not Unsorted (the inventory's).
     await expect(where.getByRole("option", { name: binderA, exact: true })).toBeAttached();
+    await expect(where.getByRole("option", { name: "Main", exact: true })).toBeAttached();
     await expect(where.getByRole("option", { name: /box/i })).toHaveCount(0);
+    await expect(where.getByRole("option", { name: "Unsorted", exact: true })).toHaveCount(0);
     await where.selectOption({ label: binderA });
     await addForm.getByRole("spinbutton", { name: "Quantity" }).fill("3");
     await addForm.getByRole("button", { name: "Add to collection" }).click();
@@ -247,9 +256,10 @@ test(
 
     await expect(lines(1)).toBeVisible();
     await expect(line("Raw ×3").getByText(binderA)).toBeVisible();
-    // Selling is Inventory's: the real collection's drawer has Move, never Sell.
-    await expect(yourCopies.getByRole("button", { name: /^Sell / })).toHaveCount(0);
-    await expect(yourCopies.getByRole("button", { name: /off sale$/ })).toHaveCount(0);
+    // A binder line can be SOLD (the one way across to a box) and is never "taken off
+    // sale": it is not for sale. (inventory-boxes-sell-take-off-sale follows the sale.)
+    await expect(yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw ×3`, exact: true })).toBeVisible();
+    await expect(yourCopies.getByRole("button", { name: /^Take off sale, / })).toHaveCount(0);
 
     // --- Move two into the second binder: a split into two lines -----------
     await moveLine("Raw ×3", binderB, 2, 2, "Card drawer, the Move panel with a binder picked");
