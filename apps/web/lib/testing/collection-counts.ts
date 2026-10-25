@@ -53,15 +53,23 @@ export async function expectCountsExact(t: T, ownerId: string, expect: (v: unkno
   return map;
 }
 
-/** The owner tally on Main equals the hand count (copies, lines, distinct cards). */
+/**
+ * The owner tally on Main equals the hand count (copies, lines, distinct
+ * cards) of the COLLECTION side only (NEO-364): rows whose home is a binder
+ * (Main included, or no home). Box lines never count.
+ */
 export async function tallyTruth(t: T, ownerId: string) {
   return t.run(async (ctx) => {
-    const rows = (await ctx.db.query("collectionCopies").collect()).filter(
+    const containers = (await ctx.db.query("collectionContainers").collect()).filter(
       (c) => c.ownerId === ownerId,
     );
-    const main = (await ctx.db.query("collectionContainers").collect()).find(
-      (c) => c.ownerId === ownerId && c.system === "main",
+    const kindOf = new Map(containers.map((c) => [c._id as string, c.kind]));
+    const rows = (await ctx.db.query("collectionCopies").collect()).filter(
+      (c) =>
+        c.ownerId === ownerId &&
+        (c.homeId === undefined || (kindOf.has(c.homeId as string) && kindOf.get(c.homeId as string) !== "box")),
     );
+    const main = containers.find((c) => c.system === "main");
     return {
       stored: main?.tally ?? null,
       truth: {
@@ -70,5 +78,51 @@ export async function tallyTruth(t: T, ownerId: string) {
         cards: new Set(rows.map((r) => r.cardId as string)).size,
       },
     };
+  });
+}
+
+/** What every box of `ownerId` holds by hand: copies, lines (the inventory side). */
+export async function boxTruth(t: T, ownerId: string) {
+  return t.run(async (ctx) => {
+    const boxes = (await ctx.db.query("collectionContainers").collect()).filter(
+      (c) => c.ownerId === ownerId && c.kind === "box",
+    );
+    const ids = new Set(boxes.map((b) => b._id as string));
+    const rows = (await ctx.db.query("collectionCopies").collect()).filter(
+      (c) => c.ownerId === ownerId && c.homeId !== undefined && ids.has(c.homeId as string),
+    );
+    return {
+      copies: rows.reduce((n, r) => n + r.quantity, 0),
+      lines: rows.length,
+      cards: new Set(rows.map((r) => r.cardId as string)).size,
+    };
+  });
+}
+
+/**
+ * Every set build of `ownerId`: what its row keeps (`kept`, null = absent),
+ * its scope stamp, and the hand count of distinct cards held in it on the
+ * COLLECTION side (NEO-364: binder-home rows only, never a box).
+ */
+export async function buildingTruth(t: T, ownerId: string) {
+  return t.run(async (ctx) => {
+    const containers = (await ctx.db.query("collectionContainers").collect()).filter(
+      (c) => c.ownerId === ownerId,
+    );
+    const kindOf = new Map(containers.map((c) => [c._id as string, c.kind]));
+    const rows = (await ctx.db.query("collectionCopies").collect()).filter(
+      (c) =>
+        c.ownerId === ownerId &&
+        (c.homeId === undefined || (kindOf.has(c.homeId as string) && kindOf.get(c.homeId as string) !== "box")),
+    );
+    const builds = (await ctx.db.query("collectionBuildingSets").collect()).filter(
+      (b) => b.ownerId === ownerId,
+    );
+    return builds.map((b) => ({
+      setId: b.setId,
+      kept: b.cards ?? null,
+      scope: b.tallyScope ?? null,
+      truth: new Set(rows.filter((r) => r.setId === b.setId).map((r) => r.cardId as string)).size,
+    }));
   });
 }
