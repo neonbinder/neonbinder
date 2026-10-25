@@ -1,42 +1,51 @@
 import { FOCUS } from "../prototypes/p1/ui";
-import { useCapabilities } from "./data/store";
+import { bindersOf, useCapabilities, useContainers, useScope } from "./data/store";
 import { useSetScope } from "./mode";
-import type { CollectionStore } from "./store";
 
 /**
- * "Binder: [All ▾]": which binder the checklist looks through, and where
- * Have and "Mark a range as Have" file new copies.
+ * "Binder: [All ▾]": which binder the page looks through, and where Have
+ * and "Mark a range as Have" file new copies.
  *
  * - All: every copy counts; a new copy goes to Main; Want is unscoped.
  * - A binder: only its copies count, Have adds to it, Want is for it.
- * - Want List: reads like All (it holds cards, not copies).
+ *
+ * Only binders that hold copies are offered (Main and your own): the Want
+ * List holds wants, Up for Trade is a flag, a smart binder fills itself, and
+ * boxes (the sale table) are Inventory's, never the collection's (NEO-359).
  *
  * Sticky, so every tab sees the same choice. It lives on the page URL
  * (`scope=`, see `./mode`): a pick replaces the current history entry, and
- * the store follows the URL.
+ * both stores follow the URL (`useScope`).
  *
- * Only a store with binders scopes (NEO-358): elsewhere it renders nothing.
+ * Only a store with scope renders it.
  */
-export default function BinderPicker({ store }: { store: CollectionStore }) {
+export default function BinderPicker() {
   const setScope = useSetScope();
-  const { scope } = useCapabilities();
-  if (!scope) return null;
-  const options = store.state.binders.filter((b) => b.kind === "manual");
+  const scope = useScope();
+  const { scope: canScope } = useCapabilities();
+  const containers = useContainers();
+  if (!canScope) return null;
+  const options = bindersOf(containers);
+  // While the shelf loads, the picker still shows the scope it will answer to.
+  const value = scope === "all" || options.some((c) => c.id === scope) ? scope : "all";
   return (
     <label className="flex items-center gap-2 text-sm">
-      <span aria-hidden="true" className="text-ink-2">Binder</span>
+      <span aria-hidden="true" className="text-ink-2">
+        Binder
+      </span>
       <select
         aria-label="Binder"
-        value={store.selectedBinderId}
+        value={value}
+        disabled={!containers}
         onChange={(e) => setScope(e.target.value)}
         className={`min-h-8 rounded-md border bg-field py-1 pl-2 pr-8 text-sm font-medium text-ink hover:border-neon-blue ${FOCUS} ${
-          store.selectedBinderId === "all" ? "border-control" : "border-selection"
+          value === "all" ? "border-control" : "border-selection"
         }`}
       >
         <option value="all">All</option>
-        {options.map((b) => (
-          <option key={b.id} value={b.id}>
-            {b.name}
+        {options.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
           </option>
         ))}
       </select>

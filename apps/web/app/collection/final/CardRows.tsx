@@ -12,7 +12,7 @@ import {
   teamNames,
   teamTextColor,
 } from "./data/labels";
-import { useCapabilities, useCopiesOf, useDemoExtension } from "./data/store";
+import { collectionCopiesIn, isWantedIn, useCapabilities, useContainers, useCopiesOf, useScope, useWants } from "./data/store";
 import type { Card, Copy, CopyId } from "./data/types";
 import { lineNames, lineSummary } from "./lineItems";
 
@@ -24,9 +24,9 @@ export interface RowActions {
   removeLine: (card: Card, copy: Copy) => void;
   /** "+ Add": open the drawer on its Add a copy form. */
   addAnother: (card: Card) => void;
-  /** Demo only (the `wants` capability). */
+  /** Want on, or off, under the page's scope (the `wants` capability). */
   toggleWant: (card: Card) => void;
-  /** Demo only (the `trade` capability). */
+  /** Up for trade on, or off, for one line item (the `trade` capability). */
   toggleTrade: (card: Card, copy: Copy) => void;
   /**
    * Details: open the drawer, on this line item when there is one. `list`
@@ -161,6 +161,13 @@ export function FeatureBadges({ card }: { card: Pick<Card, "features" | "printRu
   );
 }
 
+/** The green tag a copy flagged Up for trade wears. */
+export function TradeBadge() {
+  return (
+    <span className="ml-2 rounded border border-neon-green-text px-1 text-xs text-neon-green-text">Up for trade</span>
+  );
+}
+
 const slot = (cls: string) => <span aria-hidden="true" className={`${cls} shrink-0`} />;
 
 /**
@@ -168,9 +175,13 @@ const slot = (cls: string) => <span aria-hidden="true" className={`${cls} shrink
  * several line items (five raw Mint, one PSA 10) shows each line as its own
  * row under the same number, joined by a neon rail so the stack reads as one
  * card. Card-wide controls (+ Add, and Want in the demo) sit on the stack's
- * top row; each line carries its own Have and Details (and Trade, demo).
+ * top row; each line carries its own Have and Details (and Trade). Each line
+ * says which binder it lives in. A copy in a box is for sale, Inventory's,
+ * and never reaches a row (NEO-359: `collectionCopiesIn`); the card's drawer
+ * still lists it.
  *
- * Every control's name is distinct: the line's grade (and binder) are in it.
+ * Every control's name is distinct: the line's grade is in it, and its home
+ * too when two lines would otherwise read the same.
  * `copies` is `undefined` while they load: the row shows, its Have waits.
  */
 export default function CardRowGroup({
@@ -185,7 +196,7 @@ export default function CardRowGroup({
   groupRef,
 }: {
   card: Card;
-  /** The collector's copies of this card (in the demo's binder scope). */
+  /** The collector's copies of this card in the collection (never one in a box), in the page's scope. */
   copies: Copy[] | undefined;
   actions: RowActions;
   /** Search results span sets: show which set and variant on the subline. */
@@ -200,13 +211,14 @@ export default function CardRowGroup({
   groupRef?: Ref<HTMLLIElement>;
 }) {
   const capabilities = useCapabilities();
-  const demo = useDemoExtension();
-  const binders = demo?.state.state.binders;
+  const binders = useContainers();
+  const scope = useScope();
+  const allWants = useWants();
   const lines = copies ?? [];
   const name = showSet ? cardLabel(card) : shortCardName(card);
-  const wants = capabilities.wants && demo ? demo.state : null;
-  const tradeBinderId = capabilities.trade && demo ? demo.state.tradeBinderId : null;
-  const wanted = wants?.isWanted(card.id) ?? false;
+  const wants = capabilities.wants;
+  const trades = capabilities.trade;
+  const wanted = wants && isWantedIn(allWants, card.id, scope);
   const names = lineNames(lines, binders);
   const team = card.teams[0];
   const panel = useLiverySurface("raised");
@@ -258,9 +270,11 @@ export default function CardRowGroup({
     <>
       <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
-        <div className="text-sm sm:truncate">
-          <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
-          {summary && <span className="text-neon-blue-text"> · {summary}</span>}
+        <div className="flex min-w-0 items-baseline text-sm">
+          <span className="min-w-0 sm:truncate">
+            <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
+            {summary && <span className="text-neon-blue-text"> · {summary}</span>}
+          </span>
         </div>
         <div className="min-h-[1rem] truncate text-xs text-ink-3">
           {team && (
@@ -305,7 +319,7 @@ export default function CardRowGroup({
             onToggle={() => actions.have(card)}
           />
           {slot(SLOT_ADD)}
-          {tradeBinderId && slot(SLOT_ICON)}
+          {trades && slot(SLOT_ICON)}
           {want}
           {trailing(undefined, null, true)}
         </div>
@@ -314,15 +328,14 @@ export default function CardRowGroup({
           {lines.map((copy, i) => {
             const top = i === 0;
             const line = names[i];
-            const trade = tradeBinderId ? (copy.demo?.binderIds.includes(tradeBinderId) ?? false) : false;
             return (
               <div key={copy.id} className={rowCls} onClick={() => rowClick(copy.id)}>
                 {body(lineSummary(copy, binders), top)}
                 <HaveToggle pressed label={`Have ${name}, ${line}`} onToggle={() => actions.removeLine(card, copy)} />
                 {top ? <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} /> : slot(SLOT_ADD)}
-                {tradeBinderId && (
+                {trades && (
                   <SmallToggle
-                    pressed={trade}
+                    pressed={copy.upForTrade}
                     label={`Trade ${name}, ${line}`}
                     word="Trade"
                     tone="trade"
@@ -344,9 +357,8 @@ export default function CardRowGroup({
 /** A search hit's row: reads its own copies, since a result list spans checklists. */
 export function SearchHitRow(props: Omit<Parameters<typeof CardRowGroup>[0], "copies">) {
   const all = useCopiesOf(props.card.id);
-  const demo = useDemoExtension();
-  // The demo's binder scope narrows every row, as the checklist's do.
-  const inScope = demo ? new Set(demo.state.copiesInScope(props.card.id).map((c) => c.id)) : null;
-  const copies = all && inScope ? all.filter((c) => inScope.has(c.id)) : all;
+  const scope = useScope();
+  // The collection's copies only, narrowed by the page's scope, as the checklist's rows are.
+  const copies = collectionCopiesIn(all, scope);
   return <CardRowGroup {...props} copies={copies} />;
 }

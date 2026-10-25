@@ -29,5 +29,12 @@ the `ALLOW_RESET_SET_BUILDER_DATA` arming flag is the only guard).
 
 **How to apply:** when wiring or unwiring a table in the reset loop, grep
 `reset.*Batch` across `convex/*.test.ts` before declaring it done.
+
+**A table gaining a `v.id("selectorOptions")` field (NEO-359: a container's
+smart-binder `rule`) is a sixth and seventh consumer:** add it to
+`scripts/reference-seed/cli.mjs` `SELECTOR_DEPENDANT_TABLES` (cli.test.mjs
+walks `schema.export()` and goes red otherwise) AND to the hand-kept
+`DEPENDANTS` list in `resetSetBuilderData.test.ts`, which must equal it. Both
+fire even when the field is only inside a nested validator union.
 Related: [[reference_convex_typecheck_excludes_test_files]],
 [[entity-review-batch-is-a-grouping-not-a-table]].

@@ -18,7 +18,10 @@ export interface OpenCardOptions {
   list?: CardId[];
   /** The card as the opener already has it, so the drawer draws at once. */
   seed?: Card;
-  /** Demo: the binder the add form ticks instead of the page's target. */
+  /**
+   * The home the add form files into instead of the page's scope (the
+   * binder a want is for, the binder or box the drawer was opened from).
+   */
   binderId?: string;
 }
 

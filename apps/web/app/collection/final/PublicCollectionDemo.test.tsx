@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
@@ -11,7 +11,8 @@ import { PUBLIC_STORAGE_KEY } from "./store";
  * signed-out visitor with no Clerk provider and no Convex client, keeps its
  * own sessionStorage, puts each view on the page URL beside `demo=on` (so
  * Back steps back through the views), and points every signed-in
- * destination at the public tour.
+ * destination at the public tour. Inventory is a demo tab of its own
+ * (NEO-359), so it needs no tour.
  *
  * The auth and Convex client modules are mocked EMPTY: any hook or client the
  * demo reached for would throw "No … export is defined on the mock".
@@ -92,11 +93,13 @@ describe("the public collection demo", () => {
     const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
     const scope = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
 
-    // My Cards, scoped to Up for Trade: the scope rides on the URL, but a
+    // My Cards, scoped to the slab case: the scope rides on the URL, but a
     // pick replaces the entry rather than adding a Back step.
     openTab("My Cards");
     expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=cards");
-    const trade = (within(scope()).getByRole("option", { name: "Up for Trade" }) as HTMLOptionElement).value;
+    // Only homes are offered, so the trade pile and the Want List are not here.
+    expect(within(scope()).queryByRole("option", { name: "Up for Trade" })).toBeNull();
+    const trade = (within(scope()).getByRole("option", { name: "Slab case" }) as HTMLOptionElement).value;
     fireEvent.change(scope(), { target: { value: trade } });
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
     expect(scope().value).toBe(trade);
@@ -115,14 +118,14 @@ describe("the public collection demo", () => {
 
     back();
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=binders&scope=${trade}`);
-    expect(screen.getByText("Up for Trade", { selector: "strong" })).toBeTruthy();
+    expect(screen.getByText("Slab case", { selector: "strong" })).toBeTruthy();
     back();
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey&scope=${trade}`);
     expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
     back();
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
     expect(scope().value).toBe(trade);
-    expect((within(scope()).getByRole("option", { selected: true }) as HTMLOptionElement).text).toBe("Up for Trade");
+    expect((within(scope()).getByRole("option", { selected: true }) as HTMLOptionElement).text).toBe("Slab case");
     back();
     expect(pageUrl()).toBe(DEMO_URL);
     expect(scope().value).toBe("all");
@@ -162,12 +165,24 @@ describe("the public collection demo", () => {
     expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=/);
   });
 
-  it("sends the Inventory long box to the public Inventory tour", () => {
+  it("opens the demo's own Inventory tab from the Inventory long box, and Back steps out of it", () => {
     renderDemo();
     openTab("My Binders");
     const special = screen.getByRole("list", { name: "Special places" });
     const box = within(special).getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ });
-    expect(box.getAttribute("href")).toBe(PUBLIC_DESTINATIONS.inventory);
+    expect(box.getAttribute("href")).toBe("/binder-tracking?demo=on&tab=inventory");
+    fireEvent.click(box);
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=inventory");
+    expect(screen.getByRole("list", { name: "Your boxes" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders");
+  });
+
+  it("says selling works in the demo, and only label printing goes to the tour", () => {
+    renderDemo();
+    const bar = screen.getByRole("region", { name: "About this demo" });
+    expect(within(bar).getByText(/^Selling works here too: make a box on Inventory/)).toBeTruthy();
+    expect(within(bar).queryByText(/Inventory and label printing need an account/)).toBeNull();
   });
 
   it("sends Print label, on the cover and in the label editor, to the public Print Shop page", () => {
@@ -211,4 +226,73 @@ describe("the public collection demo", () => {
     expect(window.sessionStorage.getItem(PUBLIC_STORAGE_KEY)).not.toBeNull();
     expect(window.sessionStorage.getItem("nb-collection-final")).toBeNull();
   });
+});
+
+describe("the public demo never touches Convex", () => {
+  // `convex/react` is mocked EMPTY above: any hook the demo reached for throws "No export is defined".
+  it("makes a binder and moves a card into it on fixture data alone", async () => {
+    renderDemo();
+    openTab("My Binders");
+    fireEvent.click(screen.getByRole("button", { name: "New binder" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Binder name"), { target: { value: "Bills PC" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Bills PC" })).toBeTruthy();
+
+    const hunt = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
+    fireEvent.change(hunt, { target: { value: "jim kelly" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Move here: / }));
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Bills PC, page 1, pocket 1\.$/.test(s.textContent ?? "")),
+      ).toBe(true),
+    );
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=/);
+  });
+
+  it("matches the real collection: no box on the shelf; the boxes stand on Inventory", () => {
+    renderDemo();
+    openTab("My Binders");
+    expect(within(screen.getByRole("list", { name: "Your binders" })).queryByRole("button", { name: /Show box|, box,/ })).toBeNull();
+    // The seed's Show box counts behind the door.
+    const door = within(screen.getByRole("list", { name: "Special places" })).getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ });
+    expect(door.getAttribute("href")).toBe("/binder-tracking?demo=on&tab=inventory");
+  });
+});
+
+describe("the demo's Inventory tab (NEO-359), on fixture data alone", () => {
+  const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+
+  it("stands the Show box on the box shelf; a box and the whole stock are Back steps", () => {
+    renderDemo();
+    openTab("Inventory");
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=inventory");
+    expect(document.title).toBe("Inventory · Collection demo");
+    const boxes = screen.getByRole("list", { name: "Your boxes" });
+    fireEvent.click(within(boxes).getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ }));
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=inventory&b=box-show");
+    expect(screen.getByRole("region", { name: "Show box, open" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rename or delete Show box" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Edit label for Show box" }).length).toBeGreaterThan(0);
+    back();
+    fireEvent.click(screen.getByRole("button", { name: /^Everything for sale, \d+ cards? for sale$/ }));
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=inventory&sale=1");
+    expect(screen.getByRole("heading", { level: 2, name: "For sale" })).toBeTruthy();
+    back();
+    expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=inventory");
+  });
+
+  it("makes a box with New box and opens it", async () => {
+    renderDemo();
+    openTab("Inventory");
+    fireEvent.click(screen.getByRole("button", { name: "New box" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "New box" })).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
+    expect(await screen.findByRole("region", { name: "Dime box, open" })).toBeTruthy();
+    expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=inventory&b=[\w-]+$/);
+  });
+
+  // The drawer's Sell and Take off sale on the demo: CardDrawerMove.test.tsx.
 });

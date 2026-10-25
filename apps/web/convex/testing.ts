@@ -55,8 +55,9 @@ export const resetMyTestState = mutation({
     userProfiles: v.number(),
     prizePool: v.number(),
     // NEO-358: the caller's collection (copies before the containers they
-    // live in).
+    // live in). NEO-359: wants before the containers they may be scoped to.
     collectionCopies: v.number(),
+    collectionWants: v.number(),
     collectionContainers: v.number(),
     collectionBuildingSets: v.number(),
   }),
@@ -105,6 +106,16 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
+    // NEO-359 — wants may name a container as their binder, so they go
+    // before the containers too.
+    const collectionWants = await ctx.db
+      .query("collectionWants")
+      .withIndex("by_owner_and_card", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of collectionWants) {
+      await ctx.db.delete(row._id);
+    }
+
     const collectionContainers = await ctx.db
       .query("collectionContainers")
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", userId))
@@ -126,6 +137,7 @@ export const resetMyTestState = mutation({
       userProfiles: userProfiles.length,
       prizePool: prizePool.length,
       collectionCopies: collectionCopies.length,
+      collectionWants: collectionWants.length,
       collectionContainers: collectionContainers.length,
       collectionBuildingSets: collectionBuildingSets.length,
     };

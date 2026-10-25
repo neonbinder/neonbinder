@@ -1,5 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { inertBackground } from "@/lib/dom/inert-background";
 
 /**
@@ -75,6 +76,8 @@ export default function Modal({ labelledBy, onClose, children, className = "", f
   }
 
   return createPortal(
+    // See ../p1/Overlay.tsx: the nested <Theme> restores Radix's CSS scope.
+    <Theme>
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-scrim sm:items-center sm:p-6"
       onMouseDown={(e) => {
@@ -92,7 +95,8 @@ export default function Modal({ labelledBy, onClose, children, className = "", f
       >
         {children}
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Touch
 import { useDroppable } from "@dnd-kit/core";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import Pocket, { type PocketHandlers, type PocketVariant } from "./Pocket";
-import type { PageModel, SlotRef } from "../../prototypes/p2/model";
+import { sameSlot, type PageModel, type SlotRef } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
@@ -23,6 +23,8 @@ interface BinderDeskProps extends PocketHandlers {
   vinyl: string;
   cover: ReactNode;
   variant: PocketVariant;
+  /** Tag a box copy's pocket "For sale" (the Up for Trade pile only). */
+  saleTags?: boolean;
   aimed: SlotRef | null;
   /** The pocket a hunt found, ringed until the binder closes. */
   found?: SlotRef | null;
@@ -211,6 +213,7 @@ function Page({
   page,
   number,
   variant,
+  saleTags,
   aimed,
   found,
   onOpen,
@@ -230,22 +233,11 @@ function Page({
           key={i}
           pocket={pocket}
           variant={variant}
+          saleTag={saleTags}
           index={i}
           pageNumber={number}
-          aimed={
-            !!aimed &&
-            !!pocket.slot &&
-            aimed.binderId === pocket.slot.binderId &&
-            aimed.page === pocket.slot.page &&
-            aimed.slot === pocket.slot.slot
-          }
-          found={
-            !!found &&
-            !!pocket.slot &&
-            found.binderId === pocket.slot.binderId &&
-            found.page === pocket.slot.page &&
-            found.slot === pocket.slot.slot
-          }
+          aimed={sameSlot(aimed, pocket.slot)}
+          found={sameSlot(found, pocket.slot)}
           onOpen={onOpen}
           onAdd={onAdd}
           onAim={onAim}

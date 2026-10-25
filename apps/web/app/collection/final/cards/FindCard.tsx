@@ -7,7 +7,7 @@ import { useSearchText } from "../catalog/search";
 import { SkeletonBars } from "../catalog/Skeleton";
 import Suggestions from "../catalog/Suggestions";
 import { playerNames, printRunLabel, setLabel, teamNames, teamTextColor, variantLabel } from "../data/labels";
-import { searchable, useCopiesOf, useDemoExtension, useSearch } from "../data/store";
+import { collectionCopiesIn, searchable, useCopiesOf, useScope, useSearch } from "../data/store";
 import type { Card } from "../data/types";
 import { useMyCards } from "./context";
 
@@ -105,10 +105,9 @@ function Hit({ card }: { card: Card }) {
   const api = useMyCards();
   const sheet = useLiverySurface("sheet");
   const all = useCopiesOf(card.id);
-  const demo = useDemoExtension();
-  // The demo's binder scope narrows the count, as everywhere on the tab.
-  const inScope = demo ? new Set(demo.state.copiesInScope(card.id).map((c) => c.id)) : null;
-  const copies = all && inScope ? all.filter((c) => inScope.has(c.id)) : all;
+  const scope = useScope();
+  // The collection's copies only (never one in a box), narrowed by the page's scope, as everywhere on the tab.
+  const copies = collectionCopiesIn(all, scope);
   const n = (copies ?? []).reduce((sum, c) => sum + c.quantity, 0);
   const row = variantLabel(card.variant);
   const variation = card.cardVariation ? `, ${card.cardVariation} variation` : "";

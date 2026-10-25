@@ -51,3 +51,5 @@ codegen-pending errors in non-test Convex modules will fail that build. They mus
 resolved before push, not left for CI to find.
 
 **NEO-358 (2026-10-23):** to typecheck client code against a module codegen hasn't listed yet, a temporary shim using `ApiFromModules<{ collection: typeof import("../convex/collection") }>` gives real types for a one-off `tsc` run; delete the shim afterwards. When a deployment is configured, `npx convex codegen --typecheck disable` from `apps/web` regenerates `api.d.ts` properly.
+
+**NEO-359 (2026-10-24):** in a ticket worktree with no `CONVEX_DEPLOYMENT`, `npx convex codegen --typecheck disable` refuses ("No CONVEX_DEPLOYMENT set") before doing anything, so the two-line hand edit above is the codegen step there.

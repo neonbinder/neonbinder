@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { Link, useSearchParams } from "react-router";
 import { XMarkIcon } from "@heroicons/react/24/solid";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
@@ -344,6 +345,8 @@ function CollectionPrototype5Page() {
       </div>
 
       {createPortal(
+        // See ../p1/Overlay.tsx: the nested <Theme> restores Radix's CSS scope.
+        <Theme>
         <div ref={layerRef} onKeyDown={trapTab}>
           {drawerCard && (
             <>
@@ -394,7 +397,8 @@ function CollectionPrototype5Page() {
               </button>
             </div>
           )}
-        </div>,
+        </div>
+        </Theme>,
         document.body,
       )}
     </P5Context.Provider>

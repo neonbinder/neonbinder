@@ -1,7 +1,8 @@
 import { useId, useState, type FormEvent } from "react";
 import Modal from "../../prototypes/p2/Modal";
-import type { CollectionBinder } from "../store";
-import { binderTeamPicks, defaultLabel, labelOf, sameLabel, validLabel, type BinderLabel } from "./label";
+import type { Container, ContainerLabel } from "../data/types";
+import { useRuleHints } from "./hooks";
+import { defaultLabel, labelOf, sameLabel, teamPicks, validLabel } from "./label";
 import LabelDesigner from "./LabelDesigner";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -19,16 +20,17 @@ export default function LabelEditorDialog({
   onSave,
   onClose,
 }: {
-  binder: CollectionBinder;
+  binder: Container;
   /** Null: back to the default. */
-  onSave: (label: BinderLabel | null) => void;
+  onSave: (label: ContainerLabel | null) => void;
   onClose: () => void;
 }) {
   const titleId = useId();
-  const [draft, setDraft] = useState<BinderLabel>(() => labelOf(binder));
+  const hints = useRuleHints(binder);
+  const [draft, setDraft] = useState<ContainerLabel>(() => labelOf(binder, hints));
   const [error, setError] = useState<string | null>(null);
-  const fallback = defaultLabel(binder);
-  const [teamPicks] = useState(() => binderTeamPicks(binder));
+  const fallback = defaultLabel(binder, hints);
+  const picks = binder.rule ? teamPicks(hints.teams ?? [], hints.ruleTeam ?? null) : [];
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -44,7 +46,7 @@ export default function LabelEditorDialog({
     <Modal labelledBy={titleId} onClose={onClose} className="max-w-xl">
       <form onSubmit={submit} className="p-5">
         <h2 id={titleId} className="text-xl font-bold text-ink">
-          Spine label for {binder.name}
+          {binder.kind === "box" ? "Tape label" : "Spine label"} for {binder.name}
         </h2>
         <p className="mt-1 text-sm text-ink-2">Colors and lettering, the way the Print Shop does them.</p>
 
@@ -52,7 +54,7 @@ export default function LabelEditorDialog({
           <LabelDesigner
             name={binder.name}
             draft={draft}
-            teamPicks={teamPicks}
+            teamPicks={picks}
             onChange={(next) => {
               setDraft(next);
               setError(null);

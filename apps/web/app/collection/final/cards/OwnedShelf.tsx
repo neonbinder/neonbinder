@@ -4,33 +4,45 @@ import CardFace from "../../prototypes/_shared/CardFace";
 import Chip from "../../prototypes/p3/Chip";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT } from "../../prototypes/p3/classes";
 import { useRoving } from "../../prototypes/p3/hooks";
-import { openView } from "../binders/openView";
 import { cardCaption } from "../captions";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
-import { demoCard } from "../data/demoStore";
 import { cardLabel, compareCards } from "../data/labels";
-import { useDemoExtension, useOwnedCards, useSearch, useSummary } from "../data/store";
-import type { Card } from "../data/types";
-import type { CollectionBinder, CollectionStore } from "../store";
+import {
+  CONTAINER_COPIES_DEFAULT_LIMIT,
+  OWNED_CARDS_DEFAULT_LIMIT,
+  useBuildingSets,
+  useCards,
+  useContainerCopies,
+  useContainers,
+  useDemoExtension,
+  useOwnedCards,
+  useScope,
+  useSearch,
+  useSummary,
+} from "../data/store";
+import type { Card, Container, ContainerCount, Copy } from "../data/types";
 import { useMyCards } from "./context";
 
 /**
- * NEO-350 — "Everything else I own": the cards that are not on a set build,
- * as a compact image grid, with binders down the side: Main and Up for Trade
- * first, then your own. A smart binder lists what it would hold, haves and
- * needs both.
+ * NEO-350 / NEO-359 — "Everything else I own": the cards that are not on a
+ * set build, as a compact image grid, with the shelf down the side: Main and
+ * Up for Trade first, then your own binders, then smart binders (demo
+ * only), each listing what it holds. Boxes (the sale table) are Inventory's
+ * and never stand here (NEO-359).
  *
- * NEO-358: binders are the demo's alone (the `binders` capability), so this
- * shelf reads the demo's own store. The real collection shows
- * `CollectionTally` (the tally and every owned card) in its place until
- * binders ship.
+ * Both stores feed it through the same reads: "Every card I own" and
+ * "Everything else" page the owned-cards list (`useOwnedCards`) under All,
+ * or the scoped home's copies (`useContainerCopies`) when the binder picker
+ * has one; a binder or pile picked on the rail pages its own copies
+ * whatever the picker says. The rail is navigation: the shelf showing is
+ * `aria-current`.
  *
- * "Everything else" and "Every card I own" read through the binder picker's
- * scope; picking a binder on the rail shows that binder's cards whatever the
- * picker says. The rail is navigation: the shelf showing is `aria-current`.
- *
- * "Show 36 more of 120" counts the whole shelf. The keyboard goes to the
- * first card it adds, even when the button goes away with the last page.
+ * "Show 36 more of 120": under All with no filter on, the total is the
+ * store's own count (the tally for "Every card I own", the cards off every
+ * set build for "Everything else"), not what has loaded. Anywhere else it
+ * counts what has loaded, with a "+" while the store holds more. The
+ * keyboard goes to the first card it adds, even when the button goes away
+ * with the last page.
  */
 
 /**
@@ -54,72 +66,109 @@ function useFocusFirstNew(ids: readonly string[], focusKey: (key: string) => voi
 
 type Shelf = "else" | "all" | string;
 type Sort = "set" | "player" | "team" | "added";
-type DemoCopy = CollectionStore["scopedCopies"][number];
 
 const PAGE = 36;
 
 interface Item {
   card: Card;
   count: number;
+  /** A sortable "when": the newest acquired date, or the store's recency rank. */
   added: string;
+  /** Any of its copies is graded (a slab). */
   graded: boolean;
+}
+
+/** Copies (one container's) as one item per card, cards looked up by id. */
+function itemsOfCopies(copies: readonly Copy[], cards: readonly (Card | null)[] | undefined, ids: readonly string[]): Item[] | undefined {
+  if (!cards) return undefined;
+  const byId = new Map<string, Card>();
+  ids.forEach((id, i) => {
+    const card = cards[i];
+    if (card) byId.set(id, card);
+  });
+  const items = new Map<string, Item>();
+  for (const copy of copies) {
+    if (copy.quantity <= 0) continue;
+    const card = byId.get(copy.cardId);
+    if (!card) continue;
+    const item = items.get(card.id) ?? { card, count: 0, added: "", graded: false };
+    item.count += copy.quantity;
+    if (copy.graded) item.graded = true;
+    if (copy.acquiredAt > item.added) item.added = copy.acquiredAt;
+    items.set(card.id, item);
+  }
+  return [...items.values()];
+}
+
+/**
+ * "1 card", "12,345 cards", "5,000+ cards": every card count on this screen
+ * (the rail, the status line, the grid's name), so they agree on the plural.
+ * `exact: false` is a floor, which always reads as many.
+ */
+function cardsText(n: number, exact = true): string {
+  return exact && n === 1 ? "1 card" : `${countText(n, exact)} cards`;
+}
+
+/** "12 cards", "1 card", "Not counted yet". */
+function countDetail(count: ContainerCount | null): string {
+  if (!count) return "Not counted yet";
+  return cardsText(count.copies);
 }
 
 export default function OwnedShelf() {
   const api = useMyCards();
   const demo = useDemoExtension();
-  if (!demo) return null;
-  return <Shelf store={demo.state} openCard={api.openCard} scopedName={api.scopedName} />;
-}
-
-function Shelf({
-  store,
-  openCard,
-  scopedName,
-}: {
-  store: CollectionStore;
-  openCard: ReturnType<typeof useMyCards>["openCard"];
-  scopedName: string | null;
-}) {
+  const containers = useContainers();
+  const scope = useScope();
+  const building = useBuildingSets();
+  const summary = useSummary();
   const [shelf, setShelf] = useState<Shelf>("else");
   const [sort, setSort] = useState<Sort>("set");
   const [sport, setSport] = useState<string>("");
   const [graded, setGraded] = useState(false);
   const [dupes, setDupes] = useState(false);
-  const [needs, setNeeds] = useState(false);
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
   const grid = useRef<HTMLUListElement>(null);
 
-  const binder = shelf !== "else" && shelf !== "all" ? store.getBinder(shelf) : undefined;
-  const building = new Set(store.state.buildingSetIds);
-  const offBoard = (c: DemoCopy) => {
-    const card = demoCard(c.cardId);
-    return !!card && !building.has(card.set.id);
-  };
+  const picked = shelf !== "else" && shelf !== "all" ? containers?.find((c) => c.id === shelf) : undefined;
+  // Which container's copies feed the grid: the one picked on the rail, else
+  // the scoped home, else none (the owned-cards list).
+  const sourceId = picked?.id ?? (scope !== "all" ? scope : null);
+  const scoped = scope !== "all" ? containers?.find((c) => c.id === scope) : undefined;
+  const scopeNote = !picked && scoped ? ` in ${scoped.name}` : "";
 
-  const items: Item[] = (() => {
-    const byCard = new Map<string, Item>();
-    const copies = binder ? store.binderCopies(binder) : store.scopedCopies;
-    for (const copy of copies) {
-      if (copy.quantity <= 0) continue;
-      if (shelf === "else" && !offBoard(copy)) continue;
-      const card = demoCard(copy.cardId);
-      if (!card) continue;
-      const item = byCard.get(card.id) ?? { card, count: 0, added: "", graded: false };
-      item.count += copy.quantity;
-      if (copy.graded) item.graded = true;
-      if (copy.acquiredAt > item.added) item.added = copy.acquiredAt;
-      byCard.set(card.id, item);
+  // Every shelf may filter away much of what loads: ask for more than shows.
+  const fetchLimit = Math.max(CONTAINER_COPIES_DEFAULT_LIMIT, limit * 2);
+  const boxed = useContainerCopies(sourceId, { limit: fetchLimit });
+  const owned = useOwnedCards({ limit: Math.max(OWNED_CARDS_DEFAULT_LIMIT, limit * 2) });
+  const boxedIds = useMemo(() => [...new Set((boxed?.copies ?? []).map((c) => c.cardId))], [boxed]);
+  const boxedCards = useCards(sourceId ? boxedIds : null);
+
+  const buildingIds = useMemo(() => new Set((building ?? []).map((s) => s.id)), [building]);
+  // Everything the source holds, before "Everything else" leaves out the set builds.
+  const held: Item[] | undefined = useMemo(() => {
+    let list: Item[] | undefined;
+    if (sourceId) {
+      list = boxed ? itemsOfCopies(boxed.copies, boxedCards, boxedIds) : undefined;
+    } else if (owned) {
+      const n = owned.cards.length;
+      list = owned.cards.map((card, i) => ({
+        card,
+        count: owned.copiesByCard[card.id]?.quantity ?? 1,
+        // Most recently touched first: the rank sorts the same way a date does.
+        added: String(n - i).padStart(8, "0"),
+        graded: owned.copiesByCard[card.id]?.graded === true,
+      }));
     }
-    if (binder?.kind === "smart") {
-      for (const fixture of store.binderCards(binder)) {
-        const card = demoCard(fixture.id);
-        if (card && !byCard.has(card.id)) byCard.set(card.id, { card, count: 0, added: "", graded: false });
-      }
-    }
-    return [...byCard.values()];
-  })();
+    return list;
+  }, [sourceId, boxed, boxedCards, boxedIds, owned]);
+  const items: Item[] | undefined = useMemo(() => {
+    if (!held || shelf !== "else") return held;
+    if (!building) return undefined;
+    return held.filter((it) => !buildingIds.has(it.card.set.id));
+  }, [held, shelf, building, buildingIds]);
+  const more = sourceId ? (boxed?.truncated ?? false) : (owned?.truncated ?? false);
 
   const found = useSearch(query);
   const matchIds = useMemo(
@@ -127,11 +176,17 @@ function Shelf({
     [query, found],
   );
 
-  const shown = items
+  const sports = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const it of items ?? []) out.set(it.card.set.sport.id, it.card.set.sport.name);
+    if (sport && !out.has(sport)) out.set(sport, sport);
+    return [...out.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [items, sport]);
+
+  const shown = (items ?? [])
     .filter((it) => !sport || it.card.set.sport.id === sport)
     .filter((it) => !graded || it.graded)
     .filter((it) => !dupes || it.count > 1)
-    .filter((it) => !needs || it.count === 0)
     .filter((it) => !matchIds || matchIds.has(it.card.id))
     .sort((a, b) => {
       switch (sort) {
@@ -150,17 +205,17 @@ function Shelf({
   const roving = useRoving(grid, visibleIds);
   const focusFirstNew = useFocusFirstNew(visibleIds, roving.focusKey);
 
-  const fileable = store.fileableBinders;
-  const smart = store.ownBinders.filter((b) => b.kind === "smart");
-  const distinct = (copies: DemoCopy[]) => new Set(copies.filter((c) => c.quantity > 0).map((c) => c.cardId)).size;
-  const ownedAll = distinct(store.scopedCopies);
-  const ownedElse = distinct(store.scopedCopies.filter(offBoard));
-  const scopeNote = scopedName ? ` in ${scopedName}` : "";
+  // The rail: Main and Up for Trade, then the collector's binders as made,
+  // then smart binders. The Want List holds wants, not copies.
+  const shelves = (containers ?? []).filter((c) => c.system !== "want");
+  // Boxes are Inventory's: the rail lists binders and piles only (NEO-359).
+  const homesAndPiles = shelves.filter((c) => !c.rule && c.kind !== "box");
+  const smart = shelves.filter((c) => c.rule);
 
   const pick = (next: Shelf) => {
     setShelf(next);
     setLimit(PAGE);
-    setNeeds(false);
+    setGraded(false);
   };
 
   const title =
@@ -168,7 +223,26 @@ function Shelf({
       ? `Off the board${scopeNote}`
       : shelf === "all"
         ? `Every card I own${scopeNote}`
-        : (binder?.name ?? "");
+        : (picked?.name ?? "");
+  // The store's own count, when the grid is the whole shelf: All, no filter.
+  const unfiltered = !sport && !graded && !dupes && query.trim() === "";
+  const offBuild = !sourceId ? (summary?.offBuild ?? null) : null;
+  const known =
+    !sourceId && unfiltered && summary
+      ? shelf === "else"
+        ? offBuild
+        : shelf === "all" && summary.exact
+          ? summary.cards
+          : null
+      : null;
+  const total = known !== null ? known.toLocaleString("en-US") : `${shown.length}${more ? "+" : ""}`;
+  const tally = known !== null ? cardsText(known) : cardsText(shown.length, !more);
+  const left = known !== null ? known - visible.length : null;
+  const allDetail = scoped
+    ? `${countDetail(scoped.count)} in ${scoped.name}`
+    : summary
+      ? cardsText(summary.cards, summary.exact)
+      : "Counting…";
 
   return (
     <section aria-labelledby="mc-shelf-heading" className="mt-10">
@@ -186,24 +260,21 @@ function Shelf({
               active={shelf === "else"}
               onClick={() => pick("else")}
               name="Everything else"
-              detail={`${ownedElse} cards off the board${scopeNote}`}
+              detail={offBuild !== null ? `${cardsText(offBuild)} off your set builds` : `Cards off your set builds${scopeNote}`}
             />
-            <RailItem
-              active={shelf === "all"}
-              onClick={() => pick("all")}
-              name="Every card I own"
-              detail={`${ownedAll} cards${scopeNote}`}
-            />
-            <li className="hidden pt-2 text-xs font-bold text-ink-3 lg:block" aria-hidden="true">
-              Binders
-            </li>
-            {fileable.map((b) => (
+            <RailItem active={shelf === "all"} onClick={() => pick("all")} name="Every card I own" detail={allDetail} />
+            {homesAndPiles.length > 0 && (
+              <li className="hidden pt-2 text-xs font-bold text-ink-3 lg:block" aria-hidden="true">
+                Binders
+              </li>
+            )}
+            {homesAndPiles.map((b) => (
               <RailItem
                 key={b.id}
                 active={shelf === b.id}
                 onClick={() => pick(b.id)}
                 name={b.name}
-                detail={`${distinct(store.binderCopies(b))} cards`}
+                detail={countDetail(b.count)}
               />
             ))}
             {smart.length > 0 && (
@@ -217,8 +288,8 @@ function Shelf({
                 active={shelf === b.id}
                 onClick={() => pick(b.id)}
                 name={b.name}
-                smart
-                detail={smartDetail(b, store)}
+                tag="smart"
+                detail={b.rule && demo ? demo.describeRule(b.rule) : countDetail(b.count)}
               />
             ))}
           </ul>
@@ -228,17 +299,10 @@ function Shelf({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-base font-bold text-ink">{title}</h3>
             <p className="text-sm text-ink-3" role="status">
-              {shown.length} {shown.length === 1 ? "card" : "cards"}
+              {items === undefined ? "Counting…" : tally}
             </p>
           </div>
-          {binder?.kind === "smart" && (
-            <p className="mt-1 text-sm text-ink-2">
-              Fills itself: <span className="text-ink">{ruleText(binder, store)}</span>. Needs show dimmed.
-            </p>
-          )}
-          {binder?.kind === "manual" && binder.description && (
-            <p className="mt-1 text-sm text-ink-2">{binder.description}</p>
-          )}
+          <ShelfNote container={picked} describeRule={demo?.describeRule} />
 
           <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
             <Input
@@ -262,15 +326,13 @@ function Shelf({
             </label>
             <label className="block">
               <span className={LABEL}>Sport</span>
-              <select
-                className={`${SELECT} w-full`}
-                value={sport}
-                onChange={(e) => setSport(e.target.value)}
-              >
+              <select className={`${SELECT} w-full`} value={sport} onChange={(e) => setSport(e.target.value)}>
                 <option value="">Every sport</option>
-                <option value="baseball">Baseball</option>
-                <option value="football">Football</option>
-                <option value="hockey">Hockey</option>
+                {sports.map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -281,25 +343,27 @@ function Shelf({
             <Chip pressed={dupes} onClick={() => setDupes(!dupes)}>
               Dupes only
             </Chip>
-            {binder?.kind === "smart" && (
-              <Chip pressed={needs} onClick={() => setNeeds(!needs)}>
-                Needs only
-              </Chip>
-            )}
           </div>
 
-          {visible.length === 0 ? (
+          {items === undefined ? (
+            <div aria-busy="true" className="mt-4">
+              <SkeletonBars rows={2} />
+              <LoadingNote>Pulling the cards off the shelf…</LoadingNote>
+            </div>
+          ) : visible.length === 0 ? (
             <p className="mt-6 rounded-lg border border-dashed border-rule-strong p-6 text-center text-sm text-ink-2">
-              {shelf === "else" && items.length === 0
-                ? "Every card here is on a set build. Gnarly."
-                : items.length === 0
-                  ? "Nothing in here yet."
-                  : "Nothing here matches. Loosen a filter."}
+              {items.length > 0 || more
+                ? "Nothing here matches. Loosen a filter."
+                : !picked && held?.length === 0
+                  ? "Bare shelf, dude. Look one up in Find a card above and hit Add 1 to stock it."
+                  : shelf === "else"
+                    ? "Every card here is on a set build. Gnarly."
+                    : "Nothing in here yet."}
             </p>
           ) : (
             <ul
               ref={grid}
-              aria-label={`${title}, ${shown.length} cards`}
+              aria-label={`${title}, ${tally}`}
               onKeyDown={roving.onKeyDown}
               onFocus={roving.onFocus}
               className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-x-3 gap-y-4"
@@ -309,12 +373,19 @@ function Shelf({
                   key={it.card.id}
                   item={it}
                   tabIndex={roving.tabIndexFor(it.card.id)}
-                  onOpen={() => openCard(it.card.id, { list: visibleIds, seed: it.card })}
+                  onOpen={() =>
+                    api.openCard(it.card.id, {
+                      list: visibleIds,
+                      seed: it.card,
+                      ...(picked && !picked.rule && picked.system !== "trade" ? { binderId: picked.id } : {}),
+                    })
+                  }
                 />
               ))}
             </ul>
           )}
-          {shown.length > visible.length && (
+          {(shown.length > visible.length ||
+            (more && visible.length === shown.length && shown.length > 0 && (left === null || left > 0))) && (
             <button
               type="button"
               onClick={() => {
@@ -323,7 +394,11 @@ function Shelf({
               }}
               className={`${QUIET_BUTTON} mt-4`}
             >
-              Show {Math.min(PAGE, shown.length - visible.length)} more of {shown.length}
+              {shown.length > visible.length
+                ? `Show ${Math.min(PAGE, shown.length - visible.length)} more of ${total}`
+                : left !== null
+                  ? `Show ${Math.min(PAGE, left)} more of ${total}`
+                  : "Show more"}
             </button>
           )}
         </div>
@@ -332,17 +407,20 @@ function Shelf({
   );
 }
 
-/** A smart binder's rule in words, as its cover says it ("Reggie White"). */
-function ruleText(b: CollectionBinder, store: CollectionStore): string {
-  const line = openView({ kind: "binder", binderId: b.id }, b, store, "stack").blurb.find((l) => l.startsWith("Fills itself: "));
-  return line ? line.slice("Fills itself: ".length).replace(/\.$/, "") : b.name;
-}
-
-function smartDetail(b: CollectionBinder, store: CollectionStore): string {
-  if (b.kind !== "smart") return "";
-  const list = store.binderCards(b);
-  const have = list.filter((c) => store.ownedCount(c.id) > 0).length;
-  return `${ruleText(b, store)}. Own ${have} of ${list.length}`;
+/** Under a picked shelf's title: what the trade pile, a smart binder or a described binder is. */
+function ShelfNote({
+  container,
+  describeRule,
+}: {
+  container: Container | undefined;
+  describeRule?: (rule: NonNullable<Container["rule"]>) => string;
+}) {
+  if (!container) return null;
+  let text: string | null = null;
+  if (container.rule) text = `Fills itself: ${describeRule ? describeRule(container.rule) : container.name}.`;
+  else if (container.system === "trade") text = "Cards you'd swap. Each one still lives where it lives.";
+  if (container.description) text = text ? `${text} ${container.description}` : container.description;
+  return text ? <p className="mt-1 text-sm text-ink-2">{text}</p> : null;
 }
 
 function RailItem({
@@ -350,13 +428,14 @@ function RailItem({
   onClick,
   name,
   detail,
-  smart,
+  tag,
 }: {
   active: boolean;
   onClick: () => void;
   name: string;
   detail: string;
-  smart?: boolean;
+  /** A smart binder. */
+  tag?: "smart";
 }) {
   return (
     <li className="shrink-0">
@@ -371,7 +450,7 @@ function RailItem({
         }`}
       >
         <span className="flex w-full items-center gap-1.5 text-sm font-bold">
-          {smart && (
+          {tag === "smart" && (
             <span className="rounded border border-neon-purple px-1 text-[10px] font-bold text-neon-purple-text">
               Smart
             </span>
@@ -426,11 +505,6 @@ function countText(n: number, exact: boolean): string {
   return `${n.toLocaleString("en-US")}${exact ? "" : "+"}`;
 }
 
-/** "1 card", "12,345 cards", "5,000+ cards". */
-function ownedCardsText(n: number, exact: boolean): string {
-  return exact && n === 1 ? "1 card" : `${countText(n, exact)} cards`;
-}
-
 /**
  * NEO-358 — "Everything I own" in the real collection, until binders ship:
  * the tally line, then every card the collector holds, most recently touched
@@ -471,7 +545,7 @@ export function CollectionTally() {
         </p>
       ) : (
         <p className="mt-1 text-sm text-ink-2">
-          <strong className="text-ink">{ownedCardsText(summary.cards, summary.exact)}</strong> in the collection,{" "}
+          <strong className="text-ink">{cardsText(summary.cards, summary.exact)}</strong> in the collection,{" "}
           <strong className="text-ink">{countText(summary.copies, summary.exact)}</strong> in hand counting the
           extras. Newest first.
         </p>
@@ -488,7 +562,7 @@ export function CollectionTally() {
       {owned && owned.cards.length > 0 && (
         <ul
           ref={grid}
-          aria-label={`Everything I own, ${ownedCardsText(owned.total, owned.totalExact)}`}
+          aria-label={`Everything I own, ${cardsText(owned.total, owned.totalExact)}`}
           onKeyDown={roving.onKeyDown}
           onFocus={roving.onFocus}
           className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-x-3 gap-y-4"
@@ -496,7 +570,7 @@ export function CollectionTally() {
           {owned.cards.map((card) => (
             <ShelfCard
               key={card.id}
-              item={{ card, count: owned.copiesByCard[card.id]?.quantity ?? 1, added: "", graded: false }}
+              item={{ card, count: owned.copiesByCard[card.id]?.quantity ?? 1, added: "", graded: owned.copiesByCard[card.id]?.graded === true }}
               tabIndex={roving.tabIndexFor(card.id)}
               onOpen={() => openCard(card.id, { list: ids, seed: card })}
             />

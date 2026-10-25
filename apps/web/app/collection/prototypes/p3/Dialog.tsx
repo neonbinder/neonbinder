@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import { inertBackground } from "@/lib/dom/inert-background";
 
@@ -76,6 +77,8 @@ export default function P3Dialog({
       : "inset-x-0 top-[8vh] mx-auto max-h-[84vh] w-[min(640px,calc(100vw-2rem))] rounded-2xl border";
 
   return createPortal(
+    // See ../p1/Overlay.tsx: the nested <Theme> restores Radix's CSS scope.
+    <Theme>
     <div className="fixed inset-0 z-[60]">
       <div aria-hidden="true" className="absolute inset-0 bg-scrim" onClick={onClose} />
       <div
@@ -109,7 +112,8 @@ export default function P3Dialog({
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-5">{children}</div>
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

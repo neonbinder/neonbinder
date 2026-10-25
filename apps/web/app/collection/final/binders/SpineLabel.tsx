@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { spineFontById, spineFontFacesCss, spineFontFamilyCss } from "@/lib/print/spine-fonts";
-import { letteringSizeCss, shelfColors, smallestLetteringPx, type BinderLabel } from "./label";
+import type { ContainerLabel } from "../data/types";
+import { letteringSizeCss, shelfColors, smallestLetteringPx } from "./label";
 import "./spine-label.css";
 
 /**
@@ -29,7 +30,7 @@ export default function SpineLabel({
   badge,
 }: {
   name: string;
-  label: BinderLabel;
+  label: ContainerLabel;
   /** The spine's width in px, for the contrast check at its smallest size. */
   spineWidth: number;
   count?: ReactNode;

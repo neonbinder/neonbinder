@@ -99,6 +99,10 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // (setId). Both drained by the reset, before the selector rows.
   "collectionCopies",
   "collectionBuildingSets",
+  // NEO-359 — a smart binder's `rule` names sport, brand and set rows.
+  // Drained by the reset (after the copies and wants), before the selector
+  // rows.
+  "collectionContainers",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",

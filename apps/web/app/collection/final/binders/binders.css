@@ -297,6 +297,20 @@
   }
 }
 
+/* ------------------------------------------------- the for-sale sticker */
+
+/*
+ * The "For sale" price sticker on a box copy (the Up for Trade pile only,
+ * NEO-359). p2 hangs it at the top right, where a graded copy's slab label
+ * and the card-number corner already sit and a phone-width pocket runs them
+ * together. Here it rides the right edge halfway down, over the photo's
+ * initials: clear of the slab (top), the serial stamp and RC tag (bottom of
+ * the photo), the copies count (bottom left) and the nameplate. Same size.
+ */
+.p2-tag.nb-sale-tag {
+  top: 40%;
+}
+
 /* ------------------------------------------------ the pocket a hunt found */
 
 /* Pink, so it never reads as the blue "filling this pocket" ring: two quick
@@ -471,4 +485,22 @@
 }
 [data-theme="light"] .nb-longbox-box {
   box-shadow: 0 0 0 1px #8a8170, 0 6px 12px -6px rgb(0 0 0 / 0.35);
+}
+
+/* ------------------------------------------- clear of the pinned pack tray */
+
+/*
+ * The pack tray is fixed over the bottom of the page and publishes its height
+ * as --nb-tray-h (PackTray.tsx). A pocket, a box card or a row picker the
+ * keyboard lands on scrolls clear of it (WCAG 2.4.11), and the page ends
+ * above it so the last row can be reached.
+ */
+.p2-sleeve,
+.p2-sleeve button,
+.nb-box-face,
+.nb-box-row-pick {
+  scroll-margin-bottom: calc(var(--nb-tray-h, 0px) + 16px);
+}
+.nb-tray-clear {
+  padding-bottom: calc(var(--nb-tray-h, 0px) + 16px);
 }

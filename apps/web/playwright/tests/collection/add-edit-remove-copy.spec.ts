@@ -9,8 +9,8 @@
 // drawer fits the phone as a sheet and the desktop as a side panel.
 //
 // The signed-in page is the REAL collection (Convex, per user), not the demo:
-// it shows only "My Cards" and "Checklists", no demo bar and no "Demo theme"
-// switch. The public demo (/binder-tracking?demo=on) is proved by the
+// it shows "My Cards", "Checklists" and (NEO-359) "My Binders", no demo bar and
+// no "Demo theme" switch. The public demo (/binder-tracking?demo=on) is proved by the
 // home/binder-tracking-demo* specs; this spec replaces the retired
 // home/collection-demo-signed-in and home/collection-demo-theme.
 //
@@ -20,9 +20,10 @@
 // players or teams. Self-cleaning: every copy it adds is removed through the
 // UI, and the closing My Cards check proves the account is empty again.
 //
-// R3: no support/ drill helper applies. `drillToSet` drives the admin Set
-// Builder; this is the collector's cascade (group "Sport, year, brand and
-// set"), a different screen with its own listboxes.
+// R3: `drillToSet` drives the admin Set Builder; this is the collector's
+// cascade (group "Sport, year, brand and set"), a different screen with its
+// own listboxes, so it drills through `support/collection.ts`.
+import { collectorCascade } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -39,14 +40,19 @@ test(
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
     await expect(tabs.getByRole("link", { name: "My Cards", exact: true })).toBeVisible();
     await expect(tabs.getByRole("link", { name: "Checklists", exact: true })).toBeVisible();
-    // Not built yet in the real collection, and the demo's own chrome is gone.
-    await expect(tabs.getByRole("link", { name: "My Binders" })).toHaveCount(0);
+    // My Binders is part of the real collection (NEO-359; binders-move-fold-trade-want
+    // proves it), and the demo's own chrome is gone.
+    await expect(tabs.getByRole("link", { name: "My Binders", exact: true })).toBeVisible();
     await expect(page.getByRole("radiogroup", { name: "Demo theme" })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "About this demo" })).toHaveCount(0);
 
     // R2: the account starts with nothing, so every count below is this spec's.
-    await expect(page.getByRole("heading", { level: 2, name: "Everything I own" })).toBeVisible();
-    await expect(page.getByText(/^Nothing in the binder yet\./)).toBeVisible();
+    // With binders on (NEO-359) My Cards is "Everything else I own": the shelf
+    // of cards that sit on no set build, counting from 0.
+    const everythingElse = page.getByRole("region", { name: "Everything else I own" });
+    await expect(everythingElse.getByRole("heading", { level: 2, name: "Everything else I own" })).toBeVisible();
+    await expect(everythingElse.getByRole("status").filter({ hasText: /^0 cards$/ })).toBeVisible();
+    await expect(everythingElse.getByRole("list", { name: /^Off the board, / })).toHaveCount(0);
     // The scoreboard has landed too ("0 on the board"), so axe reads the settled page.
     await expect(page.getByRole("heading", { level: 2, name: "Sets I'm building" })).toBeVisible();
     await expect(page.getByText(/^\d+ on the board$/)).toBeVisible();
@@ -58,23 +64,7 @@ test(
     const searchBox = page.getByRole("searchbox", { name: "Search every card" });
     await expect(searchBox).toBeVisible();
 
-    const cascade = page.getByRole("group", { name: "Sport, year, brand and set" });
-    const drill = async (column: string, option: string, next?: string) => {
-      await cascade
-        .getByRole("listbox", { name: column })
-        .getByRole("option")
-        .filter({ has: page.getByText(option, { exact: true }) })
-        .click();
-      // The picked column collapses to its summary.
-      await expect(cascade.getByRole("button", { name: `${column}: ${option}, change` })).toBeVisible();
-      if (next) {
-        // The columns sit in one row that scrolls sideways; on a phone the next
-        // one starts off screen. It must be reachable (and on a desktop, it is).
-        const nextList = cascade.getByRole("listbox", { name: next });
-        await nextList.scrollIntoViewIfNeeded();
-        await expect(nextList).toBeInViewport();
-      }
-    };
+    const { cascade, drill } = collectorCascade(page);
     await drill("Sports", "Baseball", "Years");
     await drill("Years", "2024", "Brands");
     await drill("Brands", "Topps", "Sets");
@@ -155,7 +145,7 @@ test(
     await haveOff.click();
     await expect(haveOn).toBeVisible();
     await expect(progress).toHaveText(`Have 1 of ${total} · Need ${total - 1}`);
-    const notice = page.getByRole("status").filter({ hasText: `Added ${short} to your collection` });
+    const notice = page.getByRole("status").filter({ hasText: `Added ${short} to Main` });
     await expect(notice).toBeVisible();
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
@@ -168,7 +158,9 @@ test(
     // --- My Cards lists it while it is owned; Back returns to the checklist --
     await tabs.getByRole("link", { name: "My Cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=cards/);
-    const owned = page.getByRole("list", { name: "Everything I own, 1 card" });
+    // Nothing is marked as a set build, so the card sits on the shelf "Off the board".
+    await expect(everythingElse.getByRole("status").filter({ hasText: /^1 card$/ })).toBeVisible();
+    const owned = everythingElse.getByRole("list", { name: "Off the board, 1 card", exact: true });
     await expect(owned).toBeVisible();
     await expect(
       owned.getByRole("button", { name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}.*, have$`) }),
@@ -326,7 +318,7 @@ test(
 
     // The account is empty again (self-cleaning, R7).
     await tabs.getByRole("link", { name: "My Cards", exact: true }).click();
-    await expect(page.getByText(/^Nothing in the binder yet\./)).toBeVisible();
-    await expect(page.getByRole("list", { name: /^Everything I own, / })).toHaveCount(0);
+    await expect(everythingElse.getByRole("status").filter({ hasText: /^0 cards$/ })).toBeVisible();
+    await expect(everythingElse.getByRole("list", { name: /^Off the board, / })).toHaveCount(0);
   },
 );

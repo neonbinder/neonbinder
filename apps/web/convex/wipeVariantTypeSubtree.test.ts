@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -34,6 +34,7 @@ import {
   resolveTimeBudgetMs,
 } from "./wipeVariantTypeSubtree";
 import { insertTestCard } from "../lib/testing/card-row";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1168,5 +1169,125 @@ describe("NEO-304 security audit conditions", () => {
       childrenCacheCleared: false,
     });
     expect(await snapshot(t)).toEqual(before);
+  });
+});
+
+describe("NEO-359: wants count against the page budget", () => {
+  const OWNERS = Array.from({ length: 6 }, (_, i) => `collector_want_${i}`);
+  // More than WANT_SWEEP_BATCH (5) wants per card: one is left for the
+  // scheduled continuation on every card.
+  const EXTRA_CARDS = 40;
+
+  /** `EXTRA_CARDS` cards on the fixture's `insB`, each wanted by all OWNERS,
+   *  plus one outside want per owner (on a Base card) that must survive. */
+  async function seedWants(t: T, f: Fixture, wanted: boolean) {
+    const extra = await t.run(async (ctx) => {
+      const ids: Card[] = [];
+      for (let i = 0; i < EXTRA_CARDS; i++) {
+        ids.push(
+          await insertTestCard(ctx, {
+            selectorOptionId: f.insB,
+            cardNumber: `HW-${i}`,
+            cardName: `Hunted ${i}`,
+            platformData: {},
+            sortOrder: i + 1,
+            lastUpdated: NOW,
+          }),
+        );
+      }
+      return ids;
+    });
+    if (wanted) {
+      for (const owner of OWNERS) {
+        const who = t.withIdentity({ subject: owner });
+        await who.mutation(api.collectionContainers.ensureSystem, {});
+        for (const cardId of [...extra, f.cards.base1]) {
+          await who.mutation(api.collectionWants.set, { cardId, on: true });
+        }
+      }
+    }
+    return extra;
+  }
+
+  const wantCount = (t: T, owner: string) =>
+    t.run(async (ctx) => {
+      const row = (
+        await ctx.db
+          .query("collectionContainers")
+          .withIndex("by_owner_and_system", (q) =>
+            q.eq("ownerId", owner).eq("system", "want"),
+          )
+          .first()
+      )?.count;
+      return row;
+    });
+  const wantsOf = (t: T) =>
+    t.run(async (ctx) => ctx.db.query("collectionWants").collect());
+  const page = (t: T, f: Fixture) =>
+    t.mutation(internal.wipeVariantTypeSubtree.wipeCardsPage, {
+      variantTypeId: f.insertVt,
+      confirm: phraseFor(f.insertVt),
+      nodeId: f.insB,
+      limit: 150,
+    });
+
+  test("the same cards without wants fit one page (the control)", async () => {
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    await seedWants(t, f, false);
+
+    const r = await page(t, f);
+    expect(r).toMatchObject({ cardChecklist: EXTRA_CARDS + 1, hasMore: false });
+  });
+
+  test("a page of widely wanted cards ends early instead of passing the budget", async () => {
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    await seedWants(t, f, true);
+
+    const r = await page(t, f);
+    // Each wanted card costs 8 + 3 * 5 swept + 1 scheduled + 1 variation read;
+    // 700 / 25 leaves room for about 28, never all 41.
+    expect(r.hasMore).toBe(true);
+    expect(r.cardChecklist).toBeGreaterThan(20);
+    expect(r.cardChecklist).toBeLessThan(EXTRA_CARDS + 1);
+    await drainScheduled(t);
+  });
+
+  test("the wipe completes: wants are gone, other wants and counts stay right", async () => {
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    const extra = await seedWants(t, f, true);
+    for (const owner of OWNERS) {
+      expect(await wantCount(t, owner)).toEqual({ copies: EXTRA_CARDS + 1, lines: EXTRA_CARDS + 1 });
+    }
+
+    // Page by page, the way the run action does, so the early end is crossed.
+    let pages = 0;
+    let more = true;
+    while (more) {
+      pages += 1;
+      if (pages > 10) throw new Error("did not converge");
+      more = (await page(t, f)).hasMore;
+    }
+    expect(pages).toBeGreaterThan(1);
+    await drainScheduled(t);
+
+    const left = await wantsOf(t);
+    expect(left.filter((w) => extra.includes(w.cardId as Card))).toEqual([]);
+    // The outside want of every owner survives, and each Want List says so.
+    expect(left).toHaveLength(OWNERS.length);
+    for (const owner of OWNERS) {
+      expect(left.filter((w) => w.ownerId === owner).map((w) => w.cardId)).toEqual([f.cards.base1]);
+      expect(await wantCount(t, owner)).toEqual({ copies: 1, lines: 1 });
+    }
+    const gone = await t.run(async (ctx) => {
+      for (const id of extra) if (await ctx.db.get(id)) return false;
+      return true;
+    });
+    expect(gone).toBe(true);
   });
 });

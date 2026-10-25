@@ -1,12 +1,13 @@
 /**
  * Drag-and-drop helpers for My Binders, copied from prototype 2's page:
- * arrow keys hop between pockets during a keyboard drag, and a pocket's
- * droppable id names its binder, page and slot.
+ * arrow keys hop between pockets (or box rows) during a keyboard drag, and a
+ * drop target's id names where it is: a binder pocket by binder, page and
+ * slot; a box row by box and row; a box's unsorted strip by box.
  */
 
 import type { KeyboardCoordinateGetter, UniqueIdentifier } from "@dnd-kit/core";
-import type { Binder } from "../../prototypes/_shared/data";
-import type { SlotRef } from "../../prototypes/p2/model";
+import type { ContainerId } from "../data/types";
+import type { SlotRef } from "./model";
 
 /** Arrow keys hop to the nearest drop target in that direction. */
 export const pocketHop: KeyboardCoordinateGetter = (event, { context }) => {
@@ -51,8 +52,35 @@ export function parseSlotId(id: UniqueIdentifier): SlotRef | null {
   return { binderId: parts[1], page: Number(parts[2]), slot: Number(parts[3]) };
 }
 
-/** The copy in that pocket, or null when it is empty (or not a real pocket). */
-export function slotCopyId(binder: Binder | undefined, slot: SlotRef): string | null {
-  if (!binder || binder.kind !== "manual") return null;
-  return binder.layout?.[slot.page]?.slots[slot.slot] ?? null;
+/** A pocket's droppable id. */
+export function pocketDropId(slot: SlotRef): string {
+  return `pocket:${slot.binderId}:${slot.page}:${slot.slot}`;
+}
+
+/** A box row's droppable id (`row` 0-4). */
+export function rowDropId(boxId: ContainerId, row: number): string {
+  return `row:${boxId}:${row}`;
+}
+
+/** A box's "not sorted into a row yet" strip. */
+export function unsortedDropId(boxId: ContainerId): string {
+  return `unsorted:${boxId}`;
+}
+
+/** Where a drop on a box landed: a row (0-4), or `null` for the unsorted strip. */
+export function parseRowId(id: UniqueIdentifier): { boxId: ContainerId; row: number | null } | null {
+  const parts = String(id).split(":");
+  if (parts[0] === "row" && parts.length === 3) return { boxId: parts[1], row: Number(parts[2]) };
+  if (parts[0] === "unsorted" && parts.length === 2) return { boxId: parts[1], row: null };
+  return null;
+}
+
+/** A dragged card from the hunt tray: `card:<cardId>`. */
+export function cardDragId(cardId: string): string {
+  return `card:${cardId}`;
+}
+
+/** A dragged copy already in the open box: `copy:<copyId>`. */
+export function copyDragId(copyId: string): string {
+  return `copy:${copyId}`;
 }

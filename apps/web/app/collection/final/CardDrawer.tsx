@@ -5,7 +5,7 @@ import { FOCUS } from "../prototypes/p1/ui";
 import CardDetail, { CopyList } from "./CardDetail";
 import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
 import { cardLabel, setAndVariant, shortCardName } from "./data/labels";
-import { useCard, useCollectionActions, useCopiesOf, useDemoExtension } from "./data/store";
+import { useCapabilities, useCard, useCollectionActions, useContainers, useCopiesOf } from "./data/store";
 import type { Card, CardId, CopyId } from "./data/types";
 import { lineNames, lineSummary } from "./lineItems";
 import { usePageApi } from "./pageApi";
@@ -44,7 +44,7 @@ export default function CardDrawer({
   seed?: Card;
   mode: "view" | "add";
   focusCopyId?: CopyId;
-  /** Demo: the binder the add form ticks instead of the page's target. */
+  /** The home the add form picks instead of the page's scope (the hunt tray's open binder). */
   addBinderId?: string;
   /** Bumps on every openCard, so the detail remounts and re-runs its focus. */
   openKey: number;
@@ -144,7 +144,8 @@ export default function CardDrawer({
 function GoneCard({ cardId, focusCopyId }: { cardId: CardId; focusCopyId?: CopyId }) {
   const api = usePageApi();
   const writes = useCollectionActions();
-  const binders = useDemoExtension()?.state.state.binders;
+  const capabilities = useCapabilities();
+  const binders = useContainers();
   const copies = useCopiesOf(cardId);
   const names = lineNames(copies ?? [], binders);
   return (
@@ -158,6 +159,8 @@ function GoneCard({ cardId, focusCopyId }: { cardId: CardId; focusCopyId?: CopyI
         names={names}
         binders={binders}
         focusCopyId={focusCopyId}
+        showTrade={capabilities.trade}
+        showSale={capabilities.binders && capabilities.inventory}
         onRemove={(copy) =>
           void api.run(
             () => writes.removeCopy(copy),

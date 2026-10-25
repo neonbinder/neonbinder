@@ -1,179 +1,110 @@
 /**
- * NEO-350 / NEO-358 — the collection DEMO's reducer store.
+ * NEO-350 / NEO-358 / NEO-359 — the collection DEMO's reducer store.
  *
  * Hard-coded fake data only, seeded from the shared catalog and collector
  * (`../prototypes/_shared/`) and kept in sessionStorage: under
  * `nb-collection-final` by default and `PUBLIC_STORAGE_KEY` in the public
  * demo on `/binder-tracking`, so the two never mix. Nothing reaches a server.
  *
- * Since NEO-358 the page does not read this directly: `./data/demoStore`
- * wraps it (`useDemoCollectionState`) behind the shared store contract
- * (`./data/store`), and signed-in `/collection` runs on the Convex store
- * instead. The demo-only views (My Binders, the Binder picker, the demo bar)
- * still take this store, through `useDemoExtension().state`.
+ * Views never read this. `./data/demoStore` wraps it behind the shared store
+ * contract (`./data/store`), the same contract the Convex store answers, and
+ * that is all a view sees.
+ *
+ * ## The model (NEO-359, the same as the real collection's)
+ *
+ * - A copy (line item) has ONE home: `homeId`, a binder or a box. It is for
+ *   sale exactly when its home is a box. `slot` is where inside its home: a
+ *   binder pocket (`page * 9 + pocket`, one line item per pocket) or a box
+ *   row (0-4, many per row). `upForTrade` flags it for the Up for Trade pile
+ *   without moving it.
+ * - Containers: three system ones every collector has (`main`, `trade`,
+ *   `want`), then the collector's own binders and boxes. A binder with a
+ *   `rule` is a smart binder: it fills itself, and is never a home. Neither
+ *   is the Want List (it holds wants) nor the Up for Trade pile.
+ * - Wants are `{ cardId, binderId | null }`: "for my Ohtani rainbow", or
+ *   just "want it". One per card.
+ *
+ * Every write is a pure op (`demoOps`) over the whole state that returns the
+ * next state and what it did, or throws a `DemoRefusal` with the words to
+ * show. `useDemoCollectionState().run(op)` applies one.
+ *
+ * Writes that a collector would call "the same stack" fold: two line items
+ * are one when everything but quantity and date matches (home, pocket or
+ * row, trade flag included), and never when either has a cert or a serial.
+ * `updateCopy` never folds and never changes a home (that is `moveCopy`).
  *
  * ---------------------------------------------------------------------------
- * Props contract for the three tabs (My Cards, My Binders, Checklists)
+ * Props contract for the tabs (My Cards, My Binders, Checklists, Inventory)
  * ---------------------------------------------------------------------------
  *
- *   interface CollectionTabProps {
- *     store: CollectionStore;
- *     openCard: (cardId: CardId, opts?: OpenCardOptions) => void;
- *     goToTab: (tab: CollectionTab, params?: GoToTabParams) => void;
- *     notify: Notify;
- *   }
+ *   type CollectionTab = "cards" | "binders" | "checklists" | "inventory";   // ?tab=
  *
- *   type CollectionTab = "cards" | "binders" | "checklists";   // ?tab=
- *
- * - `openCard(cardId)` opens the one right-side card drawer.
- *   `opts.mode: "add"` opens it straight on the "Add a copy" form;
- *   `opts.copyId` highlights that line item in "Your copies";
- *   `opts.list` (optional) is the card ids the drawer's ↑ ↓ step through;
- *   `opts.binderId` (optional) is the binder the add form ticks in place of
- *   the page's target (e.g. the binder a want is for). Ignored unless a copy
- *   can be filed there.
  * - `goToTab("checklists", { q })` opens Checklists with that search
  *   prefilled; `goToTab("checklists", { cardId })` opens that card's
  *   checklist and rings its row. Any tab may be passed without params.
- * - `notify(message, undo?)` shows the page's status line with an Undo.
- *
- * `CollectionStore` is a superset of the prototypes' `PrototypeStore`, so a
- * component written against `PrototypeStore` takes it unchanged. Its
- * `ownedCount`, `copiesOf` and `completion` stay collection-wide. On top:
- *
- * System binders (every user has them; `binder.system` marks them; they sort
- * first and cannot be renamed or deleted):
- *   "main" Main, "trade" Up for Trade, "want" Want List.
- *   `mainBinderId`, `tradeBinderId`, `wantBinderId`, `systemBinder(kind)`,
- *   `isSystem(id)`. `fileableBinders`: Main, Up for Trade, then the
- *   collector's own manual binders (where a copy can be filed).
- *   `ownBinders`: the collector's own binders, manual and smart.
- *   `renameBinder` / `deleteBinder` refuse system binders (return false).
- *
- * Every copy lives in at least one binder. Removing its last binder (or
- * saving it with none) files it back in Main.
- *
- * The selected binder (the "Binder: [All ▾]" picker) is a filter AND the add
- * target, sticky across tabs:
- *   `selectedBinderId: "all" | BinderId` (default "all"),
- *   `setSelectedBinder(id | "all")`.
- *   `targetBinderId`: where Have and ranges file a new copy: the selected
- *     binder when it holds copies, else Main (All, Want List).
- *   `setTargetBinder(id)` is the same as `setSelectedBinder(id)`.
- *   `addHave(cardId)`: a quantity-1 raw copy, filed in `targetBinderId`.
- *   Scoped reads, all of which equal the collection-wide ones under All or
- *   Want List: `scopedCopies` (every copy in scope), `copiesInScope(cardId)`,
- *   `ownedInScope(cardId)`, `completionInScope(setId, variant?)`.
- *
- * Wants are `{ cardId, binderId | null }`: "for my Ohtani rainbow" or just
- * "want it" (null). `wants`, `wantCardIds` (distinct cards),
- * `wantsByBinder()` (Want List, grouped: unscoped first, then per binder).
- *   `isWanted(cardId)` and `toggleWant(cardId)` follow the selection:
- *   a binder selected → that binder's want; All / Want List → any want
- *   reads as pressed, toggling on adds an unscoped want and toggling off
- *   clears every want of the card. `toggleWant` returns its undo.
- *   `setWant(cardId, binderId | null, on)` for an exact edit.
- *
- * Up for Trade holds copies: `isUpForTrade(copy)`, `setUpForTrade(copyId, on)`.
- *
- * Line items: a copy with `quantity` is one line item. `addLineItem(cardId,
- * details)` adds one, folding it into an identical existing line item (same
- * grade or condition, cost, location, binders, notes, sale; never a copy
- * with a cert or serial) as extra quantity; the result carries its undo.
- *
- * Card requests ("Can't find it? Ask us to add it"): `cardRequests`,
- * `requestCard(input)`. Local only, private to this collector.
- *
- * Spine labels (the Print Shop look on the shelf): `binder.label` is the
- * collector's own `{ background, text, fontId }`, or absent for the default
- * (`binders/label.ts` decides it). `setBinderLabel(id, label | null)`;
- * `createBinder(input, label?)` takes one up front.
- *
- * Moving a copy: `moveCopy(copyId, toBinderId, slot?)` files it in the
- * destination instead of where it was (and into that pocket, when given).
- * It leaves Up for Trade alone unless that is where it goes, or the only
- * other place it lives. Never into the Want List, never zero binders. Returns
- * the binders it left and its undo, or null when nothing moved.
- *
- * Browse a set's filters: `browseFilter` / `setBrowseFilter(patch)`, kept in
- * the store so leaving the tab keeps them.
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import {
-  binderCards as binderCardsFor,
-  binderCopies as binderCopiesFor,
   binders as seedBinders,
   buildingSetIds as seedBuilding,
   cards as catalogCards,
-  compareCards,
-  copiesOf as copiesOfFor,
-  emptyCopyDetails,
-  getCard,
   myCopies as seedCopies,
-  ownedCountFor,
-  setCompletion as setCompletionFor,
-  type Binder,
-  type BinderId,
-  type Card,
+  type BinderRule,
   type CardId,
-  type Completion,
-  type Copy,
-  type CopyDetails,
+  type Copy as FixtureCopy,
   type CopyId,
   type SetId,
-  type SportId,
-  type VariantFilter,
 } from "../prototypes/_shared/data";
-import type { BinderPage } from "../prototypes/_shared/types";
-import type {
-  NewBinder,
-  PrototypeState,
-  PrototypeStore,
-} from "../prototypes/_shared/usePrototypeStore";
+import {
+  BOX_ROWS,
+  isHome,
+  MAX_BINDER_PAGES,
+  MAX_CONTAINERS,
+  MAX_WANTS,
+  POCKETS_PER_PAGE,
+  type Container,
+  type ContainerId,
+  type ContainerLabel,
+  type ContainerPatch,
+  type ContainerRule,
+  type CopyDetails,
+  type NewContainer,
+  type Scope,
+  type Want,
+} from "./data/types";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type SystemKind = "main" | "want" | "trade";
+/** A copy as the demo stores it. */
+export type DemoCopy = Omit<CopyDetails, "homeId"> & {
+  id: CopyId;
+  cardId: CardId;
+  homeId: ContainerId;
+};
 
-/** A spine label in the Print Shop's look: `#rrggbb` pair and a spine font id. */
-export interface BinderLabel {
-  background: string;
-  text: string;
-  fontId: string;
-}
+/** A container as the demo stores it (counts are derived, never stored). */
+export type DemoContainer = Omit<Container, "count">;
 
-export type CollectionBinder = Binder & { system?: SystemKind; label?: BinderLabel };
+/** @deprecated NEO-359: a binder is a `Container` now (`./data/types`). */
+export type CollectionBinder = Container;
+/** @deprecated NEO-359: `ContainerLabel` (`./data/types`). */
+export type BinderLabel = ContainerLabel;
+/** @deprecated NEO-359: `Scope` (`./data/types`). */
+export type BinderSelection = Scope;
+export type { Want };
 
-/** Browse a set's filters. `from` / `to` are years, inclusive; null is open. */
+/** Browse a set's filters. `from` / `to` are years, inclusive; null is open. `sport` is a sport id. */
 export interface BrowseFilter {
-  sport: SportId | "all";
+  sport: string | "all";
   from: number | null;
   to: number | null;
   q: string;
 }
 
 export const NO_BROWSE_FILTER: BrowseFilter = { sport: "all", from: null, to: null, q: "" };
-
-/** Where a copy is put when it moves: a pocket of the destination's pages. */
-export interface PocketRef {
-  page: number;
-  slot: number;
-}
-
-export interface MoveResult {
-  /** The binders the copy left (empty when it was only somewhere else too). */
-  from: BinderId[];
-  undo: () => void;
-}
-
-/** A card on the Want List, for one binder or (null) for the collection. */
-export interface Want {
-  cardId: CardId;
-  binderId: BinderId | null;
-}
 
 export interface CardRequest {
   id: string;
@@ -189,28 +120,18 @@ export interface CardRequest {
 
 export type NewCardRequest = Omit<CardRequest, "id" | "requestedAt">;
 
-export type BinderSelection = "all" | BinderId;
-
-export interface CollectionState extends PrototypeState {
-  binders: CollectionBinder[];
+export interface CollectionState {
+  copies: DemoCopy[];
+  containers: DemoContainer[];
   wants: Want[];
-  selectedBinderId: BinderSelection;
+  buildingSetIds: SetId[];
   cardRequests: CardRequest[];
   browseFilter: BrowseFilter;
   /** Bumped when the stored shape changes; a mismatch reseeds. */
   version: number;
 }
 
-export type CollectionTab = "cards" | "binders" | "checklists";
-
-export interface OpenCardOptions {
-  mode?: "view" | "add";
-  copyId?: CopyId;
-  /** Card ids the drawer's ↑ ↓ step through; defaults to just this card. */
-  list?: CardId[];
-  /** The binder the add form ticks instead of the page's target. */
-  binderId?: BinderId;
-}
+export type CollectionTab = "cards" | "binders" | "checklists" | "inventory";
 
 export interface GoToTabParams {
   /** Checklists: prefill the search box. */
@@ -221,85 +142,41 @@ export interface GoToTabParams {
 
 export type Notify = (message: string, undo?: () => void) => void;
 
-export interface CollectionTabProps {
-  store: CollectionStore;
-  openCard: (cardId: CardId, opts?: OpenCardOptions) => void;
-  goToTab: (tab: CollectionTab, params?: GoToTabParams) => void;
-  notify: Notify;
+/** A write the demo refuses, with the words to show on the status line. */
+export class DemoRefusal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DemoRefusal";
+  }
 }
 
-export interface AddLineItemResult {
-  /** The line item the card landed in (new, or the one it folded into). */
-  copy: Copy;
-  /** True when it folded into an identical line item as extra quantity. */
-  merged: boolean;
-  /** Takes exactly this add back. */
-  undo: () => void;
-}
-
-export interface CollectionStore extends PrototypeStore {
+/** One write: the next state and what it did. */
+export interface OpResult<T> {
   state: CollectionState;
-  getBinder: (binderId: BinderId) => CollectionBinder | undefined;
-
-  mainBinderId: BinderId;
-  wantBinderId: BinderId;
-  tradeBinderId: BinderId;
-  systemBinder: (kind: SystemKind) => CollectionBinder;
-  isSystem: (binderId: BinderId) => boolean;
-  /** Main, Up for Trade, then the collector's own manual binders. */
-  fileableBinders: CollectionBinder[];
-  /** The collector's own binders, manual and smart (no system ones). */
-  ownBinders: CollectionBinder[];
-  renameBinder: (binderId: BinderId, name: string) => boolean;
-  deleteBinder: (binderId: BinderId) => boolean;
-
-  selectedBinderId: BinderSelection;
-  setSelectedBinder: (selection: BinderSelection) => void;
-  targetBinderId: BinderId;
-  setTargetBinder: (binderId: BinderId) => void;
-  scopedCopies: Copy[];
-  copiesInScope: (cardId: CardId) => Copy[];
-  ownedInScope: (cardId: CardId) => number;
-  completionInScope: (setId: SetId, variant?: VariantFilter) => Completion;
-  /** A quantity-1 raw copy, filed straight in the target binder. */
-  addHave: (cardId: CardId) => Copy;
-  addLineItem: (cardId: CardId, details: CopyDetails) => AddLineItemResult;
-
-  wants: Want[];
-  wantCardIds: CardId[];
-  wantsByBinder: () => { binderId: BinderId | null; cards: Card[] }[];
-  isWanted: (cardId: CardId) => boolean;
-  /** Flip the want under the current selection; returns its undo. */
-  toggleWant: (cardId: CardId) => () => void;
-  setWant: (cardId: CardId, binderId: BinderId | null, on: boolean) => void;
-
-  isUpForTrade: (copy: Copy) => boolean;
-  setUpForTrade: (copyId: CopyId, on: boolean) => void;
-
-  cardRequests: CardRequest[];
-  requestCard: (input: NewCardRequest) => CardRequest;
-
-  createBinder: (input: NewBinder, label?: BinderLabel) => CollectionBinder;
-  setBinderLabel: (binderId: BinderId, label: BinderLabel | null) => void;
-  moveCopy: (copyId: CopyId, toBinderId: BinderId, slot?: PocketRef) => MoveResult | null;
-
-  browseFilter: BrowseFilter;
-  setBrowseFilter: (patch: Partial<BrowseFilter>) => void;
+  result: T;
 }
 
 // ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
 
-const STATE_VERSION = 3;
+/**
+ * v4 (NEO-359): one home per copy, slots, trade flag, the Show box. v5: the
+ * single trade-bait dupe stays in the collection, up for trade; the rest of
+ * Trade bait goes to the Show box, for sale.
+ */
+const STATE_VERSION = 5;
 const STORAGE_KEY = "nb-collection-final";
 /** The public demo's own sessionStorage key (never the app's). */
 export const PUBLIC_STORAGE_KEY = "nb-collection-demo-public";
 
 export const MAIN_BINDER_ID = "binder-main";
 export const WANT_BINDER_ID = "binder-want";
-/** The seed's "Trade bait" binder, renamed and made a system binder. */
+/** The seed's "Trade bait" binder, now the system Up for Trade pile. */
 export const TRADE_BINDER_ID = "binder-trade-bait";
+/** The seed's box: the cards for sale at the next show. */
+export const SHOW_BOX_ID = "box-show";
+const CONTENDERS_BINDER_ID = "binder-contenders-96";
 const OHTANI_BINDER_ID = "binder-ohtani-rainbow";
 const SLAB_BINDER_ID = "binder-slab-case";
 
@@ -308,12 +185,12 @@ const SLAB_BINDER_ID = "binder-slab-case";
  * chosen label beside the defaults: the Ohtani binder in Dodger blue, and the
  * slab case lettered like an equipment crate.
  */
-const SEED_LABELS: Record<BinderId, BinderLabel> = {
+const SEED_LABELS: Record<ContainerId, ContainerLabel> = {
   [OHTANI_BINDER_ID]: { background: "#005A9C", text: "#FFFFFF", fontId: "anton" },
   [SLAB_BINDER_ID]: { background: "#101820", text: "#FFE600", fontId: "stardos-stencil" },
 };
 
-const SYSTEM_ORDER: Record<SystemKind, number> = { main: 0, trade: 1, want: 2 };
+const SYSTEM_ORDER: Record<NonNullable<Container["system"]>, number> = { main: 0, trade: 1, want: 2 };
 
 /** The one card at (set, variant name, number). Throws unless exactly one. */
 function seedRef(setId: SetId, variantName: string | null, cardNumber: string): CardId {
@@ -330,33 +207,102 @@ function seedRef(setId: SetId, variantName: string | null, cardNumber: string): 
   return matches[0].id;
 }
 
+/**
+ * The Show box's rows for the seed's for-sale copies, by copy: football up
+ * front, the hockey stack behind it. One is left unsorted, so the box shows
+ * its "not sorted into a row yet" strip.
+ */
+function showBoxRow(copy: FixtureCopy): number | undefined {
+  const card = catalogCards.find((c) => c.id === copy.cardId);
+  if (!card) return undefined;
+  if (card.setId === "2024-topps-chrome-baseball") return undefined;
+  return card.setId === "1996-97-upper-deck-hockey" ? 1 : 0;
+}
+
+/** The prototype seed's copy as the demo's: one home, a slot, the trade flag. */
+function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>): DemoCopy {
+  const { binderIds, forSale, askPrice: _askPrice, ...details } = copy;
+  const wasTradeBait = binderIds.includes(TRADE_BINDER_ID);
+  const binder = binderIds.find((id) => id !== TRADE_BINDER_ID);
+  const pocket = pockets.get(copy.id);
+  // The single dupes in Trade bait are what the collector would swap, so they
+  // stay in the collection, up for trade; the stack and the big singles go
+  // to the Show box, for sale (and not up for trade). A card for sale is
+  // Inventory's and never on the collection's screens; only the Up for Trade
+  // pile would show one, since trade spans both (NEO-359).
+  const upForTrade =
+    wasTradeBait && copy.quantity === 1 && !copy.serialNumber && copy.costBasis === undefined;
+  let homeId: ContainerId;
+  let slot: number | undefined;
+  if (forSale && !upForTrade) {
+    homeId = SHOW_BOX_ID;
+    slot = showBoxRow(copy);
+  } else {
+    homeId = binder ?? MAIN_BINDER_ID;
+    slot = pocket && pocket[0] === homeId ? pocket[1] : undefined;
+  }
+  return {
+    ...details,
+    id: copy.id,
+    cardId: copy.cardId,
+    homeId,
+    upForTrade,
+    ...(slot === undefined ? {} : { slot }),
+  };
+}
+
 function seedState(): CollectionState {
-  const copies = structuredClone(seedCopies).map((c) =>
-    c.binderIds.length === 0 ? { ...c, binderIds: [MAIN_BINDER_ID] } : c,
-  );
-  const own: CollectionBinder[] = structuredClone(seedBinders).map((b): CollectionBinder =>
-    b.id === TRADE_BINDER_ID
-      ? {
-          ...b,
-          name: "Up for Trade",
-          description: "Copies you'd move at a show or a swap.",
-          system: "trade",
-        }
-      : SEED_LABELS[b.id]
-        ? { ...b, label: SEED_LABELS[b.id] }
-        : b,
-  );
-  const system: CollectionBinder[] = [
+  const pockets = new Map<CopyId, [ContainerId, number]>();
+  for (const b of seedBinders) {
+    if (b.kind !== "manual" || !b.layout) continue;
+    b.layout.forEach((page, p) =>
+      page.slots.forEach((id, s) => {
+        if (id) pockets.set(id, [b.id, p * POCKETS_PER_PAGE + s]);
+      }),
+    );
+  }
+  const copies = structuredClone(seedCopies).map((c) => seedCopy(c, pockets));
+
+  const own: DemoContainer[] = [];
+  for (const b of structuredClone(seedBinders)) {
+    if (b.id === TRADE_BINDER_ID) continue;
+    const label = SEED_LABELS[b.id];
+    own.push({
+      id: b.id,
+      kind: "binder",
+      name: b.name,
+      ...(b.description ? { description: b.description } : {}),
+      ...(label ? { label } : {}),
+      ...(b.kind === "smart" ? { rule: b.rule as ContainerRule } : {}),
+    });
+  }
+  // The box sits right after the set-build binder, as if made second.
+  const at = Math.max(0, own.findIndex((b) => b.id === CONTENDERS_BINDER_ID) + 1);
+  own.splice(at, 0, {
+    id: SHOW_BOX_ID,
+    kind: "box",
+    name: "Show box",
+    description: "Priced and sorted for the next card show.",
+  });
+
+  const system: DemoContainer[] = [
     {
       id: MAIN_BINDER_ID,
-      kind: "manual",
+      kind: "binder",
       name: "Main",
       description: "Every card lands here until you file it somewhere else.",
       system: "main",
     },
     {
+      id: TRADE_BINDER_ID,
+      kind: "binder",
+      name: "Up for Trade",
+      description: "Copies you'd move at a show or a swap.",
+      system: "trade",
+    },
+    {
       id: WANT_BINDER_ID,
-      kind: "manual",
+      kind: "binder",
       name: "Want List",
       description: "Cards you're chasing.",
       system: "want",
@@ -365,7 +311,7 @@ function seedState(): CollectionState {
   const chrome = "2024-topps-chrome-baseball";
   return {
     copies,
-    binders: sortBinders([...system, ...own]),
+    containers: sortContainers([...system, ...own]),
     buildingSetIds: [...seedBuilding],
     wants: [
       { cardId: seedRef(chrome, "Orange Refractor", "1"), binderId: OHTANI_BINDER_ID },
@@ -373,301 +319,19 @@ function seedState(): CollectionState {
       { cardId: seedRef(chrome, null, "12"), binderId: null },
       { cardId: seedRef("1996-playoff-contenders", null, "13"), binderId: null },
     ],
-    selectedBinderId: "all",
     cardRequests: [],
     browseFilter: NO_BROWSE_FILTER,
     version: STATE_VERSION,
   };
 }
 
-/** System binders first (Main, Up for Trade, Want List), the rest as made. */
-function sortBinders(binders: CollectionBinder[]): CollectionBinder[] {
-  const rank = (b: CollectionBinder) => (b.system ? SYSTEM_ORDER[b.system] : 10);
-  return binders
-    .map((b, i) => ({ b, i }))
-    .sort((x, y) => rank(x.b) - rank(y.b) || x.i - y.i)
-    .map(({ b }) => b);
-}
-
-// ---------------------------------------------------------------------------
-// Reducer (pure; exported for tests)
-// ---------------------------------------------------------------------------
-
-export type CollectionAction =
-  | { type: "addCopy"; copy: Copy }
-  | { type: "updateCopy"; id: CopyId; patch: Partial<CopyDetails> }
-  | { type: "removeCopy"; id: CopyId }
-  | { type: "restoreCopy"; copy: Copy; index: number }
-  | { type: "toggleBuilding"; setId: SetId }
-  | { type: "addToBinder"; copyId: CopyId; binderId: BinderId }
-  | { type: "removeFromBinder"; copyId: CopyId; binderId: BinderId }
-  | { type: "createBinder"; binder: CollectionBinder }
-  | { type: "renameBinder"; binderId: BinderId; name: string }
-  | { type: "deleteBinder"; binderId: BinderId }
-  | { type: "placeInSlot"; binderId: BinderId; page: number; slot: number; copyId: CopyId | null }
-  | { type: "setWants"; wants: Want[] }
-  | { type: "select"; selection: BinderSelection }
-  | { type: "requestCard"; request: CardRequest }
-  | { type: "setLabel"; binderId: BinderId; label: BinderLabel | null }
-  | { type: "moveCopy"; copyId: CopyId; to: BinderId; slot?: PocketRef }
-  | {
-      type: "restorePlacement";
-      copyId: CopyId;
-      binderIds: BinderId[];
-      layouts: [BinderId, BinderPage[] | undefined][];
-    }
-  | { type: "setBrowseFilter"; patch: Partial<BrowseFilter> }
-  | { type: "reset" };
-
-/** Binders a copy may be filed in: manual, and not the Want List. */
-function isFileable(b: CollectionBinder | undefined): boolean {
-  return !!b && b.kind === "manual" && b.system !== "want";
-}
-
-/** Keep only fileable binder ids, de-duplicated; never empty (falls back to Main). */
-function fileIds(state: CollectionState, ids: BinderId[]): BinderId[] {
-  const out: BinderId[] = [];
-  for (const id of ids) {
-    if (out.includes(id)) continue;
-    if (isFileable(state.binders.find((b) => b.id === id))) out.push(id);
-  }
-  return out.length > 0 ? out : [MAIN_BINDER_ID];
-}
-
-/** Where a new copy goes under this selection: the binder, else Main. */
-export function targetFor(state: CollectionState): BinderId {
-  const sel = state.selectedBinderId;
-  return sel !== "all" && isFileable(state.binders.find((b) => b.id === sel)) ? sel : MAIN_BINDER_ID;
-}
-
-/** The binder copies are filtered to, or null when every copy is in scope. */
-export function copyScope(state: CollectionState): BinderId | null {
-  const sel = state.selectedBinderId;
-  return sel !== "all" && isFileable(state.binders.find((b) => b.id === sel)) ? sel : null;
-}
-
-function unslot(
-  binders: CollectionBinder[],
-  copyId: CopyId,
-  onlyBinder?: BinderId,
-): CollectionBinder[] {
-  return binders.map((b) => {
-    if (b.kind !== "manual" || !b.layout) return b;
-    if (onlyBinder && b.id !== onlyBinder) return b;
-    if (!b.layout.some((p) => p.slots.includes(copyId))) return b;
-    return {
-      ...b,
-      layout: b.layout.map((p) => ({ slots: p.slots.map((id) => (id === copyId ? null : id)) })),
-    };
-  });
-}
-
-/**
- * The binders a copy leaves when it moves to `to`. Up for Trade is a status
- * as much as a place, so a move leaves it alone, unless the move IS into Up
- * for Trade, or Up for Trade is the only other place the copy lives. A copy
- * already filed in `to` leaves nothing (the move only pockets it).
- */
-export function movedFrom(copy: Copy, to: BinderId): BinderId[] {
-  // Already filed there: a move only puts it in a pocket.
-  if (copy.binderIds.includes(to)) return [];
-  const others = copy.binderIds.filter((id) => id !== to);
-  if (to === TRADE_BINDER_ID) return others;
-  const homes = others.filter((id) => id !== TRADE_BINDER_ID);
-  return homes.length > 0 ? homes : others;
-}
-
-export function collectionReducer(
-  state: CollectionState,
-  action: CollectionAction,
-): CollectionState {
-  switch (action.type) {
-    case "addCopy":
-      return {
-        ...state,
-        copies: [
-          ...state.copies,
-          { ...action.copy, binderIds: fileIds(state, action.copy.binderIds) },
-        ],
-      };
-    case "updateCopy": {
-      const patch = action.patch.binderIds
-        ? { ...action.patch, binderIds: fileIds(state, action.patch.binderIds) }
-        : action.patch;
-      // Unfiling a copy from a binder also empties its pocket there.
-      const before = state.copies.find((c) => c.id === action.id);
-      let binders = state.binders;
-      if (before && patch.binderIds) {
-        for (const id of before.binderIds) {
-          if (!patch.binderIds.includes(id)) binders = unslot(binders, action.id, id);
-        }
-      }
-      return {
-        ...state,
-        binders,
-        copies: state.copies.map((c) => (c.id === action.id ? { ...c, ...patch } : c)),
-      };
-    }
-    case "removeCopy":
-      return {
-        ...state,
-        copies: state.copies.filter((c) => c.id !== action.id),
-        binders: unslot(state.binders, action.id),
-      };
-    case "restoreCopy": {
-      if (state.copies.some((c) => c.id === action.copy.id)) return state;
-      const copies = [...state.copies];
-      copies.splice(Math.min(action.index, copies.length), 0, {
-        ...action.copy,
-        binderIds: fileIds(state, action.copy.binderIds),
-      });
-      return { ...state, copies };
-    }
-    case "toggleBuilding":
-      return {
-        ...state,
-        buildingSetIds: state.buildingSetIds.includes(action.setId)
-          ? state.buildingSetIds.filter((id) => id !== action.setId)
-          : [...state.buildingSetIds, action.setId],
-      };
-    case "addToBinder": {
-      if (!isFileable(state.binders.find((b) => b.id === action.binderId))) return state;
-      return {
-        ...state,
-        copies: state.copies.map((c) =>
-          c.id === action.copyId && !c.binderIds.includes(action.binderId)
-            ? { ...c, binderIds: [...c.binderIds, action.binderId] }
-            : c,
-        ),
-      };
-    }
-    case "removeFromBinder":
-      return {
-        ...state,
-        copies: state.copies.map((c) => {
-          if (c.id !== action.copyId) return c;
-          const rest = c.binderIds.filter((id) => id !== action.binderId);
-          // Never zero binders: the last one out sends it home to Main.
-          return { ...c, binderIds: rest.length > 0 ? rest : [MAIN_BINDER_ID] };
-        }),
-        binders: unslot(state.binders, action.copyId, action.binderId),
-      };
-    case "createBinder":
-      return { ...state, binders: sortBinders([...state.binders, action.binder]) };
-    case "renameBinder": {
-      const name = action.name.trim();
-      const target = state.binders.find((b) => b.id === action.binderId);
-      if (!target || target.system || !name) return state;
-      return {
-        ...state,
-        binders: state.binders.map((b) => (b.id === action.binderId ? { ...b, name } : b)),
-      };
-    }
-    case "deleteBinder": {
-      const target = state.binders.find((b) => b.id === action.binderId);
-      if (!target || target.system) return state;
-      return {
-        ...state,
-        binders: state.binders.filter((b) => b.id !== action.binderId),
-        copies: state.copies.map((c) => {
-          if (!c.binderIds.includes(action.binderId)) return c;
-          const rest = c.binderIds.filter((id) => id !== action.binderId);
-          return { ...c, binderIds: rest.length > 0 ? rest : [MAIN_BINDER_ID] };
-        }),
-        // A want for a binder that is gone is still a want: it goes unscoped.
-        wants: dedupeWants(
-          state.wants.map((w) => (w.binderId === action.binderId ? { ...w, binderId: null } : w)),
-        ),
-        selectedBinderId:
-          state.selectedBinderId === action.binderId ? "all" : state.selectedBinderId,
-      };
-    }
-    case "placeInSlot": {
-      const { binderId, page, slot, copyId } = action;
-      if (!isFileable(state.binders.find((b) => b.id === binderId))) return state;
-      const binders = copyId ? unslot(state.binders, copyId, binderId) : state.binders;
-      return {
-        ...state,
-        binders: binders.map((b) => {
-          if (b.id !== binderId || b.kind !== "manual") return b;
-          const layout = (b.layout ?? []).map((p) => ({ slots: [...p.slots] }));
-          while (layout.length <= page) layout.push({ slots: Array(9).fill(null) });
-          layout[page].slots[slot] = copyId;
-          return { ...b, layout };
-        }),
-        copies: copyId
-          ? state.copies.map((c) =>
-              c.id === copyId && !c.binderIds.includes(binderId)
-                ? { ...c, binderIds: [...c.binderIds, binderId] }
-                : c,
-            )
-          : state.copies,
-      };
-    }
-    case "setWants":
-      return { ...state, wants: dedupeWants(action.wants) };
-    case "select": {
-      const sel = action.selection;
-      if (sel !== "all" && !state.binders.some((b) => b.id === sel && b.kind === "manual")) {
-        return state;
-      }
-      return { ...state, selectedBinderId: sel };
-    }
-    case "requestCard":
-      return { ...state, cardRequests: [action.request, ...state.cardRequests] };
-    case "setLabel":
-      return {
-        ...state,
-        binders: state.binders.map((b) => {
-          if (b.id !== action.binderId) return b;
-          if (action.label) return { ...b, label: action.label };
-          const plain = { ...b };
-          delete plain.label;
-          return plain;
-        }),
-      };
-    case "moveCopy": {
-      const { copyId, to, slot } = action;
-      const copy = state.copies.find((c) => c.id === copyId);
-      if (!copy || !isFileable(state.binders.find((b) => b.id === to))) return state;
-      const from = movedFrom(copy, to);
-      let binders = state.binders;
-      for (const id of from) binders = unslot(binders, copyId, id);
-      const binderIds = [...copy.binderIds.filter((id) => id !== to && !from.includes(id)), to];
-      const moved: CollectionState = {
-        ...state,
-        binders,
-        copies: state.copies.map((c) => (c.id === copyId ? { ...c, binderIds } : c)),
-      };
-      return slot
-        ? collectionReducer(moved, { type: "placeInSlot", binderId: to, page: slot.page, slot: slot.slot, copyId })
-        : moved;
-    }
-    case "restorePlacement": {
-      const layouts = new Map(action.layouts);
-      return {
-        ...state,
-        copies: state.copies.map((c) => (c.id === action.copyId ? { ...c, binderIds: action.binderIds } : c)),
-        binders: state.binders.map((b) =>
-          b.kind === "manual" && layouts.has(b.id) ? { ...b, layout: layouts.get(b.id) } : b,
-        ),
-      };
-    }
-    case "setBrowseFilter":
-      return { ...state, browseFilter: { ...state.browseFilter, ...action.patch } };
-    case "reset":
-      return seedState();
-  }
-}
-
-function dedupeWants(wants: Want[]): Want[] {
-  const seen = new Set<string>();
-  return wants.filter((w) => {
-    const key = `${w.cardId}|${w.binderId ?? ""}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+/** System containers first (Main, Up for Trade, Want List), the rest as made. */
+function sortContainers(containers: DemoContainer[]): DemoContainer[] {
+  const rank = (c: DemoContainer) => (c.system ? SYSTEM_ORDER[c.system] : 10);
+  return containers
+    .map((c, i) => ({ c, i }))
+    .sort((x, y) => rank(x.c) - rank(y.c) || x.i - y.i)
+    .map(({ c }) => c);
 }
 
 export function initialCollectionState(): CollectionState {
@@ -688,15 +352,31 @@ function loadState(storageKey: string): CollectionState {
 }
 
 // ---------------------------------------------------------------------------
-// Line items
+// Reading the state (pure; exported for the demo store and tests)
 // ---------------------------------------------------------------------------
 
+export function containerIn(state: CollectionState, id: ContainerId): DemoContainer | undefined {
+  return state.containers.find((c) => c.id === id);
+}
+
+/** Where a new copy goes: `homeId` when it is a home, else Main. */
+export function homeFor(state: CollectionState, homeId: ContainerId | undefined): ContainerId {
+  return homeId && isHome(containerIn(state, homeId)) ? homeId : MAIN_BINDER_ID;
+}
+
+/** A copy's id → its index, or throws the refusal a view shows. */
+function indexOfCopy(state: CollectionState, id: CopyId): number {
+  const i = state.copies.findIndex((c) => c.id === id);
+  if (i === -1) throw new DemoRefusal("That copy is already gone.");
+  return i;
+}
+
 /** Two line items are the same stack when everything but quantity and date match. */
-export function sameLineItem(a: CopyDetails, b: CopyDetails): boolean {
-  const sameBinders =
-    a.binderIds.length === b.binderIds.length && a.binderIds.every((id) => b.binderIds.includes(id));
+export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCopy, "id" | "cardId">): boolean {
   return (
-    sameBinders &&
+    a.homeId === b.homeId &&
+    (a.slot ?? null) === (b.slot ?? null) &&
+    !!a.upForTrade === !!b.upForTrade &&
     (a.condition ?? null) === (b.condition ?? null) &&
     (a.graded?.grader ?? null) === (b.graded?.grader ?? null) &&
     (a.graded?.grade ?? null) === (b.graded?.grade ?? null) &&
@@ -707,10 +387,25 @@ export function sameLineItem(a: CopyDetails, b: CopyDetails): boolean {
     !b.serialNumber &&
     (a.costBasis ?? null) === (b.costBasis ?? null) &&
     (a.location ?? "") === (b.location ?? "") &&
-    a.notes.trim() === b.notes.trim() &&
-    a.forSale === b.forSale &&
-    (a.askPrice ?? null) === (b.askPrice ?? null)
+    a.notes.trim() === b.notes.trim()
   );
+}
+
+/** The line item already holding a binder pocket, other than `except`. */
+function pocketHolder(state: CollectionState, homeId: ContainerId, slot: number, except: ReadonlySet<CopyId>) {
+  const home = containerIn(state, homeId);
+  if (!home || home.kind !== "binder") return undefined;
+  return state.copies.find((c) => c.homeId === homeId && c.slot === slot && !except.has(c.id));
+}
+
+function checkSlot(state: CollectionState, homeId: ContainerId, slot: number | undefined) {
+  if (slot === undefined) return;
+  if (!Number.isInteger(slot) || slot < 0) throw new DemoRefusal("That isn't a pocket or a row.");
+  const home = containerIn(state, homeId);
+  if (home?.kind === "box" && slot >= BOX_ROWS) throw new DemoRefusal(`A box has ${BOX_ROWS} rows.`);
+  if (home?.kind === "binder" && slot >= POCKETS_PER_PAGE * MAX_BINDER_PAGES) {
+    throw new DemoRefusal(`A binder runs to ${MAX_BINDER_PAGES.toLocaleString("en-US")} pages.`);
+  }
 }
 
 let idCounter = 0;
@@ -719,16 +414,349 @@ function newId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${idCounter}`;
 }
 
+/** Copy fields as stored: blanks dropped, so a fold compares like with like. */
+function clean<T extends Omit<DemoCopy, "id" | "cardId">>(copy: T): T {
+  const out = { ...copy };
+  if (out.slot === undefined) delete out.slot;
+  if (!out.upForTrade) out.upForTrade = false;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Writes (pure; each returns the next state and what it did, or throws)
+// ---------------------------------------------------------------------------
+
+export interface AddLineResult {
+  copyId: CopyId;
+  merged: boolean;
+  /** The folded row's quantity and date before the add (for the undo). */
+  previous?: { quantity: number; acquiredAt: string };
+}
+
+export interface MoveOpResult {
+  copyId: CopyId;
+  folded: boolean;
+  split: boolean;
+  from: { homeId: ContainerId; slot?: number; quantity: number };
+}
+
+export interface RemoveOpResult {
+  removed: DemoCopy;
+  index: number;
+}
+
+export const demoOps = {
+  /** A copy (folding into an identical one unless `fold` is false), in `details.homeId` or Main. */
+  addLine(
+    state: CollectionState,
+    cardId: CardId,
+    details: CopyDetails,
+    fold = true,
+  ): OpResult<AddLineResult> {
+    const homeId = homeFor(state, details.homeId);
+    checkSlot(state, homeId, details.slot);
+    const quantity = Math.max(1, Math.floor(details.quantity));
+    const line = clean({ ...details, quantity, homeId });
+    const twin = fold ? state.copies.find((c) => c.cardId === cardId && sameLineItem(c, line)) : undefined;
+    if (twin) {
+      const acquiredAt = twin.acquiredAt <= line.acquiredAt ? twin.acquiredAt : line.acquiredAt;
+      return {
+        state: {
+          ...state,
+          copies: state.copies.map((c) =>
+            c.id === twin.id ? { ...c, quantity: c.quantity + quantity, acquiredAt } : c,
+          ),
+        },
+        result: { copyId: twin.id, merged: true, previous: { quantity: twin.quantity, acquiredAt: twin.acquiredAt } },
+      };
+    }
+    if (line.slot !== undefined && pocketHolder(state, homeId, line.slot, new Set())) {
+      throw new DemoRefusal("That pocket already holds a card.");
+    }
+    const copy: DemoCopy = { ...line, id: newId("copy"), cardId };
+    return { state: { ...state, copies: [...state.copies, copy] }, result: { copyId: copy.id, merged: false } };
+  },
+
+  /** Edits a copy in place. Never folds; refuses a change of home. */
+  updateCopy(state: CollectionState, id: CopyId, patch: Partial<CopyDetails>): OpResult<Partial<CopyDetails>> {
+    const i = indexOfCopy(state, id);
+    const before = state.copies[i];
+    if (patch.homeId !== undefined && patch.homeId !== before.homeId) {
+      throw new DemoRefusal("Move the card to change where it lives.");
+    }
+    const { homeId: _homeId, ...rest } = patch;
+    if ("slot" in rest) {
+      checkSlot(state, before.homeId, rest.slot);
+      if (rest.slot !== undefined && pocketHolder(state, before.homeId, rest.slot, new Set([id]))) {
+        throw new DemoRefusal("That pocket already holds a card.");
+      }
+    }
+    if (rest.quantity !== undefined) rest.quantity = Math.max(1, Math.floor(rest.quantity));
+    const previous: Partial<CopyDetails> = {};
+    for (const key of Object.keys(rest) as (keyof typeof rest)[]) {
+      (previous as Record<string, unknown>)[key] = before[key];
+    }
+    const next = clean({ ...before, ...rest }) as DemoCopy;
+    const copies = [...state.copies];
+    copies[i] = next;
+    return { state: { ...state, copies }, result: previous };
+  },
+
+  removeCopy(state: CollectionState, id: CopyId): OpResult<RemoveOpResult> {
+    const index = indexOfCopy(state, id);
+    return {
+      state: { ...state, copies: state.copies.filter((c) => c.id !== id) },
+      result: { removed: state.copies[index], index },
+    };
+  },
+
+  /** Puts a removed copy back as its own row (never folded), where it was in the list. */
+  restoreCopy(state: CollectionState, copy: DemoCopy, index = Number.MAX_SAFE_INTEGER): OpResult<CopyId> {
+    if (state.copies.some((c) => c.id === copy.id)) return { state, result: copy.id };
+    const homeId = homeFor(state, copy.homeId);
+    const taken = copy.slot !== undefined && pocketHolder(state, homeId, copy.slot, new Set());
+    const back = clean({ ...copy, homeId, ...(homeId !== copy.homeId || taken ? { slot: undefined } : {}) }) as DemoCopy;
+    const copies = [...state.copies];
+    copies.splice(Math.min(index, copies.length), 0, back);
+    return { state: { ...state, copies }, result: copy.id };
+  },
+
+  setBuilding(state: CollectionState, setId: SetId, building: boolean): OpResult<boolean> {
+    const has = state.buildingSetIds.includes(setId);
+    if (has === building) return { state, result: false };
+    return {
+      state: {
+        ...state,
+        buildingSetIds: building
+          ? [...state.buildingSetIds, setId]
+          : state.buildingSetIds.filter((id) => id !== setId),
+      },
+      result: true,
+    };
+  },
+
+  /**
+   * Moves `quantity` (default all) of a copy into `to`, at `slot` when
+   * given. Folds into an identical line there; part of a stack splits off.
+   */
+  moveCopy(
+    state: CollectionState,
+    id: CopyId,
+    to: ContainerId,
+    quantity?: number,
+    slot?: number,
+  ): OpResult<MoveOpResult> {
+    const i = indexOfCopy(state, id);
+    const source = state.copies[i];
+    const dest = containerIn(state, to);
+    if (!dest) throw new DemoRefusal("That binder is gone.");
+    if (dest.system === "want") throw new DemoRefusal("The Want List holds wants, not cards. Want the card instead.");
+    if (dest.system === "trade") throw new DemoRefusal("Flag the card Up for Trade instead: it stays where it lives.");
+    if (dest.rule) throw new DemoRefusal(`${dest.name} fills itself. Move the card somewhere else.`);
+    checkSlot(state, to, slot);
+    const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
+    const split = moving < source.quantity;
+    const from = { homeId: source.homeId, ...(source.slot === undefined ? {} : { slot: source.slot }), quantity: moving };
+    const landed = clean({ ...source, homeId: to, slot, quantity: moving });
+    const twin = state.copies.find((c) => c.id !== id && c.cardId === source.cardId && sameLineItem(c, landed));
+    if (!twin && slot !== undefined && pocketHolder(state, to, slot, new Set([id]))) {
+      throw new DemoRefusal("That pocket already holds a card.");
+    }
+    let copies = [...state.copies];
+    let copyId: CopyId;
+    if (twin) {
+      copies = copies.map((c) => (c.id === twin.id ? { ...c, quantity: c.quantity + moving } : c));
+      copies = split
+        ? copies.map((c) => (c.id === id ? { ...c, quantity: c.quantity - moving } : c))
+        : copies.filter((c) => c.id !== id);
+      copyId = twin.id;
+    } else if (split) {
+      copies = copies.map((c) => (c.id === id ? { ...c, quantity: c.quantity - moving } : c));
+      const part: DemoCopy = { ...landed, id: newId("copy"), cardId: source.cardId };
+      copies.splice(i + 1, 0, part);
+      copyId = part.id;
+    } else {
+      copies[i] = { ...landed, id, cardId: source.cardId } as DemoCopy;
+      copyId = id;
+    }
+    return { state: { ...state, copies }, result: { copyId, folded: !!twin, split, from } };
+  },
+
+  /**
+   * A pocket or row in the copy's own home (null: out of it): a move that
+   * stays home, so it folds into an identical line in that row the same way.
+   */
+  placeCopy(state: CollectionState, id: CopyId, slot: number | null): OpResult<MoveOpResult> {
+    const copy = state.copies[indexOfCopy(state, id)];
+    return demoOps.moveCopy(state, id, copy.homeId, undefined, slot ?? undefined);
+  },
+
+  /** Returns the flag it had. */
+  setTrade(state: CollectionState, id: CopyId, on: boolean): OpResult<boolean> {
+    const i = indexOfCopy(state, id);
+    const previous = !!state.copies[i].upForTrade;
+    if (previous === on) return { state, result: previous };
+    const copies = [...state.copies];
+    copies[i] = { ...copies[i], upForTrade: on };
+    return { state: { ...state, copies }, result: previous };
+  },
+
+  /**
+   * One want per card: on wants it for `binderId` (moving a want it had for
+   * another); off clears the card's want. Returns whether anything changed.
+   */
+  setWant(state: CollectionState, cardId: CardId, binderId: ContainerId | null, on: boolean): OpResult<boolean> {
+    const had = state.wants.find((w) => w.cardId === cardId);
+    if (!on) {
+      if (!had) return { state, result: false };
+      return { state: { ...state, wants: state.wants.filter((w) => w.cardId !== cardId) }, result: true };
+    }
+    if (had && had.binderId === binderId) return { state, result: false };
+    if (binderId !== null && !isHome(containerIn(state, binderId))) {
+      throw new DemoRefusal("Want it for one of your binders or boxes, or just want it.");
+    }
+    if (!had && state.wants.length >= MAX_WANTS) {
+      throw new DemoRefusal(
+        `Your Want List is full at ${MAX_WANTS.toLocaleString("en-US")} cards. Land a few or clear some to make room.`,
+      );
+    }
+    const wants = had
+      ? state.wants.map((w) => (w.cardId === cardId ? { cardId, binderId } : w))
+      : [...state.wants, { cardId, binderId }];
+    return { state: { ...state, wants }, result: true };
+  },
+
+  createContainer(state: CollectionState, input: NewContainer): OpResult<ContainerId> {
+    const name = input.name.trim();
+    if (!name) throw new DemoRefusal("Give it a name first.");
+    if (state.containers.length >= MAX_CONTAINERS) {
+      throw new DemoRefusal(`That's ${MAX_CONTAINERS} binders and boxes already. Delete one you're done with to make room.`);
+    }
+    const description = input.description?.trim();
+    const made: DemoContainer = {
+      id: newId(input.kind),
+      kind: input.kind,
+      name,
+      ...(description ? { description } : {}),
+      ...(input.label ? { label: input.label } : {}),
+      ...(input.rule && input.kind === "binder" ? { rule: input.rule } : {}),
+    };
+    return { state: { ...state, containers: sortContainers([...state.containers, made]) }, result: made.id };
+  },
+
+  /** Returns the patch that puts it back. */
+  updateContainer(state: CollectionState, id: ContainerId, patch: ContainerPatch): OpResult<ContainerPatch> {
+    const target = containerIn(state, id);
+    if (!target) throw new DemoRefusal("That binder is gone.");
+    if (target.system && (patch.name !== undefined || patch.description !== undefined)) {
+      throw new DemoRefusal(`${target.name} keeps its name. You can still change its label.`);
+    }
+    const name = patch.name?.trim();
+    if (patch.name !== undefined && !name) throw new DemoRefusal("Give it a name first.");
+    const back: ContainerPatch = {};
+    const next: DemoContainer = { ...target };
+    if (name !== undefined) {
+      back.name = target.name;
+      next.name = name;
+    }
+    if (patch.description !== undefined) {
+      back.description = target.description ?? "";
+      const d = patch.description.trim();
+      if (d) next.description = d;
+      else delete next.description;
+    }
+    if (patch.label !== undefined) {
+      back.label = target.label ?? null;
+      if (patch.label) next.label = patch.label;
+      else delete next.label;
+    }
+    return {
+      state: { ...state, containers: state.containers.map((c) => (c.id === id ? next : c)) },
+      result: back,
+    };
+  },
+
+  /** Sends its copies to Main (slots cleared), un-scopes its wants, and takes it off the shelf. */
+  deleteContainer(state: CollectionState, id: ContainerId): OpResult<number> {
+    const target = containerIn(state, id);
+    if (!target) throw new DemoRefusal("That binder is gone.");
+    if (target.system) throw new DemoRefusal(`${target.name} can't be deleted.`);
+    let moved = 0;
+    const copies = state.copies.map((c) => {
+      if (c.homeId !== id) return c;
+      moved += 1;
+      return clean({ ...c, homeId: MAIN_BINDER_ID, slot: undefined }) as DemoCopy;
+    });
+    const wants = state.wants.map((w) => (w.binderId === id ? { ...w, binderId: null } : w));
+    return {
+      state: { ...state, copies, wants, containers: state.containers.filter((c) => c.id !== id) },
+      result: moved,
+    };
+  },
+
+  requestCard(state: CollectionState, input: NewCardRequest, requestedAt: string): OpResult<CardRequest> {
+    const request: CardRequest = { ...input, id: newId("request"), requestedAt };
+    return { state: { ...state, cardRequests: [request, ...state.cardRequests] }, result: request };
+  },
+
+  setBrowseFilter(state: CollectionState, patch: Partial<BrowseFilter>): OpResult<null> {
+    return { state: { ...state, browseFilter: { ...state.browseFilter, ...patch } }, result: null };
+  },
+};
+
+/** The rule as the fixture's rule engine takes it (the shared rule is a strict subset). */
+export function fixtureRule(rule: ContainerRule): BinderRule {
+  return rule as BinderRule;
+}
+
+// ---------------------------------------------------------------------------
+// Reducer
+// ---------------------------------------------------------------------------
+
+export type CollectionAction = { type: "replace"; state: CollectionState } | { type: "reset" };
+
+export function collectionReducer(state: CollectionState, action: CollectionAction): CollectionState {
+  switch (action.type) {
+    case "replace":
+      return action.state;
+    case "reset":
+      return seedState();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
+
+export interface CollectionStore {
+  state: CollectionState;
+  /**
+   * Applies one write (`demoOps.*`, bound to its arguments) to the newest
+   * state and returns what it did. Throws the op's `DemoRefusal`, leaving
+   * the state as it was.
+   */
+  run: <T>(op: (state: CollectionState) => OpResult<T>) => T;
+  cardRequests: CardRequest[];
+  requestCard: (input: NewCardRequest) => CardRequest;
+  browseFilter: BrowseFilter;
+  setBrowseFilter: (patch: Partial<BrowseFilter>) => void;
+  /** Back to the starting stack. */
+  reset: () => void;
+}
+
+/** Today in the viewer's calendar, `YYYY-MM-DD`. */
+function today(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 /** `storageKey`: where the state persists; the public demo passes its own. */
 export function useDemoCollectionState(storageKey: string = STORAGE_KEY): CollectionStore {
   const [state, dispatch] = useReducer(collectionReducer, storageKey, loadState);
 
-  // Callbacks read the latest state through a ref so removeCopy can hand back
-  // what it removed without re-creating every action on each change.
+  // Writes build on the newest state through a ref, so two writes in one
+  // tick (a batch, an undo right after its write) never lose each other.
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
@@ -742,345 +770,39 @@ export function useDemoCollectionState(storageKey: string = STORAGE_KEY): Collec
     }
   }, [state, storageKey]);
 
-  const removedAt = useRef(
-    new Map<CopyId, { index: number; pockets: [BinderId, number, number][] }>(),
-  );
-
-  const addCopy = useCallback((cardId: CardId, details?: Partial<CopyDetails>) => {
-    const binderIds = fileIds(
-      stateRef.current,
-      details?.binderIds ?? [targetFor(stateRef.current)],
-    );
-    const copy: Copy = { ...emptyCopyDetails(), ...details, binderIds, id: newId("copy"), cardId };
-    stateRef.current = { ...stateRef.current, copies: [...stateRef.current.copies, copy] };
-    dispatch({ type: "addCopy", copy });
-    return copy;
-  }, []);
-
-  const updateCopy = useCallback(
-    (id: CopyId, patch: Partial<CopyDetails>) => dispatch({ type: "updateCopy", id, patch }),
-    [],
-  );
-
-  const removeCopy = useCallback((id: CopyId) => {
-    const copies = stateRef.current.copies;
-    const index = copies.findIndex((c) => c.id === id);
-    if (index === -1) return undefined;
-    const pockets: [BinderId, number, number][] = [];
-    for (const b of stateRef.current.binders) {
-      if (b.kind !== "manual" || !b.layout) continue;
-      b.layout.forEach((p, page) =>
-        p.slots.forEach((slotId, slot) => {
-          if (slotId === id) pockets.push([b.id, page, slot]);
-        }),
-      );
+  const run = useCallback(<T,>(op: (s: CollectionState) => OpResult<T>): T => {
+    const { state: next, result } = op(stateRef.current);
+    if (next !== stateRef.current) {
+      stateRef.current = next;
+      dispatch({ type: "replace", state: next });
     }
-    removedAt.current.set(id, { index, pockets });
-    stateRef.current = { ...stateRef.current, copies: copies.filter((c) => c.id !== id) };
-    dispatch({ type: "removeCopy", id });
-    return copies[index];
+    return result;
   }, []);
 
-  const restoreCopy = useCallback((copy: Copy) => {
-    const memo = removedAt.current.get(copy.id);
-    removedAt.current.delete(copy.id);
-    dispatch({ type: "restoreCopy", copy, index: memo?.index ?? Number.MAX_SAFE_INTEGER });
-    for (const [binderId, page, slot] of memo?.pockets ?? []) {
-      dispatch({ type: "placeInSlot", binderId, page, slot, copyId: copy.id });
-    }
-  }, []);
-
-  const toggleBuilding = useCallback(
-    (setId: SetId) => dispatch({ type: "toggleBuilding", setId }),
-    [],
+  const requestCard = useCallback(
+    (input: NewCardRequest) => run((s) => demoOps.requestCard(s, input, today())),
+    [run],
   );
-  const addToBinder = useCallback(
-    (copyId: CopyId, binderId: BinderId) => dispatch({ type: "addToBinder", copyId, binderId }),
-    [],
-  );
-  const removeFromBinder = useCallback(
-    (copyId: CopyId, binderId: BinderId) =>
-      dispatch({ type: "removeFromBinder", copyId, binderId }),
-    [],
-  );
-
-  const createBinder = useCallback((input: NewBinder, label?: BinderLabel) => {
-    const id = newId("binder");
-    const made: CollectionBinder =
-      input.kind === "smart"
-        ? { id, kind: "smart", name: input.name, description: input.description, rule: input.rule }
-        : {
-            id,
-            kind: "manual",
-            name: input.name,
-            description: input.description,
-            layout: input.pages
-              ? Array.from({ length: input.pages }, () => ({ slots: Array(9).fill(null) }))
-              : undefined,
-          };
-    const binder = label ? { ...made, label } : made;
-    dispatch({ type: "createBinder", binder });
-    return binder;
-  }, []);
-
-  const setBinderLabel = useCallback(
-    (binderId: BinderId, label: BinderLabel | null) => dispatch({ type: "setLabel", binderId, label }),
-    [],
-  );
-
-  const moveCopy = useCallback((copyId: CopyId, to: BinderId, slot?: PocketRef): MoveResult | null => {
-    const before = stateRef.current;
-    const copy = before.copies.find((c) => c.id === copyId);
-    if (!copy || !isFileable(before.binders.find((b) => b.id === to))) return null;
-    if (copy.binderIds.includes(to) && !slot) return null;
-    const from = movedFrom(copy, to);
-    // Everything the move can touch, as it was: the copy's binders and every
-    // layout it leaves or lands in.
-    const touched = new Set([...from, to]);
-    const layouts = before.binders
-      .filter((b) => touched.has(b.id))
-      .map((b): [BinderId, BinderPage[] | undefined] => [b.id, b.kind === "manual" ? b.layout : undefined]);
-    const binderIds = [...copy.binderIds];
-    const next = collectionReducer(before, { type: "moveCopy", copyId, to, slot });
-    stateRef.current = next;
-    dispatch({ type: "moveCopy", copyId, to, slot });
-    return {
-      from,
-      undo: () => {
-        dispatch({ type: "restorePlacement", copyId, binderIds, layouts });
-      },
-    };
-  }, []);
-
   const setBrowseFilter = useCallback(
-    (patch: Partial<BrowseFilter>) => dispatch({ type: "setBrowseFilter", patch }),
-    [],
+    (patch: Partial<BrowseFilter>) => run((s) => demoOps.setBrowseFilter(s, patch)),
+    [run],
   );
-
-  const renameBinder = useCallback((binderId: BinderId, name: string) => {
-    const b = stateRef.current.binders.find((x) => x.id === binderId);
-    if (!b || b.system || !name.trim()) return false;
-    dispatch({ type: "renameBinder", binderId, name });
-    return true;
+  const reset = useCallback(() => {
+    const fresh = seedState();
+    stateRef.current = fresh;
+    dispatch({ type: "replace", state: fresh });
   }, []);
 
-  const deleteBinder = useCallback((binderId: BinderId) => {
-    const b = stateRef.current.binders.find((x) => x.id === binderId);
-    if (!b || b.system) return false;
-    dispatch({ type: "deleteBinder", binderId });
-    return true;
-  }, []);
-
-  const placeInSlot = useCallback(
-    (binderId: BinderId, page: number, slot: number, copyId: CopyId | null) =>
-      dispatch({ type: "placeInSlot", binderId, page, slot, copyId }),
-    [],
-  );
-
-  const setWant = useCallback((cardId: CardId, binderId: BinderId | null, on: boolean) => {
-    const wants = stateRef.current.wants;
-    const has = wants.some((w) => w.cardId === cardId && w.binderId === binderId);
-    if (has === on) return;
-    const next = on
-      ? [...wants, { cardId, binderId }]
-      : wants.filter((w) => !(w.cardId === cardId && w.binderId === binderId));
-    stateRef.current = { ...stateRef.current, wants: next };
-    dispatch({ type: "setWants", wants: next });
-  }, []);
-
-  const toggleWant = useCallback((cardId: CardId) => {
-    const before = stateRef.current.wants;
-    const scope = copyScope(stateRef.current);
-    let next: Want[];
-    if (scope) {
-      const has = before.some((w) => w.cardId === cardId && w.binderId === scope);
-      next = has
-        ? before.filter((w) => !(w.cardId === cardId && w.binderId === scope))
-        : [...before, { cardId, binderId: scope }];
-    } else {
-      const any = before.some((w) => w.cardId === cardId);
-      next = any ? before.filter((w) => w.cardId !== cardId) : [...before, { cardId, binderId: null }];
-    }
-    stateRef.current = { ...stateRef.current, wants: next };
-    dispatch({ type: "setWants", wants: next });
-    return () => {
-      stateRef.current = { ...stateRef.current, wants: before };
-      dispatch({ type: "setWants", wants: before });
-    };
-  }, []);
-
-  const setUpForTrade = useCallback((copyId: CopyId, on: boolean) => {
-    dispatch(
-      on
-        ? { type: "addToBinder", copyId, binderId: TRADE_BINDER_ID }
-        : { type: "removeFromBinder", copyId, binderId: TRADE_BINDER_ID },
-    );
-  }, []);
-
-  const setSelectedBinder = useCallback((selection: BinderSelection) => {
-    stateRef.current = { ...stateRef.current, selectedBinderId: selection };
-    dispatch({ type: "select", selection });
-  }, []);
-
-  const addHave = useCallback(
-    (cardId: CardId) => addCopy(cardId, { quantity: 1, binderIds: [targetFor(stateRef.current)] }),
-    [addCopy],
-  );
-
-  const addLineItem = useCallback(
-    (cardId: CardId, details: CopyDetails): AddLineItemResult => {
-      const normalized: CopyDetails = {
-        ...details,
-        binderIds: fileIds(stateRef.current, details.binderIds),
-      };
-      const twin = stateRef.current.copies.find(
-        (c) => c.cardId === cardId && sameLineItem(c, normalized),
-      );
-      if (twin) {
-        const before = twin.quantity;
-        const prevDate = twin.acquiredAt;
-        const quantity = before + normalized.quantity;
-        const acquiredAt = prevDate <= normalized.acquiredAt ? prevDate : normalized.acquiredAt;
-        dispatch({ type: "updateCopy", id: twin.id, patch: { quantity, acquiredAt } });
-        return {
-          copy: { ...twin, quantity, acquiredAt },
-          merged: true,
-          undo: () =>
-            dispatch({
-              type: "updateCopy",
-              id: twin.id,
-              patch: { quantity: before, acquiredAt: prevDate },
-            }),
-        };
-      }
-      const copy = addCopy(cardId, normalized);
-      return { copy, merged: false, undo: () => void removeCopy(copy.id) };
-    },
-    [addCopy, removeCopy],
-  );
-
-  const requestCard = useCallback((input: NewCardRequest) => {
-    const request: CardRequest = {
-      ...input,
-      id: newId("request"),
-      requestedAt: emptyCopyDetails().acquiredAt,
-    };
-    dispatch({ type: "requestCard", request });
-    return request;
-  }, []);
-
-  const reset = useCallback(() => dispatch({ type: "reset" }), []);
-
-  return useMemo<CollectionStore>(() => {
-    const getBinder = (binderId: BinderId) => state.binders.find((b) => b.id === binderId);
-    const systemBinder = (kind: SystemKind) => {
-      const b = state.binders.find((x) => x.system === kind);
-      if (!b) throw new Error(`final store: no ${kind} binder`);
-      return b;
-    };
-    const scope = copyScope(state);
-    const scopedCopies = scope ? state.copies.filter((c) => c.binderIds.includes(scope)) : state.copies;
-    const wantCardIds = [...new Set(state.wants.map((w) => w.cardId))];
-    return {
+  return useMemo<CollectionStore>(
+    () => ({
       state,
-      addCopy,
-      updateCopy,
-      removeCopy,
-      restoreCopy,
-      toggleBuilding,
-      addToBinder,
-      removeFromBinder,
-      createBinder,
-      placeInSlot,
-      reset,
-      ownedCount: (cardId) => ownedCountFor(cardId, state.copies),
-      copiesOf: (cardId) => copiesOfFor(cardId, state.copies),
-      isBuilding: (setId) => state.buildingSetIds.includes(setId),
-      completion: (setId, variant) => setCompletionFor(setId, variant, state.copies),
-      binderCards: (binder): Card[] =>
-        binder.id === WANT_BINDER_ID
-          ? wantCardIds.map(getCard).sort(compareCards)
-          : binderCardsFor(binder, state.copies),
-      binderCopies: (binder) =>
-        binder.id === WANT_BINDER_ID ? [] : binderCopiesFor(binder, state.copies),
-      getBinder,
-
-      mainBinderId: MAIN_BINDER_ID,
-      wantBinderId: WANT_BINDER_ID,
-      tradeBinderId: TRADE_BINDER_ID,
-      systemBinder,
-      isSystem: (binderId) => !!getBinder(binderId)?.system,
-      fileableBinders: state.binders.filter(isFileable),
-      ownBinders: state.binders.filter((b) => !b.system),
-      renameBinder,
-      deleteBinder,
-
-      selectedBinderId: state.selectedBinderId,
-      setSelectedBinder,
-      targetBinderId: targetFor(state),
-      setTargetBinder: setSelectedBinder,
-      scopedCopies,
-      copiesInScope: (cardId) => copiesOfFor(cardId, scopedCopies),
-      ownedInScope: (cardId) => ownedCountFor(cardId, scopedCopies),
-      completionInScope: (setId, variant) => setCompletionFor(setId, variant, scopedCopies),
-      addHave,
-      addLineItem,
-
-      wants: state.wants,
-      wantCardIds,
-      wantsByBinder: () => {
-        const groups = new Map<BinderId | null, Card[]>();
-        groups.set(null, []);
-        for (const b of state.binders) if (isFileable(b)) groups.set(b.id, []);
-        for (const w of state.wants) {
-          const key = groups.has(w.binderId) ? w.binderId : null;
-          groups.get(key)!.push(getCard(w.cardId));
-        }
-        return [...groups]
-          .filter(([, list]) => list.length > 0)
-          .map(([binderId, list]) => ({ binderId, cards: list.sort(compareCards) }));
-      },
-      isWanted: (cardId) =>
-        scope
-          ? state.wants.some((w) => w.cardId === cardId && w.binderId === scope)
-          : state.wants.some((w) => w.cardId === cardId),
-      toggleWant,
-      setWant,
-
-      isUpForTrade: (copy) => copy.binderIds.includes(TRADE_BINDER_ID),
-      setUpForTrade,
-
+      run,
       cardRequests: state.cardRequests,
       requestCard,
-
-      setBinderLabel,
-      moveCopy,
       browseFilter: state.browseFilter,
       setBrowseFilter,
-    };
-  }, [
-    state,
-    addCopy,
-    updateCopy,
-    removeCopy,
-    restoreCopy,
-    toggleBuilding,
-    addToBinder,
-    removeFromBinder,
-    createBinder,
-    placeInSlot,
-    reset,
-    renameBinder,
-    deleteBinder,
-    setWant,
-    toggleWant,
-    setUpForTrade,
-    setSelectedBinder,
-    addHave,
-    addLineItem,
-    requestCard,
-    setBinderLabel,
-    moveCopy,
-    setBrowseFilter,
-  ]);
+      reset,
+    }),
+    [state, run, requestCard, setBrowseFilter, reset],
+  );
 }
