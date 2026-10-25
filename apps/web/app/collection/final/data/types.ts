@@ -402,6 +402,14 @@ export interface Container {
    * counted yet; show it as unknown, never as 0.
    */
   count: ContainerCount | null;
+  /**
+   * NEO-360 — a binder's share link parts (the real collection only; absent
+   * until minted, and never on Main, a box or a system shelf).
+   */
+  slug?: string;
+  slugKey?: string;
+  /** NEO-360 — anyone with the link can read it (a binder or the Want List). */
+  isPublic?: boolean;
 }
 
 /** True when a copy can live here: a binder or box that is not the Want List, the trade pile or a smart binder. */
@@ -596,8 +604,17 @@ export interface Capabilities {
   demoChrome: boolean;
   /** Making a smart binder (a rule that fills it). Real ones arrive with NEO-362. */
   smartBinders: boolean;
-  /** Share links for a binder, the Want List or a set (no public profile route yet). */
+  /**
+   * The demo's example Share button for a binder, the Want List, Up for Trade
+   * or a set: it shows what a link would look like and makes no page.
+   */
   share: boolean;
+  /**
+   * NEO-360 — real share links (`useSharing()`): a binder's, the Want List's
+   * and Up for Trade's public pages, each with its own switch. Never Main, a
+   * box or a set.
+   */
+  shareLinks: boolean;
   /**
    * Inventory (NEO-359): the Inventory tab with the boxes, New box, an open
    * box, everything for sale at once, and the card drawer's Sell / Take off
@@ -616,6 +633,8 @@ export const ALL_CAPABILITIES: Capabilities = {
   demoChrome: true,
   smartBinders: true,
   share: true,
+  // The demo makes no public pages: its Share button stays an example.
+  shareLinks: false,
   inventory: true,
 };
 
@@ -628,17 +647,42 @@ export const NO_CAPABILITIES: Capabilities = {
   demoChrome: false,
   smartBinders: false,
   share: false,
+  shareLinks: false,
   inventory: false,
 };
 
-/** What the real collection can do today (NEO-359: binders, wants, trade and scope; Inventory comes later). */
+/**
+ * What the real collection can do today (NEO-359: binders, wants, trade and
+ * scope; NEO-360: share links; Inventory comes later).
+ */
 export const REAL_CAPABILITIES: Capabilities = {
   ...NO_CAPABILITIES,
   binders: true,
   wants: true,
   trade: true,
   scope: true,
+  shareLinks: true,
 };
+
+// ---------------------------------------------------------------------------
+// Share links (NEO-360)
+// ---------------------------------------------------------------------------
+
+/** The two shelves that are public by default; their switches live on the profile. */
+export type PublicShelf = "trade" | "forSale";
+
+/** The collector's public name and their shelves' switches. */
+export interface ShareProfile {
+  /** Null until they pick one on their profile: no link exists without it. */
+  username: string | null;
+  tradePublic: boolean;
+  forSalePublic: boolean;
+}
+
+export interface ShareLinkParts {
+  slug: string;
+  slugKey: string;
+}
 
 // ---------------------------------------------------------------------------
 // Writes

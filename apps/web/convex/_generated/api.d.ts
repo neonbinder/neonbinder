@@ -121,6 +121,7 @@ import type * as postage from "../postage.js";
 import type * as posthog from "../posthog.js";
 import type * as preprocessAudience from "../preprocessAudience.js";
 import type * as preprocessCapacity from "../preprocessCapacity.js";
+import type * as publicCollection from "../publicCollection.js";
 import type * as publicProfile from "../publicProfile.js";
 import type * as rekeyEntityNames from "../rekeyEntityNames.js";
 import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js";
@@ -269,6 +270,7 @@ declare const fullApi: ApiFromModules<{
   posthog: typeof posthog;
   preprocessAudience: typeof preprocessAudience;
   preprocessCapacity: typeof preprocessCapacity;
+  publicCollection: typeof publicCollection;
   publicProfile: typeof publicProfile;
   rekeyEntityNames: typeof rekeyEntityNames;
   repairSportHallOfFameQids: typeof repairSportHallOfFameQids;

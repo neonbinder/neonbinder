@@ -436,14 +436,20 @@ describe("share links (demo only)", () => {
     expect(slugify("!!!")).toBe("binder");
   });
 
-  it("gives the Want List its own path by role, not by name", () => {
-    expect(containerShareTarget({ kind: "binder", system: "want", name: "Whatever" })).toEqual({ what: "your Want List", path: "want-list" });
+  const shelfRow = (over: Partial<Container>): Container => ({ id: "c1", kind: "binder", name: "Whatever", count: null, ...over });
+
+  it("gives the Want List and Up for Trade their own paths by role, not by name", () => {
+    const want = shelfRow({ system: "want" });
+    expect(containerShareTarget(want)).toEqual({ what: "your Want List", path: "want-list", subject: { kind: "want", container: want } });
+    expect(containerShareTarget(shelfRow({ system: "trade" }))?.path).toBe("up-for-trade");
   });
 
-  it("puts a box under boxes and a binder under binders", () => {
-    expect(containerShareTarget({ kind: "box", name: "Show box" }).path).toBe("boxes/show-box");
-    expect(containerShareTarget({ kind: "binder", name: "Ohtani rainbow" }).path).toBe("binders/ohtani-rainbow");
-    expect(shareUrl(containerShareTarget({ kind: "binder", name: "Ohtani rainbow" }))).toBe("neonbinder.io/@you/binders/ohtani-rainbow");
+  it("never shares Main or a single box (NEO-360); a binder goes under binders at /u/", () => {
+    expect(containerShareTarget(shelfRow({ system: "main", name: "Main" }))).toBeNull();
+    expect(containerShareTarget(shelfRow({ kind: "box", name: "Show box" }))).toBeNull();
+    const binder = containerShareTarget(shelfRow({ name: "Ohtani rainbow" }))!;
+    expect(binder.path).toBe("binders/ohtani-rainbow");
+    expect(shareUrl(binder)).toBe("neonbinder.io/u/you/binders/ohtani-rainbow");
   });
 
   it("shares a set by its label", () => {

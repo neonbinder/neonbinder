@@ -157,6 +157,10 @@ export default function EditContainerDialog({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
+            {/* NEO-360 — a binder's share link is its own; a rename never moves it. */}
+            {container.slug && (
+              <p className="text-sm text-ink-2">Renaming keeps its share link. Change the link from Share.</p>
+            )}
           </div>
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <NeonButton

@@ -1,0 +1,466 @@
+/**
+ * NEO-360 — public share links: `convex/publicCollection.ts` (the anonymous
+ * reads) and the owner's switches (`collectionContainers.ensureLink`,
+ * `setSlug`, `resetLink`, `setVisibility`, `publicProfile.setShelfVisibility`).
+ *
+ * The forbidden-key scan is the one that matters most: seed a copy with every
+ * private field set, call every public query, and walk the JSON for any
+ * forbidden key or any of those values.
+ */
+
+import { convexTest } from "convex-test";
+import { describe, expect, test } from "vitest";
+import { api } from "./_generated/api";
+import schema from "./schema";
+import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import type { Id } from "./_generated/dataModel";
+import { MAX_PUBLIC_PAGE } from "./publicCollection";
+import { binderPath, isSlugKey } from "../lib/collection/share-links";
+
+const modules = (import.meta as unknown as {
+  glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+}).glob("./**/*.*s");
+
+const ME = { subject: "collector_me_001" };
+const THEM = { subject: "collector_them_002" };
+const PAGE = { numItems: 20, cursor: null };
+
+async function setup() {
+  const t = convexTest(schema, modules);
+  const fx = await seedCollectionCatalog(t);
+  const me = t.withIdentity(ME);
+  const them = t.withIdentity(THEM);
+  await me.mutation(api.publicProfile.upsertPublicProfile, { username: "ace" });
+  await them.mutation(api.publicProfile.upsertPublicProfile, { username: "deuce" });
+  const system = await me.mutation(api.collectionContainers.ensureSystem, {});
+  return { t, fx, me, them, anon: t, system };
+}
+type S = Awaited<ReturnType<typeof setup>>;
+
+async function binder(s: S, name = "Ohtani rainbow", who: "me" | "them" = "me") {
+  const caller = who === "me" ? s.me : s.them;
+  const { containerId } = await caller.mutation(api.collectionContainers.create, { kind: "binder", name });
+  const row = await s.t.run(async (ctx) => ctx.db.get(containerId));
+  return { id: containerId, path: binderPath(row!.slug!, row!.slugKey!), row: row! };
+}
+
+const PRIVATE_VALUES = {
+  costCents: 123_456,
+  acquiredOn: "2019-04-01",
+  location: "Closet shelf B",
+  notes: "Paid too much, do not tell anyone",
+  cert: "CERT-99887766",
+  serialNumber: "07/99",
+};
+const FORBIDDEN_KEYS = [
+  "costCents",
+  "acquiredOn",
+  "location",
+  "notes",
+  "cert",
+  "serialNumber",
+  "homeId",
+  "ownerId",
+  "userId",
+  "lastUpdated",
+  "binderId",
+  "slugKey",
+];
+
+/**
+ * Walk everything for the private VALUES; walk the keys outside the card's
+ * catalog data (a team's `location` is NB's "New York", not the copy's shelf).
+ */
+function scan(value: unknown, path: string, hits: string[], forbiddenValues: string[], inCard = false) {
+  if (value === null || value === undefined) return;
+  if (typeof value === "string" || typeof value === "number") {
+    if (forbiddenValues.includes(String(value))) hits.push(`${path} = ${String(value)}`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => scan(item, `${path}[${i}]`, hits, forbiddenValues, inCard));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, inner] of Object.entries(value)) {
+      if (!inCard && FORBIDDEN_KEYS.includes(key)) hits.push(`${path}.${key}`);
+      scan(inner, `${path}.${key}`, hits, forbiddenValues, inCard || key === "card");
+    }
+  }
+}
+
+describe("the forbidden-key scan", () => {
+  test("no public query carries a private field, its value, a copy id or the owner's subject", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" });
+    const details = {
+      quantity: 1,
+      condition: "Near Mint" as const,
+      grading: { grader: "PSA" as const, grade: "10", cert: PRIVATE_VALUES.cert },
+      serialNumber: PRIVATE_VALUES.serialNumber,
+      costCents: PRIVATE_VALUES.costCents,
+      acquiredOn: PRIVATE_VALUES.acquiredOn,
+      location: PRIVATE_VALUES.location,
+      notes: PRIVATE_VALUES.notes,
+      upForTrade: true,
+    };
+    const inBinder = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details: { ...details, homeId: b.id, slot: 4 },
+    });
+    const inBox = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.strawberry2,
+      details: { ...details, homeId: box },
+    });
+    await s.me.mutation(api.collectionWants.set, { cardId: s.fx.gooden1, binderId: b.id, on: true });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: s.system.wantId, visibility: "public" });
+
+    const answers = {
+      binder: await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path }),
+      binderCopies: await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE }),
+      wantList: await s.anon.query(api.publicCollection.wantList, { username: "ace", paginationOpts: PAGE }),
+      trade: await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE }),
+      forSale: await s.anon.query(api.publicCollection.forSale, { username: "ace", paginationOpts: PAGE }),
+      shelves: await s.anon.query(api.publicCollection.shelves, { username: "ace" }),
+      shelfWant: await s.anon.query(api.publicCollection.shelf, { username: "ace", shelf: "want" }),
+      shelfTrade: await s.anon.query(api.publicCollection.shelf, { username: "ace", shelf: "trade" }),
+      shelfSale: await s.anon.query(api.publicCollection.shelf, { username: "ace", shelf: "forSale" }),
+      profile: await s.anon.query(api.publicProfile.getPublicProfileByUsername, { username: "ace" }),
+    };
+    // Something to scan: each list really answered.
+    expect(answers.binderCopies.page).toHaveLength(1);
+    expect(answers.wantList.page).toHaveLength(1);
+    expect(answers.trade.page).toHaveLength(2);
+    expect(answers.forSale.page).toHaveLength(1);
+    expect(answers.binderCopies.page[0]).toMatchObject({
+      condition: "Near Mint",
+      grading: { grader: "PSA", grade: "10" },
+      slot: 4,
+      upForTrade: true,
+    });
+
+    const hits: string[] = [];
+    const forbiddenValues = [
+      ...Object.values(PRIVATE_VALUES).map(String),
+      ME.subject,
+      inBinder.copyId,
+      inBox.copyId,
+      b.id,
+      box,
+      b.row.slugKey!,
+    ];
+    scan(answers, "answers", hits, forbiddenValues);
+    expect(hits).toEqual([]);
+  });
+});
+
+describe("defaults", () => {
+  test("a new binder and the Want List read as not found until switched public", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: b.id } });
+    await s.me.mutation(api.collectionWants.set, { cardId: s.fx.gooden1, on: true });
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toBeNull();
+    expect((await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE })).page).toEqual([]);
+    expect(await s.anon.query(api.publicCollection.shelf, { username: "ace", shelf: "want" })).toBeNull();
+    expect((await s.anon.query(api.publicCollection.wantList, { username: "ace", paginationOpts: PAGE })).page).toEqual([]);
+
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: s.system.wantId, visibility: "public" });
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toMatchObject({
+      name: "Ohtani rainbow",
+      count: { copies: 1, lines: 1 },
+    });
+    expect((await s.anon.query(api.publicCollection.wantList, { username: "ace", paginationOpts: PAGE })).page).toHaveLength(1);
+
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "private" });
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toBeNull();
+  });
+
+  test("Up for Trade and for-sale read as public until switched private", async () => {
+    const s = await setup();
+    const { copyId } = await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1 } });
+    await s.me.mutation(api.collection.setTrade, { copyId, on: true });
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.strawberry2, details: { quantity: 2, homeId: box } });
+
+    expect((await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE })).page).toHaveLength(1);
+    expect((await s.anon.query(api.publicCollection.forSale, { username: "ace", paginationOpts: PAGE })).page).toHaveLength(1);
+    expect(await s.anon.query(api.publicCollection.shelves, { username: "ace" })).toEqual({
+      wantList: false,
+      trade: true,
+      forSale: true,
+    });
+
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true });
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "forSale", private: true });
+    expect(await s.anon.query(api.publicCollection.shelf, { username: "ace", shelf: "trade" })).toBeNull();
+    expect((await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE })).page).toEqual([]);
+    expect((await s.anon.query(api.publicCollection.forSale, { username: "ace", paginationOpts: PAGE })).page).toEqual([]);
+    expect(await s.anon.query(api.publicCollection.shelves, { username: "ace" })).toEqual({
+      wantList: false,
+      trade: false,
+      forSale: false,
+    });
+
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: false });
+    expect((await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE })).page).toHaveLength(1);
+  });
+
+  test("the shelf switches never reach the public profile", async () => {
+    const s = await setup();
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true });
+    const profile = await s.anon.query(api.publicProfile.getPublicProfileByUsername, { username: "ace" });
+    expect(profile).not.toBeNull();
+    expect(Object.keys(profile!)).not.toContain("tradePrivate");
+    const mine = await s.me.query(api.publicProfile.getMyPublicProfile, {});
+    expect(mine?.tradePrivate).toBe(true);
+  });
+});
+
+describe("Main, boxes and the system shelves", () => {
+  test("Main can't be made public, and a hand-written public Main still reads as not found", async () => {
+    const s = await setup();
+    const main = s.system.mainId;
+    await expect(
+      s.me.mutation(api.collectionContainers.setVisibility, { containerId: main, visibility: "public" }),
+    ).rejects.toThrow(/Main is never shared/);
+    await expect(s.me.mutation(api.collectionContainers.setSlug, { containerId: main, slug: "main-stuff" })).rejects.toThrow(
+      /Main is never shared/,
+    );
+    await expect(s.me.mutation(api.collectionContainers.ensureLink, { containerId: main })).rejects.toThrow();
+    await s.t.run(async (ctx) => ctx.db.patch(main, { slug: "main", slugKey: "abc123", visibility: "public" }));
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "main-abc123" })).toBeNull();
+  });
+
+  test("a box and Up for Trade take no visibility, and a hand-written public box reads as not found", async () => {
+    const s = await setup();
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show box" });
+    const row = await s.t.run(async (ctx) => ctx.db.get(box));
+    expect(row?.slug).toBeUndefined();
+    await expect(
+      s.me.mutation(api.collectionContainers.setVisibility, { containerId: box, visibility: "public" }),
+    ).rejects.toThrow(/box/);
+    await expect(
+      s.me.mutation(api.collectionContainers.setVisibility, { containerId: s.system.tradeId, visibility: "public" }),
+    ).rejects.toThrow();
+    await s.t.run(async (ctx) => ctx.db.patch(box, { slug: "show-box", slugKey: "zzz999", visibility: "public" }));
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "show-box-zzz999" })).toBeNull();
+  });
+});
+
+describe("guessing", () => {
+  test("wrong key, wrong readable part, private, missing, unknown user and garbage all read the same null", async () => {
+    const s = await setup();
+    const pub = await binder(s, "Ohtani rainbow");
+    const priv = await binder(s, "Secret stash");
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: pub.id, visibility: "public" });
+    const key = pub.row.slugKey!;
+    const flipped = (key[0] === "a" ? "b" : "a") + key.slice(1);
+    const probes = [
+      { username: "ace", path: `ohtani-rainbow-${flipped}` },
+      { username: "ace", path: `ohtani-rainbows-${key}` },
+      { username: "ace", path: priv.path },
+      { username: "ace", path: "nothing-here-abcdef" },
+      { username: "nobody", path: pub.path },
+      { username: "ace", path: "ohtani-rainbow" },
+      { username: "ACE", path: pub.path },
+      { username: "ace", path: "x".repeat(500) },
+    ];
+    for (const probe of probes) {
+      expect(await s.anon.query(api.publicCollection.binder, probe)).toBeNull();
+    }
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: pub.path })).not.toBeNull();
+  });
+
+  test("another collector's binder under my username reads as not found", async () => {
+    const s = await setup();
+    const theirs = await binder(s, "Their binder", "them");
+    await s.them.mutation(api.collectionContainers.setVisibility, { containerId: theirs.id, visibility: "public" });
+    expect(await s.anon.query(api.publicCollection.binder, { username: "deuce", path: theirs.path })).not.toBeNull();
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: theirs.path })).toBeNull();
+  });
+});
+
+describe("counts and paging", () => {
+  test("an absent stored count reads as null, never a recount", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: b.id } });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    await s.t.run(async (ctx) => ctx.db.patch(b.id, { count: undefined }));
+    const header = await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path });
+    expect(header?.count).toBeNull();
+    const row = await s.t.run(async (ctx) => ctx.db.get(b.id));
+    expect(row?.count).toBeUndefined();
+  });
+
+  test(`a page holds at most ${MAX_PUBLIC_PAGE} lines whatever the client asks`, async () => {
+    const s = await setup();
+    const b = await binder(s);
+    const cardIds = await s.t.run(async (ctx) => {
+      const ids: Id<"cardChecklist">[] = [];
+      const base = await ctx.db.get(s.fx.gooden1);
+      for (let i = 0; i < MAX_PUBLIC_PAGE + 5; i++) {
+        const { _id: _ignored, _creationTime: _c, ...rest } = base!;
+        ids.push(await ctx.db.insert("cardChecklist", { ...rest, cardNumber: `P${i}`, sortOrder: 1000 + i }));
+      }
+      return ids;
+    });
+    for (const cardId of cardIds) {
+      await s.me.mutation(api.collection.addLineItem, { cardId, details: { quantity: 1, homeId: b.id } });
+    }
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    const first = await s.anon.query(api.publicCollection.binderCopies, {
+      username: "ace",
+      path: b.path,
+      paginationOpts: { numItems: 10_000, cursor: null },
+    });
+    expect(first.page).toHaveLength(MAX_PUBLIC_PAGE);
+    expect(first.isDone).toBe(false);
+    const rest = await s.anon.query(api.publicCollection.binderCopies, {
+      username: "ace",
+      path: b.path,
+      paginationOpts: { numItems: 10_000, cursor: first.continueCursor },
+    });
+    expect(rest.page).toHaveLength(5);
+  });
+
+  test("for-sale walks box by box to the end", async () => {
+    const s = await setup();
+    const { containerId: a } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "A" });
+    const { containerId: b } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "B" });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1, homeId: a } });
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.strawberry2, details: { quantity: 1, homeId: b } });
+    const seen: number[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const page: { page: unknown[]; isDone: boolean; continueCursor: string } = await s.anon.query(
+        api.publicCollection.forSale,
+        { username: "ace", paginationOpts: { numItems: 5, cursor } },
+      );
+      seen.push(page.page.length);
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+    expect(seen.reduce((x, y) => x + y, 0)).toBe(2);
+  });
+});
+
+describe("what the shelves say", () => {
+  test("the Want List carries cards only; Up for Trade marks box copies for sale without naming the box", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.me.mutation(api.collectionWants.set, { cardId: s.fx.gooden1, binderId: b.id, on: true });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: s.system.wantId, visibility: "public" });
+    const wants = await s.anon.query(api.publicCollection.wantList, { username: "ace", paginationOpts: PAGE });
+    expect(Object.keys(wants.page[0]).sort()).toEqual(["card", "key"]);
+
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Secret box name" });
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.strawberry2,
+      details: { quantity: 1, homeId: box, upForTrade: true },
+    });
+    const trade = await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE });
+    expect(trade.page[0].forSale).toBe(true);
+    expect(JSON.stringify(trade)).not.toContain("Secret box name");
+  });
+});
+
+describe("links", () => {
+  test("a new binder is born with a readable part and a 6-character key; a rename keeps both", async () => {
+    const s = await setup();
+    const b = await binder(s, "Ohtani Rainbow!");
+    expect(b.row.slug).toBe("ohtani-rainbow");
+    expect(isSlugKey(b.row.slugKey!)).toBe(true);
+    await s.me.mutation(api.collectionContainers.update, { containerId: b.id, name: "Shohei" });
+    const after = await s.t.run(async (ctx) => ctx.db.get(b.id));
+    expect([after?.slug, after?.slugKey]).toEqual([b.row.slug, b.row.slugKey]);
+  });
+
+  test("setSlug checks the format, changes the readable part and kills the old one", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    for (const bad of ["ab", "has--double", "-edge", "émoji✨", "a".repeat(51), "UPPER/slash"]) {
+      await expect(s.me.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: bad })).rejects.toThrow(
+        /lowercase letters/,
+      );
+    }
+    const { link, previous } = await s.me.mutation(api.collectionContainers.setSlug, {
+      containerId: b.id,
+      slug: "  Shohei Gold ",
+    });
+    expect(link.slug).toBe("shohei-gold");
+    expect(previous).toBe("ohtani-rainbow");
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toBeNull();
+    expect(
+      await s.anon.query(api.publicCollection.binder, { username: "ace", path: binderPath(link.slug, link.slugKey) }),
+    ).not.toBeNull();
+  });
+
+  test("resetLink changes the key and kills the old link; the binder stays public", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    const link = await s.me.mutation(api.collectionContainers.resetLink, { containerId: b.id });
+    expect(link.slugKey).not.toBe(b.row.slugKey);
+    expect(isSlugKey(link.slugKey)).toBe(true);
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toBeNull();
+    expect(
+      await s.anon.query(api.publicCollection.binder, { username: "ace", path: binderPath(link.slug, link.slugKey) }),
+    ).not.toBeNull();
+  });
+
+  test("ensureLink mints a link for a binder made before NEO-360, once", async () => {
+    const s = await setup();
+    const old = await s.t.run(async (ctx) =>
+      ctx.db.insert("collectionContainers", {
+        ownerId: ME.subject,
+        kind: "binder",
+        name: "'96 Contenders",
+        count: { copies: 0, lines: 0 },
+        lastUpdated: 0,
+      }),
+    );
+    const a = await s.me.mutation(api.collectionContainers.ensureLink, { containerId: old });
+    const b = await s.me.mutation(api.collectionContainers.ensureLink, { containerId: old });
+    expect(a.slug).toBe("96-contenders");
+    expect(b).toEqual(a);
+  });
+});
+
+describe("the switches are the owner's", () => {
+  test("setVisibility, setSlug, resetLink, ensureLink and setShelfVisibility refuse signed-out callers and other collectors' rows", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    const anonCalls = [
+      () => s.anon.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" }),
+      () => s.anon.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: "mine-now" }),
+      () => s.anon.mutation(api.collectionContainers.resetLink, { containerId: b.id }),
+      () => s.anon.mutation(api.collectionContainers.ensureLink, { containerId: b.id }),
+      () => s.anon.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true }),
+    ];
+    for (const call of anonCalls) await expect(call()).rejects.toThrow(/Not authenticated/);
+    const theirCalls = [
+      () => s.them.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" }),
+      () => s.them.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: "mine-now" }),
+      () => s.them.mutation(api.collectionContainers.resetLink, { containerId: b.id }),
+      () => s.them.mutation(api.collectionContainers.ensureLink, { containerId: b.id }),
+    ];
+    for (const call of theirCalls) await expect(call()).rejects.toThrow(/isn't in your collection/);
+    const row = await s.t.run(async (ctx) => ctx.db.get(b.id));
+    expect(row).toMatchObject({ slug: b.row.slug, slugKey: b.row.slugKey });
+    expect(row?.visibility).toBeUndefined();
+  });
+
+  test("setShelfVisibility needs a public name first", async () => {
+    const s = await setup();
+    const fresh = s.t.withIdentity({ subject: "no_profile_yet" });
+    await expect(fresh.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true })).rejects.toThrow(
+      /public name/,
+    );
+  });
+});

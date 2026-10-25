@@ -78,6 +78,7 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type SharingExtension,
 } from "./store";
 import {
   REAL_CAPABILITIES,
@@ -99,6 +100,7 @@ import {
   type Variant,
   type VariantKind,
   type VariantRef,
+  type ShareProfile,
   type Want,
 } from "./types";
 
@@ -266,6 +268,9 @@ function toContainer(raw: RawContainer): Container {
     ...(raw.description ? { description: raw.description } : {}),
     ...(raw.label ? { label: raw.label } : {}),
     count: raw.count ?? null,
+    ...(raw.slug ? { slug: raw.slug } : {}),
+    ...(raw.slugKey ? { slugKey: raw.slugKey } : {}),
+    ...(raw.visibility === "public" ? { isPublic: true } : {}),
   };
 }
 
@@ -1742,6 +1747,56 @@ function emptyDetails(): CopyDetails {
 }
 
 // ---------------------------------------------------------------------------
+// Share links (NEO-360)
+// ---------------------------------------------------------------------------
+
+/** The caller's public name and shelf switches, from their profile row. */
+function useShareProfile(): ShareProfile | undefined {
+  const raw = useQuery(api.publicProfile.getMyPublicProfile, {});
+  return useMemo(() => {
+    if (raw === undefined) return undefined;
+    return {
+      username: raw?.username ?? null,
+      tradePublic: !raw?.tradePrivate,
+      forSalePublic: !raw?.forSalePrivate,
+    };
+  }, [raw]);
+}
+
+/**
+ * The share-link writes. No optimistic layer: each is one small patch and the
+ * shelf (`collectionContainers.list`) and the profile re-read on their own.
+ */
+function useConvexSharing(): SharingExtension {
+  const asHome = (id: string) => id as RawCopy["homeId"];
+  const ensureLink = useMutation(api.collectionContainers.ensureLink);
+  const setSlug = useMutation(api.collectionContainers.setSlug);
+  const resetLink = useMutation(api.collectionContainers.resetLink);
+  const setVisibility = useMutation(api.collectionContainers.setVisibility);
+  const setShelfVisibility = useMutation(api.publicProfile.setShelfVisibility);
+  return useMemo<SharingExtension>(
+    () => ({
+      useShareProfile,
+      ensureLink: (container) =>
+        ensureLink({ containerId: asHome(container.id) }),
+      setSlug: async (container, slug) =>
+        (await setSlug({ containerId: asHome(container.id), slug })).link,
+      resetLink: (container) => resetLink({ containerId: asHome(container.id) }),
+      setVisibility: async (container, isPublic) => {
+        await setVisibility({
+          containerId: asHome(container.id),
+          visibility: isPublic ? "public" : "private",
+        });
+      },
+      setShelfVisibility: async (shelf, isPublic) => {
+        await setShelfVisibility({ shelf, private: !isPublic });
+      },
+    }),
+    [ensureLink, setSlug, resetLink, setVisibility, setShelfVisibility],
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -1758,12 +1813,20 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
     ensured.current = true;
     void Promise.resolve(ensureSystem({})).catch(() => undefined);
   }, [ensureSystem]);
+  const sharing = useConvexSharing();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions }),
-    [actions],
+    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing }),
+    [actions, sharing],
   );
   return createElement(CollectionStoreContext.Provider, { value }, children);
 }
+
+/**
+ * NEO-360 — a catalog card as the view model draws it, for the public share
+ * pages (`app/u/[username]/collection/`), which read the same catalog shape
+ * through `publicCollection` without mounting this store.
+ */
+export const hydrateCatalogCard = toCardWithPath;
 
 /** Exported for unit tests. */
 export const __test = {

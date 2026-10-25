@@ -93,6 +93,9 @@ import type {
   NewContainer,
   OwnedCards,
   CopyDetails,
+  PublicShelf,
+  ShareLinkParts,
+  ShareProfile,
   DrillItem,
   DrillLevel,
   DrillParents,
@@ -321,12 +324,33 @@ export interface DemoExtension {
   reset: () => void;
 }
 
+/**
+ * NEO-360 — real share links (capability `shareLinks`): the Convex store's
+ * only. `undefined` under the demo, whose Share button is an example.
+ * Each write rejects with the server's message when it refuses.
+ */
+export interface SharingExtension {
+  /** The caller's public name and shelf switches; `undefined` while loading. */
+  useShareProfile(): ShareProfile | undefined;
+  /** A binder's link parts, minted now for one made before share links. */
+  ensureLink(container: Container): Promise<ShareLinkParts>;
+  /** A new readable part for a binder's link; the old one stops working. */
+  setSlug(container: Container, slug: string): Promise<ShareLinkParts>;
+  /** A new random key: the old link stops working. No undo. */
+  resetLink(container: Container): Promise<ShareLinkParts>;
+  /** A binder or the Want List: public, or private (the default). */
+  setVisibility(container: Container, isPublic: boolean): Promise<void>;
+  /** Up for Trade or the for-sale stock: public (the default), or private. */
+  setShelfVisibility(shelf: PublicShelf, isPublic: boolean): Promise<void>;
+}
+
 export interface CollectionStoreValue {
   kind: "demo" | "convex";
   capabilities: Capabilities;
   data: CollectionData;
   actions: CollectionActions;
   demo?: DemoExtension;
+  sharing?: SharingExtension;
 }
 
 export const CollectionStoreContext = createContext<CollectionStoreValue | null>(null);
@@ -340,6 +364,11 @@ export function useCollectionStore(): CollectionStoreValue {
 
 export function useCapabilities(): Capabilities {
   return useCollectionStore().capabilities;
+}
+
+/** NEO-360 — real share links; `undefined` when the store has none (the demo). */
+export function useSharing(): SharingExtension | undefined {
+  return useCollectionStore().sharing;
 }
 
 /**

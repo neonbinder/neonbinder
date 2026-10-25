@@ -49,6 +49,12 @@ const SignInPage = lazy(() => import("@/app/signin/[[...sign-in]]/page"));
 const SignUpPage = lazy(() => import("@/app/sign-up/[[...sign-up]]/page"));
 const PublicProfile = lazy(() => import("@/app/u/[username]/page"));
 const SalePage = lazy(() => import("@/app/u/[username]/sale/page"));
+// NEO-360 — the public share pages, one module for all four.
+const publicCollection = () => import("@/app/u/[username]/collection/PublicCollectionPage");
+const PublicBinder = lazy(() => publicCollection().then((m) => ({ default: m.PublicBinderPage })));
+const PublicWantList = lazy(() => publicCollection().then((m) => ({ default: m.PublicWantListPage })));
+const PublicTrade = lazy(() => publicCollection().then((m) => ({ default: m.PublicTradePage })));
+const PublicForSale = lazy(() => publicCollection().then((m) => ({ default: m.PublicForSalePage })));
 const TestSignIn = lazy(() => import("@/app/testing/sign-in/page"));
 const TestReset = lazy(() => import("@/app/testing/reset/page"));
 const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
@@ -150,6 +156,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
           <Route path="/u/:username/sale" element={<Deferred><SalePage /></Deferred>} />
+          <Route path="/u/:username/binders/:path" element={<Deferred><PublicBinder /></Deferred>} />
+          <Route path="/u/:username/want-list" element={<Deferred><PublicWantList /></Deferred>} />
+          <Route path="/u/:username/up-for-trade" element={<Deferred><PublicTrade /></Deferred>} />
+          <Route path="/u/:username/for-sale" element={<Deferred><PublicForSale /></Deferred>} />
           <Route path="/u/:username" element={<Deferred><PublicProfile /></Deferred>} />
           <Route path="/testing/sign-in" element={<Deferred><TestSignIn /></Deferred>} />
           <Route path="/testing/reset" element={<Deferred><TestReset /></Deferred>} />

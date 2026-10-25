@@ -117,6 +117,10 @@ export default function PublicProfilePage() {
     username: username!,
   });
 
+  // NEO-360 — the public shelves to link to. Never a list of binders: a
+  // binder is reachable only through the link its collector shares.
+  const shelves = useQuery(api.publicCollection.shelves, { username: username! });
+
   const color1 = profile?.brandColor1 ?? "#0a0a0a";
   const color2 = profile?.brandColor2 ?? "#1a1a2e";
 
@@ -252,6 +256,38 @@ export default function PublicProfilePage() {
               </p>
             )}
           </div>
+
+          {/* NEO-360 — public collection shelves */}
+          {shelves && (shelves.trade || shelves.forSale || shelves.wantList) && (
+            <div className="w-full mt-6">
+              <div className="border-t border-ink/10 pt-6">
+                <h2 className="text-xs uppercase tracking-widest text-ink-3 font-semibold mb-4">
+                  Collection
+                </h2>
+                <div className="space-y-3">
+                  {[
+                    { show: shelves.trade, to: `/u/${profile.username}/up-for-trade`, label: "Up for Trade" },
+                    { show: shelves.forSale, to: `/u/${profile.username}/for-sale`, label: "For sale" },
+                    { show: shelves.wantList, to: `/u/${profile.username}/want-list`, label: "Want List" },
+                  ]
+                    .filter((l) => l.show)
+                    .map(({ to, label }) => (
+                      <Link
+                        key={label}
+                        to={to}
+                        className="flex items-center justify-center w-full py-3 px-5 rounded-full font-semibold text-ink transition-opacity hover:opacity-80 focus-outline"
+                        style={{
+                          background: `linear-gradient(135deg, ${color1}, ${color2})`,
+                          boxShadow: `0 0 12px #00D55899`,
+                        }}
+                      >
+                        {label}
+                      </Link>
+                    ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Marketplace buttons */}
           {marketplaceLinks.length > 0 && (

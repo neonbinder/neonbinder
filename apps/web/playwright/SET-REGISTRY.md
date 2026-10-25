@@ -2494,6 +2494,7 @@ teams or variants**. They are the reason the set must stay pristine.
 - `tests/set-selector/topps-chrome-marketplace-read.spec.ts`
 - `tests/collection/add-edit-remove-copy.spec.ts` (NEO-358 — the collector's `/collection`: drills to Base, reads it, and writes ONLY the signed-in user's `collectionCopies` on one Base card, removing them all before it ends; see "The collection spec's card" below)
 - `tests/collection/binders-move-fold-trade-want.spec.ts` (NEO-359 — the collector's My Binders: makes two binders, files copies on the FIRST THREE ordinary Base rows (same row choice as above), moves them between the binders, wants one, then deletes both binders and removes the copies; writes ONLY the signed-in user's `collectionContainers`, `collectionCopies` and `collectionWants`, never the set, its cards, players or teams)
+- `tests/collection/public-share-link.spec.ts` (NEO-360 — public share links: sets the signed-in user's public name, makes one binder, files one graded copy on the FIRST ordinary Base row (same row choice as above), shares the binder and reads it signed out, then removes the copy and deletes the binder; writes ONLY the signed-in user's `publicProfiles`, `collectionContainers` and `collectionCopies`, never the set, its cards, players or teams)
 
 **Three flows on this set are NOT read-only, and the list used to say the first two were**
 (corrected NEO-260). Each is **sole writer of one datum on the anchor** —

@@ -78,12 +78,17 @@ export interface OpenInput {
   label: ContainerLabel;
   /** A smart binder's rule in words, when the store can say it (the demo). */
   describeRule?: (rule: ContainerRule) => string;
-  /** Share links exist here (capability `share`). */
-  canShare: boolean;
+  /**
+   * Which Share this store has: `"example"` (the demo's, capability `share`:
+   * binders, the Want List, Up for Trade and sets), `"live"` (capability
+   * `shareLinks`: binders, the Want List and Up for Trade, never a set), or
+   * none.
+   */
+  share: "example" | "live" | null;
 }
 
 export function openView(input: OpenInput): OpenView {
-  const { view, container, set, mode, tally, label, describeRule, canShare } = input;
+  const { view, container, set, mode, tally, label, describeRule } = input;
   const want = container?.system === "want";
   const box = view.kind === "binder" && container?.kind === "box";
   const browsing = view.kind === "set";
@@ -97,7 +102,11 @@ export function openView(input: OpenInput): OpenView {
         ? "For sale"
         : (container?.name ?? "Binder");
   let share: ShareTarget | null = null;
-  if (canShare) share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
+  if (input.share === "example") {
+    share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
+  } else if (input.share === "live" && view.kind === "binder" && container && !container.rule) {
+    share = containerShareTarget(container);
+  }
   return {
     key: viewKey(view),
     title,
