@@ -21,9 +21,15 @@ export interface LabelFormat {
 }
 
 /**
- * A 4×6 label fed landscape: 6 inches across, 4 inches tall. This is the
- * orientation on a Rollo / Zebra / DYMO 4XL roll, and it is also what you get
- * printing onto a sheet of 4×6 labels.
+ * A 4×6 label laid out landscape: 6 inches across, 4 inches tall. This is how
+ * a shipping label reads once it is on the package, and the size every label
+ * layout (and EasyPost's postage PNG) is drawn at.
+ *
+ * It is not how the paper feeds. A Rollo / Zebra / DYMO 4XL roll runs 4in wide,
+ * short edge first, so the printer's page is portrait 4in × 6in. print-html
+ * hands the printer that portrait page and turns this layout onto it
+ * (`printedPage` in lib/print/print-html.ts), because since Firefox 158 the
+ * browser no longer does that turn for a landscape page.
  */
 export const LABEL_4X6_LANDSCAPE: LabelFormat = {
   id: "4x6-landscape",

@@ -14,10 +14,10 @@ import { printHtmlDocument } from "@/lib/print/print-html";
  *
  * ## Why the shared label format and not literal 4/6
  * It goes through the same printer, on the same roll, as the shipping label
- * beside it. Printing at DEFAULT_LABEL_FORMAT (6in across, 4in tall — the
- * landscape feed a Rollo/Zebra uses) means a printer already set up for
- * shipping labels prints this one square too, and a future format change moves
- * both together.
+ * beside it. Printing at DEFAULT_LABEL_FORMAT (laid out 6in across, 4in tall,
+ * and turned onto the portrait 4×6 stock by print-html exactly as the shipping
+ * label is) means a printer already set up for shipping labels prints this one
+ * square too, and a future format change moves both together.
  */
 
 const { widthIn, heightIn } = DEFAULT_LABEL_FORMAT;
@@ -25,13 +25,16 @@ const { widthIn, heightIn } = DEFAULT_LABEL_FORMAT;
 /**
  * The printed page, in full. Pure black edge to edge — the print document's
  * background is overridden as well as the block, so a printer that rounds the
- * page a hair larger still prints black rather than a white sliver, and
- * `overflow: hidden` keeps that rounding from spilling a blank second label.
+ * page a hair larger still prints black rather than a white sliver. The block
+ * is the label's own 6×4 and print-html turns it onto the 4×6 paper; the CSS
+ * sets colour only, because print-html owns the page and body size (pinned to
+ * the paper and clipped, so rounding never spills a blank second label) and a
+ * 6×4 size here would clip the turned block to the top 4in of the paper.
  * print-html already pins `print-color-adjust: exact`, without which browsers
  * drop backgrounds and this would print a blank sheet.
  */
 const BLACKOUT_BODY_HTML = `<div style="width:${widthIn}in;height:${heightIn}in;background:#000;display:block"></div>`;
-const BLACKOUT_CSS = `html, body { background: #000; width: ${widthIn}in; height: ${heightIn}in; overflow: hidden; }`;
+const BLACKOUT_CSS = "html, body { background: #000; }";
 
 export default function BlackoutLabelPage() {
   const [printError, setPrintError] = useState("");
