@@ -153,3 +153,4 @@
 - [Keep counts per scope, not global](reference_keep_counts_per_scope_not_global.md) — admin-invalidated count on the per-set row (clear + bounded recount), never one owner-wide counter
 - [Optimistic id swap remounts id-keyed rows](reference_optimistic_id_swap_remounts_id_keyed_rows.md) — key rows via useLineKeys; ids replay per args (optimisticIdFor); writes await landedCopy
 - [Scroll on focus swallows mouse clicks](reference_scroll_on_focus_swallows_mouse_clicks.md) — focus fires between mousedown/mouseup; gate scroll-on-focus on :focus-visible (binders/trayClear)
+- [Typecheck a client against a contract stub](reference_typecheck_a_client_against_a_contract_stub.md) — parallel backend: scratch tsconfig paths map api to a stub; missing members hide bugs as any
