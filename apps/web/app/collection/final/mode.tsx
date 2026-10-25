@@ -9,9 +9,9 @@ import {
   type Ref,
   type ReactNode,
 } from "react";
-import { Link, useLocation, useNavigate, useSearchParams, type LinkProps } from "react-router";
+import { Link, useLocation, useNavigate, useSearchParams, type LinkProps, type To } from "react-router";
 import { ScopeProvider, useScope } from "./data/store";
-import { isHome, type Container, type Scope } from "./data/types";
+import { isHome, type Container, type Scope, type Side } from "./data/types";
 
 /**
  * NEO-350 / NEO-358 — where the collection page is running, and what that
@@ -31,9 +31,20 @@ import { isHome, type Container, type Scope } from "./data/types";
  * the views, a refresh stays put and a deep link opens straight there. The
  * params, all ids and never display names:
  *
- * - `tab`: `cards`, `binders` or `checklists`.
+ * - The side (NEO-364, `useCollectionSide`): `/collection` is the
+ *   collection (binders), `/inventory` the inventory (boxes). The public demo
+ *   runs both on one page and says which with `side=inventory`, written only
+ *   for the inventory, so the demo's entry URL stays exactly `?demo=on`.
+ *   Switching sides is a view change like any other (`SideLink`), so Back
+ *   steps back across it and the demo counts it in `demoDepth`.
+ * - `tab`: on the collection `cards`, `binders` or `checklists`; on the
+ *   inventory `cards` (the Inventory list), `boxes` (My Boxes) or
+ *   `checklists`. A tab, or an open container, of the other side redirects
+ *   there in place of the entry (`useGoToSide` with `replace`).
  * - My Cards: `set` (a set wall), or `view=needs` with an optional `for`.
  * - My Binders: `b` (an open binder), `set` (a set to browse) or `all=1`.
+ * - My Boxes: `b` (an open box, Unsorted, or the Up for Trade pile drawn as
+ *   a box).
  * - Checklists: the drill (`checklistParams.ts`): above a set, `sport`,
  *   `year` and `brand`; from a set down, `set` (the rest follows from it),
  *   `type` (Base, Inserts or Parallels) and `variant` (an insert or parallel
@@ -63,9 +74,18 @@ import { isHome, type Container, type Scope } from "./data/types";
  * falls back the same quiet way: to the deepest level that still makes sense.
  *
  * Public mode is always the demo store and never reaches Convex or Clerk.
+ * On the inventory side the page never narrows: the scope is always All.
  */
 
 export type CollectionMode = "app" | "public";
+
+/** The demo's side param: `side=inventory`, absent on the collection side. */
+export const SIDE_PARAM = "side";
+/** Where each side lives in the signed-in app. */
+export const SIDE_PATHS: Record<Side, string> = {
+  collection: "/collection",
+  inventory: "/inventory",
+};
 
 type ParamsInit = URLSearchParams | Record<string, string>;
 type SetParams = (next: ParamsInit) => void;
@@ -84,8 +104,8 @@ export interface DemoHistoryState {
 /** Where a signed-in destination goes from the public demo, and why. */
 export const PUBLIC_DESTINATIONS = {
   /**
-   * The Inventory long box, for a demo store with no Inventory tab:
-   * `/inventory` needs an account. (The demo has the tab today, NEO-359.)
+   * The Inventory long box, for a store with no inventory side: `/inventory`
+   * needs an account. (The demo has its own inventory side, NEO-364.)
    */
   inventory: "/managing-inventory",
   /** "Print label" / "Print this label": `/print/spine-label` needs an account. */
@@ -105,16 +125,24 @@ interface CollectionModeValue {
    * mid-edit here is still here. The public tour page opens in place.
    */
   printLabelInNewTab: boolean;
-  /** Params every view URL keeps (public mode's `demo=on`). Empty in the app. */
+  /**
+   * Params every view URL keeps: public mode's `demo=on`, plus `side=inventory`
+   * on the demo's inventory side. Empty in the app.
+   */
   keepParams: Record<string, string>;
+  /** The page's own kept params, without the side: what a side switch starts from. */
+  baseParams: Record<string, string>;
+  /** The app page's side (`FinalCollectionPage`'s `surface`); unset: by route. */
+  surface?: Side;
 }
 
 const APP_MODE: CollectionModeValue = {
   mode: "app",
-  inventoryHref: "/inventory",
+  inventoryHref: SIDE_PATHS.inventory,
   printLabelHref: (appHref) => appHref,
   printLabelInNewTab: true,
   keepParams: {},
+  baseParams: {},
 };
 
 const CollectionModeContext = createContext<CollectionModeValue>(APP_MODE);
@@ -122,31 +150,38 @@ const CollectionModeContext = createContext<CollectionModeValue>(APP_MODE);
 export function CollectionModeProvider({
   mode,
   keepParams,
+  surface,
   children,
 }: {
   mode: CollectionMode;
   /** Public mode: params every view URL keeps (the marketing page's `demo=on`). */
   keepParams?: Record<string, string>;
+  /** App mode: the page's side (`/inventory` passes `"inventory"`). Unset: by route. */
+  surface?: Side;
   children: ReactNode;
 }) {
-  const keepKey = new URLSearchParams(keepParams).toString();
-  const value = useMemo<CollectionModeValue>(
-    () =>
-      mode === "app"
-        ? APP_MODE
-        : {
-            mode,
-            inventoryHref: PUBLIC_DESTINATIONS.inventory,
-            printLabelHref: () => PUBLIC_DESTINATIONS.printShop,
-            printLabelInNewTab: false,
-            keepParams: Object.fromEntries(new URLSearchParams(keepKey)),
-          },
-    [mode, keepKey],
-  );
   // The URL the page is headed to. The router commits a navigation inside a
   // transition, so for a moment after a push the rendered params are the old
   // ones; a scope pick or a second push in that moment builds on this.
   const location = useLocation();
+  const base = new URLSearchParams(keepParams);
+  base.delete(SIDE_PARAM);
+  const baseKey = base.toString();
+  // The demo's inventory side rides on every view URL as `side=inventory`.
+  const demoInventory =
+    mode === "public" && new URLSearchParams(location.search).get(SIDE_PARAM) === "inventory";
+  const value = useMemo<CollectionModeValue>(() => {
+    if (mode === "app") return surface ? { ...APP_MODE, surface } : APP_MODE;
+    const baseParams = Object.fromEntries(new URLSearchParams(baseKey));
+    return {
+      mode,
+      inventoryHref: PUBLIC_DESTINATIONS.inventory,
+      printLabelHref: () => PUBLIC_DESTINATIONS.printShop,
+      printLabelInNewTab: false,
+      keepParams: demoInventory ? { ...baseParams, [SIDE_PARAM]: "inventory" } : baseParams,
+      baseParams,
+    };
+  }, [mode, baseKey, demoInventory, surface]);
   const latestRef = useRef<LatestEntry>({ search: location.search, state: location.state });
   useLayoutEffect(() => {
     latestRef.current = { search: location.search, state: location.state };
@@ -175,6 +210,32 @@ function useLatestEntry(): MutableRefObject<LatestEntry> {
 
 export function useCollectionMode(): CollectionModeValue {
   return useContext(CollectionModeContext);
+}
+
+/**
+ * The side a URL stands for (NEO-364). The app: the page's `surface`, else
+ * the route (`/inventory` is the inventory, anything else the collection).
+ * The public demo: `side=inventory`, else the collection.
+ */
+export function sideOf(
+  mode: CollectionMode,
+  location: { pathname: string; search: string },
+  surface?: Side,
+): Side {
+  if (mode === "public") {
+    return new URLSearchParams(location.search).get(SIDE_PARAM) === "inventory" ? "inventory" : "collection";
+  }
+  if (surface) return surface;
+  return location.pathname === SIDE_PATHS.inventory || location.pathname.startsWith(`${SIDE_PATHS.inventory}/`)
+    ? "inventory"
+    : "collection";
+}
+
+/** The page's side, as its URL has it (see `sideOf`). The page puts it in `SideProvider`. */
+export function useCollectionSide(): Side {
+  const { mode, surface } = useCollectionMode();
+  const location = useLocation();
+  return sideOf(mode, location, surface);
 }
 
 /** The scope param: a binder or box id, or absent for All. */
@@ -344,6 +405,92 @@ export function ParamLink({
         // A plain click navigates here; record it as where the page is headed.
         if (!e.defaultPrevented && e.button === 0 && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
           latestRef.current = target;
+        }
+      }}
+      {...rest}
+    />
+  );
+}
+
+/**
+ * Where a view on a side goes (NEO-364): the app's other route
+ * (`/collection` or `/inventory`) with the view's params, or, in the demo,
+ * the same page with the kept params, `side=inventory` for the inventory
+ * (never written for the collection), and the view's. A push counts one
+ * deeper in the demo; a replace keeps the entry's history state. The scope
+ * is never carried across: each side starts at All.
+ */
+function useSideTarget() {
+  const { mode, baseParams } = useCollectionMode();
+  const latestRef = useLatestEntry();
+  return useCallback(
+    (side: Side, next: ParamsInit, how: "push" | "replace"): { to: To; search: string; state: unknown } => {
+      const view = new URLSearchParams(next);
+      view.delete(SIDE_PARAM);
+      if (mode !== "public") {
+        const q = view.toString();
+        const search = q ? `?${q}` : "";
+        return { to: { pathname: SIDE_PATHS[side], search }, search, state: undefined };
+      }
+      const params = new URLSearchParams(baseParams);
+      if (side === "inventory") params.set(SIDE_PARAM, "inventory");
+      view.forEach((value, key) => params.set(key, value));
+      const search = `?${params.toString()}`;
+      const current = (latestRef.current.state ?? {}) as DemoHistoryState;
+      const state =
+        how === "replace" ? latestRef.current.state : ({ ...current, demoDepth: (current.demoDepth ?? 0) + 1 } satisfies DemoHistoryState);
+      return { to: { search }, search, state };
+    },
+    [mode, baseParams, latestRef],
+  );
+}
+
+/**
+ * Opens a view on a side (NEO-364): pushed (a Back step), or with
+ * `replace` in place of the current entry (a redirect of a link to the
+ * other side's tab or container, so Back skips it).
+ */
+export function useGoToSide(): (side: Side, next: ParamsInit, options?: { replace?: boolean }) => void {
+  const navigate = useNavigate();
+  const target = useSideTarget();
+  const latestRef = useLatestEntry();
+  const { mode } = useCollectionMode();
+  return useCallback(
+    (side, next, options) => {
+      const replace = options?.replace === true;
+      const t = target(side, next, replace ? "replace" : "push");
+      // Same page in the demo: record where it is headed. The app's other
+      // route mounts a page of its own.
+      if (mode === "public") latestRef.current = { search: t.search, state: t.state };
+      void navigate(t.to, { replace, state: t.state });
+    },
+    [navigate, target, latestRef, mode],
+  );
+}
+
+/** A link to a view on a side (`useSideTarget`): the demo's side switch, the long box's door to the Inventory list. */
+export function SideLink({
+  side,
+  search,
+  onClick,
+  ...rest
+}: Omit<LinkProps, "to" | "state"> & { side: Side; search?: ParamsInit; ref?: Ref<HTMLAnchorElement> }) {
+  const t = useSideTarget()(side, search ?? {}, "push");
+  const latestRef = useLatestEntry();
+  const { mode } = useCollectionMode();
+  return (
+    <Link
+      to={t.to}
+      state={t.state}
+      onClick={(e) => {
+        onClick?.(e);
+        if (
+          mode === "public" &&
+          !e.defaultPrevented &&
+          e.button === 0 &&
+          !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+        ) {
+          latestRef.current = { search: t.search, state: t.state };
         }
       }}
       {...rest}

@@ -23,8 +23,8 @@ import { printRunLabel, setLabel, shortCardName, teamTextColor, variantLabel } f
 import {
   emptyCopyDetails,
   bindersOf,
-  boxesOf,
   homesOf,
+  homesOnSide,
   isWantedIn,
   systemContainer,
   useCapabilities,
@@ -32,6 +32,7 @@ import {
   useContainers,
   useCopiesOf,
   useScope,
+  useSide,
   useWants,
   wantOf,
   wantToggle,
@@ -39,7 +40,6 @@ import {
 import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
-import { ParamLink } from "./mode";
 import { usePageApi } from "./pageApi";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
@@ -87,11 +87,17 @@ function formHomes(homes: readonly Container[]): FormHome[] {
  * each with Undo), and an "Add a copy" form so grade, cost and where it lives
  * go in at the moment of adding. The acquired date starts at today.
  *
- * NEO-359: a copy lives in ONE home. "Where it lives" picks it on an add
- * (the page's scope, else Main, by default); an existing line changes home
- * only through its Move control (`moveCopy`, which can move part of a stack),
- * never through Edit (`updateCopy` keeps the home). A copy in a box is for
- * sale; Up for trade is a flag and the card stays where it lives.
+ * NEO-359: a copy lives in ONE home. "Where it lives" picks it on an add;
+ * an existing line changes home only through its Move control (`moveCopy`,
+ * which can move part of a stack), never through Edit (`updateCopy` keeps
+ * the home). A copy in a box is for sale; Up for trade is a flag and the
+ * card stays where it lives.
+ *
+ * NEO-364: the drawer is the one place the two sides meet. "Your copies"
+ * lists every line, binder and box, with Sell / Take off sale to cross. The
+ * add form offers the page side's homes only (`useSide`): binders on the
+ * collection (the opener's binder, else the page's scope, else Main), boxes
+ * on the inventory (the opener's box, the target box, else Unsorted).
  *
  * The keyboard is never dropped: Edit puts it in the copy's form, and Save
  * copy or Cancel brings it back to that copy's Edit button (Remove's and
@@ -128,34 +134,34 @@ export default function CardDetail({
   const panel = useLiverySurface("raised");
   const run = printRunLabel(card);
   const name = shortCardName(card);
+  const side = useSide();
   const homes = capabilities.binders ? homesOf(containers) : [];
-  // "Where it lives" on an add offers one kind: binders (the collection's
-  // screens), or boxes when the add starts in one (Inventory). Never a mix.
-  const binderHomes = bindersOf(containers);
-  const boxHomes = boxesOf(containers);
   const names = lineNames(lines, containers);
   const wants = capabilities.wants ? allWants : undefined;
   const wanted = capabilities.wants && isWantedIn(wants, card.id, scope);
   const want = wantOf(wants, card.id);
 
+  // "Where it lives" on an add offers the page side's homes, never a mix:
+  // binders on the collection, boxes (Unsorted first) on the inventory.
+  const addKinds = !capabilities.binders
+    ? []
+    : capabilities.inventory
+      ? homesOnSide(containers, side)
+      : bindersOf(containers);
+  const onInventory = capabilities.inventory && side === "inventory";
   // Where an add lands unless the collector picks otherwise: the opener's
-  // binder, else the page's scope, else Main.
-  const isHomeId = (id: string | undefined) => !!id && homes.some((h) => h.id === id);
-  const defaultHome = isHomeId(addBinderId)
+  // home (on this side), else the collection's scope, else the side's
+  // catch-all (Main, or Unsorted).
+  const isAddId = (id: string | undefined) => !!id && addKinds.some((h) => h.id === id);
+  const defaultHome = isAddId(addBinderId)
     ? addBinderId
-    : scope !== "all" && isHomeId(scope)
+    : !onInventory && scope !== "all" && isAddId(scope)
       ? scope
-      : systemContainer(containers, "main")?.id;
+      : systemContainer(containers, onInventory ? "unsorted" : "main")?.id;
   const [draft, setDraft] = useState<FormValue>(() => toForm(emptyCopyDetails()));
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
-  // A box takes adds only where the store has Inventory (the demo, for now).
-  const addKinds = !capabilities.binders
-    ? []
-    : capabilities.inventory && boxHomes.some((h) => h.id === defaultHome)
-      ? boxHomes
-      : binderHomes;
   /** The line whose form is open, by its line key (`CopyList`), so it lives through the store's id swap. */
   const [editing, setEditing] = useState<{ key: string; value: FormValue; trade: boolean } | null>(null);
 
@@ -415,7 +421,7 @@ export default function CardDetail({
           upForTrade={capabilities.trade ? draftTrade : undefined}
           onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
           heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
-          saveLabel="Add to collection"
+          saveLabel={onInventory ? "Add to inventory" : "Add to collection"}
         />
       </div>
     </div>
@@ -472,9 +478,10 @@ function shiftHomes(copy: Copy, homes: readonly Container[], shift: Shift): Cont
  * NEO-359: the collection and Inventory never mix in one list. Move goes to
  * another binder (or, for a line in a box, another box). Going up for sale
  * is its own path: Sell picks a box; a line in a box has Take off sale,
- * which picks the binder it goes back into. Both come with Inventory (the
- * `inventory` capability: the demo only for now); without it a line has
- * Edit, Move and Remove.
+ * which picks the binder it goes back into. Both come with the inventory
+ * (the `inventory` capability: the demo and, since NEO-364, the real
+ * collection); without it a line has Edit, Move and Remove. Unsorted is
+ * always a box to sell into, so Sell always has somewhere to go.
  *
  * Remove takes the row, and the button with it, away once the write lands:
  * the keyboard moves to the next copy's Edit (or Remove), else the one
@@ -677,7 +684,9 @@ export function CopyList({
                     Move
                   </button>
                 )}
-                {canShift && showSale && (
+                {canShift &&
+                  showSale &&
+                  shiftHomes(copy, shelf, copy.homeKind === "box" ? "unsell" : "sell").length > 0 && (
                   <button
                     type="button"
                     className={QUIET_BUTTON}
@@ -752,8 +761,6 @@ const SHIFT_WORDS: Record<
  * (`homes`, already narrowed to the shift), and, on a stack, how many go (all
  * of them to start). Enter goes, Escape keeps it where it is; either way the
  * keyboard goes back to the button that opened it.
- *
- * Sell with no box yet says how to make one (on Inventory) instead.
  */
 function MovePanel({
   copy,
@@ -798,39 +805,13 @@ function MovePanel({
     }
   };
 
-  // The panel opens with the keyboard on its first pick (or, with nowhere
-  // to go, on its way out).
+  // The panel opens with the keyboard on its first pick. (It only opens
+  // with somewhere to go: Unsorted is always a box to sell into, Main always
+  // a binder to come back to.)
   const ref = useRef<HTMLSelectElement>(null);
-  const linkRef = useRef<HTMLAnchorElement>(null);
   useEffect(() => {
-    (ref.current ?? linkRef.current)?.focus();
+    ref.current?.focus();
   }, []);
-
-  if (homes.length === 0) {
-    return (
-      <div
-        role="group"
-        aria-label={words.form(line)}
-        onKeyDown={onKeyDown}
-        className="basis-full rounded-md border border-dashed border-control bg-sheet p-3"
-      >
-        <p className="text-sm text-ink">No boxes yet, so there&apos;s nowhere to sell it from.</p>
-        <p className="mt-1 text-xs text-ink-3">Make a box on Inventory, then come back and press Sell.</p>
-        <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <button type="button" onClick={onCancel} className={QUIET_BUTTON}>
-            {words.keep}
-          </button>
-          <ParamLink
-            ref={linkRef}
-            search={{ tab: "inventory" }}
-            className="inline-flex min-h-8 items-center rounded-md px-2 text-sm font-semibold text-neon-blue-text underline underline-offset-2 hover:text-ink focus-outline"
-          >
-            Go to Inventory
-          </ParamLink>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <form

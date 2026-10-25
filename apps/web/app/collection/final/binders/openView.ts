@@ -1,5 +1,5 @@
 import { setLabel } from "../data/labels";
-import { isHome, type Container, type ContainerLabel, type ContainerRule, type SetRef } from "../data/types";
+import { isHome, type Container, type ContainerLabel, type ContainerRule, type SetRef, type Side } from "../data/types";
 import { containerShareTarget, setShareTarget, type LayoutMode, type ShareTarget, type ViewKey } from "./model";
 import type { PocketVariant } from "./Pocket";
 
@@ -9,6 +9,11 @@ import type { PocketVariant } from "./Pocket";
  * system container, the Want List, All my cards or a set you are browsing
  * all open into the same header and cover: everything that differs between
  * them is decided here, once, and the view only reads it.
+ *
+ * NEO-364: the side matters for one container. The Up for Trade pile is the
+ * one view that spans both sides; from My Binders it opens as a binder
+ * (unchanged), from My Boxes as a box (`box: true`, a stack with no rows).
+ * Same pile, same count.
  */
 
 export interface Tally {
@@ -18,10 +23,10 @@ export interface Tally {
 }
 
 export interface OpenView {
-  /** Stable per view: the container id, `set:<id>`, `all` or `sale`. */
+  /** Stable per view: the container id, `set:<id>` or `all`. */
   key: string;
   title: string;
-  /** The chip beside the title. */
+  /** The chip beside the title. `sale`: the yellow tag (a box, or the trade pile drawn as one). */
   badge: { text: string; tone: "smart" | "browse" | "sale" } | null;
   /** What Share shares; null: nothing to share (or no share links here). */
   share: ShareTarget | null;
@@ -50,7 +55,10 @@ export interface OpenView {
    * collection and inventory).
    */
   saleTags: boolean;
-  /** Open as a box (five rows), not a binder of pages. */
+  /**
+   * Open as a box, not a binder of pages: a home box's five rows, or (the
+   * trade pile from My Boxes) one stack with no rows.
+   */
   box: boolean;
 }
 
@@ -80,12 +88,15 @@ export interface OpenInput {
   describeRule?: (rule: ContainerRule) => string;
   /** Share links exist here (capability `share`). */
   canShare: boolean;
+  /** The screen it opens on: My Binders (default) or My Boxes. */
+  side?: Side;
 }
 
 export function openView(input: OpenInput): OpenView {
-  const { view, container, set, mode, tally, label, describeRule, canShare } = input;
+  const { view, container, set, mode, tally, label, describeRule, canShare, side = "collection" } = input;
   const want = container?.system === "want";
-  const box = view.kind === "binder" && container?.kind === "box";
+  const tradeBox = view.kind === "binder" && container?.system === "trade" && side === "inventory";
+  const box = view.kind === "binder" && (container?.kind === "box" || tradeBox);
   const browsing = view.kind === "set";
   const title = browsing
     ? set
@@ -93,9 +104,7 @@ export function openView(input: OpenInput): OpenView {
       : "Browse a set"
     : view.kind === "all"
       ? "All my cards"
-      : view.kind === "sale"
-        ? "For sale"
-        : (container?.name ?? "Binder");
+      : (container?.name ?? "Binder");
   let share: ShareTarget | null = null;
   if (canShare) share = browsing ? (set ? setShareTarget(set) : null) : container ? containerShareTarget(container) : null;
   return {
@@ -105,26 +114,29 @@ export function openView(input: OpenInput): OpenView {
       ? { text: "Browsing", tone: "browse" }
       : container?.rule
         ? { text: "Smart", tone: "smart" }
-        : box
-          ? { text: "For sale", tone: "sale" }
-          : null,
+        : tradeBox
+          ? { text: "Trade", tone: "sale" }
+          : box
+            ? { text: "For sale", tone: "sale" }
+            : null,
     share,
-    layout: box || want || view.kind === "sale" ? null : browsing || container ? mode : null,
+    layout: box || want ? null : browsing || container ? mode : null,
     pileTools: view.kind === "all",
     label: container ? { container, label } : null,
     editable: container && !container.system ? container : null,
     tally,
     want,
     blurb: blurbFor(input),
-    scopeLine: scopeLineFor(view, container),
+    // The inventory never narrows the collection's counts.
+    scopeLine: side === "inventory" ? null : scopeLineFor(view, container),
     vinyl: browsing ? "#1e293b" : label.background,
     pockets: browsing ? "browse" : "binder",
-    saleTags: view.kind === "binder" && container?.system === "trade",
+    saleTags: view.kind === "binder" && container?.system === "trade" && !tradeBox,
     box,
   };
 }
 
-function blurbFor({ view, container, mode, describeRule }: OpenInput): string[] {
+function blurbFor({ view, container, mode, describeRule, side }: OpenInput): string[] {
   if (view.kind === "set") {
     return [
       mode === "pockets"
@@ -139,15 +151,24 @@ function blurbFor({ view, container, mode, describeRule }: OpenInput): string[] 
       "Press a card to pull it out of the sleeve and see the details.",
     ];
   }
-  if (view.kind === "sale") {
-    return ["Every card in every box you own: the stuff that's for sale."];
-  }
   if (!container) return [];
   if (container.system === "want") {
     return [
       "Cards you're chasing, grouped by the binder they're for.",
       "Land one? Press its sleeve to add it.",
       "While this is open, the hunt below adds to your Want List.",
+    ];
+  }
+  if (container.system === "trade" && side === "inventory") {
+    return [
+      "Copies you'd swap, wherever they live: a box, or one of your binders.",
+      "Each one stays where it lives. Press a card to see it, or to take it off the pile.",
+    ];
+  }
+  if (container.system === "unsorted") {
+    return [
+      "Everything in here is for sale. A card lands here when you don't pick a box.",
+      "Drag a card between rows, or pick its row.",
     ];
   }
   if (container.system === "trade") {
@@ -175,7 +196,7 @@ function blurbFor({ view, container, mode, describeRule }: OpenInput): string[] 
 }
 
 function scopeLineFor(view: ViewKey, container: Container | undefined): string | null {
-  if (view.kind === "set" || view.kind === "sale") return null;
+  if (view.kind === "set") return null;
   if (view.kind === "all") return "Checklists and My Cards are looking through everything.";
   if (!container) return null;
   if (container.system === "want") {

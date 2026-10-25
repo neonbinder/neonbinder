@@ -12,7 +12,10 @@ import NeonButton from "@/components/modules/NeonButton";
  * see at `/collection`, in public mode). The flag is in the URL so a link can
  * open it straight away. The demo's views ride beside it, as they do at
  * `/collection` (`?demo=on&tab=binders&b=…`): Back steps back through them,
- * and Back from the demo's first view closes it. "Back to the tour" returns
+ * and Back from the demo's first view closes it. Its inventory side (NEO-364)
+ * is the same page with `side=inventory` (`?demo=on&side=inventory&tab=…`),
+ * kept on every view there by the demo itself; the collection side never
+ * writes it, so the entry stays exactly `?demo=on`. "Back to the tour" returns
  * to the tour entry in one step, however deep the visitor went. The demo's
  * code, fake catalog and CSS load only when it opens.
  */
