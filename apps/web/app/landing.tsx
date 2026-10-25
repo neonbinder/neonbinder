@@ -73,15 +73,14 @@ export default function LandingPage() {
           </div>
 
           {/* Check it Out — the way into the collection demo. One real link,
-              stretched over the whole panel (after:inset-0) so the panel
-              reads as clickable while the link keeps the name "Check it
-              Out". No `state`: nothing on the tour sits behind this entry,
-              so the demo's close falls back to replacing it with the tour.
-              The focus ring is drawn on the panel (has-focus-visible), not
-              the link, so it frames what the keyboard just selected. */}
+              painted as a NeonButton (asChild) and stretched over the whole
+              panel (after:inset-0) so the panel reads as clickable while the
+              link keeps the name "Check it Out". No `state`: nothing on the
+              tour sits behind this entry, so the demo's close falls back to
+              replacing it with the tour. */}
           <section
             aria-labelledby="check-it-out-heading"
-            className="relative w-full mb-16 p-8 rounded-lg bg-gradient-to-r from-wash-blue to-wash-pink border border-wash-rule-pink shadow-offset hover:border-neon-blue-text hover:shadow-lg hover:shadow-neon-blue-text/20 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-solid has-focus-visible:outline-(--focus) transition-all"
+            className="relative w-full mb-16 p-8 rounded-lg bg-gradient-to-r from-wash-blue to-wash-pink border border-wash-rule-pink shadow-offset hover:border-neon-blue-text hover:shadow-lg hover:shadow-neon-blue-text/20 transition-all"
           >
             <div className="flex items-center gap-3 mb-4">
               <span className="text-3xl" aria-hidden="true">🗂️</span>
@@ -90,15 +89,17 @@ export default function LandingPage() {
             <p className="text-lg text-ink-2 mb-4">
               Flip through a demo binder stuffed with real cards. No account, no sweat.
             </p>
-            <Link
-              to="/binder-tracking?demo=on"
-              onPointerEnter={warmDemo}
-              onFocus={warmDemo}
-              className="inline-flex items-center gap-2 text-lg font-bold text-neon-blue-text underline underline-offset-4 outline-none after:absolute after:inset-0 after:rounded-lg after:content-['']"
-            >
-              Check it Out
-              <span aria-hidden="true">→</span>
-            </Link>
+            <NeonButton asChild variant="secondary" size="3">
+              <Link
+                to="/binder-tracking?demo=on"
+                onPointerEnter={warmDemo}
+                onFocus={warmDemo}
+                className="after:absolute after:inset-0 after:rounded-lg after:content-['']"
+              >
+                Check it Out
+                <span aria-hidden="true">→</span>
+              </Link>
+            </NeonButton>
           </section>
 
           {/* Free Tier Positioning */}
