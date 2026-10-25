@@ -498,6 +498,11 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
     );
   };
   /** Ctrl/⌘+Z from quick entry: the line's Undo, or a word that there is none. */
+  // An aside keeps a live Undo on the line: it is skipped rather than replace
+  // it (an undo running counts too: its "Undone." is on the way).
+  const inform = (message: string) => {
+    setNotice((prev) => (prev?.undo ? prev : { id: (prev?.id ?? 0) + 1, message }));
+  };
   const undoLast = () => {
     if (undoing.current) return;
     if (notice?.undo) undo();
@@ -744,6 +749,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
     goToChecklists,
     openSuggestion: pickSuggestion,
     notify,
+    inform,
     undoLast,
     run,
   };

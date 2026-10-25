@@ -41,6 +41,12 @@ export interface PageApi {
   openSuggestion: (s: Suggestion) => void;
   notify: Notify;
   /**
+   * An aside with no Undo of its own ("Nothing changed."): said on the
+   * status line unless the line still offers an Undo, which it never
+   * replaces. An aside never costs the collector an Undo.
+   */
+  inform: (message: string) => void;
+  /**
    * Takes back the last change, as the status line's Undo does (the
    * keyboard's Ctrl/⌘+Z in quick entry). With nothing to take back it says
    * so; while an undo is running it does nothing.

@@ -67,7 +67,8 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * Shift+Enter to the one above; Escape puts back what was there, in place.
  * Ctrl/⌘+Z with nothing typed takes back the page's last change (the status
  * line's Undo); once something is typed it is the field's own text undo.
- * Left blank, the field puts its number back and the status line says so.
+ * Left blank, the field puts its number back and the status line says so
+ * (unless it is still offering an Undo: that stays).
  *
  * Saving shows on the row: a dot while the write is on its way, a check
  * when it lands, or the server's reason and the old number back when it is
@@ -131,9 +132,10 @@ export default function QuantityRow({
     if (quantity === null || quantity === base) {
       // Blank, unreadable or unchanged: nothing to write. The number goes
       // back, and a blank one says so on the status line (the row's own
-      // text stays quiet, so it is announced once).
+      // text stays quiet, so it is announced once), unless the line still
+      // offers the last count's Undo, which an aside never replaces.
       setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
-      if (quantity === null) api.notify(BLANK_MESSAGE);
+      if (quantity === null) api.inform(BLANK_MESSAGE);
       return;
     }
     const mine = ++seq.current;
