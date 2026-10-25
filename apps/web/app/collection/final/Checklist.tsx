@@ -17,10 +17,12 @@ import {
   useCollectionActions,
   useCopiesInVariant,
   useSetSummary,
+  useSide,
   useVariantCards,
   useVariantCompletion,
 } from "./data/store";
 import type { Card, CardId } from "./data/types";
+import InventoryChecklist from "./inventory/InventoryChecklist";
 import { usePageApi } from "./pageApi";
 
 type Show = "all" | "have" | "need";
@@ -40,18 +42,34 @@ type Show = "all" | "have" | "need";
  * is another, with an alert for text it cannot read. Marking a range puts
  * the caret back in its box.
  */
-const Checklist = forwardRef<
-  HTMLHeadingElement,
-  {
-    setId: string;
-    variantId: string;
-    title: string;
-    actions: RowActions;
-    selectedCardId: string | null;
-    /** Jumped here from search: scroll to this card's row and ring it. */
-    highlightCardId: CardId | null;
-  }
->(function Checklist({ setId, variantId, title, actions, selectedCardId, highlightCardId }, headingRef) {
+export interface ChecklistProps {
+  setId: string;
+  variantId: string;
+  title: string;
+  actions: RowActions;
+  selectedCardId: string | null;
+  /** Jumped here from search: scroll to this card's row and ring it. */
+  highlightCardId: CardId | null;
+}
+
+/**
+ * The page's side picks the checklist (NEO-364): the collection's Have /
+ * Want / Trade rows, or the inventory's quick quantity entry
+ * (`./inventory/InventoryChecklist`), which counts box copies only.
+ */
+const Checklist = forwardRef<HTMLHeadingElement, ChecklistProps>(function Checklist(props, headingRef) {
+  const side = useSide();
+  return side === "inventory" ? (
+    <InventoryChecklist ref={headingRef} {...props} />
+  ) : (
+    <CollectionChecklist ref={headingRef} {...props} />
+  );
+});
+
+const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(function CollectionChecklist(
+  { setId, variantId, title, actions, selectedCardId, highlightCardId },
+  headingRef,
+) {
   const api = usePageApi();
   const writes = useCollectionActions();
   const capabilities = useCapabilities();

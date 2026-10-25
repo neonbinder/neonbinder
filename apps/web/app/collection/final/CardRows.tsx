@@ -2,7 +2,7 @@ import type { MouseEvent, ReactNode, Ref } from "react";
 import { ArrowsRightLeftIcon, CheckIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
 import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
-import { FEATURE_BADGE, FOCUS, QUIET_BUTTON, useLiverySurface } from "../prototypes/p1/ui";
+import { FOCUS, QUIET_BUTTON, useLiverySurface } from "../prototypes/p1/ui";
 import {
   cardLabel,
   playerNames,
@@ -12,8 +12,19 @@ import {
   teamNames,
   teamTextColor,
 } from "./data/labels";
-import { collectionCopiesIn, isWantedIn, useCapabilities, useContainers, useCopiesOf, useScope, useWants } from "./data/store";
+import {
+  collectionCopiesIn,
+  isWantedIn,
+  useCapabilities,
+  useContainers,
+  useCopiesOf,
+  useScope,
+  useSide,
+  useWants,
+} from "./data/store";
 import type { Card, Copy, CopyId } from "./data/types";
+import { FeatureBadges } from "./inventory/badges";
+import { InventorySearchHitRow } from "./inventory/QuantityRow";
 import { lineNames, lineSummary } from "./lineItems";
 
 /** What a row's controls do; built once by the page. */
@@ -146,20 +157,8 @@ function SmallToggle({
   );
 }
 
-/** RC, AU, RELIC, SP and #'d, as the admin checklist row shows them. */
-export function FeatureBadges({ card }: { card: Pick<Card, "features" | "printRun"> }) {
-  const tokens = [...card.features, ...(card.printRun !== null ? (["NUM"] as const) : [])];
-  if (tokens.length === 0) return null;
-  return (
-    <span className="flex shrink-0 flex-wrap justify-end gap-1">
-      {tokens.map((t) => (
-        <span key={t} className={`rounded border px-1 py-0.5 text-xs ${FEATURE_BADGE[t].cls}`}>
-          {FEATURE_BADGE[t].label}
-        </span>
-      ))}
-    </span>
-  );
-}
+/** RC, AU, RELIC, SP and #'d badges: shared with the inventory's quantity rows. */
+export { FeatureBadges };
 
 /** The green tag a copy flagged Up for trade wears. */
 export function TradeBadge() {
@@ -354,8 +353,18 @@ export default function CardRowGroup({
   );
 }
 
-/** A search hit's row: reads its own copies, since a result list spans checklists. */
+/**
+ * A search hit's row: reads its own copies, since a result list spans
+ * checklists. On the inventory side (NEO-364) it is a quantity row for the
+ * target box instead, counting box copies only.
+ */
 export function SearchHitRow(props: Omit<Parameters<typeof CardRowGroup>[0], "copies">) {
+  const side = useSide();
+  if (side === "inventory") return <InventorySearchHitRow {...props} />;
+  return <CollectionSearchHitRow {...props} />;
+}
+
+function CollectionSearchHitRow(props: Omit<Parameters<typeof CardRowGroup>[0], "copies">) {
   const all = useCopiesOf(props.card.id);
   const scope = useScope();
   // The collection's copies only, narrowed by the page's scope, as the checklist's rows are.
