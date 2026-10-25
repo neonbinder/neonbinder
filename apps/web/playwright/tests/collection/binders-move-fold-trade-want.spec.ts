@@ -368,7 +368,9 @@ test(
     await hunt.fill(`${three.player} ${three.number}`);
     await page
       .getByRole("button", {
-        name: new RegExp(`^Slot in 2024 Topps Chrome #${escapeRegExp(three.number)} ${escapeRegExp(three.player)}`),
+        // The hunt finds the base card and its parallels ("..., Orioles, Gold Wave
+        // Refractors"): the base card's name stops at the team.
+        name: new RegExp(`^Slot in 2024 Topps Chrome #${escapeRegExp(three.number)} ${escapeRegExp(three.player)}, [^,]+$`),
       })
       .click();
     await page

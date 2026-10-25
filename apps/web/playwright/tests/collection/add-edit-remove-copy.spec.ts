@@ -47,8 +47,12 @@ test(
     await expect(page.getByRole("region", { name: "About this demo" })).toHaveCount(0);
 
     // R2: the account starts with nothing, so every count below is this spec's.
-    await expect(page.getByRole("heading", { level: 2, name: "Everything I own" })).toBeVisible();
-    await expect(page.getByText(/^Nothing in the binder yet\./)).toBeVisible();
+    // With binders on (NEO-359) My Cards is "Everything else I own": the shelf
+    // of cards that sit on no set build, counting from 0.
+    const everythingElse = page.getByRole("region", { name: "Everything else I own" });
+    await expect(everythingElse.getByRole("heading", { level: 2, name: "Everything else I own" })).toBeVisible();
+    await expect(everythingElse.getByRole("status").filter({ hasText: /^0 cards$/ })).toBeVisible();
+    await expect(everythingElse.getByRole("list", { name: /^Off the board, / })).toHaveCount(0);
     // The scoreboard has landed too ("0 on the board"), so axe reads the settled page.
     await expect(page.getByRole("heading", { level: 2, name: "Sets I'm building" })).toBeVisible();
     await expect(page.getByText(/^\d+ on the board$/)).toBeVisible();
@@ -154,7 +158,9 @@ test(
     // --- My Cards lists it while it is owned; Back returns to the checklist --
     await tabs.getByRole("link", { name: "My Cards", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=cards/);
-    const owned = page.getByRole("list", { name: "Everything I own, 1 card" });
+    // Nothing is marked as a set build, so the card sits on the shelf "Off the board".
+    await expect(everythingElse.getByRole("status").filter({ hasText: /^1 card$/ })).toBeVisible();
+    const owned = everythingElse.getByRole("list", { name: "Off the board, 1 card", exact: true });
     await expect(owned).toBeVisible();
     await expect(
       owned.getByRole("button", { name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}.*, have$`) }),
@@ -312,7 +318,7 @@ test(
 
     // The account is empty again (self-cleaning, R7).
     await tabs.getByRole("link", { name: "My Cards", exact: true }).click();
-    await expect(page.getByText(/^Nothing in the binder yet\./)).toBeVisible();
-    await expect(page.getByRole("list", { name: /^Everything I own, / })).toHaveCount(0);
+    await expect(everythingElse.getByRole("status").filter({ hasText: /^0 cards$/ })).toBeVisible();
+    await expect(everythingElse.getByRole("list", { name: /^Off the board, / })).toHaveCount(0);
   },
 );
