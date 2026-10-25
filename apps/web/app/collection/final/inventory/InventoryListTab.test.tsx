@@ -103,12 +103,14 @@ describe("the Inventory list", () => {
     it("stands All boxes, Unsorted, Up for Trade, then the collector's boxes, with All boxes current", () => {
       renderList();
       const buttons = rail().getAllByRole("button");
-      expect(buttons.map((b) => b.textContent)).toEqual([
-        "All boxes5 cards",
-        "Unsorted0 cards",
-        "Up for TradeTradeTrade bait in your boxes",
-        "Show box5 cards",
-      ]);
+      // Accessible names: the Trade badge is hidden, and a quiet ", " separates name from detail.
+      const stops: [RegExp, number][] = [
+        [/^All boxes\s*,\s*5 cards$/, 0],
+        [/^Unsorted\s*,\s*0 cards$/, 1],
+        [/^Up for Trade\s*,\s*Trade bait in your boxes$/, 2],
+        [/^Show box\s*,\s*5 cards$/, 3],
+      ];
+      for (const [name, i] of stops) expect(rail().getByRole("button", { name })).toBe(buttons[i]);
       expect(buttons.map((b) => b.getAttribute("aria-current"))).toEqual(["true", null, null, null]);
     });
 
