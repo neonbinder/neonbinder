@@ -332,8 +332,9 @@ export default function InventoryListTab() {
 
       <div className="flex min-w-0 flex-col gap-4 lg:flex-row">
         <nav aria-label="Boxes" className="relative min-w-0 lg:w-56 lg:shrink-0">
-          {/* Positioned, so the stops' screen-reader separators scroll with it instead of widening the page. */}
-          <ul className="relative flex max-w-full gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
+          {/* Positioned, so the stops' screen-reader separators scroll with it instead of widening the page.
+              On a phone it is one short strip that swipes sideways, with no scrollbar drawn under it. */}
+          <ul className="relative flex max-w-full gap-2 overflow-x-auto pb-1 max-sm:gap-1.5 max-sm:pb-0 max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden lg:flex-col lg:overflow-visible">
             <RailItem
               active={!picked}
               onClick={() => pick(null)}
@@ -412,7 +413,7 @@ export default function InventoryListTab() {
             <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
               <Input
                 label="Filter these cards"
-                placeholder="griffey refractor"
+                placeholder="Try “griffey refractor”"
                 autoComplete="off"
                 value={query}
                 onChange={(e) => {
@@ -591,19 +592,21 @@ function RailItem({
         type="button"
         aria-current={active ? "true" : undefined}
         onClick={onClick}
-        className={`relative flex min-h-11 w-48 items-start gap-2 rounded-md border border-b-4 px-3 py-2 text-left lg:w-full ${FOCUS} ${
+        // A scroller clips what spills out of it, so below lg the focus outline is drawn inset.
+        className={`relative flex min-h-11 w-48 items-start gap-2 rounded-md border border-b-4 px-3 py-2 text-left max-sm:w-auto max-sm:max-w-[15rem] max-sm:items-center max-sm:px-2.5 max-sm:py-1.5 max-lg:focus-visible:-outline-offset-2! lg:w-full ${FOCUS} ${
           active
             ? "border-neon-yellow-text bg-neon-yellow/10 text-ink shadow-[0_0_12px_2px_rgb(255_230_0/calc(0.2*var(--glow)))]"
             : "border-rule text-ink-2 hover:border-control"
         }`}
       >
         {tag === "trade" ? (
-          <ArrowsRightLeftIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-neon-green-text" />
+          <ArrowsRightLeftIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-neon-green-text max-sm:mt-0" />
         ) : (
-          <ArchiveBoxIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-neon-yellow-text" />
+          <ArchiveBoxIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-neon-yellow-text max-sm:mt-0" />
         )}
-        <span className="min-w-0 flex-1">
-          <span className="flex w-full items-center gap-1.5 text-sm font-bold">
+        {/* Name over what it holds; side by side on a phone, so the strip stays one line tall. */}
+        <span className="min-w-0 flex-1 max-sm:flex max-sm:items-baseline max-sm:gap-1.5">
+          <span className="flex w-full min-w-0 items-center gap-1.5 text-sm font-bold max-sm:w-auto">
             <span className="truncate">{name}</span>
             {tag === "trade" && (
               <span aria-hidden="true" className="rounded border border-neon-green-text px-1 text-[0.625rem] font-bold text-neon-green-text">
@@ -613,7 +616,7 @@ function RailItem({
           </span>
           {/* Read as "Name, what it holds": the Trade badge is decoration (the name says it). */}
           <span className="sr-only">, </span>
-          <span className="line-clamp-2 text-xs text-ink-3">{detail}</span>
+          <span className="line-clamp-2 text-xs text-ink-3 max-sm:shrink-0 max-sm:whitespace-nowrap">{detail}</span>
         </span>
       </button>
     </li>

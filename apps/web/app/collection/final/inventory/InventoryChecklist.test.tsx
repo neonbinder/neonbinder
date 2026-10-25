@@ -95,6 +95,32 @@ describe("the inventory's checklist", () => {
     expect(Number(before.exec(line().textContent!)![1])).toBe(owned0 + 1);
   });
 
+  it("the list is described by the one-line hint, which never promises the keyboard a +", () => {
+    renderChecklist();
+    const list = screen.getByRole("list", { name: "Quantities in Unsorted" });
+    const hint = document.getElementById(list.getAttribute("aria-describedby") ?? "")!;
+    expect(hint.textContent).toBe("Punch in how many raw copies sit in this box and tab on. Tap + for one more.");
+  });
+
+  it("the sleeve strip waits for a stocked card: nothing stocked shows no row of empty pockets", async () => {
+    renderChecklist();
+    const before = /^(\d+) of (\d+) in your boxes/;
+    const line = () => screen.getByText((_, el) => el?.tagName === "P" && before.test(el.textContent ?? ""));
+    // The strip: a decorative row with one empty-or-lit sleeve per card (a row each).
+    const total = qty().length;
+    const strip = () =>
+      [...document.querySelectorAll('[aria-hidden="true"]')].find(
+        (el) => el.children.length === total && [...el.children].every((c) => c.tagName === "SPAN" && !c.textContent),
+      );
+    expect(Number(before.exec(line().textContent!)![1])).toBe(0);
+    expect(strip()).toBeUndefined();
+    const first = qty()[0];
+    fireEvent.change(first, { target: { value: "1" } });
+    fireEvent.blur(first);
+    await flush();
+    await waitFor(() => expect(strip()).toBeTruthy());
+  });
+
   it("the + beside a field boxes one more, twice in a row makes two, and Undo takes the last one back", async () => {
     renderChecklist();
     const first = qty()[0];
@@ -245,7 +271,7 @@ describe("the inventory's checklist", () => {
   it("Add a range reads \"skip 12\" as taking a number back out, and says so in the placeholder", () => {
     renderChecklist();
     const range = screen.getByRole("textbox", { name: "Add a range to Unsorted" }) as HTMLInputElement;
-    expect(range.placeholder).toBe("1-20, skip 12");
+    expect(range.placeholder).toBe("e.g. 1-20, skip 12");
     fireEvent.change(range, { target: { value: "1-3, skip 2" } });
     expect(screen.getByRole("button", { name: /^Add 2 to Unsorted$/ })).toBeTruthy();
     fireEvent.change(range, { target: { value: "1-3, -2" } });

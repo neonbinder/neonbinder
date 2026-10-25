@@ -818,7 +818,7 @@ const SHIFT_WORDS: Record<
  * of them to start). Enter goes, Escape keeps it where it is; either way the
  * keyboard goes back to the button that opened it.
  */
-function MovePanel({
+export function MovePanel({
   copy,
   line,
   shift,
@@ -840,9 +840,16 @@ function MovePanel({
   const selectId = useId();
   const helpId = useId();
   const words = SHIFT_WORDS[shift];
-  const [to, setTo] = useState<ContainerId>(
-    (defaultTo && homes.some((h) => h.id === defaultTo) ? defaultTo : homes[0]?.id) ?? "",
-  );
+  // State holds only an explicit pick. Until there is one the select shows
+  // the default (or the first home), derived on every render, so homes that
+  // arrive after the panel opens are picked up instead of leaving the select
+  // on its first option while the submit waits on an empty "to".
+  const [chosen, setChosen] = useState<ContainerId | null>(null);
+  const to: ContainerId =
+    (chosen && homes.some((h) => h.id === chosen) ? chosen : undefined) ??
+    (defaultTo && homes.some((h) => h.id === defaultTo) ? defaultTo : undefined) ??
+    homes[0]?.id ??
+    "";
   const [quantity, setQuantity] = useState<number>(copy.quantity);
   const stack = copy.quantity > 1;
   const valid = Number.isInteger(quantity) && quantity >= 1 && quantity <= copy.quantity;
@@ -892,7 +899,7 @@ function MovePanel({
             className={SELECT}
             value={to}
             aria-describedby={note ? helpId : undefined}
-            onChange={(e) => setTo(e.target.value)}
+            onChange={(e) => setChosen(e.target.value)}
           >
             {homes.map((h) => (
               <option key={h.id} value={h.id}>
@@ -922,11 +929,18 @@ function MovePanel({
         </p>
       )}
       <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <button type="button" onClick={onCancel} className={QUIET_BUTTON}>
+        <button type="button" onClick={onCancel} className={`${QUIET_BUTTON} max-sm:min-h-11`}>
           {words.keep}
         </button>
-        {/* aria-disabled, not disabled: the button stays focusable and says why it waits (submit refuses it). */}
-        <NeonButton type="submit" variant="secondary" size="1" aria-disabled={!valid || !to || undefined}>
+        {/* aria-disabled, not disabled: the button stays focusable and says why it waits (submit refuses it).
+            `!`: Radix's unlayered reset outranks a plain utility on its button. */}
+        <NeonButton
+          type="submit"
+          variant="secondary"
+          size="1"
+          aria-disabled={!valid || !to || undefined}
+          className="max-sm:min-h-11!"
+        >
           {words.go(stack && valid ? quantity : null)}
         </NeonButton>
       </div>

@@ -47,7 +47,8 @@ export interface RowActions {
 }
 
 const SLOT_HAVE = "w-[4.5rem]";
-const SLOT_ADD = "w-9 sm:w-[4.25rem]";
+// Add is 44px square on a phone (the house touch target), so its column is too.
+const SLOT_ADD = "w-11 sm:w-[4.25rem]";
 const SLOT_ICON = "w-9 sm:w-[4.5rem]";
 
 function stop(fn: () => void) {
@@ -113,7 +114,9 @@ function AddButton({ label, onAdd }: { label: string; onAdd: () => void }) {
       aria-label={label}
       title="Add another copy"
       onClick={stop(onAdd)}
-      className={`${SLOT_ADD} min-h-8`}
+      // `!`: Radix's unlayered reset outranks a plain utility on its button.
+      // The widths are SLOT_ADD's, so the column lines up with the empty slots.
+      className="w-11! min-h-11! sm:w-[4.25rem]! sm:min-h-8!"
     >
       <PlusIcon aria-hidden="true" className="h-3.5 w-3.5" />
       <span className="max-sm:hidden">Add</span>

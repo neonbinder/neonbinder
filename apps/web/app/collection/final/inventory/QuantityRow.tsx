@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type KeyboardEvent, type MouseEvent, type Ref } from "react";
 import { CheckIcon, ExclamationTriangleIcon, PlusIcon } from "@heroicons/react/20/solid";
+import { InformationCircleIcon, QueueListIcon } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { QUIET_BUTTON, useLiverySurface } from "../../prototypes/p1/ui";
@@ -24,6 +25,9 @@ import {
 const FIELD_ATTR = "data-qty-field";
 /** Marks a row's other controls (Checklist, Details), reached with ← →. */
 const ROW_CONTROL_ATTR = "data-qty-control";
+
+/** Checklist / Details: a 44px icon square on a phone, a quiet word from sm up. */
+const ROW_ICON_BUTTON = "inline-flex items-center justify-center max-sm:min-h-11 max-sm:min-w-11 max-sm:px-0";
 
 /** What the status line says when a field is left blank: the number went back. */
 export const BLANK_MESSAGE = "Nothing changed. Type 0 to clear it.";
@@ -277,35 +281,51 @@ export default function QuantityRow({
     <li
       ref={groupRef}
       className={`overflow-hidden rounded-md border border-rule-strong ${
-        card.cardVariation ? "ml-8 border-l-2 border-l-control" : ""
+        card.cardVariation ? "ml-8 border-l-2 border-l-control max-sm:ml-4" : ""
       } ${isSelected || highlighted ? "border-selection bg-pick-blue/10 ring-2 ring-selection" : ""}`}
     >
+      {/* One line on a phone too: number and player, the field and its +,
+          Details as an icon. Only "also here" takes a line of its own there,
+          and a search hit's name (it carries its set, and Checklist joins
+          Details), which puts the controls on the line under it. */}
       <div
-        className="flex cursor-pointer items-center gap-x-2 gap-y-1 p-2.5 hover:bg-list-hover-raised max-sm:flex-wrap max-sm:justify-end sm:gap-3"
+        className={`flex cursor-pointer items-center gap-x-1 gap-y-1 px-2 py-1.5 hover:bg-list-hover-raised max-sm:flex-wrap sm:gap-3 sm:p-2.5 ${
+          showSet ? "max-sm:justify-end" : ""
+        }`}
         onClick={() => (onRowClick ? onRowClick() : field.current?.focus())}
       >
-        <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
-        <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
-          <div className="min-w-0 truncate text-sm font-medium text-ink">{playerNames(card) || "Player unknown"}</div>
-          <div className="min-h-[1rem] truncate text-xs text-ink-3">
-            {team && (
-              <span
-                style={{ color: teamTextColor(team, panel) }}
-                title={team.location ? `${team.location} ${team.name}` : team.name}
-              >
-                {teamNames(card)}
-              </span>
-            )}
-            {sub.length > 0 && (
-              <span>
-                {team ? " · " : ""}
-                {sub.join(" · ")}
-              </span>
-            )}
+        <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3 max-sm:hidden">#{card.cardNumber}</span>
+        <div className={`min-w-0 flex-1 ${showSet ? "max-sm:basis-full" : ""}`}>
+          <div className="min-w-0 truncate text-sm font-medium text-ink">
+            <span className="font-mono font-normal text-ink-3 sm:hidden">#{card.cardNumber} </span>
+            {playerNames(card) || "Player unknown"}
+          </div>
+          <div className="flex min-h-[1rem] min-w-0 items-center gap-1.5 text-xs text-ink-3">
+            <span className="min-w-0 truncate">
+              {team && (
+                <span
+                  style={{ color: teamTextColor(team, panel) }}
+                  title={team.location ? `${team.location} ${team.name}` : team.name}
+                >
+                  {teamNames(card)}
+                </span>
+              )}
+              {sub.length > 0 && (
+                <span>
+                  {team ? " · " : ""}
+                  {sub.join(" · ")}
+                </span>
+              )}
+            </span>
+            <span className="contents sm:hidden">
+              <FeatureBadges card={card} />
+            </span>
           </div>
         </div>
-        <FeatureBadges card={card} />
-        <span className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+        <span className="contents max-sm:hidden">
+          <FeatureBadges card={card} />
+        </span>
+        <span className="relative flex shrink-0 items-center gap-1 sm:gap-1.5" onClick={(e) => e.stopPropagation()}>
           <Input
             ref={field}
             bare
@@ -330,7 +350,7 @@ export default function QuantityRow({
             }}
             onBlur={commit}
             onKeyDown={onFieldKey}
-            className={`min-h-9 w-14 px-2 py-1 text-right text-sm font-semibold tabular-nums ${
+            className={`min-h-11 w-12 px-2 py-1 text-right text-sm font-semibold tabular-nums sm:min-h-9 sm:w-14 ${
               shownDraft !== null ? "ring-1 ring-neon-yellow-text" : ""
             }`}
           />
@@ -345,7 +365,6 @@ export default function QuantityRow({
             size="1"
             tabIndex={-1}
             aria-label={addLabel}
-            title="Add one"
             disabled={!ready}
             onMouseDown={(e) => e.preventDefault()}
             onClick={(e) => {
@@ -353,7 +372,8 @@ export default function QuantityRow({
               addOne();
             }}
             // `!`: Radix's unlayered reset outranks a plain utility on its button.
-            className="min-h-9! min-w-9! shrink-0 max-sm:min-h-11! max-sm:min-w-11!"
+            // Square, and the field's height: 44px on a phone, 36px from sm up.
+            className="min-h-11! min-w-11! shrink-0 sm:min-h-9! sm:min-w-9!"
           >
             <PlusIcon aria-hidden="true" className="h-4 w-4" />
           </NeonButton>
@@ -371,6 +391,7 @@ export default function QuantityRow({
         >
           {others?.text}
         </span>
+        {/* A word from sm up, an icon on a phone; the name says it either way. */}
         <span className="flex shrink-0 gap-1">
           {onOpenChecklist && (
             <button
@@ -380,9 +401,10 @@ export default function QuantityRow({
               onKeyDown={onControlKey}
               onClick={stop(onOpenChecklist)}
               aria-label={`Open the checklist for ${cardLabel(card)}`}
-              className={`${QUIET_BUTTON} max-sm:min-h-11`}
+              className={`${QUIET_BUTTON} ${ROW_ICON_BUTTON}`}
             >
-              Checklist
+              <QueueListIcon aria-hidden="true" className="h-5 w-5 sm:hidden" />
+              <span className="max-sm:hidden">Checklist</span>
             </button>
           )}
           <button
@@ -392,9 +414,10 @@ export default function QuantityRow({
             onKeyDown={onControlKey}
             onClick={stop(() => onOpen(lines[0]?.id))}
             aria-label={`Details for ${name}`}
-            className={`${QUIET_BUTTON} max-sm:min-h-11`}
+            className={`${QUIET_BUTTON} ${ROW_ICON_BUTTON}`}
           >
-            Details
+            <InformationCircleIcon aria-hidden="true" className="h-5 w-5 sm:hidden" />
+            <span className="max-sm:hidden">Details</span>
           </button>
         </span>
       </div>
@@ -410,10 +433,19 @@ export default function QuantityRow({
   );
 }
 
-/** Beside the field: a dot while its write is on the way, a check once it lands. */
+/**
+ * Beside the field: a dot while its write is on the way, a check once it
+ * lands. On a phone it rides the +'s top corner as a badge instead of taking
+ * a slot of its own, so the player's name keeps that width.
+ */
 function SaveMark({ status }: { status: Status }) {
   return (
-    <span className="flex h-4 w-4 shrink-0 items-center justify-center" title={markTitle(status)}>
+    <span
+      className={`flex h-4 w-4 shrink-0 items-center justify-center max-sm:pointer-events-none max-sm:absolute max-sm:-right-1.5 max-sm:-top-1.5 max-sm:rounded-full ${
+        status.kind === "idle" ? "" : "max-sm:bg-raised"
+      }`}
+      title={markTitle(status)}
+    >
       {status.kind === "saving" && (
         <>
           <span aria-hidden="true" className="h-2 w-2 rounded-full bg-neon-yellow" />

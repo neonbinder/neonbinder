@@ -1247,7 +1247,7 @@ export default function MyBindersTab({
               variant="secondary"
               outline
               onClick={more}
-              className="min-h-10"
+              className="min-h-10! max-sm:min-h-11!"
             >
               {view.kind === "set" ? "Load more of the set" : "Show more cards"}
             </NeonButton>

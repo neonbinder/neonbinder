@@ -4,6 +4,7 @@ import { SignUpButton } from "@clerk/clerk-react";
 import type { DemoHistoryState } from "@/app/collection/final/mode";
 import { BrandMark } from "@/components/primitives/BrandMark";
 import NeonButton from "@/components/modules/NeonButton";
+import { useStickyHeaderHeight } from "@/src/hooks/useStickyHeaderHeight";
 
 /**
  * NEO-350 — the collection demo, playable right here with no account.
@@ -37,6 +38,9 @@ export default function BinderTrackingPage() {
   const [params] = useSearchParams();
   const demoOpen = params.get(DEMO_PARAM) === "on";
   const demoState = (location.state ?? {}) as DemoHistoryState;
+  // The demo's sticky bars (the inventory's "Adding to") read this header's height.
+  const headerRef = useRef<HTMLElement>(null);
+  useStickyHeaderHeight(headerRef);
 
   // Opening starts the demo at the top; closing comes back to the spin
   // section and its link, so the keyboard lands where it left.
@@ -66,6 +70,7 @@ export default function BinderTrackingPage() {
   // shell's: on a phone the pack tray already holds the bottom of the screen.
   const header = (
     <header
+      ref={headerRef}
       className={`${demoOpen ? "sm:sticky" : "sticky"} top-0 z-10 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center`}
     >
       <button

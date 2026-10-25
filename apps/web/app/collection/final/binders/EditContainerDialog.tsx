@@ -132,11 +132,11 @@ export default function EditContainerDialog({
               onClick={() => {
                 if (!busy) setConfirming(false);
               }}
-              className="min-h-10"
+              className="min-h-10! max-sm:min-h-11!"
             >
               Keep it
             </NeonButton>
-            <NeonButton type="button" variant="negative" onClick={() => void remove()} {...waiting("delete")} className="min-h-10">
+            <NeonButton type="button" variant="negative" onClick={() => void remove()} {...waiting("delete")} className="min-h-10! max-sm:min-h-11!">
               Yes, delete it
             </NeonButton>
           </div>
@@ -173,15 +173,15 @@ export default function EditContainerDialog({
                 setConfirming(true);
               }}
               aria-disabled={busy ? true : undefined}
-              className="min-h-10"
+              className="min-h-10! max-sm:min-h-11!"
             >
               Delete this {noun}
             </NeonButton>
             <div className="ml-auto flex flex-wrap gap-3">
-              <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10">
+              <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-10! max-sm:min-h-11!">
                 Cancel
               </NeonButton>
-              <NeonButton type="submit" {...waiting("save")} className="min-h-10">
+              <NeonButton type="submit" {...waiting("save")} className="min-h-10! max-sm:min-h-11!">
                 Save
               </NeonButton>
             </div>

@@ -85,7 +85,7 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
         <button
           type="button"
           onClick={onReset}
-          className={`min-h-10 rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink ${FOCUS}`}
+          className={`min-h-10 max-sm:min-h-11 rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink ${FOCUS}`}
         >
           Reset demo data
         </button>
@@ -94,14 +94,14 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
             would lose to it. */}
         {isPublic && (
           <span className="contents lg:hidden">
-            <NeonButton asChild className="min-h-10">
+            <NeonButton asChild className="min-h-10! max-sm:min-h-11!">
               <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
             </NeonButton>
           </span>
         )}
         {isPublic && onExit && (
           <span className="contents lg:hidden">
-            <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10">
+            <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10! max-sm:min-h-11!">
               {EXIT}
             </NeonButton>
           </span>

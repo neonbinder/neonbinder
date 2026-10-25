@@ -493,6 +493,8 @@ describe("the + beside the field", () => {
   it("is named for the card and the box, as the field is", () => {
     setup();
     expect(plus().getAttribute("aria-label")).toBe("Add one #12 Elly De La Cruz to Unsorted");
+    // No title: it would be read again as the button's description.
+    expect(plus().hasAttribute("title")).toBe(false);
     // Right after the field, before what else the box holds and Details.
     const details = screen.getByRole("button", { name: /^Details for / });
     expect(field().compareDocumentPosition(plus()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -611,7 +613,9 @@ describe("the row's other controls", () => {
   it("clicking the row puts the caret in its field", () => {
     setup();
     const row = field().closest("li")!;
-    fireEvent.click(within(row).getByText("#12"));
+    // The number shows twice in the DOM: its own column from sm up, and on
+    // the player's line on a phone (CSS hides one). Either is the row's body.
+    fireEvent.click(within(row).getAllByText("#12")[0]);
     expect(document.activeElement).toBe(field());
   });
 

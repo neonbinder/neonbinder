@@ -175,7 +175,9 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
         ) : (
           <SkeletonBars rows={1} className="w-48" />
         )}
-        {cards ? <StockStrip cards={cards} stockedIds={stockedIds} /> : <SkeletonPips />}
+        {/* Nothing stocked: no strip. A row of empty pockets reads as missing
+            glyphs, and the "0 of N" line above already says it. */}
+        {!cards ? <SkeletonPips /> : stockedIds.size > 0 && <StockStrip cards={cards} stockedIds={stockedIds} />}
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
@@ -216,7 +218,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
             ]}
             onChange={setShow}
             className="flex basis-full flex-wrap gap-1.5 pb-1"
-            chipClass={(on) => `${CHIP} ${on ? CHIP_ON : CHIP_OFF}`}
+            chipClass={(on) => `${CHIP} max-sm:min-h-11 ${on ? CHIP_ON : CHIP_OFF}`}
           />
         </div>
 
@@ -227,7 +229,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
                 ref={rangeRef}
                 surface="dark"
                 label={`Add a range to ${boxName}`}
-                placeholder="1-20, skip 12"
+                placeholder="e.g. 1-20, skip 12"
                 value={rangeText}
                 onChange={(e) => {
                   setRangeText(e.target.value);
@@ -254,7 +256,8 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
               variant="primary"
               disabled={blocked || toAdd.length === 0 || !box}
               onClick={addRange}
-              className={FOCUS}
+              // `!`: Radix's unlayered reset outranks a plain utility on its button.
+              className={`${FOCUS} max-sm:min-h-11!`}
             >
               {pickFirstLabel(plan) ?? (toAdd.length > 0 ? `Add ${toAdd.length} to ${boxName}` : `Add to ${boxName}`)}
             </NeonButton>
@@ -305,7 +308,7 @@ const InventoryChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(functi
                             return next;
                           })
                         }
-                        className={`${CHIP} ${on ? CHIP_ON : CHIP_OFF}`}
+                        className={`${CHIP} max-sm:min-h-11 ${on ? CHIP_ON : CHIP_OFF}`}
                       >
                         {shortCardName(c)}
                       </button>
