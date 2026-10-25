@@ -376,6 +376,51 @@ describe("My Cards on the real collection", () => {
     expect(statuses()).toContain("1+ cards");
   });
 
+  it("names one card as one card, in the status line and the grid alike", () => {
+    const OFF = { ...SET, id: "set-off", name: "Topps Heritage" };
+    const store = makeStore();
+    store.value.data.useSummary = () => ({ copies: 3, cards: 3, exact: true, offBuild: 1 });
+    store.value.data.useOwnedCards = () => ({
+      cards: [{ ...OHTANI, set: OFF }],
+      copiesByCard: { [OHTANI.id]: { quantity: 1, lines: 1 } },
+      total: 3,
+      totalExact: true,
+      goneCardIds: [],
+      truncated: false,
+    });
+    renderAt("/collection", store);
+    expect(statuses()).toContain("1 card");
+    expect(screen.getByRole("list", { name: "Off the board, 1 card" })).toBeTruthy();
+    const rail = screen.getByRole("navigation", { name: "Shelves and binders" });
+    expect(within(rail).getByRole("button", { name: /^Everything else/ }).textContent).toContain("1 card off your set builds");
+  });
+
+  it("says every card is on a set build only when there are cards and all of them are", () => {
+    // The default store: both cards owned are in the set being built.
+    renderAt("/collection");
+    expect(screen.getByText("Every card here is on a set build. Gnarly.")).toBeTruthy();
+  });
+
+  it("with nothing owned, the shelf says how to add a first card instead", () => {
+    const store = makeStore();
+    store.value.data.useSummary = () => ({ copies: 0, cards: 0, exact: true, offBuild: 0 });
+    store.value.data.useOwnedCards = () => ({
+      cards: [],
+      copiesByCard: {},
+      total: 0,
+      totalExact: true,
+      goneCardIds: [],
+      truncated: false,
+    });
+    renderAt("/collection", store);
+    expect(statuses()).toContain("0 cards");
+    expect(screen.queryByText(/on a set build/)).toBeNull();
+    expect(screen.getByText("Bare shelf, dude. Look one up in Find a card above and hit Add 1 to stock it.")).toBeTruthy();
+    // The same on Every card I own.
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Shelves and binders" })).getByRole("button", { name: /^Every card I own/ }));
+    expect(screen.getByText("Bare shelf, dude. Look one up in Find a card above and hit Add 1 to stock it.")).toBeTruthy();
+  });
+
   it("offers only binders to the Binder picker: never the Want List, Up for Trade or a box", () => {
     renderAt("/collection");
     const picker = screen.getByRole("combobox", { name: "Binder" });
@@ -514,6 +559,42 @@ describe("Checklists on the real collection", () => {
     await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("Undo says Undone. only once its write lands, and does nothing pressed again while it runs", async () => {
+    const store = makeStore();
+    let land!: () => void;
+    store.undo.mockImplementationOnce(() => new Promise<void>((resolve) => (land = resolve)));
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
+    await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
+
+    const undo = screen.getByRole("button", { name: "Undo" });
+    fireEvent.click(undo);
+    expect(store.undo).toHaveBeenCalledTimes(1);
+    // Still running: the line still says what it said, and Undo stays, inert.
+    expect(statuses()).not.toContain("Undone.");
+    expect(statuses()).toContain("Added #2 Aaron Judge to Main");
+    expect(screen.getByRole("button", { name: "Undo" }).getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(store.undo).toHaveBeenCalledTimes(1);
+
+    await act(async () => land());
+    await waitFor(() => expect(statuses()).toContain("Undone."));
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  it("an undo the server refuses says so, never Undone.", async () => {
+    const store = makeStore();
+    store.undo.mockImplementationOnce(async () => {
+      throw new Error("nope");
+    });
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Have #2 Aaron Judge" }));
+    await waitFor(() => expect(statuses()).toContain("Added #2 Aaron Judge to Main"));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(statuses().some((t) => t?.startsWith("That undo didn't go through."))).toBe(true));
+    expect(statuses()).not.toContain("Undone.");
   });
 
   it("rows carry Want for every card and Trade only for a copy you hold", () => {

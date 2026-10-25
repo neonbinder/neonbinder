@@ -62,6 +62,7 @@ import type {
   SetRef as RawSetRef,
   VariantRef as RawVariantRef,
 } from "@/convex/lib/catalogView";
+import { OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import {
   bySlot,
@@ -895,7 +896,8 @@ interface KnownCopy extends CardPlace {
 let optimisticSeq = 0;
 function optimisticId(): RawCopy["_id"] {
   optimisticSeq += 1;
-  return `optimistic:${optimisticSeq}` as RawCopy["_id"];
+  // The prefix tells a list this line is ours until the server answers (`../lineKeys`).
+  return `${OPTIMISTIC_ID_PREFIX}${optimisticSeq}` as RawCopy["_id"];
 }
 
 /**

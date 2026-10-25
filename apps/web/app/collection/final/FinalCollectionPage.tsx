@@ -134,17 +134,21 @@ function tabsFor(capabilities: Capabilities) {
 }
 
 /**
- * Runs a notice's undo. A store's undo is a write of its own: run it now (the
- * demo's lands in this same click) and report an async one's refusal when it
- * comes back.
+ * Runs a notice's undo. A store's undo is a write of its own: the demo's
+ * lands in this same click, a server's when it answers. `onDone` runs once it
+ * has landed (never before: a line the undo puts back is only the server's
+ * once it answers), `onError` when it was refused.
  */
-function runUndo(undo: () => unknown, onError: (error: unknown) => void) {
+function runUndo(undo: () => unknown, onDone: () => void, onError: (error: unknown) => void) {
+  let pending: unknown;
   try {
-    const pending = undo();
-    if (pending instanceof Promise) pending.catch(onError);
+    pending = undo();
   } catch (error) {
     onError(error);
+    return;
   }
+  if (pending instanceof Promise) pending.then(onDone, onError);
+  else onDone();
 }
 
 /** What an undo that the server refused says on the status line. */
@@ -362,16 +366,33 @@ function CollectionPage({ onExit }: { onExit?: () => void }) {
     setNotice((prev) => ({ id: (prev?.id ?? 0) + 1, message, undo }));
   };
   useEffect(() => {
-    if (!notice || held) return;
+    // A running undo keeps its line up: "Undone." (or why not) replaces it.
+    if (!notice || held || notice.undoing) return;
     const t = setTimeout(() => setNotice(null), NOTICE_MS);
     return () => clearTimeout(t);
   }, [notice, held]);
+  // One undo at a time: a second press while the first is running does nothing.
+  const undoing = useRef(false);
   const undo = () => {
-    const run = notice?.undo;
-    setNotice((prev) =>
-      prev ? { id: prev.id + 1, message: "Undone." } : null,
+    if (!notice?.undo || undoing.current) return;
+    const run = notice.undo;
+    undoing.current = true;
+    const ran = notice.id;
+    // Undo stays on the line, inert, until the write lands; "Undone." waits
+    // for it, so whatever it put back is already the server's when the
+    // collector reaches for it.
+    setNotice((prev) => (prev && prev.id === ran ? { ...prev, undoing: true } : prev));
+    runUndo(
+      run,
+      () => {
+        undoing.current = false;
+        notify("Undone.");
+      },
+      (error) => {
+        undoing.current = false;
+        notify(undoFailed(error));
+      },
     );
-    if (run) runUndo(run, (error) => notify(undoFailed(error)));
   };
   const run = async <T extends { undo: Undo }>(
     write: () => Promise<T>,

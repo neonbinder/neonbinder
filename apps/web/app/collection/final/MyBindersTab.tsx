@@ -81,6 +81,7 @@ import PackTray, {
   type SlotTarget,
 } from "./binders/PackTray";
 import Shelf, { InventoryShelf } from "./binders/Shelf";
+import { keepClearOfTray, trackInputModality } from "./binders/trayClear";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
 import {
@@ -248,6 +249,8 @@ export default function MyBindersTab({
   useEffect(() => {
     if (elsewhere) replaceParams((p) => p.set("tab", elsewhere));
   }, [elsewhere, replaceParams]);
+  // Only where `:focus-visible` is missing: what tells keepClearOfTray a press from a key.
+  useEffect(() => trackInputModality(), []);
   const container =
     view?.kind === "binder"
       ? containers?.find((c) => c.id === view.binderId)
@@ -1285,33 +1288,6 @@ export default function MyBindersTab({
       )}
     </div>
   );
-}
-
-/**
- * WCAG 2.4.11: the pack tray is pinned over the bottom of the page, and a
- * control it covers still counts as on screen, so the browser never scrolls
- * to it. When the keyboard lands on one, scroll it up clear of the tray (its
- * height is `--nb-tray-h`, which PackTray publishes).
- */
-function keepClearOfTray(target: EventTarget) {
-  // The tray's own controls, and a dialog's (it sits over the tray), are left alone.
-  if (
-    !(target instanceof HTMLElement) ||
-    target.closest(".p2-pack, [role='dialog'], [role='alertdialog']")
-  )
-    return;
-  const tray =
-    parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue(
-        "--nb-tray-h",
-      ),
-    ) || 0;
-  if (tray <= 0) return;
-  const rect = target.getBoundingClientRect();
-  const limit = window.innerHeight - tray - 16;
-  // Never scroll a control taller than the room above the tray off its top.
-  if (rect.bottom > limit && rect.top > 0)
-    window.scrollBy({ top: Math.min(rect.bottom - limit, rect.top) });
 }
 
 /**

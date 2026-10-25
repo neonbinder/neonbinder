@@ -100,15 +100,19 @@ function itemsOfCopies(copies: readonly Copy[], cards: readonly (Card | null)[] 
   return [...items.values()];
 }
 
-/** "1 card", "12,345 cards". */
-function cardsText(n: number): string {
-  return n === 1 ? "1 card" : `${n.toLocaleString("en-US")} cards`;
+/**
+ * "1 card", "12,345 cards", "5,000+ cards": every card count on this screen
+ * (the rail, the status line, the grid's name), so they agree on the plural.
+ * `exact: false` is a floor, which always reads as many.
+ */
+function cardsText(n: number, exact = true): string {
+  return exact && n === 1 ? "1 card" : `${countText(n, exact)} cards`;
 }
 
 /** "12 cards", "1 card", "Not counted yet". */
 function countDetail(count: ContainerCount | null): string {
   if (!count) return "Not counted yet";
-  return count.copies === 1 ? "1 card" : `${count.copies.toLocaleString("en-US")} cards`;
+  return cardsText(count.copies);
 }
 
 export default function OwnedShelf() {
@@ -142,7 +146,8 @@ export default function OwnedShelf() {
   const boxedCards = useCards(sourceId ? boxedIds : null);
 
   const buildingIds = useMemo(() => new Set((building ?? []).map((s) => s.id)), [building]);
-  const items: Item[] | undefined = useMemo(() => {
+  // Everything the source holds, before "Everything else" leaves out the set builds.
+  const held: Item[] | undefined = useMemo(() => {
     let list: Item[] | undefined;
     if (sourceId) {
       list = boxed ? itemsOfCopies(boxed.copies, boxedCards, boxedIds) : undefined;
@@ -156,13 +161,13 @@ export default function OwnedShelf() {
         graded: owned.copiesByCard[card.id]?.graded === true,
       }));
     }
-    if (!list) return undefined;
-    if (shelf === "else") {
-      if (!building) return undefined;
-      return list.filter((it) => !buildingIds.has(it.card.set.id));
-    }
     return list;
-  }, [sourceId, boxed, boxedCards, boxedIds, owned, shelf, building, buildingIds]);
+  }, [sourceId, boxed, boxedCards, boxedIds, owned]);
+  const items: Item[] | undefined = useMemo(() => {
+    if (!held || shelf !== "else") return held;
+    if (!building) return undefined;
+    return held.filter((it) => !buildingIds.has(it.card.set.id));
+  }, [held, shelf, building, buildingIds]);
   const more = sourceId ? (boxed?.truncated ?? false) : (owned?.truncated ?? false);
 
   const found = useSearch(query);
@@ -231,12 +236,12 @@ export default function OwnedShelf() {
           : null
       : null;
   const total = known !== null ? known.toLocaleString("en-US") : `${shown.length}${more ? "+" : ""}`;
-  const single = known !== null ? known === 1 : shown.length === 1 && !more;
+  const tally = known !== null ? cardsText(known) : cardsText(shown.length, !more);
   const left = known !== null ? known - visible.length : null;
   const allDetail = scoped
     ? `${countDetail(scoped.count)} in ${scoped.name}`
     : summary
-      ? `${summary.cards.toLocaleString("en-US")}${summary.exact ? "" : "+"} cards`
+      ? cardsText(summary.cards, summary.exact)
       : "Counting…";
 
   return (
@@ -294,7 +299,7 @@ export default function OwnedShelf() {
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-base font-bold text-ink">{title}</h3>
             <p className="text-sm text-ink-3" role="status">
-              {items === undefined ? "Counting…" : `${total} ${single ? "card" : "cards"}`}
+              {items === undefined ? "Counting…" : tally}
             </p>
           </div>
           <ShelfNote container={picked} describeRule={demo?.describeRule} />
@@ -347,16 +352,18 @@ export default function OwnedShelf() {
             </div>
           ) : visible.length === 0 ? (
             <p className="mt-6 rounded-lg border border-dashed border-rule-strong p-6 text-center text-sm text-ink-2">
-              {shelf === "else" && items.length === 0 && !more
-                ? "Every card here is on a set build. Gnarly."
-                : items.length === 0 && !more
-                  ? "Nothing in here yet."
-                  : "Nothing here matches. Loosen a filter."}
+              {items.length > 0 || more
+                ? "Nothing here matches. Loosen a filter."
+                : !picked && held?.length === 0
+                  ? "Bare shelf, dude. Look one up in Find a card above and hit Add 1 to stock it."
+                  : shelf === "else"
+                    ? "Every card here is on a set build. Gnarly."
+                    : "Nothing in here yet."}
             </p>
           ) : (
             <ul
               ref={grid}
-              aria-label={`${title}, ${total} cards`}
+              aria-label={`${title}, ${tally}`}
               onKeyDown={roving.onKeyDown}
               onFocus={roving.onFocus}
               className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-x-3 gap-y-4"
@@ -498,11 +505,6 @@ function countText(n: number, exact: boolean): string {
   return `${n.toLocaleString("en-US")}${exact ? "" : "+"}`;
 }
 
-/** "1 card", "12,345 cards", "5,000+ cards". */
-function ownedCardsText(n: number, exact: boolean): string {
-  return exact && n === 1 ? "1 card" : `${countText(n, exact)} cards`;
-}
-
 /**
  * NEO-358 — "Everything I own" in the real collection, until binders ship:
  * the tally line, then every card the collector holds, most recently touched
@@ -543,7 +545,7 @@ export function CollectionTally() {
         </p>
       ) : (
         <p className="mt-1 text-sm text-ink-2">
-          <strong className="text-ink">{ownedCardsText(summary.cards, summary.exact)}</strong> in the collection,{" "}
+          <strong className="text-ink">{cardsText(summary.cards, summary.exact)}</strong> in the collection,{" "}
           <strong className="text-ink">{countText(summary.copies, summary.exact)}</strong> in hand counting the
           extras. Newest first.
         </p>
@@ -560,7 +562,7 @@ export function CollectionTally() {
       {owned && owned.cards.length > 0 && (
         <ul
           ref={grid}
-          aria-label={`Everything I own, ${ownedCardsText(owned.total, owned.totalExact)}`}
+          aria-label={`Everything I own, ${cardsText(owned.total, owned.totalExact)}`}
           onKeyDown={roving.onKeyDown}
           onFocus={roving.onFocus}
           className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-x-3 gap-y-4"

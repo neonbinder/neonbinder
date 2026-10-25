@@ -38,6 +38,7 @@ import {
 } from "./data/store";
 import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
+import { useLineKeys } from "./lineKeys";
 import { ParamLink } from "./mode";
 import { usePageApi } from "./pageApi";
 
@@ -543,8 +544,15 @@ export function CopyList({
     onRemove(copy);
   };
 
-  /** The line whose Move, Sell or Take off sale panel is open. */
-  const [moving, setMoving] = useState<{ id: CopyId; shift: Shift } | null>(null);
+  /**
+   * Each line's React key: its id, carried across the swap from the id a store
+   * drew it with ahead of the server to the server's own (an undo's re-split,
+   * say), so neither the row nor a panel open on it closes under the pointer.
+   */
+  const keyOf = useLineKeys(lines);
+  /** The line (by `keyOf`) whose Move, Sell or Take off sale panel is open. */
+  const [moving, setMoving] = useState<{ key: string; shift: Shift } | null>(null);
+  const movingOn = (copy: Copy) => (moving && moving.key === keyOf(copy) ? moving.shift : null);
   /** After a move lands: the line the cards are now (a fold's twin), for the keyboard. */
   const [landed, setLanded] = useState<CopyId | null>(null);
   const landedHere = landed !== null && lines.some((c) => c.id === landed);
@@ -581,8 +589,8 @@ export function CopyList({
     opener(id, shift)?.focus();
     setMoving(null);
   };
-  const toggle = (id: CopyId, shift: Shift) =>
-    setMoving(moving?.id === id && moving.shift === shift ? null : { id, shift });
+  const toggle = (copy: Copy, shift: Shift) =>
+    setMoving(movingOn(copy) === shift ? null : { key: keyOf(copy), shift });
   const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number) => {
     if (!onMove) return;
     closeMove(copy.id, shift);
@@ -609,12 +617,12 @@ export function CopyList({
         <ul className="divide-y divide-rule rounded-md border border-rule">
           {lines.map((copy, i) =>
             editing?.id === copy.id && renderEditor ? (
-              <li key={copy.id} className="p-2" data-copy-editor={copy.id}>
+              <li key={keyOf(copy)} className="p-2" data-copy-editor={copy.id}>
                 {renderEditor(copy, i)}
               </li>
             ) : (
               <li
-                key={copy.id}
+                key={keyOf(copy)}
                 ref={(el) => {
                   if (!copyRefs) return;
                   if (el) copyRefs.current.set(copy.id, el);
@@ -658,8 +666,8 @@ export function CopyList({
                     className={QUIET_BUTTON}
                     data-copy-move={copy.id}
                     aria-label={`Move ${name}, ${names[i]}`}
-                    aria-expanded={moving?.id === copy.id && moving.shift === "move"}
-                    onClick={() => toggle(copy.id, "move")}
+                    aria-expanded={movingOn(copy) === "move"}
+                    onClick={() => toggle(copy, "move")}
                   >
                     Move
                   </button>
@@ -672,8 +680,8 @@ export function CopyList({
                     aria-label={
                       copy.homeKind === "box" ? `Take ${name}, ${names[i]}, off sale` : `Sell ${name}, ${names[i]}`
                     }
-                    aria-expanded={moving?.id === copy.id && moving.shift !== "move"}
-                    onClick={() => toggle(copy.id, copy.homeKind === "box" ? "unsell" : "sell")}
+                    aria-expanded={movingOn(copy) !== null && movingOn(copy) !== "move"}
+                    onClick={() => toggle(copy, copy.homeKind === "box" ? "unsell" : "sell")}
                   >
                     {copy.homeKind === "box" ? "Take off sale" : "Sell"}
                   </button>
@@ -687,7 +695,7 @@ export function CopyList({
                 >
                   Remove
                 </button>
-                {canShift && moving?.id === copy.id && (
+                {canShift && moving && moving.key === keyOf(copy) && (
                   <MovePanel
                     copy={copy}
                     line={names[i]}
