@@ -1,8 +1,15 @@
 import { SignInButton, SignUpButton } from "@clerk/clerk-react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { BrandMark, NeonHeader, PullingLogo } from "../components/primitives";
 import { BindersIcon, NinePocketIcon } from "../components/icons";
 import NeonButton from "@/components/modules/NeonButton";
+
+/** Fetch the demo early when a visitor is about to open it (as the tour does). */
+function warmDemo() {
+  void import("@/app/collection/final/PublicCollectionDemo").catch(() => {
+    // A failed warm-up is retried by lazy() when the demo actually opens.
+  });
+}
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -64,6 +71,36 @@ export default function LandingPage() {
               Claim your spot before the beta drops. Get early access and insider updates—no FOMO allowed.
             </p>
           </div>
+
+          {/* Check it Out — the way into the collection demo. One real link,
+              painted as a NeonButton (asChild) and stretched over the whole
+              panel (after:inset-0) so the panel reads as clickable while the
+              link keeps the name "Check it Out". No `state`: nothing on the
+              tour sits behind this entry, so the demo's close falls back to
+              replacing it with the tour. */}
+          <section
+            aria-labelledby="check-it-out-heading"
+            className="relative w-full mb-16 p-8 rounded-lg bg-gradient-to-r from-wash-blue to-wash-pink border border-wash-rule-pink shadow-offset hover:border-neon-blue-text hover:shadow-lg hover:shadow-neon-blue-text/20 transition-all"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <span className="text-3xl" aria-hidden="true">🗂️</span>
+              <h2 id="check-it-out-heading" className="text-2xl font-bold">Check it Out</h2>
+            </div>
+            <p className="text-lg text-ink-2 mb-4">
+              Flip through a demo binder stuffed with real cards. No account, no sweat.
+            </p>
+            <NeonButton asChild variant="secondary" size="3">
+              <Link
+                to="/binder-tracking?demo=on"
+                onPointerEnter={warmDemo}
+                onFocus={warmDemo}
+                className="after:absolute after:inset-0 after:rounded-lg after:content-['']"
+              >
+                Check it Out
+                <span aria-hidden="true">→</span>
+              </Link>
+            </NeonButton>
+          </section>
 
           {/* Free Tier Positioning */}
           <div className="text-center mb-16 p-8 rounded-lg bg-gradient-to-r from-wash-green to-wash-blue border border-wash-rule-green shadow-offset">
