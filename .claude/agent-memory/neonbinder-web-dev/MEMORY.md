@@ -82,6 +82,7 @@
 - [Result ledgers grow, the page scrolls](feedback-result-ledgers-grow-the-page-scrolls.md) — no max-h-48 inner scroller on a list the operator reads; 70vh cap only past a pathological count (Jason, NEO-321)
 - [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
 - [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition, or hold a pending value when a child moves focus
+- [Latest-entry ref is stale at render after POP](reference_latest_entry_ref_is_stale_at_render_after_pop.md) — Link href/state from useLocation, rebuild the push in onClick; MemoryRouter clamps go(-n), add an entry ahead
 - [New string locator collision sweep](reference_new_string_locator_collision_sweep.md) — Playwright name/text matching is a substring; grep the specs for the new copy and check the page each hit runs on
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
 - [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe; measure heights per case matrix; tsx `.css` import stub loader
@@ -134,15 +135,15 @@
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
 - [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
 - [Tailwind JS-config colours are inlined](reference_tailwind_js_config_colours_are_inlined.md) — neon-* compile to literal hex; redeclare in @theme to theme them by variable
-- [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — globals.css (0,1,0) remaps of --green-9/--focus-8 are dead; out-specify on the Theme element, probe computed values
+- [Radix scale overrides lose to Radix](reference_radix_scale_overrides_lose_to_radix.md) — Radix sets --green-9/--focus-8 on the Theme element, so html-level remaps never reach it; set them there, probe computed values
 - [vitest CSS ?raw import is empty](reference_vitest_css_raw_import_is_empty.md) — CSS imports stub to ""; read stylesheets with readFileSync(join(__dirname, ...))
 - [data-theme="dark" scopes a subtree](reference_data_theme_dark_scopes_a_subtree.md) — pin roles dark for one scene (spin shelf, /u storefronts); light signatures still match; waitForURL glob matches query
-- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools a waitForURL regex; "An error occurred" is usually a missing Convex function on the backend
+- [Local screenshot script gotchas](reference_local_screenshot_script_gotchas.md) — sign-in redirect fools waitForURL; missing Convex fn; hand-set data-theme misreads livery; oklch colours
 - [Unlayered CSS beats Tailwind utilities](reference_unlayered_css_beats_tailwind_utilities.md) — feature stylesheets are unlayered and outrank @utility/@layer rules; strip legacy colours before adding a signature class
 - [Render a component from its unit test](reference_render_a_component_from_its_unit_test.md) — dump happy-dom markup via a scratch vitest config (sequence.hooks "list"), render with real CSS; for screens the backend cannot serve
 - [Printed output is a srcdoc capture](reference_printed_output_is_srcdoc_capture.md) — prove print unchanged by hooking the print iframe srcdoc / QR popup, not page screenshots
 - [App-wide useQuery needs its own boundary](reference_app_wide_usequery_needs_its_own_boundary.md) — a failing/missing Convex function throws in render; boundary + Sentry once
-- [Radix button box beats Tailwind](reference_radix_button_box_beats_tailwind.md) — on NeonButton, Tailwind display/height/padding/radius classes lose to Radix; use min-h, `contents` wrappers, asChild, inline style
+- [Radix layer under Tailwind utilities](reference_radix_button_box_beats_tailwind.md) — Radix CSS is `layer(radix)` in globals.css (NEO-364): plain utilities on NeonButton work, no `!`; never import it from JS
 - [rAF focus request clears by identity](reference_raf_focus_request_clear_by_identity.md) — functional clear or a stale frame drops a newer move; happy-dom blur() fires no focusout
 - [Write tool turns unicode escapes into chars](reference_write_tool_turns_unicode_escapes_into_chars.md) — a written `￿` can land as the literal char; grep and fix
 - [Compiler memo lost by a derived JSX map](reference_compiler_memo_lost_by_derived_jsx_map.md) — preserve-manual-memoization: drop the manual memo, never disable the rule
@@ -154,3 +155,6 @@
 - [Optimistic id swap remounts id-keyed rows](reference_optimistic_id_swap_remounts_id_keyed_rows.md) — key rows via useLineKeys; ids replay per args (optimisticIdFor); writes await landedCopy
 - [Scroll on focus swallows mouse clicks](reference_scroll_on_focus_swallows_mouse_clicks.md) — focus fires between mousedown/mouseup; gate scroll-on-focus on :focus-visible (binders/trayClear)
 - [Typecheck a client against a contract stub](reference_typecheck_a_client_against_a_contract_stub.md) — parallel backend: scratch tsconfig paths map api to a stub; missing members hide bugs as any
+- [HMR context-module edit crashes the page](reference_hmr_context_module_edit_crashes_the_page.md) — sibling edits mode.tsx → "outside Provider"; reload. select-on-focus field: → test selectionEnd only
+- [Sticky sub-bar must bump scroll padding](reference_sticky_subbar_must_bump_scroll_padding.md) — a bar sticking under the sm-sticky header needs html scroll-padding-top grown inline while mounted; hint text outside the sticky part
+- [sr-only escapes an unpositioned scroller](reference_sr_only_escapes_unpositioned_scroller.md) — overflow-x rail with sr-only kids widens the page unless the scroller is `relative`

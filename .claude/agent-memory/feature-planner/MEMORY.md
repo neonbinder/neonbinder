@@ -23,3 +23,4 @@
 - [Shared UI needs the catalog behind an interface too](shared-ui-needs-the-catalog-behind-an-interface-too.md) — demo views import the fake catalog directly; plan a per-view model + hooks, not just a store swap
 - [Per-user E2E tables reset in bootstrap](per-user-e2e-tables-reset-in-bootstrap-not-the-global-reset.md) — resetMyTestState, not only the global drain
 - [Prototype shared types are live](prototype-shared-types-are-live-do-not-edit-them.md) — p1-p5 still routed; adapt at demoStore, never edit prototypes/_shared shapes
+- [Kept-counter semantics change is a write-path audit](kept-counter-semantics-change-is-a-write-path-audit.md) — tally/count meaning changes touch every mutation + recount + derived counts + backfill; never a read filter
