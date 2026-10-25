@@ -238,7 +238,7 @@ test(
       name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(number)} ${escapeRegExp(player)}`),
     });
     await detailsButton.click();
-    await expect(drawer.getByText(/^You have 1\.?$/)).toBeVisible();
+    await expect(drawer.getByText(/^1 in binders\.?$/)).toBeVisible();
     await expect(page).toHaveURL(/[?&]detail=[^&]+/);
     // Opened from the checklist's rows, it says where the card sits among them.
     await expect(drawer.getByRole("status").filter({ hasText: /^Card \d+ of \d+, / })).toHaveText(
@@ -257,7 +257,7 @@ test(
     await checklist.getByRole("button", { name: `Add another ${short}`, exact: true }).click();
     await expect(page).toHaveURL(/[?&]detail=[^&]+/);
     await expect(page).toHaveURL(/[?&]mode=add(&|$)/);
-    await expect(drawer.getByText(/^You have 1\.?$/)).toBeVisible();
+    await expect(drawer.getByText(/^1 in binders\.?$/)).toBeVisible();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
     // Fully on screen before axe reads it (the drawer slides in).

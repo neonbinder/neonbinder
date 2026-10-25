@@ -313,7 +313,7 @@ test(
     await expect(drawer.getByRole("button", { name: "Add to inventory" })).toBeVisible();
     await expect(drawer.getByRole("button", { name: "Add to collection" })).toHaveCount(0);
     const where = drawer.getByRole("combobox", { name: "Where it lives" });
-    await expect(where.getByRole("option", { name: "Unsorted", exact: true })).toBeAttached();
+    await expect(where.getByRole("option", { name: "Unsorted (box, for sale)", exact: true })).toBeAttached();
     await expect(where.getByRole("option", { name: "Main", exact: true })).toHaveCount(0);
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw`, exact: true }).click();
     await expect(lines(1)).toBeVisible();

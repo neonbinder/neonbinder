@@ -89,9 +89,14 @@ test(
       const short = /^Quantity of (.+) in Unsorted$/.exec(name)![1];
       return { short, number: m![1], player: m![2] };
     };
+    // The search step finds Y by its player, so X and Z must be someone else: the Base opens
+    // on one player's run (#1, #1b, #1c are all Ohtani), so take the next row that changes player.
     const x = await card(0);
-    const y = await card(1);
-    const z = await card(2);
+    let n = 1;
+    let y = await card(n);
+    while (y.player === x.player) y = await card(++n);
+    let z = await card(++n);
+    while (z.player === y.player) z = await card(++n);
     expect(new Set([x.short, y.short, z.short]).size, "three different cards").toBe(3);
 
     await quantityField(unsortedList, x.short, "Unsorted").fill("3");
