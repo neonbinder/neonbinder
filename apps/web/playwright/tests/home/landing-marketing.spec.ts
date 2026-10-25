@@ -25,6 +25,7 @@ test("Landing Page Marketing Content", { tag: ["@marketing", "@home"] }, async (
   // keeps a heading inside a button, so the level is a real, perceivable one.
   await expect(page.getByRole("heading", { level: 1, name: "Neon Binder" })).toBeVisible();
   for (const title of [
+    "Check it Out",
     "Card Show Sales",
     "Fill Binders for Collection Tracking",
     "AI-Based Card Identification",
