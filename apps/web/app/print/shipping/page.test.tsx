@@ -37,7 +37,7 @@ vi.mock("@/lib/print/print-html", async (importOriginal) => ({
 
 import { useAction, useQuery } from "convex/react";
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { printHtmlDocument } from "@/lib/print/print-html";
+import { buildDocument, printHtmlDocument } from "@/lib/print/print-html";
 import ShippingLabelsPage from "./page";
 
 const savedAddress = {
@@ -245,5 +245,51 @@ describe("ShippingLabelsPage postage gating", () => {
     expect(
       screen.getByRole("button", { name: /print label/i }),
     ).toBeTruthy();
+  });
+});
+
+// NEO-365: since Firefox 158 a landscape @page prints portrait on the label
+// printer's 4×6 stock. Both labels this page prints must reach the printer as
+// a portrait 4×6 page with the 6×4 label turned onto it.
+describe("ShippingLabelsPage print orientation (NEO-365)", () => {
+  function expectTurnedOntoPortraitStock(options: Parameters<typeof buildDocument>[0]) {
+    expect(options.page).toEqual({ widthIn: 6, heightIn: 4 });
+    const doc = buildDocument(options);
+    expect(doc).toMatch(/@page \{\s*size: 4in 6in;/);
+    expect(doc).toContain(
+      `<div class="nb-print-paper"><div class="nb-print-turned">${options.bodyHtml}</div></div>`,
+    );
+  }
+
+  it("prints the bought postage label turned onto portrait 4×6 paper", async () => {
+    await buyPostage({ trackingCode: "9400333", historySaved: true });
+
+    await vi.waitFor(() => expect(printHtmlDocument).toHaveBeenCalled());
+    const [options] = (printHtmlDocument as Mock).mock.calls[0];
+    expect(options.bodyHtml).toContain("width:6in;height:4in");
+    expectTurnedOntoPortraitStock(options);
+  });
+
+  it("prints the free label turned onto portrait 4×6 paper", async () => {
+    hasKeyMock.mockResolvedValue(false);
+    renderPage();
+    await act(async () => {});
+
+    const type = (label: string, value: string) =>
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    type("Name", buyerAddress.name);
+    type("Street Address", buyerAddress.line1);
+    type("City", buyerAddress.city);
+    type("State", buyerAddress.state);
+    type("ZIP", buyerAddress.postalCode);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /print label/i }));
+    });
+
+    await vi.waitFor(() => expect(printHtmlDocument).toHaveBeenCalled());
+    const [options] = (printHtmlDocument as Mock).mock.calls[0];
+    expect(options.bodyHtml).toContain("JANE BUYER");
+    expectTurnedOntoPortraitStock(options);
   });
 });

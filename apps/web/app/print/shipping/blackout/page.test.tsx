@@ -16,7 +16,7 @@ vi.mock("@/lib/print/print-html", async (importOriginal) => ({
   printHtmlDocument: vi.fn(),
 }));
 
-import { printHtmlDocument } from "@/lib/print/print-html";
+import { buildDocument, printHtmlDocument } from "@/lib/print/print-html";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import BlackoutLabelPage from "./page";
 
@@ -75,6 +75,24 @@ describe("BlackoutLabelPage", () => {
     expect(options.css).toMatch(/html, body \{[^}]*background: #000/);
     // Nothing a seller typed reaches this document — there is no input at all.
     expect(options.bodyHtml).not.toMatch(/<(script|img|svg)/i);
+  });
+
+  // NEO-365: printed portrait onto the 4×6 stock with the black block turned
+  // onto it, exactly like the shipping label. The caller CSS must not size
+  // html/body: a 6×4 size there would clip the turned block to the top 4in.
+  it("prints on the portrait 4×6 paper with the black block turned onto it", async () => {
+    render(<BlackoutLabelPage />);
+    await act(async () => {
+      fireEvent.click(printButton());
+    });
+
+    const [options] = (printHtmlDocument as Mock).mock.calls[0];
+    const doc = buildDocument(options);
+    expect(doc).toMatch(/@page \{\s*size: 4in 6in;/);
+    expect(doc).toContain(
+      `<div class="nb-print-paper"><div class="nb-print-turned">${options.bodyHtml}</div></div>`,
+    );
+    expect(options.css).not.toMatch(/width|height|overflow/);
   });
 
   it("says why when the print dialog cannot open", async () => {

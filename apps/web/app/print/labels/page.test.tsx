@@ -39,7 +39,7 @@ vi.mock("@/lib/print/print-html", async (importOriginal) => ({
 
 import { useAction, useQuery } from "convex/react";
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { printHtmlDocument } from "@/lib/print/print-html";
+import { buildDocument, printHtmlDocument } from "@/lib/print/print-html";
 import { formatAbsoluteTime } from "@/lib/time/relative-time";
 import LabelHistoryPage from "./page";
 
@@ -278,6 +278,14 @@ describe("LabelHistoryPage", () => {
     expect(printed.bodyHtml).not.toContain("stale.png");
     // 6×4 in, so the barcode a carrier scans is not clipped.
     expect(printed.page).toEqual({ widthIn: 6, heightIn: 4 });
+    // NEO-365: and that 6×4 image reaches the printer turned onto portrait
+    // 4×6 paper, the way the label printer feeds its stock.
+    const doc = buildDocument(printed);
+    expect(doc).toMatch(/@page \{\s*size: 4in 6in;/);
+    expect(doc).toContain(
+      `<div class="nb-print-paper"><div class="nb-print-turned">${printed.bodyHtml}</div></div>`,
+    );
+    expect(printed.bodyHtml).toContain("width:6in;height:4in");
   });
 
   it("surfaces the backend's own message when a reprint fails", async () => {
