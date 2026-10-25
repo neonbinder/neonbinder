@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import type { ReactNode } from "react";
 import ShareLink from "./ShareLink";
@@ -94,6 +94,54 @@ describe("ShareLink", () => {
       fireEvent.submit(input.closest("form")!);
     });
     expect(sharing.setSlug).toHaveBeenCalledWith(BINDER, "shohei gold");
+    expect(screen.getByRole("status").textContent).toBe("Link name saved. The old link no longer works.");
+    // The field shows what was saved, in place: no remount, so focus stays.
+    expect((input as HTMLInputElement).value).toBe("shohei-gold");
+    expect(screen.getByLabelText("Link name")).toBe(input);
+  });
+
+  it("a link name already in use: the refusal is announced and the field points at it", async () => {
+    const sharing = sharingWith(ME);
+    sharing.setSlug = vi.fn(async () => {
+      throw new Error("Another of your binders already uses taken. Pick a different link name.");
+    });
+    renderWith(BINDER, sharing);
+    const input = screen.getByLabelText("Link name");
+    fireEvent.change(input, { target: { value: "taken" } });
+    await act(async () => {
+      fireEvent.submit(input.closest("form")!);
+    });
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Another of your binders already uses taken. Pick a different link name.");
+    expect(input.getAttribute("aria-describedby")).toContain(alert.id);
+    expect((input as HTMLInputElement).value).toBe("taken");
+  });
+
+  it("a refused Private / Public press puts the choice back and says why", async () => {
+    const sharing = sharingWith(ME);
+    sharing.setVisibility = vi.fn(async () => {
+      throw new Error("Couldn't save that. Try again.");
+    });
+    renderWith(BINDER, sharing);
+    await act(async () => {
+      fireEvent.click(choice("Public"));
+    });
+    await waitFor(() => expect(choice("Private").checked).toBe(true));
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't save that. Try again.");
+  });
+
+  it("a press while a write is out is ignored, and the choices stay focusable", async () => {
+    const sharing = sharingWith(ME);
+    let settle: () => void = () => {};
+    sharing.setVisibility = vi.fn(() => new Promise<undefined>((resolve) => (settle = () => resolve(undefined))));
+    renderWith(BINDER, sharing);
+    fireEvent.click(choice("Public"));
+    const group = screen.getByRole("group", { name: "Who can see this binder" });
+    expect(group.getAttribute("aria-disabled")).toBe("true");
+    expect(choice("Private").disabled).toBe(false);
+    fireEvent.click(choice("Private"));
+    expect(sharing.setVisibility).toHaveBeenCalledTimes(1);
+    await act(async () => settle());
   });
 
   it("refuses a malformed readable part before asking the server", () => {
@@ -101,7 +149,8 @@ describe("ShareLink", () => {
     renderWith(BINDER, sharing);
     fireEvent.change(screen.getByLabelText("Link name"), { target: { value: "no/slashes" } });
     expect(screen.getByText(/lowercase letters, numbers and single hyphens/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    // Off but focusable, so focus is never dropped.
+    expect(screen.getByRole("button", { name: "Save" }).getAttribute("aria-disabled")).toBe("true");
   });
 
   it("a binder made before share links gets its link minted on open", () => {
@@ -109,6 +158,27 @@ describe("ShareLink", () => {
     const old = { ...BINDER, slug: undefined };
     renderWith(old, sharing);
     expect(sharing.ensureLink).toHaveBeenCalledWith(old);
+  });
+
+  it("a link that can't be minted says why", async () => {
+    const sharing = sharingWith(ME);
+    sharing.ensureLink = vi.fn(async () => {
+      throw new Error("Couldn't make the link.");
+    });
+    renderWith({ ...BINDER, slug: undefined }, sharing);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Couldn't make the link."));
+    expect(screen.getByText("Making your link…")).toBeTruthy();
+  });
+
+  it("tabbing out of the panel closes it", () => {
+    renderWith(BINDER, sharingWith(ME));
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    const share = screen.getByRole("button", { name: "Share Ohtani rainbow" });
+    expect(share.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.blur(screen.getByLabelText("Link name"), { relatedTarget: outside });
+    expect(share.getAttribute("aria-expanded")).toBe("false");
+    outside.remove();
   });
 
   it("no public name yet: says so and links to the profile", () => {

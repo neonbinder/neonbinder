@@ -339,10 +339,19 @@ describe("counts and paging", () => {
         { username: "ace", paginationOpts: { numItems: 5, cursor } },
       );
       seen.push(page.page.length);
+      // The cursor names a box by its place, never its id.
+      expect(page.continueCursor).not.toContain(a);
+      expect(page.continueCursor).not.toContain(b);
       if (page.isDone) break;
       cursor = page.continueCursor;
     }
     expect(seen.reduce((x, y) => x + y, 0)).toBe(2);
+    // A forged place past the last box reads as the end.
+    const forged = await s.anon.query(api.publicCollection.forSale, {
+      username: "ace",
+      paginationOpts: { numItems: 5, cursor: "7|" },
+    });
+    expect(forged.page).toEqual([]);
   });
 });
 
@@ -363,6 +372,11 @@ describe("what the shelves say", () => {
     const trade = await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE });
     expect(trade.page[0].forSale).toBe(true);
     expect(JSON.stringify(trade)).not.toContain("Secret box name");
+
+    // For-sale switched private: Up for Trade stops saying which cards are for sale.
+    await s.me.mutation(api.publicProfile.setShelfVisibility, { shelf: "forSale", private: true });
+    const hidden = await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE });
+    expect(hidden.page[0].forSale).toBeUndefined();
   });
 });
 

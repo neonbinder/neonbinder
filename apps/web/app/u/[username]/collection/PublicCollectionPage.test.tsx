@@ -104,8 +104,8 @@ describe("public share pages", () => {
     ];
     renderAt("/u/ace/binders/ohtani-rainbow-k7f3q2");
     expect(screen.getByRole("heading", { name: "Ohtani rainbow" })).toBeTruthy();
-    expect(screen.getByRole("region", { name: "Page 1" })).toBeTruthy();
-    expect(screen.getAllByLabelText("Empty pocket")).toHaveLength(8);
+    expect(screen.getByRole("heading", { name: "Page 1" })).toBeTruthy();
+    expect(screen.getAllByText("Empty pocket")).toHaveLength(8);
     expect(screen.getByText("PSA 10")).toBeTruthy();
     expect(screen.getByText("Trade")).toBeTruthy();
   });
@@ -114,6 +114,7 @@ describe("public share pages", () => {
     queries.shelf = null;
     renderAt("/u/ace/want-list");
     expect(screen.getByRole("heading", { name: "Nothing to see here" })).toBeTruthy();
+    expect(document.title).toBe("Nothing to see here · NeonBinder");
   });
 
   it("Up for Trade tags a box copy as also for sale", () => {

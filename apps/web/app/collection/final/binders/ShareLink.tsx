@@ -37,6 +37,11 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
   return (
     <div
       className="relative"
+      // Tabbing out of the panel closes it, as Escape does (focus stays where it went).
+      onBlur={(e) => {
+        const next = e.relatedTarget;
+        if (open && next instanceof Node && !e.currentTarget.contains(next)) setOpen(false);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Escape" && open) {
           e.preventDefault();
@@ -164,7 +169,7 @@ function origin(): string {
   return typeof window === "undefined" ? "https://neonbinder.io" : window.location.origin;
 }
 
-/** The real link, its switch, and for a binder the readable part and Reset link. */
+/** The real link, its Private / Public choice, and for a binder its editable link name. */
 function LivePanel({
   target,
   sharing,
@@ -178,8 +183,10 @@ function LivePanel({
   const { subject } = target;
   const container = subject.kind === "binder" || subject.kind === "want" ? subject.container : null;
   const [copied, setCopied] = useState<boolean | null>(null);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const errorId = useId();
   const [flipping, setFlipping] = useState<boolean | null>(null);
   const radioName = useId();
 
@@ -192,12 +199,25 @@ function LivePanel({
     sharing.ensureLink(container).catch((e: unknown) => setError(writeErrorMessage(e)));
   }, [needsLink, container, sharing]);
 
+  // Mounted before anything else renders, so a refusal is always announced.
+  const alert = (
+    <p id={errorId} role="alert" className="mt-2 text-neon-pink-text empty:hidden">
+      {error}
+    </p>
+  );
+
   if (profile === undefined) {
-    return <p className="mt-2 text-ink-2">Loading your link…</p>;
+    return (
+      <>
+        {alert}
+        <p className="mt-2 text-ink-2">Loading your link…</p>
+      </>
+    );
   }
   if (profile.username === null) {
     return (
       <>
+        {alert}
         <p className="mt-2 text-ink-2">
           Your collection needs a public name before anything can be shared. Your links use it.
         </p>
@@ -227,18 +247,25 @@ function LivePanel({
   // The choice moves on the press; the server's answer settles it (a refusal puts it back).
   const isPublic = flipping ?? (subject.kind === "trade" ? profile.tradePublic : !!container?.isPublic);
 
-  const run = async (write: () => Promise<unknown>) => {
+  /** Runs one write at a time, answering whether it landed. */
+  const run = async (write: () => Promise<unknown>): Promise<boolean> => {
     setBusy(true);
     setError("");
+    setSaved(false);
+    setCopied(null);
     try {
       await write();
+      return true;
     } catch (e) {
       setError(writeErrorMessage(e));
+      return false;
     } finally {
       setBusy(false);
     }
   };
+  // While a write is out the controls stay focusable (aria-disabled) and ignore presses.
   const flip = (next: boolean) => {
+    if (busy) return;
     setFlipping(next);
     return run(() =>
       subject.kind === "trade"
@@ -252,7 +279,8 @@ function LivePanel({
   const noun = subject.kind === "binder" ? "binder" : subject.kind === "want" ? "Want List" : "shelf";
   return (
     <>
-      <fieldset className="mt-2" disabled={busy || !url}>
+      {alert}
+      <fieldset className="mt-2" disabled={!url} aria-disabled={busy || undefined}>
         <legend className="text-sm font-medium text-ink-2">Who can see this {noun}</legend>
         <div className="mt-1 grid grid-cols-2 gap-2">
           {(
@@ -285,21 +313,29 @@ function LivePanel({
       {url ? <LinkBox>{url}</LinkBox> : <p className="mt-2 text-ink-2">Making your link…</p>}
       {subject.kind === "binder" && subject.container.slug && (
         <SlugEditor
-          key={subject.container.slug}
           slug={subject.container.slug}
           busy={busy}
-          onSave={(slug) => run(() => sharing.setSlug(subject.container, slug))}
+          errorId={error ? errorId : undefined}
+          onSave={async (slug) => {
+            const ok = await run(() => sharing.setSlug(subject.container, slug));
+            setSaved(ok);
+            return ok;
+          }}
         />
       )}
       <p role="status" className="mt-2 text-ink-2">
-        {error || copiedLine(copied)}
+        {saved ? "Link name saved. The old link no longer works." : copiedLine(copied)}
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
         <NeonButton
           type="button"
           variant="negative"
           disabled={!url}
-          onClick={() => url && void copyText(url).then(setCopied)}
+          onClick={() => {
+            if (!url) return;
+            setSaved(false);
+            void copyText(url).then(setCopied);
+          }}
           className="min-h-9"
         >
           Copy link
@@ -310,8 +346,22 @@ function LivePanel({
   );
 }
 
-/** The readable part of a binder's link, editable. Enter saves; the old link stops working. */
-function SlugEditor({ slug, busy, onSave }: { slug: string; busy: boolean; onSave: (slug: string) => Promise<void> }) {
+/**
+ * The readable part of a binder's link, editable. Enter saves; the old link
+ * stops working. A save shows the cleaned name in place (no remount, so focus
+ * stays on Save or the field).
+ */
+function SlugEditor({
+  slug,
+  busy,
+  errorId,
+  onSave,
+}: {
+  slug: string;
+  busy: boolean;
+  errorId?: string;
+  onSave: (slug: string) => Promise<boolean>;
+}) {
   const inputId = useId();
   const hintId = useId();
   const [text, setText] = useState(slug);
@@ -322,7 +372,10 @@ function SlugEditor({ slug, busy, onSave }: { slug: string; busy: boolean; onSav
       className="mt-2"
       onSubmit={(e) => {
         e.preventDefault();
-        if (changed) void onSave(text);
+        if (!changed || busy) return;
+        void onSave(text).then((ok) => {
+          if (ok && cleaned) setText(cleaned);
+        });
       }}
     >
       <label htmlFor={inputId} className="block text-sm font-medium text-ink-2">
@@ -334,13 +387,13 @@ function SlugEditor({ slug, busy, onSave }: { slug: string; busy: boolean; onSav
           id={inputId}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          aria-describedby={hintId}
+          aria-describedby={errorId ? `${hintId} ${errorId}` : hintId}
           aria-invalid={cleaned === null}
           autoComplete="off"
           spellCheck={false}
           className="min-h-9 w-full min-w-0 rounded-md border border-field-rule bg-field px-2 text-sm text-ink focus-outline"
         />
-        <NeonButton type="submit" variant="secondary" outline disabled={!changed || busy} className="min-h-9">
+        <NeonButton type="submit" variant="secondary" outline aria-disabled={!changed || busy} className="min-h-9">
           Save
         </NeonButton>
       </div>
