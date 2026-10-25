@@ -250,21 +250,15 @@ export interface Grading {
 }
 
 /**
- * The demo's binder filing and sale fields. Only the demo store reads or
- * writes them; the Convex store never sets them and ignores them on a write
- * (real binders and boxes arrive with NEO-359, and price belongs to a listing).
- */
-export interface DemoCopyExtras {
-  binderIds: string[];
-  forSale: boolean;
-  askPrice?: number;
-}
-
-/**
  * Everything about a copy the collector edits. Field names match the
  * prototypes' `CopyDetails` (so `CopyDetailsForm` takes them unchanged); the
  * Convex store converts on the way through (`costBasis` dollars ↔ cents,
  * `acquiredAt` ↔ `acquiredOn`, `graded` ↔ `grading`).
+ *
+ * NEO-359: a copy has ONE home (`homeId`, a binder or a box) and is for sale
+ * exactly when that home is a box (Jason, 2026-10-24): there is no for-sale
+ * flag and no asking price (price belongs to a listing). Up for Trade is a
+ * flag on the copy; the card stays where it lives.
  */
 export interface CopyDetails {
   /** An integer ≥ 1: a stack of identical copies is one line item. */
@@ -281,8 +275,20 @@ export interface CopyDetails {
   location?: string;
   /** Blank is "". */
   notes: string;
-  /** Demo only (see `DemoCopyExtras`). */
-  demo?: DemoCopyExtras;
+  /**
+   * Where the copy lives. On an add: absent files it in the page's scope
+   * (`useScope`) when that is a binder or box, else in Main. On an edit it
+   * must stay the same: a change of home is `moveCopy`, never `updateCopy`.
+   */
+  homeId?: ContainerId;
+  /**
+   * Where inside its home: a binder pocket (`page * 9 + pocket`, both from
+   * 0; a pocket holds one line item) or a box row (0 to `BOX_ROWS - 1`, a
+   * row holds many). Absent: not in a pocket or row yet.
+   */
+  slot?: number;
+  /** On the Up for Trade pile. The copy stays in its home. */
+  upForTrade?: boolean;
 }
 
 /** One line item the collector owns: one physical copy, or an identical stack. */
@@ -291,10 +297,147 @@ export interface Copy extends CopyDetails {
   cardId: CardId;
   variantId: VariantId;
   setId: SetId;
-  /** The copy's one home: a binder, or a box for cards for sale. */
+  /** The copy's one home: a binder, or a box (for sale). */
   homeId: ContainerId;
-  /** "Main", when the store knows it. */
+  /** What the home is. `"box"`: the copy is for sale. "binder" while the store does not know yet. */
+  homeKind: ContainerKind;
+  /** "Main", "Show box", when the store knows it. */
   homeName?: string;
+  upForTrade: boolean;
+}
+
+/** Rows in a box (a long box's dividers): `slot` 0 to 4. */
+export const BOX_ROWS = 5;
+/** Pockets on a binder page. */
+export const POCKETS_PER_PAGE = 9;
+/** Pages a binder's pockets run to: `slot` 0 to `POCKETS_PER_PAGE * MAX_BINDER_PAGES - 1`. */
+export const MAX_BINDER_PAGES = 1000;
+
+/** A binder pocket's `slot`, from its page and pocket (both from 0). */
+export function pocketSlot(page: number, pocket: number): number {
+  return page * POCKETS_PER_PAGE + pocket;
+}
+
+/** The page and pocket (both from 0) a binder `slot` names. */
+export function pocketOf(slot: number): { page: number; pocket: number } {
+  return { page: Math.floor(slot / POCKETS_PER_PAGE), pocket: slot % POCKETS_PER_PAGE };
+}
+
+// ---------------------------------------------------------------------------
+// Binders and boxes
+// ---------------------------------------------------------------------------
+
+/** A container is a binder (keeps cards) or a box (cards for sale). */
+export type ContainerKind = "binder" | "box";
+
+/**
+ * The containers every collector has. `main`: where a card lands until it is
+ * filed elsewhere. `want`: the Want List (holds wants, never copies). `trade`:
+ * the Up for Trade pile (shows the copies flagged `upForTrade`; never a home).
+ * System containers sort first and cannot be renamed or deleted; their label
+ * can be set.
+ */
+export type SystemKind = "main" | "want" | "trade";
+
+/** A spine label in the Print Shop's look: a `#rrggbb` pair and a spine font id. */
+export interface ContainerLabel {
+  background: string;
+  text: string;
+  fontId: string;
+}
+
+/**
+ * One test of a smart binder's rule. Every leaf names an NB id, never a
+ * display string, so a rename never changes what a binder holds.
+ */
+export type RuleLeaf =
+  | { kind: "player"; playerId: PlayerId }
+  /** The team printed on the card (the uniform). */
+  | { kind: "teamOnCard"; teamId: TeamId }
+  /** Any player on the card had a stint with the team: college counts. */
+  | { kind: "playedFor"; teamId: TeamId }
+  | { kind: "brand"; brandId: string }
+  | { kind: "set"; setId: SetId }
+  | { kind: "sport"; sportId: string }
+  /** Inclusive years. */
+  | { kind: "yearRange"; from: number; to: number }
+  | { kind: "feature"; feature: CardFeature }
+  /** Numbered AND print run under `max`: "numbered under /50" is `max: 50`. */
+  | { kind: "printRunBelow"; max: number }
+  | { kind: "hallOfFame" };
+
+/** A leaf, or a leaf turned around. */
+export type RuleTerm = RuleLeaf | { kind: "not"; rule: RuleLeaf };
+
+/** A smart binder's rule: one term, or one level of and / or over terms. Never deeper. */
+export type ContainerRule = RuleTerm | { kind: "and" | "or"; rules: RuleTerm[] };
+
+/** What a container holds, kept on the server by every write (never counted on read). */
+export interface ContainerCount {
+  /** Physical cards: quantities summed. On the Want List, the want count. */
+  copies: number;
+  /** Line items. On the Want List, the want count. */
+  lines: number;
+}
+
+/** A binder or a box, as the shelf lists it. */
+export interface Container {
+  id: ContainerId;
+  kind: ContainerKind;
+  /** Set on the three every collector has; absent on the collector's own. */
+  system?: SystemKind;
+  name: string;
+  description?: string;
+  /** The collector's own spine label; absent for the default (`binders/label.ts`). */
+  label?: ContainerLabel;
+  /**
+   * A smart binder: fills itself from this rule (capability
+   * `smartBinders`; demo only until NEO-362). Never a home.
+   */
+  rule?: ContainerRule;
+  /**
+   * A home (Main, a binder, a box): the copies whose home it is. Up for
+   * Trade: the flagged copies. The Want List: the wants (both numbers). A
+   * smart binder: the copies its rule matches (demo only). `null`: not
+   * counted yet; show it as unknown, never as 0.
+   */
+  count: ContainerCount | null;
+}
+
+/** True when a copy can live here: a binder or box that is not the Want List, the trade pile or a smart binder. */
+export function isHome(container: Pick<Container, "system" | "rule"> | undefined): boolean {
+  return !!container && !container.rule && container.system !== "want" && container.system !== "trade";
+}
+
+/**
+ * A card on the Want List: for one binder or box ("for my Ohtani rainbow"),
+ * or (null) just wanted. At most ONE want per card: wanting it for another
+ * binder moves the want there.
+ */
+export interface Want {
+  cardId: CardId;
+  binderId: ContainerId | null;
+}
+
+/**
+ * What the page is looking through: everything, or one home (the "Binder:
+ * [All ▾]" picker, `scope=` on the URL). A scope narrows `useCopiesInVariant`
+ * and `useVariantCompletion`, and is where Have files a new copy.
+ */
+export type Scope = "all" | ContainerId;
+
+/** Copies listed out of one container, up to the limit asked for. */
+export interface ContainerCopies {
+  copies: Copy[];
+  /** True while more exist than `copies` lists: raise the limit to see them. */
+  truncated: boolean;
+}
+
+/** A whole set's cards for Browse, every checklist in order, up to the limit asked for. */
+export interface SetCards {
+  cards: Card[];
+  /** True while the set holds more cards than `cards` lists: raise the limit to page further. */
+  truncated: boolean;
 }
 
 /**
@@ -316,6 +459,21 @@ export interface Completion {
   percentAll: number;
 }
 
+/**
+ * How much of a whole set the collector has: every checklist of the set
+ * (Base, inserts, parallels) counted together, against the set summary's
+ * `totalCards` / `totalCardsAll`. Honours the view scope like
+ * `useVariantCompletion`.
+ */
+export interface SetCompletion extends Completion {
+  /**
+   * False when the store could count only part of the set's copies (a very
+   * large holding): `owned` is then a floor, to read as "N+", never as the
+   * answer.
+   */
+  exact: boolean;
+}
+
 /** The whole collection at a glance. */
 export interface CollectionSummary {
   /** Physical cards: quantities summed. */
@@ -327,6 +485,12 @@ export interface CollectionSummary {
    * numbers are then a floor, and read as "5,000+", never as the answer.
    */
   exact: boolean;
+  /**
+   * Distinct cards not in any set the collector is building ("Everything
+   * else"). Null when the store could not count it exactly: unknown, never
+   * a floor.
+   */
+  offBuild: number | null;
 }
 
 /** One card the collector holds, as the owned-cards list counts it. */
@@ -335,6 +499,8 @@ export interface HeldCount {
   quantity: number;
   /** Line items (a stack of identical copies is one). */
   lines: number;
+  /** True when any of its copies is graded (a slab); absent when none is. */
+  graded?: boolean;
 }
 
 /** "Everything I own": the collector's cards, most recently touched first. */
@@ -378,6 +544,9 @@ export type Suggestion =
       location: string;
       /** Set when the team belongs to a franchise: offer "include the whole franchise". */
       franchise?: NamedRef;
+      /** Livery, `#rrggbb`, when NB has it (the label designer's team colours). */
+      primary?: string;
+      secondary?: string;
     }
   | {
       kind: "set";
@@ -413,7 +582,7 @@ export interface SearchResult {
  * real collection until each ships: hide the control, never show a dead one.
  */
 export interface Capabilities {
-  /** The My Binders tab, filing into binders, share links and spine labels. */
+  /** My Binders: the shelf, binders and boxes, filing, pockets and rows, spine labels. */
   binders: boolean;
   /** The Want List and Want toggles. */
   wants: boolean;
@@ -425,8 +594,17 @@ export interface Capabilities {
   cardRequests: boolean;
   /** The demo bar, its Reset, and the demo's Light / Dark switch. */
   demoChrome: boolean;
-  /** For sale and asking price on the copy form. */
-  saleFields: boolean;
+  /** Making a smart binder (a rule that fills it). Real ones arrive with NEO-362. */
+  smartBinders: boolean;
+  /** Share links for a binder, the Want List or a set (no public profile route yet). */
+  share: boolean;
+  /**
+   * Inventory (NEO-359): the Inventory tab with the boxes, New box, an open
+   * box, everything for sale at once, and the card drawer's Sell / Take off
+   * sale. Demo only until the real Inventory ships; the real shelf's
+   * Inventory long box leads to the `/inventory` page instead.
+   */
+  inventory: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -436,7 +614,9 @@ export const ALL_CAPABILITIES: Capabilities = {
   scope: true,
   cardRequests: true,
   demoChrome: true,
-  saleFields: true,
+  smartBinders: true,
+  share: true,
+  inventory: true,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -446,7 +626,18 @@ export const NO_CAPABILITIES: Capabilities = {
   scope: false,
   cardRequests: false,
   demoChrome: false,
-  saleFields: false,
+  smartBinders: false,
+  share: false,
+  inventory: false,
+};
+
+/** What the real collection can do today (NEO-359: binders, wants, trade and scope; Inventory comes later). */
+export const REAL_CAPABILITIES: Capabilities = {
+  ...NO_CAPABILITIES,
+  binders: true,
+  wants: true,
+  trade: true,
+  scope: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -485,3 +676,53 @@ export interface BuildingResult {
   building: boolean;
   undo: Undo;
 }
+
+/** A copy moved (`moveCopy`) or placed (`placeCopy`, which can fold too). */
+export interface MoveResult {
+  /** The line item the moved cards are now: the same row, a new one split off, or the twin it folded into. */
+  copyId: CopyId;
+  /** True when it folded into an identical line item at the destination. */
+  folded: boolean;
+  /** True when only part of the stack moved: the source kept the rest. */
+  split: boolean;
+  /** Moves exactly these cards back where they were (splitting them back out of a fold). */
+  undo: Undo;
+}
+
+export interface WantResult {
+  /** False when the want already read as asked (nothing was written). */
+  changed: boolean;
+  undo: Undo;
+}
+
+/** A new binder or box. `rule` only with the `smartBinders` capability. */
+export interface NewContainer {
+  kind: ContainerKind;
+  name: string;
+  description?: string;
+  label?: ContainerLabel;
+  rule?: ContainerRule;
+}
+
+/** What `updateContainer` may change. On a system container, only `label`. `label: null` goes back to the default. */
+export interface ContainerPatch {
+  name?: string;
+  description?: string;
+  label?: ContainerLabel | null;
+}
+
+export interface CreateContainerResult {
+  containerId: ContainerId;
+  /** Takes the new container back down, while it is still empty. */
+  undo: Undo;
+}
+
+export interface DeleteContainerResult {
+  /** Copies sent back to Main (their pocket or row cleared). Deleting has no undo. */
+  moved: number;
+}
+
+/** The most containers one collector may have (the server refuses past it). */
+export const MAX_CONTAINERS = 200;
+/** The most wants one collector may have (the server refuses past it). */
+export const MAX_WANTS = 2000;

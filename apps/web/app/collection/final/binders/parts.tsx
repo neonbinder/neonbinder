@@ -1,7 +1,6 @@
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
-import { type LayoutMode, type PileFilters, type SortKey } from "../../prototypes/p2/model";
-import type { CollectionBinder } from "../store";
-import { labelOf } from "./label";
+import type { ContainerLabel } from "../data/types";
+import type { LayoutMode, PileFilters, SortKey } from "./model";
 import type { OpenView, Tally } from "./openView";
 import PrintShopLink from "./PrintShopLink";
 import NeonButton from "@/components/modules/NeonButton";
@@ -77,7 +76,6 @@ export function PileTools({
       </label>
       <div role="group" aria-label="Only show" className="flex flex-wrap gap-2">
         {toggle("graded", "Graded")}
-        {toggle("forSale", "For sale")}
         {toggle("rookies", "Rookies")}
       </div>
     </div>
@@ -108,7 +106,7 @@ function TallyLine({ tally, want }: { tally: Tally; want: boolean }) {
   }
   return (
     <p className="text-lg font-bold text-ink tabular-nums">
-      {cards} {cards === 1 ? "card" : "cards"}
+      {cards === null ? "Counting cards" : `${cards.toLocaleString("en-US")} ${cards === 1 ? "card" : "cards"}`}
     </p>
   );
 }
@@ -136,11 +134,11 @@ export function EditLabelButton({ name, onClick }: { name: string; onClick: () =
  * (the collector's pick, else its default), never the shelf's readable swap.
  * In the app it opens a new tab (`PrintShopLink`).
  */
-export function PrintLabelLink({ binder }: { binder: CollectionBinder }) {
+export function PrintLabelLink({ name, label }: { name: string; label: ContainerLabel }) {
   return (
     <PrintShopLink
-      appHref={spineLabelPrintHref({ name: binder.name, ...labelOf(binder) })}
-      aria-label={`Print label for ${binder.name}`}
+      appHref={spineLabelPrintHref({ name, ...label })}
+      aria-label={`Print label for ${name}`}
       className={`inline-flex min-h-8 items-center rounded-md px-1 text-xs font-medium text-neon-blue-text underline underline-offset-2 hover:text-ink max-sm:min-h-11 ${FOCUS}`}
     >
       Print label
@@ -148,17 +146,42 @@ export function PrintLabelLink({ binder }: { binder: CollectionBinder }) {
   );
 }
 
-function LabelControls({ binder, onEditLabel }: { binder: CollectionBinder; onEditLabel: () => void }) {
+/** The cover's "Rename or delete": the collector's own binders and boxes only. */
+export function EditContainerButton({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <NeonButton
+      type="button"
+      variant="secondary"
+      outline
+      size="1"
+      onClick={onClick}
+      aria-label={`Rename or delete ${name}`}
+      className="min-h-8 self-start max-sm:min-h-11"
+    >
+      Rename or delete
+    </NeonButton>
+  );
+}
+
+export interface CoverActions {
+  onEditLabel: () => void;
+  onEditContainer: () => void;
+}
+
+function LabelControls({ open, actions }: { open: OpenView; actions: CoverActions }) {
+  if (!open.label) return null;
+  const { container, label } = open.label;
   return (
     <div className="flex flex-wrap items-center gap-2 self-start">
-      <EditLabelButton name={binder.name} onClick={onEditLabel} />
-      <PrintLabelLink binder={binder} />
+      <EditLabelButton name={container.name} onClick={actions.onEditLabel} />
+      <PrintLabelLink name={container.name} label={label} />
+      {open.editable && <EditContainerButton name={container.name} onClick={actions.onEditContainer} />}
     </div>
   );
 }
 
 /** The inside front cover: name, label controls when it has a label, tally, how-to. */
-export function Cover({ open, onEditLabel }: { open: OpenView; onEditLabel: () => void }) {
+export function Cover({ open, actions }: { open: OpenView; actions: CoverActions }) {
   return (
     <div className="flex h-full flex-col gap-3 text-sm text-ink-2">
       <p
@@ -167,23 +190,23 @@ export function Cover({ open, onEditLabel }: { open: OpenView; onEditLabel: () =
       >
         {open.title}
       </p>
-      {open.label && <LabelControls binder={open.label} onEditLabel={onEditLabel} />}
+      <LabelControls open={open} actions={actions} />
       <TallyLine tally={open.tally} want={open.want} />
       {open.blurb.map((line) => (
         <p key={line}>{line}</p>
       ))}
-      <p className="mt-auto text-xs text-ink-3">PageUp and PageDown turn the pages.</p>
+      {!open.box && <p className="mt-auto text-xs text-ink-3">PageUp and PageDown turn the pages.</p>}
     </div>
   );
 }
 
 /** The cover's phone-width summary. */
-export function MobileSummary({ open, onEditLabel }: { open: OpenView; onEditLabel: () => void }) {
+export function MobileSummary({ open, actions }: { open: OpenView; actions: CoverActions }) {
   return (
     <div className="mb-3 space-y-1 text-sm text-ink-2">
       {open.label && (
         <div className="float-right ml-3">
-          <LabelControls binder={open.label} onEditLabel={onEditLabel} />
+          <LabelControls open={open} actions={actions} />
         </div>
       )}
       <TallyLine tally={open.tally} want={open.want} />

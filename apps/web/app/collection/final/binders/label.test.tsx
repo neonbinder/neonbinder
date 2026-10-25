@@ -1,162 +1,185 @@
 import { describe, expect, it } from "vitest";
 import { contrastRatio } from "@/lib/print/contrast";
 import { spineFontById } from "@/lib/print/spine-fonts";
-import { cards, getSet, getTeam, type Card } from "../../prototypes/_shared/data";
-import { initialCollectionState, MAIN_BINDER_ID, TRADE_BINDER_ID, WANT_BINDER_ID, type CollectionBinder } from "../store";
+import { cards as fixtureCards, getTeam } from "../../prototypes/_shared/data";
+import { demoCard } from "../data/demoStore";
+import type { Card, ContainerRule } from "../data/types";
 import {
   ALL_LABEL,
+  BOX_LABEL,
   LARGE_TEXT_PX,
   PLAIN_LABEL,
-  binderTeamPicks,
-  binderTeamsOnCards,
   defaultLabel,
-  defaultLabelForNew,
   labelOf,
   letteringSizeCss,
+  ruleTeamId,
+  sameLabel,
   shelfColors,
   smallestLetteringPx,
   teamColorsOn,
+  teamColorsOf,
+  teamPicks,
   teamsOnCards,
   validLabel,
+  type LabelSubject,
 } from "./label";
 
 /**
- * NEO-350 — binder spines in the Print Shop's spine-label look: which label a
- * binder wears, and the shelf never lettering one below WCAG AA.
+ * NEO-350 / NEO-359 — container spines in the Print Shop's spine-label look:
+ * which label a binder or box wears, and the shelf never lettering one below
+ * WCAG AA. Every default is keyed on a container's role or its rule's ids,
+ * never its name.
  */
 
-const binder = (id: string) => initialCollectionState().binders.find((b) => b.id === id)!;
-const smart = (rule: Extract<CollectionBinder, { kind: "smart" }>["rule"]): CollectionBinder => ({
-  id: "s",
-  kind: "smart",
-  name: "S",
-  rule,
-});
+const binder = (over: Partial<LabelSubject> = {}): LabelSubject => ({ kind: "binder", ...over });
+const smart = (rule: ContainerRule): LabelSubject => binder({ rule });
 
-describe("which label a binder wears", () => {
-  it("system binders by role, never by name", () => {
-    expect(defaultLabel(binder(MAIN_BINDER_ID)).text).toBe("#00D558");
-    expect(defaultLabel(binder(WANT_BINDER_ID)).text).toBe("#FF2E9A");
-    expect(defaultLabel({ ...binder(TRADE_BINDER_ID), name: "Swap pile" }).text).toBe("#FFE600");
+/** Real hydrated cards, so the teams carry the colours NB holds. */
+const heroCards = (playerId: string): Card[] =>
+  fixtureCards.filter((c) => c.playerIds.includes(playerId)).map((c) => demoCard(c.id)!);
+
+const teamOf = (id: string) => {
+  const t = getTeam(id);
+  return { id, name: t.name, location: t.location, primary: t.primary, secondary: t.secondary };
+};
+
+describe("which label a container wears", () => {
+  it("system containers by role, never by name", () => {
+    expect(defaultLabel(binder({ system: "main" })).text).toBe("#00D558");
+    expect(defaultLabel(binder({ system: "want" })).text).toBe("#FF2E9A");
+    expect(defaultLabel({ ...binder({ system: "trade" }), name: "Swap pile" } as LabelSubject).text).toBe("#FFE600");
   });
 
-  it("a team rule wears that team's livery, alumni or not", () => {
-    const team = getTeam("wisconsin");
-    expect(defaultLabel(smart({ kind: "teamOnCard", teamId: "wisconsin" }))).toMatchObject({
+  it("a rule that names a team wears that team's livery, alumni or not", () => {
+    const team = teamOf("wisconsin");
+    const hints = { ruleTeam: teamColorsOf({ ...team, id: "wisconsin" }) };
+    expect(defaultLabel(smart({ kind: "teamOnCard", teamId: "wisconsin" }), hints)).toMatchObject({
       background: team.primary,
       text: team.secondary,
     });
-    expect(defaultLabel(smart({ kind: "playedFor", teamId: "wisconsin" })).background).toBe(team.primary);
+    expect(defaultLabel(smart({ kind: "playedFor", teamId: "wisconsin" }), hints).background).toBe(team.primary);
   });
 
   it("a player rule wears the team on most of the binder's cards, not the longest stint", () => {
     // Reggie White spent longest with the Eagles, but most of his cards are Packers.
-    const reggie = smart({ kind: "player", playerId: "reggie-white" });
-    expect(binderTeamsOnCards(reggie).map((t) => [t.team.id, t.cards])).toEqual([
-      ["packers", 3],
-      ["eagles", 1],
-      ["panthers", 1],
-    ]);
-    expect(defaultLabel(reggie)).toMatchObject({
+    const teams = teamsOnCards(heroCards("reggie-white"));
+    expect(teams[0].team.id).toBe("packers");
+    expect(defaultLabel(smart({ kind: "player", playerId: "reggie-white" }), { teams })).toMatchObject({
       background: getTeam("packers").primary,
       text: getTeam("packers").secondary,
     });
   });
 
-  it("any other rule that names no team wears the team on most of its cards", () => {
-    const hof = smart({ kind: "hallOfFame" });
-    const [most] = binderTeamsOnCards(hof);
-    expect(defaultLabel(hof).background).toBe(most.team.primary);
+  it("a rule that names no team and has no cards at all starts plain", () => {
+    expect(defaultLabel(smart({ kind: "printRunBelow", max: 0 }), { teams: [] })).toEqual(PLAIN_LABEL);
+    expect(defaultLabel(smart({ kind: "hallOfFame" }))).toEqual(PLAIN_LABEL);
   });
 
-  it("a rule with no cards at all starts plain", () => {
-    expect(defaultLabel(smart({ kind: "printRunBelow", max: 0 }))).toEqual(PLAIN_LABEL);
-    expect(binderTeamsOnCards({ id: "m", kind: "manual", name: "Mine" })).toEqual([]);
-  });
-
-  it("a binder you fill yourself starts black with white lettering; All my cards is its own", () => {
-    expect(defaultLabel({ id: "m", kind: "manual", name: "Anything" })).toEqual(PLAIN_LABEL);
-    expect(defaultLabelForNew({ kind: "manual" })).toEqual(PLAIN_LABEL);
+  it("a binder you fill yourself starts black with white lettering; a box is masking tape; All is its own", () => {
+    expect(defaultLabel(binder())).toEqual(PLAIN_LABEL);
+    expect(defaultLabel({ kind: "box" })).toEqual(BOX_LABEL);
     expect(labelOf("all")).toEqual(ALL_LABEL);
   });
 
-  it("the collector's own label wins over the default", () => {
+  it("the collector's own label wins over the default, even on a box or a system container", () => {
     const label = { background: "#203731", text: "#FFB612", fontId: "teko" };
-    expect(labelOf({ id: "m", kind: "manual", name: "Packers PC", label })).toEqual(label);
+    expect(labelOf(binder({ label }))).toEqual(label);
+    expect(labelOf({ kind: "box", label })).toEqual(label);
+    expect(labelOf(binder({ system: "main", label }))).toEqual(label);
+  });
+
+  it("does not key the default on a name: a box named like a system role is still a box", () => {
+    expect(defaultLabel({ kind: "box", name: "Want List" } as LabelSubject)).toEqual(BOX_LABEL);
   });
 });
 
-describe("the label editor's quick picks", () => {
-  it("leads with the rule's team even when no card shows it", () => {
-    // Badgers alumni: every card is a pro uniform, so Wisconsin is on none.
-    const badgers = binder("smart-badgers-alumni");
-    expect(binderTeamsOnCards(badgers).some((t) => t.team.id === "wisconsin")).toBe(false);
-    const picks = binderTeamPicks(badgers);
-    expect(picks[0]).toMatchObject({ team: getTeam("wisconsin"), cards: 0, named: true });
-    expect(picks.slice(1).map((p) => p.team.id)).toEqual(binderTeamsOnCards(badgers).map((t) => t.team.id));
-    expect(picks.slice(1).every((p) => !p.named)).toBe(true);
-  });
-
-  it("moves the rule's team to the front once, keeping its card count", () => {
-    const redWings = binder("smart-red-wings");
-    const onCards = binderTeamsOnCards(redWings);
-    const own = onCards.find((t) => t.team.id === "red-wings")!;
-    const picks = binderTeamPicks(redWings);
-    expect(picks[0]).toMatchObject({ team: getTeam("red-wings"), cards: own.cards, named: true });
-    expect(picks.filter((p) => p.team.id === "red-wings")).toHaveLength(1);
-    expect(picks).toHaveLength(onCards.length);
-  });
-
-  it("finds the team inside an alumni rule's either-or", () => {
-    const picks = binderTeamPicks(
-      smart({
+describe("the team a rule names", () => {
+  it("finds it in a team rule, an alumni rule and the either-or of both", () => {
+    expect(ruleTeamId({ kind: "teamOnCard", teamId: "wisconsin" })).toBe("wisconsin");
+    expect(ruleTeamId({ kind: "playedFor", teamId: "wisconsin" })).toBe("wisconsin");
+    expect(
+      ruleTeamId({
         kind: "or",
         rules: [
           { kind: "teamOnCard", teamId: "wisconsin" },
           { kind: "playedFor", teamId: "wisconsin" },
         ],
       }),
-    );
-    expect(picks[0]).toMatchObject({ team: getTeam("wisconsin"), named: true });
+    ).toBe("wisconsin");
   });
 
-  it("is just the cards' teams for a rule that names no team, and nothing for a binder you fill", () => {
-    const reggie = smart({ kind: "player", playerId: "reggie-white" });
-    expect(binderTeamPicks(reggie).map((p) => [p.team.id, p.named])).toEqual([
-      ["packers", false],
-      ["eagles", false],
-      ["panthers", false],
-    ]);
-    expect(binderTeamPicks(binder(MAIN_BINDER_ID))).toEqual([]);
+  it("is null for a rule that names no team, a not, and no rule at all", () => {
+    expect(ruleTeamId({ kind: "player", playerId: "reggie-white" })).toBeNull();
+    expect(ruleTeamId({ kind: "not", rule: { kind: "teamOnCard", teamId: "wisconsin" } } as ContainerRule)).toBeNull();
+    expect(ruleTeamId(undefined)).toBeNull();
   });
 });
 
-describe("teams on a binder's cards", () => {
-  // Fake cards built from real ones, so only the teams and the set differ.
-  const old = cards.find((c) => getSet(c.setId).year === 1996)!;
-  const recent = cards.find((c) => getSet(c.setId).year === 2024)!;
-  const card = (teamIds: string[], from: Card = old): Card => ({ ...from, teamIds });
+describe("the label editor's quick picks", () => {
+  const wisconsin = teamColorsOf({ ...teamOf("wisconsin") })!;
+  const onCards = teamsOnCards(heroCards("reggie-white"));
+
+  it("leads with the rule's team even when no card shows it", () => {
+    // Badgers alumni: every card is a pro uniform, so Wisconsin is on none.
+    const picks = teamPicks(onCards, wisconsin);
+    expect(onCards.some((t) => t.team.id === "wisconsin")).toBe(false);
+    expect(picks[0]).toMatchObject({ team: wisconsin, cards: 0, named: true });
+    expect(picks.slice(1).map((p) => p.team.id)).toEqual(onCards.map((t) => t.team.id));
+    expect(picks.slice(1).every((p) => !p.named)).toBe(true);
+  });
+
+  it("moves the rule's team to the front once, keeping its card count", () => {
+    const own = onCards.find((t) => t.team.id === "eagles")!;
+    const picks = teamPicks(onCards, own.team);
+    expect(picks[0]).toMatchObject({ team: own.team, cards: own.cards, named: true });
+    expect(picks.filter((p) => p.team.id === "eagles")).toHaveLength(1);
+    expect(picks).toHaveLength(onCards.length);
+  });
+
+  it("is just the cards' teams for a rule that names no team, and nothing without cards", () => {
+    expect(teamPicks(onCards, null).map((p) => [p.team.id, p.named])).toEqual(onCards.map((t) => [t.team.id, false]));
+    expect(teamPicks([], null)).toEqual([]);
+  });
+});
+
+describe("teams on a container's cards", () => {
+  // Cards built from real ones, so only the teams and the year differ.
+  const base = demoCard(fixtureCards[0].id)!;
+  const card = (id: string, teamIds: string[], year = base.set.year): Card => ({
+    ...base,
+    id,
+    set: { ...base.set, year },
+    teams: teamIds.map((t) => ({ ...teamOf(t) })),
+  });
 
   it("counts a card for every team on it", () => {
-    const tally = teamsOnCards([card(["red-wings", "whalers"]), card(["red-wings"])]);
+    const tally = teamsOnCards([card("a", ["red-wings", "whalers"]), card("b", ["red-wings"])]);
     expect(tally.map((t) => [t.team.id, t.cards])).toEqual([
       ["red-wings", 2],
       ["whalers", 1],
     ]);
   });
 
-  it("breaks a tie by the most recent card year, then by team id", () => {
-    // One card each: the Whalers' card is newer, so they lead.
-    expect(teamsOnCards([card(["red-wings"]), card(["whalers"], recent)]).map((t) => t.team.id)).toEqual([
+  it("counts a card listed twice once", () => {
+    const a = card("a", ["red-wings"]);
+    expect(teamsOnCards([a, a])[0].cards).toBe(1);
+  });
+
+  it("breaks a tie by the most recent card year, then by team id, whatever order the cards came in", () => {
+    expect(teamsOnCards([card("a", ["red-wings"], 1996), card("b", ["whalers"], 2024)]).map((t) => t.team.id)).toEqual([
       "whalers",
       "red-wings",
     ]);
-    // Same count, same year: team id order, whatever order the cards came in.
-    expect(teamsOnCards([card(["whalers"]), card(["red-wings"])]).map((t) => t.team.id)).toEqual([
+    expect(teamsOnCards([card("a", ["whalers"], 1996), card("b", ["red-wings"], 1996)]).map((t) => t.team.id)).toEqual([
       "red-wings",
       "whalers",
     ]);
-    expect(teamsOnCards([card(["red-wings"]), card(["whalers"])])[0]).toMatchObject({ cards: 1, latestYear: 1996 });
+    expect(teamsOnCards([card("a", ["red-wings"], 1996)])[0]).toMatchObject({ cards: 1, latestYear: 1996 });
+  });
+
+  it("leaves out a team NB has no colours for: never a guess", () => {
+    const noColours = { ...card("a", []), teams: [{ id: "t", name: "Expos", location: "Montreal" }] };
+    expect(teamsOnCards([noColours])).toEqual([]);
   });
 
   it("a team pick sets both colors and keeps the lettering face", () => {
@@ -166,6 +189,11 @@ describe("teams on a binder's cards", () => {
       text: packers.secondary,
       fontId: "teko",
     });
+  });
+
+  it("compares labels by colour (either case) and face", () => {
+    expect(sameLabel({ background: "#ABCDEF", text: "#000000", fontId: "a" }, { background: "#abcdef", text: "#000000", fontId: "a" })).toBe(true);
+    expect(sameLabel(PLAIN_LABEL, { ...PLAIN_LABEL, fontId: "other" })).toBe(false);
   });
 });
 

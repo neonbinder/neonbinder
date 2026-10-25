@@ -8,8 +8,9 @@
  * gets, and when the shelf has to swap the lettering to stay readable.
  *
  * Every choice is keyed on ids and roles, never a display name: a system
- * binder by `binder.system`, a smart binder by the team its rule names or,
- * failing that, the team on most of its cards.
+ * binder by `system`, a box by its kind, a smart binder by the team its rule
+ * names or, failing that, the team on most of its cards (both read by
+ * `useLabelHints` in `./hooks`, so this file stays pure).
  *
  * Kept apart from `model.ts` (and the shelf's `SpineLabel.tsx` +
  * `spine-label.css`) so the whole look can be rolled back in one place.
@@ -18,19 +19,11 @@
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { DEFAULT_SPINE_FONT_ID, spineFontById, type SpineFont } from "@/lib/print/spine-fonts";
 import { fitFontSizeIn } from "@/lib/print/spine-formats";
-import {
-  binderCards,
-  getSet,
-  getTeam,
-  inkOn,
-  type BinderRule,
-  type Card,
-  type Team,
-  type TeamId,
-} from "../../prototypes/_shared/data";
-import type { BinderLabel, CollectionBinder } from "../store";
+import { inkOn } from "../data/labels";
+import type { Card, CardTeam, Container, ContainerLabel, ContainerRule, TeamId } from "../data/types";
 
-export type { BinderLabel };
+/** @deprecated NEO-359: `ContainerLabel`. */
+export type BinderLabel = ContainerLabel;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -41,37 +34,63 @@ export type { BinderLabel };
  * black vinyl, white lettering. Also the Print Shop designer's own starting
  * pair, so the two read the same until the collector picks colours.
  */
-export const PLAIN_LABEL: BinderLabel = {
+export const PLAIN_LABEL: ContainerLabel = {
   background: "#101820",
   text: "#FFFFFF",
   fontId: DEFAULT_SPINE_FONT_ID,
 };
 
+/** A box: a strip of masking tape with the name in black marker. */
+export const BOX_LABEL: ContainerLabel = {
+  background: "#F3E3A6",
+  text: "#111827",
+  fontId: DEFAULT_SPINE_FONT_ID,
+};
+
 /** "All my cards": the page's own blue on near-black. */
-export const ALL_LABEL: BinderLabel = { background: "#0B1220", text: "#00C2FF", fontId: DEFAULT_SPINE_FONT_ID };
+export const ALL_LABEL: ContainerLabel = { background: "#0B1220", text: "#00C2FF", fontId: DEFAULT_SPINE_FONT_ID };
 
 /** The special shelf's binders, by role. */
-const SYSTEM_LABEL: Record<NonNullable<CollectionBinder["system"]>, BinderLabel> = {
+const SYSTEM_LABEL: Record<NonNullable<Container["system"]>, ContainerLabel> = {
   main: { background: "#14532D", text: "#00D558", fontId: DEFAULT_SPINE_FONT_ID },
   want: { background: "#4A0B33", text: "#FF2E9A", fontId: DEFAULT_SPINE_FONT_ID },
   trade: { background: "#5C4A00", text: "#FFE600", fontId: DEFAULT_SPINE_FONT_ID },
 };
 
+/** What a label decision reads off a container. */
+export type LabelSubject = Pick<Container, "kind" | "system" | "rule" | "label">;
+
 /** The rule's team, when a smart binder is "a team" (with or without alumni). */
-export function ruleTeamId(rule: BinderRule): TeamId | null {
+export function ruleTeamId(rule: ContainerRule | undefined): TeamId | null {
+  if (!rule) return null;
   if (rule.kind === "teamOnCard" || rule.kind === "playedFor") return rule.teamId;
   if (rule.kind === "or" || rule.kind === "and") {
     for (const r of rule.rules) {
-      const id = ruleTeamId(r);
+      const id = ruleTeamId(r.kind === "not" ? undefined : r);
       if (id) return id;
     }
   }
   return null;
 }
 
+/** A team NB has livery for: what a quick pick paints. */
+export interface TeamColors {
+  id: TeamId;
+  name: string;
+  location: string;
+  primary: string;
+  secondary: string;
+}
+
+/** A card's team, when NB has both its colours. */
+export function teamColorsOf(team: CardTeam): TeamColors | null {
+  if (!team.primary || !team.secondary) return null;
+  return { id: team.id, name: team.name, location: team.location, primary: team.primary, secondary: team.secondary };
+}
+
 /** A team on a smart binder's cards, and how many of them it is on. */
 export interface TeamOnCards {
-  team: Team;
+  team: TeamColors;
   /** Cards (each parallel its own card) with this team on the front. */
   cards: number;
   /** The newest of those cards' set years: the first tie-break. */
@@ -79,21 +98,30 @@ export interface TeamOnCards {
 }
 
 /**
- * The teams on these cards, most cards first. A card with two teams on it
- * counts for both. Ties go to the team with the more recent card, then to
- * the lower team id, so the order never depends on catalog order.
+ * The teams on these cards that NB has colours for, most cards first. A card
+ * with two teams on it counts for both; a card listed twice counts once.
+ * Ties go to the team with the more recent card, then to the lower team id,
+ * so the order never depends on the order the cards came in.
  */
-export function teamsOnCards(cards: Card[]): TeamOnCards[] {
-  const tally = new Map<TeamId, { cards: number; latestYear: number }>();
+export function teamsOnCards(cards: readonly Card[]): TeamOnCards[] {
+  const tally = new Map<TeamId, { team: TeamColors; cards: number; latestYear: number }>();
+  const seen = new Set<string>();
   for (const card of cards) {
-    const year = getSet(card.setId).year;
-    for (const teamId of new Set(card.teamIds)) {
-      const row = tally.get(teamId);
+    if (seen.has(card.id)) continue;
+    seen.add(card.id);
+    const year = card.set.year;
+    const teamIds = new Set<string>();
+    for (const t of card.teams) {
+      if (teamIds.has(t.id)) continue;
+      teamIds.add(t.id);
+      const colors = teamColorsOf(t);
+      if (!colors) continue;
+      const row = tally.get(t.id);
       if (row) {
         row.cards += 1;
         row.latestYear = Math.max(row.latestYear, year);
       } else {
-        tally.set(teamId, { cards: 1, latestYear: year });
+        tally.set(t.id, { team: colors, cards: 1, latestYear: year });
       }
     }
   }
@@ -102,17 +130,7 @@ export function teamsOnCards(cards: Card[]): TeamOnCards[] {
       ([idA, a], [idB, b]) =>
         b.cards - a.cards || b.latestYear - a.latestYear || (idA < idB ? -1 : idA > idB ? 1 : 0),
     )
-    .map(([teamId, row]) => ({ team: getTeam(teamId), ...row }));
-}
-
-/**
- * The teams on a smart binder's cards, most first: the label editor's quick
- * picks. Catalog cards, owned or not, so the list (and the default it leads)
- * never moves as copies come and go. Empty for any other binder.
- */
-export function binderTeamsOnCards(binder: CollectionBinder): TeamOnCards[] {
-  if (binder.kind !== "smart") return [];
-  return teamsOnCards(binderCards(binder));
+    .map(([, row]) => row);
 }
 
 /** A label editor quick pick: a team, and why it is offered. */
@@ -122,50 +140,56 @@ export interface TeamPick extends TeamOnCards {
 }
 
 /**
- * The label editor's quick picks for a binder: the teams on its cards, most
- * first, led by the team its rule names when it names one. A rule's team
- * comes first even when no card shows it (Badgers alumni play on in pro
- * uniforms), since it is the team the binder wears by default. Empty for a
- * binder you fill yourself.
+ * The label editor's quick picks: the teams on a container's cards, most
+ * first, led by the team a smart binder's rule names when NB has its
+ * colours. A rule's team comes first even when no card shows it (Badgers
+ * alumni play on in pro uniforms), since it is the team the binder wears by
+ * default.
  */
-export function binderTeamPicks(binder: CollectionBinder): TeamPick[] {
-  const onCards = binderTeamsOnCards(binder).map((t) => ({ ...t, named: false }));
-  const named = binder.kind === "smart" ? ruleTeamId(binder.rule) : null;
-  if (!named) return onCards;
-  const own = onCards.find((t) => t.team.id === named);
+export function teamPicks(onCards: readonly TeamOnCards[], named: TeamColors | null): TeamPick[] {
+  const picks = onCards.map((t) => ({ ...t, named: false }));
+  if (!named) return picks;
+  const own = picks.find((t) => t.team.id === named.id);
   return [
-    { team: getTeam(named), cards: own?.cards ?? 0, latestYear: own?.latestYear ?? 0, named: true },
-    ...onCards.filter((t) => t.team.id !== named),
+    { team: named, cards: own?.cards ?? 0, latestYear: own?.latestYear ?? 0, named: true },
+    ...picks.filter((t) => t.team.id !== named.id),
   ];
 }
 
-function teamLabel(team: Team): BinderLabel {
+/** What a smart binder's default label follows, read by `useLabelHints`. */
+export interface LabelHints {
+  /** The team its rule names, with colours; null when none (or NB has no colours for it). */
+  ruleTeam?: TeamColors | null;
+  /** The teams on its cards, most first. */
+  teams?: readonly TeamOnCards[];
+}
+
+function teamLabel(team: TeamColors): ContainerLabel {
   return { background: team.primary, text: team.secondary, fontId: DEFAULT_SPINE_FONT_ID };
 }
 
-/** What a binder's label is until the collector picks one. */
-export function defaultLabel(binder: CollectionBinder | "all"): BinderLabel {
-  if (binder === "all") return ALL_LABEL;
-  if (binder.system) return SYSTEM_LABEL[binder.system];
-  if (binder.kind === "smart") {
+/** What a container's label is until the collector picks one. */
+export function defaultLabel(container: LabelSubject | "all", hints: LabelHints = {}): ContainerLabel {
+  if (container === "all") return ALL_LABEL;
+  if (container.system) return SYSTEM_LABEL[container.system];
+  if (container.rule) {
     // A rule that names a team wears it. Anything else (a player, a brand, a
     // set, Hall of Famers) wears the team on most of its cards: Reggie
     // White's binder is Packers green because most of his cards are.
-    const teamId = ruleTeamId(binder.rule);
-    if (teamId) return teamLabel(getTeam(teamId));
-    const [most] = binderTeamsOnCards(binder);
+    if (hints.ruleTeam) return teamLabel(hints.ruleTeam);
+    const most = hints.teams?.[0];
     return most ? teamLabel(most.team) : PLAIN_LABEL;
   }
-  return PLAIN_LABEL;
+  return container.kind === "box" ? BOX_LABEL : PLAIN_LABEL;
 }
 
 /** A team's colors as a label, keeping the lettering face already chosen. */
-export function teamColorsOn(label: BinderLabel, team: Team): BinderLabel {
+export function teamColorsOn(label: ContainerLabel, team: Pick<TeamColors, "primary" | "secondary">): ContainerLabel {
   return { ...label, background: team.primary, text: team.secondary };
 }
 
 /** Same colours (either case) and the same face. */
-export function sameLabel(a: BinderLabel, b: BinderLabel): boolean {
+export function sameLabel(a: ContainerLabel, b: ContainerLabel): boolean {
   return (
     a.background.toLowerCase() === b.background.toLowerCase() &&
     a.text.toLowerCase() === b.text.toLowerCase() &&
@@ -173,16 +197,10 @@ export function sameLabel(a: BinderLabel, b: BinderLabel): boolean {
   );
 }
 
-/** The label a binder wears: the collector's, else its default. */
-export function labelOf(binder: CollectionBinder | "all"): BinderLabel {
-  if (binder !== "all" && binder.label) return binder.label;
-  return defaultLabel(binder);
-}
-
-/** Default label for a binder about to be made, from what the dialog knows. */
-export function defaultLabelForNew(input: { kind: "manual" } | { kind: "smart"; rule: BinderRule }): BinderLabel {
-  if (input.kind === "manual") return PLAIN_LABEL;
-  return defaultLabel({ id: "new", kind: "smart", name: "", rule: input.rule });
+/** The label a container wears: the collector's, else its default. */
+export function labelOf(container: LabelSubject | "all", hints?: LabelHints): ContainerLabel {
+  if (container !== "all" && container.label) return container.label;
+  return defaultLabel(container, hints);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +270,7 @@ export interface ShelfColors {
  * The collector's choice is never changed in the store; the Print Shop still
  * prints exactly what they picked.
  */
-export function shelfColors(label: BinderLabel, letteringPx: number): ShelfColors {
+export function shelfColors(label: ContainerLabel, letteringPx: number): ShelfColors {
   const background = normalizeHexColor(label.background) ?? PLAIN_LABEL.background;
   const chosen = normalizeHexColor(label.text);
   const ratio = chosen ? contrastRatio(chosen, background) : null;
@@ -264,7 +282,7 @@ export function shelfColors(label: BinderLabel, letteringPx: number): ShelfColor
 }
 
 /** A label is saveable once both colours are colours. */
-export function validLabel(label: BinderLabel): BinderLabel | null {
+export function validLabel(label: ContainerLabel): ContainerLabel | null {
   const background = normalizeHexColor(label.background);
   const text = normalizeHexColor(label.text);
   if (!background || !text) return null;

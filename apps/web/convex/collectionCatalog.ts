@@ -26,6 +26,7 @@ import {
   catalogCardValidator,
   catalogCardWithPathValidator,
   catalogLevelValidator,
+  cardTeamValidator,
   kindRank,
   pathNodeValidator,
   setRefValidator,
@@ -339,39 +340,7 @@ export const setSummary = query({
       return true;
     };
 
-    const types = sortColumn(
-      await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "variantType").eq("parentId", setId),
-        )
-        .take(MAX_DRILL_ITEMS),
-    );
-    outer: for (const type of types) {
-      if (!(await push(type, setId, type, null))) break;
-      const inserts = sortColumn(
-        await ctx.db
-          .query("selectorOptions")
-          .withIndex("by_level_and_parent", (q) =>
-            q.eq("level", "insert").eq("parentId", type._id),
-          )
-          .take(MAX_DRILL_ITEMS),
-      );
-      for (const insert of inserts) {
-        if (!(await push(insert, type._id, type, insert))) break outer;
-        const subs = sortColumn(
-          await ctx.db
-            .query("selectorOptions")
-            .withIndex("by_level_and_parent", (q) =>
-              q.eq("level", "parallel").eq("parentId", insert._id),
-            )
-            .take(MAX_DRILL_ITEMS),
-        );
-        for (const sub of subs) {
-          if (!(await push(sub, insert._id, type, insert))) break outer;
-        }
-      }
-    }
+    await walkSetVariants(ctx, setId, push);
     // The set's own subtree counts are every card in it, read once; the sum
     // above is the fallback for a set not counted yet.
     if (
@@ -384,6 +353,67 @@ export const setSummary = query({
     return { set, variants, totalCards: total, totalBaseCards: totalBase, truncated };
   },
 });
+
+/**
+ * One card-bearing row of a set, as `walkSetVariants` visits it: the row, the
+ * row it hangs off, its variant type, and its insert (null on a variant type
+ * itself). Return false to stop the walk.
+ */
+export type SetVariantVisit = (
+  row: Row,
+  parentId: Id<"selectorOptions">,
+  variantType: Row,
+  insert: Row | null,
+) => Promise<boolean>;
+
+/**
+ * NEO-359 — every card-bearing row of a set in the collector's display order:
+ * each variant type (Base, then Insert, then Parallel, then the rest by name),
+ * then its inserts by name, each insert followed by its sub-variants by name.
+ * Every row is visited, rows known to be empty too (`hiddenAsEmpty`): the
+ * caller decides, and still walks beneath them. One place, so the set summary
+ * (`setSummary`) and whole-set browse (`collection.cardsInSet`) can never
+ * disagree on the order. At most `MAX_DRILL_ITEMS` rows per parent.
+ */
+export async function walkSetVariants(
+  ctx: Ctx,
+  setId: Id<"selectorOptions">,
+  visit: SetVariantVisit,
+): Promise<void> {
+  const types = sortColumn(
+    await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "variantType").eq("parentId", setId),
+      )
+      .take(MAX_DRILL_ITEMS),
+  );
+  for (const type of types) {
+    if (!(await visit(type, setId, type, null))) return;
+    const inserts = sortColumn(
+      await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", type._id),
+        )
+        .take(MAX_DRILL_ITEMS),
+    );
+    for (const insert of inserts) {
+      if (!(await visit(insert, type._id, type, insert))) return;
+      const subs = sortColumn(
+        await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "parallel").eq("parentId", insert._id),
+          )
+          .take(MAX_DRILL_ITEMS),
+      );
+      for (const sub of subs) {
+        if (!(await visit(sub, insert._id, type, insert))) return;
+      }
+    }
+  }
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Cards
@@ -437,6 +467,31 @@ export const card = query({
     const row = await ctx.db.get(id);
     if (!row) return null;
     return await new CatalogReader(ctx).cardWithPath(row);
+  },
+});
+
+/**
+ * NEO-359 — one team, by id: its nickname, where it is from, and its livery
+ * when NB has it (the same shape a card's team carries). A smart binder that
+ * names a team wears its colours even when no card shows the team. NB fields
+ * only. Null when it is gone or the id is bad.
+ */
+export const team = query({
+  args: { teamId: v.string() },
+  returns: v.union(cardTeamValidator, v.null()),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    const id = ctx.db.normalizeId("teams", args.teamId);
+    if (!id) return null;
+    const row = await ctx.db.get(id);
+    if (!row) return null;
+    return {
+      _id: row._id,
+      name: row.name,
+      ...(row.location ? { location: row.location } : {}),
+      ...(row.colors?.primary ? { primaryColor: row.colors.primary } : {}),
+      ...(row.colors?.secondary ? { secondaryColor: row.colors.secondary } : {}),
+    };
   },
 });
 

@@ -282,7 +282,7 @@ export default function ChecklistsTab({
         )}
       </section>
 
-      {requesting && demo && <RequestCardDialog store={demo.state} searched={query} onClose={() => setRequesting(false)} />}
+      {requesting && demo && <RequestCardDialog store={demo} searched={query} onClose={() => setRequesting(false)} />}
     </div>
   );
 }

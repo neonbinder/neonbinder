@@ -1,16 +1,13 @@
 import { useRef } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import CardFace from "../../prototypes/_shared/CardFace";
-import { cardLabel, getPlayer, type BinderId, type Card, type Copy } from "../../prototypes/_shared/data";
-import {
-  havePocketLabel,
-  money,
-  slabLabel,
-  type SlotRef,
-} from "../../prototypes/p2/model";
 import { cardCaption, cardNumberLine } from "../captions";
+import { cardLabel } from "../data/labels";
+import { isForSale } from "../data/store";
+import type { Card, ContainerId, Copy } from "../data/types";
+import { pocketDropId } from "./dnd";
 import IdTooltip, { IdLines } from "./IdTooltip";
-import type { BinderPocket } from "./model";
+import { havePocketLabel, slabLabel, type PocketModel, type SlotRef } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
 
 /**
@@ -28,6 +25,13 @@ import NeonButton from "@/components/modules/NeonButton";
  *
  * `found` rings a pocket the hunt tray led the collector to.
  *
+ * `saleTag` (the Up for Trade pile only, the one collection view that lists
+ * box copies): a copy whose home is a box wears the yellow "For sale" price
+ * sticker, so a trade pile mixing binder and box copies shows which is
+ * inventory. It rides the right edge halfway down (`nb-sale-tag` in
+ * binders.css), clear of the slab label, the serial stamp and the count. The pocket's name already ends ", for sale", so the sticker is
+ * hidden from assistive tech.
+ *
  * Every pocket holding a card raises an identity slip on hover or focus
  * (`IdTooltip`): season, set, insert or parallel, then number and player.
  * In browse the slip hangs on the whole sleeve, so focusing its Add chip
@@ -38,24 +42,24 @@ export type PocketVariant = "binder" | "browse";
 
 export interface PocketHandlers {
   onOpen: (card: Card, copies: Copy[]) => void;
-  /** `wantFor`: on the Want List, the binder the want is for (null: none). */
-  onAdd: (card: Card, slot?: SlotRef, wantFor?: BinderId | null) => void;
+  /** `wantFor`: on the Want List, the binder or box the want is for (null: none). */
+  onAdd: (card: Card, slot?: SlotRef, wantFor?: ContainerId | null) => void;
   onAim: (slot: SlotRef) => void;
 }
 
 interface PocketProps extends PocketHandlers {
-  pocket: BinderPocket;
+  pocket: PocketModel;
   variant: PocketVariant;
   index: number;
   pageNumber: number;
   aimed: boolean;
   /** The pocket a hunt in the tray just found: ringed, and focused. */
   found?: boolean;
+  /** Wear the "For sale" sticker on a copy in a box (the Up for Trade pile only). */
+  saleTag?: boolean;
 }
 
-export function pocketDropId(slot: SlotRef): string {
-  return `pocket:${slot.binderId}:${slot.page}:${slot.slot}`;
-}
+export { pocketDropId };
 
 function prefersReducedMotion(): boolean {
   try {
@@ -89,6 +93,7 @@ export default function Pocket({
   pageNumber,
   aimed,
   found = false,
+  saleTag = false,
   onOpen,
   onAdd,
   onAim,
@@ -109,12 +114,12 @@ export default function Pocket({
     const { card, copies } = content;
     const qty = copies.reduce((n, c) => n + c.quantity, 0);
     const slab = copies.length === 1 ? slabLabel(copies[0]) : null;
-    const sale = copies.find((c) => c.forSale);
+    const sale = saleTag && copies.some(isForSale);
     const open = () => slideOut(faceRef.current, () => onOpen(card, copies));
     const art = (
       <>
         <span ref={faceRef} className="block">
-          <CardFace card={card} size="fill" serial={copies.length === 1 ? copies[0].serialNumber : undefined} />
+          <CardFace model={card} size="fill" serial={copies.length === 1 ? copies[0].serialNumber : undefined} />
         </span>
         {slab && (
           <span aria-hidden="true" className="p2-slab">
@@ -127,8 +132,8 @@ export default function Pocket({
           </span>
         )}
         {sale && (
-          <span aria-hidden="true" className="p2-tag">
-            {sale.askPrice ? money(sale.askPrice) : "Sale"}
+          <span aria-hidden="true" className="p2-tag nb-sale-tag">
+            For sale
           </span>
         )}
       </>
@@ -174,13 +179,13 @@ export default function Pocket({
       return (
         <IdTooltip content={slip(card)}>
           <div ref={setNodeRef} className={`p2-sleeve${ring}`}>
-            <CardFace card={card} size="fill" state="need" />
+            <CardFace model={card} size="fill" state="need" />
             <AddChip label={`Add ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
           </div>
         </IdTooltip>
       );
     }
-    const who = getPlayer(card.playerIds[0]).name.split(" ").slice(-1)[0];
+    const who = (card.players[0]?.name ?? "").split(" ").slice(-1)[0];
     return (
       <IdTooltip content={slip(card)}>
         <button

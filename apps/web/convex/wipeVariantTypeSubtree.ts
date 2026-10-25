@@ -42,7 +42,11 @@
  * copy of REFUSES the page that would delete it (through `removeCardRow`'s
  * guard), and the dry run counts them per row (`cardsCollected`) under
  * `beyondChecklist`. A set's "Sets I'm building" entries sit on the SET row,
- * above the variant type, and are untouched. There are still no listing,
+ * above the variant type, and are untouched. NEO-359: a collector's WANT of
+ * a card (`collectionWants`) never holds a card back; `removeCardRow` deletes
+ * it with the card. A smart binder's rule names only set-level-and-above
+ * selector rows (sport, brand, set), never a subtree row, so containers are
+ * untouched and not in the graph. There are still no listing,
  * sales or print tables (`labelPurchases` carries no card link). The other
  * holdings beyond the checklist are cross-listings, staged checklist reviews
  * and card scans an operator uploaded (`cardChecklist.imageUrls`), and the dry
@@ -180,6 +184,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-358 set-level only; a subtree row is never a set. Untouched",
   },
+  collectionWants: {
+    fields: ["cardId"],
+    handling:
+      "NEO-359 a collector's want is deleted with its card in removeCardRow (never refuses the wipe; past a bounded take the rest are swept by a scheduled continuation)",
+  },
   entityReviewQueue: {
     fields: [
       "selectorOptionId",
@@ -264,9 +273,11 @@ const LIST_CHILDREN_GROUP = 100;
 
 /**
  * System operations one deleting mutation may spend before it ends its page.
- * A card costs ~7 through `removeCardRow` (variation-children read, collector
- * guard, cross-listing, variation, player-index and team-index reads, the
- * delete) plus one per junction and index row; ~700 leaves room under the ~900
+ * A card costs ~8 through `removeCardRow` (variation-children read, collector
+ * guard, cross-listing, variation, player-index, team-index and (NEO-359)
+ * want reads, the delete) plus one per junction and index row, three per want
+ * swept (at most `WANT_SWEEP_BATCH`) and one for a scheduled sweep; ~700
+ * leaves room under the ~900
  * comfortable line for the fixed reads (target, ancestors, membership, the
  * page's collector pre-check and the counts flush).
  */
@@ -1151,11 +1162,16 @@ export const wipeCardsPage = internalMutation({
       deletedTeamLinks.push(...removed.teamLinkIds);
       deleted.add(card._id);
       deletedCards.push(card._id);
+      // 8: the fixed reads and the delete, the want-index read included;
+      // each want swept costs 3 (its delete, its owner's Want List read and
+      // patch); scheduling the continuation costs 1.
       ops +=
-        7 +
+        8 +
         removed.crossListingIds.length +
         removed.playerLinkIds.length +
-        removed.teamLinkIds.length;
+        removed.teamLinkIds.length +
+        3 * removed.wantIds.length +
+        (removed.wantSweepScheduled ? 1 : 0);
     };
 
     let stoppedEarly = false;

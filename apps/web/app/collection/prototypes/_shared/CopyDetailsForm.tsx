@@ -28,7 +28,20 @@ import {
  * NEO-358: the real collection passes a view-model card, no binders (a copy
  * has one home, Main, until binders ship) and `hideSaleFields` (price belongs
  * to a listing, not the copy).
+ *
+ * NEO-359: the collection page files a copy in ONE home. It passes `homes`
+ * (with `homeId` / `onHomeChange`) for a "Where it lives" pick, and
+ * `upForTrade` (with `onUpForTradeChange`) for the Up for trade switch; it
+ * hides the prototypes' binder ticks (`hideBinders`). Every one of these is
+ * optional: a prototype that passes none renders exactly as before.
  */
+
+/** A home "Where it lives" offers: a binder, or a box (cards in a box are for sale). */
+export interface FormHome {
+  id: string;
+  name: string;
+  kind: "binder" | "box";
+}
 
 export interface CopyDetailsFormProps {
   /** A prototype fixture card, or (NEO-358) a collection view-model card. */
@@ -46,6 +59,16 @@ export interface CopyDetailsFormProps {
   /** Heading above the fields; default "Copy details". `null` hides it. */
   heading?: string | null;
   className?: string;
+  /** NEO-359: the homes "Where it lives" offers. Shown only with `onHomeChange`. */
+  homes?: readonly FormHome[];
+  /** NEO-359: the picked home's id. */
+  homeId?: string;
+  onHomeChange?: (homeId: string) => void;
+  /** NEO-359: the Up for trade switch's state. Shown only with `onUpForTradeChange`. */
+  upForTrade?: boolean;
+  onUpForTradeChange?: (on: boolean) => void;
+  /** NEO-359: leave out the binder ticks even when `binders` are passed. */
+  hideBinders?: boolean;
 }
 
 const CONDITIONS: Condition[] = [
@@ -83,15 +106,33 @@ export default function CopyDetailsForm({
   saveLabel = "Save copy",
   heading = "Copy details",
   className = "",
+  homes,
+  homeId,
+  onHomeChange,
+  upForTrade,
+  onUpForTradeChange,
+  hideBinders = false,
 }: CopyDetailsFormProps) {
   const headingId = useId();
   const quantityHelpId = useId();
+  const homeHelpId = useId();
   const set = (patch: Partial<CopyDetails>) => onChange({ ...value, ...patch });
 
   const run = card.printRun === null ? null : card.printRun === 1 ? "1/1" : `/${card.printRun}`;
   const label = "setId" in card ? cardLabel(card) : modelLabel(card);
   const graded = value.graded !== undefined;
-  const manualBinders = binders.filter((b) => b.kind === "manual");
+  const manualBinders = hideBinders ? [] : binders.filter((b) => b.kind === "manual");
+  const showHomes = !!homes && homes.length > 0 && !!onHomeChange;
+  const pickedHome = showHomes ? homes.find((h) => h.id === homeId) : undefined;
+  const showTrade = upForTrade !== undefined && !!onUpForTradeChange;
+  // Said only where the list has a box: a box is the sale table.
+  const homeHelp = !showHomes
+    ? null
+    : pickedHome?.kind === "box"
+      ? "It's in a box, so it's for sale."
+      : homes?.some((h) => h.kind === "box")
+        ? "A binder keeps it. A box puts it up for sale."
+        : null;
   const quantityValid = Number.isInteger(value.quantity) && value.quantity >= 1;
 
   function submit(e: FormEvent) {
@@ -271,6 +312,49 @@ export default function CopyDetailsForm({
           value={value.location ?? ""}
           onChange={(e) => set({ location: e.target.value || undefined })}
         />
+
+        {showHomes && (
+          <div>
+            <label className="block">
+              <span className={LABEL}>Where it lives</span>
+              <select
+                className={SELECT}
+                value={homeId ?? ""}
+                aria-describedby={homeHelp ? homeHelpId : undefined}
+                onChange={(e) => onHomeChange?.(e.target.value)}
+              >
+                {homeId === undefined && (
+                  <option value="">{homes.some((h) => h.kind === "box") ? "Pick a binder or box" : "Pick a binder"}</option>
+                )}
+                {homes.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.kind === "box" ? `${h.name} (box, for sale)` : h.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {homeHelp && (
+              <p id={homeHelpId} className="mt-1 text-xs text-ink-3">
+                {homeHelp}
+              </p>
+            )}
+          </div>
+        )}
+
+        {showTrade && (
+          <div className="flex items-start sm:pt-6">
+            <label className={CHOICE}>
+              <input
+                type="checkbox"
+                role="switch"
+                className={CHECK}
+                checked={upForTrade}
+                onChange={(e) => onUpForTradeChange?.(e.target.checked)}
+              />
+              Up for trade
+            </label>
+          </div>
+        )}
 
         {manualBinders.length > 0 && (
           <fieldset className="sm:col-span-2">

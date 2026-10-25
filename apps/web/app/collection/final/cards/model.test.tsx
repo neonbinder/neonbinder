@@ -45,7 +45,7 @@ function card(n: number | string, variation: string | null = null): Card {
 const ROW: Card[] = [card(1), card(2), card(3), card(4), card(5), card(13), card(13, "Sliding"), card(14)];
 
 function copy(id: string, cardId: string, quantity: number): Copy {
-  return { ...emptyCopyDetails(), id, cardId, quantity, variantId: BASE.id, setId: SET.id, homeId: "main" };
+  return { ...emptyCopyDetails(), id, cardId, quantity, variantId: BASE.id, setId: SET.id, homeId: "main", homeKind: "binder", upForTrade: false };
 }
 
 /** A number two cards share in one row (the regular card and its image variation). */

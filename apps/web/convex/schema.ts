@@ -647,6 +647,88 @@ export const collectionTallyValidator = v.object({
   cards: v.number(),
 });
 
+/**
+ * NEO-359 — the containers NB makes rather than the collector. "main" is the
+ * default home (lazy, on first add). "want" and "trade" are SHELF rows only:
+ * a spine and a label for the Want List (`collectionWants`) and for the
+ * copies flagged `upForTrade`. Neither is ever a home (`resolveHome` refuses
+ * them). Made by `collectionContainers.ensureSystem`; never renamed or
+ * deleted, label only.
+ */
+export const collectionContainerSystemValidator = v.union(
+  v.literal("main"),
+  v.literal("want"),
+  v.literal("trade"),
+);
+
+/**
+ * NEO-359 — a spine label the collector designed; mirrors the client's
+ * `BinderLabel`. Stored as strings: the handler checks both colours against
+ * /^#[0-9a-f]{6}$/i (stored lower-cased) and `fontId` against the spine-font
+ * list (lib/print/spine-fonts.ts), so a new font never needs a schema change.
+ * Absent means the default livery.
+ */
+export const collectionLabelValidator = v.object({
+  background: v.string(),
+  text: v.string(),
+  fontId: v.string(),
+});
+
+/**
+ * NEO-359 — what one container holds, kept in place so a shelf never walks
+ * copies. A home (Main, a binder, a box): its copies (quantities summed) and
+ * line items. Trade: the same over the copies flagged `upForTrade`. Want:
+ * both numbers are the want count (a want is one card). See
+ * `collectionContainers.count` for who moves it and what absent means.
+ */
+export const collectionCountValidator = v.object({
+  copies: v.number(),
+  lines: v.number(),
+});
+
+/**
+ * NEO-359 — one test in a smart binder's rule (evaluated in NEO-362). Every
+ * leaf names NB data only: NB ids, NB numbers, NB feature keys. Never a
+ * marketplace value or a display name. An id list means "any of these".
+ * Lists are capped in the handler. A leaf whose id no longer resolves (a
+ * deleted set, a merged player) matches nothing; it never throws.
+ */
+export const collectionRuleLeafValidator = v.union(
+  v.object({ kind: v.literal("player"), playerIds: v.array(v.id("players")) }),
+  v.object({ kind: v.literal("team"), teamIds: v.array(v.id("teams")) }),
+  // `level: "sport"` rows.
+  v.object({ kind: v.literal("sport"), sportIds: v.array(v.id("selectorOptions")) }),
+  // `level: "manufacturer"` rows (one per year; grouping decided in NEO-362).
+  v.object({ kind: v.literal("brand"), brandIds: v.array(v.id("selectorOptions")) }),
+  // `level: "setName"` rows.
+  v.object({ kind: v.literal("set"), setIds: v.array(v.id("selectorOptions")) }),
+  // Inclusive; either end open, at least one present (handler).
+  v.object({ kind: v.literal("year"), from: v.optional(v.number()), to: v.optional(v.number()) }),
+  // A `features` key from convex/features/expectedFeatures.ts and its value
+  // ("isRookie" / "true", "autographed" / "true").
+  v.object({ kind: v.literal("feature"), key: v.string(), value: v.string() }),
+  // `cardChecklist.printRun`, inclusive; either end open, at least one present.
+  v.object({ kind: v.literal("printRun"), min: v.optional(v.number()), max: v.optional(v.number()) }),
+  // Any player on the card carries `players.isHallOfFame`.
+  v.object({ kind: v.literal("hallOfFame") }),
+);
+
+/**
+ * NEO-359 — a smart binder's rule: ONE level of and/or over leaves, each
+ * optionally negated. No nesting, so no recursion in the validator or the
+ * evaluator. `version` lets NEO-362 reshape it additively.
+ */
+export const collectionRuleValidator = v.object({
+  version: v.literal(1),
+  match: v.union(v.literal("all"), v.literal("any")),
+  terms: v.array(
+    v.object({
+      negate: v.optional(v.literal(true)),
+      test: collectionRuleLeafValidator,
+    }),
+  ),
+});
+
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
   /**
@@ -1341,6 +1423,10 @@ export default defineSchema({
     lastUpdated: v.number(),
   })
     .index("by_selector_option", ["selectorOptionId"])
+    // NEO-359 — one variant's cards in checklist order, paged, for whole-set
+    // browse (`collection.cardsInSet`). `by_selector_option` is a prefix of
+    // this and could later be retired; its callers are many, so not here.
+    .index("by_selector_option_and_sort", ["selectorOptionId", "sortOrder"])
     .index("by_selector_option_and_number", ["selectorOptionId", "cardNumber"])
     // NEO-189: "give me this card's variations" as one indexed read rather than
     // a scan of the set. Also what `deleteCard` uses to find the children whose
@@ -3327,14 +3413,18 @@ export default defineSchema({
    * `collectionCopies` row has exactly one. Per user (`ownerId` is the Clerk
    * subject, the house identity — `getCurrentUserId`).
    *
-   * `system` marks a container NB made rather than the collector: `"main"` is
-   * the default binder every add lands in until containers are user-facing.
-   * It is get-or-created lazily on the first add (`.unique()` on
-   * `by_owner_and_system`; two racing first adds are serialised by OCC on that
-   * index range). Absent means a container the collector named. The union
-   * widens later (a `"want"` list is planned, and the add path already refuses
-   * any system container other than `"main"` as a home). No `rule` field yet
-   * (NEO-362).
+   * `system` marks a container NB made rather than the collector (NEO-359):
+   *   - `"main"` is the default binder every add lands in when no binder or
+   *     box is named. It is get-or-created lazily on the first add
+   *     (`.unique()` on `by_owner_and_system`; two racing first adds are
+   *     serialised by OCC on that index range).
+   *   - `"want"` and `"trade"` are SHELF rows only: the spine and label for
+   *     the Want List (`collectionWants`) and for the copies flagged
+   *     `upForTrade`. Neither is ever a home; the add and move paths refuse
+   *     both. Made by `collectionContainers.ensureSystem` (idempotent).
+   * Absent means a container the collector named (a binder or a box; a copy
+   * is for sale exactly when its home is a box). System rows are never
+   * renamed or deleted; only their label changes.
    *
    * `tally` is on the Main row only, and it is the OWNER's tally, not Main's:
    * every copy, line and distinct card they hold, in any home (Jason,
@@ -3349,11 +3439,33 @@ export default defineSchema({
   collectionContainers: defineTable({
     ownerId: v.string(),
     kind: collectionContainerKindValidator,
-    system: v.optional(v.literal("main")),
+    system: v.optional(collectionContainerSystemValidator),
     name: v.string(),
+    // NEO-359 — trimmed, blank stored absent, capped in the handler.
+    description: v.optional(v.string()),
+    label: v.optional(collectionLabelValidator),
+    // NEO-359 — stored shape only; `create` refuses it until NEO-362 ships the
+    // evaluator, so no row pins this shape early.
+    rule: v.optional(collectionRuleValidator),
+    /**
+     * NEO-359 — this container's own count (see `collectionCountValidator`).
+     * Moved in the same transaction by every copy write (home: always; Trade:
+     * when a flagged copy changes, if the Trade row exists) and by
+     * `collectionWants.set` (Want, if the row exists). A container NB or the
+     * collector makes is born counted ({0,0}, or counted at birth for
+     * Want/Trade). ABSENT means "not counted": NEO-358 Main rows, or a row
+     * cleared on drift. Same rule as `tally`: the next write recounts in
+     * place (bounded), and a read shows it as unknown (or a bounded count)
+     * until then.
+     */
+    count: v.optional(collectionCountValidator),
     tally: v.optional(collectionTallyValidator),
     lastUpdated: v.number(),
-  }).index("by_owner_and_system", ["ownerId", "system"]),
+  })
+    // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
+    // list() (prefix ownerId), and the 200-container cap
+    // (eq system undefined, take 201).
+    .index("by_owner_and_system", ["ownerId", "system"]),
 
   /**
    * ── NEO-358: one pile of a card the collector owns ────────────────────────
@@ -3386,6 +3498,21 @@ export default defineSchema({
     variantId: v.id("selectorOptions"),
     setId: v.id("selectorOptions"),
     homeId: v.id("collectionContainers"),
+    /**
+     * NEO-359 — where in its home the copy sits. Binder: page * 9 + pocket
+     * (one line per pocket, checked on `by_owner_home_slot`). Box: row 0-4
+     * (many lines per row). Absent means not placed yet. A whole number,
+     * checked against the home's kind in the handler. Cleared when the home
+     * changes unless the move names one. Part of the fold key.
+     */
+    slot: v.optional(v.number()),
+    /**
+     * NEO-359 — on the Up for Trade shelf. Only `true` is ever stored; off is
+     * ABSENT, never `false`, so the fold key has one spelling and
+     * `by_owner_and_trade` has one value to ask for. The wire stays a boolean
+     * and `cleanDetails` drops `false`. Part of the fold key.
+     */
+    upForTrade: v.optional(v.literal(true)),
     // An integer >= 1, capped in the handler (`MAX_COPY_QUANTITY`).
     quantity: v.number(),
     condition: v.optional(collectionCopyConditionValidator),
@@ -3409,7 +3536,18 @@ export default defineSchema({
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])
     // The catalog delete guard and the moveCards fan-out.
-    .index("by_card", ["cardId"]),
+    .index("by_card", ["cardId"])
+    // NEO-359 — a home's contents in slot order (unplaced first). Serves:
+    // copiesInContainer (prefix ownerId+homeId, paged); the occupied-pocket
+    // check in moveCopy/placeCopy (all three, .first()); `empty` (prefix,
+    // take 200); `remove`'s must-be-empty check (prefix, .first()); and a
+    // home's count recount (prefix, bounded take).
+    .index("by_owner_home_slot", ["ownerId", "homeId", "slot"])
+    // NEO-359 — scoped reads. copiesInVariant / variantCompletion with homeId
+    // (all four fields); setCompletion with homeId (prefix to setId).
+    .index("by_owner_home_set_variant", ["ownerId", "homeId", "setId", "variantId"])
+    // NEO-359 — tradeCopies (eq true, paged) and the Trade row's recount.
+    .index("by_owner_and_trade", ["ownerId", "upForTrade"]),
 
   /**
    * ── NEO-358: the sets a collector has said they are building ──────────────
@@ -3424,8 +3562,47 @@ export default defineSchema({
   collectionBuildingSets: defineTable({
     ownerId: v.string(),
     setId: v.id("selectorOptions"),
+    /**
+     * NEO-359 — distinct cards the collector holds in this set (copies whose
+     * `setId` is this set), so "Everything else" (cards off every set build)
+     * is the tally's `cards` minus these, exact, without walking the pile.
+     * Counted when the set is marked (bounded), moved by every copy write
+     * that gains or loses a whole card in this set, and cleared when the
+     * catalog re-points copies into or out of the set (`moveCards`, a set
+     * conversion). ABSENT means "not counted": NEO-358 rows, a count too big
+     * to finish, or a cleared one. The next write that touches it recounts
+     * (bounded) and a read counts it by hand until then.
+     */
+    cards: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     .index("by_owner_and_set", ["ownerId", "setId"])
     .index("by_set", ["setId"]),
+
+  /**
+   * ── NEO-359: the cards a collector is looking for ───────────────────────
+   *
+   * One row per (owner, card). `binderId` scopes the want to one of the
+   * caller's binders or boxes (never a system container). Absent means the
+   * Want List at large. No denormalised variant or set (Jason): a card move
+   * never touches a want. Capped at 2,000 per owner in `collectionWants.set`.
+   * NB data only.
+   *
+   * A deleted card takes its wants with it (`removeCardRow`, on `by_card`).
+   * A want never refuses a card delete. Removing a container un-scopes its
+   * wants (`by_owner_and_binder`).
+   */
+  collectionWants: defineTable({
+    ownerId: v.string(),
+    cardId: v.id("cardChecklist"),
+    binderId: v.optional(v.id("collectionContainers")),
+    lastUpdated: v.number(),
+  })
+    // set (all fields, .unique()); list and the cap check (prefix ownerId,
+    // take 2001).
+    .index("by_owner_and_card", ["ownerId", "cardId"])
+    // collectionContainers.remove: un-scope this container's wants.
+    .index("by_owner_and_binder", ["ownerId", "binderId"])
+    // removeCardRow: sweep a deleted card's wants.
+    .index("by_card", ["cardId"]),
 });

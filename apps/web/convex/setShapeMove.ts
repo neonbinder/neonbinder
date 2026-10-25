@@ -55,6 +55,7 @@ import { compareCardNumbers } from "../lib/cards/card-number";
 // copies (their denormalised `variantId` / `setId`).
 import { createCardCountLedger } from "./cardCounts";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
+import { forgetBuildingCards } from "./collection";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
@@ -660,6 +661,9 @@ export async function moveCards(
   // Copies re-pointed inline so far; past the budget, cards go to `later`.
   let copiesRepointed = 0;
   const later: Array<Id<"cardChecklist">> = [];
+  // NEO-359 — (owner, set) pairs whose "cards on this set build" a re-point
+  // changed: their kept counts are cleared once, after the loop.
+  const movedSets: Array<{ ownerId: string; setId: RowId }> = [];
   for (let i = 0; i < ordered.length; i++) {
     const { card, slotMap } = ordered[i];
     await ctx.db.patch(card._id, {
@@ -712,9 +716,13 @@ export async function moveCards(
         setId,
         lastUpdated: now,
       });
+      if (copy.setId !== setId) {
+        movedSets.push({ ownerId: copy.ownerId, setId: copy.setId }, { ownerId: copy.ownerId, setId });
+      }
     }
   }
   await countLedger.flush(ctx);
+  await forgetBuildingCards(ctx, movedSets);
   if (later.length > 0) {
     console.log(
       JSON.stringify({
@@ -783,6 +791,7 @@ export const repointMovedCardCopies = internalMutation({
         .withIndex("by_card", (q) => q.eq("cardId", cardId))
         .paginate({ cursor: args.cursor, numItems: COPY_REPOINT_PAGE });
       const now = Date.now();
+      const movedSets: Array<{ ownerId: string; setId: Id<"selectorOptions"> }> = [];
       for (const copy of page.page) {
         if (copy.variantId === card.selectorOptionId && copy.setId === setId) continue;
         await ctx.db.patch(copy._id, {
@@ -791,7 +800,12 @@ export const repointMovedCardCopies = internalMutation({
           lastUpdated: now,
         });
         repointed += 1;
+        if (copy.setId !== setId) {
+          movedSets.push({ ownerId: copy.ownerId, setId: copy.setId }, { ownerId: copy.ownerId, setId });
+        }
       }
+      // NEO-359 — the moved copies' owners' set-build counts are not known now.
+      await forgetBuildingCards(ctx, movedSets);
       if (!page.isDone) next = { index, cursor: page.continueCursor };
     }
     const done = next.index >= args.cardIds.length;
@@ -836,10 +850,13 @@ export async function moveBuildingSets(
         q.eq("ownerId", entry.ownerId).eq("setId", toSetId),
       )
       .first();
+    // NEO-359 — the source's cards join the target: neither kept "cards on
+    // this set build" count holds any more, so both read as not counted.
     if (already) {
       await ctx.db.delete(entry._id);
+      if (already.cards !== undefined) await ctx.db.patch(already._id, { cards: undefined });
     } else {
-      await ctx.db.patch(entry._id, { setId: toSetId, lastUpdated: now });
+      await ctx.db.patch(entry._id, { setId: toSetId, cards: undefined, lastUpdated: now });
     }
   }
 }

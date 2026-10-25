@@ -22,3 +22,4 @@
 - [System theme makes OS colour scheme a test input](system-theme-makes-os-colour-scheme-a-test-input.md) — pin colorScheme dark in playwright.config; only theme specs emulateMedia; restore stored prefs
 - [Shared UI needs the catalog behind an interface too](shared-ui-needs-the-catalog-behind-an-interface-too.md) — demo views import the fake catalog directly; plan a per-view model + hooks, not just a store swap
 - [Per-user E2E tables reset in bootstrap](per-user-e2e-tables-reset-in-bootstrap-not-the-global-reset.md) — resetMyTestState, not only the global drain
+- [Prototype shared types are live](prototype-shared-types-are-live-do-not-edit-them.md) — p1-p5 still routed; adapt at demoStore, never edit prototypes/_shared shapes

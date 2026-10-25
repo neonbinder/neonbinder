@@ -128,7 +128,7 @@
 - [Print-only region needs the :has() prefix](reference_print_only_region_has_specificity.md) — visible rule must match hide rule weight; fullPage print-emulated shots go blank
 - [Parallel builders share the scratchpad](reference_parallel_builders_share_the_scratchpad.md) — per-agent subdir for scripts/shots; own Vite port; check root for stray folders
 - [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word
-- [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — hand-rolled modal portals to body lose Radix tokens; nest <Theme hasBackground={false}>
+- [Radix button outside a Theme portal](reference_radix_button_outside_theme_portal.md) — createPortal(body) loses Radix tokens (NeonButton padding 0): prop-less nested <Theme> in the portal, never portal into the root Theme
 - [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
 - [Radix Themes tooltip needs Theme in tests](reference_radix_themes_tooltip_needs_theme_in_tests.md) — Tooltip throws outside <Theme> in component tests; child aria-describedby overrides the trigger; headless .focus() never opens it, Tab does
 - [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
@@ -149,3 +149,8 @@
 - [Collection views test on a hand-built store](reference_collection_views_test_on_a_hand_built_store.md) — RealCollection.test.tsx fakes the store; add each new hook to it
 - [convex-test scale walks cost per range read](reference_convex_test_scale_walks_cost_per_range_read.md) — paged walk over 5k distinct keys ~26s; use few keys x many rows
 - [Card fixtures insert through insertTestCard](reference_card_fixtures_insert_through_insert_test_card.md) — required listingTitle/sportId; raw test inserts fail at runtime; t.run drops closures
+- [No timeout binary empties a grep gate](reference_no_timeout_binary_empties_a_grep_gate.md) — `timeout` is missing on macOS; `timeout … tsc | grep` is a false green; tee to a file, check line count
+- [Keep counts per scope, not global](reference_keep_counts_per_scope_not_global.md) — admin-invalidated count on the per-set row (clear + bounded recount), never one owner-wide counter
+- [Optimistic id swap remounts id-keyed rows](reference_optimistic_id_swap_remounts_id_keyed_rows.md) — key rows via useLineKeys; ids replay per args (optimisticIdFor); writes await landedCopy
+- [Scroll on focus swallows mouse clicks](reference_scroll_on_focus_swallows_mouse_clicks.md) — focus fires between mousedown/mouseup; gate scroll-on-focus on :focus-visible (binders/trayClear)
+- [Typecheck a client against a contract stub](reference_typecheck_a_client_against_a_contract_stub.md) — parallel backend: scratch tsconfig paths map api to a stub; missing members hide bugs as any

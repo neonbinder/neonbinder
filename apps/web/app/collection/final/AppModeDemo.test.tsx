@@ -51,21 +51,25 @@ afterEach(() => {
 });
 
 describe("signed-in /collection runs on the real collection", () => {
-  it("shows My Cards and Checklists, and none of the demo's unbuilt parts", () => {
+  it("shows My Cards, My Binders and Checklists, and none of the demo's chrome", () => {
     renderAt("/collection");
     const tabs = within(sections()).getAllByRole("link").map((l) => l.textContent);
-    expect(tabs).toEqual(["My Cards", "Checklists"]);
+    expect(tabs).toEqual(["My Cards", "My Binders", "Checklists"]);
     expect(screen.queryByRole("region", { name: "About this demo" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reset demo data" })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Demo theme" })).toBeNull();
-    expect(screen.queryByRole("combobox", { name: "Binder" })).toBeNull();
     expect(document.title).toBe("My Cards · Collection");
   });
 
-  it("opens My Cards for a My Binders link", () => {
-    renderAt("/collection?tab=binders&b=binder-main");
-    expect(within(sections()).getByRole("link", { name: "My Cards" }).getAttribute("aria-current")).toBe("page");
-    expect(screen.queryByRole("link", { name: "My Binders" })).toBeNull();
+  it("offers the Binder picker, waiting (disabled) while the shelf loads", () => {
+    renderAt("/collection");
+    expect((screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it("opens My Binders for a My Binders link", () => {
+    renderAt("/collection?tab=binders");
+    expect(within(sections()).getByRole("link", { name: "My Binders" }).getAttribute("aria-current")).toBe("page");
+    expect(within(sections()).getByRole("link", { name: "My Cards" }).getAttribute("aria-current")).toBeNull();
   });
 });
 
@@ -90,6 +94,8 @@ describe("the demo store in app mode", () => {
       "My Cards",
       "My Binders",
       "Checklists",
+      // The demo store has Inventory (NEO-359); the real one does not yet.
+      "Inventory",
     ]);
   });
 
