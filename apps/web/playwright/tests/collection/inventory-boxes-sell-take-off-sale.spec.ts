@@ -223,6 +223,7 @@ test(
     await expect(back.getByRole("option", { name: boxName, exact: true })).toHaveCount(0);
     await back.selectOption({ label: "Main" });
     await offForm.getByRole("spinbutton", { name: "Quantity to take back" }).fill("1");
+    await expectAccessible(page, { within: offForm, label: "Card drawer, the Take off sale panel with Main picked" });
     await offForm.getByRole("button", { name: "Take 1 off sale", exact: true }).click();
     await expect(offForm).toBeHidden();
     await expect(
@@ -300,5 +301,16 @@ test(
     await expect(headline(0)).toBeVisible();
     await expect(mainSpine(0)).toBeVisible();
     await expect(doorWith(0)).toBeVisible();
+
+    // --- An old bookmark still lands: the collection's former Inventory tab opens My Boxes ----
+    await page.goto("/collection?tab=inventory");
+    await expect(page).toHaveURL(/\/inventory\?tab=boxes/);
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: "My Boxes", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(boxes).toBeVisible();
+    // The redirect replaced the old entry: Back leaves for the page before it.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/collection/);
+    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
   },
 );

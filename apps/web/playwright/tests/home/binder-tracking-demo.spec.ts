@@ -134,6 +134,27 @@ test(
     await expect(page.getByRole("group", { name: "Not sorted into a row yet", exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, an open box" });
 
+    // The pushed stack (binders, the switch, a tab, a box) unwinds one step at a time:
+    // box, shelf, list, then back ACROSS the side switch to the collection, with no
+    // side= on the URL; forward replays it.
+    await page.goBack();
+    await expect(showBox).toBeVisible();
+    await page.goBack();
+    await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
+    await page.goBack();
+    await expect(page).not.toHaveURL(/[?&]side=/);
+    await expect(page).toHaveURL(/[?&]tab=binders/);
+    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+    await expect(toCollection).toHaveAttribute("aria-current", "page");
+    await expect(binders).toBeVisible();
+    await page.goForward();
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
+    await page.goForward();
+    await expect(showBox).toBeVisible();
+    await page.goForward();
+    await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
+    await expect(open).toBeVisible();
+
     // The drawer: take a box card off sale. It leaves Inventory and joins the
     // collection (All my cards); selling it again takes it back out of there.
     const boxCard = open.getByRole("button", { name: /, for sale/ }).first();
@@ -236,17 +257,19 @@ test(
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(field).toHaveValue("0");
 
+    // "Back to the tour" goes straight out, to the tour, in ONE step however many views
+    // were pushed (collection, tabs, the switch, a box, the drawer...).
+    await page.getByRole("button", { name: "Back to the tour" }).click();
+    await expect(page).toHaveURL(/\/binder-tracking$/);
+    await expect(tour).toBeVisible();
+    await expect(tour.getByRole("link", { name: "Open the demo binder" })).toBeFocused();
+    await expect(about).toBeHidden();
+
     // The old links still land: the retired for-sale view opens the Inventory list.
     await page.goto("/binder-tracking?demo=on&sale=1");
     await expect(page).toHaveURL(/[?&]side=inventory/);
     await expect(page).toHaveURL(/[?&]tab=cards/);
     await expect(page).not.toHaveURL(/[?&]sale=/);
     await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
-
-    // "Back to the tour" goes straight out, to the tour.
-    await page.getByRole("button", { name: "Back to the tour" }).click();
-    await expect(page).toHaveURL(/\/binder-tracking$/);
-    await expect(tour).toBeVisible();
-    await expect(tour.getByRole("link", { name: "Open the demo binder" })).toBeFocused();
   },
 );

@@ -5,7 +5,8 @@
 // arrow key away and never a Tab stop. Lowering a count pulls copies out (down to
 // 0), the status line says what changed with an Undo, and the box picked sticks
 // across a reload (the URL's `box=`) and across tabs. Ctrl/Cmd+Z in an untouched
-// field takes the last count back, as the status line's Undo does.
+// field takes the last count back, as the status line's Undo does. A count over
+// 999 is refused (row error, number back, status line) and writes nothing.
 //
 // A phone's number pad has no Tab: its "Next" key sends Enter, which commits the
 // field and moves to the next row's. So the spec presses Tab on a desktop and
@@ -36,6 +37,8 @@ import {
 } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 test(
   "Inventory Checklists: type a quantity, Tab on, and the box takes it; lower, Undo, pick another box",
   { tag: ["@smoke", "@collection"] },
@@ -43,7 +46,7 @@ test(
     const boxName = `Qty${env.ATTEMPT_TOKEN}`;
     // The phone's Next key is Enter; a desktop keyboard has Tab.
     const advance = isMobile ? "Enter" : "Tab";
-    const said = (text: string) => page.getByRole("status").filter({ hasText: text });
+    const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
 
     // --- My Boxes first: the numbers to measure against, and a box to pick later ---
     await signIn("/inventory?tab=boxes");
@@ -198,6 +201,14 @@ test(
     await fieldB.fill("0");
     await page.keyboard.press(advance);
     await expect(said(`Pulled 3 ${b} from Unsorted. 0 left.`)).toBeVisible();
+
+    // --- The cap: a count over 999 is refused, the number goes back, and the line says so ----
+    await fieldB.fill("1000");
+    await page.keyboard.press(advance);
+    await expect(rowOf(b).getByText(/Didn't save/)).toBeVisible();
+    await expect(said(new RegExp(`${escapeRegExp(b)} didn't change.*999`))).toBeVisible();
+    await expect(fieldB).toHaveValue("0");
+    await expectAccessible(page, { label: "Inventory Checklists, a count refused over 999" });
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(unsorted(unsortedBase)).toBeVisible();

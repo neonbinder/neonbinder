@@ -225,6 +225,25 @@ test(
     await expectAccessible(page, { label: "Inventory list, the Up for Trade stop" });
     await railStop(/^All boxes/).click();
 
+    // Up for Trade opens as a box on My Boxes: one well, no rows, the flagged card in it.
+    await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
+    await page
+      .getByRole("list", { name: "Special places" })
+      .getByRole("button", { name: /^Up for Trade, box, / })
+      .click();
+    await expect(page).toHaveURL(/[?&]b=[^&]+/);
+    await expect(page.getByRole("heading", { level: 2, name: "Up for Trade", exact: true })).toBeVisible();
+    const tradeWell = page.getByRole("group", { name: /^Up for Trade, \d+ cards?$/ });
+    await expect(
+      tradeWell.getByRole("button", {
+        name: new RegExp(`#${escapeRegExp(y.number)} ${escapeRegExp(y.player)}.*up for trade`, "i"),
+      }),
+    ).toBeVisible();
+    // A pile is not a home: nothing is filed in rows.
+    await expect(page.getByRole("group", { name: /^Row \d, / })).toHaveCount(0);
+    await expectAccessible(page, { label: "My Boxes, Up for Trade opened as a box" });
+    await backToBoxes(page);
+
     // --- The hard line: six cards stand in the boxes; the collection still counts what it did ------------
     await goViaShell(page, isMobile, "Collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
@@ -252,6 +271,30 @@ test(
     await removeLine(z, "Raw ×2", itemZ);
     await expect(itemX).toHaveCount(0);
     await expect(itemZ).toHaveCount(0);
+
+    // The minted box is empty again: its rail stop says so.
+    await railStop(new RegExp(`^${escapeRegExp(boxName)}`)).click();
+    await expect(
+      page.getByText("Empty box. Fill it from Checklists, or Sell a card into it from its Details."),
+    ).toBeVisible();
+    await expect(railStop(new RegExp(`^${escapeRegExp(boxName)}`))).toHaveAttribute("aria-current", "true");
+    await railStop(/^All boxes/).click();
+    // Only when nothing else stood in the boxes at the start can the whole list be empty:
+    // then it says so and points at Checklists. (Never asserted when other stock exists.)
+    if (forSaleBase === 0) {
+      await expect(page.getByText("No cards in your boxes yet.")).toBeVisible();
+      const stockUp = page.getByRole("button", { name: "Stock up in Checklists" });
+      await expect(stockUp).toBeVisible();
+      await expectAccessible(page, { label: "Inventory list, empty" });
+      await stockUp.click();
+      await expect(page).toHaveURL(/[?&]tab=checklists/);
+      await expect(page.getByRole("combobox", { name: "Adding to" })).toBeVisible();
+      await page.goBack();
+      await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
+    } else {
+      await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
+    }
+
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await page.getByRole("list", { name: "Your boxes" }).getByRole("button", { name: `${boxName}, box, 0 cards for sale`, exact: true }).click();
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();

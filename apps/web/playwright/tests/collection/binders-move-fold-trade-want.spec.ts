@@ -37,7 +37,7 @@
 // Minted names are single tokens from `env.ATTEMPT_TOKEN` (never rebuilt by
 // hand), so the binders of this run are this run's alone.
 import type { Locator } from "@playwright/test";
-import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { drillToCollectorBase, goViaShell, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -51,7 +51,7 @@ interface Stats {
 test(
   "Collection: make two binders, move copies between them (split, re-fold, Undo, trade), fill a pocket, want a card, delete both",
   { tag: ["@smoke", "@collection"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, isMobile }) => {
     const binderA = `BinderA${env.ATTEMPT_TOKEN}`;
     let binderB = `BinderB${env.ATTEMPT_TOKEN}`;
     const renamed = `Spare${env.ATTEMPT_TOKEN}`;
@@ -284,6 +284,32 @@ test(
     await expect(headline({ cards: 3, binders: 2 })).toBeVisible();
     await expect(spineOf(binderA, 1)).toBeVisible();
     await expect(spineOf(binderB, 2)).toBeVisible();
+    await expect(tradeSpine(tradeBase + 1)).toBeVisible();
+
+    // --- The same pile from the inventory side: drawn as a box, the card tagged with its binder ----
+    // Up for Trade is the one place the two sides meet (one flag on the copy, one stored count),
+    // so the Inventory's My Boxes shows the binder copy too, as "In <binder>".
+    await door.click();
+    await expect(page).toHaveURL(/\/inventory\?tab=cards/);
+    await page.getByRole("navigation", { name: "Inventory sections" }).getByRole("link", { name: "My Boxes", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=boxes/);
+    const tradeBox = special.getByRole("button", {
+      name: `Up for Trade, box, ${cardsWord(tradeBase + 1)} up for trade`,
+      exact: true,
+    });
+    await expect(tradeBox).toBeVisible();
+    await tradeBox.click();
+    await expect(page.getByRole("heading", { level: 2, name: "Up for Trade", exact: true })).toBeVisible();
+    const tradeWell = page.getByRole("group", { name: /^Up for Trade, \d+ cards?$/ });
+    await expect(
+      tradeWell.getByRole("button", {
+        name: new RegExp(`#${escapeRegExp(one.number)} ${escapeRegExp(one.player)}.*up for trade.*in ${escapeRegExp(binderA)}`, "i"),
+      }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "My Boxes, Up for Trade with a binder copy" });
+    await goViaShell(page, isMobile, "Collection");
+    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+    await toBinders();
     await expect(tradeSpine(tradeBase + 1)).toBeVisible();
 
     // --- Up for Trade: the card is listed, and still lives in its binder ----
