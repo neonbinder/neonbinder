@@ -65,10 +65,12 @@ export default function ShareLink({ target }: { target: ShareTarget }) {
         <LinkIcon aria-hidden="true" className="h-4 w-4" />
         Share
       </NeonButton>
+      {/* A phone pins the panel to the bottom of the screen: anchored to the
+          button it could run off the left edge when the toolbar wraps. */}
       <div
         id={panelId}
         hidden={!open}
-        className="absolute right-0 top-full z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-neon-pink/60 bg-sheet p-3 text-sm shadow-2xl shadow-offset"
+        className="fixed inset-x-4 bottom-4 z-40 max-h-[calc(100dvh-2rem)] overflow-y-auto sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-2rem))] sm:overflow-visible rounded-xl border border-neon-pink/60 bg-sheet p-3 text-sm shadow-2xl shadow-offset"
       >
         <p className="font-semibold text-ink">Share {what}</p>
         {open &&
