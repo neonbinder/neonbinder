@@ -639,7 +639,8 @@ export const collectionCopyGradingValidator = v.object({
 /**
  * NEO-358 — one collector's whole collection in three numbers, kept on their
  * Main binder (see `collectionContainers.tally`): physical copies (quantities
- * summed), line items, and distinct cards.
+ * summed), line items, and distinct cards. NEO-364: binder homes only, never
+ * a box (`tallyScope`).
  */
 export const collectionTallyValidator = v.object({
   copies: v.number(),
@@ -659,7 +660,21 @@ export const collectionContainerSystemValidator = v.union(
   v.literal("main"),
   v.literal("want"),
   v.literal("trade"),
+  // NEO-364 — "unsorted": a box, the inventory's counterpart to Main: where a
+  // for-sale add lands with no box named, and where a deleted box empties.
+  // Lazy like Main; never in the tally; never on a collection screen.
+  v.literal("unsorted"),
 );
+
+/**
+ * NEO-364 — what a kept tally (Main's `tally`) or a building set's `cards`
+ * counts. Only `"collection"` exists: binder homes only, never a box (the
+ * hard line: collection numbers never touch a for-sale copy). A NEO-358/359
+ * number carries no marker because it counted every home, boxes included, so
+ * a reader treats an unmarked number as ABSENT: recounted (collection-only)
+ * and stamped on the next write, counted by hand on a read until then.
+ */
+export const collectionTallyScopeValidator = v.literal("collection");
 
 /**
  * NEO-359 — a spine label the collector designed; mirrors the client's
@@ -3422,12 +3437,17 @@ export default defineSchema({
    *     the Want List (`collectionWants`) and for the copies flagged
    *     `upForTrade`. Neither is ever a home; the add and move paths refuse
    *     both. Made by `collectionContainers.ensureSystem` (idempotent).
+   *   - `"unsorted"` (NEO-364) is a BOX, the inventory's Main: where a
+   *     for-sale add lands with no box named, and where a deleted box's
+   *     copies go. Lazy like Main (`getOrCreateUnsorted`), born counted,
+   *     never in the tally, never on a collection screen.
    * Absent means a container the collector named (a binder or a box; a copy
    * is for sale exactly when its home is a box). System rows are never
    * renamed or deleted; only their label changes.
    *
    * `tally` is on the Main row only, and it is the OWNER's tally, not Main's:
-   * every copy, line and distinct card they hold, in any home (Jason,
+   * every copy, line and distinct card they hold in a COLLECTION home (Main
+   * or a binder; NEO-364: never a box, see `tallyScope`) (Jason,
    * 2026-10-23: no per-account cap, dealers hold tens of thousands of cards,
    * so "how many do I own" can never be a walk). Every write in
    * convex/collection.ts moves it in the same transaction (`moveTally`).
@@ -3460,6 +3480,12 @@ export default defineSchema({
      */
     count: v.optional(collectionCountValidator),
     tally: v.optional(collectionTallyValidator),
+    /**
+     * NEO-364 — `tally` counts collection homes only (binders and Main, never
+     * a box) exactly when this says "collection". Absent: the tally is from
+     * before NEO-364 (every home) and reads as not kept.
+     */
+    tallyScope: v.optional(collectionTallyScopeValidator),
     lastUpdated: v.number(),
   })
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
@@ -3574,6 +3600,12 @@ export default defineSchema({
      * (bounded) and a read counts it by hand until then.
      */
     cards: v.optional(v.number()),
+    /**
+     * NEO-364 — `cards` counts copies in collection homes only (never a box)
+     * exactly when this says "collection". Absent: a NEO-359 count over every
+     * home, read as not counted.
+     */
+    tallyScope: v.optional(collectionTallyScopeValidator),
     lastUpdated: v.number(),
   })
     .index("by_owner_and_set", ["ownerId", "setId"])
