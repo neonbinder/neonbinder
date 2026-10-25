@@ -120,6 +120,8 @@ test(
     const itemX = itemOf(x, 3, "Unsorted");
     const itemY = itemOf(y, 1, "Unsorted");
     const itemZ = itemOf(z, 2, boxName);
+    // X after the graded copy joins it (the slab step below): x4, one a slab.
+    let mixedX = itemX;
     await expect(itemX).toBeVisible();
     await expect(itemY).toBeVisible();
     await expect(itemZ).toBeVisible();
@@ -148,11 +150,22 @@ test(
     await expect(itemZ).toBeVisible();
     await expect(itemX).toBeVisible();
 
-    // On a phone the filters fold behind a "Filters" button: open it once for sort, search and chips.
+    // On a phone the filters fold behind a "Filters" button (closed to start, "Sort by" out of
+    // reach); on a desktop there is no such button and "Sort by" is simply there.
+    const sortBy = page.getByRole("combobox", { name: "Sort by" });
+    if (isMobile) {
+      await expect(page.getByRole("button", { name: /^Filters/ })).toHaveAttribute("aria-expanded", "false");
+      await expect(sortBy).toBeHidden();
+      await expectAccessible(page, { label: "Inventory list, filters folded on a phone" });
+    } else {
+      await expect(page.getByRole("button", { name: /^Filters/ })).toHaveCount(0);
+      await expect(sortBy).toBeVisible();
+    }
+    // Open the Filters once for sort, search and chips.
     await openListFilters(page, isMobile);
+    await expect(sortBy).toBeVisible();
 
     // --- Sort: the order flips -------------------------------------------------------------------------
-    const sortBy = page.getByRole("combobox", { name: "Sort by" });
     // Set and number: the checklist's own order, so Z (the third row) never leads while X
     // (the first) stands in the same list.
     const zName = new RegExp(`#${escapeRegExp(z.number)} ${escapeRegExp(z.player)}`);
@@ -247,31 +260,75 @@ test(
     await expectAccessible(page, { label: "My Boxes, Up for Trade opened as a box" });
     await backToBoxes(page);
 
-    // --- The hard line: six cards stand in the boxes; the collection still counts what it did ------------
+    // --- Slabs only: one graded copy beside the raw ones of the same card ------------------------------------
+    await tabs.getByRole("link", { name: "Inventory", exact: true }).click();
+    await expect(itemX).toBeVisible();
+    await itemX.click();
+    const drawerX = page.getByRole("dialog", {
+      name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(x.number)} ${escapeRegExp(x.player)}`),
+    });
+    const addForm = drawerX.getByRole("form", { name: /^Add (?:a|another) copy$/ });
+    await addForm.getByRole("radio", { name: "Graded" }).check();
+    await addForm.getByRole("combobox", { name: "Grader" }).selectOption({ label: "PSA" });
+    await addForm.getByRole("textbox", { name: "Grade", exact: true }).fill("9");
+    await addForm.getByRole("spinbutton", { name: "Quantity" }).fill("1");
+    await addForm.getByRole("button", { name: "Add to inventory" }).click();
+    await expect(
+      drawerX.getByRole("status").filter({ hasText: new RegExp(`Added ${escapeRegExp(x.short)}, PSA 9`) }),
+    ).toBeVisible();
+    await drawerX.getByRole("button", { name: "Close card detail" }).click();
+    await expect(drawerX).toBeHidden();
+    // The card now reads x4, one of them a slab, in the same box.
+    const xRe = `#${escapeRegExp(x.number)} ${escapeRegExp(x.player)}`;
+    mixedX = list.getByRole("button", { name: new RegExp(`^×4 .*${xRe}.*\\bin Unsorted, 1 slab$`) });
+    await expect(mixedX).toBeVisible();
+    await openListFilters(page, isMobile);
+    const slabs = only.getByRole("button", { name: "Slabs only", exact: true });
+    await slabs.click();
+    await expect(slabs).toHaveAttribute("aria-pressed", "true");
+    // Slabs only counts the graded copies alone: x1, tagged Slab, and nothing raw stays.
+    const slabX = list.getByRole("button", { name: new RegExp(`^×1 .*${xRe}.*\\bin Unsorted, slab$`) });
+    await expect(slabX).toBeVisible();
+    await expect(slabX.getByText("Slab", { exact: true })).toBeVisible();
+    await expect(mixedX).toHaveCount(0);
+    await expect(itemY).toHaveCount(0);
+    await expect(itemZ).toHaveCount(0);
+    // The tally follows (this account's only graded copy is the one just made).
+    await expect(page.getByRole("list", { name: "Every box, 1 card", exact: true })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: /^1 card$/ })).toBeVisible();
+    await expectAccessible(page, { label: "Inventory list, Slabs only with a mixed card" });
+    await slabs.click();
+    await expect(slabs).toHaveAttribute("aria-pressed", "false");
+    await expect(mixedX).toBeVisible();
+
+    // --- The hard line: seven cards stand in the boxes; the collection still counts what it did ------------
     await goViaShell(page, isMobile, "Collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await expect(every).toBeVisible();
     expect(await nameOf(every), "the collection's 'Every card I own' count never moves for a box card").toBe(ownedBefore);
 
-    // --- Cleanup: remove the three lines through the drawer, delete the box (R7) -------------------------
+    // --- Cleanup: remove the four lines through the drawer, delete the box (R7) -------------------------
     await goViaShell(page, isMobile, "Inventory");
     await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
-    const removeLine = async (c: { number: string; player: string; short: string }, line: string, item: Locator) => {
+    const removeLines = async (c: { number: string; player: string; short: string }, lines: string[], item: Locator) => {
       await item.click();
       const d = page.getByRole("dialog", {
         name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(c.number)} ${escapeRegExp(c.player)}`),
       });
       const copies = d.getByRole("region", { name: `Your copies of ${c.short}`, exact: true });
-      const remove = copies.getByRole("button", { name: `Remove ${c.short}, ${line}`, exact: true });
-      await remove.click();
-      await expect(remove).toHaveCount(0);
+      for (const line of lines) {
+        const remove = copies.getByRole("button", { name: `Remove ${c.short}, ${line}`, exact: true });
+        await remove.click();
+        await expect(remove).toHaveCount(0);
+      }
       await expect(copies.getByRole("heading", { name: /^Your copies/ })).toBeVisible();
       await d.getByRole("button", { name: "Close card detail" }).click();
       await expect(d).toBeHidden();
     };
-    await removeLine(x, "Raw ×3", itemX);
-    await removeLine(y, "Raw", flaggedY);
-    await removeLine(z, "Raw ×2", itemZ);
+    await removeLines(x, ["Raw ×3", "PSA 9"], mixedX);
+    await removeLines(y, ["Raw"], flaggedY);
+    await removeLines(z, ["Raw ×2"], itemZ);
+    await expect(mixedX).toHaveCount(0);
     await expect(itemX).toHaveCount(0);
     await expect(itemZ).toHaveCount(0);
 

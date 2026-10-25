@@ -120,6 +120,15 @@ test(
     expect(await forSaleOnMyBoxes(page), "My Boxes' headline counts the same stock as the collection's door").toBe(forSaleBase);
     await expectAccessible(page, { label: "My Boxes, Unsorted and the special places" });
 
+    // Sharing is the collection's: neither Unsorted nor Up for Trade opens with a Share button.
+    for (const spine of [unsortedSpine, places.getByRole("button", { name: tradeRe })]) {
+      await spine.click();
+      await expect(page).toHaveURL(/[?&]b=[^&]+/);
+      await expect(page.getByRole("button", { name: /^Back to the shelf$/ })).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Share / })).toHaveCount(0);
+      await backToBoxes(page);
+    }
+
     // --- A box of my own -------------------------------------------------------
     await createBox(page, boxName, async (dialog) => {
       await expectAccessible(page, { within: dialog, label: "New box dialog" });
@@ -231,9 +240,11 @@ test(
     const back = offForm.getByRole("combobox", { name: "Back into" });
     await expect(back.getByRole("option", { name: "Main", exact: true })).toBeAttached();
     await expect(back.getByRole("option", { name: boxName, exact: true })).toHaveCount(0);
-    await back.selectOption({ label: "Main" });
+    // The default is the binder holding the most copies of this card (Main, holding one),
+    // so the combobox is NEVER touched: the success copy below comes from the untouched default.
+    await expect(back.getByRole("option", { selected: true })).toHaveText("Main");
     await offForm.getByRole("spinbutton", { name: "Quantity to take back" }).fill("1");
-    await expectAccessible(page, { within: offForm, label: "Card drawer, the Take off sale panel with Main picked" });
+    await expectAccessible(page, { within: offForm, label: "Card drawer, the Take off sale panel with its default binder" });
     await offForm.getByRole("button", { name: "Take 1 off sale", exact: true }).click();
     await expect(offForm).toBeHidden();
     await expect(
