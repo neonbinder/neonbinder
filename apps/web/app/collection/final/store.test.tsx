@@ -5,11 +5,14 @@ import {
   NO_BROWSE_FILTER,
   SHOW_BOX_ID,
   TRADE_BINDER_ID,
+  UNSORTED_BOX_ID,
   WANT_BINDER_ID,
   collectionReducer,
   demoOps,
+  MAX_LINE_QUANTITY,
   homeFor,
   initialCollectionState,
+  isPlainLine,
   sameLineItem,
   type CollectionState,
   type DemoCopy,
@@ -43,7 +46,8 @@ describe("the demo's seed", () => {
 
   it("lists the system containers first and the Show box among the collector's own", () => {
     const s = initialCollectionState();
-    expect(s.containers.slice(0, 3).map((b) => b.system)).toEqual(["main", "trade", "want"]);
+    expect(s.containers.slice(0, 4).map((b) => b.system)).toEqual(["main", "unsorted", "trade", "want"]);
+    expect(s.containers.find((b) => b.system === "unsorted")).toMatchObject({ id: UNSORTED_BOX_ID, kind: "box" });
     expect(s.containers.find((b) => b.id === TRADE_BINDER_ID)?.name).toBe("Up for Trade");
     expect(s.containers.find((b) => b.id === SHOW_BOX_ID)?.kind).toBe("box");
   });
@@ -448,15 +452,20 @@ describe("containers", () => {
     expect(() => demoOps.deleteContainer(initialCollectionState(), TRADE_BINDER_ID)).toThrow(/can't be deleted/i);
   });
 
-  it("deleting sends its copies to Main with their slots cleared and unscopes its wants", () => {
+  it("deleting a box sends its copies to Unsorted with their slots cleared, and a binder's go to Main; wants unscope", () => {
     const s0 = initialCollectionState();
     const inside = inHome(s0, SHOW_BOX_ID);
     const { state, result } = demoOps.deleteContainer(s0, SHOW_BOX_ID);
     expect(result).toBe(inside.length);
     for (const c of inside) {
-      expect(copyIn(state, c.id)).toMatchObject({ homeId: MAIN_BINDER_ID });
+      expect(copyIn(state, c.id)).toMatchObject({ homeId: UNSORTED_BOX_ID });
       expect(copyIn(state, c.id).slot).toBeUndefined();
     }
+    // A deleted binder still empties into Main.
+    const made = demoOps.createContainer(s0, { kind: "binder", name: "Scratch" });
+    const filled = demoOps.addLine(made.state, s0.copies[0].cardId, details({ homeId: made.result, notes: "s" }), false);
+    const gone = demoOps.deleteContainer(filled.state, made.result).state;
+    expect(copyIn(gone, filled.result.copyId).homeId).toBe(MAIN_BINDER_ID);
     const scoped = demoOps.setWant(s0, s0.wants[0].cardId, SLAB, true).state;
     const after = demoOps.deleteContainer(scoped, SLAB).state;
     expect(after.wants.find((w) => w.cardId === s0.wants[0].cardId)?.binderId).toBeNull();
@@ -478,5 +487,84 @@ describe("reducer and browse filter", () => {
     s = demoOps.setBrowseFilter(s, { sport: "hockey" }).state;
     s = demoOps.setBrowseFilter(s, { from: 1990 }).state;
     expect(s.browseFilter).toEqual({ ...NO_BROWSE_FILTER, sport: "hockey", from: 1990 });
+  });
+});
+
+describe("setBoxQuantity and restoreLines (NEO-364)", () => {
+  const TODAY = "2026-10-25";
+  const CARD = "card-quick-1";
+  const base = () => initialCollectionState();
+  const inBox = (s: CollectionState, boxId = UNSORTED_BOX_ID) => s.copies.filter((c) => c.cardId === CARD && c.homeId === boxId);
+  const plainCount = (s: CollectionState, boxId = UNSORTED_BOX_ID) =>
+    inBox(s, boxId).filter((c) => isPlainLine(c)).reduce((n, c) => n + c.quantity, 0);
+  const put = (s: CollectionState, over: Partial<CopyDetails>) =>
+    demoOps.addLine(s, CARD, details({ homeId: UNSORTED_BOX_ID, acquiredAt: "2026-01-01", ...over }), false);
+
+  it("raises from nothing by adding one raw, unslotted line acquired today", () => {
+    const { state, result } = demoOps.setBoxQuantity(base(), CARD, UNSORTED_BOX_ID, 3, TODAY);
+    expect(result).toMatchObject({ before: 0, after: 3 });
+    expect(inBox(state)).toEqual([expect.objectContaining({ quantity: 3, acquiredAt: TODAY, notes: "", upForTrade: false })]);
+    expect(inBox(state)[0].slot).toBeUndefined();
+  });
+
+  it("folds a raise into today's plain unslotted line instead of adding another", () => {
+    const first = demoOps.setBoxQuantity(base(), CARD, UNSORTED_BOX_ID, 2, TODAY).state;
+    const second = demoOps.setBoxQuantity(first, CARD, UNSORTED_BOX_ID, 5, TODAY);
+    expect(inBox(second.state)).toHaveLength(1);
+    expect(inBox(second.state)[0].quantity).toBe(5);
+    expect(second.result.undo.made).toEqual([]);
+  });
+
+  it("writes nothing when the value is the current one", () => {
+    const first = demoOps.setBoxQuantity(base(), CARD, UNSORTED_BOX_ID, 2, TODAY).state;
+    const same = demoOps.setBoxQuantity(first, CARD, UNSORTED_BOX_ID, 2, TODAY);
+    expect(same.state).toBe(first);
+    expect(same.result.undo).toEqual({ was: [], made: [] });
+  });
+
+  it("lowers newest line first, decrementing a stack and deleting a line that reaches 0", () => {
+    let s = put(base(), { quantity: 2, acquiredAt: "2026-01-01" }).state;
+    s = put(s, { quantity: 1, acquiredAt: "2026-02-01" }).state;
+    const down = demoOps.setBoxQuantity(s, CARD, UNSORTED_BOX_ID, 1, TODAY).state;
+    expect(inBox(down).map((c) => [c.acquiredAt, c.quantity])).toEqual([["2026-01-01", 1]]);
+  });
+
+  it("counts and touches only plain lines: a graded line and a noted line stay as they were", () => {
+    let s = put(base(), { quantity: 1, graded: { grader: "PSA", grade: "9" } }).state;
+    s = put(s, { quantity: 1, notes: "corner ding" }).state;
+    s = put(s, { quantity: 2 }).state;
+    expect(plainCount(s)).toBe(2);
+    const zero = demoOps.setBoxQuantity(s, CARD, UNSORTED_BOX_ID, 0, TODAY).state;
+    expect(inBox(zero).map((c) => c.quantity)).toEqual([1, 1]);
+    expect(inBox(zero).every((c) => !isPlainLine(c))).toBe(true);
+  });
+
+  it("does not count the same card's plain lines in another box or a binder", () => {
+    const s = demoOps.addLine(base(), CARD, details({ homeId: MAIN_BINDER_ID }), false).state;
+    expect(demoOps.setBoxQuantity(s, CARD, UNSORTED_BOX_ID, 0, TODAY).result.before).toBe(0);
+  });
+
+  it("refuses a binder, a missing box, a fraction, a negative and a count past the cap", () => {
+    expect(() => demoOps.setBoxQuantity(base(), CARD, MAIN_BINDER_ID, 1, TODAY)).toThrow(/box/i);
+    expect(() => demoOps.setBoxQuantity(base(), CARD, "box-nope", 1, TODAY)).toThrow(/gone/i);
+    expect(() => demoOps.setBoxQuantity(base(), CARD, UNSORTED_BOX_ID, 1.5, TODAY)).toThrow(DemoRefusal);
+    expect(() => demoOps.setBoxQuantity(base(), CARD, UNSORTED_BOX_ID, -1, TODAY)).toThrow(DemoRefusal);
+    expect(() => demoOps.setBoxQuantity(base(), CARD, UNSORTED_BOX_ID, MAX_LINE_QUANTITY + 1, TODAY)).toThrow(DemoRefusal);
+  });
+
+  it("restoreLines puts back exactly what a raise made, a lowering took and a fold changed", () => {
+    let s = put(base(), { quantity: 2, acquiredAt: "2026-01-01" }).state;
+    s = put(s, { quantity: 1, acquiredAt: "2026-02-01" }).state;
+    for (const target of [0, 1, 5]) {
+      const done = demoOps.setBoxQuantity(s, CARD, UNSORTED_BOX_ID, target, TODAY);
+      const back = demoOps.restoreLines(done.state, done.result.undo).state;
+      expect(back.copies).toEqual(s.copies);
+    }
+  });
+
+  it("restoreLines of a no-op write returns the same state", () => {
+    const s = base();
+    const same = demoOps.setBoxQuantity(s, CARD, UNSORTED_BOX_ID, 0, TODAY);
+    expect(demoOps.restoreLines(s, same.result.undo).state).toBe(s);
   });
 });

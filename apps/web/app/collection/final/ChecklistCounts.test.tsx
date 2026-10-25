@@ -162,7 +162,7 @@ describe("a card for sale is out of the checklist (NEO-359)", () => {
     // Its drawer still lists it, for sale; take it off sale into a binder.
     const drawer = screen.getByRole("dialog");
     expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
-    fireEvent.click(within(drawer).getByRole("button", { name: /^Take #.+ off sale$/ }));
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Take off sale, #.+$/ }));
     const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
     fireEvent.change(within(panel).getByRole("combobox", { name: "Back into" }), { target: { value: MAIN_BINDER_ID } });
     fireEvent.click(within(panel).getByRole("button", { name: /^Take (\d+|it) off sale$/ }));

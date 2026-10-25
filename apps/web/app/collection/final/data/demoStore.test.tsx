@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID, TRADE_BINDER_ID } from "../store";
+import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID, TRADE_BINDER_ID, UNSORTED_BOX_ID } from "../store";
 import { DemoCollectionProvider, demoCard, demoVariantId, parseDemoVariantId } from "./demoStore";
 import { cardLabel, compareCards, variantLabel } from "./labels";
 import {
@@ -27,6 +27,9 @@ import {
   useVariantCompletion,
   useWants,
   ScopeProvider,
+  SideProvider,
+  useInventoryCards,
+  useSetCompletion,
   collectionCopiesIn,
   collectionCopiesOfCards,
 } from "./store";
@@ -651,5 +654,140 @@ describe("containers through the contract", () => {
     const { result } = renderHook(() => useCopiesOfCards([held, "card-nope"]), { wrapper });
     expect(result.current![held].length).toBeGreaterThan(0);
     expect(result.current!["card-nope"]).toEqual([]);
+  });
+});
+
+describe("the inventory side (NEO-364)", () => {
+  const seed = initialCollectionState();
+  const inShow = seed.copies.filter((c) => c.homeId === SHOW_BOX_ID);
+  const boxCardId = inShow[0].cardId;
+  const boxCard = demoCard(boxCardId)!;
+  const unsorted = () => ({ id: UNSORTED_BOX_ID, kind: "box" as const, name: "Unsorted", count: null });
+  const binder = () => ({ id: MAIN_BINDER_ID, kind: "binder" as const, name: "Main", count: null, system: "main" as const });
+  const plainCard = () => demoCard(seed.copies.find((c) => c.homeId === MAIN_BINDER_ID)!.cardId)!;
+
+  it("lists the box copies card by card, never a binder copy, with the boxes each sits in", () => {
+    const { result } = renderHook(() => useInventoryCards(), { wrapper });
+    const items = result.current!.items;
+    const heldInBoxes = new Set(seed.copies.filter((c) => c.homeId === SHOW_BOX_ID).map((c) => c.cardId));
+    expect(items.map((i) => i.card.id).sort()).toEqual([...heldInBoxes].sort());
+    const entry = items.find((i) => i.card.id === boxCardId)!;
+    expect(entry.quantity).toBe(inShow.filter((c) => c.cardId === boxCardId).reduce((n, c) => n + c.quantity, 0));
+    expect(entry.boxes).toEqual([{ boxId: SHOW_BOX_ID, quantity: entry.quantity }]);
+    expect(result.current).toMatchObject({ goneCardIds: [], truncated: false });
+  });
+
+  it("narrows to one box, lists nothing for an empty one, and truncates at the limit", () => {
+    const { result } = renderHook(
+      () => ({ show: useInventoryCards({ boxId: SHOW_BOX_ID }), none: useInventoryCards({ boxId: UNSORTED_BOX_ID }), one: useInventoryCards({ limit: 1 }) }),
+      { wrapper },
+    );
+    expect(result.current.show!.items.length).toBeGreaterThan(0);
+    expect(result.current.none!.items).toEqual([]);
+    expect(result.current.one!.items).toHaveLength(1);
+    expect(result.current.one!.truncated).toBe(result.current.show!.items.length > 1);
+  });
+
+  it("setBoxQuantity counts into Unsorted: the card shows on the list, and the undo takes it back out", async () => {
+    const card = plainCard();
+    const { result } = renderHook(() => ({ actions: useCollectionActions(), list: useInventoryCards({ boxId: UNSORTED_BOX_ID }) }), { wrapper });
+    let r!: Awaited<ReturnType<typeof result.current.actions.setBoxQuantity>>;
+    await act(async () => {
+      r = await result.current.actions.setBoxQuantity(card, unsorted(), 3);
+    });
+    expect(r).toMatchObject({ before: 0, after: 3 });
+    expect(result.current.list!.items.map((i) => [i.card.id, i.quantity])).toEqual([[card.id, 3]]);
+    await act(async () => {
+      await result.current.actions.setBoxQuantity(card, unsorted(), 1);
+    });
+    expect(result.current.list!.items[0].quantity).toBe(1);
+    await act(r.undo);
+    expect(result.current.list!.items).toEqual([]);
+  });
+
+  it("the same number writes nothing and its undo is a no-op", async () => {
+    const { result } = renderHook(() => ({ actions: useCollectionActions(), list: useInventoryCards() }), { wrapper });
+    const before = result.current.list!;
+    let r!: Awaited<ReturnType<typeof result.current.actions.setBoxQuantity>>;
+    await act(async () => {
+      r = await result.current.actions.setBoxQuantity(boxCard, { id: SHOW_BOX_ID, kind: "box", name: "Show box", count: null }, 0);
+    });
+    expect(r).toMatchObject({ before: 0, after: 0 });
+    await act(r.undo);
+    expect(result.current.list!.items).toEqual(before.items);
+  });
+
+  it("refuses a binder in the words the real store uses", async () => {
+    const { result } = renderHook(() => useCollectionActions(), { wrapper });
+    await expect(result.current.setBoxQuantity(boxCard, binder(), 1)).rejects.toThrow(/box/i);
+  });
+
+  it("a selling-side count never lights a collection checklist", async () => {
+    const card = plainCard();
+    const variantId = card.variant.id;
+    const { result } = renderHook(
+      () => ({
+        actions: useCollectionActions(),
+        col: useVariantCompletion(variantId, "collection"),
+        inv: useVariantCompletion(variantId, "inventory"),
+        invSet: useSetCompletion(card.set.id, "inventory"),
+        colSet: useSetCompletion(card.set.id, "collection"),
+      }),
+      { wrapper },
+    );
+    const col0 = result.current.col!;
+    const inv0 = result.current.inv!;
+    const colSet0 = result.current.colSet!;
+    await act(async () => {
+      await result.current.actions.setBoxQuantity(card, unsorted(), 2);
+    });
+    expect(result.current.col).toEqual(col0);
+    expect(result.current.colSet).toEqual(colSet0);
+    expect(result.current.inv!.owned).toBe(inv0.owned + 1);
+    expect(result.current.inv!.ownedAll).toBe(inv0.ownedAll + 1);
+    expect(result.current.invSet!.owned).toBeGreaterThan(0);
+  });
+
+  it("reads the page's side by default, and a scope on the other side reads empty", () => {
+    const variantId = boxCard.variant.id;
+    const side = (s: "collection" | "inventory", scope = "all") =>
+      ({ children }: { children: ReactNode }) => (
+        <DemoCollectionProvider storageKey="nb-collection-demo-store-test">
+          <SideProvider value={s}>
+            <ScopeProvider value={scope}>{children}</ScopeProvider>
+          </SideProvider>
+        </DemoCollectionProvider>
+      );
+    const inv = renderHook(() => ({ rows: useCopiesInVariant(variantId), done: useVariantCompletion(variantId) }), { wrapper: side("inventory") });
+    expect(inv.result.current.rows!.length).toBeGreaterThan(0);
+    expect(inv.result.current.rows!.every((c) => c.homeKind === "box")).toBe(true);
+    expect(inv.result.current.done!.owned).toBeGreaterThan(0);
+
+    const col = renderHook(() => useCopiesInVariant(variantId), { wrapper: side("collection") });
+    expect(col.result.current!.every((c) => c.homeKind === "binder")).toBe(true);
+
+    // The Show box's id as the scope, read from the collection side: nothing, never the box's copies.
+    const wrongSide = renderHook(
+      () => ({ rows: useCopiesInVariant(variantId), done: useVariantCompletion(variantId) }),
+      { wrapper: side("collection", SHOW_BOX_ID) },
+    );
+    expect(wrongSide.result.current.rows).toEqual([]);
+    expect(wrongSide.result.current.done).toMatchObject({ owned: 0, ownedAll: 0 });
+    // A binder's id as the scope on the inventory side: nothing, too.
+    const binderOnInventory = renderHook(() => useCopiesInVariant(variantId), { wrapper: side("inventory", MAIN_BINDER_ID) });
+    expect(binderOnInventory.result.current).toEqual([]);
+  });
+
+  it("deleting a box through the store sends its copies to Unsorted, where the list finds them", async () => {
+    const { result } = renderHook(
+      () => ({ actions: useCollectionActions(), shelf: useContainers(), list: useInventoryCards({ boxId: UNSORTED_BOX_ID }) }),
+      { wrapper },
+    );
+    const show = result.current.shelf!.find((c) => c.id === SHOW_BOX_ID)!;
+    await act(async () => {
+      await result.current.actions.deleteContainer(show);
+    });
+    expect(result.current.shelf!.some((c) => c.id === SHOW_BOX_ID)).toBe(false);
+    expect(result.current.list!.items.map((i) => i.card.id)).toContain(boxCardId);
   });
 });

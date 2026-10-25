@@ -41,7 +41,7 @@ const lines = (drawer: HTMLElement) => within(within(drawer).getByRole("region",
 /** The stack of three's Take off sale / Sell button (its line id is stable through a split). */
 const stackSell = (drawer: HTMLElement) =>
   within(drawer)
-    .getAllByRole("button", { name: /^(Take #.+ off sale|Sell #.+)$/ })
+    .getAllByRole("button", { name: /^(Take off sale, #.+|Sell #.+)$/ })
     .find((b) => b.getAttribute("data-copy-sell") === STACK.id)!;
 const status = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
 const optionsOf = (select: HTMLElement) => within(select).getAllByRole("option").map((o) => o.textContent);
@@ -69,8 +69,13 @@ describe("the drawer's Move, Sell and Take off sale", () => {
       within(drawer)
         .queryAllByRole("button", { name: /^Move #/ })
         .find((b) => b.getAttribute("data-copy-move") === STACK.id);
-    // It is the only box, so the line has nowhere to Move to.
-    expect(stackMove()).toBeUndefined();
+    // Unsorted always exists, so a line in the Show box can Move: to another box only.
+    const moveButton = stackMove()!;
+    expect(moveButton).toBeTruthy();
+    fireEvent.click(moveButton);
+    const movePanel = within(drawer).getByRole("form", { name: /^Move / });
+    expect(optionsOf(within(movePanel).getByRole("combobox", { name: "Move to" }))).toEqual(["Unsorted"]);
+    fireEvent.click(within(movePanel).getByRole("button", { name: "Keep it here" }));
     const button = stackSell(drawer);
     expect(button.textContent).toBe("Take off sale");
     expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
@@ -167,8 +172,9 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(sell.textContent).toBe("Sell");
     fireEvent.click(sell);
     const sellPanel = within(drawer).getByRole("form", { name: /^Sell / });
-    expect(optionsOf(within(sellPanel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Show box"]);
+    expect(optionsOf(within(sellPanel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Unsorted", "Show box"]);
     expect(within(sellPanel).getByText("Everything in a box is for sale. Boxes live on Inventory.")).toBeTruthy();
+    fireEvent.change(within(sellPanel).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
     fireEvent.click(within(sellPanel).getByRole("button", { name: "Put 3 up for sale" }));
     await waitFor(() => expect(status(/^#.+ are up for sale in Show box\.$/)).toBe(true));
     await frames();
@@ -192,10 +198,10 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(status(/off sale/)).toBe(false);
   });
 
-  it("Sell with no box yet says how to make one, and goes to the demo's Inventory tab", async () => {
-    // The demo with its boxes gone: every copy back in Main.
+  it("Sell always has somewhere to go: Unsorted exists even with every other box gone, and it is the first pick", async () => {
+    // The demo with its own boxes gone: every copy back in Main. Unsorted stays (a system box).
     const seed = initialCollectionState();
-    const boxes = new Set(seed.containers.filter((c) => c.kind === "box").map((c) => c.id));
+    const boxes = new Set(seed.containers.filter((c) => c.kind === "box" && !c.system).map((c) => c.id));
     const state = {
       ...seed,
       containers: seed.containers.filter((c) => !boxes.has(c.id)),
@@ -204,12 +210,10 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     window.sessionStorage.setItem(PUBLIC_STORAGE_KEY, JSON.stringify(state));
     const drawer = renderDrawer();
     fireEvent.click(stackSell(drawer));
-    const group = within(drawer).getByRole("group", { name: /^Sell / });
-    expect(within(group).getByText("No boxes yet, so there's nowhere to sell it from.")).toBeTruthy();
-    expect(within(group).getByText("Make a box on Inventory, then come back and press Sell.")).toBeTruthy();
-    const link = within(group).getByRole("link", { name: "Go to Inventory" });
-    await frames();
-    expect(document.activeElement).toBe(link);
-    expect(link.getAttribute("href")).toBe("/binder-tracking?demo=on&tab=inventory");
+    const panel = within(drawer).getByRole("form", { name: /^Sell / });
+    expect(within(panel).queryByText(/No boxes yet/)).toBeNull();
+    expect(optionsOf(within(panel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Unsorted"]);
+    fireEvent.click(within(panel).getByRole("button", { name: "Put 3 up for sale" }));
+    await waitFor(() => expect(status(/^#.+ are up for sale in Unsorted\.$/)).toBe(true));
   });
 });

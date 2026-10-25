@@ -20,10 +20,11 @@ vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSigne
 
 /** The URL, and the browser's Back, for the history tests. */
 function HistoryProbe() {
-  const { search } = useLocation();
+  const { search, pathname } = useLocation();
   const navigate = useNavigate();
   return (
     <>
+      <output aria-label="Page path">{pathname}</output>
       <output aria-label="Page search">{search}</output>
       <button type="button" onClick={() => void navigate(-1)}>
         Browser Back
@@ -42,6 +43,15 @@ function renderBinders(start = "/collection?tab=binders") {
             element={
               <>
                 <FinalCollectionPage />
+                <HistoryProbe />
+              </>
+            }
+          />
+          <Route
+            path="/inventory"
+            element={
+              <>
+                <FinalCollectionPage surface="inventory" />
                 <HistoryProbe />
               </>
             }
@@ -70,9 +80,9 @@ describe("My Binders", () => {
       "Want List",
       "Up for Trade",
     ]);
-    // The demo store has Inventory, so its door is the Inventory tab.
+    // The long box is the door to the Inventory list, on its own page.
     const box = within(special).getByRole("link", { name: "Inventory, 5 cards for sale" });
-    expect(box.getAttribute("href")).toBe("/collection?tab=inventory");
+    expect(box.getAttribute("href")).toBe("/inventory?tab=cards");
 
     const mine = screen.getByRole("list", { name: "Your binders" });
     const spines = within(mine).getAllByRole("button");
@@ -614,8 +624,8 @@ describe("boxes and binders you make", () => {
     expect(within(dialog).getByLabelText("Binder name")).toBeTruthy();
   });
 
-  it("Inventory makes a box, and opens it without narrowing the collection", async () => {
-    renderBinders("/collection?tab=inventory");
+  it("My Boxes makes a box, and opens it without narrowing anything", async () => {
+    renderBinders("/inventory?tab=boxes");
     fireEvent.click(screen.getByRole("button", { name: "New box" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByRole("heading", { name: "New box" })).toBeTruthy();
@@ -624,7 +634,7 @@ describe("boxes and binders you make", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Put it on the shelf" }));
     await waitFor(() => expect(statusSays(/^Dime box is on the shelf\. Hunt for a card below and drop it in a row\.$/)).toBe(true));
     expect(await screen.findByRole("region", { name: "Dime box, open" })).toBeTruthy();
-    expect(screen.getByLabelText("Page search").textContent).toMatch(/^\?tab=inventory&b=[\w-]+$/);
+    expect(screen.getByLabelText("Page search").textContent).toMatch(/^\?tab=boxes&b=[\w-]+$/);
     expect(screen.queryByText(/looking through Dime box/)).toBeNull();
   });
 
@@ -637,19 +647,34 @@ describe("boxes and binders you make", () => {
     expect(screen.queryByRole("region", { name: /, open$/ })).toBeNull();
   });
 
-  it("deleting a box with cards in it sends them to Main and says it can't be undone", async () => {
-    renderBinders("/collection?tab=inventory&b=box-show");
+  it("deleting a box with cards in it sends them to Unsorted, still for sale, and can't be undone", async () => {
+    renderBinders("/inventory?tab=boxes&b=box-show");
     fireEvent.click(screen.getByRole("button", { name: "Rename or delete Show box" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete this box" }));
     expect(screen.getByRole("heading", { name: "Delete Show box?" })).toBeTruthy();
-    expect(screen.getByText(/go back to Main\. You can't undo this\./)).toBeTruthy();
+    expect(screen.getByText(/You can't undo this\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Yes, delete it" }));
-    await waitFor(() => expect(statusSays(/^Show box is off the shelf\. Its \d+ cards? went? back to Main\.$|^Show box is off the shelf\. Its \d+ cards go back to Main\.$/)).toBe(true));
+    await waitFor(() =>
+      expect(statusSays(/^Show box is off the shelf\. Its (card went|\d[\d,]* cards went) into Unsorted, still for sale\.$/)).toBe(true),
+    );
     expect(screen.queryByRole("button", { name: /^Show box, box,/ })).toBeNull();
+    // The cards are not lost: Unsorted holds them.
+    const unsorted = screen.getByRole("button", { name: /^Unsorted, box, \d+ cards? for sale$/ });
+    expect(unsorted).toBeTruthy();
+  });
+
+  // BUG (reported, NEO-364): the delete confirm (`binders/EditContainerDialog.tsx`, `goes`) still says a
+  // deleted box's cards "go back to Main", but they land in Unsorted. `it.fails` pins it; when the copy
+  // is fixed this goes red and the `.fails` comes off.
+  it.fails("the delete confirm for a box says its cards go to Unsorted", () => {
+    renderBinders("/inventory?tab=boxes&b=box-show");
+    fireEvent.click(screen.getByRole("button", { name: "Rename or delete Show box" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete this box" }));
+    expect(screen.getByText(/go to Unsorted\./)).toBeTruthy();
   });
 
   it("'Keep it' backs out of the delete confirm without deleting", () => {
-    renderBinders("/collection?tab=inventory&b=box-show");
+    renderBinders("/inventory?tab=boxes&b=box-show");
     fireEvent.click(screen.getByRole("button", { name: "Rename or delete Show box" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete this box" }));
     fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
@@ -661,6 +686,12 @@ describe("boxes and binders you make", () => {
     expect(screen.queryByRole("button", { name: /^Rename or delete/ })).toBeNull();
     // Its label can still be set.
     expect(screen.getAllByRole("button", { name: "Edit label for Main" }).length).toBeGreaterThan(0);
+  });
+
+  it("offers no rename or delete on Unsorted, the inventory's Main", () => {
+    renderBinders("/inventory?tab=boxes&b=box-unsorted");
+    expect(screen.getByRole("region", { name: "Unsorted, open" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Rename or delete/ })).toBeNull();
   });
 });
 
@@ -822,93 +853,173 @@ describe("the scope files new cards into the scoped home", () => {
   });
 });
 
-describe("the collection and Inventory never mix (NEO-359)", () => {
+describe("the collection and Inventory never mix (NEO-359, NEO-364)", () => {
   const search = () => screen.getByLabelText("Page search").textContent;
+  const path = () => screen.getByLabelText("Page path").textContent;
 
   it("My Binders shows binders only: no box on the shelf, in the headline, the picker or the My Cards rail", () => {
     renderBinders();
     const mine = screen.getByRole("list", { name: "Your binders" });
-    expect(within(mine).queryByRole("button", { name: /Show box|, box,/ })).toBeNull();
+    expect(within(mine).queryByRole("button", { name: /Show box|Unsorted|, box,/ })).toBeNull();
     expect(screen.getByRole("heading", { level: 3, name: "Your binders" })).toBeTruthy();
     expect(screen.getByText(/^\d+ cards, \d+ binders\.$/)).toBeTruthy();
-    // The long box is still the door to Inventory, and counts what is for sale.
-    expect(screen.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ }).getAttribute("href")).toBe("/collection?tab=inventory");
+    // The long box is still the door to the Inventory list, and counts what is for sale.
+    expect(screen.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ }).getAttribute("href")).toBe("/inventory?tab=cards");
 
     fireEvent.click(within(screen.getByRole("navigation", { name: "Collection sections" })).getByRole("link", { name: "My Cards" }));
     const picker = screen.getByRole("combobox", { name: "Binder" });
     expect(within(picker).getAllByRole("option").map((o) => o.textContent)).not.toContain("Show box");
-    expect(within(picker).queryByRole("option", { name: /box/i })).toBeNull();
+    expect(within(picker).queryByRole("option", { name: /box|Unsorted/i })).toBeNull();
     const rail = screen.getByRole("navigation", { name: "Shelves and binders" });
-    expect(within(rail).queryByRole("button", { name: /Show box/ })).toBeNull();
+    expect(within(rail).queryByRole("button", { name: /Show box|Unsorted/ })).toBeNull();
   });
 
   const current = () =>
-    within(screen.getByRole("navigation", { name: "Collection sections" }))
+    within(screen.getByRole("navigation", { name: "Inventory sections" }))
       .getAllByRole("link")
       .find((l) => l.getAttribute("aria-current") === "page")?.textContent;
 
-  it("a box on My Binders' URL opens on the Inventory tab instead, in place of the entry", async () => {
+  it("a box on My Binders' URL opens on My Boxes instead, in place of the entry", async () => {
     renderBinders("/collection?tab=binders&b=box-show");
     expect(await screen.findByRole("region", { name: "Show box, open" })).toBeTruthy();
-    expect(search()).toBe("?tab=inventory&b=box-show");
-    expect(current()).toBe("Inventory");
+    expect(path()).toBe("/inventory");
+    expect(search()).toBe("?tab=boxes&b=box-show");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Inventory");
+    expect(current()).toBe("My Boxes");
   });
 
-  it("the old combined for-sale view goes to Inventory's", async () => {
+  it("Back skips the redirected entry: the old link is replaced, not pushed", async () => {
+    renderBinders("/collection?tab=binders&b=box-show");
+    await screen.findByRole("region", { name: "Show box, open" });
+    fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    // Nothing is behind the replaced entry: the page stays where it is.
+    expect(path()).toBe("/inventory");
+    expect(search()).toBe("?tab=boxes&b=box-show");
+  });
+
+  it("the old combined for-sale view goes to the Inventory list", async () => {
     renderBinders("/collection?tab=binders&sale=1");
-    expect(await screen.findByRole("heading", { level: 2, name: "For sale" })).toBeTruthy();
-    expect(search()).toBe("?tab=inventory&sale=1");
+    expect(await screen.findByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
+    expect(path()).toBe("/inventory");
+    expect(search()).toBe("?tab=cards");
   });
 
-  it("a binder on Inventory's URL opens in My Binders", async () => {
-    renderBinders("/collection?tab=inventory&b=binder-contenders-96");
+  it("the old Inventory tab goes to My Boxes, a link to the boxes tab from the collection too", async () => {
+    renderBinders("/collection?tab=inventory");
+    expect(await screen.findByRole("heading", { level: 2, name: "My Boxes" })).toBeTruthy();
+    expect(path()).toBe("/inventory");
+    expect(search()).toBe("?tab=boxes");
+    cleanup();
+    renderBinders("/collection?tab=boxes");
+    expect(await screen.findByRole("heading", { level: 2, name: "My Boxes" })).toBeTruthy();
+    expect(search()).toBe("?tab=boxes");
+  });
+
+  it("a binder on My Boxes' URL opens in My Binders", async () => {
+    renderBinders("/inventory?tab=boxes&b=binder-contenders-96");
     expect(await screen.findByRole("heading", { level: 2, name: "'96 Contenders" })).toBeTruthy();
-    expect(search()).toBe("?tab=binders&b=binder-contenders-96");
+    expect(path()).toBe("/collection");
+    expect(search()).toMatch(/^\?tab=binders&b=binder-contenders-96/);
   });
-});
 
-describe("Inventory", () => {
-  const search = () => screen.getByLabelText("Page search").textContent;
-  const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
-
-  it("is a tab of its own: the boxes only, the whole stock, and no Binder picker", () => {
-    renderBinders();
-    fireEvent.click(within(screen.getByRole("navigation", { name: "Collection sections" })).getByRole("link", { name: "Inventory" }));
-    expect(search()).toBe("?tab=inventory");
-    expect(document.title).toBe("Inventory · Collection");
-    expect(screen.queryByRole("combobox", { name: "Binder" })).toBeNull();
-    const boxes = screen.getByRole("list", { name: "Your boxes" });
-    expect(within(boxes).getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ })).toBeTruthy();
-    expect(within(boxes).queryByRole("button", { name: /^Main,|^'96 Contenders,/ })).toBeNull();
-    expect(screen.queryByRole("list", { name: "Special places" })).toBeNull();
-    expect(screen.getByText(/^\d+ cards? for sale in 1 box\.$/)).toBeTruthy();
-    back();
+  it("the binders tab on the inventory's URL opens My Binders on the collection", async () => {
+    renderBinders("/inventory?tab=binders");
+    expect(await screen.findByRole("heading", { level: 2, name: "My Binders" })).toBeTruthy();
+    expect(path()).toBe("/collection");
     expect(search()).toBe("?tab=binders");
   });
 
-  it("opening a box and the whole stock are Back steps; the hunt tray shows only with a box open", () => {
-    renderBinders("/collection?tab=inventory");
+  it("the Up for Trade pile opens on both sides: a box on the inventory, a binder on the collection, no redirect", async () => {
+    renderBinders("/inventory?tab=boxes&b=binder-trade-bait");
+    expect(await screen.findByRole("group", { name: /^Up for Trade, \d+ cards?$/ })).toBeTruthy();
+    expect(path()).toBe("/inventory");
+    cleanup();
+    renderBinders("/collection?tab=binders&b=binder-trade-bait");
+    expect(await screen.findByRole("region", { name: "Up for Trade, open" })).toBeTruthy();
+    expect(path()).toBe("/collection");
+  });
+});
+
+describe("My Boxes (NEO-364)", () => {
+  const search = () => screen.getByLabelText("Page search").textContent;
+  const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+
+  it("is a tab of its own: the boxes only, Unsorted first, and no Binder picker", () => {
+    renderBinders("/inventory");
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", { name: "My Boxes" }));
+    expect(search()).toBe("?tab=boxes");
+    expect(document.title).toBe("My Boxes · Inventory");
+    expect(screen.queryByRole("combobox", { name: "Binder" })).toBeNull();
+    const boxes = screen.getByRole("list", { name: "Your boxes" });
+    expect(within(boxes).getAllByRole("button").map((b) => b.getAttribute("aria-label")?.split(",")[0] ?? b.textContent)).toEqual([
+      "Unsorted",
+      "Show box",
+      "New box",
+    ]);
+    expect(within(boxes).queryByRole("button", { name: /^Main,|^'96 Contenders,/ })).toBeNull();
+    // Up for Trade stands as a box, beside the long box that leads to the list.
+    const special = screen.getByRole("list", { name: "Special places" });
+    expect(within(special).getByRole("button", { name: /^Up for Trade, box, / })).toBeTruthy();
+    expect(within(special).getByRole("link", { name: /^Everything for sale, \d+ cards? for sale$/ }).getAttribute("href")).toBe(
+      "/inventory?tab=cards",
+    );
+    expect(screen.getByText(/^\d+ cards? for sale in 2 boxes\.$/)).toBeTruthy();
+    back();
+    expect(search()).toBe("");
+  });
+
+  it("opening a box is a Back step; the hunt tray shows only with a box open", () => {
+    renderBinders("/inventory?tab=boxes");
     expect(screen.queryByRole("region", { name: "Card hunt" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^Show box, box,/ }));
-    expect(search()).toBe("?tab=inventory&b=box-show");
+    expect(search()).toBe("?tab=boxes&b=box-show");
     expect(screen.getByRole("region", { name: "Show box, open" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Card hunt" })).toBeTruthy();
-    expect(document.title).toBe("Inventory · Show box · Collection");
+    expect(document.title).toBe("My Boxes · Show box · Inventory");
     back();
-    expect(search()).toBe("?tab=inventory");
-    fireEvent.click(screen.getByRole("button", { name: /^Everything for sale, \d+ cards? for sale$/ }));
-    expect(search()).toBe("?tab=inventory&sale=1");
-    expect(screen.getByRole("region", { name: "Show box, for sale" })).toBeTruthy();
+    expect(search()).toBe("?tab=boxes");
+    expect(screen.getByRole("list", { name: "Your boxes" })).toBeTruthy();
+  });
+
+  it("the long box leads to the Inventory list, a Back step", () => {
+    renderBinders("/inventory?tab=boxes");
+    fireEvent.click(screen.getByRole("link", { name: /^Everything for sale, \d+ cards? for sale$/ }));
+    expect(search()).toBe("?tab=cards");
+    expect(screen.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
     back();
     expect(screen.getByRole("list", { name: "Your boxes" })).toBeTruthy();
   });
 
-  it("a box's hunt moves a card in from a binder, and says it is for sale there", async () => {
-    renderBinders("/collection?tab=inventory&b=box-show");
-    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), { target: { value: "jim kelly" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Move here: / }));
+  it("the Up for Trade spine opens as a stack of boxes' and binders' copies, each tagged with where it lives", () => {
+    renderBinders("/inventory?tab=boxes");
+    fireEvent.click(screen.getByRole("button", { name: /^Up for Trade, box, / }));
+    expect(search()).toMatch(/^\?tab=boxes&b=binder-trade-bait/);
+    const pile = screen.getByRole("group", { name: /^Up for Trade, \d+ cards?$/ });
+    // A binder copy is tagged with its binder; a stack has no rows to fill.
+    expect(within(pile).getAllByRole("button").some((b) => /, in Main$/.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
+    expect(screen.queryByRole("region", { name: "Up for Trade, open" })).toBeNull();
+  });
+
+  it("an empty Unsorted opens as a box with nothing in it, and the shelf says so", () => {
+    renderBinders("/inventory?tab=boxes&b=box-unsorted");
+    expect(screen.getByRole("region", { name: "Unsorted, open" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Card hunt" })).toBeTruthy();
+  });
+
+  it("a box's hunt moves a card in from another box, and says it is for sale there", async () => {
+    renderBinders("/inventory?tab=boxes&b=box-unsorted");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), { target: { value: "steve yzerman" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Move here: / }));
     await waitFor(() =>
-      expect(screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Show box\.$/.test(s.textContent ?? ""))).toBe(true),
+      expect(screen.getAllByRole("status").some((s) => /^Moved .*Yzerman from Show box to Unsorted\.$/.test(s.textContent ?? ""))).toBe(true),
     );
+  });
+
+  it("a box's hunt never offers a binder copy: a card held only in a binder is not in your boxes", async () => {
+    renderBinders("/inventory?tab=boxes&b=box-unsorted");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), { target: { value: "jim kelly" } });
+    await screen.findByRole("list", { name: /^Not in your/ });
+    expect(screen.queryByRole("button", { name: /^Move here: / })).toBeNull();
+    expect(screen.queryByRole("button", { name: /in '96 Contenders/ })).toBeNull();
   });
 });

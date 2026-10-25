@@ -107,6 +107,7 @@ const CONTAINERS: Container[] = [
   { id: "trade", kind: "binder", system: "trade", name: "Up for Trade", count: { copies: 0, lines: 0 } },
   { id: "want", kind: "binder", system: "want", name: "Want List", count: { copies: 0, lines: 0 } },
   { id: "binder-rainbow", kind: "binder", name: "Ohtani rainbow", count: { copies: 0, lines: 0 } },
+  { id: "box-unsorted", kind: "box", system: "unsorted", name: "Unsorted", count: { copies: 0, lines: 0 } },
   { id: "box-show", kind: "box", name: "Show box", count: { copies: 0, lines: 0 } },
 ];
 
@@ -180,6 +181,7 @@ function makeStore({
     createContainer: vi.fn(async () => ({ containerId: "new-container", undo })),
     updateContainer: vi.fn(async () => ({ undo })),
     deleteContainer: vi.fn(async () => ({ moved: 0 })),
+    setBoxQuantity: vi.fn(async (_c: Card, _b: Container, quantity: number) => ({ before: 0, after: quantity, undo })),
   } satisfies CollectionActions;
   const wants: Want[] = [];
   const L = <T,>(value: T): T | undefined => (loading ? undefined : value);
@@ -248,6 +250,26 @@ function makeStore({
       ids === null
         ? undefined
         : L(Object.fromEntries(ids.map((id) => [id, [COPY_OHTANI, COPY_GOLD, ...boxCopies].filter((c) => c.cardId === id)]))),
+    // The Inventory list: one item per card held in a box.
+    useInventoryCards: (options) => {
+      const held = boxCopies.filter((c) => !options?.boxId || c.homeId === options.boxId);
+      const items = [...new Set(held.map((c) => c.cardId))].map((cardId) => {
+        const mine = held.filter((c) => c.cardId === cardId);
+        return {
+          card: CARDS.find((c) => c.id === cardId)!,
+          quantity: mine.reduce((n, c) => n + c.quantity, 0),
+          lines: mine.length,
+          graded: mine.some((c) => !!c.graded),
+          upForTrade: mine.some((c) => c.upForTrade),
+          lastUpdated: 1,
+          boxes: [...new Set(mine.map((c) => c.homeId))].map((boxId) => ({
+            boxId,
+            quantity: mine.filter((c) => c.homeId === boxId).reduce((n, c) => n + c.quantity, 0),
+          })),
+        };
+      });
+      return L({ items, goneCardIds: [], truncated: false });
+    },
     useSetCards: (id) => (id === null ? undefined : L({ cards: CARDS.filter((c) => c.set.id === id), truncated: false })),
     // Newest first: the Gold Refractor was the last Have.
     useOwnedCards: () =>
@@ -280,6 +302,15 @@ function renderAt(start: string, store = makeStore()) {
               element={
                 <>
                   <FinalCollectionPage />
+                  <LocationProbe />
+                </>
+              }
+            />
+            <Route
+              path="/inventory"
+              element={
+                <>
+                  <FinalCollectionPage surface="inventory" />
                   <LocationProbe />
                 </>
               }
@@ -780,42 +811,99 @@ describe("the Up for Trade pile's hunt on the real collection spans binders and 
   });
 });
 
-describe("Inventory stays off on the real collection until it ships (NEO-359)", () => {
-  it("has no Inventory tab: tab=inventory opens My Cards", () => {
+describe("Inventory is on for the real collection (NEO-364)", () => {
+  const sections = (name: string) => within(screen.getByRole("navigation", { name }));
+
+  it("has no Inventory tab beside the collection's: tab=inventory goes to My Boxes on /inventory, in place", () => {
     renderAt("/collection?tab=inventory");
-    const tabs = within(screen.getByRole("navigation", { name: "Collection sections" }));
-    expect(tabs.queryByRole("link", { name: "Inventory" })).toBeNull();
-    expect(tabs.getByRole("link", { name: "My Cards" }).getAttribute("aria-current")).toBe("page");
-    expect(screen.queryByRole("list", { name: "Your boxes" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "New box" })).toBeNull();
+    expect(pageUrl()).toBe("/inventory?tab=boxes");
+    expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
+    expect(sections("Inventory sections").getByRole("link", { name: "My Boxes" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("list", { name: "Your boxes" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New box" })).toBeTruthy();
   });
 
-  it("the shelf's Inventory long box leads to the Inventory page", () => {
+  it("the collection's tabs are My Cards, My Binders and Checklists, never Inventory", () => {
+    renderAt("/collection");
+    expect(sections("Collection sections").getAllByRole("link").map((l) => l.textContent)).toEqual([
+      "My Cards",
+      "My Binders",
+      "Checklists",
+    ]);
+  });
+
+  it("the inventory's tabs are Inventory, My Boxes and Checklists, with the list the default", () => {
+    renderAt("/inventory");
+    expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
+    const tabs = sections("Inventory sections").getAllByRole("link");
+    expect(tabs.map((l) => l.textContent)).toEqual(["Inventory", "My Boxes", "Checklists"]);
+    expect(tabs[0].getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
+    expect(document.title).toBe("Inventory");
+  });
+
+  it("the shelf's Inventory long box leads to the Inventory list on /inventory", () => {
     renderAt("/collection?tab=binders");
-    expect(screen.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ }).getAttribute("href")).toBe("/inventory");
+    const door = screen.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ });
+    expect(door.getAttribute("href")).toBe("/inventory?tab=cards");
+    fireEvent.click(door);
+    expect(pageUrl()).toBe("/inventory?tab=cards");
+    expect(screen.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
   });
 
-  it("a box or the whole stock on the URL just shows the shelf, and stays put", () => {
+  it("a box on the collection's URL opens on My Boxes, and the old for-sale view on the list, each in place", () => {
     renderAt("/collection?tab=binders&b=box-show");
-    expect(screen.queryByRole("region", { name: "Show box, open" })).toBeNull();
-    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
-    expect(pageUrl()).toBe("/collection?tab=binders&b=box-show");
+    expect(screen.getByRole("region", { name: "Show box, open" })).toBeTruthy();
+    expect(pageUrl()).toBe("/inventory?tab=boxes&b=box-show");
     cleanup();
     renderAt("/collection?tab=binders&sale=1");
-    expect(screen.queryByRole("heading", { level: 2, name: "For sale" })).toBeNull();
-    expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
-    expect(pageUrl()).toBe("/collection?tab=binders&sale=1");
+    expect(screen.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeTruthy();
+    expect(pageUrl()).toBe("/inventory?tab=cards");
   });
 
-  it("the drawer has no Sell: a copy moves to another binder, and that is all", () => {
+  it("the Inventory list shows the box copies the store holds, one item per card", () => {
+    const inBox: Copy = { ...COPY_OHTANI, id: "copy-box", homeId: "box-show", homeKind: "box", homeName: "Show box", quantity: 3 };
+    renderAt("/inventory", makeStore({ boxCopies: [inBox] }));
+    const list = screen.getByRole("list", { name: /^Every box, / });
+    expect(within(list).getByRole("button", { name: /^×3 .*Shohei Ohtani.*in Show box$/ })).toBeTruthy();
+  });
+
+  it("the drawer's Sell puts a binder copy into a box (Unsorted first); a box copy has Take off sale instead", () => {
     renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
     fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
     const drawer = screen.getByRole("dialog");
-    expect(within(drawer).queryByRole("button", { name: /^Sell / })).toBeNull();
     expect(within(drawer).queryByRole("button", { name: /off sale$/ })).toBeNull();
+    // Move stays binder to binder.
     fireEvent.click(within(drawer).getByRole("button", { name: "Move #1 Shohei Ohtani, Raw" }));
     const to = within(within(drawer).getByRole("form", { name: "Move Raw" })).getByRole("combobox", { name: "Move to" });
     expect(within(to).getAllByRole("option").map((o) => o.textContent)).toEqual(["Ohtani rainbow"]);
+    fireEvent.click(within(drawer).getByRole("button", { name: "Keep it here" }));
+    // Sell goes to a box, and Unsorted is always there.
+    fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
+    const into = within(within(drawer).getByRole("form", { name: "Sell Raw" })).getByRole("combobox", { name: "Into which box" });
+    expect(within(into).getAllByRole("option").map((o) => o.textContent)).toEqual(["Unsorted", "Show box"]);
+  });
+
+  it("the collection's checklists never show a quantity field: Have / Want / Trade stay", () => {
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+    expect(screen.getAllByRole("button", { name: /^Have #/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("textbox", { name: /^Quantity of / })).toBeNull();
+  });
+
+  describe("a store with Inventory off keeps the old behaviour", () => {
+    const OFF: Capabilities = { ...REAL_CAPABILITIES, inventory: false };
+
+    it("a box on the URL just shows the shelf, and stays put", () => {
+      renderAt("/collection?tab=binders&b=box-show", makeStore({ capabilities: OFF }));
+      expect(screen.queryByRole("region", { name: "Show box, open" })).toBeNull();
+      expect(screen.getByRole("list", { name: "Your binders" })).toBeTruthy();
+      expect(pageUrl()).toBe("/collection?tab=binders&b=box-show");
+    });
+
+    it("the long box still leads to the app's inventory address", () => {
+      renderAt("/collection?tab=binders", makeStore({ capabilities: OFF }));
+      expect(screen.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ }).getAttribute("href")).toBe("/inventory");
+    });
   });
 });
 

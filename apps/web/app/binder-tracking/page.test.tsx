@@ -141,4 +141,55 @@ describe("Take it for a spin", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Back to the tour" })[0]);
     await waitFor(() => expect(pageUrl()).toBe("/binder-tracking"));
   });
+
+  // NEO-364: the demo's other side is a pushed view like any other, so it counts toward the way out.
+  describe("the inventory side", () => {
+    const sideLink = (name: "Binders I keep" | "Boxes I sell") =>
+      within(screen.getByRole("group", { name: "Collection or Inventory" })).getByRole("link", { name });
+
+    it("the entry URL stays exactly ?demo=on, and Boxes I sell writes side=inventory", async () => {
+      renderTour();
+      fireEvent.click(screen.getByRole("link", { name: "Open the demo binder" }));
+      await screen.findByRole("region", { name: "About this demo" });
+      expect(pageUrl()).toBe("/binder-tracking?demo=on");
+      fireEvent.click(sideLink("Boxes I sell"));
+      expect(pageUrl()).toBe("/binder-tracking?demo=on&side=inventory&tab=cards");
+      expect(screen.getByRole("heading", { level: 1, name: "Inventory" })).toBeTruthy();
+    });
+
+    it("Back to the tour exits in one step from an inventory view, however many sides and tabs were visited", async () => {
+      renderTour();
+      fireEvent.click(screen.getByRole("link", { name: "Open the demo binder" }));
+      await screen.findByRole("region", { name: "About this demo" });
+      fireEvent.click(sideLink("Boxes I sell"));
+      fireEvent.click(within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", { name: "My Boxes" }));
+      fireEvent.click(sideLink("Binders I keep"));
+      fireEvent.click(sideLink("Boxes I sell"));
+      expect(pageUrl()).toBe("/binder-tracking?demo=on&side=inventory&tab=cards");
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Back to the tour" })[0]);
+      await waitFor(() => expect(pageUrl()).toBe("/binder-tracking"));
+      expect(screen.getByRole("heading", { level: 2, name: "Take it for a spin" })).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole("link", { name: "Open the demo binder" }));
+    });
+
+    it("the browser Back also steps through the side switch before it reaches the tour", async () => {
+      renderTour();
+      fireEvent.click(screen.getByRole("link", { name: "Open the demo binder" }));
+      await screen.findByRole("region", { name: "About this demo" });
+      fireEvent.click(sideLink("Boxes I sell"));
+      const back = () => fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+      back();
+      expect(pageUrl()).toBe("/binder-tracking?demo=on");
+      back();
+      await waitFor(() => expect(pageUrl()).toBe("/binder-tracking"));
+    });
+
+    it("a shared inventory link opens straight into it, and Back to the tour replaces it", async () => {
+      renderTour("/binder-tracking?demo=on&side=inventory&tab=boxes");
+      expect(await screen.findByRole("list", { name: "Your boxes" })).toBeTruthy();
+      fireEvent.click(screen.getAllByRole("button", { name: "Back to the tour" })[0]);
+      await waitFor(() => expect(pageUrl()).toBe("/binder-tracking"));
+    });
+  });
 });
