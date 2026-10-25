@@ -48,6 +48,8 @@ interface BinderViewProps extends PocketHandlers {
   children?: ReactNode;
   /** Words under the title while the pages load, or for a desk with no pages. */
   status?: string;
+  /** Its cards can be dragged or Alt+arrowed to other pockets. */
+  rearrange?: boolean;
 }
 
 export default function BinderView({
@@ -71,6 +73,8 @@ export default function BinderView({
   onOpen,
   onAdd,
   onAim,
+  onShift,
+  rearrange,
   children,
   status,
 }: BinderViewProps) {
@@ -137,6 +141,8 @@ export default function BinderView({
           onOpen={onOpen}
           onAdd={onAdd}
           onAim={onAim}
+          onShift={onShift}
+          rearrange={rearrange}
         />
         )}
       </div>

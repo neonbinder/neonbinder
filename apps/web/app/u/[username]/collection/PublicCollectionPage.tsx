@@ -168,7 +168,11 @@ function countLine(count: { copies: number; lines: number } | null, noun: string
 // A binder
 // ───────────────────────────────────────────────────────────────────────────
 
-/** `/u/:username/binders/:path`: nine pockets a page, then anything not placed yet. */
+/**
+ * `/u/:username/binders/:path`: nine pockets a page. Every card in a binder
+ * sits in a pocket; one stored before that rule (waiting on the backfill)
+ * shows in the first open pocket.
+ */
 export function PublicBinderPage() {
   const username = useUsername();
   const { path = "" } = useParams<{ path: string }>();
@@ -198,14 +202,25 @@ export function PublicBinderPage() {
       </Shell>
     );
   }
-  const placed = results.filter((c) => c.slot !== undefined);
-  const unplaced = results.filter((c) => c.slot === undefined);
   const pages = new Map<number, Array<PublicCopy | null>>();
-  for (const copy of placed) {
-    const page = Math.floor(copy.slot! / POCKETS);
+  const put = (copy: PublicCopy, slot: number) => {
+    const page = Math.floor(slot / POCKETS);
     const pockets = pages.get(page) ?? Array.from({ length: POCKETS }, () => null);
-    pockets[copy.slot! % POCKETS] = copy;
+    pockets[slot % POCKETS] = copy;
     pages.set(page, pockets);
+  };
+  const taken = new Set<number>();
+  for (const copy of results) {
+    if (copy.slot === undefined) continue;
+    put(copy, copy.slot);
+    taken.add(copy.slot);
+  }
+  let open = 0;
+  for (const copy of results) {
+    if (copy.slot !== undefined) continue;
+    while (taken.has(open)) open += 1;
+    put(copy, open);
+    taken.add(open);
   }
   const pageNumbers = [...pages.keys()].sort((a, b) => a - b);
   const spine = header.label;
@@ -243,16 +258,6 @@ export function PublicBinderPage() {
               </ol>
             </section>
           ))}
-          {unplaced.length > 0 && (
-            <section aria-label="Not in a pocket yet" className="mt-6">
-              <h2 className="mb-2 text-sm font-semibold text-ink-3">Not in a pocket yet</h2>
-              <ul className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
-                {unplaced.map((copy) => (
-                  <CardTile key={copy.key} item={copy} />
-                ))}
-              </ul>
-            </section>
-          )}
           <MoreButton status={status} loadMore={loadMore} />
         </>
       )}

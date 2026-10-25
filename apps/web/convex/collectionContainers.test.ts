@@ -237,7 +237,7 @@ describe("update", () => {
 });
 
 describe("empty and remove", () => {
-  test("empty sends lines to Main, clears pockets and rows, folds into Main twins, keeps counts and tally", async () => {
+  test("empty sends lines to Main's pockets, folds into Main twins, keeps counts and tally", async () => {
     const s = await setup();
     await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
     const box = await mk(s, "box", "Box");
@@ -249,11 +249,10 @@ describe("empty and remove", () => {
     const rows = await copyRows(s);
     expect(rows).toHaveLength(2);
     const g = rows.find((x) => x.cardId === s.fx.gooden1)!;
-    expect(g.quantity).toBe(6);
-    expect("slot" in g).toBe(false);
+    // Main is a binder: the twin's pocket, then Main's first open one.
+    expect(g).toMatchObject({ quantity: 6, slot: 0 });
     const st = rows.find((x) => x.cardId === s.fx.strawberry2)!;
-    expect(st).toMatchObject({ notes: "keep", quantity: 1 });
-    expect("slot" in st).toBe(false);
+    expect(st).toMatchObject({ notes: "keep", quantity: 1, slot: 1 });
     await expectCountsExact(s.t, ME.subject, expect as never);
     const tally = await tallyTruth(s.t, ME.subject);
     expect(tally.stored).toEqual(tally.truth);

@@ -39,7 +39,10 @@
  * a box; there is no for-sale flag. "Up for Trade" IS a flag on the copy
  * (`upForTrade`, stored only as `true`); the copy stays where it lives.
  * `slot` says where inside the home: a binder pocket (`page * 9 + pocket`,
- * one line item per pocket) or a box row (0 to 4, many per row).
+ * one line item per pocket) or a box row (0 to 4, many per row). Every line
+ * in a binder (Main included) has a pocket: a write that names none stacks
+ * on an identical line already in that binder, else takes the first open
+ * pocket (`arrivingPocket`, `firstOpenPocket`). Only a box holds unplaced lines.
  *
  * `moveCopy` is the only way a copy changes home. It folds into an identical
  * line at the destination (every detail, home, slot and trade flag), and part
@@ -694,6 +697,81 @@ async function pocketIsFree(
   return line === null;
 }
 
+/**
+ * A home whose every line sits in a pocket: a binder, Main included. A box
+ * has rows (a card may wait outside them) and a smart binder holds nothing.
+ * There is no "in the binder but not in a pocket".
+ */
+export function keepsPockets(home: Pick<ContainerRow, "kind" | "system" | "rule">): boolean {
+  return home.kind === "binder" && home.rule === undefined && home.system !== "want" && home.system !== "trade";
+}
+
+/**
+ * The first pocket of binder `homeId` no line holds. Starts at the binder's
+ * `openPocket` hint, reads its pocketed lines in slot order up to the first
+ * gap, and raises the hint past the pocket it returns (the caller fills it,
+ * or refuses and rolls the hint back with it). Refuses a full binder.
+ */
+export async function firstOpenPocket(
+  ctx: MutationCtx,
+  ownerId: string,
+  homeId: Id<"collectionContainers">,
+): Promise<number> {
+  const home = await ctx.db.get(homeId);
+  let next = home?.openPocket ?? 0;
+  const lines = ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", homeId).gte("slot", next));
+  for await (const line of lines) {
+    const slot = line.slot ?? -1;
+    if (slot > next) break;
+    if (slot === next) next += 1;
+  }
+  if (next >= MAX_BINDER_PAGES * POCKETS_PER_PAGE) {
+    refuse(COLLECTION_ERRORS.limit, "That binder is full. Start another binder for the rest.");
+  }
+  if (home) await ctx.db.patch(homeId, { openPocket: next + 1 });
+  return next;
+}
+
+/** A pocket of `homeId` emptied: its `openPocket` hint comes down to it. */
+export async function pocketEmptied(
+  ctx: MutationCtx,
+  homeId: Id<"collectionContainers">,
+  slot: number | undefined,
+): Promise<void> {
+  if (slot === undefined) return;
+  const home = await ctx.db.get(homeId);
+  if (home?.openPocket !== undefined && slot < home.openPocket) {
+    await ctx.db.patch(homeId, { openPocket: slot });
+  }
+}
+
+/**
+ * Where a line arriving in binder `home` with no pocket named goes: the
+ * pocket of an identical line already there, so an add or a move stacks onto
+ * it as it always has (and refuses past `MAX_COPY_QUANTITY` as it always
+ * has), else the first open pocket. `lines` are the card's lines; `except`
+ * the ones leaving.
+ */
+export async function arrivingPocket(
+  ctx: MutationCtx,
+  ownerId: string,
+  home: Pick<ContainerRow, "_id">,
+  lines: readonly CopyRow[],
+  next: StoredDetails,
+  except: ReadonlyArray<Id<"collectionCopies">> = [],
+): Promise<number> {
+  const twin = lines.find(
+    (row) =>
+      !except.includes(row._id) &&
+      row.homeId === home._id &&
+      row.slot !== undefined &&
+      foldsInto(detailsOf(row), { ...next, homeId: home._id, slot: row.slot }),
+  );
+  return twin?.slot ?? (await firstOpenPocket(ctx, ownerId, home._id));
+}
+
 /** Where a card files: its variant row and that row's set. Refuses a gone card. */
 async function placeOf(
   ctx: MutationCtx,
@@ -941,12 +1019,15 @@ async function addOne(
   const cleaned = cleanDetails(raw);
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
-  const next: StoredDetails = { ...cleaned, homeId: home._id };
   const place = await placeOf(ctx, cardId);
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
     .take(MAX_LINES_PER_CARD + 1);
+  if (cleaned.slot === undefined && keepsPockets(home)) {
+    cleaned.slot = await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
+  }
+  const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
   const into = lines.find((row) => foldsInto(detailsOf(row), next));
   if (into) {
@@ -985,7 +1066,8 @@ async function addOne(
 
 /**
  * NEO-359 — move `quantity` of a line item (all of it by default) to
- * `toHomeId` at `slot` (absent: not placed). The moved cards fold into an
+ * `toHomeId` at `slot` (absent: a binder's first open pocket, or its own
+ * pocket when it stays in the same binder; elsewhere not placed). The moved cards fold into an
  * identical line there (every detail, the home, the slot and the trade flag);
  * part of a stack splits off and the source keeps the rest. Moving cards to
  * where they already are (same home, same slot) changes nothing. Refuses the
@@ -1022,21 +1104,24 @@ export async function moveCopyCore(
     refuse(COLLECTION_ERRORS.notFound, "That binder or box isn't in your collection.");
   }
   checkSlot(home, slot);
-  if (toHomeId === row.homeId && slot === row.slot) {
-    return { copyId: row._id, folded: false, split: false, from };
-  }
-  const rest: StoredDetails = { ...detailsOf(row) };
-  delete rest.slot;
-  const next: StoredDetails = {
-    ...rest,
-    quantity,
-    homeId: home._id,
-    ...(slot !== undefined ? { slot } : {}),
-  };
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", row.cardId))
     .take(MAX_LINES_PER_CARD + 1);
+  const rest: StoredDetails = { ...detailsOf(row), quantity, homeId: home._id };
+  delete rest.slot;
+  if (slot === undefined && keepsPockets(home)) {
+    // Every card in a binder sits in a pocket: staying in the same binder
+    // keeps its own; arriving stacks on a twin or takes the first open one.
+    slot =
+      toHomeId === row.homeId && row.slot !== undefined
+        ? row.slot
+        : await arrivingPocket(ctx, ownerId, home, lines, rest, [row._id]);
+  }
+  if (toHomeId === row.homeId && slot === row.slot) {
+    return { copyId: row._id, folded: false, split: false, from };
+  }
+  const next: StoredDetails = { ...rest, ...(slot !== undefined ? { slot } : {}) };
   const into = lines.find((other) => other._id !== row._id && foldsInto(detailsOf(other), next));
   const whole = quantity === row.quantity;
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
@@ -1081,6 +1166,8 @@ export async function moveCopyCore(
     changes.push({ before: null, after: counted(next) });
     tally = { copies: 0, lines: 1, cards: 0 };
   }
+  // The whole line left its pocket (a part leaves the rest behind in it).
+  if (whole) await pocketEmptied(ctx, row.homeId, row.slot);
   await moveTally(ctx, ownerId, tally);
   await moveCounts(ctx, ownerId, changes);
   return { copyId, folded: into !== undefined, split: !whole, from };
@@ -1799,7 +1886,7 @@ export const addLineItem = mutation({
 
 /**
  * Replace a line item's details (absent optional fields are cleared, `slot`
- * and `upForTrade` included). Never folds into a sibling, so the undo
+ * and `upForTrade` included, except that a card in a binder keeps its pocket). Never folds into a sibling, so the undo
  * (`updateCopy` with `previous`) always lands on the same row. NEO-359: never
  * changes the home: a `homeId` other than the copy's own is refused (that is
  * `moveCopy`); absent keeps it.
@@ -1817,8 +1904,12 @@ export const updateCopy = mutation({
     const home = await ctx.db.get(row.homeId);
     if (home) {
       checkSlot(home, cleaned.slot);
+      if (cleaned.slot === undefined && keepsPockets(home)) {
+        cleaned.slot = row.slot ?? (await firstOpenPocket(ctx, ownerId, home._id));
+      }
       if (cleaned.slot !== row.slot) {
         await assertPocketFree(ctx, ownerId, home, cleaned.slot, [row._id]);
+        await pocketEmptied(ctx, row.homeId, row.slot);
       }
     }
     const previous = detailsOf(row);
@@ -1847,6 +1938,7 @@ export const removeCopy = mutation({
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
     await ctx.db.delete(row._id);
+    await pocketEmptied(ctx, row.homeId, row.slot);
     const lostCard = !(await stillHolds(ctx, ownerId, row.cardId));
     await moveTally(ctx, ownerId, {
       copies: -row.quantity,
@@ -1874,6 +1966,7 @@ export const removeCopies = mutation({
     let copies = 0;
     for (const row of rows) {
       await ctx.db.delete(row._id);
+      await pocketEmptied(ctx, row.homeId, row.slot);
       copies += row.quantity;
     }
     let cards = 0;
@@ -1901,8 +1994,8 @@ export const removeCopies = mutation({
  * with the same details; never folds, so a second undo-of-the-undo removes
  * exactly this row. Refuses when the card has left the catalog or the home
  * is no longer the caller's. NEO-359: if its binder pocket has been filled
- * since, the copy comes back to the same binder, not placed, rather than
- * being refused.
+ * since, the copy comes back to the same binder in its first open pocket,
+ * rather than being refused.
  */
 export const restoreCopy = mutation({
   args: { cardId: v.id("cardChecklist"), details: copyDetailsValidator },
@@ -1913,6 +2006,9 @@ export const restoreCopy = mutation({
     const home = await resolveHome(ctx, ownerId, args.details.homeId);
     checkSlot(home, cleaned.slot);
     if (!(await pocketIsFree(ctx, ownerId, home, cleaned.slot))) delete cleaned.slot;
+    if (cleaned.slot === undefined && keepsPockets(home)) {
+      cleaned.slot = await firstOpenPocket(ctx, ownerId, home._id);
+    }
     const place = await placeOf(ctx, args.cardId);
     const lines = await ctx.db
       .query("collectionCopies")
@@ -1945,7 +2041,7 @@ export const restoreCopy = mutation({
 
 /**
  * NEO-359 — move `quantity` of a line item (default: all of it) to another
- * home, at `slot` (absent: not placed there yet). Folds into an identical
+ * home, at `slot` (absent: a binder's first open pocket, else not placed). Folds into an identical
  * line at the destination; part of a stack splits off. The result's `from`
  * is the undo: move `from.quantity` of `copyId` back to `from.homeId` at
  * `from.slot`, which splits the cards back out of a fold. Refuses the Want
@@ -1969,7 +2065,8 @@ export const moveCopy = mutation({
 
 /**
  * NEO-359 — put a whole line item in a pocket or row of the home it is in
- * (`null`: take it out, not placed). The same-home `moveCopy`, so it folds
+ * (`null`: take it out of its box row; refused in a binder, where every
+ * card sits in a pocket). The same-home `moveCopy`, so it folds
  * into an identical line already in that row and returns the same result
  * (undo = the inverse move).
  */
@@ -1979,6 +2076,12 @@ export const placeCopy = mutation({
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
+    if (args.slot === null) {
+      const home = await ctx.db.get(row.homeId);
+      if (home && keepsPockets(home)) {
+        refuse(COLLECTION_ERRORS.invalid, "A card in a binder always sits in a pocket. Move it to another pocket instead.");
+      }
+    }
     return await moveCopyCore(ctx, ownerId, row, row.homeId, undefined, args.slot ?? undefined);
   },
 });

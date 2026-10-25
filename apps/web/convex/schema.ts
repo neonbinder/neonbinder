@@ -3491,6 +3491,16 @@ export default defineSchema({
      * `publicProfiles` (`tradePrivate`, `forSalePrivate`).
      */
     visibility: v.optional(v.literal("public")),
+    /**
+     * A binder's (Main included) first pocket that may be open: every pocket
+     * below it holds a card. Every card in a binder sits in a pocket, and a
+     * write that names none takes the first open one (`firstOpenPocket` in
+     * collection.ts), which starts its search here instead of at pocket 0, so
+     * Main with tens of thousands of lines still costs a few reads. Raised by
+     * that search, lowered when a pocket empties. A hint, never truth: too
+     * high only means a new card skips a gap; absent means 0.
+     */
+    openPocket: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),

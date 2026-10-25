@@ -49,6 +49,7 @@ import {
   cleanText,
   countContainer,
   detailsOf,
+  arrivingPocket,
   foldsInto,
   getOrCreateMain,
   moveCounts,
@@ -390,8 +391,8 @@ export const update = mutation({
 
 /**
  * Send up to `EMPTY_BATCH` of a binder's or box's line items back to Main,
- * their pockets and rows cleared, each folding into an identical line already
- * in Main (the trade flag travels with it). The client loops it until
+ * each folding into an identical line already in Main (its pocket), else
+ * into Main's first open pocket (the trade flag travels with it). The client loops it until
  * `remaining` is 0, then calls `remove`. `moved` is physical cards (quantities
  * summed); `remaining` is the line items still in it (0 when empty): exact
  * up to `EMPTY_BATCH`, past that the container's kept count (at least
@@ -426,6 +427,9 @@ export const empty = mutation({
       readsLeft -= siblings.length;
       const next = { ...detailsOf(line), homeId: mainId };
       delete next.slot;
+      // Main is a binder too: the card stacks on a twin there or takes Main's first open pocket.
+      const roomy = siblings.filter((other) => other.quantity + line.quantity <= MAX_COPY_QUANTITY);
+      next.slot = await arrivingPocket(ctx, ownerId, { _id: mainId }, roomy, next, [line._id]);
       const into = siblings.find(
         (other) =>
           other._id !== line._id &&
@@ -450,7 +454,7 @@ export const empty = mutation({
         );
         linesDelta -= 1;
       } else {
-        await ctx.db.patch(line._id, { homeId: mainId, slot: undefined, lastUpdated: now });
+        await ctx.db.patch(line._id, { homeId: mainId, slot: next.slot, lastUpdated: now });
         changes.push({ before, after: { ...before, homeId: mainId } });
       }
       moved += line.quantity;

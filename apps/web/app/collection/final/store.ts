@@ -163,9 +163,10 @@ export interface OpResult<T> {
 /**
  * v4 (NEO-359): one home per copy, slots, trade flag, the Show box. v5: the
  * single trade-bait dupe stays in the collection, up for trade; the rest of
- * Trade bait goes to the Show box, for sale.
+ * Trade bait goes to the Show box, for sale. v6: every card in a binder sits
+ * in a pocket (no "in the binder but not in a pocket").
  */
-const STATE_VERSION = 5;
+const STATE_VERSION = 6;
 const STORAGE_KEY = "nb-collection-final";
 /** The public demo's own sessionStorage key (never the app's). */
 export const PUBLIC_STORAGE_KEY = "nb-collection-demo-public";
@@ -261,7 +262,7 @@ function seedState(): CollectionState {
       }),
     );
   }
-  const copies = structuredClone(seedCopies).map((c) => seedCopy(c, pockets));
+  const seeded = structuredClone(seedCopies).map((c) => seedCopy(c, pockets));
 
   const own: DemoContainer[] = [];
   for (const b of structuredClone(seedBinders)) {
@@ -309,9 +310,10 @@ function seedState(): CollectionState {
     },
   ];
   const chrome = "2024-topps-chrome-baseball";
+  const containers = sortContainers([...system, ...own]);
   return {
-    copies,
-    containers: sortContainers([...system, ...own]),
+    copies: pocketLoose(seeded, containers),
+    containers,
     buildingSetIds: [...seedBuilding],
     wants: [
       { cardId: seedRef(chrome, "Orange Refractor", "1"), binderId: OHTANI_BINDER_ID },
@@ -391,6 +393,46 @@ export function sameLineItem(a: Omit<DemoCopy, "id" | "cardId">, b: Omit<DemoCop
   );
 }
 
+/** A home whose every line sits in a pocket: a binder, Main included (not a smart one). */
+function keepsPockets(home: DemoContainer | undefined): boolean {
+  return !!home && home.kind === "binder" && !home.rule && home.system !== "want" && home.system !== "trade";
+}
+
+/**
+ * Where a line arriving in binder `homeId` with no pocket named goes (as the
+ * server's `arrivingPocket`): an identical line's pocket there, else the first open one.
+ */
+function arrivingPocket(
+  copies: readonly DemoCopy[],
+  cardId: CardId,
+  line: Omit<DemoCopy, "id" | "cardId">,
+  except?: CopyId,
+): number {
+  const twin = copies.find(
+    (c) => c.id !== except && c.cardId === cardId && c.slot !== undefined && sameLineItem(c, { ...line, slot: c.slot }),
+  );
+  return twin?.slot ?? firstOpenPocket(copies, line.homeId);
+}
+
+/** The first pocket of binder `homeId` no copy holds (as the server's `firstOpenPocket`). */
+function firstOpenPocket(copies: readonly DemoCopy[], homeId: ContainerId): number {
+  const taken = new Set(copies.filter((c) => c.homeId === homeId && c.slot !== undefined).map((c) => c.slot));
+  let next = 0;
+  while (taken.has(next)) next += 1;
+  if (next >= POCKETS_PER_PAGE * MAX_BINDER_PAGES) throw new DemoRefusal("That binder is full. Start another binder.");
+  return next;
+}
+
+/** Gives every copy in a binder with no pocket the first open one, in list order. */
+function pocketLoose(copies: DemoCopy[], containers: readonly DemoContainer[]): DemoCopy[] {
+  const out = [...copies];
+  out.forEach((c, i) => {
+    if (c.slot !== undefined || !keepsPockets(containers.find((h) => h.id === c.homeId))) return;
+    out[i] = { ...c, slot: firstOpenPocket(out, c.homeId) };
+  });
+  return out;
+}
+
 /** The line item already holding a binder pocket, other than `except`. */
 function pocketHolder(state: CollectionState, homeId: ContainerId, slot: number, except: ReadonlySet<CopyId>) {
   const home = containerIn(state, homeId);
@@ -456,7 +498,14 @@ export const demoOps = {
     const homeId = homeFor(state, details.homeId);
     checkSlot(state, homeId, details.slot);
     const quantity = Math.max(1, Math.floor(details.quantity));
-    const line = clean({ ...details, quantity, homeId });
+    const loose = clean({ ...details, quantity, homeId });
+    const slot =
+      details.slot === undefined && keepsPockets(containerIn(state, homeId))
+        ? fold
+          ? arrivingPocket(state.copies, cardId, loose)
+          : firstOpenPocket(state.copies, homeId)
+        : details.slot;
+    const line = clean({ ...loose, slot });
     const twin = fold ? state.copies.find((c) => c.cardId === cardId && sameLineItem(c, line)) : undefined;
     if (twin) {
       const acquiredAt = twin.acquiredAt <= line.acquiredAt ? twin.acquiredAt : line.acquiredAt;
@@ -485,6 +534,8 @@ export const demoOps = {
       throw new DemoRefusal("Move the card to change where it lives.");
     }
     const { homeId: _homeId, ...rest } = patch;
+    // A card in a binder keeps its pocket.
+    if ("slot" in rest && rest.slot === undefined && keepsPockets(containerIn(state, before.homeId))) delete rest.slot;
     if ("slot" in rest) {
       checkSlot(state, before.homeId, rest.slot);
       if (rest.slot !== undefined && pocketHolder(state, before.homeId, rest.slot, new Set([id]))) {
@@ -515,7 +566,13 @@ export const demoOps = {
     if (state.copies.some((c) => c.id === copy.id)) return { state, result: copy.id };
     const homeId = homeFor(state, copy.homeId);
     const taken = copy.slot !== undefined && pocketHolder(state, homeId, copy.slot, new Set());
-    const back = clean({ ...copy, homeId, ...(homeId !== copy.homeId || taken ? { slot: undefined } : {}) }) as DemoCopy;
+    const lost = homeId !== copy.homeId || taken || copy.slot === undefined;
+    const slot = !lost
+      ? copy.slot
+      : keepsPockets(containerIn(state, homeId))
+        ? firstOpenPocket(state.copies, homeId)
+        : undefined;
+    const back = clean({ ...copy, homeId, slot }) as DemoCopy;
     const copies = [...state.copies];
     copies.splice(Math.min(index, copies.length), 0, back);
     return { state: { ...state, copies }, result: copy.id };
@@ -537,7 +594,8 @@ export const demoOps = {
 
   /**
    * Moves `quantity` (default all) of a copy into `to`, at `slot` when
-   * given. Folds into an identical line there; part of a stack splits off.
+   * given (else a binder's first open pocket, or its own when it stays in the
+   * same binder). Folds into an identical line there; part of a stack splits off.
    */
   moveCopy(
     state: CollectionState,
@@ -554,6 +612,12 @@ export const demoOps = {
     if (dest.system === "trade") throw new DemoRefusal("Flag the card Up for Trade instead: it stays where it lives.");
     if (dest.rule) throw new DemoRefusal(`${dest.name} fills itself. Move the card somewhere else.`);
     checkSlot(state, to, slot);
+    if (slot === undefined && keepsPockets(dest)) {
+      slot =
+        to === source.homeId && source.slot !== undefined
+          ? source.slot
+          : arrivingPocket(state.copies, source.cardId, clean({ ...source, homeId: to, slot: undefined }), id);
+    }
     const moving = Math.min(source.quantity, Math.max(1, Math.floor(quantity ?? source.quantity)));
     const split = moving < source.quantity;
     const from = { homeId: source.homeId, ...(source.slot === undefined ? {} : { slot: source.slot }), quantity: moving };
@@ -588,6 +652,9 @@ export const demoOps = {
    */
   placeCopy(state: CollectionState, id: CopyId, slot: number | null): OpResult<MoveOpResult> {
     const copy = state.copies[indexOfCopy(state, id)];
+    if (slot === null && keepsPockets(containerIn(state, copy.homeId))) {
+      throw new DemoRefusal("A card in a binder always sits in a pocket. Move it to another pocket instead.");
+    }
     return demoOps.moveCopy(state, id, copy.homeId, undefined, slot ?? undefined);
   },
 
@@ -689,7 +756,8 @@ export const demoOps = {
     });
     const wants = state.wants.map((w) => (w.binderId === id ? { ...w, binderId: null } : w));
     return {
-      state: { ...state, copies, wants, containers: state.containers.filter((c) => c.id !== id) },
+      // Main is a binder too: what comes back takes its first open pockets.
+      state: { ...state, copies: pocketLoose(copies, state.containers), wants, containers: state.containers.filter((c) => c.id !== id) },
       result: moved,
     };
   },

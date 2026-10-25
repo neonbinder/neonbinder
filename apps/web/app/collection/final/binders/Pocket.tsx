@@ -1,11 +1,11 @@
-import { useRef } from "react";
-import { useDroppable } from "@dnd-kit/core";
+import { useRef, type KeyboardEvent, type MouseEventHandler, type TouchEventHandler } from "react";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import CardFace from "../../prototypes/_shared/CardFace";
 import { cardCaption, cardNumberLine } from "../captions";
 import { cardLabel } from "../data/labels";
 import { isForSale } from "../data/store";
 import type { Card, ContainerId, Copy } from "../data/types";
-import { pocketDropId } from "./dnd";
+import { copyDragId, pocketDropId } from "./dnd";
 import IdTooltip, { IdLines } from "./IdTooltip";
 import { havePocketLabel, slabLabel, type PocketModel, type SlotRef } from "./model";
 import NeonButton from "@/components/modules/NeonButton";
@@ -14,7 +14,10 @@ import NeonButton from "@/components/modules/NeonButton";
  * One sleeve of a nine-pocket page (p2's Pocket, on the consolidated page).
  *
  * - have: the card sits in the sleeve. Pressing it slides the card up out of
- *   the sleeve, then opens the page's card drawer on that copy.
+ *   the sleeve, then opens the page's card drawer on that copy. In a binder
+ *   the collector can rearrange (`rearrange`), drag it onto an empty pocket,
+ *   or press Alt+Left / Alt+Right to move it to the open pocket before or
+ *   after (`onShift`).
  * - need: an empty sleeve with a ghost number and the word "Need"; pressing
  *   it adds that card (the open binder says how).
  * - empty: a blank sleeve. In a binder with real pockets, pressing it aims
@@ -45,6 +48,8 @@ export interface PocketHandlers {
   /** `wantFor`: on the Want List, the binder or box the want is for (null: none). */
   onAdd: (card: Card, slot?: SlotRef, wantFor?: ContainerId | null) => void;
   onAim: (slot: SlotRef) => void;
+  /** Alt+Left (-1) / Alt+Right (1) on a card the collector may rearrange. */
+  onShift?: (copy: Copy, from: SlotRef, dir: -1 | 1) => void;
 }
 
 interface PocketProps extends PocketHandlers {
@@ -57,6 +62,8 @@ interface PocketProps extends PocketHandlers {
   found?: boolean;
   /** Wear the "For sale" sticker on a copy in a box (the Up for Trade pile only). */
   saleTag?: boolean;
+  /** Its card may be dragged or Alt+arrowed to another pocket of this binder. */
+  rearrange?: boolean;
 }
 
 export { pocketDropId };
@@ -97,15 +104,43 @@ export default function Pocket({
   onOpen,
   onAdd,
   onAim,
+  onShift,
+  rearrange = false,
 }: PocketProps) {
   const { content, slot } = pocket;
   const faceRef = useRef<HTMLSpanElement>(null);
-  const { setNodeRef, isOver } = useDroppable({
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
     id: slot ? pocketDropId(slot) : `nodrop:${pageNumber}:${index}`,
     // Only a pocket with room takes a drop, so keyboard hops skip full ones.
     disabled: !slot || content.kind === "have",
     data: { slot, pageNumber, index },
   });
+  // A lone copy in a binder pocket can be picked up and dropped on an empty one.
+  const lone =
+    rearrange && variant === "binder" && slot && content.kind === "have" && content.copies.length === 1
+      ? content.copies[0]
+      : null;
+  const drag = useDraggable({
+    id: lone ? copyDragId(lone.id) : `nodrag:${pageNumber}:${index}`,
+    disabled: !lone,
+    data: { copyId: lone?.id },
+  });
+  const setNodeRef = (el: HTMLElement | null) => {
+    setDropRef(el);
+    drag.setNodeRef(el);
+  };
+  // Pointer drags only: the keyboard has Alt+arrows, so Enter still opens the card.
+  const pointer = lone
+    ? {
+        onMouseDown: drag.listeners?.onMouseDown as MouseEventHandler<HTMLButtonElement> | undefined,
+        onTouchStart: drag.listeners?.onTouchStart as TouchEventHandler<HTMLButtonElement> | undefined,
+      }
+    : {};
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
+    if (!lone || !slot || !onShift || !e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    e.preventDefault();
+    onShift(lone, slot, e.key === "ArrowLeft" ? -1 : 1);
+  };
   const ring = `${isOver ? " p2-sleeve--over" : ""}${aimed ? " p2-sleeve--target" : ""}${found ? " nb-sleeve--found" : ""}`;
   const where = `pocket ${index + 1} on page ${pageNumber}`;
   const slip = (card: Card) => <IdLines title={cardCaption(card)} lines={[cardNumberLine(card)]} />;
@@ -163,9 +198,13 @@ export default function Pocket({
           type="button"
           aria-haspopup="dialog"
           aria-label={havePocketLabel(card, copies)}
+          aria-keyshortcuts={lone ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
           data-found={found ? "true" : undefined}
+          data-lifted={lone && drag.isDragging ? "true" : undefined}
           onClick={open}
-          className={`p2-sleeve${ring}`}
+          onKeyDown={onKeyDown}
+          {...pointer}
+          className={`p2-sleeve${ring}${lone ? " nb-sleeve--movable" : ""}`}
         >
           {art}
         </button>

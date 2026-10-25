@@ -147,14 +147,18 @@ describe("folding", () => {
 });
 
 describe("moveCopy", () => {
-  it("gives the copy the new home and clears its old pocket", () => {
+  it("gives the copy the new home and that binder's first open pocket", () => {
     const s0 = initialCollectionState();
     const held = inHome(s0, CONTENDERS).find((c) => c.slot !== undefined)!;
     const { state, result } = demoOps.moveCopy(s0, held.id, SLAB);
     expect(result).toMatchObject({ copyId: held.id, folded: false, split: false });
     expect(result.from).toEqual({ homeId: CONTENDERS, slot: held.slot, quantity: held.quantity });
-    expect(copyIn(state, held.id)).toMatchObject({ homeId: SLAB });
-    expect(copyIn(state, held.id).slot).toBeUndefined();
+    const moved = copyIn(state, held.id);
+    expect(moved).toMatchObject({ homeId: SLAB });
+    const slabPockets = new Set(inHome(s0, SLAB).map((c) => c.slot));
+    let open = 0;
+    while (slabPockets.has(open)) open += 1;
+    expect(moved.slot).toBe(open);
   });
 
   it("never shows the copy in two homes: one row, one home", () => {
@@ -361,13 +365,15 @@ describe("removeCopy and restoreCopy", () => {
     expect(back.state.copies[2].id).toBe(target.id);
   });
 
-  it("drops a slot that someone took meanwhile instead of double-filling the pocket", () => {
+  it("takes the first open pocket when someone took its own meanwhile, never double-filling it", () => {
     const s0 = initialCollectionState();
     const held = inHome(s0, CONTENDERS).find((c) => c.slot !== undefined)!;
     const removed = demoOps.removeCopy(s0, held.id);
     const [s1] = withCopy(removed.state, { homeId: CONTENDERS, slot: held.slot });
     const back = demoOps.restoreCopy(s1, removed.result.removed);
-    expect(copyIn(back.state, held.id).slot).toBeUndefined();
+    const slot = copyIn(back.state, held.id).slot;
+    expect(slot).toBeTypeOf("number");
+    expect(inHome(back.state, CONTENDERS).filter((c) => c.slot === slot)).toHaveLength(1);
   });
 
   it("is idempotent for a copy that is already back", () => {
@@ -448,15 +454,15 @@ describe("containers", () => {
     expect(() => demoOps.deleteContainer(initialCollectionState(), TRADE_BINDER_ID)).toThrow(/can't be deleted/i);
   });
 
-  it("deleting sends its copies to Main with their slots cleared and unscopes its wants", () => {
+  it("deleting sends its copies to Main's open pockets and unscopes its wants", () => {
     const s0 = initialCollectionState();
     const inside = inHome(s0, SHOW_BOX_ID);
     const { state, result } = demoOps.deleteContainer(s0, SHOW_BOX_ID);
     expect(result).toBe(inside.length);
-    for (const c of inside) {
-      expect(copyIn(state, c.id)).toMatchObject({ homeId: MAIN_BINDER_ID });
-      expect(copyIn(state, c.id).slot).toBeUndefined();
-    }
+    for (const c of inside) expect(copyIn(state, c.id)).toMatchObject({ homeId: MAIN_BINDER_ID });
+    const mainSlots = inHome(state, MAIN_BINDER_ID).map((c) => c.slot);
+    expect(mainSlots.every((slot) => typeof slot === "number")).toBe(true);
+    expect(new Set(mainSlots).size).toBe(mainSlots.length);
     const scoped = demoOps.setWant(s0, s0.wants[0].cardId, SLAB, true).state;
     const after = demoOps.deleteContainer(scoped, SLAB).state;
     expect(after.wants.find((w) => w.cardId === s0.wants[0].cardId)?.binderId).toBeNull();

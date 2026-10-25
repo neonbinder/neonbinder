@@ -85,7 +85,7 @@ export interface PageModel {
   pockets: PocketModel[];
   /** The checklist section the page belongs to ("Base", "Pennant Flyers"). */
   section: string | null;
-  /** Pages past the binder's pockets ("Not in a pocket yet"). */
+  /** A word over the page ("A fresh page"). */
   note?: string;
 }
 
@@ -286,8 +286,10 @@ export function followedChecklist(copies: readonly Copy[], checklist: readonly C
 }
 
 /**
- * A binder's pages in pockets mode: its own pockets in slot order, a fresh
- * page at the back, then the copies filed here but in no pocket yet. With a
+ * A binder's pages in pockets mode: its own pockets in slot order, then a
+ * fresh page at the back. Every card in a binder sits in a pocket; a copy
+ * stored before that rule (waiting on the backfill) shows in the pocket it
+ * would get (`pocketFor`). With a
  * followed checklist, empty numbered pockets are Need sleeves (when the
  * collector has the card nowhere: `ownedAnywhere`) and the pages past the
  * checklist say "Extras".
@@ -301,7 +303,7 @@ export function binderPages(input: {
 }): PageModel[] {
   const { binderId, copies, cards, followed } = input;
   const owned = input.ownedAnywhere ?? (() => false);
-  const pockets = pocketsOf(copies);
+  const pockets = pocketsOf(withPockets(copies, cards, followed));
   const maxSlot = Math.max(-1, ...pockets.keys());
   const used = Math.max(maxSlot + 1, followed ? extrasStart(followed) : 0);
   const pageCount = Math.ceil(used / POCKETS_PER_PAGE);
@@ -340,12 +342,18 @@ export function binderPages(input: {
       })),
     });
   }
-
-  // Filed in the binder but in no pocket yet (a copy from its details, or a move).
-  const pocketed = new Set([...pockets.values()].map((c) => c.id));
-  const loose = copies.filter((c) => !pocketed.has(c.id)).sort(byChecklist(cards));
-  if (loose.length) pages.push(...paginate(perCopy(loose, cards), null, "Not in a pocket yet"));
   return pages;
+}
+
+/** `copies` with each one that has no pocket given the one it would get, in checklist order. */
+function withPockets(copies: readonly Copy[], cards: CardsById, followed: readonly Card[] | null): Copy[] {
+  const placed = copies.filter((c) => c.slot !== undefined && c.slot >= 0);
+  const loose = copies.filter((c) => c.slot === undefined || c.slot < 0).sort(byChecklist(cards));
+  for (const copy of loose) {
+    const card = cards.get(copy.cardId);
+    if (card) placed.push({ ...copy, slot: pocketFor(placed, card, followed) });
+  }
+  return placed;
 }
 
 /** Have / need on a followed checklist, for the cover. */

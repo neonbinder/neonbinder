@@ -504,3 +504,14 @@
 .nb-tray-clear {
   padding-bottom: calc(var(--nb-tray-h, 0px) + 16px);
 }
+
+/* ------------------------------------------- rearranging a binder's pockets */
+
+/* A card the collector can drag to another pocket; dimmed while it is lifted. */
+.p2-sleeve.nb-sleeve--movable {
+  cursor: grab;
+  touch-action: manipulation;
+}
+.p2-sleeve[data-lifted="true"] {
+  opacity: 0.35;
+}

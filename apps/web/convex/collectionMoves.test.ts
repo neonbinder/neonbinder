@@ -9,7 +9,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { expectCountsExact, tallyTruth, truthByContainer } from "../lib/testing/collection-counts";
@@ -53,14 +53,13 @@ async function add(s: S, cardId: Id<"cardChecklist">, details: Record<string, un
 }
 
 describe("moveCopy", () => {
-  test("a whole move re-points the row, clears its slot and keeps the id", async () => {
+  test("a whole move re-points the row, takes the first open pocket there and keeps the id", async () => {
     const s = await setup();
     const { copyId } = await add(s, s.fx.gooden1, { quantity: 3, homeId: s.binderA, slot: 4 });
     const r = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.binderB });
     expect(r).toEqual({ copyId, folded: false, split: false, from: { homeId: s.binderA, slot: 4, quantity: 3 } });
     const [row] = await copies(s.t);
-    expect(row).toMatchObject({ _id: copyId, homeId: s.binderB, quantity: 3 });
-    expect(row.slot).toBeUndefined();
+    expect(row).toMatchObject({ _id: copyId, homeId: s.binderB, quantity: 3, slot: 0 });
     await exact(s);
     await tallyIsExact(s);
   });
@@ -268,15 +267,27 @@ describe("moveCopy", () => {
 });
 
 describe("placeCopy", () => {
-  test("sets, changes and clears the slot in the same home", async () => {
+  test("sets and changes the pocket in a binder, and never takes it out of one", async () => {
     const s = await setup();
     const a = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    expect((await copies(s.t))[0].slot).toBe(0);
     await s.me.mutation(api.collection.placeCopy, { copyId: a.copyId, slot: 4 });
     expect((await copies(s.t))[0].slot).toBe(4);
     await s.me.mutation(api.collection.placeCopy, { copyId: a.copyId, slot: 5 });
     expect((await copies(s.t))[0].slot).toBe(5);
+    await expect(s.me.mutation(api.collection.placeCopy, { copyId: a.copyId, slot: null })).rejects.toThrow(/always sits in a pocket/);
+    expect((await copies(s.t))[0].slot).toBe(5);
+    await exact(s);
+  });
+
+  test("sets, changes and clears the row in a box", async () => {
+    const s = await setup();
+    const a = await add(s, s.fx.gooden1, { homeId: s.box });
+    expect((await copies(s.t))[0].slot).toBeUndefined();
+    await s.me.mutation(api.collection.placeCopy, { copyId: a.copyId, slot: 2 });
+    await s.me.mutation(api.collection.placeCopy, { copyId: a.copyId, slot: 3 });
     const r = await s.me.mutation(api.collection.placeCopy, { copyId: a.copyId, slot: null });
-    expect(r).toMatchObject({ copyId: a.copyId, folded: false, split: false, from: { homeId: s.binderA, slot: 5, quantity: 1 } });
+    expect(r).toMatchObject({ copyId: a.copyId, folded: false, split: false, from: { homeId: s.box, slot: 3, quantity: 1 } });
     expect((await copies(s.t))[0].slot).toBeUndefined();
     await exact(s);
   });
@@ -311,7 +322,10 @@ describe("placeCopy", () => {
     await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 2 });
     const diff = await add(s, s.fx.gooden1, { homeId: s.binderA, notes: "differs" });
     await expect(s.me.mutation(api.collection.placeCopy, { copyId: diff.copyId, slot: 2 })).rejects.toThrow(/pocket already holds/);
-    const same = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    // Added with no pocket named, an identical card stacks onto its twin's pocket.
+    const stacked = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    expect(stacked.merged).toBe(true);
+    const same = await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 5 });
     const r = await s.me.mutation(api.collection.placeCopy, { copyId: same.copyId, slot: 2 });
     expect(r.folded).toBe(true);
   });
@@ -440,7 +454,7 @@ describe("counts and tally after every write path", () => {
     await exact(s); await tallyIsExact(s);
   });
 
-  test("restore into a since-filled pocket comes back to the same binder, unplaced, counted", async () => {
+  test("restore into a since-filled pocket comes back to the same binder's first open pocket, counted", async () => {
     const s = await setup();
     const a = await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 3, quantity: 2 });
     const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId: a.copyId });
@@ -448,7 +462,7 @@ describe("counts and tally after every write path", () => {
     const { copyId } = await s.me.mutation(api.collection.restoreCopy, { cardId: removed.cardId, details: removed.details });
     const row = (await copies(s.t)).find((r) => r._id === copyId)!;
     expect(row.homeId).toBe(s.binderA);
-    expect(row.slot).toBeUndefined();
+    expect(row.slot).toBe(0);
     const map = await exact(s);
     expect(map.get(s.binderA)!.stored).toEqual({ copies: 3, lines: 2 });
   });
@@ -690,5 +704,116 @@ describe("caller isolation", () => {
     await s.them.mutation(api.collectionContainers.ensureSystem, {});
     await exact(s);
     await expectCountsExact(s.t, THEM.subject, expect as never);
+  });
+});
+
+describe("every card in a binder sits in a pocket", () => {
+  const binderRows = async (s: S, homeId: Id<"collectionContainers">) =>
+    (await copies(s.t)).filter((r) => r.homeId === homeId).sort((a, b) => (a.slot ?? -1) - (b.slot ?? -1));
+
+  test("an add with no pocket named takes the first open one; a box row stays optional", async () => {
+    const s = await setup();
+    await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 0 });
+    await add(s, s.fx.gold1, { homeId: s.binderA, slot: 2 });
+    const a = await add(s, s.fx.strawberry2, { homeId: s.binderA });
+    const b = await add(s, s.fx.futureStar, { homeId: s.binderA });
+    const rows = await binderRows(s, s.binderA);
+    expect(rows.find((r) => r._id === a.copyId)!.slot).toBe(1);
+    expect(rows.find((r) => r._id === b.copyId)!.slot).toBe(3);
+    const boxed = await add(s, s.fx.gooden1, { homeId: s.box });
+    expect((await copies(s.t)).find((r) => r._id === boxed.copyId)!.slot).toBeUndefined();
+    await exact(s);
+  });
+
+  test("Main is a binder too: a plain add and a batch fill its pockets in order", async () => {
+    const s = await setup();
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.strawberry2, s.fx.futureStar, s.fx.gold1] });
+    const rows = await binderRows(s, s.sys.mainId);
+    expect(rows.map((r) => r.slot)).toEqual([0, 1, 2, 3]);
+    await exact(s);
+    await tallyIsExact(s);
+  });
+
+  test("an identical card stacks in its twin's pocket instead of taking a new one", async () => {
+    const s = await setup();
+    const first = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    const again = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    expect(again).toMatchObject({ copyId: first.copyId, merged: true });
+    const rows = await binderRows(s, s.binderA);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ slot: 0, quantity: 2 });
+  });
+
+  test("an emptied pocket is the next one filled", async () => {
+    const s = await setup();
+    const a = await add(s, s.fx.gooden1, { homeId: s.binderA });
+    await add(s, s.fx.strawberry2, { homeId: s.binderA });
+    await s.me.mutation(api.collection.removeCopy, { copyId: a.copyId });
+    const c = await add(s, s.fx.gold1, { homeId: s.binderA });
+    expect((await copies(s.t)).find((r) => r._id === c.copyId)!.slot).toBe(0);
+    // Moving a card out empties its pocket too.
+    const d = await add(s, s.fx.futureStar, { homeId: s.binderA });
+    expect((await copies(s.t)).find((r) => r._id === d.copyId)!.slot).toBe(2);
+    await s.me.mutation(api.collection.moveCopy, { copyId: c.copyId, toHomeId: s.binderB });
+    const e = await add(s, s.fx.gooden1Sliding, { homeId: s.binderA });
+    expect((await copies(s.t)).find((r) => r._id === e.copyId)!.slot).toBe(0);
+  });
+
+  test("a move within the binder with no pocket named keeps the card's own", async () => {
+    const s = await setup();
+    const a = await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 6 });
+    const r = await s.me.mutation(api.collection.moveCopy, { copyId: a.copyId, toHomeId: s.binderA });
+    expect(r).toMatchObject({ copyId: a.copyId, folded: false, split: false });
+    expect((await copies(s.t))[0].slot).toBe(6);
+  });
+
+  test("editing a card's details never takes it out of its pocket", async () => {
+    const s = await setup();
+    const a = await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 4 });
+    await s.me.mutation(api.collection.updateCopy, {
+      copyId: a.copyId,
+      details: { quantity: 1, notes: "edited", homeId: s.binderA } as never,
+    });
+    expect((await copies(s.t))[0]).toMatchObject({ slot: 4, notes: "edited" });
+  });
+});
+
+describe("backfillBinderPockets", () => {
+  test("dry run counts, armed run places stored lines in open pockets, and a re-run is a no-op", async () => {
+    const s = await setup();
+    await add(s, s.fx.gooden1, { homeId: s.binderA, slot: 1 });
+    const boxed = await add(s, s.fx.gold1, { homeId: s.box });
+    // Lines stored before the rule: in a binder with no slot.
+    const loose = await s.t.run(async (ctx) => {
+      const rows = (await ctx.db.query("collectionCopies").collect()).filter((r) => r.homeId === s.binderA);
+      const base = rows[0];
+      const ids = [];
+      for (const cardId of [s.fx.strawberry2, s.fx.futureStar]) {
+        ids.push(
+          await ctx.db.insert("collectionCopies", {
+            ownerId: base.ownerId,
+            cardId,
+            variantId: base.variantId,
+            setId: base.setId,
+            homeId: s.binderA,
+            quantity: 1,
+            lastUpdated: 1,
+          }),
+        );
+      }
+      return ids;
+    });
+    const dry = await s.t.mutation(internal.backfillBinderPockets.run, {});
+    expect(dry).toMatchObject({ armed: false, binders: 1, placed: 2, isDone: true });
+    expect((await copies(s.t)).filter((r) => loose.includes(r._id)).every((r) => r.slot === undefined)).toBe(true);
+
+    const armed = await s.t.mutation(internal.backfillBinderPockets.run, { arm: true });
+    expect(armed).toMatchObject({ armed: true, binders: 1, placed: 2, isDone: true });
+    const slots = (await copies(s.t)).filter((r) => loose.includes(r._id)).map((r) => r.slot).sort();
+    expect(slots).toEqual([0, 2]);
+    expect((await copies(s.t)).find((r) => r._id === boxed.copyId)!.slot).toBeUndefined();
+
+    expect(await s.t.mutation(internal.backfillBinderPockets.run, { arm: true })).toMatchObject({ binders: 0, placed: 0 });
   });
 });

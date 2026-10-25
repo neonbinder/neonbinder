@@ -33,6 +33,8 @@ interface BinderDeskProps extends PocketHandlers {
   reducedMotion: boolean;
   /** Label for the binder region, e.g. the binder's name. */
   name: string;
+  /** Its cards can be dragged or Alt+arrowed to other pockets. */
+  rearrange?: boolean;
 }
 
 export function stepCount(pageCount: number, wide: boolean): number {
@@ -219,6 +221,8 @@ function Page({
   onOpen,
   onAdd,
   onAim,
+  onShift,
+  rearrange,
 }: BinderDeskProps & { page: PageModel; number: number }) {
   const head = [page.section, page.note].filter(Boolean).join(", ");
   return (
@@ -241,6 +245,8 @@ function Page({
           onOpen={onOpen}
           onAdd={onAdd}
           onAim={onAim}
+          onShift={onShift}
+          rearrange={rearrange}
         />
       ))}
       <p aria-hidden="true" className="p2-page-foot">

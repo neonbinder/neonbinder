@@ -29,6 +29,7 @@ import type * as adapters_wikidata from "../adapters/wikidata.js";
 import type * as adminUsers from "../adminUsers.js";
 import type * as auth from "../auth.js";
 import type * as autographFormat from "../autographFormat.js";
+import type * as backfillBinderPockets from "../backfillBinderPockets.js";
 import type * as backfillBrandPrefixAndUnknownName from "../backfillBrandPrefixAndUnknownName.js";
 import type * as backfillBrandUnknownRole from "../backfillBrandUnknownRole.js";
 import type * as backfillBscAttributeFeatures from "../backfillBscAttributeFeatures.js";
@@ -178,6 +179,7 @@ declare const fullApi: ApiFromModules<{
   adminUsers: typeof adminUsers;
   auth: typeof auth;
   autographFormat: typeof autographFormat;
+  backfillBinderPockets: typeof backfillBinderPockets;
   backfillBrandPrefixAndUnknownName: typeof backfillBrandPrefixAndUnknownName;
   backfillBrandUnknownRole: typeof backfillBrandUnknownRole;
   backfillBscAttributeFeatures: typeof backfillBscAttributeFeatures;

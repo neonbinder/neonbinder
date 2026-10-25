@@ -106,6 +106,24 @@ describe("My Binders", () => {
     expect(screen.getByText("Checklists and My Cards are looking through everything.")).toBeTruthy();
   });
 
+  it("Alt+arrows move a card to the open pocket after it, and Undo puts it back", async () => {
+    renderBinders("/collection?tab=binders&b=binder-slab-case");
+    const page1 = screen.getByRole("group", { name: /^Page 1/ });
+    const movable = () => within(page1).getAllByRole("button").filter((b) => b.getAttribute("aria-keyshortcuts"));
+    const first = movable()[0];
+    const name = first.getAttribute("aria-label")!;
+    const statusSays = (re: RegExp) => screen.getAllByRole("status").some((st) => re.test(st.textContent ?? ""));
+    fireEvent.keyDown(first, { key: "ArrowLeft", altKey: true });
+    await waitFor(() => expect(statusSays(/^There's no open pocket before /)).toBe(true));
+    fireEvent.keyDown(first, { key: "ArrowRight", altKey: true });
+    await waitFor(() => expect(statusSays(/^Moved .+ to page \d+, pocket \d+\.$/)).toBe(true));
+    // It left pocket 1 for the first open one, and the ring follows it there.
+    expect(screen.getAllByRole("button", { name }).some((b) => b.getAttribute("data-found") === "true")).toBe(true);
+    expect(movable()[0].getAttribute("aria-label")).not.toBe(name);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(movable()[0].getAttribute("aria-label")).toBe(name));
+  });
+
   it("opening a binder scopes the page to it, and the shelf shows it", () => {
     renderBinders();
     fireEvent.click(screen.getByRole("button", { name: /^'96 Contenders,/ }));
@@ -207,7 +225,8 @@ describe("the hunt tray", () => {
     const mine = screen.getByRole("list", { name: "In your binders" });
     const catalog = screen.getByRole("list", { name: "Not in your binders yet" });
     expect(within(mine).getByRole("button", { name: "Find #4 Reggie White in '96 Contenders, page 1, pocket 4" })).toBeTruthy();
-    expect(within(mine).getByRole("button", { name: "Find #4 Reggie White in Slab case" })).toBeTruthy();
+    // Every card in a binder sits in a pocket, so every binder place names one.
+    expect(within(mine).getByRole("button", { name: /^Find #4 Reggie White in Slab case, page \d+, pocket \d+$/ })).toBeTruthy();
     expect(within(catalog).getAllByRole("button", { name: /^Slot in / }).length).toBeGreaterThan(0);
     // On the shelf no binder is open, so there is nothing to move into.
     expect(within(mine).queryByRole("button", { name: /^Move here/ })).toBeNull();
@@ -229,21 +248,12 @@ describe("the hunt tray", () => {
     expect(screen.queryByRole("list", { name: "In your binders" })).toBeNull();
   });
 
-  it("a place in a binder without pages opens the card drawer", () => {
-    renderBinders();
-    fireEvent.change(hunt(), { target: { value: "96 contenders reggie white" } });
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "Find #4 Reggie White in Slab case" }));
-    });
-    expect(screen.getByRole("dialog")).toBeTruthy();
-  });
-
   it("Move here moves your one copy into the open binder's next pocket, naming both, and Undo puts it back in its own", async () => {
     renderBinders("/collection?tab=binders&b=binder-slab-case");
     fireEvent.change(hunt(), { target: { value: "jim kelly" } });
     fireEvent.click(screen.getByRole("button", { name: /^Move here: 1996 Playoff Contenders #12 Jim Kelly/ }));
-    await waitFor(() => expect(statusSays(/^Moved #12 Jim Kelly from '96 Contenders to Slab case, page 1, pocket 1\.$/)).toBe(true));
-    expect(screen.getByRole("button", { name: "Find #12 Jim Kelly in Slab case, page 1, pocket 1" })).toBeTruthy();
+    await waitFor(() => expect(statusSays(/^Moved #12 Jim Kelly from '96 Contenders to Slab case, page \d+, pocket \d+\.$/)).toBe(true));
+    expect(screen.getByRole("button", { name: /^Find #12 Jim Kelly in Slab case, page \d+, pocket \d+$/ })).toBeTruthy();
     // It left its old pocket: one home, never two.
     expect(screen.queryByRole("button", { name: /^Find #12 Jim Kelly in '96 Contenders/ })).toBeNull();
     // Nothing left to move here, so only Add another is offered.
