@@ -212,10 +212,16 @@ function plainIn(lines: ReadonlyArray<CopyRow>, boxId: Id<"collectionContainers"
 const CHANGED_SINCE =
   "That count changed since, so it can't be undone. Type the number you want instead.";
 
+type Place = { variantId: Id<"selectorOptions">; setId: Id<"selectorOptions"> };
+
 /**
  * Put `quantity` plain copies of the card in the box with these details:
  * folded into the identical line when there is one (and it has room), else
- * a new line. Returns the step that undoes it and the row change.
+ * a new line. Returns the step that undoes it, the row change, and the line
+ * as it now stands (the folded line patched, or the inserted one), so a
+ * caller holding the card's lines in memory can keep them current without
+ * reading them again. `place` gives the card's variant and set for an
+ * insert; a caller that inserts more than once passes a memo.
  */
 async function putPlain(
   ctx: MutationCtx,
@@ -225,7 +231,8 @@ async function putPlain(
   lines: ReadonlyArray<CopyRow>,
   details: { quantity: number; acquiredOn?: string; slot?: number },
   now: number,
-): Promise<{ undo: Step; change: CountChange }> {
+  place: () => Promise<Place> = () => placeOf(ctx, cardId),
+): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const next: StoredDetails = {
     quantity: details.quantity,
     ...(details.acquiredOn ? { acquiredOn: details.acquiredOn } : {}),
@@ -241,23 +248,21 @@ async function putPlain(
     return {
       undo: { op: "set", copyId: into._id, from: quantity, to: into.quantity },
       change: changeOf(into, counted(into), counted({ ...into, quantity })),
+      row: { ...into, quantity, lastUpdated: now },
     };
   }
   if (lines.length >= MAX_LINES_PER_CARD) {
     refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
   }
-  const place = await placeOf(ctx, cardId);
-  const copyId = await ctx.db.insert("collectionCopies", {
-    ownerId,
-    cardId,
-    variantId: place.variantId,
-    setId: place.setId,
-    ...next,
-    lastUpdated: now,
-  });
+  const { variantId, setId } = await place();
+  const fields = { ownerId, cardId, variantId, setId, ...next, lastUpdated: now };
+  const copyId = await ctx.db.insert("collectionCopies", fields);
   return {
     undo: { op: "remove", copyId, quantity: details.quantity },
-    change: changeOf({ cardId, setId: place.setId }, null, counted(next)),
+    change: changeOf({ cardId, setId }, null, counted(next)),
+    // `_creationTime` is not read back from the database (that would be a
+    // read per inserted line); nothing that walks the in-memory lines uses it.
+    row: { _id: copyId, _creationTime: now, ...fields },
   };
 }
 
@@ -359,7 +364,25 @@ export const undoBoxQuantity = mutation({
     const { cardId, boxId, steps } = args.inverse;
     if (steps.length > MAX_LINES_PER_CARD) refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
     const box = await ownBox(ctx, ownerId, boxId);
-    const before = plainIn(await linesOfCard(ctx, ownerId, cardId), box._id).copies;
+    // The card's lines, read ONCE and kept current in memory as each step
+    // writes (an insert appended, a patch replaced, a delete dropped), so a
+    // restore folds against what earlier steps left without reading the
+    // card's lines again: one undo is about one read per step, not one
+    // card-wide read per step. The list is the whole card: `linesOfCard`
+    // takes one past `MAX_LINES_PER_CARD`, and no write here lets a card pass it.
+    const lines: CopyRow[] = await linesOfCard(ctx, ownerId, cardId);
+    const keep = (row: CopyRow) => {
+      const at = lines.findIndex((line) => line._id === row._id);
+      if (at === -1) lines.push(row);
+      else lines[at] = row;
+    };
+    const drop = (copyId: Id<"collectionCopies">) => {
+      const at = lines.findIndex((line) => line._id === copyId);
+      if (at !== -1) lines.splice(at, 1);
+    };
+    let place: Promise<Place> | undefined;
+    const placeOnce = () => (place ??= placeOf(ctx, cardId));
+    const before = plainIn(lines, box._id).copies;
     const now = Date.now();
     const redo: Step[] = [];
     const changes: CountChange[] = [];
@@ -373,9 +396,8 @@ export const undoBoxQuantity = mutation({
           refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
         }
         checkSlot(box, step.slot);
-        // Read fresh: an earlier step may have written this card's lines.
-        const lines = await linesOfCard(ctx, ownerId, cardId);
-        const put = await putPlain(ctx, ownerId, cardId, box, lines, step, now);
+        const put = await putPlain(ctx, ownerId, cardId, box, lines, step, now, placeOnce);
+        keep(put.row);
         redo.push(put.undo);
         changes.push(put.change);
         continue;
@@ -393,6 +415,7 @@ export const undoBoxQuantity = mutation({
       if (step.op === "remove") {
         if (row.quantity !== step.quantity) refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
         await ctx.db.delete(row._id);
+        drop(row._id);
         redo.push({
           op: "restore",
           quantity: row.quantity,
@@ -404,12 +427,13 @@ export const undoBoxQuantity = mutation({
         if (row.quantity !== step.from) refuse(COLLECTION_ERRORS.invalid, CHANGED_SINCE);
         checkQuantity(step.to, 1);
         await ctx.db.patch(row._id, { quantity: step.to, lastUpdated: now });
+        keep({ ...row, quantity: step.to, lastUpdated: now });
         redo.push({ op: "set", copyId: row._id, from: step.to, to: row.quantity });
         changes.push(changeOf(row, counted(row), counted({ ...row, quantity: step.to })));
       }
     }
     await applyCopyChanges(ctx, ownerId, changes);
-    const after = plainIn(await linesOfCard(ctx, ownerId, cardId), box._id).copies;
+    const after = plainIn(lines, box._id).copies;
     return { before, after, inverse: { cardId, boxId: box._id, steps: redo.reverse() } };
   },
 });

@@ -423,6 +423,50 @@ describe("undoBoxQuantity", () => {
     expect(sum(await linesIn(s, s.fx.gooden1, s.boxA))).toBe(2);
   });
 
+  test("another collector naming their OWN Unsorted with my copyIds is refused, and my lines are untouched", async () => {
+    const s = await setup();
+    await setQty(s, s.fx.gooden1, s.boxA, 2);
+    const lowered = await setQty(s, s.fx.gooden1, s.boxA, 1); // a set step on my line
+    const raised = await setQty(s, s.fx.strawberry2, s.sys.unsortedId, 3); // a remove step on my line
+    const theirs = await s.them.mutation(api.collectionContainers.ensureSystem, {});
+    const before = await rowsOf(s);
+    for (const inverse of [lowered.inverse, raised.inverse]) {
+      expect(inverse.steps.some((step) => step.op !== "restore")).toBe(true);
+      await expect(
+        s.them.mutation(api.collectionInventory.undoBoxQuantity, {
+          inverse: { ...inverse, boxId: theirs.unsortedId },
+        }),
+      ).rejects.toThrow(/changed since/);
+    }
+    expect(await rowsOf(s)).toEqual(before);
+    expect(await rowsOf(s, THEM.subject)).toEqual([]);
+    await exact(s);
+  });
+
+  test("restores that fold into each other see the earlier steps' writes", async () => {
+    const s = await setup();
+    // Two restores of the same day: the second folds into the line the first made.
+    const undone = await s.me.mutation(api.collectionInventory.undoBoxQuantity, {
+      inverse: {
+        cardId: s.fx.gooden1,
+        boxId: s.boxA,
+        steps: [
+          { op: "restore", quantity: 2, acquiredOn: TODAY },
+          { op: "restore", quantity: 3, acquiredOn: TODAY },
+          { op: "restore", quantity: 1, acquiredOn: "2001-02-03" },
+        ],
+      },
+    });
+    expect(undone).toMatchObject({ before: 0, after: 6 });
+    expect(shape(await linesIn(s, s.fx.gooden1, s.boxA))).toEqual(["1@2001-02-03", `5@${TODAY}`]);
+    await exact(s);
+    // Its inverse takes them all back off.
+    const redone = await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: undone.inverse });
+    expect(redone).toMatchObject({ before: 6, after: 0 });
+    expect(await linesIn(s, s.fx.gooden1, s.boxA)).toEqual([]);
+    await exact(s);
+  });
+
   test("an undo cannot touch a binder line even when a step names it", async () => {
     const s = await setup();
     const { copyId } = await add(s, s.fx.gooden1, { homeId: s.binder, quantity: 3 });

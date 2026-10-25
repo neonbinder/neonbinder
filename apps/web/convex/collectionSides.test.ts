@@ -139,6 +139,64 @@ describe("variantCompletion and setCompletion", () => {
   });
 });
 
+describe("side omitted (a tab still on the pre-NEO-364 bundle) reads as the collection", () => {
+  test("copiesInVariant without side equals side collection, and never returns a box copy", async () => {
+    const s = await setup();
+    await stock(s);
+    const bare = await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId });
+    expect(bare).toEqual(await copiesIn(s, "collection"));
+    expect(bare.map((c) => [c.cardId, c.quantity, c.homeId])).toEqual([[s.fx.gooden1, 2, s.binder]]);
+    // Unsorted is a box: its only copies are invisible without a side.
+    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.futureStarsId })).toEqual([]);
+    // A box scope without a side is the other side: empty.
+    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: s.box })).toEqual([]);
+    expect(
+      await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.futureStarsId, homeId: s.sys.unsortedId }),
+    ).toEqual([]);
+    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, homeId: s.binder })).toHaveLength(1);
+  });
+
+  test("variantCompletion without side equals side collection; a box-only card owns nothing", async () => {
+    const s = await setup();
+    await stock(s);
+    const bare = await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId });
+    expect(bare).toEqual(
+      await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId, side: "collection" }),
+    );
+    expect(bare).toMatchObject({ owned: 1, ownedAll: 1 }); // gooden1 only; strawberry2 is box-only
+    expect(
+      await s.me.query(api.collection.variantCompletion, { variantId: s.fx.futureStarsId }),
+    ).toMatchObject({ owned: 0, ownedAll: 0 });
+    expect(
+      await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId, homeId: s.box }),
+    ).toMatchObject({ owned: 0, ownedAll: 0 });
+  });
+
+  test("setCompletion without side equals side collection; no box card is counted", async () => {
+    const s = await setup();
+    await stock(s);
+    const bare = await s.me.query(api.collection.setCompletion, { setId: s.fx.setId });
+    expect(bare).toEqual(await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, side: "collection" }));
+    expect(bare.owned).toBe(2); // gooden1 (binder) + gold1 (Main)
+    expect(Object.fromEntries(bare.variants.map((v) => [v.variantId, v.owned]))).toEqual({
+      [s.fx.baseId]: 1,
+      [s.fx.goldId]: 1,
+    });
+    expect(await s.me.query(api.collection.setCompletion, { setId: s.fx.setId, homeId: s.box })).toEqual({
+      owned: 0, ownedAll: 0, variants: [], truncated: false,
+    });
+  });
+
+  test("a collector with only box copies sees nothing without a side", async () => {
+    const s = await setup();
+    await s.add(s.fx.gooden1, { homeId: s.box, quantity: 5 });
+    await s.add(s.fx.futureStar, { homeId: s.sys.unsortedId, quantity: 2 });
+    expect(await s.me.query(api.collection.copiesInVariant, { variantId: s.fx.baseId })).toEqual([]);
+    expect(await s.me.query(api.collection.variantCompletion, { variantId: s.fx.baseId })).toMatchObject({ owned: 0 });
+    expect((await s.me.query(api.collection.setCompletion, { setId: s.fx.setId })).owned).toBe(0);
+  });
+});
+
 describe("ownedCards and summary (collection side only)", () => {
   test("ownedCards never lists a box-only card; a card in both counts its binder lines only", async () => {
     const s = await setup();
@@ -242,6 +300,10 @@ describe("another collector", () => {
       expect(await them.query(api.collection.copiesInVariant, { variantId: s.fx.baseId, side })).toEqual([]);
       expect(await them.query(api.collection.variantCompletion, { variantId: s.fx.baseId, side })).toMatchObject({ owned: 0 });
     }
+    // And with no side (the pre-NEO-364 bundle).
+    expect(await them.query(api.collection.copiesInVariant, { variantId: s.fx.baseId })).toEqual([]);
+    expect(await them.query(api.collection.variantCompletion, { variantId: s.fx.baseId })).toMatchObject({ owned: 0 });
+    expect((await them.query(api.collection.setCompletion, { setId: s.fx.setId })).owned).toBe(0);
     expect((await them.query(api.collectionInventory.inventoryCards, {})).items).toEqual([]);
   });
 });

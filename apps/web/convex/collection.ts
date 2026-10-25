@@ -1529,18 +1529,29 @@ async function readScope(
 }
 
 /**
+ * NEO-364 — the `side` a read takes, optional for the release only: a tab
+ * still running the SPA bundle from before NEO-364 sends no `side`, and a
+ * required arg would make its query throw until it reloads. Omitted reads as
+ * `"collection"` (what those bundles showed, binders only; never a box
+ * copy). The new client always sends it.
+ */
+const readSideValidator = v.optional(sideValidator);
+const sideOf = (side: Side | undefined): Side => side ?? "collection";
+
+/**
  * The caller's line items across one variant (a checklist's worth); NEO-359:
  * in one home when scoped. NEO-364: on one `side` only (binder lines or box
  * lines); a scope on the other side reads as empty.
  */
 export const copiesInVariant = query({
-  args: { variantId: v.string(), homeId: v.optional(v.string()), side: sideValidator },
+  args: { variantId: v.string(), homeId: v.optional(v.string()), side: readSideValidator },
   returns: v.array(copyValidator),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const side = sideOf(args.side);
     const variantId = ctx.db.normalizeId("selectorOptions", args.variantId);
     if (!variantId) return [];
-    const homeId = await readScope(ctx, ownerId, args.homeId, args.side);
+    const homeId = await readScope(ctx, ownerId, args.homeId, side);
     if (homeId === null) return [];
     const setId = await findSetForSelectorOption(ctx, variantId);
     if (!setId) return [];
@@ -1562,7 +1573,7 @@ export const copiesInVariant = query({
                 .eq("variantId", variantId),
             )
             .take(MAX_VARIANT_COPIES);
-    const onSide = homeId === undefined ? await new HomeSides(ctx, ownerId).keep(rows, args.side) : rows;
+    const onSide = homeId === undefined ? await new HomeSides(ctx, ownerId).keep(rows, side) : rows;
     return onSide.map(copyOut);
   },
 });
@@ -1583,7 +1594,7 @@ export const copiesInVariant = query({
  * only the copies on `side` (a scope on the other side owns nothing).
  */
 export const variantCompletion = query({
-  args: { variantId: v.string(), homeId: v.optional(v.string()), side: sideValidator },
+  args: { variantId: v.string(), homeId: v.optional(v.string()), side: readSideValidator },
   returns: v.union(
     v.object({
       owned: v.number(),
@@ -1595,6 +1606,7 @@ export const variantCompletion = query({
   ),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const side = sideOf(args.side);
     const variantId = ctx.db.normalizeId("selectorOptions", args.variantId);
     if (!variantId) return null;
     const row = await ctx.db.get(variantId);
@@ -1604,7 +1616,7 @@ export const variantCompletion = query({
     ) {
       return null;
     }
-    const homeId = await readScope(ctx, ownerId, args.homeId, args.side);
+    const homeId = await readScope(ctx, ownerId, args.homeId, side);
     const setId = homeId === null ? null : await findSetForSelectorOption(ctx, variantId);
     let copies: CopyRow[] = [];
     if (setId && homeId === undefined) {
@@ -1614,7 +1626,7 @@ export const variantCompletion = query({
           q.eq("ownerId", ownerId).eq("setId", setId).eq("variantId", variantId),
         )
         .take(MAX_VARIANT_COPIES);
-      copies = await new HomeSides(ctx, ownerId).keep(rows, args.side);
+      copies = await new HomeSides(ctx, ownerId).keep(rows, side);
     } else if (setId && homeId) {
       copies = await ctx.db
         .query("collectionCopies")
@@ -1642,7 +1654,7 @@ export const variantCompletion = query({
  * `side`; `truncated` is over the lines read, either side.
  */
 export const setCompletion = query({
-  args: { setId: v.string(), homeId: v.optional(v.string()), side: sideValidator },
+  args: { setId: v.string(), homeId: v.optional(v.string()), side: readSideValidator },
   returns: v.object({
     owned: v.number(),
     ownedAll: v.number(),
@@ -1657,10 +1669,11 @@ export const setCompletion = query({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const side = sideOf(args.side);
     const empty = { owned: 0, ownedAll: 0, variants: [], truncated: false };
     const setId = ctx.db.normalizeId("selectorOptions", args.setId);
     if (!setId) return empty;
-    const homeId = await readScope(ctx, ownerId, args.homeId, args.side);
+    const homeId = await readScope(ctx, ownerId, args.homeId, side);
     if (homeId === null) return empty;
     const read =
       homeId === undefined
@@ -1676,7 +1689,7 @@ export const setCompletion = query({
             .take(MAX_SUMMARY_LINES + 1);
     const truncated = read.length > MAX_SUMMARY_LINES;
     const kept = read.slice(0, MAX_SUMMARY_LINES);
-    const rows = homeId === undefined ? await new HomeSides(ctx, ownerId).keep(kept, args.side) : kept;
+    const rows = homeId === undefined ? await new HomeSides(ctx, ownerId).keep(kept, side) : kept;
     const byVariant = new Map<string, { variantId: Id<"selectorOptions">; cards: Set<string> }>();
     for (const row of rows) {
       const key = row.variantId as string;
@@ -2335,6 +2348,13 @@ export const recountCollectionTalliesPage = internalMutation({
     ...recountTotalsFields,
   }),
   handler: async (ctx, args) => {
+    // Re-asserts the arming itself: a direct `npx convex run` of this page
+    // with `write: true` must not bypass the action's two-step gate.
+    if (args.write && !recountIsArmed()) {
+      throw new ConvexError(
+        `Refused: this deployment is not armed. Set ${RECOUNT_ENV_FLAG}=1 on it to write. Nothing was written.`,
+      );
+    }
     const result = await ctx.db
       .query("collectionContainers")
       .paginate({ cursor: args.cursor, numItems: RECOUNT_PAGE });

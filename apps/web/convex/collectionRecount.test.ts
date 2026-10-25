@@ -129,6 +129,33 @@ describe("armed", () => {
     expect(await snapshot(t)).toEqual(before);
   });
 
+  test("the page itself refuses write:true on an unarmed deployment and writes nothing", async () => {
+    const { t } = await seed();
+    const before = await snapshot(t);
+    await expect(
+      t.mutation(internal.collection.recountCollectionTalliesPage, { cursor: null, write: true }),
+    ).rejects.toThrow(new RegExp(FLAG));
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  test("the page itself refuses write:true when the flag is not 1 or true", async () => {
+    vi.stubEnv(FLAG, "yes");
+    const { t } = await seed();
+    const before = await snapshot(t);
+    await expect(
+      t.mutation(internal.collection.recountCollectionTalliesPage, { cursor: null, write: true }),
+    ).rejects.toThrow(new RegExp(FLAG));
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  test("the page runs write:false (a dry-run page) on an unarmed deployment", async () => {
+    const { t } = await seed();
+    const before = await snapshot(t);
+    const page = await t.mutation(internal.collection.recountCollectionTalliesPage, { cursor: null, write: false });
+    expect(page).toMatchObject({ mains: 3, stamped: 1, cleared: 1 });
+    expect(await snapshot(t)).toEqual(before);
+  });
+
   test("a flag that is not 1 or true does not arm it", async () => {
     vi.stubEnv(FLAG, "yes");
     const { t } = await seed();

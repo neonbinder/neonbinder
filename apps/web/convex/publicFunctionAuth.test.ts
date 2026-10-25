@@ -2177,6 +2177,10 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["collection.copiesInVariant (inventory)", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID, side: "inventory" })],
     ["collection.variantCompletion (inventory)", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID, side: "inventory" })],
     ["collection.setCompletion (inventory)", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID, side: "inventory" })],
+    // NEO-364 — `side` omitted (a tab on the pre-NEO-364 bundle): still signed-in gated.
+    ["collection.copiesInVariant (no side)", (t) => t.query(api.collection.copiesInVariant, { variantId: NOT_AN_ID })],
+    ["collection.variantCompletion (no side)", (t) => t.query(api.collection.variantCompletion, { variantId: NOT_AN_ID })],
+    ["collection.setCompletion (no side)", (t) => t.query(api.collection.setCompletion, { setId: NOT_AN_ID })],
     ["collectionInventory.inventoryCards", (t) => t.query(api.collectionInventory.inventoryCards, {})],
     ["collection.buildingSets", (t) => t.query(api.collection.buildingSets, {})],
     ["collection.addHaves", (t) => t.mutation(api.collection.addHaves, { cardIds: [] })],
