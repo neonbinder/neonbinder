@@ -15,10 +15,10 @@ import { SLUG_RULE, binderHref, cleanSlug, shelfHref } from "@/lib/collection/sh
  *   - The demo (no `useSharing()`): an example link at the neutral handle
  *     (`neonbinder.io/u/you/binders/ohtani-rainbow`), copied on open, and a
  *     line saying it is an example.
- *   - The real collection (NEO-360): the collector's own link, a Public /
- *     Private switch, and for a binder its editable readable part and Reset
- *     link. A binder and the Want List start private; Up for Trade starts
- *     public. With no public name yet, the panel links to the profile.
+ *   - The real collection (NEO-360): the collector's own link, a Private /
+ *     Public choice, and for a binder its editable link name. A binder and
+ *     the Want List start private; Up for Trade starts public. With no
+ *     public name yet, the panel links to the profile.
  */
 export default function ShareLink({ target }: { target: ShareTarget }) {
   const panelId = useId();
@@ -155,6 +155,10 @@ function ExamplePanel({
   );
 }
 
+/** One of the Private / Public choices: a card with its radio. */
+const CHOICE =
+  "flex cursor-pointer items-start gap-2 rounded-md border border-field-rule bg-field px-3 py-2 text-sm text-ink-2 has-[:checked]:border-selection has-[:checked]:text-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus has-[:disabled]:cursor-default";
+
 /** The site's own origin, so a preview's link points at that preview. */
 function origin(): string {
   return typeof window === "undefined" ? "https://neonbinder.io" : window.location.origin;
@@ -177,9 +181,10 @@ function LivePanel({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [flipping, setFlipping] = useState<boolean | null>(null);
+  const radioName = useId();
 
   // A binder made before share links gets its link minted the first time Share opens.
-  const needsLink = subject.kind === "binder" && (!subject.container.slug || !subject.container.slugKey);
+  const needsLink = subject.kind === "binder" && !subject.container.slug;
   const minting = useRef(false);
   useEffect(() => {
     if (!needsLink || minting.current || !container) return;
@@ -212,14 +217,14 @@ function LivePanel({
   const username = profile.username;
   const path =
     subject.kind === "binder"
-      ? subject.container.slug && subject.container.slugKey
-        ? binderHref(username, subject.container.slug, subject.container.slugKey)
+      ? subject.container.slug
+        ? binderHref(username, subject.container.slug)
         : null
       : subject.kind === "want"
         ? shelfHref(username, "want-list")
         : shelfHref(username, "up-for-trade");
   const url = path ? `${origin()}${path}` : null;
-  // The switch moves on the press; the server's answer settles it (a refusal puts it back).
+  // The choice moves on the press; the server's answer settles it (a refusal puts it back).
   const isPublic = flipping ?? (subject.kind === "trade" ? profile.tradePublic : !!container?.isPublic);
 
   const run = async (write: () => Promise<unknown>) => {
@@ -247,21 +252,35 @@ function LivePanel({
   const noun = subject.kind === "binder" ? "binder" : subject.kind === "want" ? "Want List" : "shelf";
   return (
     <>
-      <label className="mt-2 flex cursor-pointer items-center gap-2 rounded-md border border-field-rule bg-field px-3 py-2 text-sm text-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus">
-        <input
-          type="checkbox"
-          role="switch"
-          className="h-4 w-4 accent-selection"
-          checked={isPublic}
-          disabled={busy || !url}
-          onChange={(e) => void flip(e.target.checked)}
-        />
-        {isPublic ? "Public: anyone with the link can look" : "Private: only you can see it"}
-      </label>
+      <fieldset className="mt-2" disabled={busy || !url}>
+        <legend className="text-sm font-medium text-ink-2">Who can see this {noun}</legend>
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          {(
+            [
+              { value: false, title: "Private", hint: "Only you" },
+              { value: true, title: "Public", hint: "Anyone with the link" },
+            ] as const
+          ).map((option) => (
+            <label key={option.title} className={CHOICE}>
+              <input
+                type="radio"
+                name={`${radioName}-visibility`}
+                className="mt-0.5 accent-selection"
+                checked={isPublic === option.value}
+                onChange={() => void flip(option.value)}
+              />
+              <span>
+                <span className="block font-semibold">{option.title}</span>
+                <span className="block text-xs text-ink-2">{option.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       <p className="mt-2 text-ink-2">
         {isPublic
           ? `Visitors see the cards, their condition and grade. Never what you paid, your notes or where a card is kept.`
-          : `This ${noun} is private. Switch it on to share the link below.`}
+          : `Nobody else can open the link below until you pick Public.`}
       </p>
       {url ? <LinkBox>{url}</LinkBox> : <p className="mt-2 text-ink-2">Making your link…</p>}
       {subject.kind === "binder" && subject.container.slug && (
@@ -285,9 +304,6 @@ function LivePanel({
         >
           Copy link
         </NeonButton>
-        {subject.kind === "binder" && (
-          <ResetLink busy={busy} onReset={() => run(() => sharing.resetLink(subject.container))} />
-        )}
         <DoneButton onDone={onDone} />
       </div>
     </>
@@ -334,37 +350,3 @@ function SlugEditor({ slug, busy, onSave }: { slug: string; busy: boolean; onSav
     </form>
   );
 }
-
-/** Two presses: the first says what happens, the second mints a new key. */
-function ResetLink({ busy, onReset }: { busy: boolean; onReset: () => Promise<void> }) {
-  const [asking, setAsking] = useState(false);
-  if (!asking) {
-    return (
-      <NeonButton type="button" variant="secondary" outline disabled={busy} onClick={() => setAsking(true)} className="min-h-9">
-        Reset link
-      </NeonButton>
-    );
-  }
-  return (
-    <span className="flex flex-wrap items-center gap-2">
-      <span className="text-ink-2">The old link stops working for good.</span>
-      <NeonButton
-        type="button"
-        variant="negative"
-        disabled={busy}
-        onClick={() => void onReset().then(() => setAsking(false))}
-        className="min-h-9"
-      >
-        Reset it
-      </NeonButton>
-      <button
-        type="button"
-        onClick={() => setAsking(false)}
-        className="min-h-9 rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink focus-outline"
-      >
-        Keep it
-      </button>
-    </span>
-  );
-}
-

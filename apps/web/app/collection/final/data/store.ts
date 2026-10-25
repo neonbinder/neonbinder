@@ -332,12 +332,10 @@ export interface DemoExtension {
 export interface SharingExtension {
   /** The caller's public name and shelf switches; `undefined` while loading. */
   useShareProfile(): ShareProfile | undefined;
-  /** A binder's link parts, minted now for one made before share links. */
+  /** A binder's link name, minted now for one made before share links. */
   ensureLink(container: Container): Promise<ShareLinkParts>;
-  /** A new readable part for a binder's link; the old one stops working. */
+  /** A new link name for a binder; the old link stops working. Refused when another binder uses it. */
   setSlug(container: Container, slug: string): Promise<ShareLinkParts>;
-  /** A new random key: the old link stops working. No undo. */
-  resetLink(container: Container): Promise<ShareLinkParts>;
   /** A binder or the Want List: public, or private (the default). */
   setVisibility(container: Container, isPublic: boolean): Promise<void>;
   /** Up for Trade or the for-sale stock: public (the default), or private. */

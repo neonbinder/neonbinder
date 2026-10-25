@@ -269,7 +269,6 @@ function toContainer(raw: RawContainer): Container {
     ...(raw.label ? { label: raw.label } : {}),
     count: raw.count ?? null,
     ...(raw.slug ? { slug: raw.slug } : {}),
-    ...(raw.slugKey ? { slugKey: raw.slugKey } : {}),
     ...(raw.visibility === "public" ? { isPublic: true } : {}),
   };
 }
@@ -1771,7 +1770,6 @@ function useConvexSharing(): SharingExtension {
   const asHome = (id: string) => id as RawCopy["homeId"];
   const ensureLink = useMutation(api.collectionContainers.ensureLink);
   const setSlug = useMutation(api.collectionContainers.setSlug);
-  const resetLink = useMutation(api.collectionContainers.resetLink);
   const setVisibility = useMutation(api.collectionContainers.setVisibility);
   const setShelfVisibility = useMutation(api.publicProfile.setShelfVisibility);
   return useMemo<SharingExtension>(
@@ -1781,7 +1779,6 @@ function useConvexSharing(): SharingExtension {
         ensureLink({ containerId: asHome(container.id) }),
       setSlug: async (container, slug) =>
         (await setSlug({ containerId: asHome(container.id), slug })).link,
-      resetLink: (container) => resetLink({ containerId: asHome(container.id) }),
       setVisibility: async (container, isPublic) => {
         await setVisibility({
           containerId: asHome(container.id),
@@ -1792,7 +1789,7 @@ function useConvexSharing(): SharingExtension {
         await setShelfVisibility({ shelf, private: !isPublic });
       },
     }),
-    [ensureLink, setSlug, resetLink, setVisibility, setShelfVisibility],
+    [ensureLink, setSlug, setVisibility, setShelfVisibility],
   );
 }
 

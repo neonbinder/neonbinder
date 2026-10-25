@@ -9,12 +9,15 @@
  *
  * ## What a visitor can reach
  *
- *   - A binder the collector made AND switched public, by its full path
- *     (`<slug>-<slugKey>`). Binders start private.
+ *   - A binder the collector made AND switched public, by its link name
+ *     (`/u/<username>/binders/<slug>`). Binders start private; a private
+ *     binder's link reads as not found.
  *   - The Want List, once switched public. It starts private.
  *   - Up for Trade and the for-sale stock (every copy whose home is a box)
  *     unless the collector switched them private. They start public.
- *   - Never Main, a single box, a set, or a list of the collector's binders.
+ *   - The profile's shelf (`shelves`): the PUBLIC binders' names and links,
+ *     and which public shelves have anything on them. Never a private one.
+ *   - Never Main, a single box or a set.
  *
  * ## The steps every handler takes
  *
@@ -23,8 +26,8 @@
  *  2. Resolve the username to its owner inside the handler. The owner's Clerk
  *     subject never leaves it; no returned field carries `ownerId`.
  *  3. Answer the SAME not-found (null, or an empty page) for a missing user, a
- *     private page, a wrong key, a wrong readable part, Main, a box and a
- *     system row, so probing a link teaches nothing.
+ *     private page, a wrong link name, Main, a box and a system row, so
+ *     probing a link cannot tell a private binder from a missing one.
  *  4. Read with the owner's indexes only, at most `MAX_PUBLIC_PAGE` lines a
  *     page whatever the client asks.
  *  5. Map every copy through `publicCopyOut`, built field by field from an
@@ -32,7 +35,7 @@
  *
  * Never public: cost, acquired date, location, notes, grading cert, serial
  * number, a copy's home or its id, a box's name, any other binder's link, and
- * timestamps. Counts are the stored ones only (null when absent): a visitor
+ * timestamps, a private binder's name or link. Counts are the stored ones only (null when absent): a visitor
  * can never trigger a recount.
  */
 
@@ -49,7 +52,7 @@ import {
   collectionLabelValidator,
 } from "./schema";
 import { CatalogReader, catalogCardWithPathValidator } from "./lib/catalogView";
-import { USERNAME_RE, splitBinderPath } from "../lib/collection/share-links";
+import { USERNAME_RE, isSlug } from "../lib/collection/share-links";
 
 type ContainerRow = Doc<"collectionContainers">;
 type CopyRow = Doc<"collectionCopies">;
@@ -116,9 +119,8 @@ async function profileOf(ctx: QueryCtx, username: string): Promise<Doc<"publicPr
 }
 
 /**
- * The binder a public path names, or null: unknown user, malformed path,
- * wrong key, wrong readable part, private, or not a binder the collector
- * made (Main, a box, a system shelf, even one with `visibility` written on
+ * The binder a public path names, or null: unknown user, malformed or
+ * unknown link name, private, or not a binder the collector made (Main, a box, a system shelf, even one with `visibility` written on
  * it by hand). Every one of those is the same null.
  */
 async function publicBinder(
@@ -126,18 +128,17 @@ async function publicBinder(
   username: string,
   path: string,
 ): Promise<{ ownerId: string; row: ContainerRow } | null> {
-  const parts = splitBinderPath(path);
-  if (!parts) return null;
+  if (!isSlug(path)) return null;
   const profile = await profileOf(ctx, username);
   if (!profile) return null;
   const ownerId = profile.userId;
   const row = await ctx.db
     .query("collectionContainers")
-    .withIndex("by_owner_and_slugKey", (q) => q.eq("ownerId", ownerId).eq("slugKey", parts.slugKey))
+    .withIndex("by_owner_and_slug", (q) => q.eq("ownerId", ownerId).eq("slug", path))
     .first();
   if (!row || row.ownerId !== ownerId) return null;
   if (row.system !== undefined || row.kind !== "binder") return null;
-  if (row.slug !== parts.slug || row.visibility !== "public") return null;
+  if (row.visibility !== "public") return null;
   return { ownerId, row };
 }
 
@@ -309,14 +310,26 @@ export const shelf = query({
   },
 });
 
+const publicBinderLinkValidator = v.object({
+  name: v.string(),
+  slug: v.string(),
+  count: v.union(collectionCountValidator, v.null()),
+});
+
 /**
- * The shelves the public profile page links to: each true when public and
- * not known to be empty. Never lists binders. Null for an unknown user.
+ * The public profile's shelf: the collector's PUBLIC binders (name, link
+ * name, stored count), by name, and each public shelf that is not known to
+ * be empty. A private binder is never listed. Null for an unknown user.
  */
 export const shelves = query({
   args: { username: v.string() },
   returns: v.union(
-    v.object({ wantList: v.boolean(), trade: v.boolean(), forSale: v.boolean() }),
+    v.object({
+      binders: v.array(publicBinderLinkValidator),
+      wantList: v.boolean(),
+      trade: v.boolean(),
+      forSale: v.boolean(),
+    }),
     v.null(),
   ),
   handler: async (ctx, args) => {
@@ -324,10 +337,19 @@ export const shelves = query({
     if (!profile) return null;
     const ownerId = profile.userId;
     const hasAny = (count: Count | null | undefined) => count === null || count === undefined || count.lines > 0;
+    const own = await ctx.db
+      .query("collectionContainers")
+      .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", undefined))
+      .take(MAX_CONTAINERS);
+    const binders = own
+      .filter((row) => row.kind === "binder" && row.visibility === "public" && row.slug)
+      .map((row) => ({ name: row.name, slug: row.slug!, count: row.count ?? null }))
+      .sort((a, b) => a.name.localeCompare(b.name));
     const want = await systemRow(ctx, ownerId, "want");
     const trade = profile.tradePrivate ? null : await systemRow(ctx, ownerId, "trade");
-    const boxes = profile.forSalePrivate ? [] : await boxesOf(ctx, ownerId);
+    const boxes = profile.forSalePrivate ? [] : own.filter((row) => row.kind === "box");
     return {
+      binders,
       wantList: want?.visibility === "public" && hasAny(want.count),
       trade: !!trade && hasAny(trade.count),
       forSale: boxes.length > 0 && hasAny(sumCounts(boxes.map((box) => box.count))),

@@ -1,6 +1,8 @@
 import React from "react";
 import { useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
+import { binderHref, shelfHref } from "@/lib/collection/share-links";
 import { Link, useParams } from "react-router";
 
 // — Inline SVG social icons —
@@ -111,14 +113,68 @@ function ProfileLinkButton({
  * `data-theme="dark"` on each root scopes the dark roles (app/theme.css) to
  * the page, so `text-ink`, `bg-surface` and the rest resolve dark here.
  */
+type Shelves = NonNullable<FunctionReturnType<typeof api.publicCollection.shelves>>;
+
+function cardCount(count: { copies: number } | null): string | null {
+  if (!count) return null;
+  return count.copies === 1 ? "1 card" : `${count.copies} cards`;
+}
+
+/**
+ * NEO-360 — the profile's shelf: one tile per public binder (by name), then
+ * Up for Trade, For sale and the Want List when they are public and not
+ * empty. Nothing at all when there is nothing to show.
+ */
+function ProfileShelf({ username, shelves }: { username: string; shelves: Shelves }) {
+  const tiles = [
+    ...shelves.binders.map((b) => ({
+      key: `b:${b.slug}`,
+      to: binderHref(username, b.slug),
+      title: b.name,
+      note: cardCount(b.count),
+      tone: "border-neon-blue/60",
+    })),
+    ...[
+      { show: shelves.trade, path: "up-for-trade" as const, title: "Up for Trade", tone: "border-neon-green/60" },
+      { show: shelves.forSale, path: "for-sale" as const, title: "For sale", tone: "border-neon-yellow/60" },
+      { show: shelves.wantList, path: "want-list" as const, title: "Want List", tone: "border-neon-pink/60" },
+    ]
+      .filter((shelf) => shelf.show)
+      .map((shelf) => ({ key: shelf.path, to: shelfHref(username, shelf.path), title: shelf.title, note: null, tone: shelf.tone })),
+  ];
+  if (tiles.length === 0) return null;
+  return (
+    <section aria-labelledby="profile-shelf" className="w-full mt-6">
+      <div className="border-t border-ink/10 pt-6">
+        <h2 id="profile-shelf" className="text-xs uppercase tracking-widest text-ink-3 font-semibold mb-4">
+          Binders
+        </h2>
+        <ul className="grid grid-cols-2 gap-3 text-left">
+          {tiles.map((tile) => (
+            <li key={tile.key}>
+              <Link
+                to={tile.to}
+                className={`flex min-h-20 flex-col justify-between rounded-lg border-l-4 ${tile.tone} bg-raised px-3 py-2 transition-colors hover:bg-hover-raised focus-outline`}
+              >
+                <span className="font-semibold text-ink break-words">{tile.title}</span>
+                {tile.note && <span className="text-xs text-ink-2">{tile.note}</span>}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
 export default function PublicProfilePage() {
   const { username } = useParams<{ username: string }>();
   const profile = useQuery(api.publicProfile.getPublicProfileByUsername, {
     username: username!,
   });
 
-  // NEO-360 — the public shelves to link to. Never a list of binders: a
-  // binder is reachable only through the link its collector shares.
+  // NEO-360 — the shelf at the bottom: the collector's public binders, Up for
+  // Trade, For sale and the Want List. Never a private binder.
   const shelves = useQuery(api.publicCollection.shelves, { username: username! });
 
   const color1 = profile?.brandColor1 ?? "#0a0a0a";
@@ -257,38 +313,6 @@ export default function PublicProfilePage() {
             )}
           </div>
 
-          {/* NEO-360 — public collection shelves */}
-          {shelves && (shelves.trade || shelves.forSale || shelves.wantList) && (
-            <div className="w-full mt-6">
-              <div className="border-t border-ink/10 pt-6">
-                <h2 className="text-xs uppercase tracking-widest text-ink-3 font-semibold mb-4">
-                  Collection
-                </h2>
-                <div className="space-y-3">
-                  {[
-                    { show: shelves.trade, to: `/u/${profile.username}/up-for-trade`, label: "Up for Trade" },
-                    { show: shelves.forSale, to: `/u/${profile.username}/for-sale`, label: "For sale" },
-                    { show: shelves.wantList, to: `/u/${profile.username}/want-list`, label: "Want List" },
-                  ]
-                    .filter((l) => l.show)
-                    .map(({ to, label }) => (
-                      <Link
-                        key={label}
-                        to={to}
-                        className="flex items-center justify-center w-full py-3 px-5 rounded-full font-semibold text-ink transition-opacity hover:opacity-80 focus-outline"
-                        style={{
-                          background: `linear-gradient(135deg, ${color1}, ${color2})`,
-                          boxShadow: `0 0 12px #00D55899`,
-                        }}
-                      >
-                        {label}
-                      </Link>
-                    ))}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Marketplace buttons */}
           {marketplaceLinks.length > 0 && (
             <div className="w-full mt-6">
@@ -357,6 +381,9 @@ export default function PublicProfilePage() {
               </div>
             </div>
           )}
+
+          {/* NEO-360 — the shelf: public binders, then the public shelves */}
+          {shelves && <ProfileShelf username={profile.username} shelves={shelves} />}
 
           {/* Footer */}
           <div className="flex flex-col items-center gap-3 mt-8 pt-6 border-t border-ink/10 w-full">

@@ -3466,17 +3466,20 @@ export default defineSchema({
     count: v.optional(collectionCountValidator),
     tally: v.optional(collectionTallyValidator),
     /**
-     * NEO-360 — a binder's public link is `/u/<username>/binders/<slug>-<slugKey>`.
-     * `slug` is the readable part the collector controls (lowercase
-     * `[a-z0-9-]`, 3 to 50 characters, suggested from the name at create;
-     * a rename never touches it). `slugKey` is 6 random characters
-     * (`[a-z0-9]`) minted once, so knowing the username and the binder's
-     * name is not enough to find it; "Reset link" mints a new one. Only the
-     * collector's own binders carry them (never Main, a box, Up for Trade
-     * or the Want List). Absent on a binder made before NEO-360 until its
-     * owner first opens Share or edits it (`collectionContainers.ensureLink`).
+     * NEO-360 — a binder's public link is `/u/<username>/binders/<slug>`.
+     * `slug` is the link name the collector controls (lowercase `[a-z0-9-]`,
+     * 3 to 50 characters, suggested from the name at create; a rename never
+     * touches it), unique among the owner's binders. Only the collector's
+     * own binders carry it (never Main, a box, Up for Trade or the Want
+     * List). Absent on a binder made before NEO-360 until its owner first
+     * opens Share (`collectionContainers.ensureLink`).
      */
     slug: v.optional(v.string()),
+    /**
+     * Retired before release: an early NEO-360 draft added a random suffix to
+     * binder links. Never read or written; kept only so a preview deployment
+     * holding draft rows still validates. Drop once no row carries it.
+     */
     slugKey: v.optional(v.string()),
     /**
      * NEO-360 — readable by anyone with the link. Only `"public"` is ever
@@ -3495,10 +3498,9 @@ export default defineSchema({
     // (eq system undefined, take 201).
     .index("by_owner_and_system", ["ownerId", "system"])
     // NEO-360 — a public binder link (`publicCollection.binder`): owner from the
-    // username, then the key. `.first()`, never `.unique()`: a key is drawn
-    // from ~2 billion values per owner, and a reader must not throw on the
-    // vanishing chance of a twin.
-    .index("by_owner_and_slugKey", ["ownerId", "slugKey"]),
+    // username, then the link name. Also the uniqueness check when a link
+    // name is minted or changed. `.first()`, never `.unique()`, on reads.
+    .index("by_owner_and_slug", ["ownerId", "slug"]),
 
   /**
    * ── NEO-358: one pile of a card the collector owns ────────────────────────

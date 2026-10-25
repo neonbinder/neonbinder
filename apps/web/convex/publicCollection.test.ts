@@ -1,7 +1,7 @@
 /**
  * NEO-360 — public share links: `convex/publicCollection.ts` (the anonymous
  * reads) and the owner's switches (`collectionContainers.ensureLink`,
- * `setSlug`, `resetLink`, `setVisibility`, `publicProfile.setShelfVisibility`).
+ * `setSlug`, `setVisibility`, `publicProfile.setShelfVisibility`).
  *
  * The forbidden-key scan is the one that matters most: seed a copy with every
  * private field set, call every public query, and walk the JSON for any
@@ -15,7 +15,6 @@ import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
 import { MAX_PUBLIC_PAGE } from "./publicCollection";
-import { binderPath, isSlugKey } from "../lib/collection/share-links";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -41,7 +40,7 @@ async function binder(s: S, name = "Ohtani rainbow", who: "me" | "them" = "me") 
   const caller = who === "me" ? s.me : s.them;
   const { containerId } = await caller.mutation(api.collectionContainers.create, { kind: "binder", name });
   const row = await s.t.run(async (ctx) => ctx.db.get(containerId));
-  return { id: containerId, path: binderPath(row!.slug!, row!.slugKey!), row: row! };
+  return { id: containerId, path: row!.slug!, row: row! };
 }
 
 const PRIVATE_VALUES = {
@@ -64,7 +63,6 @@ const FORBIDDEN_KEYS = [
   "userId",
   "lastUpdated",
   "binderId",
-  "slugKey",
 ];
 
 /**
@@ -149,7 +147,6 @@ describe("the forbidden-key scan", () => {
       inBox.copyId,
       b.id,
       box,
-      b.row.slugKey!,
     ];
     scan(answers, "answers", hits, forbiddenValues);
     expect(hits).toEqual([]);
@@ -189,6 +186,7 @@ describe("defaults", () => {
     expect((await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE })).page).toHaveLength(1);
     expect((await s.anon.query(api.publicCollection.forSale, { username: "ace", paginationOpts: PAGE })).page).toHaveLength(1);
     expect(await s.anon.query(api.publicCollection.shelves, { username: "ace" })).toEqual({
+      binders: [],
       wantList: false,
       trade: true,
       forSale: true,
@@ -200,6 +198,7 @@ describe("defaults", () => {
     expect((await s.anon.query(api.publicCollection.trade, { username: "ace", paginationOpts: PAGE })).page).toEqual([]);
     expect((await s.anon.query(api.publicCollection.forSale, { username: "ace", paginationOpts: PAGE })).page).toEqual([]);
     expect(await s.anon.query(api.publicCollection.shelves, { username: "ace" })).toEqual({
+      binders: [],
       wantList: false,
       trade: false,
       forSale: false,
@@ -231,8 +230,8 @@ describe("Main, boxes and the system shelves", () => {
       /Main is never shared/,
     );
     await expect(s.me.mutation(api.collectionContainers.ensureLink, { containerId: main })).rejects.toThrow();
-    await s.t.run(async (ctx) => ctx.db.patch(main, { slug: "main", slugKey: "abc123", visibility: "public" }));
-    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "main-abc123" })).toBeNull();
+    await s.t.run(async (ctx) => ctx.db.patch(main, { slug: "main", visibility: "public" }));
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "main" })).toBeNull();
   });
 
   test("a box and Up for Trade take no visibility, and a hand-written public box reads as not found", async () => {
@@ -246,26 +245,24 @@ describe("Main, boxes and the system shelves", () => {
     await expect(
       s.me.mutation(api.collectionContainers.setVisibility, { containerId: s.system.tradeId, visibility: "public" }),
     ).rejects.toThrow();
-    await s.t.run(async (ctx) => ctx.db.patch(box, { slug: "show-box", slugKey: "zzz999", visibility: "public" }));
-    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "show-box-zzz999" })).toBeNull();
+    await s.t.run(async (ctx) => ctx.db.patch(box, { slug: "show-box", visibility: "public" }));
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "show-box" })).toBeNull();
+    expect((await s.anon.query(api.publicCollection.shelves, { username: "ace" }))?.binders).toEqual([]);
   });
 });
 
 describe("guessing", () => {
-  test("wrong key, wrong readable part, private, missing, unknown user and garbage all read the same null", async () => {
+  test("a wrong link name, private, missing, unknown user and garbage all read the same null", async () => {
     const s = await setup();
     const pub = await binder(s, "Ohtani rainbow");
     const priv = await binder(s, "Secret stash");
     await s.me.mutation(api.collectionContainers.setVisibility, { containerId: pub.id, visibility: "public" });
-    const key = pub.row.slugKey!;
-    const flipped = (key[0] === "a" ? "b" : "a") + key.slice(1);
     const probes = [
-      { username: "ace", path: `ohtani-rainbow-${flipped}` },
-      { username: "ace", path: `ohtani-rainbows-${key}` },
+      { username: "ace", path: "ohtani-rainbows" },
       { username: "ace", path: priv.path },
-      { username: "ace", path: "nothing-here-abcdef" },
+      { username: "ace", path: "nothing-here" },
       { username: "nobody", path: pub.path },
-      { username: "ace", path: "ohtani-rainbow" },
+      { username: "ace", path: "Ohtani-Rainbow" },
       { username: "ACE", path: pub.path },
       { username: "ace", path: "x".repeat(500) },
     ];
@@ -370,25 +367,34 @@ describe("what the shelves say", () => {
 });
 
 describe("links", () => {
-  test("a new binder is born with a readable part and a 6-character key; a rename keeps both", async () => {
+  test("a new binder is born with a plain link name; a rename keeps it; a twin name gets -2", async () => {
     const s = await setup();
     const b = await binder(s, "Ohtani Rainbow!");
     expect(b.row.slug).toBe("ohtani-rainbow");
-    expect(isSlugKey(b.row.slugKey!)).toBe(true);
+    const twin = await binder(s, "Ohtani rainbow");
+    expect(twin.row.slug).toBe("ohtani-rainbow-2");
+    const theirs = await binder(s, "Ohtani rainbow", "them");
+    expect(theirs.row.slug).toBe("ohtani-rainbow");
     await s.me.mutation(api.collectionContainers.update, { containerId: b.id, name: "Shohei" });
     const after = await s.t.run(async (ctx) => ctx.db.get(b.id));
-    expect([after?.slug, after?.slugKey]).toEqual([b.row.slug, b.row.slugKey]);
+    expect(after?.slug).toBe(b.row.slug);
   });
 
-  test("setSlug checks the format, changes the readable part and kills the old one", async () => {
+  test("setSlug checks the format, refuses a name another binder uses, and kills the old link", async () => {
     const s = await setup();
     const b = await binder(s);
+    const other = await binder(s, "Gold stuff");
     await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
     for (const bad of ["ab", "has--double", "-edge", "émoji✨", "a".repeat(51), "UPPER/slash"]) {
       await expect(s.me.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: bad })).rejects.toThrow(
         /lowercase letters/,
       );
     }
+    await expect(
+      s.me.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: other.path }),
+    ).rejects.toThrow(/already uses/);
+    // Its own name is never "taken".
+    await s.me.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: "ohtani-rainbow" });
     const { link, previous } = await s.me.mutation(api.collectionContainers.setSlug, {
       containerId: b.id,
       slug: "  Shohei Gold ",
@@ -396,22 +402,22 @@ describe("links", () => {
     expect(link.slug).toBe("shohei-gold");
     expect(previous).toBe("ohtani-rainbow");
     expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toBeNull();
-    expect(
-      await s.anon.query(api.publicCollection.binder, { username: "ace", path: binderPath(link.slug, link.slugKey) }),
-    ).not.toBeNull();
+    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: "shohei-gold" })).not.toBeNull();
   });
 
-  test("resetLink changes the key and kills the old link; the binder stays public", async () => {
+  test("the profile's shelf lists public binders only, by name", async () => {
     const s = await setup();
-    const b = await binder(s);
-    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
-    const link = await s.me.mutation(api.collectionContainers.resetLink, { containerId: b.id });
-    expect(link.slugKey).not.toBe(b.row.slugKey);
-    expect(isSlugKey(link.slugKey)).toBe(true);
-    expect(await s.anon.query(api.publicCollection.binder, { username: "ace", path: b.path })).toBeNull();
-    expect(
-      await s.anon.query(api.publicCollection.binder, { username: "ace", path: binderPath(link.slug, link.slugKey) }),
-    ).not.toBeNull();
+    const zed = await binder(s, "Zed binder");
+    const ace = await binder(s, "Ace binder");
+    await binder(s, "Private stash");
+    for (const b of [zed, ace]) {
+      await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    }
+    const shelves = await s.anon.query(api.publicCollection.shelves, { username: "ace" });
+    expect(shelves?.binders).toEqual([
+      { name: "Ace binder", slug: "ace-binder", count: { copies: 0, lines: 0 } },
+      { name: "Zed binder", slug: "zed-binder", count: { copies: 0, lines: 0 } },
+    ]);
   });
 
   test("ensureLink mints a link for a binder made before NEO-360, once", async () => {
@@ -433,13 +439,12 @@ describe("links", () => {
 });
 
 describe("the switches are the owner's", () => {
-  test("setVisibility, setSlug, resetLink, ensureLink and setShelfVisibility refuse signed-out callers and other collectors' rows", async () => {
+  test("setVisibility, setSlug, ensureLink and setShelfVisibility refuse signed-out callers and other collectors' rows", async () => {
     const s = await setup();
     const b = await binder(s);
     const anonCalls = [
       () => s.anon.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" }),
       () => s.anon.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: "mine-now" }),
-      () => s.anon.mutation(api.collectionContainers.resetLink, { containerId: b.id }),
       () => s.anon.mutation(api.collectionContainers.ensureLink, { containerId: b.id }),
       () => s.anon.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true }),
     ];
@@ -447,12 +452,11 @@ describe("the switches are the owner's", () => {
     const theirCalls = [
       () => s.them.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" }),
       () => s.them.mutation(api.collectionContainers.setSlug, { containerId: b.id, slug: "mine-now" }),
-      () => s.them.mutation(api.collectionContainers.resetLink, { containerId: b.id }),
       () => s.them.mutation(api.collectionContainers.ensureLink, { containerId: b.id }),
     ];
     for (const call of theirCalls) await expect(call()).rejects.toThrow(/isn't in your collection/);
     const row = await s.t.run(async (ctx) => ctx.db.get(b.id));
-    expect(row).toMatchObject({ slug: b.row.slug, slugKey: b.row.slugKey });
+    expect(row).toMatchObject({ slug: b.row.slug });
     expect(row?.visibility).toBeUndefined();
   });
 

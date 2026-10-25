@@ -2355,7 +2355,6 @@ describe("NEO-360: the public share-link reads are public by intent; the switche
     const calls = [
       () => t.mutation(api.collectionContainers.setVisibility, { containerId, visibility: "public" }),
       () => t.mutation(api.collectionContainers.setSlug, { containerId, slug: "my-binder" }),
-      () => t.mutation(api.collectionContainers.resetLink, { containerId }),
       () => t.mutation(api.collectionContainers.ensureLink, { containerId }),
       () => t.mutation(api.publicProfile.setShelfVisibility, { shelf: "trade", private: true }),
     ];

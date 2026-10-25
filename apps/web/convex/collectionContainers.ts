@@ -23,10 +23,10 @@
  * reads it, deriving or hand-counting (bounded) a container that was never
  * counted, and says null when it cannot.
  *
- * Share links (NEO-360): a binder the collector made carries a `slug` and a
- * `slugKey` from birth (`create`), so its link survives a rename; a binder
- * made before NEO-360 gets them from `ensureLink`. `setSlug`, `resetLink` and
- * `setVisibility` are the only other writers. Binders and the Want List start
+ * Share links (NEO-360): a binder the collector made carries a `slug` (its
+ * link name, unique among the owner's binders) from birth (`create`), so its
+ * link survives a rename; a binder made before NEO-360 gets one from
+ * `ensureLink`. `setSlug` and `setVisibility` are the only other writers. Binders and the Want List start
  * private; Main, boxes and Up for Trade never take a `visibility` here (Up for
  * Trade's switch is `publicProfile.setShelfVisibility`). The anonymous reads
  * are `publicCollection.ts`'s.
@@ -64,7 +64,7 @@ import {
   collectionRuleValidator,
 } from "./schema";
 import { SPINE_FONTS } from "../lib/print/spine-fonts";
-import { SLUG_RULE, cleanSlug, mintSlugKey, suggestSlug } from "../lib/collection/share-links";
+import { SLUG_RULE, cleanSlug, freeSlug, suggestSlug } from "../lib/collection/share-links";
 
 type ContainerRow = Doc<"collectionContainers">;
 
@@ -103,9 +103,8 @@ export const containerValidator = v.object({
    * is too big to count here: show it as unknown, never as 0.
    */
   count: v.union(collectionCountValidator, v.null()),
-  /** NEO-360 — a binder's link parts; absent until minted (see `ensureLink`). */
+  /** NEO-360 — a binder's link name; absent until minted (see `ensureLink`). */
   slug: v.optional(v.string()),
-  slugKey: v.optional(v.string()),
   /** NEO-360 — present only when public (a binder, or the Want List). */
   visibility: v.optional(v.literal("public")),
   lastUpdated: v.number(),
@@ -125,7 +124,6 @@ function containerOut(
     ...(row.rule ? { rule: row.rule } : {}),
     count,
     ...(row.slug ? { slug: row.slug } : {}),
-    ...(row.slugKey ? { slugKey: row.slugKey } : {}),
     ...(row.visibility === "public" ? { visibility: "public" as const } : {}),
     lastUpdated: row.lastUpdated,
   };
@@ -171,6 +169,25 @@ function cleanName(raw: string): string {
 }
 
 /** The caller's container, or a not-found refusal. */
+/**
+ * The first free link name for one of the owner's binders, from `base`
+ * (`base`, `base-2`, ...). `self` is the binder being named, whose own name
+ * never counts as taken. Bounded: one collector has at most `MAX_CONTAINERS`.
+ */
+async function freeSlugFor(
+  ctx: MutationCtx,
+  ownerId: string,
+  base: string,
+  self?: Id<"collectionContainers">,
+): Promise<string> {
+  const own = await ctx.db
+    .query("collectionContainers")
+    .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", undefined))
+    .take(MAX_CONTAINERS);
+  const taken = new Set(own.filter((row) => row._id !== self && row.slug).map((row) => row.slug!));
+  return freeSlug(base, taken);
+}
+
 async function ownContainer(
   ctx: MutationCtx,
   ownerId: string,
@@ -310,7 +327,7 @@ export const create = mutation({
       ...(label ? { label } : {}),
       count: { copies: 0, lines: 0 },
       // NEO-360 — the link is minted with the binder, so a rename never moves it.
-      ...(args.kind === "binder" ? { slug: suggestSlug(name), slugKey: mintSlugKey() } : {}),
+      ...(args.kind === "binder" ? { slug: freeSlug(suggestSlug(name), new Set(own.map((row) => row.slug ?? ""))) } : {}),
       lastUpdated: Date.now(),
     });
     return { containerId };
@@ -491,12 +508,12 @@ export const remove = mutation({
 // NEO-360 — share links
 // ───────────────────────────────────────────────────────────────────────────
 
-const linkValidator = v.object({ slug: v.string(), slugKey: v.string() });
+const linkValidator = v.object({ slug: v.string() });
 
 /**
- * A binder's link parts, minted now if it was made before NEO-360 (the
- * readable part from its current name). Idempotent. The Share panel and the
- * edit dialog call it when they open. Refuses Main, a box and the system
+ * A binder's link name, minted now if it was made before NEO-360 (from its
+ * current name, made unique among the owner's binders). Idempotent. The
+ * Share panel calls it when it opens. Refuses Main, a box and the system
  * shelves.
  */
 export const ensureLink = mutation({
@@ -506,18 +523,18 @@ export const ensureLink = mutation({
     const ownerId = await requireSignedIn(ctx);
     const row = await ownContainer(ctx, ownerId, args.containerId);
     if (!hasOwnLink(row)) refuseNoLink(row);
-    if (row.slug && row.slugKey) return { slug: row.slug, slugKey: row.slugKey };
-    const link = { slug: row.slug ?? suggestSlug(row.name), slugKey: row.slugKey ?? mintSlugKey() };
-    await ctx.db.patch(row._id, link);
-    return link;
+    if (row.slug) return { slug: row.slug };
+    const slug = await freeSlugFor(ctx, ownerId, suggestSlug(row.name), row._id);
+    await ctx.db.patch(row._id, { slug });
+    return { slug };
   },
 });
 
 /**
- * Change a binder's readable part (`slug`). Trimmed and lower-cased; spaces
+ * Change a binder's link name (`slug`). Trimmed and lower-cased; spaces
  * become hyphens; anything else outside `[a-z0-9-]` is refused, not
- * rewritten. It need not be unique: the key makes the path unique. The old
- * readable part stops working at once. `previous` is what it was (undo =
+ * rewritten. Refused when another of the collector's binders already has
+ * it. The old link stops working at once. `previous` is what it was (undo =
  * `setSlug` with it).
  */
 export const setSlug = mutation({
@@ -529,29 +546,11 @@ export const setSlug = mutation({
     if (!hasOwnLink(row)) refuseNoLink(row);
     const slug = cleanSlug(args.slug);
     if (!slug) refuse(COLLECTION_ERRORS.invalid, SLUG_RULE);
-    const link = { slug, slugKey: row.slugKey ?? mintSlugKey() };
-    await ctx.db.patch(row._id, link);
-    return { link, ...(row.slug ? { previous: row.slug } : {}) };
-  },
-});
-
-/**
- * "Reset link": a new random key for a binder, so a link that went further
- * than meant stops working while the binder stays as public or private as
- * it was. No undo: the old key is gone for good.
- */
-export const resetLink = mutation({
-  args: { containerId: v.id("collectionContainers") },
-  returns: linkValidator,
-  handler: async (ctx, args) => {
-    const ownerId = await requireSignedIn(ctx);
-    const row = await ownContainer(ctx, ownerId, args.containerId);
-    if (!hasOwnLink(row)) refuseNoLink(row);
-    let slugKey = mintSlugKey();
-    while (slugKey === row.slugKey) slugKey = mintSlugKey();
-    const link = { slug: row.slug ?? suggestSlug(row.name), slugKey };
-    await ctx.db.patch(row._id, link);
-    return link;
+    if (slug !== row.slug && (await freeSlugFor(ctx, ownerId, slug, row._id)) !== slug) {
+      refuse(COLLECTION_ERRORS.invalid, `Another of your binders already uses ${slug}. Pick a different link name.`);
+    }
+    await ctx.db.patch(row._id, { slug });
+    return { link: { slug }, ...(row.slug ? { previous: row.slug } : {}) };
   },
 });
 
@@ -578,10 +577,7 @@ export const setVisibility = mutation({
     const patch: Partial<ContainerRow> = {
       visibility: args.visibility === "public" ? "public" : undefined,
     };
-    if (hasOwnLink(row)) {
-      if (!row.slug) patch.slug = suggestSlug(row.name);
-      if (!row.slugKey) patch.slugKey = mintSlugKey();
-    }
+    if (hasOwnLink(row) && !row.slug) patch.slug = await freeSlugFor(ctx, ownerId, suggestSlug(row.name), row._id);
     await ctx.db.patch(row._id, patch);
     return null;
   },

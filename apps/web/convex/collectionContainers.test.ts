@@ -100,7 +100,7 @@ describe("ensureSystem and list", () => {
     await mk(s, "binder", "A");
     const allowed = ["_id", "kind", "system", "name", "count", "lastUpdated", "description", "label", "rule",
       // NEO-360 — the owner's own link parts and switch.
-      "slug", "slugKey", "visibility"];
+      "slug", "visibility"];
     for (const row of await s.me.query(api.collectionContainers.list, {})) {
       expect(Object.keys(row).filter((k) => !allowed.includes(k))).toEqual([]);
       expect(row.count).not.toBeNull();

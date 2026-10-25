@@ -1,14 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  MAX_BINDER_PATH_CHARS,
-  SLUG_MAX_CHARS,
-  binderPath,
-  cleanSlug,
-  isSlugKey,
-  mintSlugKey,
-  splitBinderPath,
-  suggestSlug,
-} from "./share-links";
+import { SLUG_MAX_CHARS, binderHref, cleanSlug, freeSlug, isSlug, suggestSlug } from "./share-links";
 
 describe("share links (NEO-360)", () => {
   it("suggests a readable part from a binder's name, always valid", () => {
@@ -30,16 +21,21 @@ describe("share links (NEO-360)", () => {
     }
   });
 
-  it("mints 6 characters from [a-z0-9]", () => {
-    const keys = new Set(Array.from({ length: 200 }, mintSlugKey));
-    for (const key of keys) expect(isSlugKey(key)).toBe(true);
-    expect(keys.size).toBeGreaterThan(190);
+  it("finds the first free link name, still within the length", () => {
+    expect(freeSlug("tb-binder", new Set())).toBe("tb-binder");
+    expect(freeSlug("tb-binder", new Set(["tb-binder", "tb-binder-2"]))).toBe("tb-binder-3");
+    const long = "a".repeat(SLUG_MAX_CHARS);
+    const next = freeSlug(long, new Set([long]));
+    expect(next.length).toBeLessThanOrEqual(SLUG_MAX_CHARS);
+    expect(next.endsWith("-2")).toBe(true);
+    expect(isSlug(next)).toBe(true);
   });
 
-  it("splits a path back into its parts, and refuses anything else", () => {
-    expect(splitBinderPath(binderPath("ohtani-rainbow", "k7f3q2"))).toEqual({ slug: "ohtani-rainbow", slugKey: "k7f3q2" });
-    for (const bad of ["ohtani-rainbow", "ab-k7f3q2", "ohtani-K7F3Q2", "-k7f3q2", "x".repeat(MAX_BINDER_PATH_CHARS + 1)]) {
-      expect(splitBinderPath(bad)).toBeNull();
+  it("builds a plain path, and knows a well-formed link name", () => {
+    expect(binderHref("ace", "ohtani-rainbow")).toBe("/u/ace/binders/ohtani-rainbow");
+    expect(isSlug("ohtani-rainbow")).toBe(true);
+    for (const bad of ["ab", "Ohtani", "-ab", "a--b", "x".repeat(SLUG_MAX_CHARS + 1)]) {
+      expect(isSlug(bad)).toBe(false);
     }
   });
 });

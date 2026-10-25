@@ -403,11 +403,10 @@ export interface Container {
    */
   count: ContainerCount | null;
   /**
-   * NEO-360 — a binder's share link parts (the real collection only; absent
+   * NEO-360 — a binder's link name (the real collection only; absent
    * until minted, and never on Main, a box or a system shelf).
    */
   slug?: string;
-  slugKey?: string;
   /** NEO-360 — anyone with the link can read it (a binder or the Want List). */
   isPublic?: boolean;
 }
@@ -681,7 +680,6 @@ export interface ShareProfile {
 
 export interface ShareLinkParts {
   slug: string;
-  slugKey: string;
 }
 
 // ---------------------------------------------------------------------------

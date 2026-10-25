@@ -1,13 +1,14 @@
 // NEO-360 (R1): public share links. A signed-in collector picks a public name,
 // builds a binder holding one graded copy with a cost, a location, notes and a
-// cert, flags it Up for trade, and opens Share: the binder says it is private.
-// They rename the link's readable part, switch the binder public and read the
-// link off the panel. A visitor (a fresh, signed-out context on the same
-// device) opens it and sees the binder's name, the card and its grade, and
-// none of the private strings anywhere on the page. A one-character change to
-// the key reads as not found; the Want List (never switched public) reads as
-// not found; Up for Trade, public by default, lists the card. The collector
-// switches the binder private and the visitor's link reads as not found.
+// cert, flags it Up for trade, and opens Share: Private is picked. They
+// rename the link, pick Public and read the plain link
+// (`/u/<username>/binders/<link name>`) off the panel. A visitor (a fresh,
+// signed-out context on the same device) opens it and sees the binder's name,
+// the card and its grade, and none of the private strings anywhere on the
+// page. A wrong link name reads as not found; the profile's shelf lists the
+// binder and Up for Trade; the Want List (never switched public) reads as not
+// found; Up for Trade, public by default, lists the card. The collector picks
+// Private again and the visitor's link reads as not found.
 //
 // R7/R7a: writes only the signed-in user's own rows (`publicProfiles`,
 // `collectionContainers`, `collectionCopies`; the bootstrap reset clears the
@@ -24,7 +25,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test(
-  "Collection: share a binder publicly, a visitor sees it without the private details, a wrong key and a private binder are not found",
+  "Collection: share a binder publicly, a visitor sees it without the private details, a wrong link name and a private binder are not found",
   { tag: ["@smoke", "@collection"] },
   async ({ page, browser, baseURL, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN.toLowerCase();
@@ -84,22 +85,24 @@ test(
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 
-    // --- Share: private at first; rename the link, switch it public ---------
+    // --- Share: private at first; rename the link, pick Public --------------
     await tabs.getByRole("link", { name: "My Binders", exact: true }).click();
     await shelf.getByRole("button", { name: new RegExp(`^${escapeRegExp(binderName)}, `) }).click();
     await expect(heading).toBeVisible();
     await page.getByRole("button", { name: `Share ${binderName}`, exact: true }).click();
-    const sw = page.getByRole("switch", { name: /^Private: only you can see it$/ });
-    await expect(sw).not.toBeChecked();
-    await expect(page.getByText("This binder is private. Switch it on to share the link below.")).toBeVisible();
+    const visibility = page.getByRole("group", { name: "Who can see this binder" });
+    const privateChoice = visibility.getByRole("radio", { name: /^Private/ });
+    const publicChoice = visibility.getByRole("radio", { name: /^Public/ });
+    await expect(privateChoice).toBeChecked();
+    await expect(page.getByText("Nobody else can open the link below until you pick Public.")).toBeVisible();
     const linkName = page.getByRole("textbox", { name: "Link name" });
     await linkName.fill(readable);
     await linkName.press("Enter");
-    const linkRe = new RegExp(`/u/${escapeRegExp(username)}/binders/${escapeRegExp(readable)}-[a-z0-9]{6}$`);
+    const linkRe = new RegExp(`/u/${escapeRegExp(username)}/binders/${escapeRegExp(readable)}$`);
     const linkText = page.getByText(linkRe);
     await expect(linkText).toBeVisible();
-    await sw.check();
-    await expect(page.getByRole("switch", { name: /^Public: anyone with the link can look$/ })).toBeChecked();
+    await publicChoice.check();
+    await expect(publicChoice).toBeChecked();
     await expectAccessible(page, { label: "Share panel, a public binder" });
     const link = new URL((await linkText.textContent())!.trim());
 
@@ -118,12 +121,18 @@ test(
     for (const value of Object.values(secret)) await expect(visitor.getByText(value)).toHaveCount(0);
     await expectAccessible(visitor, { label: "Public binder page" });
 
-    // A one-character change to the key: not found, the same screen as private.
-    const key = link.pathname.slice(-6);
-    const flipped = `${key.slice(0, 5)}${key[5] === "a" ? "b" : "a"}`;
-    await visitor.goto(`${link.pathname.slice(0, -6)}${flipped}`);
+    // A wrong link name: not found, the same screen as private.
+    await visitor.goto(`${link.pathname}-nope`);
     await expectNotFound(visitor);
     await expectAccessible(visitor, { label: "Public page not found" });
+
+    // The profile's shelf lists the public binder and Up for Trade.
+    await visitor.goto(`/u/${username}`);
+    const profileShelf = visitor.getByRole("region", { name: "Binders" });
+    await expect(profileShelf.getByRole("link", { name: new RegExp(`^${escapeRegExp(binderName)}`) })).toBeVisible({
+      timeout: LAUNCH_GATE,
+    });
+    await expect(profileShelf.getByRole("link", { name: "Up for Trade" })).toBeVisible();
 
     // The Want List was never switched public.
     await visitor.goto(`/u/${username}/want-list`);
@@ -136,8 +145,8 @@ test(
     await expectAccessible(visitor, { label: "Public Up for Trade page" });
 
     // --- Back to private: the link reads as not found ----------------------
-    await page.getByRole("switch", { name: /^Public: anyone with the link can look$/ }).uncheck();
-    await expect(page.getByRole("switch", { name: /^Private: only you can see it$/ })).not.toBeChecked();
+    await privateChoice.check();
+    await expect(privateChoice).toBeChecked();
     await visitor.goto(link.pathname);
     await expectNotFound(visitor);
     await visitorContext.close();
