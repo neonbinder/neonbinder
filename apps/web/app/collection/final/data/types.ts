@@ -559,6 +559,8 @@ export interface InventoryItem {
  */
 export interface InventoryCards {
   items: InventoryItem[];
+  /** Cards held in a box that are no longer in the catalog, within the limit: say so, never crash. */
+  goneCardIds: CardId[];
   /**
    * True when the store stopped short of every box line (the server reads
    * a bounded number of lines): say there are more, and offer narrowing to

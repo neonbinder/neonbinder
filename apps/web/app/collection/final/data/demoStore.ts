@@ -24,6 +24,14 @@
  * `useCopiesOfCards` and a box's own `useContainerCopies` list them all, and
  * the Up for Trade pile (`tradeOf`) keeps every flagged copy, a box's too.
  *
+ * NEO-364: the side-aware reads (`useCopiesInVariant`, `useVariantCompletion`,
+ * `useSetCompletion`, and the drill's counts at the page's side) read one
+ * side: binder homes for the collection (`collectionOf`), box homes for the
+ * inventory (`inventoryOf`). A scope on the other side reads as empty.
+ * `useInventoryCards` lists the box copies card by card; `setBoxQuantity`
+ * runs the reducer's `demoOps.setBoxQuantity` (plain lines only) and undoes
+ * with `demoOps.restoreLines`.
+ *
  * Writes go through the reducer's pure ops (`../store` `demoOps`), so a
  * refusal (a taken pocket, the Want List as a home) rejects with the same
  * kind of words the server sends.
@@ -80,10 +88,13 @@ import {
   CONTAINER_COPIES_DEFAULT_LIMIT,
   emptyCopyDetails,
   inCollection,
+  inInventory,
   OWNED_CARDS_DEFAULT_LIMIT,
   searchable,
   SET_CARDS_DEFAULT_LIMIT,
+  todayIso,
   useScope,
+  useSide,
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
@@ -102,6 +113,9 @@ import {
   type Copy,
   type DrillItem,
   type HeldCount,
+  type InventoryBoxCount,
+  type InventoryCards,
+  type InventoryItem,
   type OwnedCards,
   type DrillLevel,
   type DrillParents,
@@ -115,6 +129,7 @@ import {
   type VariantKind,
   type VariantRef,
   type Scope,
+  type Side,
 } from "./types";
 
 export { PUBLIC_STORAGE_KEY };
@@ -289,6 +304,24 @@ function collectionOf(state: CollectionState): DemoCopy[] {
   return kept;
 }
 
+/** The inventory's copies, per reducer state (`inInventory`, NEO-364). */
+const inventoryCache = new WeakMap<CollectionState, DemoCopy[]>();
+
+/** The copies the inventory's screens see: every one whose home is a box (Unsorted included). */
+function inventoryOf(state: CollectionState): DemoCopy[] {
+  const cached = inventoryCache.get(state);
+  if (cached) return cached;
+  const kinds = new Map(state.containers.map((c) => [c.id, c.kind]));
+  const kept = state.copies.filter((c) => inInventory({ homeKind: kinds.get(c.homeId) ?? "binder" }));
+  inventoryCache.set(state, kept);
+  return kept;
+}
+
+/** One side's copies: the collection's binders or the inventory's boxes. */
+function sideOf(state: CollectionState, side: Side): DemoCopy[] {
+  return side === "inventory" ? inventoryOf(state) : collectionOf(state);
+}
+
 /**
  * The Up for Trade pile: every flagged copy, wherever it lives. Trade spans
  * collection and inventory, so a box copy stays (the one collection view
@@ -298,12 +331,18 @@ function tradeOf(state: CollectionState): DemoCopy[] {
   return state.copies.filter((c) => c.upForTrade);
 }
 
-/** The collection's copies a scope looks through: one home's, or all of them. */
-function inScope(state: CollectionState, scope: Scope): DemoCopy[] {
-  const copies = collectionOf(state);
+/**
+ * One side's copies a scope looks through: one home's, or all of them. A
+ * home on the other side reads as empty (NEO-364: a box scope never shows a
+ * collection copy, nor a binder scope an inventory one).
+ */
+function inScope(state: CollectionState, scope: Scope, side: Side): DemoCopy[] {
+  const copies = sideOf(state, side);
   if (scope === "all") return copies;
   const home = state.containers.find((c) => c.id === scope);
-  return isHome(home) ? copies.filter((c) => c.homeId === scope) : copies;
+  if (!isHome(home)) return copies;
+  if ((home!.kind === "box") !== (side === "inventory")) return [];
+  return copies.filter((c) => c.homeId === scope);
 }
 
 /** The copies a container lists (see `useContainerCopies`), in slot order. */
@@ -321,6 +360,63 @@ function containerCopies(state: CollectionState, id: string): DemoCopy[] {
     });
   }
   return bySlot(state.copies.filter((c) => c.homeId === id));
+}
+
+/**
+ * When a demo line was last touched, as `lastUpdated` ms: its date, plus its
+ * place in the list as a tiebreak (the reducer appends each new line), so a
+ * line added today sorts after one added earlier today.
+ */
+function touchedAt(copy: DemoCopy, index: number): number {
+  const day = Date.parse(copy.acquiredAt);
+  return (Number.isFinite(day) ? day : 0) + index;
+}
+
+/**
+ * The Inventory list (`useInventoryCards`): every card held in a box, one
+ * item per card (its box lines together), most recently touched first;
+ * `boxId` narrows to one box. Never a binder copy.
+ */
+function inventoryCardsOf(state: CollectionState, limit: number, boxId: string | undefined): InventoryCards {
+  const index = new Map(state.copies.map((c, i) => [c.id, i]));
+  // The shelf is sorted system first, so Unsorted leads the collector's boxes.
+  const order = new Map(state.containers.map((c, i) => [c.id, i]));
+  const held = new Map<string, Omit<InventoryItem, "card">>();
+  for (const copy of inventoryOf(state)) {
+    if (copy.quantity <= 0 || (boxId !== undefined && copy.homeId !== boxId)) continue;
+    const at = touchedAt(copy, index.get(copy.id) ?? 0);
+    const item = held.get(copy.cardId) ?? {
+      quantity: 0,
+      lines: 0,
+      graded: false,
+      upForTrade: false,
+      lastUpdated: 0,
+      boxes: [] as InventoryBoxCount[],
+    };
+    item.quantity += copy.quantity;
+    item.lines += 1;
+    if (copy.graded) item.graded = true;
+    if (copy.upForTrade) item.upForTrade = true;
+    item.lastUpdated = Math.max(item.lastUpdated, at);
+    const box = item.boxes.find((b) => b.boxId === copy.homeId);
+    if (box) box.quantity += copy.quantity;
+    else item.boxes.push({ boxId: copy.homeId, quantity: copy.quantity });
+    held.set(copy.cardId, item);
+  }
+  const ranked = [...held.entries()].sort(([, a], [, b]) => b.lastUpdated - a.lastUpdated);
+  const items: InventoryItem[] = [];
+  const goneCardIds: string[] = [];
+  for (const [id, item] of ranked.slice(0, limit)) {
+    const card = demoCard(id);
+    if (!card) {
+      goneCardIds.push(id);
+      continue;
+    }
+    // Unsorted first, then the shelf's order.
+    item.boxes.sort((a, b) => (order.get(a.boxId) ?? 0) - (order.get(b.boxId) ?? 0));
+    items.push({ card, ...item });
+  }
+  return { items, goneCardIds, truncated: ranked.length > limit };
 }
 
 function countOf(copies: readonly DemoCopy[]) {
@@ -461,10 +557,12 @@ export const DEMO_DATA: CollectionData = {
   useDrill(level, parents) {
     const state = useDemoState().state;
     const scope = useScope();
+    // The drill's "have N of M" counts the page's side (the contract passes no side here).
+    const side = useSide();
     const key = parentsKey(parents);
     return useMemo(
-      () => (level ? drillColumn(level, JSON.parse(key) as DrillParents, inScope(state, scope)) : undefined),
-      [level, key, state, scope],
+      () => (level ? drillColumn(level, JSON.parse(key) as DrillParents, inScope(state, scope, side)) : undefined),
+      [level, key, state, scope, side],
     );
   },
 
@@ -502,25 +600,25 @@ export const DEMO_DATA: CollectionData = {
     return variantId === null ? undefined : (demoIndex().variantCards.get(variantId) ?? []);
   },
 
-  useVariantCompletion(variantId) {
+  useVariantCompletion(variantId, side) {
     const state = useDemoState().state;
     const scope = useScope();
     return useMemo(
       () =>
         variantId === null
           ? undefined
-          : (completionIn(variantId, inScope(state, scope)) ?? completionOf({ owned: 0, total: 0 })),
-      [variantId, state, scope],
+          : (completionIn(variantId, inScope(state, scope, side)) ?? completionOf({ owned: 0, total: 0 })),
+      [variantId, state, scope, side],
     );
   },
 
-  useSetCompletion(setId) {
+  useSetCompletion(setId, side) {
     const state = useDemoState().state;
     const scope = useScope();
     return useMemo((): SetCompletion | undefined => {
       if (setId === null) return undefined;
       const set = fixtureSet(setId);
-      const scoped = inScope(state, scope);
+      const scoped = inScope(state, scope, side);
       const sum = { owned: 0, total: 0, ownedAll: 0, totalAll: 0 };
       for (const sv of set?.variants ?? []) {
         const c = completionIn(demoVariantId(set!.id, sv.path), scoped);
@@ -534,7 +632,7 @@ export const DEMO_DATA: CollectionData = {
         ...completionOf({ owned: sum.owned, total: sum.total }, { owned: sum.ownedAll, total: sum.totalAll }),
         exact: true,
       };
-    }, [setId, state, scope]);
+    }, [setId, state, scope, side]);
   },
 
   useCard(cardId) {
@@ -602,14 +700,14 @@ export const DEMO_DATA: CollectionData = {
     );
   },
 
-  useCopiesInVariant(variantId) {
+  useCopiesInVariant(variantId, side) {
     const state = useDemoState().state;
     const scope = useScope();
     return useMemo(() => {
       if (variantId === null) return undefined;
       const inVariant = new Set((demoIndex().variantCards.get(variantId) ?? []).map((c) => c.id));
-      return toViewCopies(inScope(state, scope).filter((c) => inVariant.has(c.cardId)), state.containers);
-    }, [variantId, state, scope]);
+      return toViewCopies(inScope(state, scope, side).filter((c) => inVariant.has(c.cardId)), state.containers);
+    }, [variantId, state, scope, side]);
   },
 
   useOwnedCards(options) {
@@ -654,6 +752,13 @@ export const DEMO_DATA: CollectionData = {
         truncated: order.length > limit,
       };
     }, [copies, limit]);
+  },
+
+  useInventoryCards(options) {
+    const limit = Math.max(1, Math.floor(options?.limit ?? OWNED_CARDS_DEFAULT_LIMIT));
+    const boxId = options?.boxId;
+    const state = useDemoState().state;
+    return useMemo(() => inventoryCardsOf(state, limit, boxId), [state, limit, boxId]);
   },
 
   useSummary() {
@@ -880,6 +985,17 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     async deleteContainer(container) {
       const moved = run((s) => demoOps.deleteContainer(s, container.id));
       return { moved };
+    },
+
+    async setBoxQuantity(card, box, quantity) {
+      const r = run((s) => demoOps.setBoxQuantity(s, card.id, box.id, quantity, todayIso()));
+      return {
+        before: r.before,
+        after: r.after,
+        undo: async () => {
+          run((s) => demoOps.restoreLines(s, r.undo));
+        },
+      };
     },
   };
   return actions;

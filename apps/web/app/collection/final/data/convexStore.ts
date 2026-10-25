@@ -21,18 +21,23 @@
  * leaves in the same update that adds it where it lands, so a card never
  * shows in two places.
  *
- * NEO-359: a copy in a box is for sale and never shows on a collection
- * screen (`inCollection` in `./store`). The lists the server sends are
- * filtered here once the shelf says which homes are boxes (every copy read
- * waits for the shelf). The server's COUNTS still include box copies, and
- * NEO-364 makes them exclude boxes: `collection.summary` (the Main tally and
- * its recount), `collection.ownedCards`, `collection.variantCompletion` and
- * `collection.setCompletion` under All, `collection.copiesInVariant` under
- * All (filtered here). The trade pile is the one collection view that
- * keeps box copies (trade spans collection and inventory), so
- * `collection.tradeCopies` and the trade pile's stored count in
- * `collectionContainers.list` already say what the screen shows. Real
- * Inventory is off, so no real copy lives in a box yet.
+ * NEO-359 / NEO-364: a copy in a box is for sale: the inventory's, never
+ * on a collection screen; a copy in a binder is the collection's, never on
+ * an inventory screen. `collection.copiesInVariant`, `variantCompletion` and
+ * `setCompletion` take the reading `side` and answer that side only (a
+ * scope on the other side reads as empty); `summary` and `ownedCards` are
+ * collection-only. The optimistic engine follows the same line: a box home
+ * never counts toward a collection checklist, a binder home never toward an
+ * inventory one (it tells them apart by the shelf, so a home it cannot place
+ * reads as a binder, like `toCopy`). The trade pile is the one view that
+ * spans both (`collection.tradeCopies`).
+ *
+ * NEO-364 inventory: `useInventoryCards` reads `collectionInventory.inventoryCards`
+ * (every box, at most the server's line budget) or, narrowed to one box, pages
+ * that box's `copiesInContainer`. `setBoxQuantity` is
+ * `collectionInventory.setBoxQuantity` with the plain-line rule drawn ahead
+ * of the server; its undo is `collectionInventory.undoBoxQuantity` with the
+ * write's exact `inverse`.
  *
  * Conversions between the server's copy and the view's (see `CopyDetails` in
  * `./types`): `costCents` ↔ `costBasis` dollars, `acquiredOn` ↔ `acquiredAt`,
@@ -66,8 +71,8 @@ import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import {
   bySlot,
-  collectionCopies,
   CollectionStoreContext,
+  copiesOnSide,
   completionOf,
   CONTAINER_COPIES_DEFAULT_LIMIT,
   OWNED_CARDS_DEFAULT_LIMIT,
@@ -91,8 +96,11 @@ import {
   type DrillItem,
   type DrillLevel,
   type HeldCount,
+  type InventoryCards,
+  type InventoryItem,
   type OwnedCards,
   type SetCompletion,
+  type Side,
   type SetRef,
   type SetSummary,
   type Suggestion,
@@ -113,6 +121,10 @@ type RawDrillItem = RawDrill["items"][number];
 type RawSummaryVariant = NonNullable<FunctionReturnType<typeof api.collectionCatalog.setSummary>>["variants"][number];
 type RawSuggest = FunctionReturnType<typeof api.collectionCatalog.suggest>;
 type RawEntityCards = { cards: CatalogCardWithPath[]; continueCursor: string | null };
+type RawInventory = FunctionReturnType<typeof api.collectionInventory.inventoryCards>;
+type RawInventoryItem = RawInventory["items"][number];
+type RawBoxQuantity = FunctionReturnType<typeof api.collectionInventory.setBoxQuantity>;
+type RawBoxInverse = RawBoxQuantity["inverse"];
 
 /** The card search's page size (the server's cap). */
 const SEARCH_LIMIT = 50;
@@ -130,6 +142,10 @@ const COPIES_OF_MANY = 50;
 const PAGE_SIZE = 100;
 /** `empty` calls `deleteContainer` makes before it gives up (200 copies each). */
 const MAX_EMPTY_ROUNDS = 100;
+/** Lines one box's Inventory list pages in, at most (the server's `MAX_INVENTORY_LINES`). */
+const MAX_BOX_LIST_LINES = 2000;
+/** The most copies one line holds (the server's `MAX_COPY_QUANTITY`). */
+const MAX_LINE_QUANTITY = 999;
 
 // ---------------------------------------------------------------------------
 // Hydration: the server's shapes → the view model
@@ -445,11 +461,11 @@ export const CONVEX_DATA: CollectionData = {
     }, [raw]);
   },
 
-  useVariantCompletion(variantId) {
+  useVariantCompletion(variantId, side) {
     const homeId = useScopedHome();
     const raw = useQuery(
       api.collection.variantCompletion,
-      variantId ? { variantId, ...(homeId ? { homeId } : {}) } : "skip",
+      variantId ? { variantId, side, ...(homeId ? { homeId } : {}) } : "skip",
     );
     return useMemo(() => {
       if (raw === undefined) return undefined;
@@ -463,14 +479,14 @@ export const CONVEX_DATA: CollectionData = {
     }, [raw]);
   },
 
-  useSetCompletion(setId) {
+  useSetCompletion(setId, side) {
     const homeId = useScopedHome();
     // The owned counts come in one read of the set's copies; the totals are
     // the set summary's (the same numbers the browse header shows).
     const summary = CONVEX_DATA.useSetSummary(setId);
     const raw = useQuery(
       api.collection.setCompletion,
-      setId ? { setId, ...(homeId ? { homeId } : {}) } : "skip",
+      setId ? { setId, side, ...(homeId ? { homeId } : {}) } : "skip",
     );
     return useMemo((): SetCompletion | undefined => {
       if (setId === null || summary === undefined || raw === undefined) return undefined;
@@ -582,17 +598,17 @@ export const CONVEX_DATA: CollectionData = {
     return useMemo(() => (homes ? raw?.map((r) => toCopy(r, homes)) : undefined), [raw, homes]);
   },
 
-  useCopiesInVariant(variantId) {
+  useCopiesInVariant(variantId, side) {
     const homes = useHomes();
     const homeId = useScopedHome();
     const raw = useQuery(
       api.collection.copiesInVariant,
-      variantId ? { variantId, ...(homeId ? { homeId } : {}) } : "skip",
+      variantId ? { variantId, side, ...(homeId ? { homeId } : {}) } : "skip",
     );
-    // NEO-364: under All the server lists box copies too; they never show here.
+    // The server answers one side; the optimistic rows are kept to it too.
     return useMemo(
-      () => (homes && raw ? collectionCopies(raw.map((r) => toCopy(r, homes))) : undefined),
-      [raw, homes],
+      () => (homes && raw ? copiesOnSide(raw.map((r) => toCopy(r, homes)), side) : undefined),
+      [raw, homes, side],
     );
   },
 
@@ -672,6 +688,53 @@ export const CONVEX_DATA: CollectionData = {
         truncated: held.length > limit || !exhausted,
       };
     }, [tally, ids, hydrated, held, limit, exhausted]);
+  },
+
+  /**
+   * The Inventory list. Every box: `collectionInventory.inventoryCards`, which
+   * reads at most the server's line budget (its `truncated` says so). One box
+   * (`boxId`, only ever a box: anything else lists nothing): that box's
+   * `copiesInContainer`, paged until it holds more than `limit` cards, so the
+   * list can see past the budget one box at a time. Cards are hydrated
+   * through `cards`; one already hydrated stands in while the list re-asks
+   * (a quick count reorders it), so the list never blinks to a skeleton.
+   */
+  useInventoryCards(options) {
+    const limit = limitOf(options?.limit, OWNED_CARDS_DEFAULT_LIMIT);
+    const homes = useHomes();
+    const boxId = options?.boxId ?? null;
+    const boxKnown = boxId === null || homes !== undefined;
+    const isBox = boxId !== null && homes?.get(boxId)?.kind === "box";
+    const all = useQuery(api.collectionInventory.inventoryCards, boxId === null ? {} : "skip");
+    const inBox = useBoxInventory(isBox ? boxId : null, limit);
+    const raw: RawInventory | undefined =
+      boxId === null ? all : !boxKnown ? undefined : isBox ? inBox : { items: [], goneCardIds: [], truncated: false };
+    const listed = useMemo(() => raw?.items.slice(0, limit), [raw, limit]);
+    const known = useCardCache(useMemo(() => listed?.map((i) => i.cardId as string) ?? null, [listed]));
+    return useMemo((): InventoryCards | undefined => {
+      if (!raw || !listed || !known) return undefined;
+      const items: InventoryItem[] = [];
+      const goneCardIds: string[] = [...raw.goneCardIds];
+      for (const item of listed) {
+        // Not hydrated yet: it joins the list when it lands.
+        if (!known.has(item.cardId)) continue;
+        const card = known.get(item.cardId);
+        if (!card) {
+          goneCardIds.push(item.cardId);
+          continue;
+        }
+        items.push({
+          card,
+          quantity: item.quantity,
+          lines: item.lines,
+          graded: item.graded,
+          upForTrade: item.upForTrade,
+          lastUpdated: item.lastUpdated,
+          boxes: item.boxes.map((b) => ({ boxId: b.boxId, quantity: b.quantity })),
+        });
+      }
+      return { items, goneCardIds, truncated: raw.truncated || raw.items.length > limit };
+    }, [raw, listed, known, limit]);
   },
 
   useContainers() {
@@ -791,6 +854,77 @@ function useHomes(): Homes | undefined {
     () => (raw ? new Map(raw.map((c) => [c._id as string, { kind: c.kind, name: c.name }])) : undefined),
     [raw],
   );
+}
+
+/**
+ * Cards by id, hydrated through `cards` (sorted, so a reorder asks nothing
+ * new). Every card seen stays known for the mount: while a changed list is
+ * re-asked, the ones already hydrated stand in. `undefined` until the first
+ * answer (or for `null` ids).
+ */
+function useCardCache(ids: readonly string[] | null): ReadonlyMap<string, Card | null> | undefined {
+  const key = ids ? [...new Set(ids)].sort().join("\n") : null;
+  const sorted = useMemo(() => (key === null ? null : key === "" ? [] : key.split("\n")), [key]);
+  const hydrated = CONVEX_DATA.useCards(sorted);
+  const seen = useRef(new Map<string, Card | null>());
+  return useMemo(() => {
+    if (sorted === null) return undefined;
+    if (hydrated) sorted.forEach((id, i) => seen.current.set(id, hydrated[i] ?? null));
+    else if (sorted.length > 0 && seen.current.size === 0) return undefined;
+    return new Map(seen.current);
+  }, [sorted, hydrated]);
+}
+
+/**
+ * One box's lines (`copiesInContainer`), card by card in the shape
+ * `inventoryCards` answers, paged until it holds MORE than `limit` cards
+ * (so `truncated` is honest) or `MAX_BOX_LIST_LINES` lines. Newest first.
+ * `undefined` until the first page (and for `null`).
+ */
+function useBoxInventory(boxId: string | null, limit = OWNED_CARDS_DEFAULT_LIMIT): RawInventory | undefined {
+  const pages = usePaginatedQuery(
+    api.collection.copiesInContainer,
+    boxId ? { containerId: boxId } : "skip",
+    { initialNumItems: PAGE_SIZE },
+  );
+  const items = useMemo(() => (boxId ? boxItems(pages.results, boxId) : []), [pages.results, boxId]);
+  const canLoadMore = pages.status === "CanLoadMore";
+  const lines = pages.results.length;
+  const { loadMore } = pages;
+  useEffect(() => {
+    if (canLoadMore && items.length <= limit && lines < MAX_BOX_LIST_LINES) loadMore(PAGE_SIZE);
+  }, [canLoadMore, items.length, limit, lines, loadMore]);
+  const loading = boxId === null || pages.status === "LoadingFirstPage";
+  const exhausted = pages.status === "Exhausted";
+  return useMemo(
+    () => (loading ? undefined : { items, goneCardIds: [], truncated: !exhausted }),
+    [loading, items, exhausted],
+  );
+}
+
+/** One box's lines as Inventory items, one per card, newest first. */
+function boxItems(rows: readonly RawCopy[], boxId: string): RawInventoryItem[] {
+  const byCard = new Map<string, RawInventoryItem>();
+  for (const row of rows) {
+    if (row.homeId !== boxId || row.quantity <= 0) continue;
+    const item = byCard.get(row.cardId) ?? {
+      cardId: row.cardId,
+      quantity: 0,
+      lines: 0,
+      graded: false,
+      upForTrade: false,
+      lastUpdated: 0,
+      boxes: [{ boxId: row.homeId, quantity: 0 }],
+    };
+    item.quantity += row.quantity;
+    item.lines += 1;
+    item.boxes[0].quantity += row.quantity;
+    if (row.grading) item.graded = true;
+    if (row.upForTrade === true) item.upForTrade = true;
+    if (row.lastUpdated > item.lastUpdated) item.lastUpdated = row.lastUpdated;
+    byCard.set(row.cardId, item);
+  }
+  return [...byCard.values()].sort((a, b) => b.lastUpdated - a.lastUpdated);
 }
 
 /** The scope as a `homeId` argument: the picked home, or undefined under All. */
@@ -1029,9 +1163,25 @@ function patchRows(
   return out;
 }
 
-/** Whether a card is held in a list, optionally inside one home. */
-function heldIn(rows: readonly RawCopy[], cardId: string, homeId?: string): boolean {
-  return rows.some((r) => r.cardId === cardId && r.quantity > 0 && (!homeId || r.homeId === homeId));
+/** Whether a card is held in a list, among the rows `keep` lets count. */
+function heldIn(rows: readonly RawCopy[], cardId: string, keep: (r: RawCopy) => boolean = () => true): boolean {
+  return rows.some((r) => r.cardId === cardId && r.quantity > 0 && keep(r));
+}
+
+/**
+ * Which side a row is on, by the loaded shelf: a box home is the
+ * inventory's, anything else (a binder, or a home the shelf does not hold
+ * yet, read as a binder like `toCopy` does) the collection's.
+ */
+function sidesOf(local: OptimisticLocalStore): (r: Pick<RawCopy, "homeId">, side: Side) => boolean {
+  const shelf = local.getQuery(api.collectionContainers.list, {});
+  const boxes = new Set((shelf ?? []).filter((c) => c.kind === "box").map((c) => c._id as string));
+  return (r, side) => boxes.has(r.homeId) === (side === "inventory");
+}
+
+/** A side-aware read's side (every one carries it since NEO-364; `collection` before). */
+function sideArg(args: Record<string, unknown>): Side {
+  return args.side === "inventory" ? "inventory" : "collection";
 }
 
 /** Every loaded page of a paginated read, grouped by its args without the cursor. */
@@ -1065,9 +1215,21 @@ function patchPaged<Q extends PaginatedQueryReference>(
   }
 }
 
-/** Applies a change to every loaded list, checklist count and shelf count it can reach. */
+/**
+ * Applies a change to every loaded list, checklist count, inventory item and
+ * shelf count it can reach. NEO-364: a side-aware read keeps to its side, so
+ * under the collection a box home never counts toward a checklist or lists
+ * in `copiesInVariant`, and under the inventory a binder home never does.
+ */
 function applyChange(local: OptimisticLocalStore, change: Change) {
   const { cardId, variantId } = change;
+  const onSide = sidesOf(local);
+  /** What a side-aware read at these args lets in: its side, and its scoped home if any. */
+  const keepFor = (args: Record<string, unknown>) => {
+    const side = sideArg(args);
+    const homeId = args.homeId as string | undefined;
+    return (r: RawCopy) => onSide(r, side) && (!homeId || r.homeId === homeId);
+  };
   const ofCard = local.getQuery(api.collection.copiesOf, { cardId: cardId as RawCopy["cardId"] });
   const inVariant = local
     .getAllQueries(api.collection.copiesInVariant)
@@ -1077,16 +1239,20 @@ function applyChange(local: OptimisticLocalStore, change: Change) {
   for (const { args, value } of local.getAllQueries(api.collection.variantCompletion)) {
     if (args.variantId !== variantId || !value) continue;
     const homeId = args.homeId as string | undefined;
+    const side = sideArg(args);
+    const keep = keepFor(args);
     let before: boolean | undefined;
     let after: boolean | undefined;
     if (ofCard !== undefined) {
-      before = heldIn(ofCard, cardId, homeId);
-      after = heldIn(patchRows(ofCard, change, () => true, true), cardId, homeId);
+      before = heldIn(ofCard, cardId, keep);
+      after = heldIn(patchRows(ofCard, change, () => true, true), cardId, keep);
     } else {
-      const same = inVariant.find((q) => (q.args.homeId as string | undefined) === homeId);
+      const same = inVariant.find(
+        (q) => (q.args.homeId as string | undefined) === homeId && sideArg(q.args) === side,
+      );
       if (same?.value) {
-        before = heldIn(same.value, cardId);
-        after = heldIn(patchRows(same.value, change, (r) => !homeId || r.homeId === homeId, true), cardId);
+        before = heldIn(same.value, cardId, keep);
+        after = heldIn(patchRows(same.value, change, keep, true), cardId, keep);
       }
     }
     if (before === undefined || before === after) continue;
@@ -1102,15 +1268,11 @@ function applyChange(local: OptimisticLocalStore, change: Change) {
     local.setQuery(api.collection.copiesOf, { cardId: cardId as RawCopy["cardId"] }, patchRows(ofCard, change, () => true, true));
   }
   for (const { args, value } of inVariant) {
-    const homeId = args.homeId as string | undefined;
-    local.setQuery(
-      api.collection.copiesInVariant,
-      args,
-      patchRows(value!, change, (r) => !homeId || r.homeId === homeId, true),
-    );
+    local.setQuery(api.collection.copiesInVariant, args, patchRows(value!, change, keepFor(args), true));
   }
   patchPaged(local, api.collection.copiesInContainer, change, (args) => (r) => r.homeId === args.containerId);
   patchPaged(local, api.collection.tradeCopies, change, () => (r) => r.upForTrade === true);
+  patchInventory(local, change, ofCard === undefined ? undefined : patchRows(ofCard, change, () => true, true));
 
   // The shelf's counts: a home counts the copies it holds, the trade pile the flagged ones.
   const shelf = local.getQuery(api.collectionContainers.list, {});
@@ -1137,6 +1299,60 @@ function applyChange(local: OptimisticLocalStore, change: Change) {
         };
       }),
     );
+  }
+}
+
+/**
+ * The Inventory list (`collectionInventory.inventoryCards`, every loaded
+ * answer) after the change: the card's item rebuilt from its box rows. With
+ * `whole` (the card's every row after the change, from a loaded `copiesOf`)
+ * the item is counted afresh; otherwise the change's box rows are added and
+ * taken off the item as it was (its graded and trade marks only ever gain
+ * there; the server's answer settles them). An item at 0 leaves the list;
+ * the list stays newest first.
+ */
+function patchInventory(local: OptimisticLocalStore, change: Change, whole: readonly RawCopy[] | undefined) {
+  const shelf = local.getQuery(api.collectionContainers.list, {});
+  if (!shelf) return;
+  const order = new Map(shelf.filter((c) => c.kind === "box").map((c, i) => [c._id as string, i]));
+  const inBox = (r: RawCopy) => order.has(r.homeId);
+  const was = change.before.filter(inBox);
+  const now = change.after.filter(inBox);
+  if (was.length === 0 && now.length === 0) return;
+  const cardId = change.cardId as RawInventoryItem["cardId"];
+  for (const { args, value } of local.getAllQueries(api.collectionInventory.inventoryCards)) {
+    if (!value) continue;
+    const old = value.items.find((i) => i.cardId === cardId);
+    const item: RawInventoryItem = whole
+      ? { cardId, quantity: 0, lines: 0, graded: false, upForTrade: false, lastUpdated: 0, boxes: [] }
+      : old
+        ? { ...old, boxes: old.boxes.map((b) => ({ ...b })) }
+        : { cardId, quantity: 0, lines: 0, graded: false, upForTrade: false, lastUpdated: 0, boxes: [] };
+    const add = (r: RawCopy, sign: 1 | -1) => {
+      item.quantity += sign * r.quantity;
+      item.lines += sign;
+      const box = item.boxes.find((b) => b.boxId === r.homeId);
+      if (box) box.quantity += sign * r.quantity;
+      else if (sign > 0) item.boxes.push({ boxId: r.homeId, quantity: r.quantity });
+      if (sign > 0) {
+        if (r.grading) item.graded = true;
+        if (r.upForTrade === true) item.upForTrade = true;
+        if (r.lastUpdated > item.lastUpdated) item.lastUpdated = r.lastUpdated;
+      }
+    };
+    if (whole) {
+      for (const r of whole) if (inBox(r) && r.quantity > 0) add(r, 1);
+    } else {
+      for (const r of was) add(r, -1);
+      for (const r of now) add(r, 1);
+    }
+    item.boxes = item.boxes
+      .filter((b) => b.quantity > 0)
+      .sort((a, b) => (order.get(a.boxId) ?? 0) - (order.get(b.boxId) ?? 0));
+    const rest = value.items.filter((i) => i.cardId !== cardId);
+    const items =
+      item.quantity > 0 && item.lines > 0 ? [...rest, item].sort((a, b) => b.lastUpdated - a.lastUpdated) : rest;
+    local.setQuery(api.collectionInventory.inventoryCards, args, { ...value, items });
   }
 }
 
@@ -1180,6 +1396,132 @@ function foldsInto(row: RawCopy, next: RawDetails): boolean {
     row.location === next.location &&
     row.notes === next.notes
   );
+}
+
+/** A plain line (NEO-364, D9), the server's `isPlainLine`: raw, no detail recorded, not up for trade. */
+function isPlainRow(r: RawCopy): boolean {
+  return (
+    r.condition === undefined &&
+    r.grading === undefined &&
+    r.serialNumber === undefined &&
+    r.costCents === undefined &&
+    r.location === undefined &&
+    r.notes === undefined &&
+    r.upForTrade !== true
+  );
+}
+
+/**
+ * `setBoxQuantity` drawn ahead of the server, from the card's loaded rows:
+ * the plain lines in the box are set to `quantity`. Raising folds into
+ * today's plain unplaced line or draws a new one; lowering takes from the
+ * plain lines newest first (a line at 0 goes). The same number changes
+ * nothing.
+ */
+function applyBoxQuantity(
+  local: OptimisticLocalStore,
+  cardId: string,
+  boxId: string,
+  quantity: number,
+  acquiredOn: string,
+  place: CardPlace | undefined,
+  draw: () => RawCopy["_id"] = optimisticId,
+) {
+  if (!place) return;
+  const now = Date.now();
+  const rows = cardRows(local, cardId);
+  const plain = rows.filter((r) => r.homeId === boxId && isPlainRow(r));
+  const before = plain.reduce((n, r) => n + r.quantity, 0);
+  if (quantity === before) return;
+  const change: Change = { cardId, variantId: place.variantId, isVariation: place.isVariation, before: [], after: [] };
+  if (quantity > before) {
+    const adding = quantity - before;
+    const next = { quantity: adding, acquiredOn, homeId: boxId } as RawDetails;
+    const into = rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
+    if (into) {
+      change.before = [into];
+      change.after = [{ ...into, quantity: into.quantity + adding, lastUpdated: now }];
+    } else {
+      change.after = [
+        {
+          _id: draw(),
+          cardId: cardId as RawCopy["cardId"],
+          variantId: place.variantId as RawCopy["variantId"],
+          setId: place.setId as RawCopy["setId"],
+          homeId: boxId as RawCopy["homeId"],
+          quantity: adding,
+          acquiredOn,
+          lastUpdated: now,
+        },
+      ];
+    }
+  } else {
+    let left = before - quantity;
+    // Newest first, as the server's `newerLine`: the latest touched, then the later listed.
+    const newest = plain
+      .map((r, i) => ({ r, i }))
+      .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
+      .map(({ r }) => r);
+    for (const r of newest) {
+      if (left === 0) break;
+      const take = Math.min(left, r.quantity);
+      left -= take;
+      change.before.push(r);
+      if (take < r.quantity) change.after.push({ ...r, quantity: r.quantity - take, lastUpdated: now });
+    }
+  }
+  applyChange(local, change);
+}
+
+/**
+ * `undoBoxQuantity` drawn ahead of the server: each step of the inverse, in
+ * order, on the card's loaded rows. A `restore` folds into an identical
+ * line as the server does, or draws line `n` (the step's place).
+ */
+function applyBoxSteps(
+  local: OptimisticLocalStore,
+  inverse: RawBoxInverse,
+  place: CardPlace | undefined,
+  draw: (n: number) => RawCopy["_id"],
+) {
+  if (!place) return;
+  const now = Date.now();
+  const cardId = inverse.cardId as string;
+  inverse.steps.forEach((step, n) => {
+    const rows = cardRows(local, cardId);
+    const change: Change = { cardId, variantId: place.variantId, isVariation: place.isVariation, before: [], after: [] };
+    if (step.op === "restore") {
+      const next = {
+        quantity: step.quantity,
+        ...(step.acquiredOn ? { acquiredOn: step.acquiredOn } : {}),
+        ...(step.slot !== undefined ? { slot: step.slot } : {}),
+        homeId: inverse.boxId,
+      } as RawDetails;
+      const into = rows.find((r) => foldsInto(r, next) && r.quantity + step.quantity <= MAX_LINE_QUANTITY);
+      if (into) {
+        change.before = [into];
+        change.after = [{ ...into, quantity: into.quantity + step.quantity, lastUpdated: now }];
+      } else {
+        change.after = [
+          {
+            ...(next as object),
+            _id: draw(n),
+            cardId: inverse.cardId,
+            variantId: place.variantId as RawCopy["variantId"],
+            setId: place.setId as RawCopy["setId"],
+            homeId: inverse.boxId,
+            lastUpdated: now,
+          } as RawCopy,
+        ];
+      }
+    } else {
+      const row = rows.find((r) => r._id === step.copyId);
+      if (!row) return;
+      change.before = [row];
+      if (step.op === "set") change.after = [{ ...row, quantity: step.to, lastUpdated: now }];
+    }
+    applyChange(local, change);
+  });
 }
 
 /** An add (`fold: false` for a restore, which the server always inserts as its own row). */
@@ -1305,6 +1647,8 @@ function useConvexActions(): CollectionActions {
   const updateContainerBase = useMutation(api.collectionContainers.update);
   const emptyContainer = useMutation(api.collectionContainers.empty);
   const removeContainerBase = useMutation(api.collectionContainers.remove);
+  const setBoxQuantityBase = useMutation(api.collectionInventory.setBoxQuantity);
+  const undoBoxQuantityBase = useMutation(api.collectionInventory.undoBoxQuantity);
 
   // `withOptimisticUpdate` hands back a new function each call: build them
   // once per mutation so the actions object stays put across renders.
@@ -1430,6 +1774,20 @@ function useConvexActions(): CollectionActions {
         const shelf = local.getQuery(api.collectionContainers.list, {});
         if (shelf) local.setQuery(api.collectionContainers.list, {}, shelf.filter((c) => c._id !== args.containerId));
       }),
+      setBoxQuantity: setBoxQuantityBase.withOptimisticUpdate((local, args) =>
+        applyBoxQuantity(
+          local,
+          args.cardId,
+          args.boxId,
+          args.quantity,
+          args.acquiredOn ?? todayIso(),
+          cards.current.get(args.cardId),
+          () => optimisticIdFor(args),
+        ),
+      ),
+      undoBoxQuantity: undoBoxQuantityBase.withOptimisticUpdate((local, args) =>
+        applyBoxSteps(local, args.inverse, cards.current.get(args.inverse.cardId), (n) => optimisticIdFor(args, n)),
+      ),
     };
     // The writes whose optimistic update can draw a line: each placeholder
     // learns its real id from the answer (`landedCopy`).
@@ -1444,6 +1802,16 @@ function useConvexActions(): CollectionActions {
       // A split's drawn line is the part that moved: the line the server says the cards are now.
       moveCopy: landsAs(drawing.moveCopy, (r) => r.copyId),
       placeCopy: landsAs(drawing.placeCopy, (r) => r.copyId),
+      // A raise draws at most one line; its undo step names the line the server wrote.
+      setBoxQuantity: landsAs(drawing.setBoxQuantity, (r) => {
+        for (const step of r.inverse.steps) if (step.op !== "restore") return step.copyId;
+        return undefined;
+      }),
+      // The redo is the undo's steps reversed: step n's line is named at the mirror place.
+      undoBoxQuantity: landsAs(drawing.undoBoxQuantity, (r, n) => {
+        const step = r.inverse.steps[r.inverse.steps.length - 1 - n];
+        return step && step.op !== "restore" ? step.copyId : undefined;
+      }),
     };
   }, [
     addHaveBase,
@@ -1459,6 +1827,8 @@ function useConvexActions(): CollectionActions {
     setWantBase,
     updateContainerBase,
     removeContainerBase,
+    setBoxQuantityBase,
+    undoBoxQuantityBase,
   ]);
 
   return useMemo<CollectionActions>(() => {
@@ -1720,10 +2090,12 @@ function useConvexActions(): CollectionActions {
       },
 
       async deleteContainer(container) {
+        // A binder's copies go back to Main, a box's into Unsorted (the server's `empty`).
+        const to = container.kind === "box" ? "Unsorted" : "Main";
         let moved = 0;
         for (let round = 0; ; round++) {
           if (round >= MAX_EMPTY_ROUNDS) {
-            throw new Error(`Moved ${moved.toLocaleString("en-US")} cards to Main so far. Press Delete again to finish.`);
+            throw new Error(`Moved ${moved.toLocaleString("en-US")} cards to ${to} so far. Press Delete again to finish.`);
           }
           const r = await emptyContainer({ containerId: asHome(container.id) });
           moved += r.moved;
@@ -1731,6 +2103,31 @@ function useConvexActions(): CollectionActions {
         }
         await m.removeContainer({ containerId: asHome(container.id) });
         return { moved };
+      },
+
+      async setBoxQuantity(card, box, quantity) {
+        // The server's words, before anything is drawn.
+        if (box.kind !== "box") throw new Error("Quick counts go in a box. Pick a box to count into.");
+        if (!Number.isInteger(quantity) || quantity < 0 || quantity > MAX_LINE_QUANTITY) {
+          throw new Error(`Quantity is a whole number from 0 to ${MAX_LINE_QUANTITY}.`);
+        }
+        placeCard(card);
+        const r = await m.setBoxQuantity({
+          cardId: asCard(card.id),
+          boxId: asHome(box.id),
+          quantity,
+          acquiredOn: todayIso(),
+        });
+        return {
+          before: r.before,
+          after: r.after,
+          undo: async () => {
+            // The same number wrote nothing, so there is nothing to put back.
+            if (r.inverse.steps.length === 0) return;
+            placeCard(card);
+            await m.undoBoxQuantity({ inverse: r.inverse });
+          },
+        };
       },
     };
   }, [m, setBuilding, createContainer, emptyContainer]);
@@ -1748,8 +2145,8 @@ function emptyDetails(): CopyDetails {
 /** Mounts the Convex store. Inside the signed-in shell only (every read needs a collector). */
 export function ConvexCollectionProvider({ children }: { children: ReactNode }) {
   const actions = useConvexActions();
-  // Main, the Want List and Up for Trade exist for every collector who has a
-  // shelf: make them once per mount (idempotent on the server). A refusal
+  // Main, Unsorted, the Want List and Up for Trade exist for every collector
+  // who has a shelf: make them once per mount (idempotent on the server). A refusal
   // here shows up again on the first real write, with its words.
   const ensureSystem = useMutation(api.collectionContainers.ensureSystem);
   const ensured = useRef(false);
@@ -1780,5 +2177,9 @@ export const __test = {
   applyChange,
   applyMove,
   applyAdd,
+  applyBoxQuantity,
+  applyBoxSteps,
+  isPlainRow,
+  patchInventory,
   optimisticIdFor,
 };
