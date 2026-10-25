@@ -74,6 +74,8 @@ describe("ShareLink", () => {
     expect(screen.getByText(`${window.location.origin}/u/ace/binders/ohtani-rainbow-k7f3q2`)).toBeTruthy();
     fireEvent.click(sw);
     expect(sharing.setVisibility).toHaveBeenCalledWith(BINDER, true);
+    // It moves on the press, before the server answers.
+    expect((screen.getByRole("switch") as HTMLInputElement).checked).toBe(true);
   });
 
   it("a public binder: the switch is on, and says what visitors never see", () => {

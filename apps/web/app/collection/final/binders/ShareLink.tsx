@@ -174,6 +174,7 @@ function LivePanel({
   const [copied, setCopied] = useState<boolean | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [flipping, setFlipping] = useState<boolean | null>(null);
 
   // A binder made before share links gets its link minted the first time Share opens.
   const needsLink = subject.kind === "binder" && (!subject.container.slug || !subject.container.slugKey);
@@ -216,7 +217,8 @@ function LivePanel({
         ? shelfHref(username, "want-list")
         : shelfHref(username, "up-for-trade");
   const url = path ? `${origin()}${path}` : null;
-  const isPublic = subject.kind === "trade" ? profile.tradePublic : !!container?.isPublic;
+  // The switch moves on the press; the server's answer settles it (a refusal puts it back).
+  const isPublic = flipping ?? (subject.kind === "trade" ? profile.tradePublic : !!container?.isPublic);
 
   const run = async (write: () => Promise<unknown>) => {
     setBusy(true);
@@ -229,14 +231,16 @@ function LivePanel({
       setBusy(false);
     }
   };
-  const flip = (next: boolean) =>
-    run(() =>
+  const flip = (next: boolean) => {
+    setFlipping(next);
+    return run(() =>
       subject.kind === "trade"
         ? sharing.setShelfVisibility("trade", next)
         : container
           ? sharing.setVisibility(container, next)
           : Promise.resolve(),
-    );
+    ).finally(() => setFlipping(null));
+  };
 
   const noun = subject.kind === "binder" ? "binder" : subject.kind === "want" ? "Want List" : "shelf";
   return (
