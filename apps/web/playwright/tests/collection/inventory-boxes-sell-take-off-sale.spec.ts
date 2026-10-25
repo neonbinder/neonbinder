@@ -121,6 +121,8 @@ test(
     });
     await expect(page.getByRole("region", { name: `${boxName}, open`, exact: true })).toBeVisible();
     await expect(page.getByRole("group", { name: "Row 2, 0 cards", exact: true })).toBeVisible();
+    // Sharing is the collection's: no Share button on an inventory-side view.
+    await expect(page.getByRole("button", { name: /^Share / })).toHaveCount(0);
     await expectAccessible(page, { label: "My Boxes, an empty box" });
     await backToBoxes(page);
     const boxSpine = (cards: number) =>
@@ -152,6 +154,8 @@ test(
       yourCopies.getByRole("heading", { name: `Your copies (${n} ${n === 1 ? "line" : "lines"})`, exact: true });
     await expect(lines(1)).toBeVisible();
     await expect(line("Raw ×3").getByText("Main")).toBeVisible();
+    // The drawer's headline splits what is kept from what is for sale.
+    await expect(drawer.getByText(/^3 in binders\.?$/)).toBeVisible();
 
     // --- Sell two of them into the box ----------------------------------------
     await yourCopies.getByRole("button", { name: `Sell ${one.short}, Raw ×3`, exact: true }).click();
@@ -171,6 +175,7 @@ test(
       drawer.getByRole("status").filter({ hasText: `2 of ${one.short} are up for sale in ${boxName}` }),
     ).toBeVisible();
     await expect(lines(2)).toBeVisible();
+    await expect(drawer.getByText(/^1 in binders · 2 for sale\.?$/)).toBeVisible();
     await expect(line("Raw").getByText("Main")).toBeVisible();
     await expect(line("Raw ×2").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, a stack split between Main and a box" });
@@ -232,6 +237,7 @@ test(
       }),
     ).toBeVisible();
     await expect(lines(2)).toBeVisible();
+    await expect(drawer.getByText(/^2 in binders · 1 for sale\.?$/)).toBeVisible();
     await expect(line("Raw ×2").getByText("Main")).toBeVisible();
     await expect(line("Raw").getByText(new RegExp(`For sale · ${escapeRegExp(boxName)}`))).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, one copy back in Main and one still for sale" });
@@ -267,6 +273,14 @@ test(
     ).toBeVisible();
     await expect(boxes.getByRole("button", { name: new RegExp(`^${escapeRegExp(boxName)},`) })).toHaveCount(0);
     await expect(boxes.getByRole("button", { name: `Unsorted, box, ${cardsWord(unsortedBase + 1)} for sale`, exact: true })).toBeVisible();
+    // The URL no longer names the deleted box, and one Back does not return to it.
+    await expect(page).toHaveURL(/[?&]tab=boxes/);
+    await page.goBack();
+    await expect(page).not.toHaveURL(/[?&]b=/);
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
+    await page.goForward();
+    await expect(page).toHaveURL(/[?&]tab=boxes/);
+    await expect(boxes).toBeVisible();
 
     // --- Cleanup: remove what is left through the drawer (R7) -------------------
     await tabs.getByRole("link", { name: "Inventory", exact: true }).click();

@@ -37,8 +37,6 @@ import {
 } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 test(
   "Inventory Checklists: type a quantity, Tab on, and the box takes it; lower, Undo, pick another box",
   { tag: ["@smoke", "@collection"] },
@@ -120,7 +118,7 @@ test(
         .filter({ has: page.getByRole("textbox", { name: `Quantity of ${short} in Unsorted`, exact: true }) });
     await expect(rowOf(a).getByText("Saved")).toBeVisible();
     await expect(rowOf(b).getByText("Saved")).toBeVisible();
-    await expect(said(`Boxed 3 more ${b}. 3 in Unsorted.`)).toBeVisible();
+    await expect(said(`Boxed 3 more of ${b}. 3 in Unsorted.`)).toBeVisible();
     await expect(fieldA).toHaveValue("2");
     await expect(fieldB).toHaveValue("3");
 
@@ -136,7 +134,7 @@ test(
     // --- Lower: 2 to 1, then 1 to 0 pulls copies out; Undo puts the last back -------
     await fieldA.fill("1");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 1 ${a} from Unsorted. 1 left.`)).toBeVisible();
+    await expect(said(`Pulled 1 of ${a} from Unsorted. 1 left.`)).toBeVisible();
     await expect(fieldA).toHaveValue("1");
     // Ctrl/Cmd+Z in an untouched field (the keyboard is on B's now) takes the last count back.
     await expect(fieldB).toBeFocused();
@@ -145,11 +143,11 @@ test(
     await expect(fieldA).toHaveValue("2");
     await fieldA.fill("1");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 1 ${a} from Unsorted. 1 left.`)).toBeVisible();
+    await expect(said(`Pulled 1 of ${a} from Unsorted. 1 left.`)).toBeVisible();
     await expect(fieldA).toHaveValue("1");
     await fieldA.fill("0");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 1 ${a} from Unsorted. 0 left.`)).toBeVisible();
+    await expect(said(`Pulled 1 of ${a} from Unsorted. 0 left.`)).toBeVisible();
     await expect(fieldA).toHaveValue("0");
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(said("Undone.")).toBeVisible();
@@ -167,7 +165,7 @@ test(
     await expect(show.getByRole("radio", { name: `Not in ${boxName}`, exact: true })).toBeVisible();
     await boxA.fill("4");
     await page.keyboard.press(advance);
-    await expect(said(`Boxed 4 more ${a}. 4 in ${boxName}.`)).toBeVisible();
+    await expect(said(`Boxed 4 more of ${a}. 4 in ${boxName}.`)).toBeVisible();
     await expect(boxA).toHaveValue("4");
     // "In <box>" narrows the list to what the box holds.
     await show.getByRole("radio", { name: `In ${boxName}`, exact: true }).click();
@@ -192,22 +190,25 @@ test(
     // --- Cleanup: type everything back to 0, delete the box (R7) ---------------------
     await quantityField(checklist, a, boxName).fill("0");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 4 ${a} from ${boxName}. 0 left.`)).toBeVisible();
+    await expect(said(`Pulled 4 of ${a} from ${boxName}. 0 left.`)).toBeVisible();
     await adding.selectOption({ label: "Unsorted" });
     await expect(adding.getByRole("option", { selected: true })).toHaveText("Unsorted");
     await fieldA.fill("0");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 1 ${a} from Unsorted. 0 left.`)).toBeVisible();
+    await expect(said(`Pulled 1 of ${a} from Unsorted. 0 left.`)).toBeVisible();
     await fieldB.fill("0");
     await page.keyboard.press(advance);
-    await expect(said(`Pulled 3 ${b} from Unsorted. 0 left.`)).toBeVisible();
+    await expect(said(`Pulled 3 of ${b} from Unsorted. 0 left.`)).toBeVisible();
 
     // --- The cap: a count over 999 is refused, the number goes back, and the line says so ----
     await fieldB.fill("1000");
     await page.keyboard.press(advance);
-    await expect(rowOf(b).getByText(/Didn't save/)).toBeVisible();
-    await expect(said(new RegExp(`${escapeRegExp(b)} didn't change.*999`))).toBeVisible();
+    await expect(
+      rowOf(b).getByText("Didn't save: Quantity is a whole number from 0 to 999. Back to 0.", { exact: true }),
+    ).toBeVisible();
+    await expect(said(`${b} didn't change. Quantity is a whole number from 0 to 999.`)).toBeVisible();
     await expect(fieldB).toHaveValue("0");
+    await expect(fieldB).toHaveAttribute("aria-invalid", "true");
     await expectAccessible(page, { label: "Inventory Checklists, a count refused over 999" });
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();

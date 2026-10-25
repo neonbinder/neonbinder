@@ -307,6 +307,15 @@ test(
       }),
     ).toBeVisible();
     await expectAccessible(page, { label: "My Boxes, Up for Trade with a binder copy" });
+    // The Inventory list's Up for Trade stop reads the same pile, binders included.
+    await page.getByRole("navigation", { name: "Inventory sections" }).getByRole("link", { name: "Inventory", exact: true }).click();
+    await page.getByRole("navigation", { name: "Boxes" }).getByRole("button", { name: /^Up for Trade/ }).click();
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`#${escapeRegExp(one.number)} ${escapeRegExp(one.player)}.*in ${escapeRegExp(binderA)}`, "i"),
+      }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "Inventory list, the Up for Trade stop with a binder copy" });
     await goViaShell(page, isMobile, "Collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await toBinders();

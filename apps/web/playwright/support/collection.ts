@@ -169,3 +169,16 @@ export async function deleteOpenBox(
 export function quantityField(scope: Locator, short: string, box: string): Locator {
   return scope.getByRole("textbox", { name: `Quantity of ${short} in ${box}`, exact: true });
 }
+
+/**
+ * The Inventory list's filters (the filter box, "Sort by", "Sport", the
+ * "Only show" chips): on a phone they fold behind a "Filters" button, so open
+ * it first (a no-op on a desktop, where there is no such button). Open once per
+ * visit to the list: a second click would fold them again.
+ */
+export async function openListFilters(page: Page, isMobile: boolean): Promise<void> {
+  if (!isMobile) return;
+  const button = page.getByRole("button", { name: /^Filters/ });
+  await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+}

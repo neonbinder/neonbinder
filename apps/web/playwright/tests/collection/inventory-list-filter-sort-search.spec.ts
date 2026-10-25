@@ -33,6 +33,7 @@ import {
   goViaShell,
   inventoryTabs,
   nameOf,
+  openListFilters,
   quantityField,
 } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -100,18 +101,18 @@ test(
     await page.keyboard.press(advance);
     await quantityField(unsortedList, y.short, "Unsorted").fill("1");
     await page.keyboard.press(advance);
-    await expect(said(`Boxed 1 more ${y.short}. 1 in Unsorted.`)).toBeVisible();
+    await expect(said(`Boxed 1 more of ${y.short}. 1 in Unsorted.`)).toBeVisible();
     await adding.selectOption({ label: boxName });
     await expect(adding.getByRole("option", { selected: true })).toHaveText(boxName);
     const zField = quantityField(checklist.getByRole("list", { name: `Quantities in ${boxName}` }), z.short, boxName);
     await zField.fill("2");
     await page.keyboard.press(advance);
-    await expect(said(`Boxed 2 more ${z.short}. 2 in ${boxName}.`)).toBeVisible();
+    await expect(said(`Boxed 2 more of ${z.short}. 2 in ${boxName}.`)).toBeVisible();
 
     // --- The list: one item per card, how many, which box ----------------------------------------
     await tabs.getByRole("link", { name: "Inventory", exact: true }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
-    await expect(page.getByText(new RegExp(`^${cardsWord(forSaleBase + 6)} for sale in \\d+ boxes?\\.$`))).toBeVisible();
+    await expect(page.getByText(new RegExp(`^${cardsWord(forSaleBase + 6)} for sale in \\d+ box(?:es)?\\.$`))).toBeVisible();
     // The list is named for what it shows ("Every box, 6 cards, 3 different", "Unsorted, 4 cards, 2 different").
     const list = page.getByRole("list", { name: /, \d+ cards?(, \d+ different)?$/ });
     // An item leads with its count ("×3 <card>, ...") and ends with where it sits.
@@ -149,6 +150,9 @@ test(
     await expect(railStop(/^All boxes/)).toHaveAttribute("aria-current", "true");
     await expect(itemZ).toBeVisible();
     await expect(itemX).toBeVisible();
+
+    // On a phone the filters fold behind a "Filters" button: open it once for sort, search and chips.
+    await openListFilters(page, isMobile);
 
     // --- Sort: the order flips -------------------------------------------------------------------------
     const sortBy = page.getByRole("combobox", { name: "Sort by" });
@@ -220,7 +224,9 @@ test(
     // The Up for Trade stop on the rail (drawn as a box) lists the same card.
     await railStop(/^Up for Trade/).click();
     await expect(railStop(/^Up for Trade/)).toHaveAttribute("aria-current", "true");
-    await expect(flaggedY).toBeVisible();
+    // The trade stop lists the whole pile (binders too), so its rows need no ", up for trade" tag.
+    await expect(itemY).toBeVisible();
+    await expect(page.getByText("Everything you'd swap, from your binders and your boxes.")).toBeVisible();
     await expect(itemX).toHaveCount(0);
     await expectAccessible(page, { label: "Inventory list, the Up for Trade stop" });
     await railStop(/^All boxes/).click();

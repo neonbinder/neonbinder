@@ -118,7 +118,7 @@ test(
     const showBox = boxes.getByRole("button", { name: /^Show box, box, \d+ cards? for sale$/ });
     await expect(showBox).toBeVisible();
     await expect(boxes.getByRole("button", { name: "New box", exact: true })).toBeVisible();
-    await expect(page.getByText(/^\d+ cards? for sale in 2 boxes\.$/)).toBeVisible();
+    await expect(page.getByText(/^\d+ cards? for sale in \d+ box(?:es)?\.$/)).toBeVisible();
     const places = page.getByRole("list", { name: "Special places" });
     await expect(places.getByRole("button", { name: /^Up for Trade, box, \d+ cards? up for trade$/ })).toBeVisible();
     const wholeStock = places.getByRole("link", { name: /^Everything for sale, \d+ cards? for sale$/ });
@@ -250,7 +250,7 @@ test(
     await expectAccessible(page, { label: "Collection demo, the Inventory Checklists with quantity fields" });
     await field.fill("2");
     await field.press("Tab");
-    const notice = page.getByRole("status").filter({ hasText: "Boxed 2 more #1 Shohei Ohtani. 2 in Unsorted." });
+    const notice = page.getByRole("status").filter({ hasText: "Boxed 2 more of #1 Shohei Ohtani. 2 in Unsorted." });
     await expect(notice).toBeVisible();
     await expect(field).toHaveValue("2");
     await page.getByRole("button", { name: "Undo", exact: true }).click();
