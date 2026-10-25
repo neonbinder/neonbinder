@@ -7,6 +7,8 @@
 // across a reload (the URL's `box=`) and across tabs. Ctrl/Cmd+Z in an untouched
 // field takes the last count back, as the status line's Undo does. A count over
 // 999 is refused (row error, number back, status line) and writes nothing.
+// The + after a field boxes one more through the same write and Undo, and is
+// never a Tab stop.
 //
 // A phone's number pad has no Tab: its "Next" key sends Enter, which commits the
 // field and moves to the next row's. So the spec presses Tab on a desktop and
@@ -123,6 +125,18 @@ test(
     await expect(said(`Boxed 3 more of ${b}. 3 in Unsorted.`)).toBeVisible();
     await expect(fieldA).toHaveValue("2");
     await expect(fieldB).toHaveValue("3");
+
+    // --- The + beside A's field boxes one more, the same write; Undo takes it back ---
+    await rowOf(a).getByRole("button", { name: `Add one ${a} to Unsorted`, exact: true }).click();
+    await expect(said(`Boxed 1 more of ${a}. 3 in Unsorted.`)).toBeVisible();
+    await expect(fieldA).toHaveValue("3");
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(said("Undone.")).toBeVisible();
+    await expect(fieldA).toHaveValue("2");
+    // The + is never a Tab stop: Tab from A's field still lands on B's (both projects).
+    await fieldA.focus();
+    await page.keyboard.press("Tab");
+    await expect(fieldB).toBeFocused();
 
     // --- My Boxes counts five more in Unsorted; Back returns to the typed numbers ---
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();

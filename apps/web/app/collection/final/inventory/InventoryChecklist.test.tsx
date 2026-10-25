@@ -95,6 +95,26 @@ describe("the inventory's checklist", () => {
     expect(Number(before.exec(line().textContent!)![1])).toBe(owned0 + 1);
   });
 
+  it("the + beside a field boxes one more, twice in a row makes two, and Undo takes the last one back", async () => {
+    renderChecklist();
+    const first = qty()[0];
+    const name = /^Quantity of (.+) in Unsorted$/.exec(first.getAttribute("aria-label") ?? "")![1];
+    const plus = screen.getByRole("button", { name: `Add one ${name} to Unsorted` });
+    fireEvent.click(plus);
+    await flush();
+    const saysExactly = (text: string) => screen.getAllByRole("status").some((el) => el.textContent === text);
+    await waitFor(() => expect(saysExactly(`Boxed 1 more of ${name}. 1 in Unsorted.`)).toBe(true));
+    expect(qty()[0].value).toBe("1");
+    fireEvent.click(plus);
+    fireEvent.click(plus);
+    await flush();
+    await waitFor(() => expect(saysExactly(`Boxed 1 more of ${name}. 3 in Unsorted.`)).toBe(true));
+    expect(qty()[0].value).toBe("3");
+    fireEvent.click(screen.getAllByRole("button", { name: "Undo" })[0]);
+    await waitFor(() => expect(says(/^Undone\./)).toBe(true));
+    expect(qty()[0].value).toBe("2");
+  });
+
   it("a blank field does not replace a live Undo: the count stays on the status line and Undo still works", async () => {
     renderChecklist();
     const [a, b] = qty();

@@ -93,7 +93,7 @@ export default function TargetBoxPicker() {
       </div>
       <p id={QUICK_ENTRY_HINT_ID} className="-mt-4 px-1 text-xs text-ink-3">
         Each number is how many plain raw copies (no grade, no condition, no notes) sit in this box. Graded and noted
-        copies show up after it. Type it, tab on. <Key>→</Key> opens Details, <Key>Enter</Key> hops to the next row,{" "}
+        copies show up after it. Type it and tab on, or hit + to box one more. <Key>→</Key> opens Details, <Key>Enter</Key> hops to the next row,{" "}
         <Key>Esc</Key> puts the number back, <Key>Ctrl/⌘+Z</Key> undoes the last count.
       </p>
     </>

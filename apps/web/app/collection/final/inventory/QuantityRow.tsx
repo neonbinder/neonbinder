@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type KeyboardEvent, type MouseEvent, type Ref } from "react";
-import { CheckIcon, ExclamationTriangleIcon } from "@heroicons/react/20/solid";
+import { CheckIcon, ExclamationTriangleIcon, PlusIcon } from "@heroicons/react/20/solid";
+import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { QUIET_BUTTON, useLiverySurface } from "../../prototypes/p1/ui";
 import type { RowActions } from "../CardRows";
@@ -81,6 +82,11 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * (unless it is still offering an Undo: that stays). A count past 999 is
  * refused on the spot, in the server's words, and never cut down to fit.
  *
+ * The + right after the field boxes one more plain copy, through the same
+ * write, status line and Undo as a typed number. It is for the pointer and
+ * the screen reader only (no Tab stop, not on the arrows), so quick entry's
+ * keyboard is exactly the field's.
+ *
  * Saving shows on the row: a dot while the write is on its way, a check
  * when it lands, or the server's reason and the old number back when it is
  * refused. The page's status line says what changed, with one Undo.
@@ -135,10 +141,22 @@ export default function QuantityRow({
 
   const name = showSet ? cardLabel(card) : shortCardName(card);
   const label = box ? `Quantity of ${name} in ${box.name}` : `Quantity of ${name}`;
+  const addLabel = box ? `Add one ${name} to ${box.name}` : `Add one ${name}`;
 
-  const commit = () => {
-    if (shownDraft === null || !box || copies === undefined) return;
-    const base = pending.current > 0 && lastSent.current !== null ? lastSent.current : count;
+  /** The number the next write builds on: the one still on its way, else the box's. */
+  const latest = () => (pending.current > 0 && lastSent.current !== null ? lastSent.current : count);
+
+  /** Past the cap: refused here, as the server would, with nothing written. */
+  const refuseOverCap = (base: number, boxId: string) => {
+    setDraft(pending.current > 0 ? { text: String(base), boxId } : null);
+    setStatus({ kind: "error", message: QUANTITY_RANGE_MESSAGE });
+    api.notify(`${shortCardName(card)} didn't change. ${QUANTITY_RANGE_MESSAGE}`);
+  };
+
+  /** Writes what is typed, if it changed. False only when it was refused. */
+  const commit = (): boolean => {
+    if (shownDraft === null || !box || copies === undefined) return true;
+    const base = latest();
     const quantity = parseQuantity(shownDraft);
     if (quantity === null || quantity === base) {
       // Blank, unreadable or unchanged: nothing to write. The number goes
@@ -147,21 +165,41 @@ export default function QuantityRow({
       // offers the last count's Undo, which an aside never replaces.
       setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
       if (quantity === null) api.inform(BLANK_MESSAGE);
-      return;
+      return true;
     }
     if (!quantityInRange(quantity)) {
-      // Past the cap: refused here, as the server would, with nothing written.
-      setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
-      setStatus({ kind: "error", message: QUANTITY_RANGE_MESSAGE });
-      api.notify(`${shortCardName(card)} didn't change. ${QUANTITY_RANGE_MESSAGE}`);
+      refuseOverCap(base, box.id);
+      return false;
+    }
+    send(quantity, box);
+    return true;
+  };
+
+  /**
+   * The + beside the field: one more plain copy, written exactly as a typed
+   * number is. It builds on the newest number, the one still on its way
+   * included, so rapid clicks never lose a count. Anything typed and not yet
+   * left (the field keeps the focus, see `onMouseDown` below) goes first.
+   */
+  const addOne = () => {
+    if (!box || copies === undefined) return;
+    // A typed number the cap refused stays refused: the + adds nothing to it.
+    if (!commit()) return;
+    const base = latest();
+    if (!quantityInRange(base + 1)) {
+      refuseOverCap(base, box.id);
       return;
     }
+    send(base + 1, box);
+  };
+
+  /** Writes `quantity` through the page's commit queue and reports how it went. */
+  const send = (quantity: number, target: Container) => {
     const mine = ++seq.current;
     pending.current += 1;
     lastSent.current = quantity;
-    setDraft({ text: String(quantity), boxId: box.id });
+    setDraft({ text: String(quantity), boxId: target.id });
     setStatus({ kind: "saving" });
-    const target = box;
     const settle = () => {
       pending.current -= 1;
       if (mine !== seq.current) return false;
@@ -296,6 +334,29 @@ export default function QuantityRow({
               shownDraft !== null ? "ring-1 ring-neon-yellow-text" : ""
             }`}
           />
+          {/* Pointer-only on purpose: never a Tab stop and not in the ← → ring,
+              so the keyboard still walks field to field. A mousedown keeps the
+              focus where it was (no ring left on the +, a typed number stays
+              in its field until the click writes it). */}
+          <NeonButton
+            type="button"
+            variant="secondary"
+            outline
+            size="1"
+            tabIndex={-1}
+            aria-label={addLabel}
+            title="Add one"
+            disabled={!ready}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.stopPropagation();
+              addOne();
+            }}
+            // `!`: Radix's unlayered reset outranks a plain utility on its button.
+            className="min-h-9! min-w-9! shrink-0 max-sm:min-h-11! max-sm:min-w-11!"
+          >
+            <PlusIcon aria-hidden="true" className="h-4 w-4" />
+          </NeonButton>
           <SaveMark status={status} />
         </span>
         {/* After the number, never before it: "0 · also here: PSA 9" reads as

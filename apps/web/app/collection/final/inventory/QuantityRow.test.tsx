@@ -482,6 +482,119 @@ describe("the keyboard", () => {
   });
 });
 
+describe("the + beside the field", () => {
+  const plus = (name: string | RegExp = /^Add one /) => screen.getByRole("button", { name }) as HTMLButtonElement;
+  /** What Tab walks, in document order: what a browser's sequential focus visits. */
+  const tabbable = () =>
+    [...document.querySelectorAll<HTMLElement>("input, button, select, textarea, a[href], [tabindex]")].filter(
+      (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled,
+    );
+
+  it("is named for the card and the box, as the field is", () => {
+    setup();
+    expect(plus().getAttribute("aria-label")).toBe("Add one #12 Elly De La Cruz to Unsorted");
+    // Right after the field, before what else the box holds and Details.
+    const details = screen.getByRole("button", { name: /^Details for / });
+    expect(field().compareDocumentPosition(plus()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(plus().compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("boxes one more through the field's own write, shows the new number, and says it on the status line with Undo", async () => {
+    let land!: () => void;
+    const undo = vi.fn(async () => {});
+    const rig = setup(undefined, {
+      write: (_c, _b, q) => new Promise((resolve) => (land = () => resolve({ before: 2, after: q, undo }))),
+    });
+    fireEvent.click(plus());
+    await flush();
+    expect(rig.setBoxQuantity).toHaveBeenCalledTimes(1);
+    expect(rig.setBoxQuantity).toHaveBeenCalledWith(ELLY, expect.objectContaining({ id: "unsorted" }), 3);
+    expect(field().value).toBe("3");
+    expect(screen.getByText("Saving")).toBeTruthy();
+    await act(async () => land());
+    expect(rig.api.notify).toHaveBeenCalledWith("Boxed 1 more of #12 Elly De La Cruz. 3 in Unsorted.", undo);
+    expect(screen.getByText("Saved")).toBeTruthy();
+  });
+
+  it("two quick clicks make two more: the second builds on the first while it is still on its way", async () => {
+    const lands: (() => void)[] = [];
+    const rig = setup(undefined, {
+      write: (_c, _b, q) => new Promise((resolve) => lands.push(() => resolve({ before: q - 1, after: q, undo: async () => {} }))),
+    });
+    fireEvent.click(plus());
+    fireEvent.click(plus());
+    await flush();
+    expect(field().value).toBe("4");
+    // The queue holds the second behind the first.
+    expect(rig.setBoxQuantity).toHaveBeenCalledTimes(1);
+    await act(async () => lands[0]());
+    await flush();
+    expect(rig.setBoxQuantity).toHaveBeenCalledTimes(2);
+    expect(rig.setBoxQuantity.mock.calls.map((c) => c[2])).toEqual([3, 4]);
+    await act(async () => lands[1]());
+    expect(rig.api.notify).toHaveBeenLastCalledWith("Boxed 1 more of #12 Elly De La Cruz. 4 in Unsorted.", expect.any(Function));
+  });
+
+  it("writes a typed number first, then one more on top of it", async () => {
+    const rig = setup();
+    type(field(), "5");
+    fireEvent.click(plus());
+    await flush();
+    expect(rig.setBoxQuantity.mock.calls.map((c) => c[2])).toEqual([5, 6]);
+  });
+
+  it("at 999 refuses in the cap's words and writes nothing", async () => {
+    const rig = setup([{ card: ELLY, copies: [line({ quantity: 999 })] }]);
+    fireEvent.click(plus());
+    await flush();
+    expect(rig.setBoxQuantity).not.toHaveBeenCalled();
+    expect(field().value).toBe("999");
+    expect(screen.getByText("Didn't save: Quantity is a whole number from 0 to 999. Back to 999.")).toBeTruthy();
+    expect(rig.api.notify).toHaveBeenCalledWith("#12 Elly De La Cruz didn't change. Quantity is a whole number from 0 to 999.");
+  });
+
+  it("adds nothing to a typed number the cap refused", async () => {
+    const rig = setup();
+    type(field(), "1000");
+    fireEvent.click(plus());
+    await flush();
+    expect(rig.setBoxQuantity).not.toHaveBeenCalled();
+    expect(field().value).toBe("2");
+    expect(rig.api.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("is never a Tab stop: Tab from one field lands on the next row's field", () => {
+    setup([
+      { card: ELLY, copies: [line()] },
+      { card: CHASE, copies: [line({ id: "c2", cardId: CHASE.id })] },
+    ]);
+    const [a, b] = fields();
+    expect(plus(/^Add one #12 /).tabIndex).toBe(-1);
+    expect(tabbable()).toEqual([a, b]);
+  });
+
+  it("is not on the row's arrows: → from the field still reaches Details", () => {
+    setup();
+    field().focus();
+    field().setSelectionRange(1, 1);
+    fireEvent.keyDown(field(), { key: "ArrowRight" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Details for / }));
+  });
+
+  it("keeps the focus where it was: pressing it never pulls the focus off a field", () => {
+    setup();
+    field().focus();
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    plus().dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+  });
+
+  it("waits, like the field, until the shelf and the copies are in", () => {
+    setup([{ card: ELLY, copies: undefined }]);
+    expect(plus().disabled).toBe(true);
+  });
+});
+
 describe("the row's other controls", () => {
   it("Details opens the card on the row's first line in the box", () => {
     const rig = setup([{ card: ELLY, copies: [line({ id: "first" }), line({ id: "second", slot: 2 })] }]);
