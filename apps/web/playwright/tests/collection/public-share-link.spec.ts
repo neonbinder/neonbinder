@@ -115,8 +115,7 @@ test(
     await expect(visitor.getByRole("heading", { level: 1, name: binderName })).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(visitor.getByRole("region", { name: "Not in a pocket yet" }).getByText("PSA 10")).toBeVisible();
     await expect(visitor.getByText(card.player).first()).toBeVisible();
-    const pageText = await visitor.locator("body").innerText();
-    for (const value of Object.values(secret)) expect(pageText).not.toContain(value);
+    for (const value of Object.values(secret)) await expect(visitor.getByText(value)).toHaveCount(0);
     await expectAccessible(visitor, { label: "Public binder page" });
 
     // A one-character change to the key: not found, the same screen as private.
