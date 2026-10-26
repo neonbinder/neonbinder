@@ -45,13 +45,12 @@ import {
   MAX_LINES_PER_CARD,
   MAX_COPY_QUANTITY,
   type CountChange,
+  applyCopyChanges,
+  changeOf,
   cleanText,
   counted,
   detailsOf,
   foldsInto,
-  moveBuildingCards,
-  moveCounts,
-  moveTally,
   placeOf,
   refuse,
 } from "./collection";
@@ -332,13 +331,11 @@ export async function moveOntoCatalogCard(
   privateCardId: Id<"privateCards">,
   cardId: Id<"cardChecklist">,
 ): Promise<number> {
-  const place = await placeOf(ctx, ownerId, cardId);
+  const place = await placeOf(ctx, cardId);
   const rows = await linesOf(ctx, ownerId, privateCardId);
   if (rows.length === 0) return 0;
   const target = await linesOf(ctx, ownerId, cardId);
-  const heldBefore = target.length > 0;
   const changes: CountChange[] = [];
-  let lines = 0;
   const now = Date.now();
   for (const row of rows) {
     const mine = detailsOf(row);
@@ -348,11 +345,10 @@ export async function moveOntoCatalogCard(
     if (twin) {
       const quantity = twin.quantity + row.quantity;
       await ctx.db.patch(twin._id, { quantity, lastUpdated: now });
-      changes.push({ before: counted(twin), after: counted({ ...twin, quantity }) });
+      changes.push(changeOf(twin, counted(twin), counted({ ...twin, quantity })));
       twin.quantity = quantity;
       await ctx.db.delete(row._id);
-      changes.push({ before: counted(row), after: null });
-      lines -= 1;
+      changes.push(changeOf(row, counted(row), null));
       continue;
     }
     if (target.length >= MAX_LINES_PER_CARD) {
@@ -367,14 +363,12 @@ export async function moveOntoCatalogCard(
       setId: place.setId,
       lastUpdated: now,
     });
+    // The line leaves the private card and joins the NB one, in place.
+    changes.push(changeOf(row, counted(row), null));
+    changes.push(changeOf({ cardId, setId: place.setId }, null, counted(row)));
     target.push({ ...row, cardId, variantId: place.variantId, setId: place.setId });
   }
-  // One private card left; one NB card joined unless they held it already.
-  await moveTally(ctx, ownerId, { copies: 0, lines, cards: heldBefore ? -1 : 0 });
-  await moveCounts(ctx, ownerId, changes);
-  if (!heldBefore && place.setId) {
-    await moveBuildingCards(ctx, ownerId, [{ setId: place.setId, cards: 1 }]);
-  }
+  await applyCopyChanges(ctx, ownerId, changes);
   return rows.length;
 }
 
@@ -384,17 +378,12 @@ export async function moveOntoCatalogCard(
  */
 async function deletePrivateCard(ctx: MutationCtx, card: PrivateCardRow): Promise<void> {
   const rows = await linesOf(ctx, card.ownerId, card._id);
-  let copies = 0;
-  for (const row of rows) {
-    await ctx.db.delete(row._id);
-    copies += row.quantity;
-  }
+  for (const row of rows) await ctx.db.delete(row._id);
   if (rows.length > 0) {
-    await moveTally(ctx, card.ownerId, { copies: -copies, lines: -rows.length, cards: -1 });
-    await moveCounts(
+    await applyCopyChanges(
       ctx,
       card.ownerId,
-      rows.map((row) => ({ before: counted(row), after: null })),
+      rows.map((row) => changeOf(row, counted(row), null)),
     );
   }
   await discardPrivateCard(ctx, card);

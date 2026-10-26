@@ -10,14 +10,14 @@ import { compareCards } from "../data/labels";
 import { useCollectionActions, useContainers } from "../data/store";
 import type { Card, Container, Copy } from "../data/types";
 import BoxDesk from "./BoxDesk";
-import ForSaleView from "./ForSaleView";
 
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
 
 /**
  * NEO-359 — an open box: five rows and the "Not sorted into a row yet" strip,
  * every move done three ways (drag, the row picker, Alt+ArrowUp / Alt+ArrowDown)
- * through one `onPlace`; and the for-sale view over every box.
+ * through one `onPlace`. (The for-sale view is retired, NEO-364: the Inventory
+ * list is its own tab, see InventoryListTab.test.tsx.)
  */
 
 const BOX: Container = { id: "box1", kind: "box", name: "Show box", count: null };
@@ -87,6 +87,16 @@ describe("an open box", () => {
     ]);
     const strip = screen.getByRole("group", { name: "Not sorted into a row yet" });
     expect(within(strip).getAllByRole("button", { name: /Playoff Contenders/ })).toHaveLength(1);
+  });
+
+  it("stands a row's cards in box order (set year, set name, natural number, variant) whatever order they came in", () => {
+    const [a, b, c] = [c0, c1, c2];
+    // Same set: the number decides, and a stack stays one line.
+    const lines = [line("late", c, 0), line("early", a, 0, { quantity: 2 }), line("mid", b, 0)];
+    renderBox(lines);
+    const row = screen.getByRole("group", { name: /^Row 1,/ });
+    const ids = [...row.querySelectorAll<HTMLElement>("[data-box-copy]")].map((el) => el.getAttribute("data-box-copy"));
+    expect(ids).toEqual(["early", "mid", "late"]);
   });
 
   it("says an empty box is empty, and a sorted one is all sorted", () => {
@@ -232,7 +242,7 @@ describe("the box on the page (demo store)", () => {
       <Theme>
         <MemoryRouter initialEntries={[start]}>
           <Routes>
-            <Route path="/collection" element={<FinalCollectionPage />} />
+            <Route path="/inventory" element={<FinalCollectionPage surface="inventory" />} />
           </Routes>
         </MemoryRouter>
       </Theme>,
@@ -240,7 +250,7 @@ describe("the box on the page (demo store)", () => {
   }
 
   it("opens the Show box with its unsorted strip, and Alt+ArrowUp from the table lands the card in Row 5 and keeps the keyboard on it", async () => {
-    renderPage("/collection?tab=inventory&b=box-show");
+    renderPage("/inventory?tab=boxes&b=box-show");
     const region = await screen.findByRole("region", { name: "Show box, open" });
     const strip = screen.getByRole("group", { name: "Not sorted into a row yet" });
     const unsorted = [...strip.querySelectorAll<HTMLElement>("[data-box-copy]")];
@@ -257,67 +267,5 @@ describe("the box on the page (demo store)", () => {
       expect(moved?.closest('[role="group"]')?.getAttribute("aria-label")).toMatch(/^Row 5,/);
     });
     await waitFor(() => expect(document.activeElement?.getAttribute("data-box-copy")).toBe(id));
-  });
-});
-
-describe("the for-sale view", () => {
-  function Rig({ openBox, openCard }: { openBox: (b: Container) => void; openCard: (c: Card, copy: Copy) => void }) {
-    return (
-      <Theme>
-        <DemoCollectionProvider storageKey="nb-for-sale-test">
-          <ForSaleView onOpenBox={openBox} onOpenCard={openCard} />
-        </DemoCollectionProvider>
-      </Theme>
-    );
-  }
-  beforeEach(() => window.sessionStorage.clear());
-  afterEach(() => window.sessionStorage.clear());
-
-  it("lists the cards of every box with the row each sits in, headed by the for-sale total", () => {
-    render(<Rig openBox={vi.fn()} openCard={vi.fn()} />);
-    expect(screen.getByText(/\d+ cards? for sale in 1 box/)).toBeTruthy();
-    const section = screen.getByRole("region", { name: "Show box, for sale" });
-    const buttons = within(section).getAllByRole("button", { name: /, Show box, / });
-    expect(buttons.length).toBeGreaterThan(1);
-    expect(buttons.some((b) => /, Row \d$/.test(b.getAttribute("aria-label")!))).toBe(true);
-    expect(buttons.some((b) => /, not in a row$/.test(b.getAttribute("aria-label")!))).toBe(true);
-  });
-
-  it("opens the box, and a card's line, from here", () => {
-    const openBox = vi.fn();
-    const openCard = vi.fn();
-    render(<Rig openBox={openBox} openCard={openCard} />);
-    fireEvent.click(screen.getByRole("button", { name: "Open the box, Show box" }));
-    expect(openBox).toHaveBeenCalledWith(expect.objectContaining({ id: "box-show" }));
-    fireEvent.click(within(screen.getByRole("region", { name: "Show box, for sale" })).getAllByRole("button", { name: /, Show box, / })[0]);
-    expect(openCard).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String) }), expect.objectContaining({ homeId: "box-show" }));
-  });
-
-  it("with no box says nothing is for sale and how to make one", () => {
-    function Rig2() {
-      const actions = useCollectionActions();
-      const containers = useContainers();
-      const box = containers?.find((c) => c.kind === "box");
-      return (
-        <>
-          <button type="button" onClick={() => box && void actions.deleteContainer(box)}>
-            Delete the box
-          </button>
-          <ForSaleView onOpenBox={vi.fn()} onOpenCard={vi.fn()} />
-        </>
-      );
-    }
-    render(
-      <Theme>
-        <DemoCollectionProvider storageKey="nb-for-sale-test">
-          <Rig2 />
-        </DemoCollectionProvider>
-      </Theme>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Delete the box" }));
-    return waitFor(() => {
-      expect(screen.getByText("Nothing's for sale yet.")).toBeTruthy();
-      expect(screen.getByText(/Make a box \(New box\)/)).toBeTruthy();
-    });
   });
 });

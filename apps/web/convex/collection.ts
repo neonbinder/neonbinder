@@ -49,13 +49,31 @@
  *
  * Every container keeps its own `count` (copies and lines), moved by every
  * write here in the same transaction (`moveCounts`), after the tally.
+ *
+ * ## Collection and inventory (NEO-364)
+ *
+ * The hard line: Collection = binders, Inventory = boxes. A copy whose home
+ * is a binder (Main included) is on the collection side; one whose home is a
+ * box (Unsorted included) is on the inventory side. The tally and the
+ * building-set counts are COLLECTION ONLY, and every read that could serve
+ * either side takes an explicit `side` (`copiesInVariant`,
+ * `variantCompletion`, `setCompletion`); `ownedCards` and `summary` are the
+ * collection's. A move (Sell / Take off sale) is the only crossing. The one
+ * exception is Up for Trade, a flag on the copy read across both sides
+ * (`tradeCopies`). The inventory's own reads and quick-count write live in
+ * `convex/collectionInventory.ts`.
+ *
+ * Every write describes its row changes once (`CountChange[]`) and hands
+ * them to `applyCopyChanges`, the single place the tally, the container
+ * counts and the building-set counts move. No handler moves a number itself.
  */
 
 import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import { internalAction, internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -242,7 +260,7 @@ export const removedCopyValidator = v.object({
 });
 
 type DetailsArg = typeof copyDetailsValidator.type;
-type StoredDetails = Omit<DetailsArg, "homeId" | "upForTrade"> & {
+export type StoredDetails = Omit<DetailsArg, "homeId" | "upForTrade"> & {
   homeId: Id<"collectionContainers">;
   upForTrade?: true;
 };
@@ -339,7 +357,7 @@ export function cleanDetails(raw: DetailsArg): Omit<StoredDetails, "homeId"> {
  * rows; a binder's pockets run to `MAX_BINDER_PAGES` pages. Whole and
  * non-negative is `cleanDetails`' check.
  */
-function checkSlot(home: Pick<ContainerRow, "kind">, slot: number | undefined): void {
+export function checkSlot(home: Pick<ContainerRow, "kind">, slot: number | undefined): void {
   if (slot === undefined) return;
   const max = home.kind === "box" ? BOX_ROWS : MAX_BINDER_PAGES * POCKETS_PER_PAGE;
   if (!Number.isInteger(slot) || slot < 0 || slot >= max) {
@@ -457,35 +475,126 @@ export async function getOrCreateMain(
   });
 }
 
-type Tally = typeof collectionTallyValidator.type;
+// ───────────────────────────────────────────────────────────────────────────
+// Sides (NEO-364): Collection = binders, Inventory = boxes
+// ───────────────────────────────────────────────────────────────────────────
 
-const NO_CHANGE: Tally = { copies: 0, lines: 0, cards: 0 };
+/**
+ * NEO-364 — the two sides of a collector's cards. A copy is on the
+ * collection side when its home is a binder (Main included) and on the
+ * inventory side when its home is a box (Unsorted included). No collection
+ * read, count or screen ever touches an inventory copy, and the reverse.
+ */
+export type Side = "collection" | "inventory";
+export const sideValidator = v.union(v.literal("collection"), v.literal("inventory"));
 
-function addTallies(a: Tally, b: Tally): Tally {
-  return { copies: a.copies + b.copies, lines: a.lines + b.lines, cards: a.cards + b.cards };
+/** The side a container's copies are on. */
+export function sideOfContainer(row: Pick<ContainerRow, "kind">): Side {
+  return row.kind === "box" ? "inventory" : "collection";
 }
 
 /**
- * The caller's tally counted by hand, from at most `MAX_TALLY_RECOUNT_LINES`
- * line items. `exact` is false when there were more: the numbers are then a
- * floor, never the answer.
+ * NEO-364 — which side each home is on, read at most once per home per call
+ * (one `get` each). A home that is gone or not the owner's is on no side:
+ * its copies count nowhere, the same as a recount that walks the homes.
+ */
+export class HomeSides {
+  private readonly known = new Map<string, Side | null>();
+  constructor(
+    private readonly ctx: Pick<QueryCtx, "db">,
+    private readonly ownerId: string,
+  ) {}
+
+  async of(homeId: Id<"collectionContainers">): Promise<Side | null> {
+    const cached = this.known.get(homeId);
+    if (cached !== undefined) return cached;
+    const row = await this.ctx.db.get(homeId);
+    const side = row && row.ownerId === this.ownerId ? sideOfContainer(row) : null;
+    this.known.set(homeId, side);
+    return side;
+  }
+
+  async is(homeId: Id<"collectionContainers">, side: Side): Promise<boolean> {
+    return (await this.of(homeId)) === side;
+  }
+
+  /** Only the rows whose home is on `side`, order kept. */
+  async keep<T extends { homeId: Id<"collectionContainers"> }>(rows: ReadonlyArray<T>, side: Side): Promise<T[]> {
+    const out: T[] = [];
+    for (const row of rows) if (await this.is(row.homeId, side)) out.push(row);
+    return out;
+  }
+}
+
+/** System rows a collector can have: Main, Unsorted, the Want List, Up for Trade. */
+export const MAX_SYSTEM_CONTAINERS = 4;
+
+/**
+ * NEO-364 — the owner's collection HOMES (Main and their binders; never a
+ * box, never the Want List or Up for Trade, which hold no copies), oldest
+ * first. One bounded read.
+ */
+async function collectionHomes(ctx: Pick<QueryCtx, "db">, ownerId: string): Promise<ContainerRow[]> {
+  const rows = await ctx.db
+    .query("collectionContainers")
+    .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId))
+    .take(MAX_CONTAINERS + MAX_SYSTEM_CONTAINERS);
+  return rows.filter(
+    (row) => sideOfContainer(row) === "collection" && row.system !== "want" && row.system !== "trade",
+  );
+}
+
+type Tally = typeof collectionTallyValidator.type;
+
+/**
+ * NEO-364 — Main's tally when it is a kept, collection-only one. A tally
+ * from before NEO-364 (no `tallyScope`) counted boxes too and reads as not
+ * kept: recounted on the next write, counted by hand on a read until then.
+ */
+function keptTally(main: Pick<ContainerRow, "tally" | "tallyScope"> | null | undefined): Tally | undefined {
+  return main?.tallyScope === "collection" ? main.tally : undefined;
+}
+
+/**
+ * NEO-364 — a building set's `cards` when it is a kept, collection-only
+ * count; undefined (not counted) otherwise, a NEO-359 all-homes count included.
+ */
+function keptCards(row: Pick<Doc<"collectionBuildingSets">, "cards" | "tallyScope">): number | undefined {
+  return row.tallyScope === "collection" ? row.cards : undefined;
+}
+
+/**
+ * The caller's tally counted by hand: the lines in their collection homes
+ * (Main and binders, never a box), at most `MAX_TALLY_RECOUNT_LINES` of them
+ * over every home. `exact` is false when there were more: the numbers are
+ * then a floor, never the answer.
  */
 async function recountTally(
   ctx: Pick<QueryCtx, "db">,
   ownerId: string,
 ): Promise<{ tally: Tally; exact: boolean; rows: CopyRow[] }> {
-  const rows = await ctx.db
-    .query("collectionCopies")
-    .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId))
-    .take(MAX_TALLY_RECOUNT_LINES + 1);
-  const exact = rows.length <= MAX_TALLY_RECOUNT_LINES;
-  const counted = exact ? rows : rows.slice(0, MAX_TALLY_RECOUNT_LINES);
+  const homes = await collectionHomes(ctx, ownerId);
+  const rows: CopyRow[] = [];
+  let exact = true;
+  for (const home of homes) {
+    const left = MAX_TALLY_RECOUNT_LINES - rows.length;
+    const lines = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", home._id))
+      .take(left + 1);
+    if (lines.length > left) {
+      rows.push(...lines.slice(0, left));
+      exact = false;
+      break;
+    }
+    rows.push(...lines);
+  }
   let copies = 0;
-  for (const row of counted) copies += row.quantity;
+  for (const row of rows) copies += row.quantity;
   return {
-    tally: { copies, lines: counted.length, cards: distinctCards(counted).size },
+    tally: { copies, lines: rows.length, cards: distinctCards(rows).size },
     exact,
-    rows: counted,
+    rows,
   };
 }
 
@@ -497,16 +606,19 @@ async function recountTally(
 export const MAX_BUILDING_CARDS_RECOUNT_LINES = MAX_SUMMARY_LINES;
 
 /**
- * Distinct cards the owner holds in `setId` (lines naming the set), counted
- * by hand from at most `MAX_BUILDING_CARDS_RECOUNT_LINES` lines and at most
- * `budget.left` reads, which it spends. Null when it could not finish: the
- * count is then unknown, never a floor.
+ * Distinct cards the owner holds in `setId` in a collection home (lines
+ * naming the set whose home is a binder; NEO-364: never a box), counted by
+ * hand from at most `MAX_BUILDING_CARDS_RECOUNT_LINES` lines and at most
+ * `budget.left` reads, which it spends. Box lines are read and skipped, so
+ * they spend the budget too. Null when it could not finish: the count is
+ * then unknown, never a floor.
  */
 export async function countSetCards(
   ctx: Pick<QueryCtx, "db">,
   ownerId: string,
   setId: Id<"selectorOptions">,
   budget: { left: number },
+  sides: HomeSides = new HomeSides(ctx, ownerId),
 ): Promise<number | null> {
   const limit = Math.min(budget.left, MAX_BUILDING_CARDS_RECOUNT_LINES);
   if (limit <= 0) return null;
@@ -516,7 +628,7 @@ export async function countSetCards(
     .take(limit + 1);
   budget.left -= Math.min(rows.length, limit);
   if (rows.length > limit) return null;
-  return distinctCards(rows).size;
+  return distinctCards(await sides.keep(rows, "collection")).size;
 }
 
 /** A whole card gained (+1) or lost (-1) in a set, as one write saw it. */
@@ -525,14 +637,16 @@ export type SetCardsChange = { setId: Id<"selectorOptions">; cards: number };
 /**
  * Move the `cards` on the owner's building-set rows by `changes`, AFTER the
  * writes, in the same transaction. A set the owner is not building has no
- * row and nothing to keep. A row whose count is absent (or would go below
- * zero: drift) is counted by hand instead, and left uncounted when that
- * cannot finish.
+ * row and nothing to keep. A row whose count is not kept (absent, from before
+ * NEO-364, or would go below zero: drift) is counted by hand instead and
+ * stamped collection-only, and left uncounted when that cannot finish.
+ * Only `applyCopyChanges` calls it.
  */
-export async function moveBuildingCards(
+async function moveBuildingCards(
   ctx: MutationCtx,
   ownerId: string,
   changes: ReadonlyArray<SetCardsChange>,
+  sides: HomeSides,
 ): Promise<void> {
   const bySet = new Map<Id<"selectorOptions">, number>();
   for (const { setId, cards } of changes) bySet.set(setId, (bySet.get(setId) ?? 0) + cards);
@@ -543,21 +657,42 @@ export async function moveBuildingCards(
       .withIndex("by_owner_and_set", (q) => q.eq("ownerId", ownerId).eq("setId", setId))
       .first();
     if (!row) continue;
-    if (row.cards !== undefined) {
-      const next = row.cards + delta;
+    const kept = keptCards(row);
+    if (kept !== undefined) {
+      const next = kept + delta;
       if (next >= 0) {
         await ctx.db.patch(row._id, { cards: next });
         continue;
       }
       console.warn(
-        JSON.stringify({ event: "collection_building_cards_drift", stored: row.cards, delta }),
+        JSON.stringify({ event: "collection_building_cards_drift", stored: kept, delta }),
       );
     }
-    const counted = await countSetCards(ctx, ownerId, setId, {
-      left: MAX_BUILDING_CARDS_RECOUNT_LINES,
-    });
-    await ctx.db.patch(row._id, { cards: counted ?? undefined });
+    await recountBuildingRow(ctx, ownerId, row, sides);
   }
+}
+
+/** Count one building-set row by hand and store it, stamped; unknown when it cannot finish. */
+async function recountBuildingRow(
+  ctx: MutationCtx,
+  ownerId: string,
+  row: Doc<"collectionBuildingSets">,
+  sides: HomeSides,
+): Promise<number | null> {
+  const counted = await countSetCards(
+    ctx,
+    ownerId,
+    row.setId,
+    { left: MAX_BUILDING_CARDS_RECOUNT_LINES },
+    sides,
+  );
+  await ctx.db.patch(
+    row._id,
+    counted === null
+      ? { cards: undefined, tallyScope: undefined }
+      : { cards: counted, tallyScope: "collection" },
+  );
+  return counted;
 }
 
 /**
@@ -584,11 +719,11 @@ export async function forgetBuildingCards(
 }
 
 /**
- * Distinct cards the owner holds on any of `building` (their set builds):
- * each row's kept `cards`, or a hand count for a row without one. With
- * `rows` (every one of the owner's lines, from a tally recount) it is
- * counted off those instead, with no reads. `exact` is false when a hand
- * count could not finish.
+ * Distinct cards the owner holds in a collection home on any of `building`
+ * (their set builds): each row's kept `cards`, or a hand count for a row
+ * without one. With `rows` (every one of the owner's collection lines, from
+ * a tally recount) it is counted off those instead, with no reads. `exact`
+ * is false when a hand count could not finish.
  */
 async function cardsOnBuilds(
   ctx: Pick<QueryCtx, "db">,
@@ -610,14 +745,16 @@ async function cardsOnBuilds(
     return { cards, exact: true };
   }
   const budget = { left: MAX_BUILDING_CARDS_RECOUNT_LINES };
+  const sides = new HomeSides(ctx, ownerId);
   let cards = 0;
   let exact = true;
   for (const b of building) {
-    if (b.cards !== undefined) {
-      cards += b.cards;
+    const kept = keptCards(b);
+    if (kept !== undefined) {
+      cards += kept;
       continue;
     }
-    const counted = await countSetCards(ctx, ownerId, b.setId, budget);
+    const counted = await countSetCards(ctx, ownerId, b.setId, budget, sides);
     if (counted === null) exact = false;
     else cards += counted;
   }
@@ -627,16 +764,18 @@ async function cardsOnBuilds(
 /**
  * Move the caller's tally by `delta`, AFTER the write it describes, in the
  * same transaction. The tally lives on Main (see the schema); a collector
- * without one yet, or one whose tally would go below zero (drift), is counted
- * by hand instead, and left uncounted when even that is too big to finish.
+ * without a kept one yet (absent, or from before NEO-364), or one whose tally
+ * would go below zero (drift), is counted by hand instead and stamped
+ * collection-only, and left uncounted when even that is too big to finish.
+ * Only `applyCopyChanges` calls it.
  */
-export async function moveTally(ctx: MutationCtx, ownerId: string, delta: Tally): Promise<void> {
+async function moveTally(ctx: MutationCtx, ownerId: string, delta: Tally): Promise<void> {
   if (delta.copies === 0 && delta.lines === 0 && delta.cards === 0) return;
   const mainId = await getOrCreateMain(ctx, ownerId);
   const main = await ctx.db.get(mainId);
-  const stored = main?.tally;
+  const stored = keptTally(main);
   if (stored) {
-    const next = addTallies(stored, delta);
+    const next = { copies: stored.copies + delta.copies, lines: stored.lines + delta.lines, cards: stored.cards + delta.cards };
     if (next.copies >= 0 && next.lines >= 0 && next.cards >= 0) {
       await ctx.db.patch(mainId, { tally: next });
       return;
@@ -644,20 +783,86 @@ export async function moveTally(ctx: MutationCtx, ownerId: string, delta: Tally)
     console.warn(JSON.stringify({ event: "collection_tally_drift", stored, delta }));
   }
   const counted = await recountTally(ctx, ownerId);
-  await ctx.db.patch(mainId, { tally: counted.exact ? counted.tally : undefined });
+  await ctx.db.patch(
+    mainId,
+    counted.exact
+      ? { tally: counted.tally, tallyScope: "collection" }
+      : { tally: undefined, tallyScope: undefined },
+  );
 }
 
-/** Is any line of this card still the caller's? (After a delete: did a distinct card go?) */
-async function stillHolds(
+/**
+ * Collection lines the owner holds of `cardId` right now (this transaction's
+ * writes included), at most `MAX_LINES_PER_CARD + 1` read.
+ */
+async function collectionLinesOf(
   ctx: MutationCtx,
   ownerId: string,
   cardId: CopyCardId,
-): Promise<boolean> {
-  const line = await ctx.db
+  sides: HomeSides,
+): Promise<number> {
+  const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
-    .first();
-  return line !== null;
+    .take(MAX_LINES_PER_CARD + 1);
+  return (await sides.keep(lines, "collection")).length;
+}
+
+/**
+ * NEO-364 — the ONE place a copy write moves the owner's numbers: every
+ * handler describes its row writes as `CountChange`s (the row before and
+ * after, with its card and set) and calls this once, AFTER the writes, in
+ * the same transaction. From those changes and the side of each home it
+ * derives, never per handler:
+ *
+ *   1. the tally (collection side only: copies and lines of rows in a
+ *      binder home; a distinct card gained when a card's first collection
+ *      line arrives, lost when its last one goes),
+ *   2. every container's own count (`moveCounts`, both sides, Trade too),
+ *   3. the building-set `cards` (the same gained/lost cards, by set).
+ *
+ * A card's collection presence before the write is its collection lines now
+ * minus the net collection lines the changes added, so a card is read only
+ * when its net collection lines moved (an add, a delete, a binder/box move;
+ * never a quantity edit, a trade flag, or a write wholly inside boxes).
+ */
+export async function applyCopyChanges(
+  ctx: MutationCtx,
+  ownerId: string,
+  changes: ReadonlyArray<CountChange>,
+): Promise<void> {
+  const sides = new HomeSides(ctx, ownerId);
+  let copies = 0;
+  let lines = 0;
+  const perCard = new Map<string, { cardId: CopyCardId; setId?: Id<"selectorOptions">; lines: number }>();
+  for (const change of changes) {
+    for (const [row, sign] of [
+      [change.before, -1],
+      [change.after, 1],
+    ] as const) {
+      if (!row || !(await sides.is(row.homeId, "collection"))) continue;
+      copies += sign * row.quantity;
+      lines += sign;
+      const entry = perCard.get(change.cardId) ?? { cardId: change.cardId, setId: change.setId, lines: 0 };
+      entry.lines += sign;
+      perCard.set(change.cardId, entry);
+    }
+  }
+  let cards = 0;
+  const setCards: SetCardsChange[] = [];
+  for (const entry of perCard.values()) {
+    if (entry.lines === 0) continue;
+    const now = await collectionLinesOf(ctx, ownerId, entry.cardId, sides);
+    const before = now - entry.lines;
+    const delta = (now > 0 ? 1 : 0) - (before > 0 ? 1 : 0);
+    if (delta === 0) continue;
+    cards += delta;
+    // NEO-361: a private card is on no set build.
+    if (entry.setId) setCards.push({ setId: entry.setId, cards: delta });
+  }
+  await moveTally(ctx, ownerId, { copies, lines, cards });
+  await moveCounts(ctx, ownerId, changes);
+  await moveBuildingCards(ctx, ownerId, setCards, sides);
 }
 
 /**
@@ -729,12 +934,28 @@ async function pocketIsFree(
   return line === null;
 }
 
-/**
- * Where a card files: its variant row and that row's set. Refuses a gone
- * card. NEO-361: a private card files nowhere (no variant, no set), and must
- * be the caller's own; anyone else's reads as gone.
- */
+/** Where a card files: its variant row and that row's set. Refuses a gone card. */
 export async function placeOf(
+  ctx: MutationCtx,
+  cardId: Id<"cardChecklist">,
+): Promise<{ variantId: Id<"selectorOptions">; setId: Id<"selectorOptions"> }> {
+  const card = await ctx.db.get(cardId);
+  if (!card) {
+    refuse(COLLECTION_ERRORS.notFound, "That card isn't in the catalog anymore.");
+  }
+  const setId = await findSetForSelectorOption(ctx, card.selectorOptionId);
+  if (!setId) {
+    refuse(COLLECTION_ERRORS.notFound, "That card isn't filed under a set yet, so it can't be added.");
+  }
+  return { variantId: card.selectorOptionId, setId };
+}
+
+/**
+ * NEO-361 — `placeOf` for any card a copy can be of. A private card files
+ * nowhere (no variant, no set), and must be the caller's own; anyone else's
+ * reads as gone.
+ */
+export async function placeOfCopyCard(
   ctx: MutationCtx,
   ownerId: string,
   rawId: CopyCardId,
@@ -748,15 +969,10 @@ export async function placeOf(
     return {};
   }
   const cardId = ctx.db.normalizeId("cardChecklist", rawId);
-  const card = cardId ? await ctx.db.get(cardId) : null;
-  if (!card) {
+  if (!cardId) {
     refuse(COLLECTION_ERRORS.notFound, "That card isn't in the catalog anymore.");
   }
-  const setId = await findSetForSelectorOption(ctx, card.selectorOptionId);
-  if (!setId) {
-    refuse(COLLECTION_ERRORS.notFound, "That card isn't filed under a set yet, so it can't be added.");
-  }
-  return { variantId: card.selectorOptionId, setId };
+  return placeOf(ctx, cardId);
 }
 
 /** The caller's copy, or a not-found refusal. */
@@ -785,11 +1001,28 @@ export type Counted = {
 
 /**
  * One row's write, as the counts see it: the row before (null for an
- * insert) and after (null for a delete). Every write path describes itself
- * this way and `moveCounts` turns it into container deltas, so a split, a
- * fold, a move and a trade flag are all handled in one place.
+ * insert) and after (null for a delete), and the card and set the row is of.
+ * Every write path describes itself this way and `applyCopyChanges` turns it
+ * into the tally, the container counts and the building-set counts, so a
+ * split, a fold, a move, a binder/box crossing and a trade flag are all
+ * handled in one place.
  */
-export type CountChange = { before: Counted | null; after: Counted | null };
+export type CountChange = {
+  cardId: CopyCardId;
+  /** NEO-361 — absent for a private card, which is in no set. */
+  setId?: Id<"selectorOptions">;
+  before: Counted | null;
+  after: Counted | null;
+};
+
+/** A `CountChange` for one of `row`'s writes. */
+export function changeOf(
+  row: Pick<CopyRow, "cardId" | "setId">,
+  before: Counted | null,
+  after: Counted | null,
+): CountChange {
+  return { cardId: row.cardId, setId: row.setId, before, after };
+}
 
 const TRADE_KEY = "trade";
 
@@ -836,13 +1069,13 @@ function sumRows(rows: ReadonlyArray<Pick<CopyRow, "quantity">>): Count {
  * count is absent or drifted. Reads at most `budget.left` documents and
  * spends them; null when it could not finish (the count is then unknown,
  * never a floor). Main first tries the cheap derivation: the owner's tally
- * minus every collector-made container's count, when the tally is kept and
- * every one of those containers is counted (exact for every NEO-358
- * collector, no backfill).
+ * minus every collector-made BINDER's count (NEO-364: the tally counts no
+ * box, so no box is subtracted), when the tally is kept and every one of
+ * those binders is counted (exact for every NEO-358 collector, no backfill).
  */
 export async function countContainer(
   ctx: Pick<QueryCtx, "db">,
-  row: Pick<ContainerRow, "_id" | "ownerId" | "system" | "tally">,
+  row: Pick<ContainerRow, "_id" | "ownerId" | "system" | "tally" | "tallyScope">,
   budget: { left: number },
 ): Promise<Count | null> {
   const ownerId = row.ownerId;
@@ -866,15 +1099,17 @@ export async function countContainer(
     if (budget.left < 0) return null;
     return sumRows(rows);
   }
-  if (row.system === "main" && row.tally) {
+  const tally = row.system === "main" ? keptTally(row) : undefined;
+  if (tally) {
     const own = await ctx.db
       .query("collectionContainers")
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", undefined))
       .take(MAX_CONTAINERS + 1);
-    if (own.length <= MAX_CONTAINERS && own.every((c) => c.count !== undefined)) {
-      let copies = row.tally.copies;
-      let lines = row.tally.lines;
-      for (const c of own) {
+    const binders = own.filter((c) => sideOfContainer(c) === "collection");
+    if (own.length <= MAX_CONTAINERS && binders.every((c) => c.count !== undefined)) {
+      let copies = tally.copies;
+      let lines = tally.lines;
+      for (const c of binders) {
         copies -= c.count!.copies;
         lines -= c.count!.lines;
       }
@@ -916,14 +1151,15 @@ async function moveContainerCount(
 }
 
 /**
- * Move the caller's Want List or Up for Trade count by `delta`, if that row
- * exists yet (`ensureSystem` makes them, counted). A collector without one
- * has nothing to keep.
+ * Move one of the caller's system rows' counts by `delta` (the Want List and
+ * Up for Trade, from outside the home path), if that row exists yet
+ * (`ensureSystem` makes them, counted). A collector without one has nothing
+ * to keep.
  */
 export async function moveSystemCount(
   ctx: MutationCtx,
   ownerId: string,
-  system: "want" | "trade",
+  system: NonNullable<ContainerRow["system"]>,
   delta: Count,
 ): Promise<void> {
   if (delta.copies === 0 && delta.lines === 0) return;
@@ -938,9 +1174,9 @@ export async function moveSystemCount(
  * Move every container count `changes` touches, in the same transaction and
  * AFTER the writes (and after `moveTally`, which Main's derivation reads).
  * Collector-made homes first, Main last, so Main's derivation sees their new
- * counts.
+ * counts. Called by `applyCopyChanges` and nothing else.
  */
-export async function moveCounts(
+async function moveCounts(
   ctx: MutationCtx,
   ownerId: string,
   changes: ReadonlyArray<CountChange>,
@@ -972,9 +1208,9 @@ export async function moveCounts(
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Add one line item, folding when the rule allows. Returns how the caller's
- * tally moves and the row change for the container counts; the caller applies
- * both (`moveTally`, then `moveCounts`) once, after all its adds.
+ * Add one line item, folding when the rule allows. Returns the row change;
+ * the caller applies every add's change once (`applyCopyChanges`), after all
+ * its adds.
  */
 async function addOne(
   ctx: MutationCtx,
@@ -983,15 +1219,13 @@ async function addOne(
   raw: DetailsArg,
 ): Promise<{
   result: typeof addResultValidator.type;
-  delta: Tally;
   change: CountChange;
-  setCards: SetCardsChange[];
 }> {
   const cleaned = cleanDetails(raw);
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const next: StoredDetails = { ...cleaned, homeId: home._id };
-  const place = await placeOf(ctx, ownerId, cardId);
+  const place = await placeOfCopyCard(ctx, ownerId, cardId);
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
@@ -1007,9 +1241,7 @@ async function addOne(
     await ctx.db.patch(into._id, { quantity, lastUpdated: now });
     return {
       result: { copyId: into._id, merged: true, previous },
-      delta: { copies: next.quantity, lines: 0, cards: 0 },
-      change: { before: counted(into), after: counted({ ...into, quantity }) },
-      setCards: [],
+      change: changeOf(into, counted(into), counted({ ...into, quantity })),
     };
   }
   if (lines.length >= MAX_LINES_PER_CARD) {
@@ -1025,9 +1257,7 @@ async function addOne(
   });
   return {
     result: { copyId, merged: false },
-    delta: { copies: next.quantity, lines: 1, cards: lines.length === 0 ? 1 : 0 },
-    change: { before: null, after: counted(next) },
-    setCards: lines.length === 0 && place.setId ? [{ setId: place.setId, cards: 1 }] : [],
+    change: changeOf({ cardId, setId: place.setId }, null, counted(next)),
   };
 }
 
@@ -1038,7 +1268,9 @@ async function addOne(
  * part of a stack splits off and the source keeps the rest. Moving cards to
  * where they already are (same home, same slot) changes nothing. Refuses the
  * Want List, Up for Trade, a smart binder, and a binder pocket another line
- * holds. Returns the result and applies the tally and counts itself.
+ * holds. Returns the result and applies the numbers itself
+ * (`applyCopyChanges`): NEO-364, a binder-to-box move (Sell) leaves the tally,
+ * a box-to-binder one (Take off sale) joins it.
  */
 export async function moveCopyCore(
   ctx: MutationCtx,
@@ -1090,7 +1322,6 @@ export async function moveCopyCore(
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
   const now = Date.now();
   const changes: CountChange[] = [];
-  let tally: Tally = NO_CHANGE;
   let copyId: Id<"collectionCopies">;
   if (into) {
     const total = into.quantity + quantity;
@@ -1098,26 +1329,25 @@ export async function moveCopyCore(
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Move fewer, or start a new line.`);
     }
     await ctx.db.patch(into._id, { quantity: total, lastUpdated: now });
-    changes.push({ before: counted(into), after: counted({ ...into, quantity: total }) });
+    changes.push(changeOf(into, counted(into), counted({ ...into, quantity: total })));
     if (whole) {
       await ctx.db.delete(row._id);
-      changes.push({ before: counted(row), after: null });
-      tally = { copies: 0, lines: -1, cards: 0 };
+      changes.push(changeOf(row, counted(row), null));
     } else {
       await ctx.db.patch(row._id, { quantity: row.quantity - quantity, lastUpdated: now });
-      changes.push({ before: counted(row), after: counted({ ...row, quantity: row.quantity - quantity }) });
+      changes.push(changeOf(row, counted(row), counted({ ...row, quantity: row.quantity - quantity })));
     }
     copyId = into._id;
   } else if (whole) {
     await ctx.db.patch(row._id, { homeId: home._id, slot, lastUpdated: now });
-    changes.push({ before: counted(row), after: counted({ ...row, homeId: home._id }) });
+    changes.push(changeOf(row, counted(row), counted({ ...row, homeId: home._id })));
     copyId = row._id;
   } else {
     if (lines.length >= MAX_LINES_PER_CARD) {
       refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
     }
     await ctx.db.patch(row._id, { quantity: row.quantity - quantity, lastUpdated: now });
-    changes.push({ before: counted(row), after: counted({ ...row, quantity: row.quantity - quantity }) });
+    changes.push(changeOf(row, counted(row), counted({ ...row, quantity: row.quantity - quantity })));
     copyId = await ctx.db.insert("collectionCopies", {
       ownerId,
       cardId: row.cardId,
@@ -1125,11 +1355,9 @@ export async function moveCopyCore(
       ...next,
       lastUpdated: now,
     });
-    changes.push({ before: null, after: counted(next) });
-    tally = { copies: 0, lines: 1, cards: 0 };
+    changes.push(changeOf(row, null, counted(next)));
   }
-  await moveTally(ctx, ownerId, tally);
-  await moveCounts(ctx, ownerId, changes);
+  await applyCopyChanges(ctx, ownerId, changes);
   return { copyId, folded: into !== undefined, split: !whole, from };
 }
 
@@ -1177,7 +1405,9 @@ async function ownedOnVariant(
 
 /**
  * The caller's whole collection at a glance, read off the tally on their Main
- * binder: one read whatever the collection's size. `exact` is false only for
+ * binder: one read whatever the collection's size. NEO-364: the COLLECTION
+ * only (binder homes, Main included); a box copy (for sale) is in no number
+ * here, building sets included. `exact` is false only for
  * a collector whose tally was never kept and who holds more than
  * `MAX_TALLY_RECOUNT_LINES` line items: the numbers are then a floor
  * ("5,000+"), until their next write counts them.
@@ -1208,9 +1438,8 @@ export const summary = query({
       .query("collectionContainers")
       .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", "main"))
       .first();
-    const counted = main?.tally
-      ? { tally: main.tally, exact: true }
-      : await recountTally(ctx, ownerId);
+    const kept = keptTally(main);
+    const counted = kept ? { tally: kept, exact: true } : await recountTally(ctx, ownerId);
     const building = await ctx.db
       .query("collectionBuildingSets")
       .withIndex("by_owner_and_set", (q) => q.eq("ownerId", ownerId))
@@ -1231,16 +1460,16 @@ export const summary = query({
   },
 });
 
-/** One card the caller holds, as "Everything I own" lists it. */
+/** One card the caller holds, as "Everything I own" lists it. NEO-364: binder lines only. */
 export const ownedCardValidator = v.object({
   cardId: copyCardIdValidator,
-  /** Physical copies, over every line of the card. */
+  /** Physical copies, over every collection (binder) line of the card. */
   quantity: v.number(),
-  /** Line items of the card. */
+  /** Collection (binder) line items of the card. */
   lines: v.number(),
-  /** When the card's newest line was last touched. */
+  /** When the card's newest collection line was last touched. */
   lastUpdated: v.number(),
-  /** NEO-359: true when any line of the card is graded (a slab): "Slabs only". */
+  /** NEO-359: true when any collection line of the card is graded (a slab): "Slabs only". */
   graded: v.boolean(),
 });
 
@@ -1258,6 +1487,13 @@ export const ownedCardValidator = v.object({
  * caller asks for more until it has enough.
  *
  * A page reads at most `MAX_OWNED_PAGE_LINES` lines whatever it is asked.
+ *
+ * NEO-364 — the collection side only: a line whose home is a box is skipped
+ * (it spends the page like any line), a card is listed at its newest BINDER
+ * line, its numbers are over its binder lines, and a card held only in boxes
+ * is never listed. The pages still walk every line (no index splits the
+ * sides), so a box-heavy collection can return empty pages; the caller keeps
+ * asking until `isDone`.
  */
 export const ownedCards = query({
   args: { paginationOpts: paginationOptsValidator },
@@ -1273,13 +1509,16 @@ export const ownedCards = query({
       .paginate({ ...args.paginationOpts, numItems });
     const page: Array<typeof ownedCardValidator.type> = [];
     const seen = new Set<string>();
+    const sides = new HomeSides(ctx, ownerId);
     for (const line of result.page) {
       if (seen.has(line.cardId)) continue;
+      if (!(await sides.is(line.homeId, "collection"))) continue;
       seen.add(line.cardId);
-      const lines = await ctx.db
+      const all = await ctx.db
         .query("collectionCopies")
         .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", line.cardId))
         .take(MAX_LINES_PER_CARD);
+      const lines = await sides.keep(all, "collection");
       if (lines.some((other) => newerLine(other, line))) continue;
       let quantity = 0;
       let graded = false;
@@ -1303,7 +1542,7 @@ export const ownedCards = query({
  * Does `a` come before `b` in `ownedCards`' order? The index's: `lastUpdated`
  * descending, then `_creationTime` (every index ends in it) descending.
  */
-function newerLine(a: CopyRow, b: CopyRow): boolean {
+export function newerLine(a: CopyRow, b: CopyRow): boolean {
   if (a._id === b._id) return false;
   if (a.lastUpdated !== b.lastUpdated) return a.lastUpdated > b.lastUpdated;
   return a._creationTime > b._creationTime;
@@ -1327,14 +1566,17 @@ export const copiesOf = query({
 
 /**
  * NEO-359 — the scope a read names (`homeId`, from the URL's `scope=`):
- * `undefined` when there is none (every home), the home's id when it is one
- * of the caller's homes, and `null` when the id is bad, not the caller's, or
- * not a home (the Want List, Up for Trade): the read is then empty.
+ * `undefined` when there is none (every home on the side), the home's id when
+ * it is one of the caller's homes, and `null` when the id is bad, not the
+ * caller's, or not a home (the Want List, Up for Trade): the read is then
+ * empty. NEO-364: a home on the OTHER side (a box asked for on the
+ * collection side, a binder on the inventory side) is `null` too.
  */
 async function readScope(
   ctx: Pick<QueryCtx, "db">,
   ownerId: string,
   raw: string | undefined,
+  side: Side,
 ): Promise<Id<"collectionContainers"> | null | undefined> {
   if (raw === undefined) return undefined;
   const id = ctx.db.normalizeId("collectionContainers", raw);
@@ -1342,18 +1584,34 @@ async function readScope(
   const home = await ctx.db.get(id);
   if (!home || home.ownerId !== ownerId) return null;
   if (home.system === "want" || home.system === "trade" || home.rule !== undefined) return null;
+  if (sideOfContainer(home) !== side) return null;
   return id;
 }
 
-/** The caller's line items across one variant (a checklist's worth); NEO-359: in one home when scoped. */
+/**
+ * NEO-364 — the `side` a read takes, optional for the release only: a tab
+ * still running the SPA bundle from before NEO-364 sends no `side`, and a
+ * required arg would make its query throw until it reloads. Omitted reads as
+ * `"collection"` (what those bundles showed, binders only; never a box
+ * copy). The new client always sends it.
+ */
+const readSideValidator = v.optional(sideValidator);
+const sideOf = (side: Side | undefined): Side => side ?? "collection";
+
+/**
+ * The caller's line items across one variant (a checklist's worth); NEO-359:
+ * in one home when scoped. NEO-364: on one `side` only (binder lines or box
+ * lines); a scope on the other side reads as empty.
+ */
 export const copiesInVariant = query({
-  args: { variantId: v.string(), homeId: v.optional(v.string()) },
+  args: { variantId: v.string(), homeId: v.optional(v.string()), side: readSideValidator },
   returns: v.array(copyValidator),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const side = sideOf(args.side);
     const variantId = ctx.db.normalizeId("selectorOptions", args.variantId);
     if (!variantId) return [];
-    const homeId = await readScope(ctx, ownerId, args.homeId);
+    const homeId = await readScope(ctx, ownerId, args.homeId, side);
     if (homeId === null) return [];
     const setId = await findSetForSelectorOption(ctx, variantId);
     if (!setId) return [];
@@ -1375,7 +1633,8 @@ export const copiesInVariant = query({
                 .eq("variantId", variantId),
             )
             .take(MAX_VARIANT_COPIES);
-    return rows.map(copyOut);
+    const onSide = homeId === undefined ? await new HomeSides(ctx, ownerId).keep(rows, side) : rows;
+    return onSide.map(copyOut);
   },
 });
 
@@ -1391,10 +1650,11 @@ export const copiesInVariant = query({
  * when the row was never counted and holds too many cards to count here.
  * Null for an id that is not a card-bearing row. NEO-359: with `homeId`,
  * owned counts only the copies in that home (a bad or foreign scope owns
- * nothing); the totals are the variant's either way.
+ * nothing); the totals are the variant's either way. NEO-364: owned counts
+ * only the copies on `side` (a scope on the other side owns nothing).
  */
 export const variantCompletion = query({
-  args: { variantId: v.string(), homeId: v.optional(v.string()) },
+  args: { variantId: v.string(), homeId: v.optional(v.string()), side: readSideValidator },
   returns: v.union(
     v.object({
       owned: v.number(),
@@ -1406,6 +1666,7 @@ export const variantCompletion = query({
   ),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const side = sideOf(args.side);
     const variantId = ctx.db.normalizeId("selectorOptions", args.variantId);
     if (!variantId) return null;
     const row = await ctx.db.get(variantId);
@@ -1415,16 +1676,17 @@ export const variantCompletion = query({
     ) {
       return null;
     }
-    const homeId = await readScope(ctx, ownerId, args.homeId);
+    const homeId = await readScope(ctx, ownerId, args.homeId, side);
     const setId = homeId === null ? null : await findSetForSelectorOption(ctx, variantId);
     let copies: CopyRow[] = [];
     if (setId && homeId === undefined) {
-      copies = await ctx.db
+      const rows = await ctx.db
         .query("collectionCopies")
         .withIndex("by_owner_set_variant", (q) =>
           q.eq("ownerId", ownerId).eq("setId", setId).eq("variantId", variantId),
         )
         .take(MAX_VARIANT_COPIES);
+      copies = await new HomeSides(ctx, ownerId).keep(rows, side);
     } else if (setId && homeId) {
       copies = await ctx.db
         .query("collectionCopies")
@@ -1448,10 +1710,11 @@ export const variantCompletion = query({
  * Owned counts for every variant of one set in one read, for a scoreboard:
  * per variant and across the set, regular cards (`owned`) and every card
  * (`ownedAll`). Totals come from `collectionCatalog.setSummary`. NEO-359:
- * with `homeId`, only the copies in that home.
+ * with `homeId`, only the copies in that home. NEO-364: only the copies on
+ * `side`; `truncated` is over the lines read, either side.
  */
 export const setCompletion = query({
-  args: { setId: v.string(), homeId: v.optional(v.string()) },
+  args: { setId: v.string(), homeId: v.optional(v.string()), side: readSideValidator },
   returns: v.object({
     owned: v.number(),
     ownedAll: v.number(),
@@ -1466,12 +1729,13 @@ export const setCompletion = query({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const side = sideOf(args.side);
     const empty = { owned: 0, ownedAll: 0, variants: [], truncated: false };
     const setId = ctx.db.normalizeId("selectorOptions", args.setId);
     if (!setId) return empty;
-    const homeId = await readScope(ctx, ownerId, args.homeId);
+    const homeId = await readScope(ctx, ownerId, args.homeId, side);
     if (homeId === null) return empty;
-    const rows =
+    const read =
       homeId === undefined
         ? await ctx.db
             .query("collectionCopies")
@@ -1483,9 +1747,11 @@ export const setCompletion = query({
               q.eq("ownerId", ownerId).eq("homeId", homeId).eq("setId", setId),
             )
             .take(MAX_SUMMARY_LINES + 1);
-    const truncated = rows.length > MAX_SUMMARY_LINES;
+    const truncated = read.length > MAX_SUMMARY_LINES;
+    const kept = read.slice(0, MAX_SUMMARY_LINES);
+    const rows = homeId === undefined ? await new HomeSides(ctx, ownerId).keep(kept, side) : kept;
     const byVariant = new Map<string, { variantId: Id<"selectorOptions">; cards: Set<string> }>();
-    for (const row of rows.slice(0, MAX_SUMMARY_LINES)) {
+    for (const row of rows) {
       if (!row.variantId) continue;
       const key = row.variantId as string;
       const entry = byVariant.get(key) ?? { variantId: row.variantId, cards: new Set<string>() };
@@ -1787,15 +2053,13 @@ export const addHave = mutation({
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const { result, delta, change, setCards } = await addOne(
+    const { result, change } = await addOne(
       ctx,
       ownerId,
       args.cardId,
       haveDetails(args.acquiredOn, args.homeId),
     );
-    await moveTally(ctx, ownerId, delta);
-    await moveCounts(ctx, ownerId, [change]);
-    await moveBuildingCards(ctx, ownerId, setCards);
+    await applyCopyChanges(ctx, ownerId, [change]);
     return result;
   },
 });
@@ -1815,18 +2079,12 @@ export const addHaves = mutation({
     }
     const out = [];
     const changes: CountChange[] = [];
-    const setCards: SetCardsChange[] = [];
-    let delta = NO_CHANGE;
     for (const cardId of args.cardIds) {
       const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn, args.homeId));
       out.push({ cardId, ...added.result });
-      delta = addTallies(delta, added.delta);
       changes.push(added.change);
-      setCards.push(...added.setCards);
     }
-    await moveTally(ctx, ownerId, delta);
-    await moveCounts(ctx, ownerId, changes);
-    await moveBuildingCards(ctx, ownerId, setCards);
+    await applyCopyChanges(ctx, ownerId, changes);
     return out;
   },
 });
@@ -1837,10 +2095,8 @@ export const addLineItem = mutation({
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    const { result, delta, change, setCards } = await addOne(ctx, ownerId, args.cardId, args.details);
-    await moveTally(ctx, ownerId, delta);
-    await moveCounts(ctx, ownerId, [change]);
-    await moveBuildingCards(ctx, ownerId, setCards);
+    const { result, change } = await addOne(ctx, ownerId, args.cardId, args.details);
+    await applyCopyChanges(ctx, ownerId, [change]);
     return result;
   },
 });
@@ -1878,9 +2134,8 @@ export const updateCopy = mutation({
       homeId: row.homeId,
       lastUpdated: Date.now(),
     });
-    await moveTally(ctx, ownerId, { copies: cleaned.quantity - row.quantity, lines: 0, cards: 0 });
-    await moveCounts(ctx, ownerId, [
-      { before: counted(row), after: counted({ ...cleaned, homeId: row.homeId }) },
+    await applyCopyChanges(ctx, ownerId, [
+      changeOf(row, counted(row), counted({ ...cleaned, homeId: row.homeId })),
     ]);
     return { previous };
   },
@@ -1894,14 +2149,7 @@ export const removeCopy = mutation({
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
     await ctx.db.delete(row._id);
-    const lostCard = !(await stillHolds(ctx, ownerId, row.cardId));
-    await moveTally(ctx, ownerId, {
-      copies: -row.quantity,
-      lines: -1,
-      cards: lostCard ? -1 : 0,
-    });
-    await moveCounts(ctx, ownerId, [{ before: counted(row), after: null }]);
-    if (lostCard && row.setId) await moveBuildingCards(ctx, ownerId, [{ setId: row.setId, cards: -1 }]);
+    await applyCopyChanges(ctx, ownerId, [changeOf(row, counted(row), null)]);
     return { removed: { cardId: row.cardId, details: detailsOf(row) } };
   },
 });
@@ -1918,27 +2166,12 @@ export const removeCopies = mutation({
     const unique = [...new Set(args.copyIds)];
     const rows = [];
     for (const id of unique) rows.push(await ownCopy(ctx, ownerId, id));
-    let copies = 0;
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-      copies += row.quantity;
-    }
-    let cards = 0;
-    const setCards: SetCardsChange[] = [];
-    for (const cardId of distinctCards(rows)) {
-      if (await stillHolds(ctx, ownerId, cardId as CopyCardId)) continue;
-      cards += 1;
-      // A card's lines all name its set; the first removed one says which.
-      const line = rows.find((row) => row.cardId === cardId)!;
-      if (line.setId) setCards.push({ setId: line.setId, cards: -1 });
-    }
-    await moveTally(ctx, ownerId, { copies: -copies, lines: -rows.length, cards: -cards });
-    await moveCounts(
+    for (const row of rows) await ctx.db.delete(row._id);
+    await applyCopyChanges(
       ctx,
       ownerId,
-      rows.map((row) => ({ before: counted(row), after: null })),
+      rows.map((row) => changeOf(row, counted(row), null)),
     );
-    await moveBuildingCards(ctx, ownerId, setCards);
     return { removed: rows.map((row) => ({ cardId: row.cardId, details: detailsOf(row) })) };
   },
 });
@@ -1960,7 +2193,7 @@ export const restoreCopy = mutation({
     const home = await resolveHome(ctx, ownerId, args.details.homeId);
     checkSlot(home, cleaned.slot);
     if (!(await pocketIsFree(ctx, ownerId, home, cleaned.slot))) delete cleaned.slot;
-    const place = await placeOf(ctx, ownerId, args.cardId);
+    const place = await placeOfCopyCard(ctx, ownerId, args.cardId);
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", args.cardId))
@@ -1976,15 +2209,9 @@ export const restoreCopy = mutation({
       homeId: home._id,
       lastUpdated: Date.now(),
     });
-    await moveTally(ctx, ownerId, {
-      copies: cleaned.quantity,
-      lines: 1,
-      cards: lines.length === 0 ? 1 : 0,
-    });
-    await moveCounts(ctx, ownerId, [{ before: null, after: counted({ ...cleaned, homeId: home._id }) }]);
-    if (lines.length === 0 && place.setId) {
-      await moveBuildingCards(ctx, ownerId, [{ setId: place.setId, cards: 1 }]);
-    }
+    await applyCopyChanges(ctx, ownerId, [
+      changeOf({ cardId: args.cardId, setId: place.setId }, null, counted({ ...cleaned, homeId: home._id })),
+    ]);
     return { copyId };
   },
 });
@@ -2047,11 +2274,12 @@ export const setTrade = mutation({
       upForTrade: args.on ? true : undefined,
       lastUpdated: Date.now(),
     });
-    await moveCounts(ctx, ownerId, [
-      {
-        before: counted(row),
-        after: { homeId: row.homeId, quantity: row.quantity, ...(args.on ? { upForTrade: true as const } : {}) },
-      },
+    await applyCopyChanges(ctx, ownerId, [
+      changeOf(row, counted(row), {
+        homeId: row.homeId,
+        quantity: row.quantity,
+        ...(args.on ? { upForTrade: true as const } : {}),
+      }),
     ]);
     return { previous };
   },
@@ -2087,16 +2315,195 @@ export const setBuilding = mutation({
     if (held.length >= MAX_BUILDING_SETS) {
       refuse(COLLECTION_ERRORS.limit, `You're building ${MAX_BUILDING_SETS} sets already. Finish or drop one first.`);
     }
-    // NEO-359 — born counted when the count can finish (see the schema).
+    // NEO-359 — born counted when the count can finish (see the schema);
+    // NEO-364: collection homes only, stamped so.
     const cards = await countSetCards(ctx, ownerId, args.setId, {
       left: MAX_BUILDING_CARDS_RECOUNT_LINES,
     });
     await ctx.db.insert("collectionBuildingSets", {
       ownerId,
       setId: args.setId,
-      ...(cards !== null ? { cards } : {}),
+      ...(cards !== null ? { cards, tallyScope: "collection" as const } : {}),
       lastUpdated: Date.now(),
     });
     return { changed: true };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-364 — the armed recount: collection-only tallies
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * NEO-364 — optional clean-up after deploy: settle every tally and
+ * building-set count from before NEO-364 (they counted boxes too).
+ *
+ * It is not needed for correctness: a tally or `cards` without
+ * `tallyScope: "collection"` already reads as not kept, so the next write
+ * recounts it collection-only and stamps it, and a read counts by hand until
+ * then. This only spares those hand counts:
+ *
+ *   - an owner with NO box: the old number counted binders only anyway, so
+ *     it is stamped as it is (Main's tally and each counted building set);
+ *   - an owner with a box: Main's tally and the unstamped building-set
+ *     `cards` are cleared (absent = count by hand, then kept again on the
+ *     next write).
+ *
+ * ## Operator command
+ *
+ *   # 1. dry run (the default): reports what an armed run would do, writes nothing
+ *   npx convex run collection:recountCollectionTallies '{}'
+ *
+ *   # 2. arm the deployment, run for real, disarm
+ *   npx convex env set ALLOW_COLLECTION_BACKFILL 1
+ *   npx convex run collection:recountCollectionTallies '{"confirm":"RECOUNT"}'
+ *   npx convex env remove ALLOW_COLLECTION_BACKFILL
+ *
+ * Two arming steps, the project rule: `confirm` is per invocation, the env
+ * flag per deployment. An armed invocation on an unarmed deployment comes
+ * back `refused` with the dry-run report. Internal, so no identity: reaching
+ * it takes deploy credentials. Idempotent: a second run finds every row
+ * stamped or cleared and writes nothing.
+ *
+ * It pages `collectionContainers` (no index on `system` alone) a page per
+ * mutation, looped here, so no single transaction reads more than one page
+ * of owners. Owners with building sets but no Main (they never held a copy)
+ * are not visited; their counts are recounted on first use.
+ */
+const RECOUNT_CONFIRM = "RECOUNT";
+const RECOUNT_ENV_FLAG = "ALLOW_COLLECTION_BACKFILL";
+/** Containers one page reads; each Main also reads its owner's containers and set builds. */
+const RECOUNT_PAGE = 20;
+/** A stop for a runaway loop, far above any real table. */
+const RECOUNT_MAX_PAGES = 100_000;
+
+function recountIsArmed(): boolean {
+  const value = process.env[RECOUNT_ENV_FLAG];
+  return value === "1" || value === "true";
+}
+
+const recountTotalsFields = {
+  /** Main rows seen (one per owner who ever held a copy). */
+  mains: v.number(),
+  /** Owners whose tally and set builds were already collection-only (or never counted). */
+  alreadyScoped: v.number(),
+  /** Owners with no box whose old numbers were stamped as they are. */
+  stamped: v.number(),
+  /** Owners with a box whose old numbers were cleared. */
+  cleared: v.number(),
+  /** Building-set rows stamped (no-box owners). */
+  buildingStamped: v.number(),
+  /** Building-set rows cleared (owners with a box). */
+  buildingCleared: v.number(),
+};
+
+type RecountTotals = { [K in keyof typeof recountTotalsFields]: number };
+
+export const recountCollectionTalliesPage = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()), write: v.boolean() },
+  returns: v.object({
+    continueCursor: v.string(),
+    isDone: v.boolean(),
+    ...recountTotalsFields,
+  }),
+  handler: async (ctx, args) => {
+    // Re-asserts the arming itself: a direct `npx convex run` of this page
+    // with `write: true` must not bypass the action's two-step gate.
+    if (args.write && !recountIsArmed()) {
+      throw new ConvexError(
+        `Refused: this deployment is not armed. Set ${RECOUNT_ENV_FLAG}=1 on it to write. Nothing was written.`,
+      );
+    }
+    const result = await ctx.db
+      .query("collectionContainers")
+      .paginate({ cursor: args.cursor, numItems: RECOUNT_PAGE });
+    const totals: RecountTotals = {
+      mains: 0,
+      alreadyScoped: 0,
+      stamped: 0,
+      cleared: 0,
+      buildingStamped: 0,
+      buildingCleared: 0,
+    };
+    for (const main of result.page) {
+      if (main.system !== "main") continue;
+      totals.mains += 1;
+      const ownerId = main.ownerId;
+      const oldTally = main.tally !== undefined && main.tallyScope !== "collection";
+      const builds = await ctx.db
+        .query("collectionBuildingSets")
+        .withIndex("by_owner_and_set", (q) => q.eq("ownerId", ownerId))
+        .take(MAX_BUILDING_SETS + 1);
+      const oldBuilds = builds.filter((b) => b.cards !== undefined && b.tallyScope !== "collection");
+      if (!oldTally && oldBuilds.length === 0) {
+        totals.alreadyScoped += 1;
+        continue;
+      }
+      const containers = await ctx.db
+        .query("collectionContainers")
+        .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId))
+        .take(MAX_CONTAINERS + MAX_SYSTEM_CONTAINERS);
+      const hasBox = containers.some((c) => sideOfContainer(c) === "inventory");
+      if (hasBox) {
+        totals.cleared += 1;
+        totals.buildingCleared += oldBuilds.length;
+        if (args.write) {
+          if (oldTally) await ctx.db.patch(main._id, { tally: undefined, tallyScope: undefined });
+          for (const b of oldBuilds) await ctx.db.patch(b._id, { cards: undefined, tallyScope: undefined });
+        }
+      } else {
+        totals.stamped += 1;
+        totals.buildingStamped += oldBuilds.length;
+        if (args.write) {
+          if (oldTally) await ctx.db.patch(main._id, { tallyScope: "collection" });
+          for (const b of oldBuilds) await ctx.db.patch(b._id, { tallyScope: "collection" });
+        }
+      }
+    }
+    return { continueCursor: result.continueCursor, isDone: result.isDone, ...totals };
+  },
+});
+
+export const recountCollectionTallies = internalAction({
+  args: { confirm: v.optional(v.string()) },
+  returns: v.object({
+    mode: v.union(v.literal("dry-run"), v.literal("armed"), v.literal("refused")),
+    message: v.optional(v.string()),
+    pages: v.number(),
+    ...recountTotalsFields,
+  }),
+  handler: async (ctx, args) => {
+    const asked = args.confirm === RECOUNT_CONFIRM;
+    const write = asked && recountIsArmed();
+    let message: string | undefined;
+    if (args.confirm !== undefined && !asked) {
+      message = `Dry run: confirm must be exactly "${RECOUNT_CONFIRM}". Nothing was written.`;
+    } else if (asked && !write) {
+      message =
+        `Refused: this deployment is not armed. Set ${RECOUNT_ENV_FLAG}=1 on it, re-run, and remove ` +
+        `the flag afterwards. Nothing was written; the report is what an armed run would do.`;
+    }
+    const totals: RecountTotals = {
+      mains: 0,
+      alreadyScoped: 0,
+      stamped: 0,
+      cleared: 0,
+      buildingStamped: 0,
+      buildingCleared: 0,
+    };
+    let cursor: string | null = null;
+    let pages = 0;
+    for (; pages < RECOUNT_MAX_PAGES; ) {
+      const page: { continueCursor: string; isDone: boolean } & RecountTotals = await ctx.runMutation(
+        internal.collection.recountCollectionTalliesPage,
+        { cursor, write },
+      );
+      pages += 1;
+      for (const key of Object.keys(totals) as Array<keyof RecountTotals>) totals[key] += page[key];
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+    const mode: "armed" | "refused" | "dry-run" = write ? "armed" : asked ? "refused" : "dry-run";
+    return { mode, ...(message ? { message } : {}), pages, ...totals };
   },
 });

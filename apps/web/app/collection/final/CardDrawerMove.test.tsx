@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
-import { initialCollectionState, MAIN_BINDER_ID, PUBLIC_STORAGE_KEY } from "./store";
+import { initialCollectionState, MAIN_BINDER_ID, PUBLIC_STORAGE_KEY, SHOW_BOX_ID } from "./store";
 
 /**
  * NEO-359 — a line item's Move, Sell and Take off sale panels in the drawer,
@@ -23,10 +23,10 @@ const STACK = initialCollectionState().copies.find((c) => c.quantity === 3)!;
 /** How many line items the drawer shows for that card to start with. */
 const LINES = initialCollectionState().copies.filter((c) => c.cardId === STACK.cardId).length;
 
-function renderDrawer() {
+function renderDrawer(cardId: string = STACK.cardId) {
   render(
     <Theme>
-      <MemoryRouter initialEntries={[`${DEMO}&tab=cards&detail=${STACK.cardId}`]}>
+      <MemoryRouter initialEntries={[`${DEMO}&tab=cards&detail=${cardId}`]}>
         <Routes>
           <Route path="/binder-tracking" element={<PublicCollectionDemo onExit={vi.fn()} keepParams={{ demo: "on" }} />} />
         </Routes>
@@ -41,7 +41,7 @@ const lines = (drawer: HTMLElement) => within(within(drawer).getByRole("region",
 /** The stack of three's Take off sale / Sell button (its line id is stable through a split). */
 const stackSell = (drawer: HTMLElement) =>
   within(drawer)
-    .getAllByRole("button", { name: /^(Take #.+ off sale|Sell #.+)$/ })
+    .getAllByRole("button", { name: /^(Take off sale, #.+|Sell #.+)$/ })
     .find((b) => b.getAttribute("data-copy-sell") === STACK.id)!;
 const status = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
 const optionsOf = (select: HTMLElement) => within(select).getAllByRole("option").map((o) => o.textContent);
@@ -69,8 +69,13 @@ describe("the drawer's Move, Sell and Take off sale", () => {
       within(drawer)
         .queryAllByRole("button", { name: /^Move #/ })
         .find((b) => b.getAttribute("data-copy-move") === STACK.id);
-    // It is the only box, so the line has nowhere to Move to.
-    expect(stackMove()).toBeUndefined();
+    // Unsorted always exists, so a line in the Show box can Move: to another box only.
+    const moveButton = stackMove()!;
+    expect(moveButton).toBeTruthy();
+    fireEvent.click(moveButton);
+    const movePanel = within(drawer).getByRole("form", { name: /^Move / });
+    expect(optionsOf(within(movePanel).getByRole("combobox", { name: "Move to" }))).toEqual(["Unsorted"]);
+    fireEvent.click(within(movePanel).getByRole("button", { name: "Keep it here" }));
     const button = stackSell(drawer);
     expect(button.textContent).toBe("Take off sale");
     expect(within(drawer).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
@@ -167,8 +172,9 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(sell.textContent).toBe("Sell");
     fireEvent.click(sell);
     const sellPanel = within(drawer).getByRole("form", { name: /^Sell / });
-    expect(optionsOf(within(sellPanel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Show box"]);
+    expect(optionsOf(within(sellPanel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Unsorted", "Show box"]);
     expect(within(sellPanel).getByText("Everything in a box is for sale. Boxes live on Inventory.")).toBeTruthy();
+    fireEvent.change(within(sellPanel).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
     fireEvent.click(within(sellPanel).getByRole("button", { name: "Put 3 up for sale" }));
     await waitFor(() => expect(status(/^#.+ are up for sale in Show box\.$/)).toBe(true));
     await frames();
@@ -192,10 +198,10 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(status(/off sale/)).toBe(false);
   });
 
-  it("Sell with no box yet says how to make one, and goes to the demo's Inventory tab", async () => {
-    // The demo with its boxes gone: every copy back in Main.
+  it("Sell always has somewhere to go: Unsorted exists even with every other box gone, and it is the first pick", async () => {
+    // The demo with its own boxes gone: every copy back in Main. Unsorted stays (a system box).
     const seed = initialCollectionState();
-    const boxes = new Set(seed.containers.filter((c) => c.kind === "box").map((c) => c.id));
+    const boxes = new Set(seed.containers.filter((c) => c.kind === "box" && !c.system).map((c) => c.id));
     const state = {
       ...seed,
       containers: seed.containers.filter((c) => !boxes.has(c.id)),
@@ -204,12 +210,56 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     window.sessionStorage.setItem(PUBLIC_STORAGE_KEY, JSON.stringify(state));
     const drawer = renderDrawer();
     fireEvent.click(stackSell(drawer));
-    const group = within(drawer).getByRole("group", { name: /^Sell / });
-    expect(within(group).getByText("No boxes yet, so there's nowhere to sell it from.")).toBeTruthy();
-    expect(within(group).getByText("Make a box on Inventory, then come back and press Sell.")).toBeTruthy();
-    const link = within(group).getByRole("link", { name: "Go to Inventory" });
+    const panel = within(drawer).getByRole("form", { name: /^Sell / });
+    expect(within(panel).queryByText(/No boxes yet/)).toBeNull();
+    expect(optionsOf(within(panel).getByRole("combobox", { name: "Into which box" }))).toEqual(["Unsorted"]);
+    fireEvent.click(within(panel).getByRole("button", { name: "Put 3 up for sale" }));
+    await waitFor(() => expect(status(/^#.+ are up for sale in Unsorted\.$/)).toBe(true));
+  });
+
+  // NEO-364 F3: copies never record the binder they left, so Take off sale
+  // starts on the binder already holding the most of the card, else Main.
+  it("Take off sale starts on the binder holding the most of the card, else Main", async () => {
+    const drawer = renderDrawer();
+    const backInto = () => {
+      fireEvent.click(stackSell(drawer));
+      const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
+      const value = (within(panel).getByRole("combobox", { name: "Back into" }) as HTMLSelectElement).value;
+      fireEvent.click(within(panel).getByRole("button", { name: "Leave it for sale" }));
+      return value;
+    };
+    // The seed keeps one of this card in Main: Main it is.
+    const seed = initialCollectionState().copies.filter((c) => c.cardId === STACK.cardId && c.homeId !== SHOW_BOX_ID);
+    expect(seed.map((c) => c.homeId)).toEqual([MAIN_BINDER_ID]);
+    expect(backInto()).toBe(MAIN_BINDER_ID);
     await frames();
-    expect(document.activeElement).toBe(link);
-    expect(link.getAttribute("href")).toBe("/binder-tracking?demo=on&tab=inventory");
+
+    // Two in the slab case outnumber Main's one: the slab case it is.
+    await takeOff(drawer, 2);
+    await waitFor(() => expect(lines(drawer)).toHaveLength(LINES + 1));
+    await frames();
+    expect(backInto()).toBe("binder-slab-case");
+  });
+
+  it("the headline counts binders and boxes apart: what you keep, then what's for sale", () => {
+    const copies = initialCollectionState().copies.filter((c) => c.cardId === STACK.cardId);
+    const forSale = copies.filter((c) => c.homeId === SHOW_BOX_ID).reduce((n, c) => n + c.quantity, 0);
+    const kept = copies.reduce((n, c) => n + c.quantity, 0) - forSale;
+    expect(kept).toBeGreaterThan(0);
+    expect(forSale).toBeGreaterThan(0);
+    const drawer = renderDrawer();
+    expect(within(drawer).getByText(`${kept} in binders · ${forSale} for sale`)).toBeTruthy();
+    expect(within(drawer).queryByText(/^You have /)).toBeNull();
+  });
+
+  it("a line's free-text location that only names a binder (the slab case it left) is not shown on the line", () => {
+    const slab = initialCollectionState().copies.find((c) => c.location === "Slab case" && c.homeId === SHOW_BOX_ID)!;
+    expect(slab).toBeTruthy();
+    const drawer = renderDrawer(slab.cardId);
+    const region = within(drawer).getByRole("region", { name: /^Your copies of / });
+    expect(within(region).getAllByText(/^For sale · Show box$/).length).toBeGreaterThan(0);
+    expect(within(region).queryByText(/Slab case/)).toBeNull();
+    // The add form's location hint no longer reads like a box.
+    expect(within(drawer).getByPlaceholderText("Shelf 2, top drawer")).toBeTruthy();
   });
 });

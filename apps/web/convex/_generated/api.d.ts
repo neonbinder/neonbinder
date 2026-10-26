@@ -55,6 +55,7 @@ import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as collection from "../collection.js";
 import type * as collectionCatalog from "../collectionCatalog.js";
 import type * as collectionContainers from "../collectionContainers.js";
+import type * as collectionInventory from "../collectionInventory.js";
 import type * as collectionRequests from "../collectionRequests.js";
 import type * as collectionWants from "../collectionWants.js";
 import type * as combinedNamesReport from "../combinedNamesReport.js";
@@ -204,6 +205,7 @@ declare const fullApi: ApiFromModules<{
   collection: typeof collection;
   collectionCatalog: typeof collectionCatalog;
   collectionContainers: typeof collectionContainers;
+  collectionInventory: typeof collectionInventory;
   collectionRequests: typeof collectionRequests;
   collectionWants: typeof collectionWants;
   combinedNamesReport: typeof combinedNamesReport;

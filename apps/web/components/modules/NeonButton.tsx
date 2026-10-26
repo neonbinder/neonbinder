@@ -58,10 +58,11 @@ const HUES: Record<NeonButtonVariant, { fill: string; hover: string; ink: string
 
 /**
  * The button's paint, as `--nb-*` custom properties that the `.neon-button`
- * rule in app/globals.css reads at rest and under the pointer. Radix's
- * stylesheet is unlayered, so a Tailwind class cannot outrank its fill, and an
- * inline `backgroundColor` would freeze the hover; a custom property set on
- * the element does neither.
+ * rule in app/globals.css reads at rest and under the pointer. That rule is
+ * unlayered, so it outranks Radix's fill and any colour utility passed in
+ * `className` (size, spacing and position utilities do apply: Radix sits in a
+ * cascade layer under Tailwind's utilities). An inline `backgroundColor` would
+ * freeze the hover; a custom property set on the element does not.
  */
 export type NeonButtonPaint = Record<
   "--nb-fill" | "--nb-fill-hover" | "--nb-ink" | "--nb-ink-hover" | "--nb-edge" | "--nb-edge-hover",

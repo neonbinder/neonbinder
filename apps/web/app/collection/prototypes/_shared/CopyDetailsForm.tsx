@@ -308,7 +308,7 @@ export default function CopyDetailsForm({
 
         <Input
           label="Location"
-          placeholder="Box 3"
+          placeholder="Shelf 2, top drawer"
           value={value.location ?? ""}
           onChange={(e) => set({ location: e.target.value || undefined })}
         />

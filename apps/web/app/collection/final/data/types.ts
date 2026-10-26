@@ -38,6 +38,27 @@ export type TeamId = string;
 export type ContainerId = string;
 
 // ---------------------------------------------------------------------------
+// Sides and tabs (NEO-364)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which half of the collector's cards a screen is looking at. Hard line
+ * (NEO-364): `"collection"` is the binders, `"inventory"` the boxes. A
+ * collection read never counts a copy in a box and an inventory read never
+ * counts one in a binder; the card drawer's Sell / Take off sale is the only
+ * crossing. Up for Trade is the one read that spans both (`useTradeCopies`).
+ */
+export type Side = "collection" | "inventory";
+
+/**
+ * The page's `?tab=`. `/collection` shows `cards`, `binders` and
+ * `checklists`; `/inventory` shows `cards` (the Inventory list), `boxes`
+ * (My Boxes) and `checklists`. The old `"inventory"` key is retired: a
+ * `?tab=inventory` link redirects (replace) to `/inventory?tab=boxes`.
+ */
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists";
+
+// ---------------------------------------------------------------------------
 // Catalog
 // ---------------------------------------------------------------------------
 
@@ -241,7 +262,10 @@ export interface DrillItem {
   id: string;
   level: DrillLevel;
   name: string;
-  /** A ready-made line under the name, when the store has one ("/50 · have 2 of 30"). */
+  /**
+   * A ready-made line under the name, when the store has one: a parallel's
+   * print run ("/50"). Never a count (NEO-364): the drill shows no numbers.
+   */
   description?: string;
   /** Variant-type rows: what the row is (and its children are). */
   kind?: VariantKind;
@@ -297,8 +321,10 @@ export interface CopyDetails {
   notes: string;
   /**
    * Where the copy lives. On an add: absent files it in the page's scope
-   * (`useScope`) when that is a binder or box, else in Main. On an edit it
-   * must stay the same: a change of home is `moveCopy`, never `updateCopy`.
+   * (`useScope`) when that is a binder or box, else in Main. An inventory
+   * screen always passes the box (the target box, Unsorted by default). On
+   * an edit it must stay the same: a change of home is `moveCopy`, never
+   * `updateCopy`.
    */
   homeId?: ContainerId;
   /**
@@ -352,13 +378,16 @@ export function pocketOf(slot: number): { page: number; pocket: number } {
 export type ContainerKind = "binder" | "box";
 
 /**
- * The containers every collector has. `main`: where a card lands until it is
- * filed elsewhere. `want`: the Want List (holds wants, never copies). `trade`:
- * the Up for Trade pile (shows the copies flagged `upForTrade`; never a home).
- * System containers sort first and cannot be renamed or deleted; their label
- * can be set.
+ * The containers every collector has. `main`: the collection's catch-all
+ * binder, where a card lands until it is filed elsewhere. `unsorted`
+ * (NEO-364): the inventory's Main, a box: where a card for sale lands when
+ * no box is picked, and where a deleted box's copies drop. `want`: the Want
+ * List (holds wants, never copies). `trade`: the Up for Trade pile (shows the
+ * copies flagged `upForTrade`, binder or box; never a home). System
+ * containers sort first and cannot be renamed, emptied or deleted; their
+ * label can be set. Unsorted never shows on a collection screen.
  */
-export type SystemKind = "main" | "want" | "trade";
+export type SystemKind = "main" | "unsorted" | "want" | "trade";
 
 /** A spine label in the Print Shop's look: a `#rrggbb` pair and a spine font id. */
 export interface ContainerLabel {
@@ -405,7 +434,7 @@ export interface ContainerCount {
 export interface Container {
   id: ContainerId;
   kind: ContainerKind;
-  /** Set on the three every collector has; absent on the collector's own. */
+  /** Set on the four every collector has; absent on the collector's own. */
   system?: SystemKind;
   name: string;
   description?: string;
@@ -417,7 +446,7 @@ export interface Container {
    */
   rule?: ContainerRule;
   /**
-   * A home (Main, a binder, a box): the copies whose home it is. Up for
+   * A home (Main, Unsorted, a binder, a box): the copies whose home it is. Up for
    * Trade: the flagged copies. The Want List: the wants (both numbers). A
    * smart binder: the copies its rule matches (demo only). `null`: not
    * counted yet; show it as unknown, never as 0.
@@ -425,7 +454,7 @@ export interface Container {
   count: ContainerCount | null;
 }
 
-/** True when a copy can live here: a binder or box that is not the Want List, the trade pile or a smart binder. */
+/** True when a copy can live here: a binder or box (Main and Unsorted included) that is not the Want List, the trade pile or a smart binder. */
 export function isHome(container: Pick<Container, "system" | "rule"> | undefined): boolean {
   return !!container && !container.rule && container.system !== "want" && container.system !== "trade";
 }
@@ -522,6 +551,50 @@ export interface HeldCount {
   lines: number;
   /** True when any of its copies is graded (a slab); absent when none is. */
   graded?: boolean;
+}
+
+/** One box a card sits in, and how many of the card's copies it holds. */
+export interface InventoryBoxCount {
+  boxId: ContainerId;
+  /** Physical copies of the card in this box: quantities summed. */
+  quantity: number;
+  /** Of those, the graded ones (slabs): what "Slabs only" counts. */
+  gradedQuantity: number;
+}
+
+/** One card on the Inventory list: every line of it in every box, together. */
+export interface InventoryItem {
+  card: Card;
+  /** Physical copies across the card's box lines: quantities summed. */
+  quantity: number;
+  /** Box line items (a stack of identical copies is one). */
+  lines: number;
+  /** True when any of its box copies is graded (a slab). */
+  graded: boolean;
+  /** Its graded box copies (slabs), quantities summed: what "Slabs only" counts and tags. */
+  gradedQuantity: number;
+  /** True when any of its box copies is flagged Up for Trade. */
+  upForTrade: boolean;
+  /** The newest `lastUpdated` (ms since epoch) of the card's box lines: the list's "Added" sort. */
+  lastUpdated: number;
+  /** Every box it sits in, Unsorted included. Never a binder. */
+  boxes: InventoryBoxCount[];
+}
+
+/**
+ * The Inventory list (`/inventory?tab=cards`): one item per card held in a
+ * box, never a binder copy (NEO-364 hard line).
+ */
+export interface InventoryCards {
+  items: InventoryItem[];
+  /** Cards held in a box that are no longer in the catalog, within the limit: say so, never crash. */
+  goneCardIds: CardId[];
+  /**
+   * True when the store stopped short of every box line (the server reads
+   * a bounded number of lines): say there are more, and offer narrowing to
+   * one box.
+   */
+  truncated: boolean;
 }
 
 /** "Everything I own": the collector's cards, most recently touched first. */
@@ -623,10 +696,10 @@ export interface Capabilities {
   /** Share links for a binder, the Want List or a set (no public profile route yet). */
   share: boolean;
   /**
-   * Inventory (NEO-359): the Inventory tab with the boxes, New box, an open
-   * box, everything for sale at once, and the card drawer's Sell / Take off
-   * sale. Demo only until the real Inventory ships; the real shelf's
-   * Inventory long box leads to the `/inventory` page instead.
+   * Inventory (NEO-359, real since NEO-364): the inventory side's screens
+   * (the Inventory list, My Boxes with New box and an open box, Checklists
+   * with quick quantity entry) and the card drawer's Sell / Take off sale.
+   * Never a tab beside the collection's: the inventory is its own page.
    */
   inventory: boolean;
 }
@@ -655,7 +728,7 @@ export const NO_CAPABILITIES: Capabilities = {
   inventory: false,
 };
 
-/** What the real collection can do today (NEO-359: binders, wants, trade and scope; NEO-361: card requests; Inventory comes later). */
+/** What the real collection can do today (NEO-359: binders, wants, trade and scope; NEO-361: card requests; NEO-364: inventory). */
 export const REAL_CAPABILITIES: Capabilities = {
   ...NO_CAPABILITIES,
   binders: true,
@@ -663,6 +736,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   trade: true,
   scope: true,
   cardRequests: true,
+  inventory: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -714,6 +788,18 @@ export interface MoveResult {
   undo: Undo;
 }
 
+/**
+ * `setBoxQuantity`: how many plain copies of the card the box held before
+ * and holds now. `before === after`: nothing was written (the undo is a
+ * no-op that resolves).
+ */
+export interface QuantityResult {
+  before: number;
+  after: number;
+  /** Puts exactly the lines the write touched back as they were. */
+  undo: Undo;
+}
+
 export interface WantResult {
   /** False when the want already read as asked (nothing was written). */
   changed: boolean;
@@ -743,7 +829,10 @@ export interface CreateContainerResult {
 }
 
 export interface DeleteContainerResult {
-  /** Copies sent back to Main (their pocket or row cleared). Deleting has no undo. */
+  /**
+   * Copies sent away (their pocket or row cleared): a binder's back to Main,
+   * a box's into Unsorted, so a copy never crosses sides. Deleting has no undo.
+   */
   moved: number;
 }
 

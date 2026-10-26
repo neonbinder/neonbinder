@@ -13,10 +13,10 @@ import NeonButton from "@/components/modules/NeonButton";
 import CardFace from "../../prototypes/_shared/CardFace";
 import { cardCaption, cardNumberLine } from "../captions";
 import { BOX_ROWS, type Card, type Container, type Copy, type CopyId } from "../data/types";
-import { lineNames } from "../lineItems";
+import { binderText, lineNames, type NamedBinder } from "../lineItems";
 import { copyDragId, rowDropId, unsortedDropId } from "./dnd";
 import IdTooltip, { IdLines } from "./IdTooltip";
-import { boxRows, havePocketLabel, rowName, shortName, type CardsById } from "./model";
+import { boxOrder, boxRows, havePocketLabel, rowName, shortName, type CardsById } from "./model";
 import "./box.css";
 
 /**
@@ -35,6 +35,14 @@ import "./box.css";
  * handles that drop, through the same drop ids).
  *
  * Pressing a card opens the page's card drawer on that copy.
+ *
+ * Inside a row (and on the table) the cards stand in a dealer's box order
+ * (NEO-364 D18): set, then card number, then variant; a stack of identical
+ * copies is one card with its ×N.
+ *
+ * `TradeBox` (NEO-364 D4) is the Up for Trade pile as My Boxes draws it: the
+ * same kraft box with no dividers, every flagged copy standing in it, each
+ * tagged with where it really lives ("In <binder>", or its box).
  */
 
 /** The divider tabs, front to back: the neon file colours. */
@@ -148,7 +156,7 @@ export default function BoxDesk({ box, copies, cards, truncated, onMore, onOpen,
         {unsorted.map(item)}
       </Unsorted>
       {truncated && (
-        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10">
+        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10 max-sm:min-h-11">
           Dig deeper into {box.name}
         </NeonButton>
       )}
@@ -296,5 +304,101 @@ function BoxCard({
         <option value="">Not in a row</option>
       </select>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The Up for Trade pile, drawn as a box (My Boxes)
+// ---------------------------------------------------------------------------
+
+interface TradeBoxProps {
+  /** The Up for Trade pile (a system container, never a home). */
+  pile: Container;
+  /** Every flagged copy, binders' and boxes' alike, up to what the page has loaded. */
+  copies: readonly Copy[];
+  cards: CardsById;
+  /** The shelf, to name a copy's home when the store did not. */
+  homes?: readonly NamedBinder[];
+  /** More copies than `copies` holds: offer to load more. */
+  truncated: boolean;
+  onMore: () => void;
+  /** Open the card drawer on this copy. */
+  onOpen: (card: Card, copy: Copy) => void;
+  /** The copy a hunt led to: ringed and focused. */
+  found: CopyId | null;
+}
+
+/**
+ * The Up for Trade pile from the inventory side: one well, no rows (the pile
+ * is not a home, so nothing is filed in it), the cards in box order. Each
+ * card wears a tag under it saying where it lives: "In <binder>" for one
+ * kept in the collection, the box's name for one for sale. Pressing a card
+ * opens the drawer on that copy, where it comes off the pile.
+ */
+export function TradeBox({ pile, copies, cards, homes, truncated, onMore, onOpen, found }: TradeBoxProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!found) return;
+    const el = rootRef.current?.querySelector<HTMLElement>(`[data-box-copy="${CSS.escape(found)}"]`);
+    el?.focus({ preventScroll: true });
+    el?.scrollIntoView({ block: "nearest" });
+  }, [found]);
+  const shown = boxOrder(copies, cards).filter((c) => c.quantity > 0 && cards.has(c.cardId));
+  const total = shown.reduce((n, c) => n + c.quantity, 0);
+
+  return (
+    <div ref={rootRef}>
+      {/* One named group, with the count: a region around it would only say the pile's name twice. */}
+      <div className="nb-box nb-box--pile">
+        <div className="nb-box-well" role="group" aria-label={`${pile.name}, ${total} ${total === 1 ? "card" : "cards"}`}>
+          {shown.length === 0 ? (
+            <p className="nb-box-empty">Nothing up for trade yet. Hunt for a card below and put it on the pile.</p>
+          ) : (
+            <ul className="nb-box-cards">
+              {shown.map((copy) => {
+                const card = cards.get(copy.cardId)!;
+                const where = binderText(copy, homes) || (copy.homeKind === "box" ? "a box" : "a binder");
+                const tag = copy.homeKind === "box" ? where : `In ${where}`;
+                return (
+                  <li key={copy.id} className="nb-box-card">
+                    <IdTooltip content={<IdLines title={cardCaption(card)} lines={[cardNumberLine(card), tag]} />}>
+                      <button
+                        type="button"
+                        onClick={() => onOpen(card, copy)}
+                        data-box-copy={copy.id}
+                        data-found={found === copy.id ? "true" : undefined}
+                        aria-haspopup="dialog"
+                        aria-label={`${havePocketLabel(card, [copy])}, in ${where}`}
+                        className="nb-box-face"
+                      >
+                        <span className="block">
+                          <CardFace model={card} size="fill" serial={copy.serialNumber} />
+                        </span>
+                        {copy.quantity > 1 && (
+                          <span aria-hidden="true" className="nb-box-qty">
+                            ×{copy.quantity}
+                          </span>
+                        )}
+                      </button>
+                    </IdTooltip>
+                    <span
+                      aria-hidden="true"
+                      className={`nb-box-where${copy.homeKind === "box" ? "" : " nb-box-where--binder"}`}
+                    >
+                      {tag}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+      {truncated && (
+        <NeonButton type="button" variant="secondary" outline onClick={onMore} className="mt-3 min-h-10 max-sm:min-h-11">
+          Dig deeper into {pile.name}
+        </NeonButton>
+      )}
+    </div>
   );
 }

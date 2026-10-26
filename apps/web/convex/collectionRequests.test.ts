@@ -285,6 +285,28 @@ describe("approveCard", () => {
     expect(await tallyOf(s)).toMatchObject({ copies: 2, lines: 1, distinctCards: 1 });
   });
 
+  test("a copy kept in a box counts on the inventory side only, and joins the NB card on approval (NEO-364)", async () => {
+    const s = await setup();
+    const boxId = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Box A" })).containerId;
+    const { requestId, privateCardId } = await askBase(s);
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: privateCardId,
+      details: { quantity: 3, homeId: boxId },
+    });
+    // The collection tally is binders only; the box keeps its own count.
+    expect(await tallyOf(s)).toMatchObject({ copies: 0, lines: 0, distinctCards: 0 });
+    const box = async () =>
+      (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === boxId);
+    expect((await box())?.count).toMatchObject({ copies: 3, lines: 1 });
+    // The Inventory list is of catalog cards: the private one is not listed.
+    expect((await s.me.query(api.collectionInventory.inventoryCards, {})).items).toEqual([]);
+    await s.admin.mutation(api.collectionRequests.approveCard, { requestId, cardId: s.fx.gooden1 });
+    const listed = (await s.me.query(api.collectionInventory.inventoryCards, {})).items;
+    expect(listed.map((i) => [i.cardId, i.quantity])).toEqual([[s.fx.gooden1, 3]]);
+    expect((await box())?.count).toMatchObject({ copies: 3, lines: 1 });
+    expect(await tallyOf(s)).toMatchObject({ copies: 0, lines: 0, distinctCards: 0 });
+  });
+
   test("refuses a set request and an already added one", async () => {
     const s = await setup();
     const { requestId } = await askBase(s);
